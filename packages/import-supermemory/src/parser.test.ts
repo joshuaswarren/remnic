@@ -16,6 +16,34 @@ describe("parseSupermemoryExport", () => {
     );
   });
 
+  it("throws when JSON input is null", () => {
+    assert.throws(
+      () => parseSupermemoryExport("null"),
+      /Supermemory export must be a JSON array or object; received null/,
+    );
+  });
+
+  it("throws when JSON input is a primitive", () => {
+    assert.throws(
+      () => parseSupermemoryExport("123"),
+      /Supermemory export must be a JSON array or object; received number/,
+    );
+  });
+
+  it("throws when an object has no recognized memory key", () => {
+    assert.throws(
+      () => parseSupermemoryExport({ foo: [] }),
+      /Supermemory export object has no recognized memory key/,
+    );
+  });
+
+  it("throws when a recognized memory key is not an array", () => {
+    assert.throws(
+      () => parseSupermemoryExport({ memories: {} }),
+      /Supermemory export key 'memories' must be an array/,
+    );
+  });
+
   it("consumes only first matching key to avoid duplicates", () => {
     const parsed = parseSupermemoryExport({
       memories: [{ id: "m1", content: "hello" }],
