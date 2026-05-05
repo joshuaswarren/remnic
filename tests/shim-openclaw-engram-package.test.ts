@@ -13,7 +13,7 @@ test("Phase C shim package keeps a workspace-linked source manifest", async () =
   const dependencies = pkg.dependencies as Record<string, string>;
 
   assert.equal(pkg.name, "@joshuaswarren/openclaw-engram");
-  assert.equal(pkg.version, "9.3.17");
+  assert.equal(pkg.version, "9.3.18");
   assert.equal(bin["engram-access"], "./bin/engram-access.js");
   assert.equal(exportsMap["."].import, "./dist/index.js");
   assert.equal(exportsMap["./access-cli"].import, "./dist/access-cli.js");

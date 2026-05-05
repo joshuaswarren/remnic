@@ -28,14 +28,14 @@
       "provider": "openai",
       "method": "api-key",
       "choiceId": "remnic-openai-api-key",
-      "choiceLabel": "Optional OpenAI API key for Remnic plugin-mode extraction",
-      "choiceHint": "Not needed when Remnic uses the OpenClaw gateway model source. Set only if you intentionally use plugin mode with OpenAI or an OpenAI-compatible endpoint.",
+      "choiceLabel": "OpenAI API key for Remnic memory extraction",
+      "choiceHint": "Remnic sends memory extraction, consolidation, and embedding requests to OpenAI or the configured OpenAI-compatible endpoint unless you route those tasks through OpenClaw gateway/local LLM settings.",
       "groupId": "remnic-memory",
       "groupLabel": "Remnic memory",
       "optionKey": "openaiApiKey",
       "cliFlag": "--openai-api-key",
       "cliOption": "--openai-api-key <key>",
-      "cliDescription": "Optional OpenAI API key used by Remnic plugin-mode extraction, consolidation, and embedding flows.",
+      "cliDescription": "OpenAI API key used by Remnic memory extraction, consolidation, and embedding flows.",
       "onboardingScopes": [
         "text-inference"
       ]
@@ -90,13 +90,13 @@
       "commands.list"
     ],
     "memoryCapabilities": [
-      "openclaw-remnic"
+      "openclaw-engram"
     ],
     "memoryPromptSections": [
       "engram-memory"
     ],
     "services": [
-      "openclaw-remnic"
+      "openclaw-engram"
     ],
     "tools": [
       "compounding_promote_candidate",
@@ -2922,8 +2922,8 @@
           "plugin",
           "gateway"
         ],
-        "default": "gateway",
-        "description": "LLM source: 'gateway' delegates to a gateway agent's model chain (agents.list[]); 'plugin' uses Engram's own openai/localLlm config."
+        "default": "plugin",
+        "description": "LLM source: 'plugin' uses Engram's own openai/localLlm config; 'gateway' delegates to a gateway agent's model chain (agents.list[])."
       },
       "gatewayAgentId": {
         "type": "string",

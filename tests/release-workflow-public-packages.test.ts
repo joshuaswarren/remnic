@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 // Topological publish order: core first, then the à-la-carte companion
-// packages (bench, weclone family, connector-replit) that install
+// packages (bench, importer/exporter family, connector-replit) that install
 // surfaces depend on, then the depend-on-core runtimes (server, CLI) and
 // plugin bundles (openclaw + per-agent plugins), and finally the legacy
 // shim that lives at the tail. Keep in sync with PUBLISH_ORDER in
@@ -18,6 +18,7 @@ const expectedPublishDirs = [
   "packages/import-gemini",
   "packages/import-mem0",
   "packages/import-lossless-claw",
+  "packages/import-supermemory",
   "packages/connector-weclone",
   "packages/connector-replit",
   "packages/hermes-provider",
