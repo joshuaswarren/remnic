@@ -16,12 +16,7 @@ function toImported(row: SupermemoryRecord, importedFromPath?: string): Imported
   const content = pickContent(row);
   if (!content) return undefined;
   const sourceId = typeof row.id === "string" && row.id.length > 0 ? row.id : content.slice(0, 64);
-  const sourceTimestamp =
-    typeof row.updatedAt === "string"
-      ? row.updatedAt
-      : typeof row.createdAt === "string"
-        ? row.createdAt
-        : undefined;
+  const sourceTimestamp = pickTimestamp(row);
   return {
     content,
     sourceLabel: SUPERMEMORY_SOURCE_LABEL,
@@ -36,6 +31,15 @@ function toImported(row: SupermemoryRecord, importedFromPath?: string): Imported
       ...(row.metadata && typeof row.metadata === "object" ? { sourceMetadata: row.metadata } : {}),
     },
   };
+}
+
+function pickTimestamp(row: SupermemoryRecord): string | undefined {
+  for (const timestamp of [row.updatedAt, row.createdAt]) {
+    if (typeof timestamp === "string" && timestamp.trim().length > 0) {
+      return timestamp.trim();
+    }
+  }
+  return undefined;
 }
 
 function pickContent(row: SupermemoryRecord): string | undefined {

@@ -42,7 +42,8 @@
     "@remnic/import-claude": "^0.1.0",
     "@remnic/import-gemini": "^0.1.0",
     "@remnic/import-lossless-claw": "^0.1.1",
-    "@remnic/import-mem0": "^0.1.0"
+    "@remnic/import-mem0": "^0.1.0",
+    "@remnic/import-supermemory": "^0.1.0"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": { "optional": true },
@@ -52,7 +53,8 @@
     "@remnic/import-claude": { "optional": true },
     "@remnic/import-gemini": { "optional": true },
     "@remnic/import-lossless-claw": { "optional": true },
-    "@remnic/import-mem0": { "optional": true }
+    "@remnic/import-mem0": { "optional": true },
+    "@remnic/import-supermemory": { "optional": true }
   },
   "devDependencies": {
     "@remnic/bench": "workspace:*",
@@ -63,6 +65,7 @@
     "@remnic/import-gemini": "workspace:*",
     "@remnic/import-lossless-claw": "workspace:*",
     "@remnic/import-mem0": "workspace:*",
+    "@remnic/import-supermemory": "workspace:*",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },

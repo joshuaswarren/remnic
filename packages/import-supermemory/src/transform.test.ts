@@ -17,4 +17,13 @@ describe("transformSupermemoryExport", () => {
     assert.equal(out.length, 1);
     assert.equal(out[0]?.sourceTimestamp, undefined);
   });
+
+  it("falls back to createdAt when updatedAt is blank", () => {
+    const out = transformSupermemoryExport({
+      memories: [{ id: "a", content: "memo", updatedAt: " ", createdAt: "2026-05-05T00:00:00.000Z" }],
+    });
+
+    assert.equal(out.length, 1);
+    assert.equal(out[0]?.sourceTimestamp, "2026-05-05T00:00:00.000Z");
+  });
 });
