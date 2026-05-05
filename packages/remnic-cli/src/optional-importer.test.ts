@@ -13,12 +13,13 @@ describe("optional-importer loader", () => {
     clearImporterModuleCacheForTesting();
   });
 
-  it("SUPPORTED_IMPORTERS lists the four canonical sources in a stable order", () => {
+  it("SUPPORTED_IMPORTERS lists the five canonical sources in a stable order", () => {
     assert.deepEqual([...SUPPORTED_IMPORTERS], [
       "chatgpt",
       "claude",
       "gemini",
       "mem0",
+      "supermemory",
     ]);
   });
 
@@ -43,12 +44,12 @@ describe("optional-importer loader", () => {
   // destabilizes, flip it to another not-yet-shipped adapter.
   it("loading a missing importer throws a user-facing install hint", async () => {
     await assert.rejects(
-      () => loadImporterModule("gemini"),
+      () => loadImporterModule("supermemory"),
       (err: Error) => {
         // Install hint must include the package name and an install
         // command the user can actually run — not a raw MODULE_NOT_FOUND.
         assert.ok(
-          err.message.includes("@remnic/import-gemini"),
+          err.message.includes("@remnic/import-supermemory"),
           `expected package name in message, got: ${err.message}`,
         );
         assert.ok(

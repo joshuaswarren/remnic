@@ -4,7 +4,7 @@ Issue [#568](https://github.com/joshuaswarren/remnic/issues/568) ships a
 family of optional importer packages that pull personal memory out of
 external platforms and land it in Remnic as first-class memories.
 
-Four sources are supported today:
+Five sources are supported today:
 
 | Source  | Package                   | Source label | Input                                     |
 |---------|---------------------------|--------------|-------------------------------------------|
@@ -12,6 +12,7 @@ Four sources are supported today:
 | Claude  | `@remnic/import-claude`   | `claude`     | Data-export JSON (projects + conversations) |
 | Gemini  | `@remnic/import-gemini`   | `gemini`     | Google Takeout `My Activity.json`            |
 | mem0    | `@remnic/import-mem0`     | `mem0`       | REST API (paginated) or offline JSON dump    |
+| Supermemory | `@remnic/import-supermemory` | `supermemory` | JSON export from Supermemory Memories API |
 
 Each importer is an **à-la-carte optional runtime companion** of the
 `@remnic/cli` package. They are never bundled into the base CLI install,
@@ -33,7 +34,7 @@ npm install -g @remnic/cli
 
 # Add the importer you actually need
 npm install -g @remnic/import-chatgpt
-# or any mix of: @remnic/import-claude, @remnic/import-gemini, @remnic/import-mem0
+# or any mix of: @remnic/import-claude, @remnic/import-gemini, @remnic/import-mem0, @remnic/import-supermemory
 ```
 
 If you run `remnic import --adapter <name>` without the matching package
@@ -50,7 +51,7 @@ remnic import --adapter <name> [options]
 
 | Flag                        | Applies to      | Description                                                             |
 |-----------------------------|-----------------|-------------------------------------------------------------------------|
-| `--adapter <name>`          | all             | Required. One of `chatgpt`, `claude`, `gemini`, `mem0`.                 |
+| `--adapter <name>`          | all             | Required. One of `chatgpt`, `claude`, `gemini`, `mem0`, `supermemory`.                 |
 | `--file <path>`             | file-based      | Path to the export file (leading `~` is expanded).                      |
 | `--dry-run`                 | all             | Parse + transform only; print a plan and never write.                   |
 | `--batch-size <n>`          | all             | How many memories per orchestrator batch. Default 25, range 1–500.     |
@@ -158,3 +159,37 @@ Per-path behavior:
   endpoint (which may be self-hosted or hosted).
 - **Dry-run** (`--dry-run`) never writes or extracts, so it is the
   safest way to preview what an importer would pick up.
+
+
+### Supermemory (`@remnic/import-supermemory`)
+
+- Accepts JSON exports produced from Supermemory memories list endpoints.
+- Works with both direct array payloads and object payloads containing `memories`, `results`, or `data`.
+- Imports `content` first; falls back to `summary` or `title` when `content` is missing.
+- Preserves `containerTags` and source metadata under `metadata.sourceMetadata`.
+
+#### Supermemory → Remnic quick migration
+
+1. Export your Supermemory memories to JSON (example uses the current API hostname):
+
+```bash
+curl -sS https://api.supermemory.ai/v3/memories/list \
+  -H "Authorization: Bearer $SUPERMEMORY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"page":1,"limit":1000}' > supermemory-memories.json
+```
+
+2. Install the Remnic importer package:
+
+```bash
+npm install -g @remnic/import-supermemory
+```
+
+3. Preview import first, then commit:
+
+```bash
+remnic import --adapter supermemory --file ./supermemory-memories.json --dry-run
+remnic import --adapter supermemory --file ./supermemory-memories.json
+```
+
+If your export spans multiple pages, concatenate them into one object `{ "memories": [...] }` (or one flat array) before import.

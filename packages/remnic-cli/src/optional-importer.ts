@@ -41,6 +41,7 @@ export const SUPPORTED_IMPORTERS = [
   "claude",
   "gemini",
   "mem0",
+  "supermemory",
 ] as const;
 export type SupportedImporterName = (typeof SUPPORTED_IMPORTERS)[number];
 

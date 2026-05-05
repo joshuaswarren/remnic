@@ -1,0 +1,40 @@
+{
+  "name": "@remnic/import-supermemory",
+  "version": "0.1.0",
+  "description": "Import Supermemory exports into Remnic",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "check-types": "tsc --noEmit",
+    "test": "tsx --test src/parser.test.ts src/transform.test.ts src/adapter.test.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "@remnic/core": "workspace:^"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/import-supermemory"
+  },
+  "keywords": ["remnic", "memory", "supermemory", "import"]
+}
