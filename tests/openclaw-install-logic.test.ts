@@ -59,7 +59,7 @@ function buildUpdatedOpenclawConfig(
   const defaultModelSource = !existingNewEntry && !migrateLegacy ? "gateway" : "plugin";
 
   const legacyHooks =
-    legacyEntry?.hooks && typeof legacyEntry.hooks === "object" && !Array.isArray(legacyEntry.hooks)
+    migrateLegacy && legacyEntry?.hooks && typeof legacyEntry.hooks === "object" && !Array.isArray(legacyEntry.hooks)
       ? (legacyEntry.hooks as Record<string, unknown>)
       : {};
   const existingHooks =
@@ -156,6 +156,26 @@ test("migration: preserves hook policy fields while enabling conversation access
     customFlag: "legacy",
     allowConversationAccess: true,
   });
+});
+
+test("declined migration: does not merge legacy hook policy fields", () => {
+  const existing: OpenclawConfig = {
+    plugins: {
+      entries: {
+        "openclaw-engram": {
+          hooks: { allowPromptInjection: false, customFlag: "legacy" },
+          config: { memoryDir: "/old/path" },
+        },
+      },
+      slots: { memory: "openclaw-engram" },
+    },
+  };
+  const result = buildUpdatedOpenclawConfig(existing, "/new/path", false);
+
+  assert.deepEqual(result.plugins!.entries!["openclaw-remnic"].hooks, {
+    allowConversationAccess: true,
+  });
+  assert.equal(result.plugins?.slots?.memory, "openclaw-engram");
 });
 
 test("reinstall: keeps existing hook fields while repairing conversation access", () => {
