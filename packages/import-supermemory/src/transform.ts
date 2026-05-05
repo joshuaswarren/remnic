@@ -16,7 +16,12 @@ function toImported(row: SupermemoryRecord, importedFromPath?: string): Imported
   const content = pickContent(row);
   if (!content) return undefined;
   const sourceId = typeof row.id === "string" && row.id.length > 0 ? row.id : content.slice(0, 64);
-  const sourceTimestamp = typeof row.updatedAt === "string" ? row.updatedAt : row.createdAt;
+  const sourceTimestamp =
+    typeof row.updatedAt === "string"
+      ? row.updatedAt
+      : typeof row.createdAt === "string"
+        ? row.createdAt
+        : undefined;
   return {
     content,
     sourceLabel: SUPERMEMORY_SOURCE_LABEL,

@@ -16,16 +16,25 @@ export interface ParsedSupermemoryExport {
 }
 
 export function parseSupermemoryExport(input: unknown, filePath?: string): ParsedSupermemoryExport {
+  if (input == null) {
+    throw new Error("Supermemory import requires JSON input. Pass --file <supermemory-export.json>.");
+  }
+
   const raw = typeof input === "string" ? JSON.parse(input) : input;
   const memories: SupermemoryRecord[] = [];
+
   if (Array.isArray(raw)) {
     append(memories, raw);
   } else if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
     for (const key of ["memories", "results", "data"] as const) {
-      if (Array.isArray(obj[key])) append(memories, obj[key] as unknown[]);
+      if (Array.isArray(obj[key])) {
+        append(memories, obj[key] as unknown[]);
+        break;
+      }
     }
   }
+
   return { memories, ...(filePath ? { importedFromPath: filePath } : {}) };
 }
 
