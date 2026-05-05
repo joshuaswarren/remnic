@@ -54,6 +54,9 @@ Use this key after migration:
     },
     "entries": {
       "openclaw-remnic": {
+        "hooks": {
+          "allowConversationAccess": true
+        },
         "config": {
           "memoryDir": "~/.openclaw/workspace/memory/local"
         }

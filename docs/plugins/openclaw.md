@@ -74,7 +74,10 @@ Minimal configuration:
     "slots": { "memory": "openclaw-remnic" },
     "entries": {
       "openclaw-remnic": {
-        "package": "@remnic/plugin-openclaw"
+        "package": "@remnic/plugin-openclaw",
+        "hooks": {
+          "allowConversationAccess": true
+        }
       }
     }
   }

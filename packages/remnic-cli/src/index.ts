@@ -2916,6 +2916,23 @@ function parseOpenclawPluginState(
   return { plugins, entries, slots };
 }
 
+function readOpenclawHooksPolicy(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function buildRemnicOpenclawHooksPolicy(
+  legacyHooks: unknown,
+  existingHooks: unknown,
+): Record<string, unknown> {
+  return {
+    ...readOpenclawHooksPolicy(legacyHooks),
+    ...readOpenclawHooksPolicy(existingHooks),
+    allowConversationAccess: true,
+  };
+}
+
 function resolveOpenclawInstallMemoryDir(args: {
   requestedMemoryDir?: string;
   existingNewEntryConfig: Record<string, unknown>;
@@ -6456,6 +6473,10 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
   const newEntry: Record<string, unknown> = {
     ...legacyNonConfigFields,
     ...existingNewEntryFields,
+    hooks: buildRemnicOpenclawHooksPolicy(
+      legacyNonConfigFields.hooks,
+      existingNewEntryFields.hooks,
+    ),
     config: {
       modelSource: defaultModelSource,
       ...legacyConfigToMerge,
@@ -6497,6 +6518,7 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
   const changes: string[] = [];
   if (!hasNew) changes.push(`+ Added plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"]`);
   else changes.push(`~ Updated plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"].config.memoryDir`);
+  changes.push(`~ Set plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"].hooks.allowConversationAccess = true`);
   if (!slotIsActiveLegacy && currentSlot !== REMNIC_OPENCLAW_PLUGIN_ID) {
     changes.push(`~ Set plugins.slots.memory = "${REMNIC_OPENCLAW_PLUGIN_ID}" (was: ${currentSlot ?? "(unset)"})`);
   } else if (slotIsActiveLegacy) {
@@ -6517,7 +6539,8 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
     const entrySummary = dryRunEntries
       ? Object.keys(dryRunEntries).map((k) => {
           const cfg = (dryRunEntries[k] as Record<string, unknown>)?.config as Record<string, unknown> | undefined;
-          return `  ${k}: { config: { memoryDir: ${cfg?.memoryDir ?? "(unset)"}, ... } }`;
+          const hooks = (dryRunEntries[k] as Record<string, unknown>)?.hooks as Record<string, unknown> | undefined;
+          return `  ${k}: { hooks: { allowConversationAccess: ${hooks?.allowConversationAccess ?? "(unset)"} }, config: { memoryDir: ${cfg?.memoryDir ?? "(unset)"}, ... } }`;
         }).join("\n")
       : "  (none)";
     console.log("\nResulting plugins.entries:");

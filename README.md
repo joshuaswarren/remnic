@@ -193,6 +193,9 @@ After installation, add the Remnic bridge plugin to your `openclaw.json`:
     "entries": {
       "openclaw-remnic": {
         "enabled": true,
+        "hooks": {
+          "allowConversationAccess": true
+        },
         "config": {
           // Recommended for OpenClaw: use the gateway model chain.
           "modelSource": "gateway",

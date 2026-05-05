@@ -25,7 +25,10 @@ Add the plugin to your `openclaw.json`:
     "slots": { "memory": "openclaw-remnic" },
     "entries": {
       "openclaw-remnic": {
-        "package": "@remnic/plugin-openclaw"
+        "package": "@remnic/plugin-openclaw",
+        "hooks": {
+          "allowConversationAccess": true
+        }
       }
     }
   }
