@@ -1,6 +1,6 @@
 {
   "name": "@remnic/import-supermemory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Import Supermemory exports into Remnic",
   "type": "module",
   "main": "dist/index.js",

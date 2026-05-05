@@ -303,7 +303,7 @@ remnic status              # Daemon status and local endpoint summary
 ## Bring your memory
 
 Remnic can import existing memory from the platforms you already use.
-Four optional importer packages ship alongside the CLI — install only the
+Five optional importer packages ship alongside the CLI — install only the
 ones you need:
 
 ```bash
@@ -323,6 +323,11 @@ remnic import --adapter gemini --file "~/Takeout/Gemini/My Activity.json"
 npm install -g @remnic/import-mem0
 export MEM0_API_KEY=...
 remnic import --adapter mem0 --rate-limit 2
+
+# Supermemory (JSON export)
+npm install -g @remnic/import-supermemory
+remnic import --adapter supermemory --file ./supermemory-memories.json --dry-run
+remnic import --adapter supermemory --file ./supermemory-memories.json
 ```
 
 Each importer is an **optional runtime companion** — the base CLI
@@ -557,6 +562,7 @@ Remnic is organized as a monorepo with a core engine, standalone server/CLI, and
 | `@remnic/import-claude` | [![npm](https://img.shields.io/npm/v/@remnic/import-claude)](https://www.npmjs.com/package/@remnic/import-claude) | Claude project docs and prompt-template importer — optional `remnic import --adapter claude` surface |
 | `@remnic/import-gemini` | [![npm](https://img.shields.io/npm/v/@remnic/import-gemini)](https://www.npmjs.com/package/@remnic/import-gemini) | Google Takeout Gemini Apps Activity importer — optional `remnic import --adapter gemini` surface |
 | `@remnic/import-mem0` | [![npm](https://img.shields.io/npm/v/@remnic/import-mem0)](https://www.npmjs.com/package/@remnic/import-mem0) | mem0 REST and JSON importer — optional `remnic import --adapter mem0` surface |
+| `@remnic/import-supermemory` | [![npm](https://img.shields.io/npm/v/@remnic/import-supermemory)](https://www.npmjs.com/package/@remnic/import-supermemory) | Supermemory JSON importer — optional `remnic import --adapter supermemory` surface |
 | `@remnic/plugin-openclaw` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-openclaw)](https://www.npmjs.com/package/@remnic/plugin-openclaw) | OpenClaw adapter — thin bridge (embedded or delegate mode) |
 | `@remnic/plugin-claude-code` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-claude-code)](https://www.npmjs.com/package/@remnic/plugin-claude-code) | Native Claude Code plugin — hooks, skills, MCP |
 | `@remnic/plugin-codex` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-codex)](https://www.npmjs.com/package/@remnic/plugin-codex) | Native Codex CLI plugin — hooks, skills, MCP |
@@ -1037,7 +1043,7 @@ OpenClaw plugin settings live in `openclaw.json` under `plugins.entries.openclaw
 - [Recall X-ray](docs/xray.md) — `remnic xray` CLI, HTTP endpoint, MCP tool for per-result retrieval attribution (issue #570)
 - [Connectors](docs/connectors.md) — `remnic connectors list/status/run` CLI reference, OAuth setup, config keys, env vars, and troubleshooting for Google Drive and Notion (issue #683 PR 6/N)
 - [Live connectors framework](docs/live-connectors.md) — Connector framework contract, registry, state store API, and how to write a connector
-- [Memory importers](docs/importers.md) — Bring memory from ChatGPT, Claude, Gemini, and mem0 (issue #568)
+- [Memory importers](docs/importers.md) — Bring memory from ChatGPT, Claude, Gemini, mem0, and Supermemory (issue #568)
 - [Memory Extraction Threat Model](docs/security/memory-extraction-threat-model.md) — ADAM attack analysis, attacker tiers, and mitigation wiring (issue #565)
 - [ADAM Baseline 2026-04](docs/security/adam-baseline-2026-04.md) — Reproducible ASR measurements per attacker tier
 
