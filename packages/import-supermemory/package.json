@@ -1,6 +1,6 @@
 {
   "name": "@remnic/import-supermemory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Import Supermemory exports into Remnic",
   "type": "module",
   "main": "dist/index.js",
@@ -22,10 +22,11 @@
     "access": "public",
     "provenance": true
   },
-  "dependencies": {
+  "peerDependencies": {
     "@remnic/core": "workspace:^"
   },
   "devDependencies": {
+    "@remnic/core": "workspace:*",
     "tsup": "^8.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.7.0"

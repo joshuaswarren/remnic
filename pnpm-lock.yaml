@@ -248,11 +248,10 @@ importers:
         version: 5.9.3
 
   packages/import-supermemory:
-    dependencies:
-      '@remnic/core':
-        specifier: workspace:^
-        version: link:../remnic-core
     devDependencies:
+      '@remnic/core':
+        specifier: workspace:*
+        version: link:../remnic-core
       tsup:
         specifier: ^8.0.0
         version: 8.5.1(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)

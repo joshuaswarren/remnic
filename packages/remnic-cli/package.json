@@ -1,6 +1,6 @@
 {
   "name": "@remnic/cli",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "CLI for Remnic memory — init, query, doctor, daemon management",
   "type": "module",
   "main": "dist/index.js",
@@ -43,7 +43,7 @@
     "@remnic/import-gemini": "^0.1.0",
     "@remnic/import-lossless-claw": "^0.1.1",
     "@remnic/import-mem0": "^0.1.0",
-    "@remnic/import-supermemory": "^0.1.0"
+    "@remnic/import-supermemory": "^0.1.1"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": { "optional": true },

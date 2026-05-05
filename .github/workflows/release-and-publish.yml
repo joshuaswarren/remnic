@@ -366,6 +366,7 @@ jobs:
             packages/import-gemini
             packages/import-mem0
             packages/import-lossless-claw
+            packages/import-supermemory
             packages/connector-weclone
             packages/connector-replit
             packages/hermes-provider
@@ -407,9 +408,9 @@ jobs:
               publish_status=$?
               cat "$publish_log"
               if [ "$pkg_exists" != "true" ] && grep -q "npm error code E404" "$publish_log"; then
-                echo "::warning::${pkg_name}@${pkg_version} is not provisioned for first-time npm publish from this automation yet; skipping so existing package updates can still ship."
+                echo "::error::${pkg_name}@${pkg_version} is not provisioned for first-time npm publish from this automation. Set up trusted publishing for this package, then rerun the release workflow."
                 rm -f "$publish_log"
-                continue
+                exit $publish_status
               fi
               rm -f "$publish_log"
               exit $publish_status
