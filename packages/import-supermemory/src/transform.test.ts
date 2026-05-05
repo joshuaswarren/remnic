@@ -18,6 +18,15 @@ describe("transformSupermemoryExport", () => {
     assert.equal(out[0]?.sourceId, "12345");
   });
 
+  it("reads v4 memory text as imported content", () => {
+    const out = transformSupermemoryExport({
+      memories: [{ id: "a", memory: "remember this" }],
+    });
+
+    assert.equal(out.length, 1);
+    assert.equal(out[0]?.content, "remember this");
+  });
+
   it("does not emit non-string sourceTimestamp", () => {
     const out = transformSupermemoryExport({
       memories: [{ id: "a", content: "memo", createdAt: 1700000000 as unknown as string }],

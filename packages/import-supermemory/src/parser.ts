@@ -1,5 +1,6 @@
 export interface SupermemoryRecord {
   id?: string;
+  memory?: string;
   content?: string;
   summary?: string;
   title?: string;

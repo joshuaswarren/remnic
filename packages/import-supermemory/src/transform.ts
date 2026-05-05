@@ -54,7 +54,7 @@ function pickSourceId(value: unknown): string | undefined {
 }
 
 function pickContent(row: SupermemoryRecord): string | undefined {
-  for (const c of [row.content, row.summary, row.title]) {
+  for (const c of [row.content, row.memory, row.summary, row.title]) {
     if (typeof c === "string" && c.trim().length > 0) return c.trim();
   }
   return undefined;
