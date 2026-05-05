@@ -29,7 +29,7 @@ export function parseSupermemoryExport(input: unknown, filePath?: string): Parse
   } else if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
     let sawKnownKey = false;
-    for (const key of ["memories", "results", "data"] as const) {
+    for (const key of ["memoryEntries", "memories", "results", "data"] as const) {
       if (key in obj) {
         sawKnownKey = true;
         if (!Array.isArray(obj[key])) {
@@ -41,7 +41,7 @@ export function parseSupermemoryExport(input: unknown, filePath?: string): Parse
     }
     if (!sawKnownKey) {
       throw new Error(
-        "Supermemory export object has no recognized memory key. Expected one of 'memories', 'results', or 'data'.",
+        "Supermemory export object has no recognized memory key. Expected one of 'memoryEntries', 'memories', 'results', or 'data'.",
       );
     }
   }

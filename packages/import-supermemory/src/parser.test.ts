@@ -9,6 +9,13 @@ describe("parseSupermemoryExport", () => {
     assert.equal(parsed.importedFromPath, "bundle.json");
   });
 
+  it("reads v4 memoryEntries array from object", () => {
+    const parsed = parseSupermemoryExport({ memoryEntries: [{ id: "m1", content: "hello" }] });
+
+    assert.equal(parsed.memories.length, 1);
+    assert.equal(parsed.memories[0]?.id, "m1");
+  });
+
   it("throws when input is missing", () => {
     assert.throws(
       () => parseSupermemoryExport(undefined),
@@ -47,10 +54,11 @@ describe("parseSupermemoryExport", () => {
   it("consumes only first matching key to avoid duplicates", () => {
     const parsed = parseSupermemoryExport({
       memories: [{ id: "m1", content: "hello" }],
+      memoryEntries: [{ id: "m2", content: "newer" }],
       data: [{ id: "m1", content: "hello" }],
     });
 
     assert.equal(parsed.memories.length, 1);
-    assert.equal(parsed.memories[0]?.id, "m1");
+    assert.equal(parsed.memories[0]?.id, "m2");
   });
 });

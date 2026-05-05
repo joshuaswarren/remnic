@@ -15,7 +15,7 @@ export function transformSupermemoryExport(parsed: ParsedSupermemoryExport): Imp
 function toImported(row: SupermemoryRecord, importedFromPath?: string): ImportedMemory | undefined {
   const content = pickContent(row);
   if (!content) return undefined;
-  const sourceId = typeof row.id === "string" && row.id.length > 0 ? row.id : content.slice(0, 64);
+  const sourceId = pickSourceId(row.id) ?? content.slice(0, 64);
   const sourceTimestamp = pickTimestamp(row);
   return {
     content,
@@ -38,6 +38,17 @@ function pickTimestamp(row: SupermemoryRecord): string | undefined {
     if (typeof timestamp === "string" && timestamp.trim().length > 0) {
       return timestamp.trim();
     }
+  }
+  return undefined;
+}
+
+function pickSourceId(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
   }
   return undefined;
 }
