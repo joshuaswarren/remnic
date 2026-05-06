@@ -514,6 +514,8 @@ function hasSuccessorTrajectoryIntent(query: string): boolean {
     /\b(?:next|following|subsequent|successor)\s+(?:step|action|observation|turn)\b/,
     /\b(?:step|action|observation|turn)\s+\d+\s+(?:then|and then)\b/,
     /\bwhat\s+(?:happened|came|occurred)\s+next\b/,
+    /\b(?:breaks?|breaking|broke)\s+(?:this|that|the|a|an)?\s*(?:loop|cycle|pattern|sequence)\b/,
+    /\b(?:loop|cycle|pattern|sequence)\s+(?:breaks?|breaking|broke|ends?|stops?)\b/,
   ].some((pattern) => pattern.test(normalized));
 }
 

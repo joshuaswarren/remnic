@@ -94,6 +94,10 @@ test("agentic-memory answering asks responders to synthesize grounded trajectory
         assert.match(question, /requires inference/);
         assert.match(question, /step numbers, action names, object names/);
         assert.match(question, /anchor the answer to those exact numbers/);
+        assert.match(question, /adjacent trajectory evidence contains the named action/);
+        assert.match(question, /next concrete maneuver it enables/);
+        assert.match(question, /treat an object on the direct path as a blocker/);
+        assert.match(question, /prefer rule-text positioning over chasing ordinary objects/);
         assert.match(question, /Answer every clause in the question/);
         assert.match(question, /Do not assume an object disappeared/);
         assert.equal(
@@ -273,6 +277,7 @@ test("agentic-memory question builder preserves strict safety while allowing tra
   assert.match(prompt, /what would have happened/);
   assert.match(prompt, /synthesize the best-supported explanation/);
   assert.match(prompt, /do not name a later action outside the range/);
+  assert.match(prompt, /reconcile the mismatch from the adjacent evidence/);
   assert.match(prompt, /Do not answer "unknown" merely because the answer requires inference/);
 });
 
