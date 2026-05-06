@@ -318,11 +318,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         const hasExplicitReferences = explicitReferences.length > 0;
         const preferFocusedExplicitContext =
           hasExplicitReferences && sessionId.startsWith("ama-");
-        const focusedReferenceWindow = preferFocusedExplicitContext
-          ? buildFocusedReferenceWindow(
+        const focusedReferenceWindows = preferFocusedExplicitContext
+          ? buildFocusedReferenceWindows(
             explicitReferences.map((reference) => reference.number),
           )
-          : null;
+          : [];
 
         const exactReferenceEvidence = await buildExplicitCueRecallSection({
           engine,
@@ -408,7 +408,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                     result.content,
                     query,
                     preferFocusedExplicitContext,
-                    focusedReferenceWindow,
+                    focusedReferenceWindows,
                   )
                 ) {
                   seenTurns.add(id);
@@ -434,7 +434,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                     message.content,
                     query,
                     preferFocusedExplicitContext,
-                    focusedReferenceWindow,
+                    focusedReferenceWindows,
                   )
                 ) {
                   continue;
@@ -646,7 +646,7 @@ function shouldIncludeFocusedSearchEvidence(
   content: string,
   query: string,
   focusedExplicitContext: boolean,
-  referenceWindow: { min: number; max: number } | null,
+  referenceWindows: readonly { min: number; max: number }[],
 ): boolean {
   if (!focusedExplicitContext) {
     return true;
@@ -654,9 +654,10 @@ function shouldIncludeFocusedSearchEvidence(
 
   const structuredNumber = extractStructuredTrajectoryCueNumber(content);
   if (structuredNumber !== undefined) {
-    return !referenceWindow ||
-      (structuredNumber >= referenceWindow.min &&
-        structuredNumber <= referenceWindow.max);
+    return referenceWindows.length === 0 ||
+      referenceWindows.some((window) =>
+        structuredNumber >= window.min && structuredNumber <= window.max,
+      );
   }
 
   if (/\[(?:Action|Observation|Thought|Reward|State|Environment|Result|Error|Test|Step|Turn)\b/i.test(content)) {
@@ -670,23 +671,20 @@ function shouldIncludeFocusedSearchEvidence(
 }
 
 function extractFocusedSearchTerms(query: string): string[] {
-  const terms = query.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) ?? [];
+  const terms = query.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [];
   return [...new Set(terms.filter((term) =>
     !FOCUSED_SEARCH_STOP_WORDS.has(term) &&
     !/^\d+$/.test(term),
   ))];
 }
 
-function buildFocusedReferenceWindow(
+function buildFocusedReferenceWindows(
   numbers: readonly number[],
-): { min: number; max: number } | null {
-  if (numbers.length === 0) {
-    return null;
-  }
-  return {
-    min: Math.max(0, Math.min(...numbers) - 1),
-    max: Math.max(...numbers),
-  };
+): Array<{ min: number; max: number }> {
+  return numbers.map((number) => ({
+    min: Math.max(0, number - 1),
+    max: number,
+  }));
 }
 
 function extractStructuredTrajectoryCueNumber(content: string): number | undefined {

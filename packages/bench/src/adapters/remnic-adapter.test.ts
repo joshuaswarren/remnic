@@ -467,6 +467,79 @@ test("adapter recall keeps bounded search evidence after AMA explicit step promp
   }
 });
 
+test("adapter recall keeps short lexical cues in focused AMA search evidence", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    const messages = [
+      {
+        role: "user" as const,
+        content: "Background note: the red box unlocked the west door.",
+      },
+      ...Array.from({ length: 10 }, (_, index) => [
+        {
+          role: "user" as const,
+          content: `[Action ${index}]: move-${index}`,
+        },
+        {
+          role: "assistant" as const,
+          content: `[Observation ${index}]: state-${index}`,
+        },
+      ]).flat(),
+    ];
+
+    await adapter.store("ama-ep-short-cue", messages);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "ama-ep-short-cue",
+      "At Step 8, why did the red box matter?",
+      24_000,
+    );
+
+    assert.match(recalled, /## Search evidence/);
+    assert.match(recalled, /red box unlocked the west door/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("adapter recall keeps disjoint AMA step search windows separate", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    const messages = Array.from({ length: 42 }, (_, index) => [
+      {
+        role: "user" as const,
+        content:
+          index === 20
+            ? "[Action 20]: unrelated-noise bridge action"
+            : `[Action ${index}]: move-${index}`,
+      },
+      {
+        role: "assistant" as const,
+        content: `[Observation ${index}]: state-${index}`,
+      },
+    ]).flat();
+
+    await adapter.store("ama-ep-disjoint", messages);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "ama-ep-disjoint",
+      "Compare steps 2 and 40 with unrelated-noise before answering.",
+      24_000,
+    );
+
+    assert.match(recalled, /## Explicit Cue Evidence/);
+    assert.match(recalled, /\[Action 2\]: move-2/);
+    assert.match(recalled, /\[Action 40\]: move-40/);
+    assert.doesNotMatch(recalled, /\[Action 20\]: unrelated-noise/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("adapter recall resolves AMA step labels when stored transcript turns are offset", async () => {
   const adapter = await createRemnicAdapter();
 
