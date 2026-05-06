@@ -97,6 +97,48 @@ test("AMA-Bench normalizes sparse null trajectory fields from the official datas
   }
 });
 
+test("AMA-Bench fails fast when trajectory drain fails before scoring", async () => {
+  let completedTasks = 0;
+  let recallCalls = 0;
+
+  await assert.rejects(
+    () =>
+      runAmaBenchBenchmark({
+        benchmark: amaBenchDefinition,
+        mode: "quick",
+        onTaskComplete() {
+          completedTasks += 1;
+        },
+        system: {
+          async store() {},
+          async recall() {
+            recallCalls += 1;
+            return "Spanish";
+          },
+          async search() {
+            return [];
+          },
+          async reset() {},
+          async getStats() {
+            return {
+              totalMessages: 4,
+              totalSummaryNodes: 0,
+              maxDepth: 0,
+            };
+          },
+          async drain() {
+            throw new Error("drain timed out");
+          },
+          async destroy() {},
+        },
+      }),
+    /AMA-Bench drain failed for episode 1: drain timed out/,
+  );
+
+  assert.equal(recallCalls, 0);
+  assert.equal(completedTasks, 0);
+});
+
 test("AMA-Bench records recommended and cross-judge protocol metrics", async () => {
   const result = await runAmaBenchBenchmark({
     benchmark: amaBenchDefinition,
