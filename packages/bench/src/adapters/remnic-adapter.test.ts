@@ -504,6 +504,47 @@ test("adapter recall keeps short lexical cues in focused AMA search evidence", a
   }
 });
 
+test("adapter recall filters common-word-only focused search hits", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    const messages = [
+      {
+        role: "user" as const,
+        content: "Background note: why did the matter and the did why.",
+      },
+      {
+        role: "user" as const,
+        content: "Background note: the red box unlocked the west door.",
+      },
+      ...Array.from({ length: 10 }, (_, index) => [
+        {
+          role: "user" as const,
+          content: `[Action ${index}]: move-${index}`,
+        },
+        {
+          role: "assistant" as const,
+          content: `[Observation ${index}]: state-${index}`,
+        },
+      ]).flat(),
+    ];
+
+    await adapter.store("ama-ep-common-words", messages);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "ama-ep-common-words",
+      "At Step 8, why did the red box matter?",
+      24_000,
+    );
+
+    assert.match(recalled, /red box unlocked the west door/);
+    assert.doesNotMatch(recalled, /why did the matter and the did why/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("adapter recall keeps disjoint AMA step search windows separate", async () => {
   const adapter = await createRemnicAdapter();
 
