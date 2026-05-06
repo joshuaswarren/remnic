@@ -162,16 +162,39 @@ test("parseBenchArgs accepts codex-cli as a system and judge provider", () => {
     "codex-cli",
     "--system-model",
     "gpt-5.5",
+    "--system-codex-reasoning-effort",
+    "high",
     "--judge-provider",
     "codex-cli",
     "--judge-model",
     "gpt-5.5",
+    "--judge-codex-reasoning-effort",
+    "medium",
   ]);
 
   assert.equal(parsed.systemProvider, "codex-cli");
   assert.equal(parsed.systemModel, "gpt-5.5");
+  assert.equal(parsed.systemCodexReasoningEffort, "high");
   assert.equal(parsed.judgeProvider, "codex-cli");
   assert.equal(parsed.judgeModel, "gpt-5.5");
+  assert.equal(parsed.judgeCodexReasoningEffort, "medium");
+});
+
+test("parseBenchArgs rejects system Codex reasoning effort for non-Codex providers", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--system-provider",
+        "openai",
+        "--system-model",
+        "gpt-5.5",
+        "--system-codex-reasoning-effort",
+        "xhigh",
+      ]),
+    /--system-codex-reasoning-effort requires --system-provider codex-cli/,
+  );
 });
 
 test("parseBenchArgs accepts internal Remnic LLM provider flags", () => {
@@ -215,20 +238,21 @@ test("parseBenchArgs accepts AMA-Bench recommended judge and cross-judge flags",
     "run",
     "ama-bench",
     "--judge-provider",
-    "ollama",
+    "codex-cli",
     "--judge-model",
-    "qwen3:32b",
-    "--judge-base-url",
-    "https://ollama.com/api",
+    "gpt-5.5",
     "--ama-bench-judge-protocol",
     "recommended",
     "--ama-bench-cross-judge-model",
-    "gemma4:31b-cloud",
+    "gpt-5.5",
+    "--ama-bench-cross-judge-codex-reasoning-effort",
+    "low",
   ]);
 
   assert.equal(parsed.amaBenchJudgeProtocol, "recommended");
-  assert.equal(parsed.amaBenchCrossJudgeModel, "gemma4:31b-cloud");
+  assert.equal(parsed.amaBenchCrossJudgeModel, "gpt-5.5");
   assert.equal(parsed.amaBenchCrossJudgeProvider, undefined);
+  assert.equal(parsed.amaBenchCrossJudgeCodexReasoningEffort, "low");
 });
 
 test("parseBenchArgs rejects unknown AMA-Bench judge protocol", () => {
@@ -254,6 +278,44 @@ test("parseBenchArgs requires cross-judge model when cross-judge provider is con
         "ollama",
       ]),
     /--ama-bench-cross-judge-model is required/,
+  );
+});
+
+test("parseBenchArgs requires cross-judge model when only cross-judge Codex effort is configured", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--judge-provider",
+        "codex-cli",
+        "--judge-model",
+        "gpt-5.5",
+        "--ama-bench-cross-judge-codex-reasoning-effort",
+        "low",
+      ]),
+    /--ama-bench-cross-judge-model is required/,
+  );
+});
+
+test("parseBenchArgs rejects cross-judge Codex reasoning effort for non-Codex providers", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--judge-provider",
+        "ollama",
+        "--judge-model",
+        "qwen3:32b",
+        "--judge-base-url",
+        "https://ollama.com/api",
+        "--ama-bench-cross-judge-model",
+        "gemma4:31b-cloud",
+        "--ama-bench-cross-judge-codex-reasoning-effort",
+        "xhigh",
+      ]),
+    /--ama-bench-cross-judge-codex-reasoning-effort requires/,
   );
 });
 

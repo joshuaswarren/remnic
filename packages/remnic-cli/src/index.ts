@@ -586,10 +586,12 @@ interface ResolveBenchRuntimeProfileOptions {
   systemModel?: string;
   systemBaseUrl?: string;
   systemApiKey?: string;
+  systemCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
   judgeProvider?: string;
   judgeModel?: string;
   judgeBaseUrl?: string;
   judgeApiKey?: string;
+  judgeCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
   internalProvider?: string;
   internalModel?: string;
   internalBaseUrl?: string;
@@ -601,6 +603,7 @@ interface ResolveBenchRuntimeProfileOptions {
   amaBenchCrossJudgeModel?: string;
   amaBenchCrossJudgeBaseUrl?: string;
   amaBenchCrossJudgeApiKey?: string;
+  amaBenchCrossJudgeCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
   requestTimeout?: number;
   max429WaitMs?: number;
   disableThinking?: boolean;
@@ -698,10 +701,14 @@ Options:
                            Use a direct provider-backed answering path
   --system-model <model>   Model name for the direct answering provider
   --system-base-url <url>  Base URL for the direct answering provider
+  --system-codex-reasoning-effort <low|medium|high|xhigh>
+                           Codex CLI reasoning effort for the direct answerer
   --judge-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
                            Use a direct provider-backed judge
   --judge-model <model>    Model name for the judge provider
   --judge-base-url <url>   Base URL for the judge provider
+  --judge-codex-reasoning-effort <low|medium|high|xhigh>
+                           Codex CLI reasoning effort for the judge
   --internal-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
                            Provider for Remnic's internal extraction/summarization LLM
   --internal-model <model> Model name for Remnic's internal LLM provider
@@ -718,6 +725,8 @@ Options:
                            For ama-bench, add a second recommended-protocol judge for agreement checks
   --ama-bench-cross-judge-provider <provider>
                            Provider for the ama-bench cross judge (defaults to --judge-provider)
+  --ama-bench-cross-judge-codex-reasoning-effort <low|medium|high|xhigh>
+                           Codex CLI reasoning effort for the ama-bench cross judge
   --ama-bench-cross-judge-base-url <url>
                            Base URL for the ama-bench cross judge (defaults to --judge-base-url)
   --custom <path>          Run a YAML-defined custom benchmark file
@@ -794,10 +803,15 @@ export function buildBenchRuntimeProfileRequest(
       runtimeProfile === "openclaw-chain"
         ? undefined
         : parsed.systemApiKey,
+    systemCodexReasoningEffort:
+      runtimeProfile === "openclaw-chain"
+        ? undefined
+        : parsed.systemCodexReasoningEffort,
     judgeProvider: parsed.judgeProvider,
     judgeModel: parsed.judgeModel,
     judgeBaseUrl: parsed.judgeBaseUrl,
     judgeApiKey: parsed.judgeApiKey,
+    judgeCodexReasoningEffort: parsed.judgeCodexReasoningEffort,
     internalProvider: parsed.internalProvider,
     internalModel: parsed.internalModel,
     internalBaseUrl: parsed.internalBaseUrl,
@@ -2498,6 +2512,11 @@ function resolveAmaBenchCrossJudgeProvider(
     ...(canInheritPrimaryTransport && primaryJudgeProvider?.disableThinking
       ? { disableThinking: primaryJudgeProvider.disableThinking }
       : {}),
+    ...(parsed.amaBenchCrossJudgeCodexReasoningEffort
+      ? { reasoningEffort: parsed.amaBenchCrossJudgeCodexReasoningEffort }
+      : canInheritPrimaryTransport && primaryJudgeProvider?.reasoningEffort
+        ? { reasoningEffort: primaryJudgeProvider.reasoningEffort }
+        : {}),
   };
 }
 

@@ -62,10 +62,12 @@ interface ParsedArgs {
   systemModel?: string;
   systemBaseUrl?: string;
   systemApiKey?: string;
+  systemCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
   judgeProvider?: BuiltInProvider;
   judgeModel?: string;
   judgeBaseUrl?: string;
   judgeApiKey?: string;
+  judgeCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
   internalProvider?: BuiltInProvider;
   internalModel?: string;
   internalBaseUrl?: string;
@@ -76,6 +78,7 @@ interface ParsedArgs {
   strongSystemModel?: string;
   strongSystemBaseUrl?: string;
   strongSystemApiKey?: string;
+  strongSystemCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
   strongDisableThinking: boolean;
   requestTimeout?: number;
   max429WaitMs?: number;
@@ -85,6 +88,7 @@ interface ParsedArgs {
   amaBenchCrossJudgeModel?: string;
   amaBenchCrossJudgeBaseUrl?: string;
   amaBenchCrossJudgeApiKey?: string;
+  amaBenchCrossJudgeCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
   variants?: string[];
   includeStrong: boolean;
 }
@@ -136,10 +140,15 @@ export async function runAmaBenchDiagnosticMatrix(
       parsed.runtimeProfile === "openclaw-chain"
         ? undefined
         : parsed.systemApiKey,
+    systemCodexReasoningEffort:
+      parsed.runtimeProfile === "openclaw-chain"
+        ? undefined
+        : parsed.systemCodexReasoningEffort,
     judgeProvider: parsed.judgeProvider,
     judgeModel: parsed.judgeModel,
     judgeBaseUrl: parsed.judgeBaseUrl,
     judgeApiKey: parsed.judgeApiKey,
+    judgeCodexReasoningEffort: parsed.judgeCodexReasoningEffort,
     internalProvider: parsed.internalProvider,
     internalModel: parsed.internalModel,
     internalBaseUrl: parsed.internalBaseUrl,
@@ -258,7 +267,8 @@ function createCrossJudge(
     parsed.amaBenchCrossJudgeProvider !== undefined ||
     parsed.amaBenchCrossJudgeModel !== undefined ||
     parsed.amaBenchCrossJudgeBaseUrl !== undefined ||
-    parsed.amaBenchCrossJudgeApiKey !== undefined;
+    parsed.amaBenchCrossJudgeApiKey !== undefined ||
+    parsed.amaBenchCrossJudgeCodexReasoningEffort !== undefined;
   if (!hasAnyCrossJudgeConfig) {
     return {};
   }
@@ -281,6 +291,8 @@ function createCrossJudge(
     (inheritPrimary ? primaryJudgeProvider?.baseUrl : undefined);
   const apiKey = parsed.amaBenchCrossJudgeApiKey ??
     (inheritPrimary ? primaryJudgeProvider?.apiKey : undefined);
+  const reasoningEffort = parsed.amaBenchCrossJudgeCodexReasoningEffort ??
+    (inheritPrimary ? primaryJudgeProvider?.reasoningEffort : undefined);
 
   const config: ProviderConfig = {
     provider,
@@ -293,10 +305,17 @@ function createCrossJudge(
     ...(inheritPrimary && primaryJudgeProvider?.disableThinking
       ? { disableThinking: primaryJudgeProvider.disableThinking }
       : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
   };
   if (config.provider === "local-llm" && !config.baseUrl) {
     throw new Error(
       "--ama-bench-cross-judge-provider local-llm requires --ama-bench-cross-judge-base-url or --judge-base-url.",
+    );
+  }
+  if (reasoningEffort && config.provider !== "codex-cli") {
+    throw new Error(
+      "--ama-bench-cross-judge-codex-reasoning-effort requires " +
+        "--ama-bench-cross-judge-provider codex-cli (or --judge-provider codex-cli).",
     );
   }
 
@@ -363,12 +382,14 @@ function validatePrimaryProviderConfigs(parsed: ParsedArgs): void {
     model: parsed.systemModel,
     baseUrl: parsed.systemBaseUrl,
     apiKey: parsed.systemApiKey,
+    codexReasoningEffort: parsed.systemCodexReasoningEffort,
   });
   validateProviderFlagGroup("judge", {
     provider: parsed.judgeProvider,
     model: parsed.judgeModel,
     baseUrl: parsed.judgeBaseUrl,
     apiKey: parsed.judgeApiKey,
+    codexReasoningEffort: parsed.judgeCodexReasoningEffort,
   });
   validateProviderFlagGroup("internal", {
     provider: parsed.internalProvider,
@@ -380,7 +401,7 @@ function validatePrimaryProviderConfigs(parsed: ParsedArgs): void {
 }
 
 function validateProviderFlagGroup(
-  label: "system" | "judge" | "internal",
+  label: "system" | "judge" | "internal" | "strong-system" | "ama-bench-cross-judge",
   config: {
     provider?: BuiltInProvider;
     model?: string;
@@ -423,7 +444,8 @@ function strongProviderConfig(parsed: ParsedArgs): ProviderConfig | undefined {
     parsed.strongSystemProvider !== undefined ||
     parsed.strongSystemModel !== undefined ||
     parsed.strongSystemBaseUrl !== undefined ||
-    parsed.strongSystemApiKey !== undefined;
+    parsed.strongSystemApiKey !== undefined ||
+    parsed.strongSystemCodexReasoningEffort !== undefined;
   if (!hasAny) {
     return undefined;
   }
@@ -435,6 +457,14 @@ function strongProviderConfig(parsed: ParsedArgs): ProviderConfig | undefined {
   if (parsed.strongSystemProvider === "local-llm" && !parsed.strongSystemBaseUrl) {
     throw new Error(
       "--strong-system-provider local-llm requires --strong-system-base-url.",
+    );
+  }
+  if (
+    parsed.strongSystemCodexReasoningEffort !== undefined &&
+    parsed.strongSystemProvider !== "codex-cli"
+  ) {
+    throw new Error(
+      "--strong-system-codex-reasoning-effort requires --strong-system-provider codex-cli.",
     );
   }
 
@@ -456,6 +486,9 @@ function strongProviderConfig(parsed: ParsedArgs): ProviderConfig | undefined {
         }
       : {}),
     ...(parsed.strongDisableThinking ? { disableThinking: true } : {}),
+    ...(parsed.strongSystemCodexReasoningEffort
+      ? { reasoningEffort: parsed.strongSystemCodexReasoningEffort }
+      : {}),
   };
 }
 
@@ -481,6 +514,7 @@ function sanitizeProvider(
     provider: config.provider,
     model: config.model,
     ...(config.baseUrl ? { baseUrl: config.baseUrl } : {}),
+    ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
   };
 }
 
@@ -570,6 +604,13 @@ function parseArgs(argv: string[]): ParsedArgs {
         parsed.systemApiKey = parseNonEmptyValue(takeValue(index, arg), arg);
         index += 1;
         break;
+      case "--system-codex-reasoning-effort":
+        parsed.systemCodexReasoningEffort = parseReasoningEffort(
+          takeValue(index, arg),
+          arg,
+        );
+        index += 1;
+        break;
       case "--judge-provider":
         parsed.judgeProvider = parseProvider(takeValue(index, arg), arg);
         index += 1;
@@ -584,6 +625,13 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--judge-api-key":
         parsed.judgeApiKey = parseNonEmptyValue(takeValue(index, arg), arg);
+        index += 1;
+        break;
+      case "--judge-codex-reasoning-effort":
+        parsed.judgeCodexReasoningEffort = parseReasoningEffort(
+          takeValue(index, arg),
+          arg,
+        );
         index += 1;
         break;
       case "--internal-provider":
@@ -628,6 +676,13 @@ function parseArgs(argv: string[]): ParsedArgs {
         parsed.strongSystemApiKey = parseNonEmptyValue(takeValue(index, arg), arg);
         index += 1;
         break;
+      case "--strong-system-codex-reasoning-effort":
+        parsed.strongSystemCodexReasoningEffort = parseReasoningEffort(
+          takeValue(index, arg),
+          arg,
+        );
+        index += 1;
+        break;
       case "--strong-disable-thinking":
         parsed.strongDisableThinking = true;
         break;
@@ -669,6 +724,13 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--ama-bench-cross-judge-api-key":
         parsed.amaBenchCrossJudgeApiKey = parseNonEmptyValue(
+          takeValue(index, arg),
+          arg,
+        );
+        index += 1;
+        break;
+      case "--ama-bench-cross-judge-codex-reasoning-effort":
+        parsed.amaBenchCrossJudgeCodexReasoningEffort = parseReasoningEffort(
           takeValue(index, arg),
           arg,
         );
@@ -818,10 +880,15 @@ Normal answerer / judge:
   --system-provider <provider>       openai, anthropic, ollama, litellm, local-llm, or codex-cli.
   --system-model <model>
   --system-base-url <url>
+  --system-codex-reasoning-effort <low|medium|high|xhigh>
   --judge-provider <provider>
   --judge-model <model>
   --judge-base-url <url>
+  --judge-codex-reasoning-effort <low|medium|high|xhigh>
   --ama-bench-judge-protocol <default|recommended>
+  --ama-bench-cross-judge-provider <provider>
+  --ama-bench-cross-judge-model <model>
+  --ama-bench-cross-judge-codex-reasoning-effort <low|medium|high|xhigh>
 
 Remnic internal LLM:
   --internal-provider <provider>     Provider for Remnic extraction/summarization.
@@ -835,6 +902,7 @@ Strong-answerer ablations:
   --strong-system-provider <provider>
   --strong-system-model <model>
   --strong-system-base-url <url>
+  --strong-system-codex-reasoning-effort <low|medium|high|xhigh>
   --include-strong                   Include all strong variants when strong config is present.
 
 Default variants:

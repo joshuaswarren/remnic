@@ -310,6 +310,7 @@ export interface SanitizedDiagnosticProvider {
   provider: string;
   model: string;
   baseUrl?: string;
+  reasoningEffort?: string;
 }
 
 export interface AmaBenchDiagnosticMatrixArtifact {

@@ -28,6 +28,7 @@ export type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain";
 export type BenchModelSource = "plugin" | "gateway";
 export type BenchRunAction = "list" | "show" | "delete";
 export type AmaBenchJudgeProtocol = "default" | "recommended";
+export type BenchCodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export interface ParsedBenchArgs {
   action: BenchAction;
@@ -50,16 +51,18 @@ export interface ParsedBenchArgs {
   systemModel?: string;
   systemBaseUrl?: string;
   systemApiKey?: string;
+  systemCodexReasoningEffort?: BenchCodexReasoningEffort;
   judgeProvider?: BuiltInProvider;
   judgeModel?: string;
   judgeBaseUrl?: string;
   judgeApiKey?: string;
+  judgeCodexReasoningEffort?: BenchCodexReasoningEffort;
   internalProvider?: BuiltInProvider;
   internalModel?: string;
   internalBaseUrl?: string;
   internalApiKey?: string;
   internalDisableThinking?: boolean;
-  internalCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  internalCodexReasoningEffort?: BenchCodexReasoningEffort;
   threshold?: number;
   baselineAction?: BenchBaselineAction;
   datasetAction?: BenchDatasetAction;
@@ -80,6 +83,7 @@ export interface ParsedBenchArgs {
   amaBenchCrossJudgeModel?: string;
   amaBenchCrossJudgeBaseUrl?: string;
   amaBenchCrossJudgeApiKey?: string;
+  amaBenchCrossJudgeCodexReasoningEffort?: BenchCodexReasoningEffort;
   /** `bench published` — specific benchmark to run (longmemeval|locomo). */
   publishedName?: PublishedBenchmarkName;
   /** `bench published` — seed forwarded into the harness context. */
@@ -157,6 +161,18 @@ function parseBenchProvider(raw: string, flag: string): BuiltInProvider {
   return raw;
 }
 
+function parseCodexReasoningEffort(
+  raw: string,
+  flag: string,
+): BenchCodexReasoningEffort {
+  if (raw !== "low" && raw !== "medium" && raw !== "high" && raw !== "xhigh") {
+    throw new Error(
+      `ERROR: ${flag} must be "low", "medium", "high", or "xhigh".`,
+    );
+  }
+  return raw;
+}
+
 export function readBenchOptionValue(argv: string[], flag: string): string | undefined {
   const index = argv.indexOf(flag);
   if (index === -1) {
@@ -190,10 +206,12 @@ export function collectBenchmarks(argv: string[]): string[] {
       arg === "--system-model" ||
       arg === "--system-base-url" ||
       arg === "--system-api-key" ||
+      arg === "--system-codex-reasoning-effort" ||
       arg === "--judge-provider" ||
       arg === "--judge-model" ||
       arg === "--judge-base-url" ||
       arg === "--judge-api-key" ||
+      arg === "--judge-codex-reasoning-effort" ||
       arg === "--internal-provider" ||
       arg === "--internal-model" ||
       arg === "--internal-base-url" ||
@@ -218,7 +236,8 @@ export function collectBenchmarks(argv: string[]): string[] {
       arg === "--ama-bench-cross-judge-provider" ||
       arg === "--ama-bench-cross-judge-model" ||
       arg === "--ama-bench-cross-judge-base-url" ||
-      arg === "--ama-bench-cross-judge-api-key"
+      arg === "--ama-bench-cross-judge-api-key" ||
+      arg === "--ama-bench-cross-judge-codex-reasoning-effort"
     ) {
       index += 1;
       continue;
@@ -329,10 +348,18 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const systemModel = readBenchOptionValue(args, "--system-model");
   const systemBaseUrl = readBenchOptionValue(args, "--system-base-url");
   const systemApiKey = readBenchOptionValue(args, "--system-api-key");
+  const systemCodexReasoningEffortRaw = readBenchOptionValue(
+    args,
+    "--system-codex-reasoning-effort",
+  );
   const judgeProviderRaw = readBenchOptionValue(args, "--judge-provider");
   const judgeModel = readBenchOptionValue(args, "--judge-model");
   const judgeBaseUrl = readBenchOptionValue(args, "--judge-base-url");
   const judgeApiKey = readBenchOptionValue(args, "--judge-api-key");
+  const judgeCodexReasoningEffortRaw = readBenchOptionValue(
+    args,
+    "--judge-codex-reasoning-effort",
+  );
   const internalProviderRaw = readBenchOptionValue(args, "--internal-provider");
   const internalModel = readBenchOptionValue(args, "--internal-model");
   const internalBaseUrl = readBenchOptionValue(args, "--internal-base-url");
@@ -353,6 +380,10 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const amaBenchCrossJudgeModel = readBenchOptionValue(args, "--ama-bench-cross-judge-model");
   const amaBenchCrossJudgeBaseUrl = readBenchOptionValue(args, "--ama-bench-cross-judge-base-url");
   const amaBenchCrossJudgeApiKey = readBenchOptionValue(args, "--ama-bench-cross-judge-api-key");
+  const amaBenchCrossJudgeCodexReasoningEffortRaw = readBenchOptionValue(
+    args,
+    "--ama-bench-cross-judge-codex-reasoning-effort",
+  );
   let runtimeProfile: BenchRuntimeProfile | undefined;
   if (runtimeProfileRaw !== undefined) {
     runtimeProfile = parseBenchRuntimeProfile(
@@ -395,25 +426,30 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     judgeProvider = parseBenchProvider(judgeProviderRaw, "--judge-provider");
   }
 
+  const systemCodexReasoningEffort = systemCodexReasoningEffortRaw === undefined
+    ? undefined
+    : parseCodexReasoningEffort(
+      systemCodexReasoningEffortRaw,
+      "--system-codex-reasoning-effort",
+    );
+  const judgeCodexReasoningEffort = judgeCodexReasoningEffortRaw === undefined
+    ? undefined
+    : parseCodexReasoningEffort(
+      judgeCodexReasoningEffortRaw,
+      "--judge-codex-reasoning-effort",
+    );
+
   let internalProvider: BuiltInProvider | undefined;
   if (internalProviderRaw !== undefined) {
     internalProvider = parseBenchProvider(internalProviderRaw, "--internal-provider");
   }
 
-  let internalCodexReasoningEffort: ParsedBenchArgs["internalCodexReasoningEffort"];
-  if (internalCodexReasoningEffortRaw !== undefined) {
-    if (
-      internalCodexReasoningEffortRaw !== "low" &&
-      internalCodexReasoningEffortRaw !== "medium" &&
-      internalCodexReasoningEffortRaw !== "high" &&
-      internalCodexReasoningEffortRaw !== "xhigh"
-    ) {
-      throw new Error(
-        'ERROR: --internal-codex-reasoning-effort must be "low", "medium", "high", or "xhigh".',
-      );
-    }
-    internalCodexReasoningEffort = internalCodexReasoningEffortRaw;
-  }
+  const internalCodexReasoningEffort = internalCodexReasoningEffortRaw === undefined
+    ? undefined
+    : parseCodexReasoningEffort(
+      internalCodexReasoningEffortRaw,
+      "--internal-codex-reasoning-effort",
+    );
 
   let amaBenchJudgeProtocol: AmaBenchJudgeProtocol | undefined;
   if (amaBenchJudgeProtocolRaw !== undefined) {
@@ -435,6 +471,13 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       "--ama-bench-cross-judge-provider",
     );
   }
+  const amaBenchCrossJudgeCodexReasoningEffort =
+    amaBenchCrossJudgeCodexReasoningEffortRaw === undefined
+      ? undefined
+      : parseCodexReasoningEffort(
+        amaBenchCrossJudgeCodexReasoningEffortRaw,
+        "--ama-bench-cross-judge-codex-reasoning-effort",
+      );
 
   let threshold: number | undefined;
   if (thresholdRaw !== undefined) {
@@ -579,6 +622,22 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
         "vLLM (http://localhost:8000/v1), LM Studio (http://localhost:1234/v1).",
     );
   }
+  if (
+    systemCodexReasoningEffort !== undefined &&
+    effectiveSystemProvider !== "codex-cli"
+  ) {
+    throw new Error(
+      "ERROR: --system-codex-reasoning-effort requires --system-provider codex-cli (or --provider codex-cli).",
+    );
+  }
+  if (
+    judgeCodexReasoningEffort !== undefined &&
+    judgeProvider !== "codex-cli"
+  ) {
+    throw new Error(
+      "ERROR: --judge-codex-reasoning-effort requires --judge-provider codex-cli.",
+    );
+  }
   if (internalProvider === "local-llm" && !internalBaseUrl) {
     throw new Error(
       "ERROR: --internal-provider local-llm requires --internal-base-url. " +
@@ -594,6 +653,17 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       "ERROR: --internal-codex-reasoning-effort requires --internal-provider codex-cli.",
     );
   }
+  const effectiveAmaBenchCrossJudgeProvider =
+    amaBenchCrossJudgeProvider ?? judgeProvider;
+  if (
+    amaBenchCrossJudgeCodexReasoningEffort !== undefined &&
+    effectiveAmaBenchCrossJudgeProvider !== "codex-cli"
+  ) {
+    throw new Error(
+      "ERROR: --ama-bench-cross-judge-codex-reasoning-effort requires " +
+        "--ama-bench-cross-judge-provider codex-cli (or --judge-provider codex-cli).",
+    );
+  }
   if (
     amaBenchCrossJudgeProvider === "local-llm" &&
     !(amaBenchCrossJudgeBaseUrl ?? judgeBaseUrl)
@@ -606,7 +676,8 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   if (
     (amaBenchCrossJudgeProvider !== undefined ||
       amaBenchCrossJudgeBaseUrl !== undefined ||
-      amaBenchCrossJudgeApiKey !== undefined) &&
+      amaBenchCrossJudgeApiKey !== undefined ||
+      amaBenchCrossJudgeCodexReasoningEffort !== undefined) &&
     amaBenchCrossJudgeModel === undefined
   ) {
     throw new Error(
@@ -644,10 +715,12 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     systemModel: effectiveSystemModel,
     systemBaseUrl: effectiveSystemBaseUrl,
     systemApiKey,
+    systemCodexReasoningEffort,
     judgeProvider,
     judgeModel,
     judgeBaseUrl,
     judgeApiKey,
+    judgeCodexReasoningEffort,
     internalProvider,
     internalModel,
     internalBaseUrl,
@@ -678,6 +751,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     amaBenchCrossJudgeModel,
     amaBenchCrossJudgeBaseUrl,
     amaBenchCrossJudgeApiKey,
+    amaBenchCrossJudgeCodexReasoningEffort,
     resume,
     retryFailed,
   };

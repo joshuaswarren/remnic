@@ -41,10 +41,12 @@ export interface ResolveBenchRuntimeProfileOptions {
   systemModel?: string;
   systemBaseUrl?: string;
   systemApiKey?: string;
+  systemCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
   judgeProvider?: BuiltInProvider;
   judgeModel?: string;
   judgeBaseUrl?: string;
   judgeApiKey?: string;
+  judgeCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
   internalProvider?: BuiltInProvider;
   internalModel?: string;
   internalBaseUrl?: string;
@@ -90,6 +92,7 @@ export async function resolveBenchRuntimeProfile(
       options.disableThinking,
       options.systemApiKey,
       options.max429WaitMs,
+      options.systemCodexReasoningEffort,
     );
   const judgeProvider = resolveProviderConfig(
     "judge",
@@ -100,6 +103,7 @@ export async function resolveBenchRuntimeProfile(
     options.disableThinking,
     options.judgeApiKey,
     options.max429WaitMs,
+    options.judgeCodexReasoningEffort,
   );
   const internalProvider = applyInternalProviderDefaults(
     resolveProviderConfig(
