@@ -332,6 +332,21 @@ test("provider-backed runtime resolution configures codex-cli with xhigh reasoni
   assert.equal(typeof resolved.adapterOptions.judge?.score, "function");
 });
 
+test("provider-backed runtime resolution can override codex-cli reasoning effort", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    systemProvider: "codex-cli",
+    systemModel: "gpt-5.5",
+    systemCodexReasoningEffort: "high",
+    judgeProvider: "codex-cli",
+    judgeModel: "gpt-5.5",
+    judgeCodexReasoningEffort: "medium",
+  });
+
+  assert.equal(resolved.systemProvider?.reasoningEffort, "high");
+  assert.equal(resolved.judgeProvider?.reasoningEffort, "medium");
+});
+
 test("runtime profile can route Remnic internal LLM calls through codex-cli", async () => {
   const resolved = await resolveBenchRuntimeProfile({
     runtimeProfile: "baseline",
