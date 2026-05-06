@@ -314,10 +314,15 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
         const sections: string[] = [];
         let usedChars = 0;
-        const hasExplicitReferences =
-          collectExplicitTurnReferences(query).length > 0;
+        const explicitReferences = collectExplicitTurnReferences(query);
+        const hasExplicitReferences = explicitReferences.length > 0;
         const preferFocusedExplicitContext =
           hasExplicitReferences && sessionId.startsWith("ama-");
+        const focusedReferenceWindow = preferFocusedExplicitContext
+          ? buildFocusedReferenceWindow(
+            explicitReferences.map((reference) => reference.number),
+          )
+          : null;
 
         const exactReferenceEvidence = await buildExplicitCueRecallSection({
           engine,
@@ -355,10 +360,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           }
         }
 
-        if (preferFocusedExplicitContext && exactReferenceEvidence) {
-          const joined = sections.join("\n\n");
-          return joined.length > budget ? joined.slice(0, budget) : joined;
-        }
+        const suppressBroadSummary =
+          preferFocusedExplicitContext && !!exactReferenceEvidence;
 
         if (query) {
           const remainingAfterCore = Math.max(0, budget - usedChars);
@@ -383,7 +386,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             const seenTurns = new Set<string>();
 
             for (const result of searchResults) {
-              const windowRadius = useCoreMemoryPipeline ? 3 : 1;
+              const windowRadius = preferFocusedExplicitContext
+                ? 2
+                : useCoreMemoryPipeline
+                  ? 3
+                  : 1;
               const fromTurn = Math.max(0, result.turn_index - windowRadius);
               const toTurn = result.turn_index + windowRadius;
               const expanded = await engine.expandContext(
@@ -395,7 +402,15 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
               if (expanded.length === 0) {
                 const id = `${result.session_id}:${result.turn_index}`;
-                if (!seenTurns.has(id)) {
+                if (
+                  !seenTurns.has(id) &&
+                  shouldIncludeFocusedSearchEvidence(
+                    result.content,
+                    query,
+                    preferFocusedExplicitContext,
+                    focusedReferenceWindow,
+                  )
+                ) {
                   seenTurns.add(id);
                   evidenceItems.push({
                     id,
@@ -414,6 +429,16 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               for (const message of expanded) {
                 const id = `${result.session_id}:${message.turn_index}`;
                 if (seenTurns.has(id)) continue;
+                if (
+                  !shouldIncludeFocusedSearchEvidence(
+                    message.content,
+                    query,
+                    preferFocusedExplicitContext,
+                    focusedReferenceWindow,
+                  )
+                ) {
+                  continue;
+                }
                 seenTurns.add(id);
                 evidenceItems.push({
                   id,
@@ -441,10 +466,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           }
         }
 
-        const summaryBudget = Math.max(0, budget - usedChars - 4);
-        const recallText = await engine.assembleRecall(sessionId, summaryBudget);
-        if (recallText) {
-          sections.push(recallText);
+        if (!suppressBroadSummary) {
+          const summaryBudget = Math.max(0, budget - usedChars - 4);
+          const recallText = await engine.assembleRecall(sessionId, summaryBudget);
+          if (recallText) {
+            sections.push(recallText);
+          }
         }
 
         if (sections.length === 0) {
@@ -575,6 +602,102 @@ function shouldUseCoreMemoryPipeline(
     }
     return value === true;
   });
+}
+
+const FOCUSED_SEARCH_STOP_WORDS = new Set([
+  "about",
+  "accomplish",
+  "accomplished",
+  "action",
+  "actions",
+  "after",
+  "agent",
+  "answer",
+  "answering",
+  "before",
+  "between",
+  "compare",
+  "does",
+  "done",
+  "during",
+  "from",
+  "into",
+  "matter",
+  "mattered",
+  "observation",
+  "observations",
+  "relevant",
+  "single",
+  "step",
+  "steps",
+  "that",
+  "think",
+  "this",
+  "turn",
+  "turns",
+  "what",
+  "when",
+  "where",
+  "which",
+  "with",
+]);
+
+function shouldIncludeFocusedSearchEvidence(
+  content: string,
+  query: string,
+  focusedExplicitContext: boolean,
+  referenceWindow: { min: number; max: number } | null,
+): boolean {
+  if (!focusedExplicitContext) {
+    return true;
+  }
+
+  const structuredNumber = extractStructuredTrajectoryCueNumber(content);
+  if (structuredNumber !== undefined) {
+    return !referenceWindow ||
+      (structuredNumber >= referenceWindow.min &&
+        structuredNumber <= referenceWindow.max);
+  }
+
+  if (/\[(?:Action|Observation|Thought|Reward|State|Environment|Result|Error|Test|Step|Turn)\b/i.test(content)) {
+    return true;
+  }
+
+  const contentLower = content.toLowerCase();
+  return extractFocusedSearchTerms(query).some((term) =>
+    contentLower.includes(term),
+  );
+}
+
+function extractFocusedSearchTerms(query: string): string[] {
+  const terms = query.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) ?? [];
+  return [...new Set(terms.filter((term) =>
+    !FOCUSED_SEARCH_STOP_WORDS.has(term) &&
+    !/^\d+$/.test(term),
+  ))];
+}
+
+function buildFocusedReferenceWindow(
+  numbers: readonly number[],
+): { min: number; max: number } | null {
+  if (numbers.length === 0) {
+    return null;
+  }
+  return {
+    min: Math.max(0, Math.min(...numbers) - 1),
+    max: Math.max(...numbers),
+  };
+}
+
+function extractStructuredTrajectoryCueNumber(content: string): number | undefined {
+  const match = content.match(
+    /\[(?:Action|Observation|Thought|Reward|State|Environment|Result|Error|Test|Step|Turn)\s+(\d+)\b/i,
+  );
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const parsed = Number(match[1]);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function nextBenchTranscriptTurnId(

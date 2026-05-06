@@ -417,8 +417,51 @@ test("adapter recall keeps AMA explicit step prompts focused on the cited window
     assert.match(recalled, /## Explicit Cue Evidence/);
     assert.match(recalled, /\[Action 20\]: move-20/);
     assert.match(recalled, /\[Action 23\]: move-23/);
-    assert.doesNotMatch(recalled, /\[Action 24\]: move-24/);
+    assert.match(recalled, /## Search evidence/);
     assert.doesNotMatch(recalled, /\[Action 29\]: move-29/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("adapter recall keeps bounded search evidence after AMA explicit step prompts", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    const messages = [
+      {
+        role: "user" as const,
+        content: "Background note: the compact snack signal was trail mix.",
+      },
+      ...Array.from({ length: 12 }, (_, index) => [
+        {
+          role: "user" as const,
+          content: `[Action ${index}]: move-${index}`,
+        },
+        {
+          role: "assistant" as const,
+          content: `[Observation ${index}]: state-${index}`,
+        },
+      ]).flat(),
+    ];
+
+    await adapter.store("ama-ep-search", messages);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "ama-ep-search",
+      "At Step 8, why did the compact snack signal matter?",
+      24_000,
+    );
+
+    assert.match(recalled, /## Explicit Cue Evidence/);
+    assert.match(recalled, /\[Action 8\]: move-8/);
+    assert.match(recalled, /## Search evidence/);
+    assert.match(recalled, /compact snack signal was trail mix/);
+    assert.ok(
+      recalled.indexOf("## Explicit Cue Evidence") <
+        recalled.indexOf("## Search evidence"),
+    );
   } finally {
     await adapter.destroy();
   }
