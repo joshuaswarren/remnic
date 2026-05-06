@@ -279,6 +279,30 @@ test("buildExplicitCueRecallSection keeps loop-break action questions inside bou
   assert.doesNotMatch(section, /Observation 24/);
 });
 
+test("buildExplicitCueRecallSection keeps loop-break action questions inside single steps", async () => {
+  const messages = Array.from({ length: 54 }, (_, index) => ({
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `filler turn ${index}`,
+  }));
+  messages[46] = { role: "user", content: "[Action 23] left" };
+  messages[47] = { role: "assistant", content: "[Observation 23] loop still continued" };
+  messages[48] = { role: "user", content: "[Action 24] down" };
+  messages[49] = { role: "assistant", content: "[Observation 24] successor state" };
+  const engine = new FakeCueEngine({ "bench-session": messages });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "bench-session",
+    query: "In step 23, which action broke the loop?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Action 23/);
+  assert.match(section, /Observation 23/);
+  assert.doesNotMatch(section, /Action 24/);
+  assert.doesNotMatch(section, /Observation 24/);
+});
+
 test("buildExplicitCueRecallSection includes successor trajectory evidence when requested", async () => {
   const messages = Array.from({ length: 54 }, (_, index) => ({
     role: index % 2 === 0 ? "user" : "assistant",

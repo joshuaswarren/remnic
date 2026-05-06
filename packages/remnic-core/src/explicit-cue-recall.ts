@@ -527,7 +527,7 @@ function hasSuccessorTrajectoryIntent(query: string): boolean {
     return false;
   }
 
-  if (!hasBoundedTrajectoryRange(raw)) {
+  if (!hasBoundedTrajectoryReference(raw)) {
     return true;
   }
 
@@ -535,11 +535,21 @@ function hasSuccessorTrajectoryIntent(query: string): boolean {
     hasNamedTrajectoryActionCue(normalized);
 }
 
+function hasBoundedTrajectoryReference(query: string): boolean {
+  return hasBoundedTrajectoryRange(query) || hasSingleTrajectoryReference(query);
+}
+
 function hasBoundedTrajectoryRange(query: string): boolean {
   return [
     /\b(?:between|from|in|during|within)\s+(?:steps?|actions?|observations?|turns?)\s+\d+\s*(?:-|\u2013|\u2014|\bto\b|\bthrough\b|\bthru\b|\band\b)\s*\d+\b/,
     /\b(?:steps?|actions?|observations?|turns?)\s+\d+\s*(?:-|\u2013|\u2014|\bto\b|\bthrough\b|\bthru\b)\s*\d+\b/,
   ].some((pattern) => pattern.test(query));
+}
+
+function hasSingleTrajectoryReference(query: string): boolean {
+  return /\b(?:in|during|within|at|on)?\s*(?:steps?|actions?|observations?|turns?)\s+\d+\b/.test(
+    query,
+  );
 }
 
 function asksForActionInsideBoundedRange(normalizedQuery: string): boolean {
