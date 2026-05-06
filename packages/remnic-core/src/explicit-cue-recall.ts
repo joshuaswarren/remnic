@@ -508,15 +508,51 @@ function contentLabelEvidenceWindow(hit: {
 }
 
 function hasSuccessorTrajectoryIntent(query: string): boolean {
-  const normalized = query.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  return [
+  const raw = query.toLowerCase();
+  const normalized = raw.replace(/[^a-z0-9]+/g, " ").trim();
+  if ([
     /\bafter\s+(?:step|action|observation|turn)\s+\d+\b/,
     /\b(?:next|following|subsequent|successor)\s+(?:step|action|observation|turn)\b/,
     /\b(?:step|action|observation|turn)\s+\d+\s+(?:then|and then)\b/,
     /\bwhat\s+(?:happened|came|occurred)\s+next\b/,
+  ].some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+
+  const hasLoopBreakIntent = [
     /\b(?:breaks?|breaking|broke)\s+(?:this|that|the|a|an)?\s*(?:loop|cycle|pattern|sequence)\b/,
     /\b(?:loop|cycle|pattern|sequence)\s+(?:breaks?|breaking|broke|ends?|stops?)\b/,
   ].some((pattern) => pattern.test(normalized));
+  if (!hasLoopBreakIntent) {
+    return false;
+  }
+
+  if (!hasBoundedTrajectoryRange(raw)) {
+    return true;
+  }
+
+  return !asksForActionInsideBoundedRange(normalized) &&
+    hasNamedTrajectoryActionCue(normalized);
+}
+
+function hasBoundedTrajectoryRange(query: string): boolean {
+  return [
+    /\b(?:between|from|in|during|within)\s+(?:steps?|actions?|observations?|turns?)\s+\d+\s*(?:-|\u2013|\u2014|\bto\b|\bthrough\b|\bthru\b|\band\b)\s*\d+\b/,
+    /\b(?:steps?|actions?|observations?|turns?)\s+\d+\s*(?:-|\u2013|\u2014|\bto\b|\bthrough\b|\bthru\b)\s*\d+\b/,
+  ].some((pattern) => pattern.test(query));
+}
+
+function asksForActionInsideBoundedRange(normalizedQuery: string): boolean {
+  return /\b(?:which|what)\s+(?:single\s+)?(?:action|move|step|maneuver)\s+(?:broke|breaks|breaking|ended|ends|stopped|stops|mattered|accomplished|advanced)\b/.test(
+    normalizedQuery,
+  );
+}
+
+function hasNamedTrajectoryActionCue(normalizedQuery: string): boolean {
+  const actions = "(?:up|down|left|right|wait|stay|push|pull|open|close|use|enter|exit)";
+  return new RegExp(
+    `\\b(?:${actions}\\s+(?:action|move|step|maneuver)|(?:action|move|step|maneuver)\\s+${actions})\\b`,
+  ).test(normalizedQuery);
 }
 
 function contentHasReferenceLabel(
