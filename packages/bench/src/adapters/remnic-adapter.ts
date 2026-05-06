@@ -672,7 +672,7 @@ function shouldIncludeFocusedSearchEvidence(
       );
   }
 
-  if (/\[(?:Action|Observation|Thought|Reward|State|Environment|Result|Error|Test|Step|Turn)\b/i.test(content)) {
+  if (/^\s*\[(?:Action|Observation|Thought|Reward|State|Environment|Result|Error|Test|Step|Turn)\b/i.test(content)) {
     return true;
   }
 
@@ -701,7 +701,7 @@ function buildFocusedReferenceWindows(
 
 function extractStructuredTrajectoryCueNumber(content: string): number | undefined {
   const match = content.match(
-    /\[(?:Action|Observation|Thought|Reward|State|Environment|Result|Error|Test|Step|Turn)\s+(\d+)\b/i,
+    /^\s*\[(?:Action|Observation|Thought|Reward|State|Environment|Result|Error|Test|Step|Turn)\s+(\d+)\b/i,
   );
   if (!match?.[1]) {
     return undefined;

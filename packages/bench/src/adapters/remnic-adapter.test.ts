@@ -545,6 +545,45 @@ test("adapter recall filters common-word-only focused search hits", async () => 
   }
 });
 
+test("adapter recall does not treat quoted trajectory labels as structured focused hits", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    const messages = [
+      {
+        role: "user" as const,
+        content: "Background note: someone quoted [Action 8] out of context.",
+      },
+      ...Array.from({ length: 10 }, (_, index) => [
+        {
+          role: "user" as const,
+          content: `[Action ${index}]: move-${index}`,
+        },
+        {
+          role: "assistant" as const,
+          content: `[Observation ${index}]: state-${index}`,
+        },
+      ]).flat(),
+    ];
+
+    await adapter.store("ama-ep-quoted-label", messages);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "ama-ep-quoted-label",
+      "At Step 8, why did the action matter?",
+      24_000,
+    );
+
+    assert.match(recalled, /\[Action 8\]: move-8/);
+    assert.match(recalled, /## Search evidence/);
+    const searchEvidence = recalled.split("## Search evidence")[1] ?? "";
+    assert.doesNotMatch(searchEvidence, /quoted \[Action 8\] out of context/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("adapter recall keeps disjoint AMA step search windows separate", async () => {
   const adapter = await createRemnicAdapter();
 
