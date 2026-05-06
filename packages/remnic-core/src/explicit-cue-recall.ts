@@ -520,7 +520,7 @@ function hasSuccessorTrajectoryIntent(query: string): boolean {
   }
 
   const hasLoopBreakIntent = [
-    /\b(?:breaks?|breaking|broke)\s+(?:this|that|the|a|an)?\s*(?:loop|cycle|pattern|sequence)\b/,
+    /\b(?:breaks?|breaking|broke)\s+(?:out\s+of\s+)?(?:this|that|the|a|an)?\s*(?:loop|cycle|pattern|sequence)\b/,
     /\b(?:loop|cycle|pattern|sequence)\s+(?:breaks?|breaking|broke|ends?|stops?)\b/,
   ].some((pattern) => pattern.test(normalized));
   if (!hasLoopBreakIntent) {
