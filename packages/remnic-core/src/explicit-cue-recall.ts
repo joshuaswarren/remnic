@@ -541,13 +541,13 @@ function hasBoundedTrajectoryReference(query: string): boolean {
 
 function hasBoundedTrajectoryRange(query: string): boolean {
   return [
-    /\b(?:between|from|in|during|within)\s+(?:steps?|actions?|observations?|turns?)\s+\d+\s*(?:-|\u2013|\u2014|\bto\b|\bthrough\b|\bthru\b|\band\b)\s*\d+\b/,
-    /\b(?:steps?|actions?|observations?|turns?)\s+\d+\s*(?:-|\u2013|\u2014|\bto\b|\bthrough\b|\bthru\b)\s*\d+\b/,
+    /\b(?:between|from|in|during|within)\s+(?:steps?|actions?|observations?|turns?)\s+#?\d+\s*(?:-|\u2013|\u2014|\bto\b|\bthrough\b|\bthru\b|\band\b)\s*#?\d+\b/,
+    /\b(?:steps?|actions?|observations?|turns?)\s+#?\d+\s*(?:-|\u2013|\u2014|\bto\b|\bthrough\b|\bthru\b)\s*#?\d+\b/,
   ].some((pattern) => pattern.test(query));
 }
 
 function hasSingleTrajectoryReference(query: string): boolean {
-  return /\b(?:in|during|within|at|on)?\s*(?:steps?|actions?|observations?|turns?)\s+\d+\b/.test(
+  return /\b(?:in|during|within|at|on)?\s*(?:steps?|actions?|observations?|turns?)\s+#?\d+\b/.test(
     query,
   );
 }
