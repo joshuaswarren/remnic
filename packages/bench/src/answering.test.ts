@@ -96,7 +96,8 @@ test("agentic-memory answering asks responders to synthesize grounded trajectory
         assert.match(question, /anchor the answer to those exact numbers/);
         assert.match(question, /state at the start of Step N is the prior observation/);
         assert.match(question, /enumerate each action in that inclusive range/);
-        assert.match(question, /scan the whole recalled trajectory evidence up to that boundary/);
+        assert.match(question, /exclude Action\/Observation N/);
+        assert.match(question, /include Action\/Observation N/);
         assert.match(question, /count all matching action verbs/);
         assert.match(question, /container, inventory, and object-location histories/);
         assert.match(question, /adjacent trajectory evidence contains the named action/);
@@ -377,7 +378,13 @@ test("unknown and explicit trajectory evidence helpers are conservative", () => 
     hasExplicitTrajectoryEvidence(
       "##Explicit Cue Evidence\n[Action 3]: up",
     ),
-    true,
+    false,
+  );
+  assert.equal(
+    hasExplicitTrajectoryEvidence(
+      '## Search evidence\nThe note quoted "[Action 3]: up" as an example label.',
+    ),
+    false,
   );
   assert.equal(
     hasExplicitTrajectoryEvidence(

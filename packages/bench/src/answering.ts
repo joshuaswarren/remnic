@@ -120,7 +120,8 @@ export function buildAgenticMemoryBenchmarkQuestion(
     "- In action/observation trajectories, Action N causes Observation N. The state at the start of Step N is the prior observation, usually Observation N-1; use that prior state when the question asks what an alternative action at the start of a step would do.",
     "- For cited step ranges, identify the action or state change inside that range; do not name a later action outside the range as the answer.",
     "- When the question asks for actions between step X and step Y, enumerate each action in that inclusive range in step order; do not collapse the range to only the first, last, or most semantically relevant actions.",
-    "- When the question asks for actions, state changes, inventory changes, container interactions, or object locations before/until a step, scan the whole recalled trajectory evidence up to that boundary and include every matching event with its step number.",
+    "- When the question asks for actions, state changes, inventory changes, container interactions, or object locations before step N, exclude Action/Observation N and scan only earlier trajectory evidence through step N-1.",
+    "- When the question asks for actions, state changes, inventory changes, container interactions, or object locations until step N, through step N, or up to and including step N, include Action/Observation N and scan the whole recalled trajectory evidence through that boundary.",
     "- For action-frequency questions, count all matching action verbs across the requested span and report the full frequency table; do not count only the most recent recalled excerpt.",
     "- For container, inventory, and object-location histories, maintain a state timeline from actions such as open, close, take, move, put, remove, and inventory observations; preserve earlier changes even if later recall excerpts also mention the object.",
     "- If the question names a specific action but the cited step label shows a different action and adjacent trajectory evidence contains the named action, reconcile the mismatch from the adjacent evidence instead of ignoring the named action.",
@@ -231,16 +232,7 @@ export function isUnknownOnlyAnswer(answer: string): boolean {
 }
 
 export function hasExplicitTrajectoryEvidence(recalledText: string): boolean {
-  if (
-    hasStepMarker(recalledText, "Action") ||
-    hasStepMarker(recalledText, "Observation")
-  ) {
-    return true;
-  }
-
-  return hasExplicitCueEvidenceHeading(recalledText) &&
-    (hasStepMarker(recalledText, "Step") ||
-      hasStepMarker(recalledText, "Turn"));
+  return hasTrajectoryMarkerInStructuredSection(recalledText);
 }
 
 function stripWrappingQuotes(value: string): string {
@@ -271,64 +263,79 @@ function isSentencePunctuation(code: number): boolean {
   return code === 33 || code === 46 || code === 63;
 }
 
-function hasExplicitCueEvidenceHeading(text: string): boolean {
+const STRUCTURED_TRAJECTORY_SECTION_TITLES = new Set([
+  "Explicit Cue Evidence",
+  "Remnic recall pipeline",
+  "Search evidence",
+  "Raw messages",
+]);
+
+function hasTrajectoryMarkerInStructuredSection(text: string): boolean {
   const lines = text
     .replaceAll("\r\n", "\n")
     .replaceAll("\r", "\n")
     .split("\n");
+  let inStructuredSection = false;
+
   for (const line of lines) {
-    if (!line.startsWith("##") || line.startsWith("###")) {
+    const heading = parseLevelTwoHeading(line);
+    if (heading !== undefined) {
+      inStructuredSection = STRUCTURED_TRAJECTORY_SECTION_TITLES.has(heading);
       continue;
     }
-    const rawTitle = line.slice(2);
-    if (
-      rawTitle.length === 0 ||
-      !isAsciiWhitespace(rawTitle.charCodeAt(0))
-    ) {
+    if (!inStructuredSection) {
       continue;
     }
-    const title = rawTitle.trimStart();
     if (
-      title === "Explicit Cue Evidence" ||
-      title.startsWith("Explicit Cue Evidence ") ||
-      title.startsWith("Explicit Cue Evidence\t")
+      isStepMarkerLine(line, "Action") ||
+      isStepMarkerLine(line, "Observation") ||
+      isStepMarkerLine(line, "Step") ||
+      isStepMarkerLine(line, "Turn")
     ) {
       return true;
     }
   }
+
   return false;
 }
 
-function hasStepMarker(
-  text: string,
+function parseLevelTwoHeading(line: string): string | undefined {
+  if (!line.startsWith("##") || line.startsWith("###")) {
+    return undefined;
+  }
+  const rawTitle = line.slice(2);
+  if (
+    rawTitle.length === 0 ||
+    !isAsciiWhitespace(rawTitle.charCodeAt(0))
+  ) {
+    return undefined;
+  }
+  return rawTitle.trim();
+}
+
+function isStepMarkerLine(
+  line: string,
   label: "Action" | "Observation" | "Step" | "Turn",
 ): boolean {
+  const trimmed = line.trimStart();
   const prefix = `[${label}`;
-  let offset = 0;
-  while (offset < text.length) {
-    const start = text.indexOf(prefix, offset);
-    if (start === -1) {
-      return false;
-    }
-    let index = start + prefix.length;
-    if (!isAsciiWhitespace(text.charCodeAt(index))) {
-      offset = start + 1;
-      continue;
-    }
-    while (index < text.length && isAsciiWhitespace(text.charCodeAt(index))) {
-      index += 1;
-    }
-    let sawDigit = false;
-    while (index < text.length && isAsciiDigit(text.charCodeAt(index))) {
-      sawDigit = true;
-      index += 1;
-    }
-    if (sawDigit && text[index] === "]") {
-      return true;
-    }
-    offset = start + 1;
+  if (!trimmed.startsWith(prefix)) {
+    return false;
   }
-  return false;
+
+  let index = prefix.length;
+  if (!isAsciiWhitespace(trimmed.charCodeAt(index))) {
+    return false;
+  }
+  while (index < trimmed.length && isAsciiWhitespace(trimmed.charCodeAt(index))) {
+    index += 1;
+  }
+  let sawDigit = false;
+  while (index < trimmed.length && isAsciiDigit(trimmed.charCodeAt(index))) {
+    sawDigit = true;
+    index += 1;
+  }
+  return sawDigit && trimmed[index] === "]";
 }
 
 function isAsciiDigit(code: number): boolean {
