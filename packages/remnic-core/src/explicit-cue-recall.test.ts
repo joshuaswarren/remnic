@@ -380,6 +380,244 @@ test("buildTrajectoryAnalysisRecallSection keeps disjoint explicit references di
   assert.doesNotMatch(section, /unrelated-noise bridge action/);
 });
 
+test("buildTrajectoryAnalysisRecallSection infers movement from relative object deltas", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [
+        20,
+        "right",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "rule `win` 3 step to the left",
+        ].join("\n"),
+      ],
+      [
+        21,
+        "left",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "rule `win` 2 step to the left",
+        ].join("\n"),
+      ],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "Between steps 20 and 21, the rule 'win' block's relative position changed from 3 step to the left to 2 step to the left. What was the actual movement?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Relative-position movement cues/);
+  assert.match(section, /rule win changed from 3 step to the left to 2 step to the left/);
+  assert.match(section, /agent moved left/);
+});
+
+test("buildTrajectoryAnalysisRecallSection infers same-tile alignment from object disappearance", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [
+        41,
+        "right",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "ball 1 step to the right",
+          "rule `win` 3 steps to the left and 1 step up",
+        ].join("\n"),
+      ],
+      [
+        42,
+        "right",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "rule `win` 4 steps to the left and 1 step up",
+          "rule `ball` 1 step to the right and 4 steps down",
+        ].join("\n"),
+      ],
+      [
+        43,
+        "down",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "ball 1 step up",
+          "rule `win` 4 steps to the left and 2 steps up",
+          "rule `ball` 1 step to the right and 3 steps down",
+        ].join("\n"),
+      ],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "At step 41, the ball was 1 step to the right. After moving right in step 42 it vanished, then after moving down in step 43 it reappeared 1 step up. What was the exact position and why was achieving this state the critical objective of the agent's moves from step 39 to 42?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Object alignment cues/);
+  assert.match(section, /zero-offset same-tile alignment at the end of step 42/);
+  assert.match(section, /ball reappears 1 step up/);
+  assert.match(section, /future upward interaction or alignment/);
+  assert.match(section, /possible ball manipulation or rule alignment toward a new win condition/);
+  assert.doesNotMatch(section, /not as pushing, collecting, or removing ball/);
+});
+
+test("buildTrajectoryAnalysisRecallSection infers rule-text repositioning goals", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [
+        39,
+        "up",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "rule `is` 2 step to the left and 2 step up",
+          "rule `win` 1 step to the left and 2 step up",
+          "ball 2 steps to the right and 1 step up",
+        ].join("\n"),
+      ],
+      [
+        42,
+        "right",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "rule `is` 4 step to the left and 1 step up",
+          "rule `win` 3 step to the left and 1 step up",
+          "rule `ball` 1 step to the right and 4 steps down",
+        ].join("\n"),
+      ],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "In steps 39-42, what strategic goal did the up, up, right, right maneuver accomplish, and what implicit property of the ball made it necessary?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Rule-text positioning cues/);
+  assert.match(section, /rule is moved from 2 step to the left and 2 step up to 4 step to the left and 1 step up/);
+  assert.match(section, /rule win moved from 1 step to the left and 2 step up to 3 step to the left and 1 step up/);
+  assert.match(section, /repositioning the agent to the right of those rule text blocks/);
+});
+
+test("buildTrajectoryAnalysisRecallSection recommends alternative moves toward win-rule text", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [
+        7,
+        "down",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "rule `is` 2 step to the left and 1 step up",
+          "rule `win` 1 step to the left and 1 step up",
+          "rule `door` 2 steps down",
+        ].join("\n"),
+      ],
+      [
+        8,
+        "up",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "rule `is` 2 step to the left",
+          "rule `win` 1 step to the left",
+          "rule `door` 3 steps down",
+        ].join("\n"),
+      ],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "In steps 7-10, the agent gets stuck in a down-up loop. At the start of Step 8, instead of moving up, what alternative move would have represented a clear step towards creating a new win condition?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Counterfactual action cues/);
+  assert.match(section, /At the start of step 8, use Observation 7 as the decision state/);
+  assert.match(section, /rule win at 1 step to the left and 1 step up/);
+  assert.match(section, /left is the alternative/);
+  assert.match(section, /IS\/WIN rule text/);
+});
+
+test("buildTrajectoryAnalysisRecallSection surfaces inactive object rules", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [
+        39,
+        "up",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "ball 2 steps to the right and 1 step up",
+          "rule `ball` 3 steps to the right and 3 steps down",
+        ].join("\n"),
+      ],
+      [
+        42,
+        "right",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "rule `ball` 1 step to the right and 4 steps down",
+        ].join("\n"),
+      ],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "In steps 39-42, what strategic goal did the up, up, right, right maneuver accomplish, and what implicit property of the ball made it necessary?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Rule-state cues/);
+  assert.match(section, /Active rules in this window: baba is you/);
+  assert.match(section, /No active rule for ball appears/);
+  assert.match(section, /no "ball is push" rule is active/);
+  assert.match(section, /treat ball as not currently pushable/);
+  assert.match(section, /bypassing or repositioning around a not-pushable obstacle/);
+});
+
 test("buildTrajectoryAnalysisRecallSection expands sparse turn-index archives", async () => {
   const engine = new FakeCueEngine({
     ama: makeTrajectoryMessages([[50, "sparse target action", "sparse target state"]])
