@@ -95,6 +95,10 @@ test("agentic-memory answering asks responders to synthesize grounded trajectory
         assert.match(question, /step numbers, action names, object names/);
         assert.match(question, /anchor the answer to those exact numbers/);
         assert.match(question, /state at the start of Step N is the prior observation/);
+        assert.match(question, /enumerate each action in that inclusive range/);
+        assert.match(question, /scan the whole recalled trajectory evidence up to that boundary/);
+        assert.match(question, /count all matching action verbs/);
+        assert.match(question, /container, inventory, and object-location histories/);
         assert.match(question, /adjacent trajectory evidence contains the named action/);
         assert.match(question, /next concrete maneuver it enables/);
         assert.match(question, /treat an object on the direct path as a blocker/);
@@ -177,7 +181,7 @@ test("agentic-memory answering retries one unknown answer when explicit trajecto
           };
         }
         assert.match(question, /prior answer was only "unknown"/);
-        assert.match(question, /explicit trajectory evidence/);
+        assert.match(question, /trajectory evidence/);
         return {
           text: "It moved right, making the wall shift to the left relative to the agent.",
           tokens: { input: 13, output: 12 },
@@ -196,6 +200,51 @@ test("agentic-memory answering retries one unknown answer when explicit trajecto
   assert.deepEqual(result.tokens, { input: 24, output: 13 });
   assert.equal(result.latencyMs, 16);
   assert.equal(result.model, "retry-model");
+});
+
+test("agentic-memory answering retries unknown when trajectory markers appear outside explicit cue sections", async () => {
+  const questions: string[] = [];
+  const result = await answerBenchmarkQuestion({
+    question: "What inventory changes occurred before step 80?",
+    recalledText: [
+      "## Remnic recall pipeline",
+      "[Action 20]: take cd 3",
+      "[Observation 20]: Inventory: cd 3.",
+      "[Action 24]: move cd 3 to safe 1",
+      "[Observation 24]: Inventory: empty.",
+      "[Action 80]: take cd 2",
+      "[Observation 80]: Inventory: cd 2.",
+    ].join("\n"),
+    answerMode: "agentic-memory",
+    retryUnknownWithEvidence: true,
+    responder: {
+      async respond(question) {
+        questions.push(question);
+        if (questions.length === 1) {
+          return {
+            text: "unknown",
+            tokens: { input: 11, output: 1 },
+            latencyMs: 7,
+            model: "first-model",
+          };
+        }
+        assert.match(question, /prior answer was only "unknown"/);
+        assert.match(question, /trajectory evidence/);
+        return {
+          text: "cd 3 was added at step 20, removed at step 24, and cd 2 was added at step 80.",
+          tokens: { input: 13, output: 12 },
+          latencyMs: 9,
+          model: "retry-model",
+        };
+      },
+    },
+  });
+
+  assert.equal(questions.length, 2);
+  assert.equal(
+    result.finalAnswer,
+    "cd 3 was added at step 20, removed at step 24, and cd 2 was added at step 80.",
+  );
 });
 
 test("agentic-memory answering does not retry unknown without explicit trajectory evidence", async () => {
@@ -322,13 +371,13 @@ test("unknown and explicit trajectory evidence helpers are conservative", () => 
     hasExplicitTrajectoryEvidence(
       "## Remnic recall pipeline\n[Action 3]: up\n[Observation 3]: the key moved closer",
     ),
-    false,
+    true,
   );
   assert.equal(
     hasExplicitTrajectoryEvidence(
       "##Explicit Cue Evidence\n[Action 3]: up",
     ),
-    false,
+    true,
   );
   assert.equal(
     hasExplicitTrajectoryEvidence(

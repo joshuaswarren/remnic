@@ -119,6 +119,10 @@ export function buildAgenticMemoryBenchmarkQuestion(
     "- For explicit step, action, observation, or turn references, anchor the answer to those exact numbers. Do not shift the answer to a neighboring step unless the question explicitly asks for the next or previous step.",
     "- In action/observation trajectories, Action N causes Observation N. The state at the start of Step N is the prior observation, usually Observation N-1; use that prior state when the question asks what an alternative action at the start of a step would do.",
     "- For cited step ranges, identify the action or state change inside that range; do not name a later action outside the range as the answer.",
+    "- When the question asks for actions between step X and step Y, enumerate each action in that inclusive range in step order; do not collapse the range to only the first, last, or most semantically relevant actions.",
+    "- When the question asks for actions, state changes, inventory changes, container interactions, or object locations before/until a step, scan the whole recalled trajectory evidence up to that boundary and include every matching event with its step number.",
+    "- For action-frequency questions, count all matching action verbs across the requested span and report the full frequency table; do not count only the most recent recalled excerpt.",
+    "- For container, inventory, and object-location histories, maintain a state timeline from actions such as open, close, take, move, put, remove, and inventory observations; preserve earlier changes even if later recall excerpts also mention the object.",
     "- If the question names a specific action but the cited step label shows a different action and adjacent trajectory evidence contains the named action, reconcile the mismatch from the adjacent evidence instead of ignoring the named action.",
     "- If a game or tool trajectory requires a strategic abstraction, name the concrete mechanism being prepared or avoided, such as pushing a rule block, breaking a rule, opening a path, satisfying a tool requirement, aligning with an object, or undoing a loop.",
     "- When a maneuver makes an object vanish from relative observations or changes its offset, answer both the immediate relation and the next concrete maneuver it enables, such as pushing from a new side, bypassing a blocker, or aligning with rule text.",
@@ -209,9 +213,9 @@ export function buildUnknownRetryQuestion(
   return [
     question,
     "",
-    "The prior answer was only \"unknown\", but the supplied Remnic context includes explicit trajectory evidence.",
+    "The prior answer was only \"unknown\", but the supplied Remnic context includes trajectory evidence.",
     "Retry once by deriving the best-supported answer from that evidence.",
-    "Use \"unknown\" only if the explicit evidence is absent, contradictory, or lacks the exact value requested.",
+    "Use \"unknown\" only if the trajectory evidence is absent, contradictory, or lacks the exact value requested.",
     "For causal or strategic questions, answer with the concrete action/state change and the implication it supports.",
     ...(answerFormat === "structured"
       ? ["Preserve the requested structured output format exactly."]
@@ -227,9 +231,16 @@ export function isUnknownOnlyAnswer(answer: string): boolean {
 }
 
 export function hasExplicitTrajectoryEvidence(recalledText: string): boolean {
+  if (
+    hasStepMarker(recalledText, "Action") ||
+    hasStepMarker(recalledText, "Observation")
+  ) {
+    return true;
+  }
+
   return hasExplicitCueEvidenceHeading(recalledText) &&
-    (hasStepMarker(recalledText, "Action") ||
-      hasStepMarker(recalledText, "Observation"));
+    (hasStepMarker(recalledText, "Step") ||
+      hasStepMarker(recalledText, "Turn"));
 }
 
 function stripWrappingQuotes(value: string): string {
@@ -288,7 +299,10 @@ function hasExplicitCueEvidenceHeading(text: string): boolean {
   return false;
 }
 
-function hasStepMarker(text: string, label: "Action" | "Observation"): boolean {
+function hasStepMarker(
+  text: string,
+  label: "Action" | "Observation" | "Step" | "Turn",
+): boolean {
   const prefix = `[${label}`;
   let offset = 0;
   while (offset < text.length) {
