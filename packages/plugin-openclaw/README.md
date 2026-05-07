@@ -164,6 +164,13 @@ CI jobs that provision OpenClaw should use
 `npm run check:openclaw-sdk-surface:required` or pass
 `-- --require --package-root <path>` so a missing SDK fails instead of skipping.
 
+Last compatibility sweep: May 7, 2026. The SDK surface check passed against
+`openclaw@2026.5.3`, `openclaw@2026.5.3-1`, `openclaw@2026.5.4-beta.1`,
+`openclaw@2026.5.4-beta.2`, `openclaw@2026.5.4-beta.3`,
+`openclaw@2026.5.4`, `openclaw@2026.5.5`, and `openclaw@2026.5.6`.
+Keep the peer range broad unless an upstream release removes a runtime surface
+Remnic actively uses.
+
 Native memory registrars are tracked separately in
 [`docs/plugins/openclaw-native-memory-registrars.md`](../../docs/plugins/openclaw-native-memory-registrars.md).
 That spike explains why Remnic currently uses `registerMemoryCapability()` as

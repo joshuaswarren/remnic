@@ -1846,7 +1846,9 @@ export class Orchestrator {
       : this.localLlm;
     // Initialize gateway fast LLM for fast-tier ops when modelSource is "gateway"
     this._fastGatewayLlm = config.modelSource === "gateway"
-      ? new FallbackLlmClient(config.gatewayConfig)
+      ? new FallbackLlmClient(config.gatewayConfig, {
+          workspaceDir: config.workspaceDir,
+        })
       : null;
     if (config.modelSource === "gateway") {
       log.debug(
@@ -3158,7 +3160,9 @@ export class Orchestrator {
           ? this.config.fastGatewayAgentId
           : this.config.gatewayAgentId || undefined)
       : undefined;
-    const llm = new FallbackLlmClient(this.config.gatewayConfig);
+    const llm = new FallbackLlmClient(this.config.gatewayConfig, {
+      workspaceDir: this.config.workspaceDir,
+    });
     if (!llm.isAvailable(gatewayAgentId) && !(modelSetting === "fast" && this.fastLlm && !useGateway)) {
       log.warn(
         "[semantic-consolidation] no LLM available — skipping synthesis",
@@ -3402,7 +3406,9 @@ export class Orchestrator {
     if (this.config.peerProfileReasonerEnabled) {
       try {
         const { runPeerProfileReasoner } = await import("./peers/index.js");
-        const llm = new FallbackLlmClient(this.config.gatewayConfig);
+        const llm = new FallbackLlmClient(this.config.gatewayConfig, {
+          workspaceDir: this.config.workspaceDir,
+        });
         const peerResult = await runPeerProfileReasoner({
           memoryDir: targetStorage.dir,
           enabled: true,
@@ -11711,7 +11717,9 @@ export class Orchestrator {
           judgeCandidates,
           this.config,
           this.localLlm,
-          new FallbackLlmClient(this.config.gatewayConfig),
+          new FallbackLlmClient(this.config.gatewayConfig, {
+            workspaceDir: this.config.workspaceDir,
+          }),
           this.judgeVerdictCache,
           this.judgeDeferCounts,
           judgeTelemetryHandler,

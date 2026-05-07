@@ -53,7 +53,9 @@ export class HourlySummarizer {
     this.localLlm = new LocalLlmClient(config, this.modelRegistry);
 
     // Initialize fallback client with gateway config
-    this.fallbackLlm = new FallbackLlmClient(gatewayConfig);
+    this.fallbackLlm = new FallbackLlmClient(gatewayConfig, {
+      workspaceDir: config.workspaceDir,
+    });
 
     if (!gatewayConfig?.agents?.defaults?.model?.primary && !config.localLlmEnabled && config.modelSource !== "gateway") {
       log.warn("no gateway default AI and local LLM disabled — hourly summarization disabled");

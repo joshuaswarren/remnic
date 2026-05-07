@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import path from "node:path";
 import type { GatewayConfig, ModelProviderConfig, AgentPersona } from "./types.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import {
@@ -9,6 +10,8 @@ import {
 import { resolveProviderApiKey, getGatewayRuntimeAuthForModel } from "./resolve-provider-secret.js";
 import { loadModelsJsonProviders } from "./models-json.js";
 import { callCodexCliFallback } from "./codex-cli-fallback.js";
+import { resolveHomeDir } from "./runtime/env.js";
+import { expandTildePath } from "./utils/path.js";
 
 export interface FallbackLlmOptions {
   temperature?: number;
@@ -74,7 +77,13 @@ export class FallbackLlmClient {
     runtimeContext: FallbackLlmRuntimeContext = {},
   ) {
     this.gatewayConfig = gatewayConfig;
-    this.runtimeContext = runtimeContext;
+    this.runtimeContext = {
+      ...runtimeContext,
+      workspaceDir:
+        normalizeRuntimePath(runtimeContext.workspaceDir) ??
+        readGatewayWorkspaceDir(gatewayConfig) ??
+        defaultOpenClawWorkspaceDir(),
+    };
   }
 
   /**
@@ -810,6 +819,26 @@ export class FallbackLlmClient {
         : undefined,
     };
   }
+}
+
+function normalizeRuntimePath(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? expandTildePath(trimmed) : undefined;
+}
+
+function readGatewayWorkspaceDir(gatewayConfig: GatewayConfig | undefined): string | undefined {
+  if (!gatewayConfig || typeof gatewayConfig !== "object") return undefined;
+  const raw = gatewayConfig as Record<string, unknown>;
+  return (
+    normalizeRuntimePath(raw.workspaceDir) ??
+    normalizeRuntimePath(raw.workspacePath) ??
+    normalizeRuntimePath(raw.workspace)
+  );
+}
+
+function defaultOpenClawWorkspaceDir(): string {
+  return path.join(resolveHomeDir(), ".openclaw", "workspace");
 }
 
 function extractResponsesOutputText(data: {

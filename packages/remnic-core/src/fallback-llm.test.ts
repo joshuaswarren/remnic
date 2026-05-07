@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { FallbackLlmClient } from "./fallback-llm.js";
 import { __codexCliFallbackTestHooks } from "./codex-cli-fallback.js";
 import { clearModelsJsonCache, __setModelsJsonForTest } from "./models-json.js";
-import { clearSecretCache } from "./resolve-provider-secret.js";
+import {
+  __setGatewayRuntimeAuthForModelForTest,
+  clearSecretCache,
+} from "./resolve-provider-secret.js";
 
 test("fallback llm prefers the active gateway provider config over models.json", { concurrency: false }, async () => {
   __setModelsJsonForTest({
@@ -64,6 +68,158 @@ test("fallback llm prefers the active gateway provider config over models.json",
   } finally {
     globalThis.fetch = originalFetch;
     clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm passes the OpenClaw workspace to runtime auth", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = "/tmp/remnic-openclaw-home";
+  let capturedWorkspaceDir: string | undefined;
+  __setGatewayRuntimeAuthForModelForTest(async ({ workspaceDir }) => {
+    capturedWorkspaceDir = workspaceDir;
+    return {
+      apiKey: "runtime-key",
+      baseUrl: "https://runtime.example/v1",
+      source: "test-runtime",
+      mode: "oauth",
+    };
+  });
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "openai/gpt-5.5",
+        },
+      },
+    },
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://raw.example/v1",
+          api: "openai-completions",
+          apiKey: "secretref-managed",
+          models: [],
+        },
+      },
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  let capturedAuth = "";
+  globalThis.fetch = (async (url, init) => {
+    capturedUrl = String(url);
+    capturedAuth = String((init?.headers as Record<string, string> | undefined)?.Authorization ?? "");
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "ok" } }],
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16 },
+    );
+
+    assert.equal(response?.content, "ok");
+    assert.equal(capturedUrl, "https://runtime.example/v1/chat/completions");
+    assert.equal(capturedAuth, "Bearer runtime-key");
+    assert.equal(
+      capturedWorkspaceDir,
+      path.join("/tmp/remnic-openclaw-home", ".openclaw", "workspace"),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    clearSecretCache();
+  }
+});
+
+test("fallback llm prefers a configured workspace for runtime auth", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = "/tmp/remnic-configured-home";
+  let capturedWorkspaceDir: string | undefined;
+  __setGatewayRuntimeAuthForModelForTest(async ({ workspaceDir }) => {
+    capturedWorkspaceDir = workspaceDir;
+    return {
+      apiKey: "runtime-key",
+      baseUrl: "https://runtime.example/v1",
+      source: "test-runtime",
+      mode: "oauth",
+    };
+  });
+
+  const llm = new FallbackLlmClient(
+    {
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-5.5",
+          },
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://raw.example/v1",
+            api: "openai-completions",
+            apiKey: "secretref-managed",
+            models: [],
+          },
+        },
+      },
+    },
+    { workspaceDir: "~/custom-openclaw-workspace" },
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "ok" } }],
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    )) as typeof fetch;
+
+  try {
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16 },
+    );
+
+    assert.equal(response?.content, "ok");
+    assert.equal(
+      capturedWorkspaceDir,
+      path.join("/tmp/remnic-configured-home", "custom-openclaw-workspace"),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
     clearSecretCache();
   }
 });

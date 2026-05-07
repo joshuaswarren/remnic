@@ -114,7 +114,9 @@ export class ExtractionEngine {
       log.warn("no OpenAI API key — direct OpenAI client disabled; local and gateway fallback paths remain available");
     }
     this.localLlm = localLlm ?? new LocalLlmClient(config, modelRegistry);
-    this.fallbackLlm = new FallbackLlmClient(gatewayConfig);
+    this.fallbackLlm = new FallbackLlmClient(gatewayConfig, {
+      workspaceDir: config.workspaceDir,
+    });
     this.modelRegistry = modelRegistry ?? new ModelRegistry(config.memoryDir);
     if (config.modelSource === "gateway") {
       log.debug(
