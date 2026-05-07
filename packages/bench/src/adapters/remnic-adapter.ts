@@ -11,7 +11,9 @@ import { promisify } from "node:util";
 import {
   buildEvidencePack,
   buildExplicitCueRecallSection,
+  buildTrajectoryAnalysisRecallSection,
   collectExplicitTurnReferences,
+  normalizeTurnExpansionEnd,
   Orchestrator,
   parseConfig,
 } from "@remnic/core";
@@ -121,6 +123,7 @@ const DEFAULT_BENCH_DRAIN_TIMEOUT_MS = 5 * 60_000;
 const CORE_EXPLICIT_CUE_MAX_CHARS = 18_000;
 const CORE_EXPLICIT_CUE_MAX_ITEM_CHARS = 2_400;
 const CORE_EXPLICIT_CUE_MAX_REFERENCES = 24;
+const CORE_TRAJECTORY_ANALYSIS_MAX_CHARS = 18_000;
 const execFileAsync = promisify(execFile);
 
 function cloneBenchConfig(config: Record<string, unknown>): Record<string, unknown> {
@@ -482,6 +485,22 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           usedChars += exactReferenceEvidence.length;
         }
 
+        const trajectoryAnalysisEvidence = sessionId.startsWith("ama-")
+          ? await buildTrajectoryAnalysisRecallSection({
+              engine,
+              sessionId,
+              query,
+              maxChars: Math.min(
+                CORE_TRAJECTORY_ANALYSIS_MAX_CHARS,
+                Math.max(0, Math.floor((budget - usedChars) * 0.55)),
+              ),
+            })
+          : "";
+        if (trajectoryAnalysisEvidence) {
+          sections.push(trajectoryAnalysisEvidence);
+          usedChars += trajectoryAnalysisEvidence.length;
+        }
+
         if (useCoreMemoryPipeline) {
           const coreBudget = Math.max(
             0,
@@ -620,10 +639,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         if (sections.length === 0) {
           const stats = await engine.getStats(sessionId);
           if (stats.totalMessages > 0) {
+            const toTurn = normalizeTurnExpansionEnd(stats);
             const expanded = await engine.expandContext(
               sessionId,
               0,
-              stats.totalMessages - 1,
+              toTurn,
               Math.floor(budget / 4),
             );
             if (expanded.length > 0) {

@@ -1,5 +1,6 @@
 export const BENCH_RECALL_SECTION_TITLES = [
   "Explicit Cue Evidence",
+  "Trajectory analysis",
   "Remnic recall pipeline",
   "Search evidence",
   "Raw messages",
@@ -11,6 +12,7 @@ export const BENCH_RECALL_SECTION_TITLE_SET = new Set<string>(
 
 export const TRAJECTORY_RETRY_SECTION_TITLES = [
   "Explicit Cue Evidence",
+  "Trajectory analysis",
   "Remnic recall pipeline",
 ] as const;
 

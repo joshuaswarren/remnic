@@ -1246,7 +1246,13 @@ function ensureRuntimeBuilds(): void {
     "dist",
     "index.js",
   );
-  if (!existsSync(coreDistPath)) {
+  const coreSourcePaths = [
+    path.join(repoRoot, "packages", "remnic-core", "src"),
+    path.join(repoRoot, "packages", "remnic-core", "package.json"),
+    path.join(repoRoot, "packages", "remnic-core", "tsup.config.ts"),
+    path.join(repoRoot, "packages", "remnic-core", "tsconfig.json"),
+  ];
+  if (!existsSync(coreDistPath) || isAnySourceNewerThan(coreSourcePaths, coreDistPath)) {
     runPnpm(["--filter", "@remnic/core", "build"]);
   }
 

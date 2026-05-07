@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildExplicitCueRecallSection,
+  buildTrajectoryAnalysisRecallSection,
   collectBenchmarkAnchorCues,
   collectExplicitTurnReferences,
   collectLexicalCues,
@@ -74,6 +75,24 @@ class FakeCueEngine implements ExplicitCueRecallEngine {
       }
     }
     return results.slice(0, Math.max(0, Math.floor(limit)));
+  }
+
+  async getStats(sessionId?: string): Promise<{
+    totalMessages: number;
+    maxTurnIndex?: number;
+  }> {
+    const sessionEntries = Object.entries(this.sessions).filter(
+      ([candidateSessionId]) => !sessionId || candidateSessionId === sessionId,
+    );
+    let maxTurn = -1;
+    let totalMessages = 0;
+    for (const [, messages] of sessionEntries) {
+      totalMessages += messages.length;
+      for (let index = 0; index < messages.length; index += 1) {
+        maxTurn = Math.max(maxTurn, messages[index]?.turnIndex ?? index);
+      }
+    }
+    return { totalMessages, maxTurnIndex: maxTurn };
   }
 }
 
@@ -202,6 +221,231 @@ test("buildExplicitCueRecallSection searches benchmark anchor cues", async () =>
   });
 
   assert.match(section, /plan-specific deployment owner is Nia/);
+});
+
+test("buildTrajectoryAnalysisRecallSection enumerates full action ranges", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [71, "go to drawer 4", "arrived at drawer 4"],
+      [72, "look", "looked around"],
+      [73, "go to safe 1", "arrived at safe 1"],
+      [74, "go to drawer 4", "arrived at drawer 4"],
+      [75, "look", "looked at drawer 4"],
+      [76, "go to shelf 2", "arrived at shelf 2"],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: "What actions were performed between step 71 and step 76?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /^## Trajectory analysis/);
+  for (const step of [71, 72, 73, 74, 75, 76]) {
+    assert.match(section, new RegExp(`Action ${step}`));
+  }
+});
+
+test("buildTrajectoryAnalysisRecallSection preserves before-step entity history", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [8, "open safe 1", "safe 1 is open"],
+      [9, "close safe 1", "safe 1 is closed"],
+      [20, "take cd 3 from desk 1", "carrying cd 3"],
+      [23, "open safe 1", "safe 1 is open"],
+      [24, "move cd 3 to safe 1", "cd 3 is in safe 1"],
+      [80, "take cd 2 from desk 2", "carrying cd 2"],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "Before step 80, which actions were performed on safe 1 and at which steps?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Action 8.*open safe 1/);
+  assert.match(section, /Action 9.*close safe 1/);
+  assert.match(section, /Action 23.*open safe 1/);
+  assert.doesNotMatch(section, /Action 80/);
+  assert.doesNotMatch(section, /move cd 3 to safe 1/);
+});
+
+test("buildTrajectoryAnalysisRecallSection summarizes inventory and frequency", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [0, "look", "empty inventory"],
+      [1, "go to desk 1", "at desk"],
+      [2, "take cd 3 from desk 1", "carrying cd 3"],
+      [3, "move cd 3 to safe 1", "cd 3 in safe"],
+      [4, "take cd 2 from desk 2", "carrying cd 2"],
+      [5, "look", "still carrying cd 2"],
+    ]),
+  });
+
+  const inventorySection = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: "What changes occurred to the inventory throughout the trajectory?",
+    maxChars: 4000,
+  });
+  assert.match(inventorySection, /inventory added cd 3/);
+  assert.match(inventorySection, /inventory removed cd 3/);
+  assert.match(inventorySection, /inventory added cd 2/);
+
+  const frequencySection = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: "Until step 5, what types of actions has the agent performed and how frequently?",
+    maxChars: 4000,
+  });
+  assert.match(frequencySection, /look=2/);
+  assert.match(frequencySection, /go=1/);
+  assert.match(frequencySection, /take=2/);
+  assert.match(frequencySection, /move=1/);
+});
+
+test("buildTrajectoryAnalysisRecallSection resolves quoted observation transitions and entity locations", async () => {
+  const sourceObservation = [
+    "You arrive at garbagecan 1. On the garbagecan 1, you see nothing.",
+    "",
+    "The current available actions are: go to drawer 4, look.",
+  ].join("\n");
+  const targetObservation = [
+    "You arrive at drawer 4. The drawer 4 is open. In it, you see a creditcard 1.",
+    "",
+    "The current available actions are: examine shelf 2, go to shelf 2, look.",
+  ].join("\n");
+  const immediateTargetObservation = [
+    "You arrive at drawer 4. The drawer 4 is open. In it, you see a creditcard 1.",
+    "",
+    "The current available actions are: examine garbagecan 1, look.",
+  ].join("\n");
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [70, "look", sourceObservation],
+      [71, "go to drawer 4", immediateTargetObservation],
+      [72, "look", "You are facing drawer 4."],
+      [73, "go to shelf 2", "You arrive at shelf 2."],
+      [74, "go to drawer 4", targetObservation],
+      [80, "take cd 2 from desk 2", "carrying cd 2"],
+      [90, "move cd 3 to safe 1", "cd 3 is in safe 1"],
+      [115, "look", "cd 2 can be moved to safe 1"],
+    ]),
+  });
+
+  const transitionSection = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: `What sequence of actions would transform the state between the observation: "${sourceObservation}" and the observation: "${targetObservation}"?`,
+    maxChars: 5000,
+  });
+  assert.match(transitionSection, /Action 71.*go to drawer 4/);
+  assert.doesNotMatch(transitionSection, /Action 72/);
+  assert.doesNotMatch(transitionSection, /Action 80/);
+
+  const locationSection = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: "What is the location of cd 3, cd 2 at step 115?",
+    maxChars: 5000,
+  });
+  assert.match(locationSection, /cd 2 location at step 115: inventory/);
+  assert.match(locationSection, /cd 3 location at step 115: safe 1/);
+});
+
+test("buildTrajectoryAnalysisRecallSection keeps disjoint explicit references discrete", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [2, "move-2", "state-2"],
+      [20, "unrelated-noise bridge action", "state-20"],
+      [40, "move-40", "state-40"],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: "Compare steps 2 and 40 with unrelated-noise before answering.",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Action 2.*move-2/);
+  assert.match(section, /Action 40.*move-40/);
+  assert.doesNotMatch(section, /Action 20/);
+  assert.doesNotMatch(section, /unrelated-noise bridge action/);
+});
+
+test("buildTrajectoryAnalysisRecallSection expands sparse turn-index archives", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([[50, "sparse target action", "sparse target state"]])
+      .map((message, index) => ({
+        ...message,
+        turnIndex: 100 + index,
+      })),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: "What happened in step 50?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Action 50.*sparse target action/);
+  assert.match(section, /Observation 50.*sparse target state/);
+});
+
+test("buildTrajectoryAnalysisRecallSection rejects reverse-only quoted observation transitions", async () => {
+  const laterObservation = "later state with the source details";
+  const earlierObservation = "earlier state with the target details";
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [5, "first action", earlierObservation],
+      [10, "later action", laterObservation],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: `What sequence of actions would transform the state between the observation: "${laterObservation}" and the observation: "${earlierObservation}"?`,
+    maxChars: 4000,
+  });
+
+  assert.equal(section, "");
+});
+
+test("buildTrajectoryAnalysisRecallSection truncates within tiny budgets", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([[1, "look", "state-1"]]),
+  });
+  const header = "## Trajectory analysis";
+  const newline = "\n";
+  const maxChars = header.length + newline.length + 2;
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: "What actions were performed between step 1 and step 1?",
+    maxChars,
+  });
+
+  assert.ok(section.length <= maxChars);
+  assert.match(section, /^## Trajectory analysis\n/);
+  assert.equal(
+    await buildTrajectoryAnalysisRecallSection({
+      engine,
+      sessionId: "ama",
+      query: "What actions were performed between step 1 and step 1?",
+      maxChars: header.length,
+    }),
+    "",
+  );
 });
 
 test("buildExplicitCueRecallSection expands paired action and observation references", async () => {
@@ -844,4 +1088,21 @@ test("buildExplicitCueRecallSection stays silent when disabled by budget or no c
 
 function normalizeForSearch(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9:_-]+/g, " ").trim();
+}
+
+function makeTrajectoryMessages(
+  steps: Array<[number, string, string]>,
+): Message[] {
+  const messages: Message[] = [];
+  for (const [step, action, observation] of steps) {
+    messages.push({
+      role: "user",
+      content: `[Action ${step}]: ${action}`,
+    });
+    messages.push({
+      role: "assistant",
+      content: `[Observation ${step}]: ${observation}`,
+    });
+  }
+  return messages;
 }

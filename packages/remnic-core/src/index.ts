@@ -52,15 +52,18 @@ export {
 } from "./evidence-pack.js";
 export {
   buildExplicitCueRecallSection,
+  buildTrajectoryAnalysisRecallSection,
   collectExplicitTurnReferences,
   collectBenchmarkAnchorCues,
   collectLexicalCues,
   collectQuestionSlotCues,
   collectStructuredPlanCues,
   collectTemporalLexicalCues,
+  normalizeTurnExpansionEnd,
   type ExplicitCueRecallEngine,
   type ExplicitCueRecallOptions,
   type ExplicitTurnReference,
+  type TrajectoryAnalysisRecallOptions,
 } from "./explicit-cue-recall.js";
 
 // ---------------------------------------------------------------------------

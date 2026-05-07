@@ -19,6 +19,7 @@ export interface MemoryStats {
   totalMessages: number;
   totalSummaryNodes: number;
   maxDepth: number;
+  maxTurnIndex?: number;
 }
 
 export interface BenchResponse {
