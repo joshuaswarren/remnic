@@ -231,6 +231,7 @@ test("direct adapter recall expands search hits with adjacent stored results", a
 test("direct adapter archives stored messages into LCM once", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {
+      transcriptEnabled: true,
       extractionMinUserTurns: 999,
     },
   });
