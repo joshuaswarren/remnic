@@ -177,17 +177,26 @@ test("runtime namespace null does not count as hasRuntimeNamespace", () => {
   assert.equal(caps.hasRuntimeNamespace, false);
 });
 
-test("registrationMode 'setup-runtime' is passed through correctly", () => {
-  const api: Record<string, unknown> = {
-    on: () => {},
-    runtime: { version: "2026.3.22" },
-    registrationMode: "setup-runtime",
-  };
+test("modern registrationMode values are passed through correctly", () => {
+  for (const mode of [
+    "full",
+    "discovery",
+    "tool-discovery",
+    "setup-only",
+    "setup-runtime",
+    "cli-metadata",
+  ]) {
+    const api: Record<string, unknown> = {
+      on: () => {},
+      runtime: { version: "2026.3.22" },
+      registrationMode: mode,
+    };
 
-  const caps = detectSdkCapabilities(api);
+    const caps = detectSdkCapabilities(api);
 
-  assert.equal(caps.registrationMode, "setup-runtime");
-  assert.equal(caps.hasRegistrationMode, true);
+    assert.equal(caps.registrationMode, mode);
+    assert.equal(caps.hasRegistrationMode, true);
+  }
 });
 
 test("registerMemoryCapability detection when present", () => {

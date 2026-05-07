@@ -46,22 +46,6 @@ const OPENCLAW_MANIFEST_PATHS = [
   "packages/plugin-openclaw/openclaw.plugin.json",
   "packages/shim-openclaw-engram/openclaw.plugin.json",
 ];
-const EXPECTED_LIFECYCLE_HOOK_CONTRACTS = [
-  "after_compaction",
-  "after_tool_call",
-  "agent_end",
-  "before_agent_start",
-  "before_compaction",
-  "before_prompt_build",
-  "before_reset",
-  "before_tool_call",
-  "commands.list",
-  "llm_output",
-  "session_end",
-  "session_start",
-  "subagent_ended",
-  "subagent_spawning",
-];
 const TOOL_SOURCE_PATHS = [
   "src/tools.ts",
   "packages/plugin-openclaw/src/openclaw-tools/memory-search-tool.ts",
@@ -129,7 +113,7 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
     );
   });
 
-  test(`${manifestPath} declares OpenClaw adapter command, memory, service, and hook contracts`, () => {
+  test(`${manifestPath} keeps runtime declarations on supported manifest surfaces`, () => {
     const manifest = readManifest(manifestPath);
 
     assert.deepEqual(manifest.commandAliases, [
@@ -143,14 +127,19 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
       onCommands: ["remnic"],
       onCapabilities: ["tool", "hook"],
     });
-    assert.deepEqual(manifest.contracts?.commands, ["remnic"]);
-    assert.deepEqual(
-      [...(manifest.contracts?.hooks ?? [])].sort(),
-      EXPECTED_LIFECYCLE_HOOK_CONTRACTS,
-    );
-    assert.deepEqual(manifest.contracts?.memoryCapabilities, [manifest.id]);
-    assert.deepEqual(manifest.contracts?.memoryPromptSections, ["engram-memory"]);
-    assert.deepEqual(manifest.contracts?.services, [manifest.id]);
+    for (const deprecatedKey of [
+      "commands",
+      "hooks",
+      "memoryCapabilities",
+      "memoryPromptSections",
+      "services",
+    ]) {
+      assert.equal(
+        deprecatedKey in (manifest.contracts ?? {}),
+        false,
+        `${deprecatedKey} is no longer part of OpenClaw PluginManifestContracts`,
+      );
+    }
   });
 
   test(`${manifestPath} declares pre-runtime auth metadata for OpenAI-backed memory extraction`, () => {

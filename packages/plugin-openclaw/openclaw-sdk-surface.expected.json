@@ -40,8 +40,6 @@
     "session_start"
   ],
   "manifestContracts": [
-    "commands",
-    "hooks",
     "memoryEmbeddingProviders",
     "tools"
   ]

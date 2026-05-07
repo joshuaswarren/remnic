@@ -289,8 +289,14 @@ declare module "openclaw/plugin-sdk" {
     /** Register an additive memory prompt supplement. */
     registerMemoryPromptSupplement?: (builder: MemoryPromptSectionBuilder["build"] | ((...args: any[]) => any)) => void;
 
-    /** Registration mode: "full" | "setup-only" | "setup-runtime" (new SDK >=2026.3.22) */
-    registrationMode?: "full" | "setup-only" | "setup-runtime";
+    /** Registration mode: "full" | "discovery" | "tool-discovery" | "setup-only" | "setup-runtime" | "cli-metadata" (new SDK >=2026.3.22) */
+    registrationMode?:
+      | "full"
+      | "discovery"
+      | "tool-discovery"
+      | "setup-only"
+      | "setup-runtime"
+      | "cli-metadata";
 
     /** Runtime namespace (new SDK >=2026.3.22) */
     runtime?: OpenClawRuntime;

@@ -125,16 +125,22 @@ test("split-only SDKs receive runtime and flush-plan registrations without unifi
   });
 });
 
-test("setup-only mode does not register runtime hooks or services", async () => {
+test("non-runtime registration modes do not register runtime hooks or services", async () => {
   await withCapturedRegistration((plugin) => {
-    const capture = captureOpenClawRegistrationApi({
-      registrationMode: "setup-only",
-    });
+    for (const registrationMode of [
+      "discovery",
+      "tool-discovery",
+      "setup-only",
+      "setup-runtime",
+      "cli-metadata",
+    ] as const) {
+      const capture = captureOpenClawRegistrationApi({ registrationMode });
 
-    plugin.register(capture.api);
+      plugin.register(capture.api);
 
-    assert.deepEqual(capture.hooks(), []);
-    assert.deepEqual(capture.registrations(), []);
+      assert.deepEqual(capture.hooks(), [], registrationMode);
+      assert.deepEqual(capture.registrations(), [], registrationMode);
+    }
   });
 });
 

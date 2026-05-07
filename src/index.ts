@@ -5,7 +5,11 @@ import { createRequire } from "node:module";
 import { parseConfig } from "./config.js";
 import { initLogger } from "./logger.js";
 import { log } from "./logger.js";
-import { detectSdkCapabilities, type SdkCapabilities } from "./sdk-compat.js";
+import {
+  detectSdkCapabilities,
+  type OpenClawRegistrationMode,
+  type SdkCapabilities,
+} from "./sdk-compat.js";
 import {
   Orchestrator,
   sanitizeSessionKeyForFilename,
@@ -588,6 +592,20 @@ function tryDefinePluginEntry(def: {
 /** SDK capabilities detected at register() time — available to later tasks. */
 let sdkCaps: SdkCapabilities | undefined;
 
+const NON_RUNTIME_REGISTRATION_MODES = new Set<OpenClawRegistrationMode>([
+  "discovery",
+  "tool-discovery",
+  "setup-only",
+  "setup-runtime",
+  "cli-metadata",
+]);
+
+function isNonRuntimeRegistrationMode(
+  mode: SdkCapabilities["registrationMode"],
+): boolean {
+  return typeof mode === "string" && NON_RUNTIME_REGISTRATION_MODES.has(mode);
+}
+
 const pluginDefinition = {
   id: PLUGIN_ID,
   name: "Remnic (Local Memory)",
@@ -620,6 +638,21 @@ const pluginDefinition = {
     // Initialize logger early (debug off until config is parsed).
     initLogger(api.logger, false);
 
+    // Detect SDK capabilities for dual-path hook registration.
+    sdkCaps = detectSdkCapabilities(api as unknown as Record<string, unknown>);
+    log.info(
+      `SDK detection: version=${sdkCaps.sdkVersion}, beforePromptBuild=${sdkCaps.hasBeforePromptBuild}, memoryPromptSection=${sdkCaps.hasRegisterMemoryPromptSection}, memoryCapability=${sdkCaps.hasRegisterMemoryCapability}, typedHooks=${sdkCaps.hasTypedHooks}`,
+    );
+
+    // Metadata/setup loaders invoke register() to inspect static surfaces. Keep
+    // those paths inert: no migrations, config reads, hooks, services, or tools.
+    if (isNonRuntimeRegistrationMode(sdkCaps.registrationMode)) {
+      log.info(
+        `registrationMode=${sdkCaps.registrationMode} — skipping runtime initialization`,
+      );
+      return;
+    }
+
     const disableRegisterMigration =
       readEnvVar("REMNIC_DISABLE_REGISTER_MIGRATION") === "1" ||
       readEnvVar("OPENCLAW_ENGRAM_DISABLE_REGISTER_MIGRATION") === "1";
@@ -632,18 +665,6 @@ const pluginDefinition = {
           log.warn(`register migration failed: ${error}`);
         }));
       void migrationPromise;
-    }
-
-    // Detect SDK capabilities for dual-path hook registration.
-    sdkCaps = detectSdkCapabilities(api as unknown as Record<string, unknown>);
-    log.info(
-      `SDK detection: version=${sdkCaps.sdkVersion}, beforePromptBuild=${sdkCaps.hasBeforePromptBuild}, memoryPromptSection=${sdkCaps.hasRegisterMemoryPromptSection}, memoryCapability=${sdkCaps.hasRegisterMemoryCapability}, typedHooks=${sdkCaps.hasTypedHooks}`,
-    );
-
-    // Skip heavy initialization in setup-only mode (new SDK channel setup flows)
-    if (sdkCaps.registrationMode === "setup-only") {
-      log.info("registrationMode=setup-only — skipping full initialization");
-      return;
     }
 
     // Workaround: Load config from file since gateway may not pass it.

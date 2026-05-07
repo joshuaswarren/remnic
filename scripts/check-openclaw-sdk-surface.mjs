@@ -21,6 +21,12 @@ const PREFERRED_SDK_SURFACE_FILES = [
   "dist/plugin-sdk/src/plugins/manifest-registry.d.ts",
   "dist/plugin-sdk/src/plugins/memory-embedding-providers.d.ts",
   "dist/plugin-sdk/src/plugins/compaction-provider.d.ts",
+  "src/plugins/types.ts",
+  "src/plugins/hook-types.ts",
+  "src/plugins/manifest.ts",
+  "src/plugins/manifest-registry.ts",
+  "src/plugins/memory-embedding-providers.ts",
+  "src/plugins/compaction-provider.ts",
 ];
 const EXPECTED_REGISTRAR_PREFIXES = [
   "registerCli",
@@ -39,13 +45,7 @@ const EXPECTED_HOOK_PREFIXES = [
   "llm_",
   "session_",
 ];
-const EXPECTED_CONTRACT_PREFIXES = [
-  "commands",
-  "hooks",
-  "memory",
-  "services",
-  "tools",
-];
+const EXPECTED_CONTRACT_PREFIXES = ["memory", "tools"];
 
 const args = parseArgs(process.argv.slice(2));
 const expectedPath = resolveUserPath(args.expected ?? defaultExpectedPath);
@@ -158,7 +158,7 @@ async function inspectOpenClawSurface(root) {
   const files = await collectFiles(root);
   if (files.length === 0) {
     throw new Error(
-      `OpenClaw SDK surface check failed: no SDK declaration files found under ${root}. Build OpenClaw or pass --package-root to a package containing dist/plugin-sdk declarations.`,
+      `OpenClaw SDK surface check failed: no SDK declaration or source files found under ${root}. Build OpenClaw or pass --package-root to a package containing dist/plugin-sdk declarations.`,
     );
   }
   const manifestFiles = files.filter((file) =>
@@ -182,7 +182,9 @@ async function inspectOpenClawSurface(root) {
 
   for (const file of contractFiles) {
     const text = await readFile(file, "utf-8").catch(() => "");
-    for (const match of text.matchAll(/\b([A-Za-z][A-Za-z0-9]+Providers|tools|commands|hooks|services|memory[A-Za-z0-9]+)\b/g)) {
+    const contractsText = extractPluginManifestContractsBlock(text);
+    if (!contractsText) continue;
+    for (const match of contractsText.matchAll(/\b([A-Za-z][A-Za-z0-9]+Providers|tools|commands|hooks|services|memory[A-Za-z0-9]+)\b/g)) {
       const value = match[1];
       if (looksLikeManifestContract(value)) manifestContracts.add(value);
     }
@@ -208,6 +210,26 @@ function looksLikeHookName(value) {
 
 function looksLikeManifestContract(value) {
   return EXPECTED_CONTRACT_PREFIXES.some((prefix) => value.startsWith(prefix));
+}
+
+function extractPluginManifestContractsBlock(text) {
+  const match =
+    /\b(?:export\s+)?(?:interface|type)\s+PluginManifestContracts\b[^={]*[={]/.exec(text);
+  if (!match) return null;
+
+  const openBraceIndex = text.indexOf("{", match.index);
+  if (openBraceIndex === -1) return null;
+
+  let depth = 0;
+  for (let index = openBraceIndex; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(openBraceIndex + 1, index);
+    }
+  }
+  return null;
 }
 
 async function collectFiles(root) {

@@ -1,4 +1,11 @@
 type RegistrationArgs = unknown[];
+type OpenClawRegistrationMode =
+  | "full"
+  | "discovery"
+  | "tool-discovery"
+  | "setup-only"
+  | "setup-runtime"
+  | "cli-metadata";
 
 export interface CapturedOpenClawApi {
   api: Record<string, unknown>;
@@ -39,7 +46,7 @@ export function captureOpenClawRegistrationApi(options: {
   label?: string;
   pluginConfig?: Record<string, unknown>;
   config?: Record<string, unknown>;
-  registrationMode?: "full" | "setup-only" | "setup-runtime";
+  registrationMode?: OpenClawRegistrationMode;
   runtime?: Record<string, unknown>;
   disabledMethods?: string[];
   logger?: Record<"debug" | "info" | "warn" | "error", (...args: unknown[]) => void>;

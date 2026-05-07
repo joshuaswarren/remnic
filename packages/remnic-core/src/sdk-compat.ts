@@ -26,8 +26,17 @@ export interface SdkCapabilities {
   /** Detected SDK version string, or "legacy" */
   sdkVersion: string;
   /** api.registrationMode value when present */
-  registrationMode: "full" | "setup-only" | "setup-runtime" | undefined;
+  registrationMode: OpenClawRegistrationMode | undefined;
 }
+
+export type OpenClawRegistrationMode =
+  | "full"
+  | "discovery"
+  | "tool-discovery"
+  | "setup-only"
+  | "setup-runtime"
+  | "cli-metadata"
+  | (string & {});
 
 export function detectSdkCapabilities(api: Record<string, unknown>): SdkCapabilities {
   const hasRegisterMemoryPromptSection =

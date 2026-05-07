@@ -120,7 +120,7 @@ test("OpenClaw SDK surface check fails clearly when SDK declarations are missing
     const result = runCheck(["--package-root", tempRoot]);
 
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /no SDK declaration files found/);
+    assert.match(result.stderr, /no SDK declaration or source files found/);
     assert.doesNotMatch(result.stderr, /registerMemoryInternalHelper/);
   } finally {
     fs.rmSync(tempRoot, { force: true, recursive: true });
@@ -188,8 +188,6 @@ const expectedHooks = [
   "session_start",
 ];
 const expectedManifestContracts = [
-  "commands",
-  "hooks",
   "memoryEmbeddingProviders",
   "tools",
 ];
@@ -259,11 +257,15 @@ export type HookName =
   | "session_end"
   | "session_start";
 
-export interface PluginContracts {
+export interface PluginManifestContracts {
   commands?: string[];
   hooks?: HookName[];
   memoryEmbeddingProviders?: string[];
   tools?: string[];
+}
+
+export interface LegacyRuntimeMetadata {
+  memoryCapabilities?: string[];
 }
 `,
   );

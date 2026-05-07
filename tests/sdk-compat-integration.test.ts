@@ -7,7 +7,7 @@
  * - New SDK api: gets before_prompt_build, session/tool/llm/subagent hooks,
  *   registerMemoryPromptSection, and service registration.
  * - Legacy SDK api: gets before_agent_start and core hooks only.
- * - Setup-only mode: skips all registration entirely.
+ * - Non-runtime registration modes: skip all registration entirely.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -255,6 +255,7 @@ test("new SDK api gets all new hooks + memory section", async () => {
     const { default: plugin } = await import("../src/index.js");
 
     const api = buildNewSdkApi("new-sdk-test");
+    api.pluginConfig = { initGateTimeoutMs: 30_000 };
     plugin.register(api as any);
 
     // When registerMemoryPromptSection is available (new SDK), before_prompt_build
@@ -709,44 +710,48 @@ test("tryDefinePluginEntry: fallback produces correct plugin shape when SDK modu
 });
 
 // ============================================================================
-// Test 4: Setup-only mode skips all registration
+// Test 4: Non-runtime registration modes skip all registration
 // ============================================================================
-test("setup-only mode skips all registration", async () => {
+test("non-runtime registration modes skip all registration", async () => {
   resetGlobals();
   const previousDisableMigration = disableRegisterMigrationForTest();
   try {
     const { default: plugin } = await import("../src/index.js");
 
-    const api = buildNewSdkApi("setup-only-test");
-    api.registrationMode = "setup-only";
-    plugin.register(api as any);
+    for (const mode of [
+      "discovery",
+      "tool-discovery",
+      "setup-only",
+      "setup-runtime",
+      "cli-metadata",
+    ]) {
+      const api = buildNewSdkApi(`${mode}-test`);
+      api.registrationMode = mode;
+      plugin.register(api as any);
 
-    // No hooks should be registered
-    assert.equal(
-      api._registeredHooks.length,
-      0,
-      `expected zero hooks in setup-only mode, got: ${api._registeredHooks.join(", ")}`,
-    );
+      assert.equal(
+        api._registeredHooks.length,
+        0,
+        `expected zero hooks in ${mode} mode, got: ${api._registeredHooks.join(", ")}`,
+      );
 
-    // No tools registered
-    assert.equal(
-      api._registeredToolCount,
-      0,
-      "expected zero tools in setup-only mode",
-    );
+      assert.equal(
+        api._registeredToolCount,
+        0,
+        `expected zero tools in ${mode} mode`,
+      );
 
-    // No services registered
-    assert.equal(
-      api._registeredServiceIds.length,
-      0,
-      "expected zero services in setup-only mode",
-    );
+      assert.equal(
+        api._registeredServiceIds.length,
+        0,
+        `expected zero services in ${mode} mode`,
+      );
 
-    // registerMemoryPromptSection should not have been called
-    assert.ok(
-      !api._memoryPromptSectionRegistered,
-      "registerMemoryPromptSection should NOT be called in setup-only mode",
-    );
+      assert.ok(
+        !api._memoryPromptSectionRegistered,
+        `registerMemoryPromptSection should NOT be called in ${mode} mode`,
+      );
+    }
   } finally {
     await awaitPendingMigration();
     restoreRegisterMigrationEnv(previousDisableMigration);

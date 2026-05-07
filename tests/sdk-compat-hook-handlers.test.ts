@@ -4544,16 +4544,24 @@ test("capability promptBuilder does not fall back to stale Codex thread cache af
   );
 });
 
-test("registrationMode setup-only registers zero handlers", async () => {
+test("non-runtime registration modes register zero handlers", async () => {
   const { default: plugin } = await import("../src/index.js");
-  const api = buildHandlerCapturingApi("setup-only-test", {
-    registrationMode: "setup-only",
-  });
-  plugin.register(api as any);
+  for (const registrationMode of [
+    "discovery",
+    "tool-discovery",
+    "setup-only",
+    "setup-runtime",
+    "cli-metadata",
+  ]) {
+    const api = buildHandlerCapturingApi(`${registrationMode}-test`, {
+      registrationMode,
+    });
+    plugin.register(api as any);
 
-  assert.equal(
-    api.handlers.size,
-    0,
-    `expected zero handlers in setup-only mode, got: ${[...api.handlers.keys()].join(", ")}`,
-  );
+    assert.equal(
+      api.handlers.size,
+      0,
+      `expected zero handlers in ${registrationMode} mode, got: ${[...api.handlers.keys()].join(", ")}`,
+    );
+  }
 });

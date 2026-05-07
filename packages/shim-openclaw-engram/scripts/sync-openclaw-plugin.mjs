@@ -17,11 +17,6 @@ const packageJson = JSON.parse(await readFile(packageJsonPath, "utf-8"));
 const manifest = JSON.parse(raw);
 manifest.id = "openclaw-engram";
 manifest.version = packageJson.version;
-manifest.contracts = {
-  ...manifest.contracts,
-  memoryCapabilities: [manifest.id],
-  services: [manifest.id],
-};
 manifest.providerAuthChoices = [
   {
     provider: "openai",
