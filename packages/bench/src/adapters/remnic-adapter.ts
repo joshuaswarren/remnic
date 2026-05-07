@@ -118,6 +118,19 @@ type OrchestratorTeardownView = {
   qmdMaintenanceInFlight?: boolean;
 };
 
+type OrchestratorDrainDiagnosticsView = {
+  lcmEngine: {
+    observeQueueDepth: number;
+    observeQueueInFlightCount: number;
+  } | null;
+  extractionQueue?: unknown[];
+  queueProcessing?: boolean;
+  consolidationInFlight?: boolean;
+  qmdMaintenancePending?: boolean;
+  qmdMaintenanceInFlight?: boolean;
+  tierMigrationInFlight?: boolean;
+};
+
 const BENCH_TEARDOWN_DEFERRED_READY_WAIT_MS = 500;
 const DEFAULT_BENCH_DRAIN_TIMEOUT_MS = 5 * 60_000;
 const CORE_EXPLICIT_CUE_MAX_CHARS = 18_000;
@@ -448,7 +461,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           });
         }
 
-        await state.orchestrator.ingestReplayBatch(replayTurns);
+        await state.orchestrator.ingestReplayBatch(replayTurns, {
+          archiveLcm: false,
+        });
       },
 
       async recall(sessionId: string, query: string, budgetChars?: number): Promise<string> {
@@ -681,7 +696,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         const timeout = new Promise<void>((_, reject) => {
           timer = setTimeout(() => {
             abortController.abort();
-            reject(new Error(`drain() timed out after ${drainTimeoutMs}ms`));
+            reject(
+              new Error(
+                `drain() timed out after ${drainTimeoutMs}ms (${describeDrainState(state.orchestrator)})`,
+              ),
+            );
           }, drainTimeoutMs);
         });
         try {
@@ -693,10 +712,14 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 state.orchestrator.waitForConsolidationIdle(drainTimeoutMs),
               ]);
               if (!extractionIdle) {
-                throw new Error("drain() timed out waiting for extraction idle");
+                throw new Error(
+                  `drain() timed out waiting for extraction idle (${describeDrainState(state.orchestrator)})`,
+                );
               }
               if (!consolidationIdle) {
-                throw new Error("drain() timed out waiting for consolidation idle");
+                throw new Error(
+                  `drain() timed out waiting for consolidation idle (${describeDrainState(state.orchestrator)})`,
+                );
               }
             })().catch((err: unknown) => {
               if (abortController.signal.aborted) return;
@@ -725,6 +748,25 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
 export const createLightweightAdapter = createAdapterFactory("lightweight");
 export const createRemnicAdapter = createAdapterFactory("direct");
+
+function describeDrainState(orchestrator: Orchestrator): string {
+  const view = orchestrator as unknown as OrchestratorDrainDiagnosticsView;
+  const lcmDepth = view.lcmEngine?.observeQueueDepth ?? 0;
+  const lcmInFlight = view.lcmEngine?.observeQueueInFlightCount ?? 0;
+  const extractionQueueDepth = Array.isArray(view.extractionQueue)
+    ? view.extractionQueue.length
+    : 0;
+  return [
+    `lcmDepth=${lcmDepth}`,
+    `lcmInFlight=${lcmInFlight}`,
+    `extractionProcessing=${view.queueProcessing === true}`,
+    `extractionQueueDepth=${extractionQueueDepth}`,
+    `consolidationInFlight=${view.consolidationInFlight === true}`,
+    `qmdMaintenancePending=${view.qmdMaintenancePending === true}`,
+    `qmdMaintenanceInFlight=${view.qmdMaintenanceInFlight === true}`,
+    `tierMigrationInFlight=${view.tierMigrationInFlight === true}`,
+  ].join(", ");
+}
 
 function shouldUseCoreMemoryPipeline(
   mode: BenchAdapterMode,

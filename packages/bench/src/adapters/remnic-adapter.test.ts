@@ -228,6 +228,35 @@ test("direct adapter recall expands search hits with adjacent stored results", a
   }
 });
 
+test("direct adapter archives stored messages into LCM once", async () => {
+  const adapter = await createRemnicAdapter({
+    configOverrides: {
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    await adapter.store("archive-once-session", [
+      {
+        role: "user",
+        content: "First archived turn.",
+      },
+      {
+        role: "assistant",
+        content: "Second archived turn.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const stats = await adapter.getStats("archive-once-session");
+
+    assert.equal(stats.totalMessages, 2);
+    assert.equal(stats.maxTurnIndex, 1);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("adapter recall front-loads exact step references from the session trace", async () => {
   const adapter = await createRemnicAdapter();
 
