@@ -1,4 +1,5 @@
 import type { BenchResponder } from "./adapters/types.js";
+import { TRAJECTORY_RETRY_SECTION_TITLE_SET } from "./recall-sections.js";
 
 export type BenchmarkAnswerMode = "default" | "strict" | "agentic-memory";
 
@@ -263,13 +264,6 @@ function isSentencePunctuation(code: number): boolean {
   return code === 33 || code === 46 || code === 63;
 }
 
-const STRUCTURED_TRAJECTORY_SECTION_TITLES = new Set([
-  "Explicit Cue Evidence",
-  "Remnic recall pipeline",
-  "Search evidence",
-  "Raw messages",
-]);
-
 function hasTrajectoryMarkerInStructuredSection(text: string): boolean {
   const lines = text
     .replaceAll("\r\n", "\n")
@@ -280,7 +274,7 @@ function hasTrajectoryMarkerInStructuredSection(text: string): boolean {
   for (const line of lines) {
     const heading = parseLevelTwoHeading(line);
     if (heading !== undefined) {
-      inStructuredSection = STRUCTURED_TRAJECTORY_SECTION_TITLES.has(heading);
+      inStructuredSection = TRAJECTORY_RETRY_SECTION_TITLE_SET.has(heading);
       continue;
     }
     if (!inStructuredSection) {

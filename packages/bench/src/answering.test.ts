@@ -388,6 +388,16 @@ test("unknown and explicit trajectory evidence helpers are conservative", () => 
   );
   assert.equal(
     hasExplicitTrajectoryEvidence(
+      [
+        "## Search evidence",
+        "[ama-ep-1, turn 6, user]: The note quoted an example.",
+        "[Action 3]: up",
+      ].join("\n"),
+    ),
+    false,
+  );
+  assert.equal(
+    hasExplicitTrajectoryEvidence(
       "##\tExplicit Cue Evidence\r\n[Observation 12]: the key moved closer",
     ),
     true,
