@@ -46,6 +46,18 @@ test("runBenchmark executes taxonomy-accuracy in quick mode", async () => {
   assert.equal(result.results.aggregates.exact_match.mean, 1);
 });
 
+test("runBenchmark keeps generic office facts in the fallback taxonomy bucket", async () => {
+  const result = await runBenchmark("taxonomy-accuracy", {
+    mode: "full",
+    system: adapter,
+  });
+
+  const task = result.results.tasks.find((entry) => entry.taskId === "general-fact");
+  assert.ok(task);
+  assert.equal(task.actual, "general-facts");
+  assert.equal(result.results.aggregates.exact_match.mean, 1);
+});
+
 test("runBenchmark executes extraction-judge-calibration in quick mode", async () => {
   const result = await runBenchmark("extraction-judge-calibration", {
     mode: "quick",
@@ -83,8 +95,8 @@ test("runBenchmark executes retrieval-personalization in quick mode", async () =
   assert.equal(result.meta.benchmarkTier, "remnic");
   assert.equal(result.results.tasks.length, 4);
   assert.equal(result.results.aggregates["clean.p_at_1"].mean, 1);
-  assert.equal(result.results.aggregates["dirty.p_at_1"].mean, 0.5);
-  assert.equal(result.results.aggregates["dirty_penalty.p_at_1"].mean, 0.5);
+  assert.equal(result.results.aggregates["dirty.p_at_1"].mean, 1);
+  assert.equal(result.results.aggregates["dirty_penalty.p_at_1"].mean, 0);
 });
 
 test("runBenchmark applies retrieval-personalization limit as an exact task cap", async () => {
@@ -97,6 +109,18 @@ test("runBenchmark applies retrieval-personalization limit as an exact task cap"
   assert.equal(result.results.tasks.length, 1);
   assert.equal(result.results.tasks[0]?.taskId, "clean:alex-scope-q3-launch");
   assert.equal(result.results.aggregates["dirty_penalty.p_at_1"], undefined);
+});
+
+test("runBenchmark treats retrospective decision questions as non-initiating procedural recall", async () => {
+  const result = await runBenchmark("procedural-recall", {
+    mode: "full",
+    system: adapter,
+  });
+
+  const task = result.results.tasks.find((entry) => entry.taskId === "intent:memory-question");
+  assert.ok(task);
+  assert.equal(task.actual, "false");
+  assert.equal(result.results.aggregates.task_initiation_gate.mean, 1);
 });
 
 test("runBenchmark executes retrieval-temporal in quick mode", async () => {

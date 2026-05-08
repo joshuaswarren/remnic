@@ -17,9 +17,10 @@ const DEFAULT_CATEGORY_ID = "facts";
  * 1. Find all taxonomy categories whose `memoryCategories` include
  *    the given `memoryCategory`.
  * 2. If exactly one match, return it with confidence 1.0.
- * 3. If multiple matches, pick the one with the lowest priority
- *    number (highest precedence). Apply keyword heuristics from
- *    filing rules as a secondary signal.
+ * 3. If multiple matches, prefer the strongest exact-token keyword
+ *    overlap from filing rules. Use priority only as a tie-breaker.
+ *    If no filing rules match, choose the explicit/default fallback
+ *    category instead of letting low-priority generic terms win.
  * 4. If no match, fall back to the "facts" category (or first
  *    category if "facts" is absent) with low confidence.
  * 5. Always populate `alternatives` with other plausible categories.
@@ -29,7 +30,7 @@ export function resolveCategory(
   memoryCategory: MemoryCategory,
   taxonomy: Taxonomy,
 ): ResolverDecision {
-  const contentLower = content.toLowerCase();
+  const contentTokens = tokenizeKeywordText(content);
 
   // Step 1: find matching categories
   const matches = taxonomy.categories.filter((cat) =>
@@ -82,7 +83,7 @@ export function resolveCategory(
   // Multiple matches — use filing rule keyword heuristics + priority
   const scored = matches.map((cat) => ({
     cat,
-    keywordScore: computeKeywordScore(contentLower, cat),
+    keywordScore: computeKeywordScoreForTokens(contentTokens, cat),
   }));
 
   // Sort by keyword score descending, then priority ascending (lower wins)
@@ -91,7 +92,13 @@ export function resolveCategory(
     return a.cat.priority - b.cat.priority;
   });
 
-  const best = scored[0]!;
+  const topScored = scored[0]!;
+  const best = topScored.keywordScore > 0
+    ? topScored
+    : {
+        cat: selectFallbackCategory(matches) ?? topScored.cat,
+        keywordScore: 0,
+      };
   const runnerUp = scored[1];
 
   // Confidence is higher when keyword match clearly differentiates
@@ -110,7 +117,7 @@ export function resolveCategory(
   const reason =
     best.keywordScore > 0
       ? `Filing rules for "${best.cat.name}" matched content keywords (priority ${best.cat.priority})`
-      : `Priority tie-break: "${best.cat.name}" has lowest priority number (${best.cat.priority})`;
+      : `No filing rules matched content keywords; using fallback category "${best.cat.name}"`;
 
   return {
     categoryId: best.cat.id,
@@ -124,21 +131,54 @@ export function resolveCategory(
  * Compute a simple keyword overlap score between content and
  * a category's filing rules + description.
  */
-function computeKeywordScore(contentLower: string, cat: TaxonomyCategory): number {
+function computeKeywordScoreForTokens(contentTokens: Set<string>, cat: TaxonomyCategory): number {
   let score = 0;
   const ruleText = [...cat.filingRules, cat.description]
     .join(" ")
     .toLowerCase();
 
-  // Extract meaningful words (3+ chars) from the rule text
-  const keywords = ruleText
-    .split(/[^a-z0-9]+/)
-    .filter((w) => w.length >= 3);
+  const keywords = tokenizeKeywordText(ruleText);
 
   for (const kw of keywords) {
-    if (contentLower.includes(kw)) {
+    if (contentTokens.has(kw)) {
       score += 1;
     }
   }
   return score;
 }
+
+function tokenizeKeywordText(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map((word) => word.trim())
+      .filter((word) => word.length >= 3 && !TAXONOMY_KEYWORD_STOPWORDS.has(word)),
+  );
+}
+
+function selectFallbackCategory(
+  categories: readonly TaxonomyCategory[],
+): TaxonomyCategory | undefined {
+  return categories.find((cat) => cat.id === DEFAULT_CATEGORY_ID) ??
+    categories.find((cat) => {
+      const text = `${cat.id} ${cat.name} ${cat.description} ${cat.filingRules.join(" ")}`.toLowerCase();
+      return /\b(general|fallback)\b/.test(text);
+    });
+}
+
+const TAXONOMY_KEYWORD_STOPWORDS = new Set([
+  "about",
+  "all",
+  "and",
+  "are",
+  "for",
+  "from",
+  "has",
+  "into",
+  "not",
+  "the",
+  "this",
+  "was",
+  "with",
+]);

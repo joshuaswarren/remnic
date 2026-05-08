@@ -163,9 +163,23 @@ function tokenize(value: string): Set<string> {
     value
       .toLowerCase()
       .split(/[^a-z0-9]+/g)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 3),
+      .map(normalizeRetrievalToken)
+      .filter((token): token is string => token !== undefined),
   );
+}
+
+function normalizeRetrievalToken(token: string): string | undefined {
+  const trimmed = token.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  if (trimmed.length < 3 && !/[0-9]/.test(trimmed)) {
+    return undefined;
+  }
+  if (/^decid(?:e|es|ed|ing)$/.test(trimmed) || /^decisions?$/.test(trimmed)) {
+    return "decide";
+  }
+  return trimmed;
 }
 
 function schemaPenalty(queryTokens: Set<string>, page: SchemaTierPage): number {
@@ -177,7 +191,7 @@ function schemaPenalty(queryTokens: Set<string>, page: SchemaTierPage): number {
   if (page.timeline.length === 0) penalty += 1;
   if (page.type === "project" && page.seeAlso.length < 2) penalty += 1.5;
   if ((queryTokens.has("decide") || queryTokens.has("decision")) && !page.frontmatter.type) {
-    penalty += 7;
+    penalty += 3;
   }
 
   return penalty;

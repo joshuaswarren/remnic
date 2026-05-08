@@ -28,6 +28,9 @@ const ENTITY_PATTERNS: Array<{ re: RegExp; entityType: string }> = [
 const TASK_INITIATION_RE =
   /\b(ship(?:ping|ped)?|deploy(?:ing|ed)?|release|publish|open(?:ing)?\s+(?:a\s+)?(?:pr|pull\s+request)|merge(?:ing)?\s+(?:the\s+)?(?:pr|pull\s+request)|run\s+(?:the\s+)?tests?|start(?:ing)?\s+(?:work|on|the)|kick\s+off|implement(?:ing|ed)?|let's\s+(?:ship|deploy|release|publish|open|run|merge|implement|fix|patch|build|start|do|get|put|wire|hook|land|roll)\b|going\s+to\s+(?:ship|deploy|release|open|run|merge)|need\s+to\s+(?:ship|deploy|run|open|merge|test)|fix(?:ing|ed)?\s+(?:(?:the|a)\s+)?(?:\w+\s+){0,4}(?:bug|build)\b|patch(?:ing|ed)?|build(?:ing)?\s+(?:and\s+)?(?:ship|deploy))\b/i;
 
+const MEMORY_LOOKUP_RE =
+  /^(?:what|when|where|who|which|why|how|did)\b/i;
+
 function normalizeTextInput(input: unknown): string {
   return typeof input === "string" ? input : "";
 }
@@ -39,7 +42,7 @@ export function inferIntentFromText(text: string): MemoryIntent {
   const entityTypes = Array.from(
     new Set(ENTITY_PATTERNS.filter((p) => p.re.test(safeText)).map((p) => p.entityType)),
   );
-  const taskInitiation = TASK_INITIATION_RE.test(safeText);
+  const taskInitiation = !isMemoryLookupPrompt(safeText) && TASK_INITIATION_RE.test(safeText);
 
   return {
     goal,
@@ -51,6 +54,12 @@ export function inferIntentFromText(text: string): MemoryIntent {
 
 export function isTaskInitiationIntent(intent: MemoryIntent): boolean {
   return intent.taskInitiation === true;
+}
+
+function isMemoryLookupPrompt(text: string): boolean {
+  const trimmed = text.trim();
+  return MEMORY_LOOKUP_RE.test(trimmed) ||
+    /\b(?:previous|earlier|last week|last time|remember|recall|what did we decide)\b/i.test(trimmed);
 }
 
 export function intentCompatibilityScore(queryIntent: MemoryIntent, memoryIntent: MemoryIntent): number {

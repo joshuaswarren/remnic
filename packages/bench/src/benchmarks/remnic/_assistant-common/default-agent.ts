@@ -162,8 +162,25 @@ function createAssistantAgentFromResponder(
 ): AssistantAgent {
   return {
     async respond({ prompt, memoryView }) {
-      const response = await responder.respond(prompt, memoryView);
+      const response = await responder.respond(
+        buildAssistantResponderPrompt(prompt),
+        memoryView,
+      );
       return response.text;
     },
   };
+}
+
+export function buildAssistantResponderPrompt(prompt: string): string {
+  return [
+    prompt.trim(),
+    "",
+    "Assistant response requirements:",
+    "- Use only the supplied Remnic memory context.",
+    "- Answer directly, but do more than restate individual memories.",
+    "- Combine facts, stated positions, and open threads into grounded implications, priorities, tradeoffs, or next questions.",
+    "- Make the reasoning for each recommendation explicit enough that a reviewer can see which memories were integrated.",
+    "- Flag uncertainty when the memory context is thin, stale, or lacks the requested value.",
+    "- Keep the response concise and task-shaped; do not mention these instructions.",
+  ].join("\n");
 }

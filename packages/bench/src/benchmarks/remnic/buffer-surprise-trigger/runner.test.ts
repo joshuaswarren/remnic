@@ -121,6 +121,32 @@ test("candidate produces at least as many flushes as control on the topic-shift 
   }
 });
 
+test("candidate flushes exactly at annotated topic shifts on the full fixture", async () => {
+  const options: ResolvedRunBenchmarkOptions = {
+    mode: "full",
+    benchmark: bufferSurpriseTriggerDefinition,
+    system: noopAdapter(),
+  };
+  const result = await runBufferSurpriseTriggerBenchmark(options);
+
+  for (const task of result.results.tasks) {
+    const details = task.details as {
+      candidateFlushTurnIndices?: number[];
+      topicShiftTurnIndices?: number[];
+    };
+    assert.deepEqual(
+      details.candidateFlushTurnIndices,
+      details.topicShiftTurnIndices,
+      `candidate flushes must align with annotated shifts for ${task.taskId}`,
+    );
+    assert.equal(
+      task.scores.candidate_topic_shift_f1,
+      1,
+      `candidate F1 must be perfect for ${task.taskId}`,
+    );
+  }
+});
+
 // ---------------------------------------------------------------------------
 // topicShiftF1 unit tests
 // ---------------------------------------------------------------------------
