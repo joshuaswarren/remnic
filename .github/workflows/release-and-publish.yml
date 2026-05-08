@@ -451,7 +451,7 @@ jobs:
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
           CLAWHUB_PACKAGE_NAME: "@remnic/plugin-openclaw"
-          CLAWHUB_OWNER: "joshuaswarren"
+          CLAWHUB_OWNER: "remnic"
         run: |
           if [ -z "${CLAWHUB_TOKEN:-}" ]; then
             echo "::notice title=ClawHub publish skipped::CLAWHUB_TOKEN secret is not configured."
