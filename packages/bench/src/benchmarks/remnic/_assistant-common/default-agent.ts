@@ -172,8 +172,9 @@ function createAssistantAgentFromResponder(
 }
 
 export function buildAssistantResponderPrompt(prompt: string): string {
+  const trimmedPrompt = prompt.trim();
   return [
-    prompt.trim(),
+    trimmedPrompt,
     "",
     "Assistant response requirements:",
     "- Use only the supplied Remnic memory context.",
@@ -184,6 +185,20 @@ export function buildAssistantResponderPrompt(prompt: string): string {
     "- Make each recommendation traceable to two or more relevant memory items when the context supports it.",
     "- Flag uncertainty when the memory context is thin, stale, missing dates, or lacks the requested value.",
     "- Avoid unsupported demographic details, pronouns, motives, or preferences.",
+    ...buildPromptSpecificRequirements(trimmedPrompt),
     "- Keep the response concise and task-shaped; do not mention these instructions.",
   ].join("\n");
+}
+
+function buildPromptSpecificRequirements(prompt: string): string[] {
+  const lowered = prompt.toLowerCase();
+  if (
+    (lowered.includes("open question") || lowered.includes("expects")) &&
+    (lowered.includes("meeting") || lowered.includes("conversation"))
+  ) {
+    return [
+      "- For open-question recall, answer the person-specific expected question and connect it to any settled stance that constrains the answer.",
+    ];
+  }
+  return [];
 }

@@ -14,3 +14,12 @@ test("buildAssistantResponderPrompt preserves prompt and asks for grounded synth
   assert.match(prompt, /Avoid unsupported demographic details/);
   assert.match(prompt, /Flag uncertainty/);
 });
+
+test("buildAssistantResponderPrompt adds open-question recall guidance", () => {
+  const prompt = buildAssistantResponderPrompt(
+    "I'm meeting Priya. What open questions does she expect me to answer?",
+  );
+
+  assert.match(prompt, /person-specific expected question/);
+  assert.match(prompt, /settled stance that constrains the answer/);
+});
