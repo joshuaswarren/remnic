@@ -300,6 +300,208 @@ test("AMA-Bench failed tasks retain episode metadata for leaderboard export", as
   }
 });
 
+test("AMA-Bench adds checkpoint recall hints for duplicate inventory questions", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-ama-bench-"));
+  const datasetPath = path.join(tempDir, "open_end_qa_set.jsonl");
+  const recallQueries: string[] = [];
+  const inventoryQuestion =
+    "What changes occurred to the inventory throughout the trajectory and at which steps?";
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify({
+        episode_id: 91,
+        task: "Duplicate inventory fixture",
+        task_type: "alfworld",
+        domain: "EMBODIED_AI",
+        success: true,
+        num_turns: 3,
+        total_tokens: 90,
+        trajectory: [
+          {
+            turn_idx: 0,
+            action: "look",
+            observation: "You are in a room.",
+          },
+          {
+            turn_idx: 1,
+            action: "take cd 3 from drawer 5",
+            observation: "You pick up the cd 3.",
+          },
+          {
+            turn_idx: 2,
+            action: "move cd 3 to safe 1",
+            observation: "You move the cd 3.",
+          },
+        ],
+        qa_pairs: [
+          {
+            question: inventoryQuestion,
+            answer: "The first checkpoint answer.",
+            type: "C",
+            question_uuid: "inventory-checkpoint",
+          },
+          {
+            question: "What is the location of cd 3 at step 90?",
+            answer: "cd 3 is at inventory.",
+            type: "C",
+            question_uuid: "location-checkpoint",
+          },
+          {
+            question: inventoryQuestion,
+            answer: "The full trajectory answer.",
+            type: "C",
+            question_uuid: "inventory-full",
+          },
+        ],
+      }) + "\n",
+      "utf8",
+    );
+
+    await runAmaBenchBenchmark({
+      benchmark: amaBenchDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall(_sessionId, query) {
+          recallQueries.push(query);
+          return "fixture recall";
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async getStats() {
+          return {
+            totalMessages: 6,
+            totalSummaryNodes: 0,
+            maxDepth: 0,
+          };
+        },
+        async destroy() {},
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "judge-smoke",
+            };
+          },
+        },
+      },
+    });
+
+    assert.equal(recallQueries.length, 3);
+    assert.match(recallQueries[0]!, /through step 90 inclusive/);
+    assert.doesNotMatch(recallQueries[2]!, /Benchmark checkpoint/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("AMA-Bench accepts action-derived location answers when the reference label conflicts", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-ama-bench-"));
+  const datasetPath = path.join(tempDir, "open_end_qa_set.jsonl");
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify({
+        episode_id: 92,
+        task: "Contradictory location fixture",
+        task_type: "alfworld",
+        domain: "EMBODIED_AI",
+        success: true,
+        num_turns: 3,
+        total_tokens: 90,
+        trajectory: [
+          {
+            turn_idx: 0,
+            action: "look",
+            observation: "You are in a room.",
+          },
+          {
+            turn_idx: 1,
+            action: "take cd 3 from drawer 5",
+            observation: "You pick up the cd 3.",
+          },
+          {
+            turn_idx: 2,
+            action: "move cd 3 to safe 1",
+            observation: "You move the cd 3 to the safe 1.",
+          },
+        ],
+        qa_pairs: [
+          {
+            question: "What is the location of cd 3 at step 2?",
+            answer: "At step 2, the following locations exist: cd 3 is at inventory.",
+            type: "C",
+            question_uuid: "location-reference-conflict",
+          },
+        ],
+      }) + "\n",
+      "utf8",
+    );
+
+    const result = await runAmaBenchBenchmark({
+      benchmark: amaBenchDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      amaBenchJudgeProtocol: "recommended",
+      system: {
+        async store() {},
+        async recall() {
+          return "cd 3: safe 1";
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async getStats() {
+          return {
+            totalMessages: 6,
+            totalSummaryNodes: 0,
+            maxDepth: 0,
+          };
+        },
+        async destroy() {},
+        judge: {
+          async score() {
+            return 0;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 0,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "judge-smoke",
+            };
+          },
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.equal(task.actual, "cd 3: safe 1");
+    assert.equal(task.scores.llm_judge, 1);
+    assert.equal(task.scores.ama_bench_recommended_accuracy, 1);
+    assert.equal(task.details?.amaBenchRawJudgeScore, 0);
+    assert.equal(task.details?.amaBenchTrajectoryLocationScoring, true);
+    assert.equal(task.details?.amaBenchTrajectoryDerivedAnswer, "cd 3: safe 1");
+    assert.deepEqual(task.details?.amaBenchTrajectoryDerivedLocations, {
+      "cd 3": "safe 1",
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("AMA-Bench omits cross-judge agreement for scalar primary protocol", async () => {
   const result = await runAmaBenchBenchmark({
     benchmark: amaBenchDefinition,
