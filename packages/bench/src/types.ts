@@ -44,6 +44,8 @@ export interface ProviderConfig {
   retryOptions?: { maxAttempts?: number; baseBackoffMs?: number; timeoutMs?: number; max429WaitMs?: number };
   disableThinking?: boolean;
   reasoningEffort?: BenchReasoningEffort;
+  responderContextBudgetChars?: number;
+  responderPromptBudgetChars?: number;
 }
 
 export interface TaskTokenUsage {

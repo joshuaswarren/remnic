@@ -2774,6 +2774,8 @@ export function parseConfig(raw: unknown): PluginConfig {
       typeof cfg.lcmDeterministicMaxTokens === "number"
         ? Math.max(64, Math.floor(cfg.lcmDeterministicMaxTokens))
         : 512,
+    lcmTelemetryPrefilterEnabled:
+      coerceBool(cfg.lcmTelemetryPrefilterEnabled) !== false,
     lcmArchiveRetentionDays:
       typeof cfg.lcmArchiveRetentionDays === "number"
         ? Math.max(1, Math.floor(cfg.lcmArchiveRetentionDays))

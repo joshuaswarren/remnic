@@ -42,6 +42,8 @@ export interface ResolveBenchRuntimeProfileOptions {
   systemBaseUrl?: string;
   systemApiKey?: string;
   systemCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
+  systemResponderContextBudgetChars?: number;
+  systemResponderPromptBudgetChars?: number;
   judgeProvider?: BuiltInProvider;
   judgeModel?: string;
   judgeBaseUrl?: string;
@@ -95,6 +97,8 @@ export async function resolveBenchRuntimeProfile(
       options.systemApiKey,
       options.max429WaitMs,
       options.systemCodexReasoningEffort,
+      options.systemResponderContextBudgetChars,
+      options.systemResponderPromptBudgetChars,
     );
   const judgeProvider = resolveProviderConfig(
     "judge",
@@ -103,10 +107,12 @@ export async function resolveBenchRuntimeProfile(
     options.judgeBaseUrl,
     options.requestTimeout,
     options.disableThinking,
-    options.judgeApiKey,
-    options.max429WaitMs,
-    options.judgeCodexReasoningEffort,
-  );
+      options.judgeApiKey,
+      options.max429WaitMs,
+      options.judgeCodexReasoningEffort,
+      undefined,
+      undefined,
+    );
   const internalProvider = applyInternalProviderDefaults(
     resolveProviderConfig(
       "internal",
@@ -118,6 +124,8 @@ export async function resolveBenchRuntimeProfile(
       options.internalApiKey,
       options.max429WaitMs,
       options.internalCodexReasoningEffort,
+      undefined,
+      undefined,
     ),
   );
   const internalConfigOverrides = buildInternalRemnicConfigOverrides(
@@ -360,14 +368,26 @@ function resolveProviderConfig(
   apiKey?: string,
   max429WaitMs?: number,
   reasoningEffort?: ProviderConfig["reasoningEffort"],
+  responderContextBudgetChars?: number,
+  responderPromptBudgetChars?: number,
 ): ProviderConfig | null {
   const hasProvider = typeof provider === "string";
   const hasModel = typeof model === "string" && model.trim().length > 0;
   const hasBaseUrl = typeof baseUrl === "string" && baseUrl.trim().length > 0;
   const hasApiKey = typeof apiKey === "string" && apiKey.trim().length > 0;
   const hasReasoningEffort = reasoningEffort !== undefined;
+  const hasResponderContextBudget = responderContextBudgetChars !== undefined;
+  const hasResponderPromptBudget = responderPromptBudgetChars !== undefined;
 
-  if (!hasProvider && !hasModel && !hasBaseUrl && !hasApiKey && !hasReasoningEffort) {
+  if (
+    !hasProvider &&
+    !hasModel &&
+    !hasBaseUrl &&
+    !hasApiKey &&
+    !hasReasoningEffort &&
+    !hasResponderContextBudget &&
+    !hasResponderPromptBudget
+  ) {
     return null;
   }
 
@@ -405,6 +425,12 @@ function resolveProviderConfig(
       : {}),
     ...(disableThinking ? { disableThinking: true } : {}),
     ...(provider === "codex-cli" ? { reasoningEffort: reasoningEffort ?? "xhigh" } : {}),
+    ...(responderContextBudgetChars !== undefined
+      ? { responderContextBudgetChars }
+      : {}),
+    ...(responderPromptBudgetChars !== undefined
+      ? { responderPromptBudgetChars }
+      : {}),
   };
 }
 
@@ -692,6 +718,12 @@ function asProviderFactoryConfig(config: ProviderConfig): ProviderFactoryConfig 
     ...(config.retryOptions ? { retryOptions: config.retryOptions } : {}),
     ...(config.disableThinking ? { disableThinking: config.disableThinking } : {}),
     ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
+    ...(config.responderContextBudgetChars !== undefined
+      ? { responderContextBudgetChars: config.responderContextBudgetChars }
+      : {}),
+    ...(config.responderPromptBudgetChars !== undefined
+      ? { responderPromptBudgetChars: config.responderPromptBudgetChars }
+      : {}),
   } as ProviderFactoryConfig;
 }
 

@@ -17,6 +17,7 @@ export interface LcmEngineConfig {
   deterministicMaxTokens: number;
   archiveRetentionDays: number;
   recallBudgetShare: number;
+  telemetryPrefilterEnabled: boolean;
   messagePartsEnabled: boolean;
   messagePartsRecallMaxResults: number;
 }
@@ -31,6 +32,7 @@ export function extractLcmConfig(cfg: PluginConfig): LcmEngineConfig {
     deterministicMaxTokens: (cfg as any).lcmDeterministicMaxTokens ?? 512,
     archiveRetentionDays: (cfg as any).lcmArchiveRetentionDays ?? 90,
     recallBudgetShare: (cfg as any).lcmRecallBudgetShare ?? 0.15,
+    telemetryPrefilterEnabled: (cfg as any).lcmTelemetryPrefilterEnabled !== false,
     messagePartsEnabled: (cfg as any).messagePartsEnabled === true,
     messagePartsRecallMaxResults:
       typeof (cfg as any).messagePartsRecallMaxResults === "number"
@@ -95,6 +97,7 @@ export class LcmEngine {
         rollupFanIn: this.config.rollupFanIn,
         maxDepth: this.config.maxDepth,
         deterministicMaxTokens: this.config.deterministicMaxTokens,
+        telemetryPrefilterEnabled: this.config.telemetryPrefilterEnabled,
       },
     );
     const observeQueue = new LcmWorkQueue({

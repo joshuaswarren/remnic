@@ -180,6 +180,96 @@ test("parseBenchArgs accepts codex-cli as a system and judge provider", () => {
   assert.equal(parsed.judgeCodexReasoningEffort, "medium");
 });
 
+test("parseBenchArgs accepts direct responder context budgeting", () => {
+  const parsed = parseBenchArgs([
+    "run",
+    "ama-bench",
+    "--system-provider",
+    "codex-cli",
+    "--system-model",
+    "gpt-5.5",
+    "--system-responder-context-budget-chars",
+    "8000",
+  ]);
+
+  assert.equal(parsed.systemResponderContextBudgetChars, 8000);
+});
+
+test("parseBenchArgs accepts direct responder prompt budgeting", () => {
+  const parsed = parseBenchArgs([
+    "run",
+    "ama-bench",
+    "--system-provider",
+    "codex-cli",
+    "--system-model",
+    "gpt-5.5",
+    "--system-responder-prompt-budget-chars",
+    "2000",
+  ]);
+
+  assert.equal(parsed.systemResponderPromptBudgetChars, 2000);
+});
+
+test("parseBenchArgs rejects responder context budget without a direct responder", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--system-responder-context-budget-chars",
+        "8000",
+      ]),
+    /--system-responder-context-budget-chars requires --system-provider/,
+  );
+});
+
+test("parseBenchArgs rejects responder prompt budget without a direct responder", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--system-responder-prompt-budget-chars",
+        "2000",
+      ]),
+    /--system-responder-prompt-budget-chars requires --system-provider/,
+  );
+});
+
+test("parseBenchArgs rejects invalid responder context budgets", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--system-provider",
+        "codex-cli",
+        "--system-model",
+        "gpt-5.5",
+        "--system-responder-context-budget-chars",
+        "0",
+      ]),
+    /--system-responder-context-budget-chars must be a positive integer/,
+  );
+});
+
+test("parseBenchArgs rejects invalid responder prompt budgets", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--system-provider",
+        "codex-cli",
+        "--system-model",
+        "gpt-5.5",
+        "--system-responder-prompt-budget-chars",
+        "3.14",
+      ]),
+    /--system-responder-prompt-budget-chars must be a positive integer/,
+  );
+});
+
 test("parseBenchArgs rejects system Codex reasoning effort for non-Codex providers", () => {
   assert.throws(
     () =>

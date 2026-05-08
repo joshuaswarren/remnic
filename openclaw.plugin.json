@@ -4412,6 +4412,11 @@
         "default": 512,
         "description": "Max tokens for deterministic (non-LLM) summaries"
       },
+      "lcmTelemetryPrefilterEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Use deterministic LCM compression for mechanical action/state telemetry without durable-memory cues."
+      },
       "lcmArchiveRetentionDays": {
         "type": "number",
         "default": 90,

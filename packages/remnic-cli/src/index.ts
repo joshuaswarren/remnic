@@ -573,6 +573,8 @@ interface BenchProviderConfig {
   };
   disableThinking?: boolean;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  responderContextBudgetChars?: number;
+  responderPromptBudgetChars?: number;
 }
 
 interface ResolveBenchRuntimeProfileOptions {
@@ -587,6 +589,8 @@ interface ResolveBenchRuntimeProfileOptions {
   systemBaseUrl?: string;
   systemApiKey?: string;
   systemCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  systemResponderContextBudgetChars?: number;
+  systemResponderPromptBudgetChars?: number;
   judgeProvider?: string;
   judgeModel?: string;
   judgeBaseUrl?: string;
@@ -703,6 +707,10 @@ Options:
   --system-base-url <url>  Base URL for the direct answering provider
   --system-codex-reasoning-effort <low|medium|high|xhigh>
                            Codex CLI reasoning effort for the direct answerer
+  --system-responder-context-budget-chars <n>
+                           Compact recalled memory context before sending it to the direct answerer
+  --system-responder-prompt-budget-chars <n>
+                           Compact repeated benchmark prompt instructions before sending them to the direct answerer
   --judge-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
                            Use a direct provider-backed judge
   --judge-model <model>    Model name for the judge provider
@@ -807,6 +815,14 @@ export function buildBenchRuntimeProfileRequest(
       runtimeProfile === "openclaw-chain"
         ? undefined
         : parsed.systemCodexReasoningEffort,
+    systemResponderContextBudgetChars:
+      runtimeProfile === "openclaw-chain"
+        ? undefined
+        : parsed.systemResponderContextBudgetChars,
+    systemResponderPromptBudgetChars:
+      runtimeProfile === "openclaw-chain"
+        ? undefined
+        : parsed.systemResponderPromptBudgetChars,
     judgeProvider: parsed.judgeProvider,
     judgeModel: parsed.judgeModel,
     judgeBaseUrl: parsed.judgeBaseUrl,

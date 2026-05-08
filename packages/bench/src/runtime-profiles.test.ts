@@ -347,6 +347,30 @@ test("provider-backed runtime resolution can override codex-cli reasoning effort
   assert.equal(resolved.judgeProvider?.reasoningEffort, "medium");
 });
 
+test("provider-backed runtime resolution can budget direct responder context", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    systemProvider: "codex-cli",
+    systemModel: "gpt-5.5",
+    systemResponderContextBudgetChars: 8_000,
+  });
+
+  assert.equal(resolved.systemProvider?.responderContextBudgetChars, 8_000);
+  assert.equal(typeof resolved.adapterOptions.responder?.respond, "function");
+});
+
+test("provider-backed runtime resolution can budget direct responder prompt protocol", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    systemProvider: "codex-cli",
+    systemModel: "gpt-5.5",
+    systemResponderPromptBudgetChars: 2_000,
+  });
+
+  assert.equal(resolved.systemProvider?.responderPromptBudgetChars, 2_000);
+  assert.equal(typeof resolved.adapterOptions.responder?.respond, "function");
+});
+
 test("runtime profile can route Remnic internal LLM calls through codex-cli", async () => {
   const resolved = await resolveBenchRuntimeProfile({
     runtimeProfile: "baseline",

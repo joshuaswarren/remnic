@@ -39,6 +39,18 @@ export interface ProviderBaseConfig {
   retryOptions?: { maxAttempts?: number; baseBackoffMs?: number; timeoutMs?: number; max429WaitMs?: number };
   /** Suppress thinking/reasoning tokens for thinking-capable models (Qwen 3.5, Gemma 4, DeepSeek). */
   disableThinking?: boolean;
+  /**
+   * Optional answering-only memory-context budget. Benchmark artifacts keep the
+   * full recalled text, but provider-backed responders may receive this compact
+   * deterministic view to avoid transport-specific prompt stalls.
+   */
+  responderContextBudgetChars?: number;
+  /**
+   * Optional answering-only question/protocol budget. This keeps the original
+   * benchmark question and artifact unchanged while shortening repeated harness
+   * instructions for slow transport-backed responders such as Codex CLI.
+   */
+  responderPromptBudgetChars?: number;
 }
 
 export interface OpenAiCompatibleProviderConfig extends ProviderBaseConfig {

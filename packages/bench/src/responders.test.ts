@@ -8,10 +8,15 @@ import {
   createProviderBackedResponder,
   createResponderFromProvider,
   createStructuredJudgeFromProvider,
+  compactResponderContext,
+  compactResponderQuestion,
 } from "./responders.ts";
 import type { LlmProvider } from "./providers/types.ts";
 
-function createFakeProvider(resultText: string): LlmProvider {
+function createFakeProvider(
+  resultText: string,
+  onPrompt?: (prompt: string) => void,
+): LlmProvider {
   let inputTokens = 0;
   let outputTokens = 0;
 
@@ -20,6 +25,7 @@ function createFakeProvider(resultText: string): LlmProvider {
     name: "test-model",
     provider: "openai",
     async complete(prompt) {
+      onPrompt?.(prompt);
       inputTokens += prompt.length;
       outputTokens += resultText.length;
       return {
@@ -76,6 +82,86 @@ test("responder wrappers adapt a provider instance into answer-generation and ju
     taskId: "task-1",
   });
   assert.match(raw, /identity_accuracy/);
+});
+
+test("responder context compaction preserves referenced trajectory evidence", async () => {
+  let capturedPrompt = "";
+  const recalledText = Array.from({ length: 80 }, (_, index) => {
+    const step = index + 1;
+    return `[Action ${step}]: move-${step}\n[Observation ${step}]: state-${step}`;
+  }).join("\n");
+  const responder = createProviderBackedResponder(
+    {
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      responderContextBudgetChars: 900,
+    },
+    createFakeProvider("answer", (prompt) => {
+      capturedPrompt = prompt;
+    }),
+  );
+
+  await responder.respond(
+    "What changed between Actions 41-42?",
+    recalledText,
+  );
+
+  assert.equal(capturedPrompt.includes("state-42"), true);
+  assert.equal(capturedPrompt.includes("move-2"), false);
+  assert.equal(capturedPrompt.length < recalledText.length, true);
+});
+
+test("compactResponderContext falls back to deterministic head/tail context without trajectory references", () => {
+  const compacted = compactResponderContext(
+    "alpha ".repeat(200) + "omega",
+    "What is the summary?",
+    320,
+  );
+
+  assert.equal(compacted.length <= 320, true);
+  assert.match(compacted, /alpha/);
+  assert.match(compacted, /omega/);
+  assert.match(compacted, /omitted unrelated recalled context/);
+});
+
+test("responder prompt compaction preserves the question and concise agentic protocol", async () => {
+  let capturedPrompt = "";
+  const longProtocolQuestion = [
+    "What did Action 42 accomplish?",
+    "",
+    "Benchmark answer protocol:",
+    "- Use only the supplied Remnic memory context as evidence.",
+    "- Return the shortest complete answer that satisfies the question.",
+    "",
+    "Agentic trajectory protocol:",
+    ...Array.from({ length: 40 }, (_, index) =>
+      `- Detailed trajectory instruction ${index + 1}.`,
+    ),
+  ].join("\n");
+  const responder = createProviderBackedResponder(
+    {
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      responderPromptBudgetChars: 1_200,
+    },
+    createFakeProvider("answer", (prompt) => {
+      capturedPrompt = prompt;
+    }),
+  );
+
+  await responder.respond(longProtocolQuestion, "[Action 42]: right");
+
+  assert.match(capturedPrompt, /What did Action 42 accomplish\?/);
+  assert.match(capturedPrompt, /Agentic trajectory protocol/);
+  assert.match(capturedPrompt, /Action N causes Observation N/);
+  assert.doesNotMatch(capturedPrompt, /Detailed trajectory instruction 40/);
+});
+
+test("compactResponderQuestion validates the prompt budget", () => {
+  assert.throws(
+    () => compactResponderQuestion("question", 0),
+    /responder prompt budget must be a positive integer/,
+  );
 });
 
 test("provider-backed responder factories reject invalid configs and produce typed wrappers", () => {

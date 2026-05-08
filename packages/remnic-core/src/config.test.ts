@@ -138,6 +138,11 @@ test("parseConfig extractionTelemetryPrefilterEnabled defaults on and accepts st
   assert.equal(parseConfig({ extractionTelemetryPrefilterEnabled: "false" }).extractionTelemetryPrefilterEnabled, false);
 });
 
+test("parseConfig lcmTelemetryPrefilterEnabled defaults on and accepts string false", () => {
+  assert.equal(parseConfig({}).lcmTelemetryPrefilterEnabled, true);
+  assert.equal(parseConfig({ lcmTelemetryPrefilterEnabled: "false" }).lcmTelemetryPrefilterEnabled, false);
+});
+
 test("parseConfig keeps explicit cue recall opt-in and budgets configurable", () => {
   const defaults = parseConfig({});
   assert.equal(defaults.explicitCueRecallEnabled, false);

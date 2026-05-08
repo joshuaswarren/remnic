@@ -52,6 +52,8 @@ export interface ParsedBenchArgs {
   systemBaseUrl?: string;
   systemApiKey?: string;
   systemCodexReasoningEffort?: BenchCodexReasoningEffort;
+  systemResponderContextBudgetChars?: number;
+  systemResponderPromptBudgetChars?: number;
   judgeProvider?: BuiltInProvider;
   judgeModel?: string;
   judgeBaseUrl?: string;
@@ -207,6 +209,8 @@ export function collectBenchmarks(argv: string[]): string[] {
       arg === "--system-base-url" ||
       arg === "--system-api-key" ||
       arg === "--system-codex-reasoning-effort" ||
+      arg === "--system-responder-context-budget-chars" ||
+      arg === "--system-responder-prompt-budget-chars" ||
       arg === "--judge-provider" ||
       arg === "--judge-model" ||
       arg === "--judge-base-url" ||
@@ -351,6 +355,14 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const systemCodexReasoningEffortRaw = readBenchOptionValue(
     args,
     "--system-codex-reasoning-effort",
+  );
+  const systemResponderContextBudgetRaw = readBenchOptionValue(
+    args,
+    "--system-responder-context-budget-chars",
+  );
+  const systemResponderPromptBudgetRaw = readBenchOptionValue(
+    args,
+    "--system-responder-prompt-budget-chars",
   );
   const judgeProviderRaw = readBenchOptionValue(args, "--judge-provider");
   const judgeModel = readBenchOptionValue(args, "--judge-model");
@@ -533,6 +545,42 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     }
   }
 
+  let systemResponderContextBudgetChars: number | undefined;
+  if (systemResponderContextBudgetRaw !== undefined) {
+    systemResponderContextBudgetChars = Number(systemResponderContextBudgetRaw);
+    if (
+      !Number.isInteger(systemResponderContextBudgetChars) ||
+      systemResponderContextBudgetChars <= 0
+    ) {
+      throw new Error(
+        "ERROR: --system-responder-context-budget-chars must be a positive integer.",
+      );
+    }
+    if (systemResponderContextBudgetChars > 1_000_000) {
+      throw new Error(
+        "ERROR: --system-responder-context-budget-chars must not exceed 1,000,000.",
+      );
+    }
+  }
+
+  let systemResponderPromptBudgetChars: number | undefined;
+  if (systemResponderPromptBudgetRaw !== undefined) {
+    systemResponderPromptBudgetChars = Number(systemResponderPromptBudgetRaw);
+    if (
+      !Number.isInteger(systemResponderPromptBudgetChars) ||
+      systemResponderPromptBudgetChars <= 0
+    ) {
+      throw new Error(
+        "ERROR: --system-responder-prompt-budget-chars must be a positive integer.",
+      );
+    }
+    if (systemResponderPromptBudgetChars > 1_000_000) {
+      throw new Error(
+        "ERROR: --system-responder-prompt-budget-chars must not exceed 1,000,000.",
+      );
+    }
+  }
+
   // `bench published` flags. Parsed unconditionally so `--name`, `--model`,
   // etc. raise consistent errors even when used outside the `published`
   // action (mirrors CLAUDE.md rule 14: validate flag args at input boundaries).
@@ -631,6 +679,22 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     );
   }
   if (
+    systemResponderContextBudgetChars !== undefined &&
+    effectiveSystemProvider === undefined
+  ) {
+    throw new Error(
+      "ERROR: --system-responder-context-budget-chars requires --system-provider (or --provider).",
+    );
+  }
+  if (
+    systemResponderPromptBudgetChars !== undefined &&
+    effectiveSystemProvider === undefined
+  ) {
+    throw new Error(
+      "ERROR: --system-responder-prompt-budget-chars requires --system-provider (or --provider).",
+    );
+  }
+  if (
     judgeCodexReasoningEffort !== undefined &&
     judgeProvider !== "codex-cli"
   ) {
@@ -716,6 +780,8 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     systemBaseUrl: effectiveSystemBaseUrl,
     systemApiKey,
     systemCodexReasoningEffort,
+    systemResponderContextBudgetChars,
+    systemResponderPromptBudgetChars,
     judgeProvider,
     judgeModel,
     judgeBaseUrl,

@@ -78,6 +78,8 @@ export const BENCHMARK_RESULT_SCHEMA = {
                 model: { type: "string" },
                 baseUrl: { type: "string" },
                 reasoningEffort: { type: "string" },
+                responderContextBudgetChars: { type: "number" },
+                responderPromptBudgetChars: { type: "number" },
               },
             },
           ],

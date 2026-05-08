@@ -1130,6 +1130,12 @@ export interface PluginConfig {
    * extraction over state logs. Default true.
    */
   extractionTelemetryPrefilterEnabled: boolean;
+  /**
+   * When true, LCM uses deterministic compression instead of semantic LLM
+   * summarization for mechanical action/state telemetry transcripts with no
+   * durable-memory cue. Raw transcript storage/recall still runs. Default true.
+   */
+  lcmTelemetryPrefilterEnabled: boolean;
   extractionMaxTurnChars: number;
   extractionMaxFactsPerRun: number;
   extractionMaxEntitiesPerRun: number;
