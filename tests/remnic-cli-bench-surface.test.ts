@@ -46,29 +46,35 @@ test("workspace scripts expose bench list, bench run, and a quick smoke path", a
     scripts?: Record<string, string>;
   };
   const helper = await readFile("scripts/run-bench-cli.mjs", "utf8");
+  const buildHelper = await readFile("scripts/build-staleness.mjs", "utf8");
 
   assert.equal(pkg.scripts?.["bench:list"], "node scripts/run-bench-cli.mjs list");
   assert.equal(pkg.scripts?.["bench:run"], "node scripts/run-bench-cli.mjs run");
   assert.equal(pkg.scripts?.["bench:compare"], "node scripts/run-bench-cli.mjs compare");
   assert.equal(pkg.scripts?.["bench:quick"], "node scripts/run-bench-cli.mjs run --quick longmemeval");
 
+  assert.match(helper, /from "\.\/build-staleness\.mjs"/);
   assert.match(helper, /packages", "remnic-core", "dist", "index\.js"/);
   assert.match(helper, /packages", "bench", "dist", "index\.js"/);
-  assert.match(helper, /\["--filter", "@remnic\/core", "build"\]/);
-  assert.match(helper, /\["--filter", "@remnic\/bench", "build"\]/);
+  assert.match(helper, /ensurePackageBuild\(\s*repoRoot,\s*"@remnic\/core"/);
+  assert.match(helper, /ensurePackageBuild\(\s*repoRoot,\s*"@remnic\/bench"/);
+  assert.doesNotMatch(helper, /isAnySourceNewerThan\(/);
+  assert.match(buildHelper, /export function runPnpm\(repoRoot, args\)/);
   assert.match(helper, /\["exec", "tsx", "packages\/remnic-cli\/src\/index\.ts", "bench"/);
 });
 
 test("CLI prebuild helper hydrates the bundled export adapter before building", async () => {
   const helper = await readFile("scripts/ensure-cli-bench-build-deps.mjs", "utf8");
+  const buildHelper = await readFile("scripts/build-staleness.mjs", "utf8");
 
+  assert.match(helper, /from "\.\/build-staleness\.mjs"/);
   assert.match(helper, /packages", "remnic-core", "dist", "index\.js"/);
   assert.match(helper, /packages", "bench", "dist", "index\.js"/);
   assert.match(helper, /packages", "export-weclone", "dist", "index\.js"/);
-  assert.match(helper, /run\(\["--filter", pkgName, "build"\]\);/);
-  assert.match(helper, /ensurePackageBuild\(\s*"@remnic\/core"/);
-  assert.match(helper, /ensurePackageBuild\(\s*"@remnic\/bench"/);
-  assert.match(helper, /ensurePackageBuild\(\s*"@remnic\/export-weclone"/);
+  assert.match(buildHelper, /runPnpm\(repoRoot, \["--filter", pkgName, "build"\]\);/);
+  assert.match(helper, /ensurePackageBuild\(\s*repoRoot,\s*"@remnic\/core"/);
+  assert.match(helper, /ensurePackageBuild\(\s*repoRoot,\s*"@remnic\/bench"/);
+  assert.match(helper, /ensurePackageBuild\(\s*repoRoot,\s*"@remnic\/export-weclone"/);
 });
 
 test("CLI README documents bench list and quick-run examples", async () => {

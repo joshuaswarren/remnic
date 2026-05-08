@@ -1,44 +1,39 @@
-import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { ensurePackageBuild } from "./build-staleness.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const pnpmCmd = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-
-function run(args) {
-  const result = spawnSync(pnpmCmd, args, {
-    cwd: repoRoot,
-    stdio: "inherit",
-    env: process.env,
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-
-  if (typeof result.status === "number" && result.status !== 0) {
-    process.exit(result.status);
-  }
-}
-
-function ensurePackageBuild(pkgName, distPath) {
-  if (fs.existsSync(distPath)) {
-    return;
-  }
-
-  run(["--filter", pkgName, "build"]);
-}
 
 ensurePackageBuild(
+  repoRoot,
   "@remnic/core",
   path.join(repoRoot, "packages", "remnic-core", "dist", "index.js"),
+  [
+    path.join(repoRoot, "packages", "remnic-core", "src"),
+    path.join(repoRoot, "packages", "remnic-core", "package.json"),
+    path.join(repoRoot, "packages", "remnic-core", "tsup.config.ts"),
+    path.join(repoRoot, "packages", "remnic-core", "tsconfig.json"),
+  ],
 );
 ensurePackageBuild(
+  repoRoot,
   "@remnic/bench",
   path.join(repoRoot, "packages", "bench", "dist", "index.js"),
+  [
+    path.join(repoRoot, "packages", "bench", "src"),
+    path.join(repoRoot, "packages", "bench", "package.json"),
+    path.join(repoRoot, "packages", "bench", "tsup.config.ts"),
+    path.join(repoRoot, "packages", "bench", "tsconfig.json"),
+  ],
 );
 ensurePackageBuild(
+  repoRoot,
   "@remnic/export-weclone",
   path.join(repoRoot, "packages", "export-weclone", "dist", "index.js"),
+  [
+    path.join(repoRoot, "packages", "export-weclone", "src"),
+    path.join(repoRoot, "packages", "export-weclone", "package.json"),
+    path.join(repoRoot, "packages", "export-weclone", "tsup.config.ts"),
+    path.join(repoRoot, "packages", "export-weclone", "tsconfig.json"),
+  ],
 );
