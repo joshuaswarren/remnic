@@ -2038,6 +2038,8 @@ export function parseConfig(raw: unknown): PluginConfig {
       typeof cfg.extractionMinChars === "number" ? cfg.extractionMinChars : 40,
     extractionMinUserTurns:
       typeof cfg.extractionMinUserTurns === "number" ? cfg.extractionMinUserTurns : 1,
+    extractionTelemetryPrefilterEnabled:
+      coerceBool(cfg.extractionTelemetryPrefilterEnabled) !== false,
     extractionMaxTurnChars:
       typeof cfg.extractionMaxTurnChars === "number" ? cfg.extractionMaxTurnChars : 4000,
     extractionMaxFactsPerRun:

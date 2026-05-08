@@ -1123,6 +1123,13 @@ export interface PluginConfig {
   extractionDedupeWindowMs: number;
   extractionMinChars: number;
   extractionMinUserTurns: number;
+  /**
+   * When true, skip semantic memory extraction for mechanical action/state
+   * telemetry transcripts that have no durable-memory cue. Raw transcript
+   * storage/recall still runs; this only prevents expensive low-value fact
+   * extraction over state logs. Default true.
+   */
+  extractionTelemetryPrefilterEnabled: boolean;
   extractionMaxTurnChars: number;
   extractionMaxFactsPerRun: number;
   extractionMaxEntitiesPerRun: number;

@@ -56,6 +56,47 @@ const CONSOLIDATION_RESPONSE_SCHEMA = `{
   "entityUpdates": [{"name": "person-jane-doe", "type": "person", "facts": ["Now leads the backend team", "Recently migrated the user service to TypeScript"]}]
 }`;
 
+const TELEMETRY_TURN_MARKER = /^\[(?:user|assistant|system)\]\s+\[(?:action|observation|state|reward|step|turn|frame)\s+\d+\]:/i;
+const BARE_TELEMETRY_MARKER = /^\[(?:action|observation|state|reward|step|turn|frame)\s+\d+\]:/i;
+const DURABLE_MEMORY_CUE =
+  /\b(?:remember|don't forget|prefer|preference|decided|decision|deadline|commit(?:ment)?|promise|my name|i am|i work|we use|correction|actually|always|never|when you|if\s+.+\s+then)\b/i;
+
+function stripRolePrefix(line: string): string {
+  return line.replace(/^\[(?:user|assistant|system)\]\s+/i, "").trim();
+}
+
+function isTelemetryMarkerLine(line: string): boolean {
+  return TELEMETRY_TURN_MARKER.test(line) || BARE_TELEMETRY_MARKER.test(stripRolePrefix(line));
+}
+
+function isMechanicalTelemetryLine(line: string): boolean {
+  const stripped = stripRolePrefix(line);
+  return (
+    isTelemetryMarkerLine(line) ||
+    /^(?:left|right|up|down|wait|noop|stop|start|forward|backward)$/i.test(stripped) ||
+    /^(?:active rules|objects on (?:the )?map|inventory|score|reward|position|location):?$/i.test(stripped) ||
+    /^rule `[^`]+`/i.test(stripped) ||
+    /^(?:[a-z][\w-]*|\w+ `[^`]+`)\s+\d+\s+steps?\s+(?:to\s+the\s+)?(?:left|right|up|down)\b/i.test(stripped)
+  );
+}
+
+function looksLikeMechanicalTelemetryTranscript(conversation: string): boolean {
+  if (DURABLE_MEMORY_CUE.test(conversation)) return false;
+
+  const lines = conversation
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length < 8) return false;
+
+  const markerLines = lines.filter((line) => isTelemetryMarkerLine(line)).length;
+  if (markerLines < 4) return false;
+
+  const mechanicalLines = lines.filter((line) => isMechanicalTelemetryLine(line)).length;
+  const mechanicalRatio = mechanicalLines / lines.length;
+  return mechanicalRatio >= 0.45;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -959,6 +1000,13 @@ export class ExtractionEngine {
       .join("\n\n");
     if (conversation.trim().length === 0) {
       log.debug("extraction skipped — conversation only contained non-memory work-layer context");
+      return { facts: [], profileUpdates: [], entities: [], questions: [] };
+    }
+    if (
+      this.config.extractionTelemetryPrefilterEnabled &&
+      looksLikeMechanicalTelemetryTranscript(conversation)
+    ) {
+      log.debug("extraction skipped — mechanical action/state telemetry without durable-memory cues");
       return { facts: [], profileUpdates: [], entities: [], questions: [] };
     }
 

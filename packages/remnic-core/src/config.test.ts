@@ -133,6 +133,10 @@ test("parseConfig localLlmTimeoutMs clamps invalid values to a positive timeout"
   assert.equal(parseConfig({ localLlmTimeoutMs: 0 }).localLlmTimeoutMs, 1);
   assert.equal(parseConfig({ localLlmTimeoutMs: Number.NaN }).localLlmTimeoutMs, 180_000);
 });
+test("parseConfig extractionTelemetryPrefilterEnabled defaults on and accepts string false", () => {
+  assert.equal(parseConfig({}).extractionTelemetryPrefilterEnabled, true);
+  assert.equal(parseConfig({ extractionTelemetryPrefilterEnabled: "false" }).extractionTelemetryPrefilterEnabled, false);
+});
 
 test("parseConfig keeps explicit cue recall opt-in and budgets configurable", () => {
   const defaults = parseConfig({});
