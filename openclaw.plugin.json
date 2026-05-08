@@ -3017,6 +3017,11 @@
         "default": "low",
         "description": "Minimum locally-scored importance level required to persist an extracted fact. Facts below this level are dropped before write and counted toward the importance_gated metric. Default \"low\" drops only trivial turn-level chatter (greetings, single-word replies); raise to \"normal\" or higher for a stricter gate."
       },
+      "extractionTelemetryPrefilterEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Skip semantic durable-memory extraction for mechanical action/state telemetry transcripts that contain no durable-memory cue. Raw transcript storage and recall still run. Disable this if you intentionally want fact extraction from action logs."
+      },
       "extractionScopeClassificationEnabled": {
         "type": "boolean",
         "default": true,
