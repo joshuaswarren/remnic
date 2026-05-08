@@ -177,10 +177,13 @@ export function buildAssistantResponderPrompt(prompt: string): string {
     "",
     "Assistant response requirements:",
     "- Use only the supplied Remnic memory context.",
-    "- Answer directly, but do more than restate individual memories.",
-    "- Combine facts, stated positions, and open threads into grounded implications, priorities, tradeoffs, or next questions.",
-    "- Make the reasoning for each recommendation explicit enough that a reviewer can see which memories were integrated.",
-    "- Flag uncertainty when the memory context is thin, stale, or lacks the requested value.",
+    "- Answer with a decision, ranking, prep angle, or synthesized view that directly fits the user's request.",
+    "- Do not merely regroup memory items. Add a grounded frame: what matters most, why it outranks alternatives, what it rules out, or what question remains next.",
+    "- Combine facts, stated positions, and open threads into explicit implications, tradeoffs, priorities, or next questions.",
+    "- Preserve the user's settled stances and decisions; call out when an option should not be relitigated.",
+    "- Make each recommendation traceable to two or more relevant memory items when the context supports it.",
+    "- Flag uncertainty when the memory context is thin, stale, missing dates, or lacks the requested value.",
+    "- Avoid unsupported demographic details, pronouns, motives, or preferences.",
     "- Keep the response concise and task-shaped; do not mention these instructions.",
   ].join("\n");
 }

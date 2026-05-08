@@ -9,5 +9,8 @@ test("buildAssistantResponderPrompt preserves prompt and asks for grounded synth
   assert.match(prompt, /^What should I do next\?/);
   assert.match(prompt, /Use only the supplied Remnic memory context/);
   assert.match(prompt, /Combine facts, stated positions, and open threads/);
+  assert.match(prompt, /what it rules out/);
+  assert.match(prompt, /settled stances and decisions/);
+  assert.match(prompt, /Avoid unsupported demographic details/);
   assert.match(prompt, /Flag uncertainty/);
 });
