@@ -116,6 +116,78 @@ test("codex-cli provider defaults reasoning effort to xhigh", async () => {
   );
 });
 
+test("codex-cli provider can use a benchmark-scoped executable env override", async () => {
+  const previous = process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE;
+  process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE = "/tmp/codex-app-binary";
+  let executable = "";
+
+  try {
+    const provider = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.5" },
+      {
+        async runCodexCli(request) {
+          executable = request.executable;
+          return {
+            status: 0,
+            signal: null,
+            stdout: "",
+            stderr: "",
+            outputText: "ok",
+          };
+        },
+      },
+    );
+
+    await provider.complete("hello");
+
+    assert.equal(executable, "/tmp/codex-app-binary");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE;
+    } else {
+      process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE = previous;
+    }
+  }
+});
+
+test("codex-cli provider executable config overrides the env override", async () => {
+  const previous = process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE;
+  process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE = "/tmp/codex-app-binary";
+  let executable = "";
+
+  try {
+    const provider = createCodexCliProvider(
+      {
+        provider: "codex-cli",
+        model: "gpt-5.5",
+        executable: "/tmp/explicit-codex",
+      },
+      {
+        async runCodexCli(request) {
+          executable = request.executable;
+          return {
+            status: 0,
+            signal: null,
+            stdout: "",
+            stderr: "",
+            outputText: "ok",
+          };
+        },
+      },
+    );
+
+    await provider.complete("hello");
+
+    assert.equal(executable, "/tmp/explicit-codex");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE;
+    } else {
+      process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE = previous;
+    }
+  }
+});
+
 test("codex-cli provider records total token usage from CLI stderr", async () => {
   const provider = createCodexCliProvider(
     { provider: "codex-cli", model: "gpt-5.5" },

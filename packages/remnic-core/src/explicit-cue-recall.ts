@@ -777,6 +777,14 @@ interface AgentMoveDelta {
   dy: number;
 }
 
+interface ContainerObjectTransfer {
+  step: number;
+  action: string;
+  object: string;
+  container: string;
+  direction: "placed" | "removed";
+}
+
 function hasTrajectoryAnalysisIntent(query: string): boolean {
   const normalized = normalizeTrajectoryQuery(query);
   if (collectExplicitTurnReferences(query).length > 0) {
@@ -934,6 +942,8 @@ function buildTrajectoryAnalysisLines(
   const asksLocation = /\blocations?\b/.test(normalized) || /\bwhere\b/.test(normalized);
   const asksContainerHistory = /\bcontainers?\b/.test(normalized) ||
     /\binteracted\b/.test(normalized);
+  const asksContainerObjectTransfer = /\b(?:objects?|items?)\b/.test(normalized) &&
+    /\b(?:placed|put|inserted|moved|removed)\b/.test(normalized);
   const asksEntityState = /\bstate\b/.test(normalized) ||
     /\bchanges?\s+history\b/.test(normalized) ||
     /\bwhole\s+changes?\s+history\b/.test(normalized);
@@ -989,6 +999,7 @@ function buildTrajectoryAnalysisLines(
   ) {
     appendEntityTimelineLines(lines, trajectory, bounds, entities, {
       includeIndirectMentions: asksLocation,
+      includeContainerObjectTransfers: asksContainerObjectTransfer,
     });
   }
 
@@ -1514,7 +1525,10 @@ function appendEntityTimelineLines(
   trajectory: readonly LabeledTrajectoryStep[],
   bounds: TrajectoryBounds,
   entities: readonly string[],
-  options: { includeIndirectMentions: boolean },
+  options: {
+    includeIndirectMentions: boolean;
+    includeContainerObjectTransfers: boolean;
+  },
 ): void {
   for (const entity of entities) {
     const directActions = boundedTrajectory(trajectory, bounds).filter(
@@ -1527,13 +1541,28 @@ function appendEntityTimelineLines(
     const stateChanges = collectContainerStateChanges(trajectory, bounds).filter(
       (change) => normalizeEntity(change.entity) === normalizeEntity(entity),
     );
-    if (directActions.length === 0 && stateChanges.length === 0) {
+    const objectTransfers = options.includeContainerObjectTransfers
+      ? collectContainerObjectTransfers(trajectory, bounds).filter(
+        (transfer) => normalizeEntity(transfer.container) === normalizeEntity(entity),
+      )
+      : [];
+    if (
+      directActions.length === 0 &&
+      stateChanges.length === 0 &&
+      objectTransfers.length === 0
+    ) {
       continue;
     }
 
     lines.push(`Timeline for ${entity}:`);
     for (const step of directActions) {
       lines.push(`[Action ${step.step}]: ${step.action}`);
+    }
+    if (objectTransfers.length > 0) {
+      lines.push(`Object transfers involving ${entity}:`);
+      for (const transfer of objectTransfers) {
+        lines.push(`[Action ${transfer.step}]: ${transfer.action} => ${formatContainerTransfer(transfer)}`);
+      }
     }
     const inferredLocation = inferEntityLocation(trajectory, bounds, entity);
     if (inferredLocation) {
@@ -1582,6 +1611,47 @@ function collectContainerStateChanges(
     });
   }
   return changes;
+}
+
+function collectContainerObjectTransfers(
+  trajectory: readonly LabeledTrajectoryStep[],
+  bounds: TrajectoryBounds,
+): ContainerObjectTransfer[] {
+  const transfers: ContainerObjectTransfer[] = [];
+  for (const step of boundedTrajectory(trajectory, bounds)) {
+    if (!step.action) continue;
+    const action = step.action.trim();
+    const take = /^take\s+(.+?)\s+from\s+(.+)$/i.exec(action);
+    if (take) {
+      transfers.push({
+        step: step.step,
+        action: step.action,
+        object: take[1]!.trim(),
+        container: take[2]!.trim(),
+        direction: "removed",
+      });
+      continue;
+    }
+
+    const place = /^(?:move|put|place|insert)\s+(.+?)\s+(?:to|in|into|on)\s+(.+)$/i.exec(
+      action,
+    );
+    if (!place) continue;
+    transfers.push({
+      step: step.step,
+      action: step.action,
+      object: place[1]!.trim(),
+      container: place[2]!.trim(),
+      direction: "placed",
+    });
+  }
+  return transfers;
+}
+
+function formatContainerTransfer(transfer: ContainerObjectTransfer): string {
+  return transfer.direction === "placed"
+    ? `${transfer.object} placed in ${transfer.container}`
+    : `${transfer.object} removed from ${transfer.container}`;
 }
 
 function parseInventoryChange(action: string, held: Set<string>): string | undefined {

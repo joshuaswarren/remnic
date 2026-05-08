@@ -275,6 +275,63 @@ test("buildTrajectoryAnalysisRecallSection preserves before-step entity history"
   assert.doesNotMatch(section, /move cd 3 to safe 1/);
 });
 
+test("buildTrajectoryAnalysisRecallSection summarizes container object transfers for state questions", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [8, "open safe 1", "safe 1 is open"],
+      [9, "close safe 1", "safe 1 is closed"],
+      [23, "open safe 1", "safe 1 is open"],
+      [24, "move cd 3 to safe 1", "cd 3 is in safe 1"],
+      [83, "close safe 1", "safe 1 is closed"],
+      [84, "examine safe 1", "safe 1 is closed"],
+      [85, "open safe 1", "safe 1 is open"],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "How did the state of safe 1 change throughout the trajectory, including what objects were placed in or removed from it?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Action 8.*open safe 1/);
+  assert.match(section, /Object transfers involving safe 1/);
+  assert.match(section, /Action 24.*move cd 3 to safe 1.*cd 3 placed in safe 1/);
+  assert.match(section, /Latest safe 1 state at step 85: open/);
+});
+
+test("buildTrajectoryAnalysisRecallSection keeps broad container history focused on state changes", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [8, "open safe 1", "safe 1 is open"],
+      [9, "close safe 1", "safe 1 is closed"],
+      [12, "open drawer 1", "drawer 1 is open"],
+      [13, "close drawer 1", "drawer 1 is closed"],
+      [20, "take cd 3 from drawer 4", "carrying cd 3"],
+      [23, "open safe 1", "safe 1 is open"],
+      [24, "move cd 3 to safe 1", "cd 3 is in safe 1"],
+      [80, "take cd 2 from desk 2", "carrying cd 2"],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "Until step 80, which containers has the agent interacted with and what state changes occurred?",
+    maxChars: 4000,
+  });
+
+  assert.match(section, /Container open\/close state changes/);
+  assert.match(section, /Action 8.*open safe 1/);
+  assert.match(section, /Action 12.*open drawer 1/);
+  assert.doesNotMatch(section, /Object transfers/);
+  assert.doesNotMatch(section, /move cd 3 to safe 1/);
+  assert.doesNotMatch(section, /take cd 2 from desk 2/);
+});
+
 test("buildTrajectoryAnalysisRecallSection summarizes inventory and frequency", async () => {
   const engine = new FakeCueEngine({
     ama: makeTrajectoryMessages([

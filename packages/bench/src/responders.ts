@@ -43,6 +43,7 @@ const SCORE_CUE_REGEX = /\b(score|rated|rating|grade|graded|result|overall|final
 const CONTEXT_COMPACTION_MARKER = "[...omitted unrelated recalled context...]";
 const COMPACTED_CONTEXT_PREFIX =
   "[Remnic memory context compacted for the responder prompt; full recalled text is preserved in the benchmark artifact.]";
+const TRAJECTORY_ANALYSIS_HEADING = "## Trajectory analysis";
 const TRAJECTORY_LABELS = Object.freeze([
   "action",
   "observation",
@@ -229,9 +230,17 @@ export function compactResponderContext(
   }
 
   const stepRefs = extractReferencedTrajectoryNumbers(question);
-  const body = stepRefs.size > 0
+  const trajectoryAnalysis = extractContextSection(
+    normalized,
+    TRAJECTORY_ANALYSIS_HEADING,
+  );
+  const focusedTranscript = stepRefs.size > 0
     ? buildTrajectoryFocusedContext(normalized, stepRefs)
     : "";
+  const body = joinCompactedContextSections(
+    trajectoryAnalysis,
+    focusedTranscript,
+  );
   const compactedBody = body.trim().length > 0
     ? body.trim()
     : headTailCompact(normalized, maxChars);
@@ -246,6 +255,42 @@ export function compactResponderContext(
   }
 
   return `${COMPACTED_CONTEXT_PREFIX}\n${headTailCompact(compactedBody, bodyBudget)}`;
+}
+
+function extractContextSection(
+  text: string,
+  heading: string,
+): string {
+  const lines = text.split("\n");
+  const start = lines.findIndex((line) => line.trim() === heading);
+  if (start < 0) {
+    return "";
+  }
+
+  let end = lines.length;
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (trimmed.startsWith("## ") && trimmed !== heading) {
+      end = index;
+      break;
+    }
+  }
+
+  return lines.slice(start, end).join("\n").trim();
+}
+
+function joinCompactedContextSections(...sections: string[]): string {
+  const rendered: string[] = [];
+  const seen = new Set<string>();
+  for (const section of sections) {
+    const trimmed = section.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    rendered.push(trimmed);
+  }
+  return rendered.join(`\n\n${CONTEXT_COMPACTION_MARKER}\n\n`);
 }
 
 function extractReferencedTrajectoryNumbers(question: string): Set<number> {

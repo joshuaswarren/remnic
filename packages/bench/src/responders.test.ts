@@ -111,6 +111,41 @@ test("responder context compaction preserves referenced trajectory evidence", as
   assert.equal(capturedPrompt.length < recalledText.length, true);
 });
 
+test("responder context compaction preserves trajectory analysis before raw transcript lines", () => {
+  const recalledText = [
+    "## Explicit Cue Evidence",
+    "[Action 115]: go to garbagecan 1",
+    "[Observation 115]: You arrive at garbagecan 1.",
+    "",
+    "## Trajectory analysis",
+    "Analyzed labeled action/observation transcript window: steps 0-115 (at).",
+    "Timeline for cd 2:",
+    "[Action 80]: take cd 2 from desk 2",
+    "Inferred cd 2 location at step 115: inventory.",
+    "Timeline for cd 3:",
+    "[Action 20]: take cd 3 from drawer 4",
+    "[Action 24]: move cd 3 to safe 1",
+    "Inferred cd 3 location at step 115: safe 1.",
+    "",
+    "## Search evidence",
+    ...Array.from({ length: 120 }, (_, index) =>
+      `[Action ${index}]: noisy old action ${index}`,
+    ),
+  ].join("\n");
+
+  const compacted = compactResponderContext(
+    recalledText,
+    "What is the location of cd 3, cd 2 at step 115?",
+    900,
+  );
+
+  assert.match(compacted, /## Trajectory analysis/);
+  assert.match(compacted, /Inferred cd 2 location at step 115: inventory/);
+  assert.match(compacted, /Inferred cd 3 location at step 115: safe 1/);
+  assert.match(compacted, /Action 115/);
+  assert.equal(compacted.length <= 900, true);
+});
+
 test("compactResponderContext falls back to deterministic head/tail context without trajectory references", () => {
   const compacted = compactResponderContext(
     "alpha ".repeat(200) + "omega",

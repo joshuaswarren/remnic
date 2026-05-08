@@ -91,6 +91,8 @@ const CODEX_CLI_PARENT_SIGNALS: NodeJS.Signals[] = [
 const CODEX_CLI_FORCED_PARENT_EXIT_MS = 1_000;
 const CODEX_CLI_DIAGNOSTICS_DIR_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_DIR";
 const CODEX_CLI_DIAGNOSTICS_MODE_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_MODE";
+const CODEX_CLI_EXECUTABLE_ENV = "REMNIC_BENCH_CODEX_CLI_EXECUTABLE";
+const CODEX_CLI_VERSION_TIMEOUT_MS = 5_000;
 
 const activeCodexCliChildPids = new Set<number>();
 let codexCliParentCleanupInstalled = false;
@@ -177,7 +179,7 @@ class CodexCliProvider implements LlmProvider {
 
   async discover(): Promise<DiscoveredModel[]> {
     const version = await this.runCodexVersion(
-      this.config.executable ?? "codex",
+      resolveCodexCliExecutable(this.config),
       buildIsolatedCodexEnv(),
     );
     if (version.status !== 0) {
@@ -248,7 +250,7 @@ class CodexCliProvider implements LlmProvider {
     ];
 
     return {
-      executable: this.config.executable ?? "codex",
+      executable: resolveCodexCliExecutable(this.config),
       args,
       input: buildCodexCompletionPrompt(prompt, opts.systemPrompt),
       outputPath,
@@ -268,18 +270,75 @@ function runCodexVersionCommand(
     const child = spawn(executable, ["--version"], {
       env,
       stdio: ["ignore", "ignore", "pipe"],
+      detached: process.platform !== "win32",
       windowsHide: true,
     });
     let stderr = "";
+    let timedOut = false;
+    let killTimeout: NodeJS.Timeout | undefined;
+    const terminateChild = (signal: NodeJS.Signals): void => {
+      if (child.pid && process.platform !== "win32") {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // Fall back to killing the direct child below.
+        }
+      }
+      child.kill(signal);
+    };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminateChild("SIGTERM");
+      killTimeout = setTimeout(() => {
+        terminateChild("SIGKILL");
+      }, 1_000);
+      killTimeout.unref();
+    }, CODEX_CLI_VERSION_TIMEOUT_MS);
+    timeout.unref();
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => {
       stderr = appendBounded(stderr, chunk);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      if (killTimeout) {
+        clearTimeout(killTimeout);
+      }
+      reject(error);
+    });
     child.on("close", (status) => {
-      resolve({ status, stderr });
+      clearTimeout(timeout);
+      if (killTimeout) {
+        clearTimeout(killTimeout);
+      }
+      resolve({
+        status: timedOut ? status ?? 124 : status,
+        stderr: timedOut
+          ? appendBounded(
+              stderr,
+              `\nCodex CLI --version timed out after ${CODEX_CLI_VERSION_TIMEOUT_MS}ms.`,
+            )
+          : stderr,
+      });
     });
   });
+}
+
+function resolveCodexCliExecutable(config: CodexCliProviderConfig): string {
+  const configured =
+    config.executable ?? process.env[CODEX_CLI_EXECUTABLE_ENV];
+  if (configured === undefined) {
+    return "codex";
+  }
+
+  const trimmed = configured.trim();
+  if (trimmed.length === 0) {
+    throw new Error(
+      `${CODEX_CLI_EXECUTABLE_ENV} / codex-cli executable must not be empty`,
+    );
+  }
+  return trimmed;
 }
 
 function buildCodexCompletionPrompt(
@@ -786,6 +845,7 @@ export const __codexCliProviderTestHooks = {
   getActiveCodexCliChildCount: () => activeCodexCliChildPids.size,
   parseCodexTokenUsage,
   resolveCodexCliDiagnosticsDir,
+  resolveCodexCliExecutable,
   runCodexCliCommand,
   terminateActiveCodexCliChildren,
 };
