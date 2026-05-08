@@ -289,6 +289,17 @@ test("codex-cli provider writes full diagnostics only when explicitly requested"
   }
 });
 
+test("codex-cli diagnostics dir expands home-relative tilde paths", () => {
+  assert.equal(
+    __codexCliProviderTestHooks.resolveCodexCliDiagnosticsDir({
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      diagnosticsDir: "~/codex-diag",
+    }),
+    path.join(os.homedir(), "codex-diag"),
+  );
+});
+
 test("codex-cli command terminates subprocess when aborted", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-cli-test-"));
   const controller = new AbortController();

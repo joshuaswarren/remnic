@@ -411,9 +411,20 @@ function resolveCodexCliDiagnosticsDir(
   config: CodexCliProviderConfig,
 ): string | undefined {
   const dir = config.diagnosticsDir ?? process.env[CODEX_CLI_DIAGNOSTICS_DIR_ENV];
-  return typeof dir === "string" && dir.trim().length > 0
-    ? path.resolve(dir)
+  const trimmed = typeof dir === "string" ? dir.trim() : "";
+  return trimmed.length > 0
+    ? path.resolve(expandHomeRelativePath(trimmed))
     : undefined;
+}
+
+function expandHomeRelativePath(value: string): string {
+  if (value === "~") {
+    return os.homedir();
+  }
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return value;
 }
 
 function resolveCodexCliDiagnosticsMode(
@@ -774,6 +785,7 @@ export const __codexCliProviderTestHooks = {
   buildIsolatedCodexEnv,
   getActiveCodexCliChildCount: () => activeCodexCliChildPids.size,
   parseCodexTokenUsage,
+  resolveCodexCliDiagnosticsDir,
   runCodexCliCommand,
   terminateActiveCodexCliChildren,
 };
