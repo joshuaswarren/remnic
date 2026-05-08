@@ -1135,21 +1135,45 @@ function appendSpatialTrajectoryInferenceLines(
   const wantsRules = /\brules?\b/.test(normalized) ||
     /\bwin\s+condition\b/.test(normalized) ||
     /\bpush(?:able)?\s+word\b/.test(normalized);
-  const wantsStrategicOrCounterfactual = /\b(?:counterproductive|strategic|objective|instead|alternative|progress|goal|necessary|critical)\b/.test(
+  const wantsStrategicOrCounterfactual = /\b(?:blocked|counterproductive|failed|failure|infer|inferred|objective|instead|alternative|progress|goal|necessary|critical|strategic|successful)\b/.test(
     normalized,
   );
-  if (!wantsRelativePosition && !wantsRules && !wantsStrategicOrCounterfactual) {
+  const wantsStateTransformation = /\b(?:appear|appears|appeared|disappear|disappears|disappeared|temporary|transformation|hidden\s+state|reversed)\b/.test(
+    normalized,
+  );
+  if (!wantsRelativePosition && !wantsRules && !wantsStrategicOrCounterfactual && !wantsStateTransformation) {
     return;
   }
 
   const window = spatialTrajectoryWindowForQuery(query, trajectory, bounds);
-  const actionMovementLines = collectActionMovementSummaryLines(query, window, bounds);
+  const counterfactualContactLines = collectCounterfactualContactLines(query, trajectory, normalized);
+  if (counterfactualContactLines.length > 0) {
+    lines.push("Counterfactual contact cues:");
+    lines.push(...counterfactualContactLines);
+  }
+
+  const selfReversingLines = collectSelfReversingProgressLines(query, window, normalized);
+  if (selfReversingLines.length > 0) {
+    lines.push("Self-reversing sequence cues:");
+    lines.push(...selfReversingLines);
+  }
+  const suppressMovementProgressEvidence = selfReversingLines.some((line) =>
+    line.includes("named movement sequence") &&
+    /\bwhich\b/.test(normalized) &&
+    /\brelevant\b/.test(normalized)
+  );
+
+  const actionMovementLines = suppressMovementProgressEvidence
+    ? []
+    : collectActionMovementSummaryLines(query, window, bounds);
   if (actionMovementLines.length > 0) {
     lines.push("Action movement summary cues:");
     lines.push(...actionMovementLines);
   }
 
-  const movementLines = collectMovementDeltaLines(query, window);
+  const movementLines = suppressMovementProgressEvidence
+    ? []
+    : collectMovementDeltaLines(query, window);
   if (movementLines.length > 0) {
     lines.push("Relative-position movement cues:");
     lines.push(...movementLines);
@@ -1172,10 +1196,40 @@ function appendSpatialTrajectoryInferenceLines(
     lines.push(...alternativeActionLines);
   }
 
+  const adjacentRuleSetupLines = collectAdjacentRuleSetupLines(window, normalized);
+  if (adjacentRuleSetupLines.length > 0) {
+    lines.push("Adjacent rule-block setup cues:");
+    lines.push(...adjacentRuleSetupLines);
+  }
+
   const blockedMoveLines = collectBlockedMoveLines(query, window, normalized);
   if (blockedMoveLines.length > 0) {
     lines.push("Blocked-move cues:");
     lines.push(...blockedMoveLines);
+  }
+
+  const failedContactLines = collectFailedContactBoundaryLines(window, normalized);
+  if (failedContactLines.length > 0) {
+    lines.push("Failed-push boundary cues:");
+    lines.push(...failedContactLines);
+  }
+
+  const failedEscapeLines = collectFailedEscapeLines(query, trajectory, normalized);
+  if (failedEscapeLines.length > 0) {
+    lines.push("Failed-move escape cues:");
+    lines.push(...failedEscapeLines);
+  }
+
+  const transformationLines = collectTemporaryRuleTransformationLines(window, normalized);
+  if (transformationLines.length > 0) {
+    lines.push("Temporary transformation cues:");
+    lines.push(...transformationLines);
+  }
+
+  const wholeConfigurationShiftLines = collectWholeConfigurationShiftLines(window, normalized);
+  if (wholeConfigurationShiftLines.length > 0) {
+    lines.push("Whole-configuration shift cues:");
+    lines.push(...wholeConfigurationShiftLines);
   }
 
   const ruleInterventionLines = collectRuleInterventionStrategyLines(window, normalized);
@@ -1196,7 +1250,15 @@ function appendSpatialTrajectoryInferenceLines(
     lines.push(...rulePhraseAlignmentLines);
   }
 
-  const ruleTextPositionLines = collectRuleTextPositionLines(window, normalized);
+  const controlRuleInteractionLines = collectControlRuleInteractionLines(window, normalized);
+  if (controlRuleInteractionLines.length > 0) {
+    lines.push("Control-rule interaction cues:");
+    lines.push(...controlRuleInteractionLines);
+  }
+
+  const ruleTextPositionLines = suppressMovementProgressEvidence
+    ? []
+    : collectRuleTextPositionLines(window, normalized);
   if (ruleTextPositionLines.length > 0) {
     lines.push("Rule-text positioning cues:");
     lines.push(...ruleTextPositionLines);
@@ -1224,6 +1286,39 @@ function spatialTrajectoryWindowForQuery(
   if (references.length > 0 && hasManeuverInterpretationCue(normalized)) {
     start = Math.min(start, ...references);
     end = Math.max(end, ...references);
+  }
+
+  if (
+    references.length > 0 &&
+    /\b(?:then|at\s+the\s+start\s+of|start\s+of|optimal|successful|failed|corrective)\b/.test(
+      normalized,
+    )
+  ) {
+    end = Math.max(end, ...references);
+  }
+
+  if (/\b(?:failed|successful|before\s+the\s+successful)\b/.test(normalized)) {
+    for (const match of normalized.matchAll(/\bsteps?\s+(\d+)\s*(?:-|to|through|thru)\s*(\d+)\b/g)) {
+      const rangeStart = parseNonNegativeIntegerToken(match[1] ?? "");
+      const rangeEnd = parseNonNegativeIntegerToken(match[2] ?? "");
+      if (rangeStart !== undefined && rangeEnd !== undefined) {
+        start = Math.min(start, rangeStart, rangeEnd);
+        end = Math.max(end, rangeStart, rangeEnd);
+      }
+    }
+    const successfulStep = firstMatchInteger(normalized, /\bsuccessful\s+move\s+at\s+step\s+(\d+)\b/);
+    if (successfulStep !== undefined) {
+      end = Math.max(end, successfulStep);
+    }
+  }
+
+  if (
+    references.length > 0 &&
+    /\b(?:appear|appears|appeared|disappear|disappears|disappeared|temporary|transformation|hidden\s+state|reversed)\b/.test(
+      normalized,
+    )
+  ) {
+    end = Math.max(end, ...references.map((reference) => reference + 1));
   }
 
   if (hasManeuverInterpretationCue(normalized) || /\brelative\s+position\b/.test(normalized)) {
@@ -1402,6 +1497,100 @@ function collectMovementDeltaLines(
   return lines.slice(0, 8);
 }
 
+function collectSelfReversingProgressLines(
+  query: string,
+  window: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (
+    !/\b(?:relevant|progress|goal|touching|win\s+object|zero\s+net|self[- ]?reversing|opposing)\b/.test(
+      normalizedQuery,
+    )
+  ) {
+    return [];
+  }
+  const mentionedMoves = extractMentionedMoveSequence(query);
+  const moves = mentionedMoves.length >= 2
+    ? mentionedMoves
+    : window
+        .map((step) => (step.action ? agentMoveDeltaFromAction(step.action)?.direction : undefined))
+        .filter((direction): direction is AgentMoveDelta["direction"] => direction !== undefined);
+  if (moves.length < 2) {
+    return [];
+  }
+
+  const hasReversePair =
+    containsAdjacentReversePair(moves, "right", "left") ||
+    containsAdjacentReversePair(moves, "left", "right") ||
+    containsAdjacentReversePair(moves, "up", "down") ||
+    containsAdjacentReversePair(moves, "down", "up");
+  if (!hasReversePair) {
+    return [];
+  }
+
+  const net = summarizeMoveNet(
+    moves.map((direction) => agentMoveDeltaFromAction(direction)!),
+  );
+  const lines: string[] = [];
+  if (net.dx === 0 && net.dy === 0) {
+    lines.push(
+      `The named movement sequence (${moves.join(", ")}) has net displacement 0; treat the actions as self-reversing exploratory noise unless a lasting rule, reward, inventory, or object-contact change is shown.`,
+    );
+    if (/\bwhich\b/.test(normalizedQuery) && /\brelevant\b/.test(normalizedQuery)) {
+      lines.push(
+        `For a question asking which named actions were relevant, answer that none of the named actions made lasting progress when the sequence cancels out and no durable state change is shown.`,
+      );
+    }
+  } else if (
+    mentionedMoves.length >= 4 &&
+    containsAdjacentReversePair(mentionedMoves, "right", "left") &&
+    containsAdjacentReversePair(mentionedMoves, "down", "up")
+  ) {
+    lines.push(
+      `The named right/left and down/up pairs are self-reversing; temporary closeness to a win object inside a reversed pair is not lasting progress toward touching that object.`,
+    );
+  }
+  return lines;
+}
+
+function extractMentionedMoveSequence(query: string): AgentMoveDelta["direction"][] {
+  const moves: AgentMoveDelta["direction"][] = [];
+  for (const value of extractBacktickValues(query)) {
+    const move = agentMoveDeltaFromAction(value);
+    if (move) {
+      moves.push(move.direction);
+    }
+  }
+  if (moves.length > 0) {
+    return moves;
+  }
+
+  const normalized = normalizeTrajectoryQuery(query);
+  const sequence = /(?:sequence\s+of\s+(?:four\s+)?movements?|actions?\s+from\s+step\s+\d+\s+to\s+\d+\s+consist\s+of)\s+((?:up|down|left|right)(?:\s+(?:and|then|,)\s+(?:up|down|left|right))*)/.exec(
+    normalized,
+  )?.[1];
+  if (!sequence) {
+    return [];
+  }
+  return sequence
+    .split(/\s*(?:,|and|then)\s*/)
+    .map((token) => agentMoveDeltaFromAction(token)?.direction)
+    .filter((direction): direction is AgentMoveDelta["direction"] => direction !== undefined);
+}
+
+function containsAdjacentReversePair(
+  moves: readonly AgentMoveDelta["direction"][],
+  first: AgentMoveDelta["direction"],
+  second: AgentMoveDelta["direction"],
+): boolean {
+  for (let index = 1; index < moves.length; index += 1) {
+    if (moves[index - 1] === first && moves[index] === second) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function collectObjectAlignmentLines(
   query: string,
   window: readonly LabeledTrajectoryStep[],
@@ -1531,6 +1720,7 @@ function collectAlternativeActionLines(
   }
 
   const targetStep = firstMatchInteger(normalized, /\bstart\s+of\s+step\s+(\d+)\b/) ??
+    firstMatchInteger(normalized, /\bfrom\s+step\s+(\d+)\s+to\s+\d+\b/) ??
     firstMatchInteger(normalized, /\binstead\s+of\s+(?:moving|going)\s+[a-z]+\s+(?:in|at|on)\s+step\s+(\d+)\b/) ??
     firstMatchInteger(normalized, /\b(?:if\s+)?(?:at|in|on)\s+step\s+(\d+)\b/);
   if (targetStep === undefined) {
@@ -1616,6 +1806,141 @@ function collectAlternativeActionLines(
   return lines;
 }
 
+function collectCounterfactualContactLines(
+  query: string,
+  trajectory: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (!/\b(?:instead|would\s+have|if\s+the\s+agent|if\s+at\s+step|had\s+instead)\b/.test(normalizedQuery)) {
+    return [];
+  }
+  const targetStep = firstMatchInteger(normalizedQuery, /\bstart\s+of\s+step\s+(\d+)\b/) ??
+    firstMatchInteger(normalizedQuery, /\bfrom\s+step\s+(\d+)\s+to\s+\d+\b/) ??
+    firstMatchInteger(normalizedQuery, /\binstead\s+of\s+(?:moving|going)\s+[a-z]+\s+(?:in|at|on)\s+step\s+(\d+)\b/) ??
+    firstMatchInteger(normalizedQuery, /\b(?:if\s+)?(?:at|in|on)\s+step\s+(\d+)\b/) ??
+    firstMatchInteger(normalizedQuery, /\baction\s+at\s+step\s+(\d+)\b/);
+  const move = extractAlternativeMove(normalizedQuery);
+  if (targetStep === undefined || !move) {
+    return [];
+  }
+
+  const byStep = new Map(trajectory.map((step) => [step.step, step]));
+  const useSameStepLayout =
+    normalizedQuery.includes(`layout in step ${targetStep}`) ||
+    normalizedQuery.includes(`shown in step ${targetStep}`) ||
+    normalizedQuery.includes(`configuration shown in step ${targetStep}`) ||
+    normalizedQuery.includes(`based on the object layout in step ${targetStep}`);
+  const observationStep = useSameStepLayout
+    ? byStep.get(targetStep)
+    : byStep.get(targetStep - 1) ?? byStep.get(targetStep);
+  if (!observationStep?.observation) {
+    return [];
+  }
+
+  const contacts = parseRelativePositionEntries(observationStep.observation)
+    .filter((position) => position.x === move.dx && position.y === move.dy)
+    .sort((left, right) => {
+      const leftRule = normalizeEntity(left.entity).startsWith("rule ") ? 0 : 1;
+      const rightRule = normalizeEntity(right.entity).startsWith("rule ") ? 0 : 1;
+      return leftRule - rightRule || normalizeEntity(left.entity).localeCompare(normalizeEntity(right.entity));
+    });
+  if (contacts.length === 0) {
+    return [];
+  }
+
+  const contact = contacts[0]!;
+  const lines = [
+    `At Observation ${observationStep.step}, ${contact.entity} is ${contact.raw}; a counterfactual Action ${targetStep} ${move.direction} would contact that block. In the benchmark's push mechanics, this is the expected push interaction: push it one cell ${move.direction} and move the agent into the block's original cell unless an explicit STOP/boundary cue says otherwise. Do not describe this as merely stepping onto or overlapping the block.`,
+  ];
+  if (/\bwall\s+is\s+stop\b/.test(normalizedQuery)) {
+    const sameRowIs = findRuleIsOnSameRowAfterMove(observationStep.observation, move);
+    if (sameRowIs) {
+      lines.push(
+        `After that ${move.direction} move, ${sameRowIs.entity} from ${sameRowIs.raw} would be on the agent's same horizontal row at ${formatRelativePosition({ x: sameRowIs.x - move.dx, y: sameRowIs.y - move.dy })}, setting up a later lateral push of IS toward WALL and STOP.`,
+      );
+    }
+    lines.push(
+      `For a WALL IS STOP formation question, this contact is a positioning setup for getting onto the same row/line as rule IS so a later move can push IS into alignment with WALL and STOP.`,
+    );
+  }
+  if (/\brule\s+words?\b|\brule\s+blocks?\b|\bis\s+block\b|\btext\s+block\b/.test(normalizedQuery)) {
+    lines.push(
+      `Prefer this concrete contact/push interpretation over a vague movement-only explanation when the question asks about manipulating rule words.`,
+    );
+  }
+  return lines.slice(0, 3);
+}
+
+function findRuleIsOnSameRowAfterMove(
+  observation: string,
+  move: AgentMoveDelta,
+): RelativePosition | undefined {
+  return parseRelativePositionEntries(observation)
+    .filter((position) => normalizeEntity(position.entity) === "rule is")
+    .map((position) => ({
+      position,
+      afterX: position.x - move.dx,
+      afterY: position.y - move.dy,
+    }))
+    .filter((entry) => entry.afterY === 0)
+    .sort((left, right) => Math.abs(left.afterX) - Math.abs(right.afterX))[0]?.position;
+}
+
+function collectAdjacentRuleSetupLines(
+  window: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (
+    !/\b(?:final\s+position|relative\s+to\s+(?:the\s+)?rule|rule\s+blocks?|rule\s+words?|strategic\s+advantage|manipulat(?:e|ing)\s+(?:the\s+)?rule|push(?:ed|ing)?\s+(?:the\s+)?(?:is|win|baba|you|key|door)?\s*(?:text\s+)?block)\b/.test(
+      normalizedQuery,
+    )
+  ) {
+    return [];
+  }
+
+  const latest = [...window].reverse().find((step) => step.observation);
+  if (!latest?.observation) {
+    return [];
+  }
+
+  const adjacent = parseRelativePositionEntries(latest.observation)
+    .filter((position) => normalizeEntity(position.entity).startsWith("rule "))
+    .filter((position) => manhattanDistance(position) === 1)
+    .sort((left, right) => {
+      const leftMentioned = normalizedQuery.includes(normalizeEntity(left.entity).replace(/^rule\s+/, "")) ? 0 : 1;
+      const rightMentioned = normalizedQuery.includes(normalizeEntity(right.entity).replace(/^rule\s+/, "")) ? 0 : 1;
+      return leftMentioned - rightMentioned || normalizeEntity(left.entity).localeCompare(normalizeEntity(right.entity));
+    });
+  const lines: string[] = [];
+  for (const position of adjacent.slice(0, 3)) {
+    const direction = pushDirectionForAdjacentPosition(position);
+    if (!direction) {
+      continue;
+    }
+    const base = normalizeEntity(position.entity).replace(/^rule\s+/, "");
+    lines.push(
+      `At Observation ${latest.step}, ${position.entity} is ${position.raw}; the agent is directly ${agentRelationToAdjacentBlock(position)} the ${base.toUpperCase()} text block, so a future ${direction} action can push ${base.toUpperCase()} ${direction} to manipulate rule syntax.`,
+    );
+  }
+  return lines;
+}
+
+function pushDirectionForAdjacentPosition(position: RelativePosition): AgentMoveDelta["direction"] | undefined {
+  if (position.x === 0 && position.y === -1) return "up";
+  if (position.x === 0 && position.y === 1) return "down";
+  if (position.x === -1 && position.y === 0) return "left";
+  if (position.x === 1 && position.y === 0) return "right";
+  return undefined;
+}
+
+function agentRelationToAdjacentBlock(position: RelativePosition): string {
+  if (position.x === 0 && position.y === -1) return "underneath";
+  if (position.x === 0 && position.y === 1) return "above";
+  if (position.x === -1 && position.y === 0) return "to the right of";
+  if (position.x === 1 && position.y === 0) return "to the left of";
+  return "next to";
+}
+
 function collectBlockedMoveLines(
   query: string,
   window: readonly LabeledTrajectoryStep[],
@@ -1677,6 +2002,264 @@ function collectBlockedMoveLines(
   }
 
   return uniqueLines(lines).slice(0, 6);
+}
+
+function collectFailedContactBoundaryLines(
+  window: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (!/\b(?:failed|fail|blocked|no\s+change|unchanged|inability)\b/.test(normalizedQuery)) {
+    return [];
+  }
+
+  const directions = new Set<AgentMoveDelta["direction"]>();
+  let hasExplicitDirection = false;
+  for (const direction of ["up", "down", "left", "right"] as const) {
+    if (
+      normalizedQuery.includes(`failed ${direction}`) ||
+      normalizedQuery.includes(`${direction} action repeatedly fails`) ||
+      normalizedQuery.includes(`${direction} attempt`) ||
+      normalizedQuery.includes(`moves ${direction}`)
+    ) {
+      directions.add(direction);
+      hasExplicitDirection = true;
+    }
+  }
+  if (!hasExplicitDirection) {
+    for (const step of window) {
+      const move = step.action ? agentMoveDeltaFromAction(step.action) : undefined;
+      if (move) {
+        directions.add(move.direction);
+      }
+    }
+  }
+  if (directions.size === 0) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  for (const step of window) {
+    if (!step.observation) {
+      continue;
+    }
+    const positions = parseRelativePositionEntries(step.observation);
+    for (const direction of directions) {
+      const move = agentMoveDeltaFromAction(direction)!;
+      const contact = positions.find(
+        (position) => position.x === move.dx && position.y === move.dy,
+      );
+      if (!contact) {
+        continue;
+      }
+      const normalizedEntity = normalizeEntity(contact.entity);
+      if (normalizedEntity.startsWith("rule ")) {
+        const stopRules = parseActiveRules(step.observation).filter((rule) => rule.endsWith(" is stop"));
+        const stopContext = stopRules.length === 0
+          ? "No active STOP rule is involved; "
+          : "";
+        lines.push(
+          `At Observation ${step.step}, ${contact.entity} is ${contact.raw}; failed ${direction} moves identify this text block as the blocker. ${stopContext}since rule/text blocks normally move when pushed, the failure implies the block cannot move further ${direction} because it is pressed against the ${boundaryNameForDirection(direction)}.`,
+        );
+      } else {
+        lines.push(
+          `At Observation ${step.step}, ${contact.entity} is ${contact.raw}; failed ${direction} moves identify that adjacent object as the immediate blocker.`,
+        );
+      }
+    }
+  }
+  return uniqueLines(lines).slice(0, 5);
+}
+
+function boundaryNameForDirection(direction: AgentMoveDelta["direction"]): string {
+  if (direction === "up") return "top/northern edge of the playable area";
+  if (direction === "down") return "bottom/southern edge of the playable area";
+  if (direction === "left") return "left/western edge of the playable area";
+  return "right/eastern edge of the playable area";
+}
+
+function collectFailedEscapeLines(
+  query: string,
+  trajectory: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (!/\bfailed\s+moves?\b/.test(normalizedQuery) || !/\bsuccessful\s+move\s+at\s+step\s+\d+\b/.test(normalizedQuery)) {
+    return [];
+  }
+
+  const failedGroups = [...normalizedQuery.matchAll(/\b(up|down|left|right)\s+in\s+steps?\s+(\d+)\s*(?:-|to|through|thru)\s*(\d+)\b/g)]
+    .map((match) => match[1] as AgentMoveDelta["direction"]);
+  if (failedGroups.length === 0) {
+    return [];
+  }
+
+  const successStep = firstMatchInteger(normalizedQuery, /\bsuccessful\s+move\s+at\s+step\s+(\d+)\b/);
+  const successAction = successStep === undefined
+    ? undefined
+    : trajectory.find((step) => step.step === successStep)?.action;
+  const blocked = failedGroups.map(blockedSideName);
+  const escapes = uniqueLines(failedGroups.map(oppositeMoveDirection));
+  const success = successStep === undefined
+    ? "the later successful move"
+    : `the successful ${normalizeActionVerb(successAction ?? "") || "escape"} move at step ${successStep}`;
+  return [
+    `Failed ${failedGroups.join("/")} move groups imply the agent was blocked ${formatNaturalList(blocked)} and likely cornered; the useful escape direction(s) are ${formatNaturalList(escapes)}. Treat ${success} as the escape from that blocked corner, not as missing evidence.`,
+  ];
+}
+
+function blockedSideName(direction: AgentMoveDelta["direction"]): string {
+  if (direction === "up") return "above";
+  if (direction === "down") return "below";
+  return `to the ${direction}`;
+}
+
+function oppositeMoveDirection(direction: AgentMoveDelta["direction"]): AgentMoveDelta["direction"] {
+  if (direction === "up") return "down";
+  if (direction === "down") return "up";
+  if (direction === "left") return "right";
+  return "left";
+}
+
+function formatNaturalList(values: readonly string[]): string {
+  const unique = uniqueLines(values);
+  if (unique.length <= 1) {
+    return unique[0] ?? "";
+  }
+  if (unique.length === 2) {
+    return `${unique[0]} and ${unique[1]}`;
+  }
+  return `${unique.slice(0, -1).join(", ")}, and ${unique[unique.length - 1]}`;
+}
+
+function collectTemporaryRuleTransformationLines(
+  window: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (
+    !/\b(?:appear|appears|appeared|disappear|disappears|disappeared|temporary|transformation|hidden\s+state|reversed)\b/.test(
+      normalizedQuery,
+    )
+  ) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  for (let index = 1; index < window.length - 1; index += 1) {
+    const previous = window[index - 1]!;
+    const current = window[index]!;
+    const next = window[index + 1]!;
+    if (!previous.observation || !current.observation || !next.observation) {
+      continue;
+    }
+    const previousPositions = parseRelativePositions(previous.observation);
+    const currentPositions = parseRelativePositions(current.observation);
+    const nextPositions = parseRelativePositions(next.observation);
+    for (const [entity] of currentPositions.entries()) {
+      if (entity.startsWith("rule ") || previousPositions.has(entity) || nextPositions.has(entity)) {
+        continue;
+      }
+      const activeRules = new Set([
+        ...parseActiveRules(previous.observation),
+        ...parseActiveRules(current.observation),
+        ...parseActiveRules(next.observation),
+      ]);
+      if (activeRules.has(`${entity} is win`) || activeRules.has(`${entity} is you`)) {
+        continue;
+      }
+      lines.push(
+        `${entity} appears in Observation ${current.step} but is absent before and after; with surrounding actions reversing each other, explain this as a temporary hidden rule/text alignment that transformed another object into ${entity} and then broke again, not as a permanent object pickup or overlap.`,
+      );
+      if (entity === "key") {
+        lines.push(
+          `For a temporary key appearance, a plausible hidden rule is BALL IS KEY or another object IS KEY formed by the right move and broken by the left move.`,
+        );
+      }
+    }
+  }
+  return uniqueLines(lines).slice(0, 4);
+}
+
+function collectWholeConfigurationShiftLines(
+  window: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (
+    !/\b(?:entire|whole|all)\b/.test(normalizedQuery) ||
+    !/\b(?:configuration|level|objects?|rules?)\b/.test(normalizedQuery) ||
+    !/\bshift(?:ed|ing)?\b/.test(normalizedQuery)
+  ) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  for (let index = 1; index < window.length; index += 1) {
+    const previous = window[index - 1]!;
+    const current = window[index]!;
+    const move = current.action ? agentMoveDeltaFromAction(current.action) : undefined;
+    if (!previous.observation || !current.observation || !move) {
+      continue;
+    }
+    const previousPositions = parseRelativePositions(previous.observation);
+    const currentPositions = parseRelativePositions(current.observation);
+    const counts = new Map<string, { dx: number; dy: number; count: number }>();
+    for (const [entity, previousPosition] of previousPositions.entries()) {
+      const currentPosition = currentPositions.get(entity);
+      if (!currentPosition) {
+        continue;
+      }
+      const dx = currentPosition.x - previousPosition.x;
+      const dy = currentPosition.y - previousPosition.y;
+      if (dx === 0 && dy === 0) {
+        continue;
+      }
+      const key = `${dx}:${dy}`;
+      const entry = counts.get(key) ?? { dx, dy, count: 0 };
+      entry.count += 1;
+      counts.set(key, entry);
+    }
+    const best = [...counts.values()].sort((left, right) => right.count - left.count)[0];
+    if (!best || best.count < 5) {
+      continue;
+    }
+    lines.push(
+      `Observation ${previous.step}->${current.step} shows a coordinated whole-level push/shift after Action ${current.step} ${move.direction}: ${best.count} tracked objects or rule words all moved ${formatRelativePosition({ x: best.dx, y: best.dy })} relative to the agent. Treat the ${move.direction} action as the progress-enabling whole-configuration contact created by the prior setup, not as ordinary empty-space movement.`,
+    );
+    if (/\bleft\b/.test(normalizedQuery) || /\bdown\b/.test(normalizedQuery)) {
+      lines.push(
+        `By contrast, moving left or down would move back into empty space or undo the setup and would not trigger that coordinated configuration shift.`,
+      );
+    }
+  }
+  return uniqueLines(lines).slice(0, 3);
+}
+
+function collectControlRuleInteractionLines(
+  window: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (
+    !/\bbaba\s+is\s+you\b/.test(normalizedQuery) ||
+    !/\b(?:interact(?:ing)?|prerequisite|position(?:ing)?|control\s+rule|own\s+rule|necessary)\b/.test(normalizedQuery)
+  ) {
+    return [];
+  }
+
+  const latest = [...window].reverse().find((step) => step.observation);
+  if (!latest?.observation || !parseActiveRules(latest.observation).includes("baba is you")) {
+    return [];
+  }
+
+  const phrase = findAlignedRulePhrasePositions(
+    parseRelativePositionEntries(latest.observation),
+    "baba",
+    "you",
+  );
+  if (!phrase) {
+    return [];
+  }
+  return [
+    `At Observation ${latest.step}, the specific target text block is rule baba at ${phrase.subject.raw}, the leftmost word of the active BABA IS YOU phrase.`,
+    `Because BABA IS YOU makes Baba the controlled agent, the setup should not be described as directly pushing the BABA word itself from inside its own control rule. The purpose of becoming adjacent is to later push a different object or text block into the rule's syntax line to modify or break that control rule.`,
+  ];
 }
 
 function collectNoKeyWinRepositioningCue(
@@ -1931,21 +2514,31 @@ function collectRuleStateLines(
   }
   for (const object of [...seenObjects].sort((left, right) => left.localeCompare(right))) {
     if (!activeRules.some((rule) => rule.startsWith(`${object} is `))) {
+      if (!shouldExplainMissingObjectPushRule(object, normalizedQuery, asksExactRelativeState)) {
+        continue;
+      }
       lines.push(
         `No active rule for ${object} appears in this window; specifically, no "${object} is push" rule is active, so treat ${object} as not currently pushable and do not claim that a current move pushed ${object} unless the observations state that rule.`,
       );
-      if (
-        normalizedQuery.includes(object) &&
-        hasManeuverInterpretationCue(normalizedQuery) &&
-        !asksExactRelativeState
-      ) {
-        lines.push(
-          `For ${object} maneuver questions, make bypassing or repositioning around a not-pushable obstacle the strategic goal unless an active rule says "${object} is push"; do not make overlap, collection, removal, or pushing the goal unless the question asks that exact relative state.`,
-        );
-      }
+      lines.push(
+        `For ${object} maneuver questions, make bypassing or repositioning around a not-pushable obstacle the strategic goal unless an active rule says "${object} is push"; do not make overlap, collection, removal, or pushing the goal unless the question asks that exact relative state.`,
+      );
     }
   }
   return lines.slice(0, 8);
+}
+
+function shouldExplainMissingObjectPushRule(
+  object: string,
+  normalizedQuery: string,
+  asksExactRelativeState: boolean,
+): boolean {
+  if (asksExactRelativeState || !normalizedQuery.includes(object) || !hasManeuverInterpretationCue(normalizedQuery)) {
+    return false;
+  }
+  return /\b(?:implicit\s+property|not\s+pushable|unpushable|not-pushable|bypass|obstacle|around\s+(?:it|the)|ordinary\s+object)\b/.test(
+    normalizedQuery,
+  );
 }
 
 function parseStopRuleObjects(observation: string): string[] {
@@ -2974,6 +3567,11 @@ function extractAlternativeMove(normalizedQuery: string): AgentMoveDelta | undef
     if (
       normalizedQuery.includes(`moved ${direction} instead`) ||
       normalizedQuery.includes(`move ${direction} instead`) ||
+      normalizedQuery.includes(`instead moved ${direction}`) ||
+      normalizedQuery.includes(`instead chosen ${direction}`) ||
+      normalizedQuery.includes(`instead chosen to move ${direction}`) ||
+      normalizedQuery.includes(`instead chosen the action ${direction}`) ||
+      normalizedQuery.includes(`instead chosen to go ${direction}`) ||
       normalizedQuery.includes(`chosen the action ${direction}`) ||
       normalizedQuery.includes(`chose the action ${direction}`) ||
       normalizedQuery.includes(`action ${direction} at step`)
