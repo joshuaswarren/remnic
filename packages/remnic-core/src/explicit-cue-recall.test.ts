@@ -354,6 +354,24 @@ test("buildTrajectoryAnalysisRecallSection summarizes inventory and frequency", 
   assert.match(inventorySection, /inventory removed cd 3/);
   assert.match(inventorySection, /inventory added cd 2/);
 
+  const longInventorySection = await buildTrajectoryAnalysisRecallSection({
+    engine: new FakeCueEngine({
+      ama: makeTrajectoryMessages([
+        [1, "take apple 1 from desk 1", "carrying apple"],
+        [2, "move apple 1 to safe 1", "apple in safe"],
+        [3, "take mug 1 from desk 1", "carrying mug"],
+        [4, "move mug 1 to shelf 1", "mug on shelf"],
+        [5, "take pen 1 from drawer 1", "carrying pen"],
+        [6, "move pen 1 to drawer 2", "pen in drawer"],
+      ]),
+    }),
+    sessionId: "ama",
+    query: "What changes occurred to the inventory throughout the trajectory?",
+    maxChars: 4000,
+  });
+  assert.match(longInventorySection, /First five inventory changes: step 1: apple 1 added/);
+  assert.match(longInventorySection, /Complete inventory changes: .*step 6: pen 1 removed/);
+
   const frequencySection = await buildTrajectoryAnalysisRecallSection({
     engine,
     sessionId: "ama",
@@ -401,8 +419,15 @@ test("buildTrajectoryAnalysisRecallSection resolves quoted observation transitio
     query: `What sequence of actions would transform the state between the observation: "${sourceObservation}" and the observation: "${targetObservation}"?`,
     maxChars: 5000,
   });
+  assert.match(transitionSection, /Matched quoted observations: Observation 70 -> Observation 74/);
+  assert.match(
+    transitionSection,
+    /Action sequence that transforms the quoted observations:.*step 71: go to drawer 4.*step 74: go to drawer 4/,
+  );
   assert.match(transitionSection, /Action 71.*go to drawer 4/);
-  assert.doesNotMatch(transitionSection, /Action 72/);
+  assert.match(transitionSection, /Action 72.*look/);
+  assert.match(transitionSection, /Action 73.*go to shelf 2/);
+  assert.match(transitionSection, /Action 74.*go to drawer 4/);
   assert.doesNotMatch(transitionSection, /Action 80/);
 
   const locationSection = await buildTrajectoryAnalysisRecallSection({
@@ -413,6 +438,141 @@ test("buildTrajectoryAnalysisRecallSection resolves quoted observation transitio
   });
   assert.match(locationSection, /cd 2 location at step 115: inventory/);
   assert.match(locationSection, /cd 3 location at step 115: safe 1/);
+});
+
+test("buildTrajectoryAnalysisRecallSection handles repeated quoted target observations", async () => {
+  const sourceObservation = [
+    "You pick up the toiletpaper 1 from the countertop 1.",
+    "",
+    "The current available actions are: go to cabinet 1, look.",
+  ].join("\n");
+  const targetObservation = [
+    "You are facing the cabinet 1. Next to it, you see nothing.",
+    "",
+    "The current available actions are: close cabinet 1, examine cabinet 1, examine toiletpaper 1, go to handtowelholder 1, look, move toiletpaper 1 to cabinet 1.",
+  ].join("\n");
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [72, "take toiletpaper 1 from countertop 1", sourceObservation],
+      [73, "go to cabinet 1", "You arrive at cabinet 1."],
+      [74, "look", targetObservation],
+      [75, "go to handtowelholder 1", "You arrive at handtowelholder 1."],
+      [76, "go to cabinet 1", "You arrive at cabinet 1."],
+      [77, "look", targetObservation],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: `What sequence of actions would transform the state between the observation: "${sourceObservation}" and the observation: "${targetObservation}"?`,
+    maxChars: 5000,
+  });
+
+  assert.match(section, /Matched quoted observations: Observation 72 -> Observation 77/);
+  assert.match(section, /step 75: go to handtowelholder 1/);
+  assert.match(section, /step 76: go to cabinet 1/);
+  assert.match(section, /step 77: look/);
+});
+
+test("buildTrajectoryAnalysisRecallSection keeps immediate non-look target transitions narrow", async () => {
+  const sourceObservation = [
+    "You arrive at garbagecan 1. On the garbagecan 1, you see nothing.",
+    "",
+    "The current available actions are: go to drawer 4, look.",
+  ].join("\n");
+  const targetObservation = [
+    "You arrive at drawer 4. The drawer 4 is open. In it, you see a creditcard 1.",
+    "",
+    "The current available actions are: go to safe 1, look.",
+  ].join("\n");
+  const repeatedTargetObservation = [
+    "You arrive at drawer 4. The drawer 4 is open. In it, you see a creditcard 1.",
+    "",
+    "The current available actions are: examine shelf 2, take pencil 2 from shelf 2.",
+  ].join("\n");
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [70, "go to garbagecan 1", sourceObservation],
+      [71, "go to drawer 4", targetObservation],
+      [72, "look", "You are facing drawer 4."],
+      [73, "go to safe 1", "You arrive at safe 1."],
+      [74, "go to drawer 4", repeatedTargetObservation],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: `What sequence of actions would transform the state between the observation: "${sourceObservation}" and the observation: "${targetObservation}"?`,
+    maxChars: 5000,
+  });
+
+  assert.match(section, /Matched quoted observations: Observation 70 -> Observation 71/);
+  assert.match(section, /step 71: go to drawer 4/);
+  assert.doesNotMatch(section, /step 72: look/);
+  assert.doesNotMatch(section, /step 74: go to drawer 4/);
+});
+
+test("buildTrajectoryAnalysisRecallSection includes resulting observations for explicit action sequences", async () => {
+  const startObservation = [
+    "You are facing the toilet 1. Next to it, you see nothing.",
+    "",
+    "The current available actions are: go to countertop 1, look, inventory.",
+  ].join("\n");
+  const finalObservation = [
+    "You arrive at cabinet 1. The cabinet 1 is open. In it, you see a candle 2, a cloth 1, and a toiletpaper 3.",
+    "",
+    "The current available actions are: examine handtowelholder 1, examine toiletpaper 1, go to countertop 1, look.",
+  ].join("\n");
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [70, "look", startObservation],
+      [71, "go to countertop 1", "You arrive at countertop 1."],
+      [72, "take toiletpaper 1 from countertop 1", "You pick up the toiletpaper 1 from the countertop 1."],
+      [73, "go to cabinet 1", "You arrive at cabinet 1."],
+      [74, "look", "You are facing the cabinet 1."],
+      [75, "go to handtowelholder 1", "You arrive at handtowelholder 1."],
+      [76, "go to cabinet 1", finalObservation],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query: `When the agent is at the state with observation: "${startObservation}", performs the following sequence of actions: step 70: look; step 71: go to countertop 1; step 72: take toiletpaper 1 from countertop 1; step 73: go to cabinet 1; step 74: look; step 75: go to handtowelholder 1; step 76: go to cabinet 1, what will be the resulting state? Please provide the full observation.`,
+    maxChars: 5000,
+  });
+
+  assert.match(section, /Referenced action sequence and observations/);
+  assert.match(section, /Resulting observation after Action 76: You arrive at cabinet 1/);
+  assert.match(section, /examine handtowelholder 1, examine toiletpaper 1/);
+});
+
+test("buildTrajectoryAnalysisRecallSection includes movable object state timelines", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [2, "go to toilet 1", "You arrive at toilet 1. On it, you see a toiletpaper 3."],
+      [3, "take toiletpaper 3 from toilet 1", "You pick up the toiletpaper 3 from the toilet 1."],
+      [4, "go to cabinet 1", "You arrive at cabinet 1. The cabinet 1 is closed."],
+      [5, "open cabinet 1", "You open the cabinet 1."],
+      [6, "move toiletpaper 3 to cabinet 1", "You move the toiletpaper 3 to the cabinet 1."],
+      [77, "look", "You are facing the cabinet 1."],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "What is the state of toiletpaper 3 at step 77? When did this change occur and what were the prior whole changes history?",
+    maxChars: 5000,
+  });
+
+  assert.match(section, /Timeline for toiletpaper 3/);
+  assert.match(section, /Action 3.*take toiletpaper 3 from toilet 1/);
+  assert.match(section, /Action 6.*move toiletpaper 3 to cabinet 1/);
+  assert.match(section, /Inferred toiletpaper 3 location at step 77: cabinet 1/);
 });
 
 test("buildTrajectoryAnalysisRecallSection keeps disjoint explicit references discrete", async () => {

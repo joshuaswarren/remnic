@@ -100,6 +100,7 @@ test("agentic-memory answering asks responders to synthesize grounded trajectory
         assert.match(question, /include Action\/Observation N/);
         assert.match(question, /count all matching action verbs/);
         assert.match(question, /container, inventory, and object-location histories/);
+        assert.match(question, /First five inventory changes/);
         assert.match(question, /adjacent trajectory evidence contains the named action/);
         assert.match(question, /next concrete maneuver it enables/);
         assert.match(question, /treat an object on the direct path as a blocker/);

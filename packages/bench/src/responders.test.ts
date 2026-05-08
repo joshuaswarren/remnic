@@ -189,6 +189,7 @@ test("responder prompt compaction preserves the question and concise agentic pro
   assert.match(capturedPrompt, /What did Action 42 accomplish\?/);
   assert.match(capturedPrompt, /Agentic trajectory protocol/);
   assert.match(capturedPrompt, /Action N causes Observation N/);
+  assert.match(capturedPrompt, /First five and Complete inventory summaries/);
   assert.doesNotMatch(capturedPrompt, /Detailed trajectory instruction 40/);
 });
 

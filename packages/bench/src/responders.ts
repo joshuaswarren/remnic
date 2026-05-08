@@ -195,6 +195,7 @@ function buildConciseAgenticProtocol(question: string): string {
     "- Honor exact cited numbers and boundaries; for ranges, before, until, counts, or lists, scan the requested span and include all requested actions or state changes.",
     "- For causal or strategic questions, infer the concrete mechanism from trajectory evidence and answer every clause.",
     "- In grid/rule games, distinguish objects from rule text; only claim passability, collection, disappearance, or win conditions when active rules or observations support it.",
+    "- If context gives both First five and Complete inventory summaries, answer with First five first and then Complete as a separate labeled summary.",
     "- Keep the answer focused on the asked event.",
   ];
   return instructions.join("\n");

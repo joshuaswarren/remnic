@@ -947,15 +947,33 @@ function buildTrajectoryAnalysisLines(
   const asksEntityState = /\bstate\b/.test(normalized) ||
     /\bchanges?\s+history\b/.test(normalized) ||
     /\bwhole\s+changes?\s+history\b/.test(normalized);
+  const asksResultingObservation = /\bresulting\s+state\b/.test(normalized) ||
+    /\bprovide\s+the\s+full\s+observation\b/.test(normalized) ||
+    /\bwhat\s+will\s+be\s+the\s+resulting\b/.test(normalized);
 
   if (transition) {
     lines.push(
       `Matched quoted observations: Observation ${transition.fromStep} -> Observation ${transition.toStep}.`,
     );
+    appendActionSequenceSummary(
+      lines,
+      trajectory,
+      transition.fromStep + 1,
+      transition.toStep,
+      "Action sequence that transforms the quoted observations:",
+    );
     appendActionRangeLines(lines, trajectory, transition.fromStep + 1, transition.toStep, {
       includeObservations: true,
-      heading: "Actions that transform the quoted observations:",
+      heading: "Detailed transition evidence:",
     });
+  }
+
+  if (asksResultingObservation && !transition && explicitReferences.length > 0) {
+    appendActionRangeLines(lines, trajectory, bounds.start, bounds.end, {
+      includeObservations: true,
+      heading: "Referenced action sequence and observations:",
+    });
+    appendResultingObservationLine(lines, trajectory, bounds.end);
   }
 
   if (
@@ -1000,6 +1018,7 @@ function buildTrajectoryAnalysisLines(
     appendEntityTimelineLines(lines, trajectory, bounds, entities, {
       includeIndirectMentions: asksLocation,
       includeContainerObjectTransfers: asksContainerObjectTransfer,
+      includeMovableStateActions: asksEntityState,
     });
   }
 
@@ -1072,6 +1091,36 @@ function appendActionRangeLines(
       lines.push(`[Observation ${step.step}]: ${oneLine(step.observation)}`);
     }
   }
+}
+
+function appendActionSequenceSummary(
+  lines: string[],
+  trajectory: readonly LabeledTrajectoryStep[],
+  start: number,
+  end: number,
+  heading: string,
+): void {
+  const low = Math.min(start, end);
+  const high = Math.max(start, end);
+  const actions = trajectory
+    .filter((step) => step.step >= low && step.step <= high && step.action)
+    .map((step) => `step ${step.step}: ${step.action}`);
+  if (actions.length === 0) {
+    return;
+  }
+  lines.push(`${heading} ${actions.join("; ")}.`);
+}
+
+function appendResultingObservationLine(
+  lines: string[],
+  trajectory: readonly LabeledTrajectoryStep[],
+  stepNumber: number,
+): void {
+  const step = trajectory.find((candidate) => candidate.step === stepNumber);
+  if (!step?.observation) {
+    return;
+  }
+  lines.push(`Resulting observation after Action ${step.step}: ${oneLine(step.observation)}`);
 }
 
 function appendSpatialTrajectoryInferenceLines(
@@ -1490,19 +1539,50 @@ function appendInventoryChangeLines(
   bounds: TrajectoryBounds,
 ): void {
   const held = new Set<string>();
-  const changes: string[] = [];
+  const changes: Array<{ step: number; action: string; change: string }> = [];
   for (const step of boundedTrajectory(trajectory, bounds)) {
     if (!step.action) continue;
     const change = parseInventoryChange(step.action, held);
     if (change) {
-      changes.push(`[Action ${step.step}]: ${step.action} => ${change}`);
+      changes.push({ step: step.step, action: step.action, change });
     }
   }
   if (changes.length === 0) {
     return;
   }
   lines.push("Inventory changes from action transcript:");
-  lines.push(...changes);
+  if (changes.length > 5) {
+    lines.push(
+      `First five inventory changes: ${formatInventoryChangeSummary(changes.slice(0, 5))}.`,
+    );
+    lines.push(
+      `Complete inventory changes: ${formatInventoryChangeSummary(changes)}.`,
+    );
+  }
+  for (const change of changes) {
+    lines.push(`[Action ${change.step}]: ${change.action} => ${change.change}`);
+  }
+}
+
+function formatInventoryChangeSummary(
+  changes: ReadonlyArray<{ step: number; change: string }>,
+): string {
+  return changes
+    .map((change) => `step ${change.step}: ${summarizeInventoryChange(change.change)}`)
+    .join("; ");
+}
+
+function summarizeInventoryChange(change: string): string {
+  const added = /^inventory added (.+?);/i.exec(change);
+  if (added) {
+    return `${added[1]!.trim()} added`;
+  }
+  const removed = /^inventory removed (.+?);/i.exec(change) ??
+    /^inventory removed (.+)$/i.exec(change);
+  if (removed) {
+    return `${removed[1]!.trim()} removed`;
+  }
+  return change;
 }
 
 function appendContainerStateChangeLines(
@@ -1528,14 +1608,17 @@ function appendEntityTimelineLines(
   options: {
     includeIndirectMentions: boolean;
     includeContainerObjectTransfers: boolean;
+    includeMovableStateActions: boolean;
   },
 ): void {
   for (const entity of entities) {
+    const includeIndirectMentions = options.includeIndirectMentions ||
+      (options.includeMovableStateActions && !isLikelyContainerEntity(entity));
     const directActions = boundedTrajectory(trajectory, bounds).filter(
       (step) =>
         step.action &&
         (isDirectEntityAction(step.action, entity) ||
-          (options.includeIndirectMentions &&
+          (includeIndirectMentions &&
             actionMentionsEntity(step.action, entity))),
     );
     const stateChanges = collectContainerStateChanges(trajectory, bounds).filter(
@@ -1736,11 +1819,13 @@ function findObservationTransition(
   }
 
   let best: ObservationTransition | undefined;
+  const pairs: ObservationTransition[] = [];
   for (const fromStep of fromCandidates) {
     for (const toStep of toCandidates) {
       if (toStep <= fromStep) {
         continue;
       }
+      pairs.push({ fromStep, toStep });
       if (
         !best ||
         toStep - fromStep < best.toStep - best.fromStep ||
@@ -1752,10 +1837,48 @@ function findObservationTransition(
     }
   }
   if (best) {
-    return best;
+    return selectObservationTransition(trajectory, best, pairs);
   }
 
   return undefined;
+}
+
+function selectObservationTransition(
+  trajectory: readonly LabeledTrajectoryStep[],
+  shortest: ObservationTransition,
+  pairs: readonly ObservationTransition[],
+): ObservationTransition {
+  const gap = shortest.toStep - shortest.fromStep;
+  const targetStep = trajectory.find((step) => step.step === shortest.toStep);
+  if (gap > 2 || normalizeActionVerb(targetStep?.action ?? "") !== "look") {
+    return shortest;
+  }
+
+  const nextRepeatedTarget = pairs
+    .filter(
+      (pair) =>
+        pair.fromStep === shortest.fromStep &&
+        pair.toStep > shortest.toStep &&
+        pair.toStep - shortest.fromStep <= 8,
+    )
+    .sort((left, right) => left.toStep - right.toStep)[0];
+  if (
+    !nextRepeatedTarget ||
+    !observationsHaveSameFullText(trajectory, shortest.toStep, nextRepeatedTarget.toStep)
+  ) {
+    return shortest;
+  }
+  return nextRepeatedTarget ?? shortest;
+}
+
+function observationsHaveSameFullText(
+  trajectory: readonly LabeledTrajectoryStep[],
+  leftStep: number,
+  rightStep: number,
+): boolean {
+  const left = trajectory.find((step) => step.step === leftStep)?.observation;
+  const right = trajectory.find((step) => step.step === rightStep)?.observation;
+  return !!left && !!right && normalizeObservationText(left) === normalizeObservationText(right);
 }
 
 function extractQuotedObservations(query: string): string[] {
@@ -1775,7 +1898,8 @@ function findObservationStepCandidates(
 ): number[] {
   const normalizedQuoted = normalizeObservationText(quotedObservation);
   const normalizedQuotedCore = normalizeObservationCore(quotedObservation);
-  const candidates = new Set<number>();
+  const fullCandidates = new Set<number>();
+  const coreCandidates = new Set<number>();
 
   for (const step of trajectory) {
     if (!step.observation) continue;
@@ -1785,7 +1909,7 @@ function findObservationStepCandidates(
       normalizedObservation.includes(normalizedQuoted) ||
       normalizedQuoted.includes(normalizedObservation)
     ) {
-      candidates.add(step.step);
+      fullCandidates.add(step.step);
       continue;
     }
 
@@ -1797,10 +1921,11 @@ function findObservationStepCandidates(
         normalizedObservationCore.includes(normalizedQuotedCore) ||
         normalizedQuotedCore.includes(normalizedObservationCore))
     ) {
-      candidates.add(step.step);
+      coreCandidates.add(step.step);
     }
   }
 
+  const candidates = fullCandidates.size > 0 ? fullCandidates : coreCandidates;
   return [...candidates].sort((left, right) => left - right);
 }
 
@@ -1852,6 +1977,32 @@ function isDirectEntityAction(action: string, entity: string): boolean {
     `close ${normalizedEntity}`,
     `examine ${normalizedEntity}`,
   ].includes(normalizedAction);
+}
+
+function isLikelyContainerEntity(entity: string): boolean {
+  const head = normalizeEntity(entity).split(/\s+/)[0];
+  return [
+    "bed",
+    "cabinet",
+    "counter",
+    "countertop",
+    "coffeemachine",
+    "desk",
+    "drawer",
+    "fridge",
+    "garbagecan",
+    "handtowelholder",
+    "laundryhamper",
+    "microwave",
+    "safe",
+    "shelf",
+    "sinkbasin",
+    "stoveburner",
+    "toaster",
+    "toilet",
+    "toiletpaperhanger",
+    "towelholder",
+  ].includes(head ?? "");
 }
 
 function inferEntityLocation(
