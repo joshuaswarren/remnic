@@ -77,6 +77,7 @@ export interface ResolvedBenchRuntimeProfile {
 const REDACTED_CONFIG_VALUE = "[redacted]";
 const INTERNAL_GATEWAY_AGENT_ID = "remnic-bench-internal";
 let codexCliFallbackRegistered = false;
+let codexCliFallbackChain: Promise<void> = Promise.resolve();
 
 export async function resolveBenchRuntimeProfile(
   options: ResolveBenchRuntimeProfileOptions,
@@ -557,52 +558,71 @@ function registerCodexCliFallbackRunnerIfNeeded(config: ProviderConfig | null): 
     return;
   }
 
-  const runner: CodexCliFallbackRunner = async (request) => {
-    const reasoningEffort = asCodexReasoningEffort(
-      request.config.codexCliReasoningEffort ?? request.config.reasoningEffort,
-    );
-    const provider = createProvider({
-      provider: "codex-cli",
-      model: request.modelId,
-      ...(typeof request.config.apiKey === "string"
-        ? { apiKey: request.config.apiKey }
-        : {}),
-      ...(reasoningEffort ? { reasoningEffort } : {}),
-      ...(typeof request.config.codexCliExecutable === "string"
-        ? { executable: request.config.codexCliExecutable }
-        : typeof request.config.executable === "string"
-          ? { executable: request.config.executable }
+  const runner: CodexCliFallbackRunner = async (request) =>
+    enqueueCodexCliFallback(async () => {
+      if (request.options.signal?.aborted) {
+        throw abortReason(request.options.signal);
+      }
+      const reasoningEffort = asCodexReasoningEffort(
+        request.config.codexCliReasoningEffort ?? request.config.reasoningEffort,
+      );
+      const provider = createProvider({
+        provider: "codex-cli",
+        model: request.modelId,
+        ...(typeof request.config.apiKey === "string"
+          ? { apiKey: request.config.apiKey }
           : {}),
-      ...(typeof request.config.retryOptions?.timeoutMs === "number" ||
-        typeof request.options.timeoutMs === "number"
-        ? {
-            retryOptions: {
-              timeoutMs:
-                typeof request.config.retryOptions?.timeoutMs === "number"
-                  ? request.config.retryOptions.timeoutMs
-                  : request.options.timeoutMs,
-            },
-          }
-        : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(typeof request.config.codexCliExecutable === "string"
+          ? { executable: request.config.codexCliExecutable }
+          : typeof request.config.executable === "string"
+            ? { executable: request.config.executable }
+            : {}),
+        ...(typeof request.config.retryOptions?.timeoutMs === "number" ||
+          typeof request.options.timeoutMs === "number"
+          ? {
+              retryOptions: {
+                timeoutMs:
+                  typeof request.config.retryOptions?.timeoutMs === "number"
+                    ? request.config.retryOptions.timeoutMs
+                    : request.options.timeoutMs,
+              },
+            }
+          : {}),
+      });
+      const split = splitCodexFallbackMessages(request.messages);
+      const completion = await provider.complete(split.prompt, {
+        systemPrompt: split.systemPrompt,
+        temperature: 0.3,
+        maxTokens: 4096,
+        signal: request.options.signal,
+      });
+      return {
+        content: completion.text,
+        usage: {
+          inputTokens: completion.tokens.input,
+          outputTokens: completion.tokens.output,
+          totalTokens: completion.tokens.input + completion.tokens.output,
+        },
+      };
     });
-    const split = splitCodexFallbackMessages(request.messages);
-    const completion = await provider.complete(split.prompt, {
-      systemPrompt: split.systemPrompt,
-      temperature: 0.3,
-      maxTokens: 4096,
-    });
-    return {
-      content: completion.text,
-      usage: {
-        inputTokens: completion.tokens.input,
-        outputTokens: completion.tokens.output,
-        totalTokens: completion.tokens.input + completion.tokens.output,
-      },
-    };
-  };
 
   setCodexCliFallbackRunnerForProcess(runner);
   codexCliFallbackRegistered = true;
+}
+
+function enqueueCodexCliFallback<T>(task: () => Promise<T>): Promise<T> {
+  const run = codexCliFallbackChain.then(task, task);
+  codexCliFallbackChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function abortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  return reason instanceof Error ? reason : new Error("codex-cli fallback aborted");
 }
 
 function asCodexReasoningEffort(

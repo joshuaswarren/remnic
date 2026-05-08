@@ -17,6 +17,7 @@ export interface FallbackLlmOptions {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   /** Override which agent persona's model chain to use (by ID from agents.list[]). */
   agentId?: string;
 }
@@ -109,14 +110,19 @@ export class FallbackLlmClient {
       return null;
     }
 
-    const runChain = async (): Promise<FallbackLlmResponse | null> => {
+    const runChain = async (
+      runOptions: FallbackLlmOptions,
+    ): Promise<FallbackLlmResponse | null> => {
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
+        if (runOptions.signal?.aborted) {
+          throw abortReason(runOptions.signal);
+        }
         const model = models[i];
         const isFallback = i > 0;
 
         try {
-          const result = await this.tryModel(model, messages, options);
+          const result = await this.tryModel(model, messages, runOptions);
           if (result) {
             if (isFallback) {
               log.debug(`fallback LLM: succeeded using ${model.modelString} (fallback ${i})`);
@@ -128,6 +134,9 @@ export class FallbackLlmClient {
             };
           }
         } catch (err) {
+          if (runOptions.signal?.aborted) {
+            throw abortReason(runOptions.signal);
+          }
           const errorMsg = err instanceof Error ? err.message : String(err);
           log.debug(`fallback LLM: ${model.modelString} failed (${errorMsg}), trying next...`);
           // Continue to next model in chain
@@ -144,22 +153,37 @@ export class FallbackLlmClient {
         return null;
       }
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const controller = new AbortController();
+      const onCallerAbort = (): void => {
+        controller.abort(abortReason(options.signal));
+      };
+      options.signal?.addEventListener("abort", onCallerAbort, { once: true });
+      if (options.signal?.aborted) {
+        onCallerAbort();
+      }
+      const timedOptions = { ...options, signal: controller.signal };
+      const chain = runChain(timedOptions);
+      chain.catch(() => {});
       try {
         return await Promise.race([
-          runChain(),
+          chain,
           new Promise<null>((resolve) => {
             timeoutHandle = setTimeout(() => {
               log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
+              controller.abort(
+                new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
+              );
               resolve(null);
             }, options.timeoutMs);
           }),
         ]);
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
+        options.signal?.removeEventListener("abort", onCallerAbort);
       }
     }
 
-    return await runChain();
+    return await runChain(options);
   }
 
   /**
@@ -413,7 +437,7 @@ export class FallbackLlmClient {
         effectiveConfig,
         model.modelId,
         messages,
-        { timeoutMs: options.timeoutMs },
+        { timeoutMs: options.timeoutMs, signal: options.signal },
       );
     }
 
@@ -538,6 +562,7 @@ export class FallbackLlmClient {
     const response = await fetch(url, {
       method: "POST",
       headers,
+      signal: options.signal,
       body: JSON.stringify(body),
     });
 
@@ -600,6 +625,7 @@ export class FallbackLlmClient {
     const response = await fetch(url, {
       method: "POST",
       headers,
+      signal: options.signal,
       body: JSON.stringify({
         model: modelId,
         messages,
@@ -693,6 +719,7 @@ export class FallbackLlmClient {
     const response = await fetch(url, {
       method: "POST",
       headers,
+      signal: options.signal,
       body: JSON.stringify(body),
     });
 
@@ -784,6 +811,7 @@ export class FallbackLlmClient {
     const response = await fetch(url, {
       method: "POST",
       headers,
+      signal: options.signal,
       body: JSON.stringify(body),
     });
 
@@ -819,6 +847,11 @@ export class FallbackLlmClient {
         : undefined,
     };
   }
+}
+
+function abortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
 }
 
 function normalizeRuntimePath(value: unknown): string | undefined {

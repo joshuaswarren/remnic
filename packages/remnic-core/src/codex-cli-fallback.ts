@@ -18,6 +18,7 @@ export interface CodexCliFallbackConfig {
 
 export interface CodexCliFallbackOptions {
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface CodexCliFallbackResult {
@@ -114,6 +115,7 @@ function normalizeCodexCliFallbackOptions(
     ...(options.timeoutMs !== undefined
       ? { timeoutMs: normalizeCodexCliTimeoutMs(options.timeoutMs) }
       : {}),
+    ...(options.signal ? { signal: options.signal } : {}),
   };
 }
 

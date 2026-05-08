@@ -7,6 +7,7 @@ import { __codexCliFallbackTestHooks } from "./codex-cli-fallback.js";
 import { clearModelsJsonCache, __setModelsJsonForTest } from "./models-json.js";
 import {
   __setGatewayRuntimeAuthForModelForTest,
+  __setGatewayResolverForTest,
   clearSecretCache,
 } from "./resolve-provider-secret.js";
 
@@ -478,6 +479,65 @@ test("fallback llm invokes registered codex-cli fallback runner", { concurrency:
   }
 });
 
+test("fallback llm aborts codex-cli fallback requests when timeout wins", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  let capturedSignal: AbortSignal | undefined;
+  let sawAbort = false;
+  const restoreRunner = __codexCliFallbackTestHooks.setRunCodexCliForTest(
+    async (request) => {
+      capturedSignal = request.options.signal;
+      return await new Promise<never>((_resolve, reject) => {
+        const onAbort = (): void => {
+          sawAbort = true;
+          reject(request.options.signal?.reason ?? new Error("aborted"));
+        };
+        if (request.options.signal?.aborted) {
+          onAbort();
+          return;
+        }
+        request.options.signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    },
+  );
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "codex-cli/gpt-custom",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "codex-cli": {
+          baseUrl: "",
+          api: "codex-cli",
+          apiKey: "codex-test-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  try {
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16, timeoutMs: 10 },
+    );
+
+    assert.equal(response, null);
+    assert.equal(capturedSignal?.aborted, true);
+    assert.equal(sawAbort, true);
+  } finally {
+    restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
 test("fallback llm can call Ollama native chat and suppress thinking", { concurrency: false }, async () => {
   clearModelsJsonCache();
   clearSecretCache();
@@ -552,6 +612,7 @@ test("fallback llm can call Ollama native chat and suppress thinking", { concurr
 test("fallback llm has built-in anthropic defaults when the gateway provider catalog is unavailable", { concurrency: false }, async () => {
   clearModelsJsonCache();
   clearSecretCache();
+  disableGatewaySecretResolverForTest();
 
   const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = "anthropic-test-key";
@@ -618,6 +679,7 @@ test("fallback llm prefers configured alias providers before built-in defaults",
     },
   });
   clearSecretCache();
+  disableGatewaySecretResolverForTest();
 
   const llm = new FallbackLlmClient({
     agents: {
@@ -683,6 +745,7 @@ test("fallback llm resolves claude-cli refs through the anthropic built-in fallb
     },
   });
   clearSecretCache();
+  disableGatewaySecretResolverForTest();
 
   const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = "anthropic-test-key";
@@ -934,3 +997,7 @@ test("fallback llm normalizes anthropic-compatible base URLs that omit /v1", { c
     clearSecretCache();
   }
 });
+
+function disableGatewaySecretResolverForTest(): void {
+  __setGatewayResolverForTest(async () => null);
+}
