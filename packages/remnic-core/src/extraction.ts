@@ -58,8 +58,26 @@ const CONSOLIDATION_RESPONSE_SCHEMA = `{
 
 const TELEMETRY_TURN_MARKER = /^\[(?:user|assistant|system)\]\s+\[(?:action|observation|state|reward|step|turn|frame)\s+\d+\]:/i;
 const BARE_TELEMETRY_MARKER = /^\[(?:action|observation|state|reward|step|turn|frame)\s+\d+\]:/i;
-const DURABLE_MEMORY_CUE =
-  /\b(?:remember|don't forget|prefer|preference|decided|decision|deadline|commit(?:ment)?|promise|my name|i am|i work|we use|correction|actually|always|never|when you|if\s+.+\s+then)\b/i;
+const DURABLE_MEMORY_CUE_PHRASES = [
+  "remember",
+  "don't forget",
+  "prefer",
+  "preference",
+  "decided",
+  "decision",
+  "deadline",
+  "commitment",
+  "promise",
+  "my name",
+  "i am",
+  "i work",
+  "we use",
+  "correction",
+  "actually",
+  "always",
+  "never",
+  "when you",
+];
 
 function stripRolePrefix(line: string): string {
   return line.replace(/^\[(?:user|assistant|system)\]\s+/i, "").trim();
@@ -80,8 +98,17 @@ function isMechanicalTelemetryLine(line: string): boolean {
   );
 }
 
+function hasDurableMemoryCue(conversation: string): boolean {
+  const lower = conversation.toLowerCase();
+  if (DURABLE_MEMORY_CUE_PHRASES.some((phrase) => lower.includes(phrase))) {
+    return true;
+  }
+  const ifIndex = lower.indexOf("if ");
+  return ifIndex >= 0 && lower.indexOf(" then", ifIndex + 3) >= 0;
+}
+
 function looksLikeMechanicalTelemetryTranscript(conversation: string): boolean {
-  if (DURABLE_MEMORY_CUE.test(conversation)) return false;
+  if (hasDurableMemoryCue(conversation)) return false;
 
   const lines = conversation
     .split(/\n+/)
