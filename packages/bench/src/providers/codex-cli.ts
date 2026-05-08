@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -39,6 +40,47 @@ interface CodexCliProviderDeps {
   ) => Promise<{ status: number | null; stderr: string }>;
 }
 
+interface CodexCliDiagnosticRecord {
+  schemaVersion: 1;
+  id: string;
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  provider: "codex-cli";
+  model: string;
+  reasoningEffort: string;
+  executable: string;
+  timeoutMs?: number;
+  workspaceBasename: string;
+  outputBasename: string;
+  prompt: {
+    sha256: string;
+    chars: number;
+    lines: number;
+    systemPromptChars?: number;
+    userPromptChars?: number;
+  };
+  command: {
+    args: string[];
+  };
+  result?: {
+    status: number | null;
+    signal: NodeJS.Signals | null;
+    stdoutChars: number;
+    stderrChars: number;
+    outputChars: number;
+    stdoutTail: string;
+    stderrTail: string;
+  };
+  error?: string;
+  fullPrompt?: string;
+}
+
+interface CodexCliDiagnosticHandle {
+  path: string;
+  record: CodexCliDiagnosticRecord;
+}
+
 const DEFAULT_REASONING_EFFORT = "xhigh";
 const CODEX_CLI_STDIO_LIMIT = 64_000;
 const CODEX_CLI_PARENT_SIGNALS: NodeJS.Signals[] = [
@@ -47,6 +89,8 @@ const CODEX_CLI_PARENT_SIGNALS: NodeJS.Signals[] = [
   "SIGTERM",
 ];
 const CODEX_CLI_FORCED_PARENT_EXIT_MS = 1_000;
+const CODEX_CLI_DIAGNOSTICS_DIR_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_DIR";
+const CODEX_CLI_DIAGNOSTICS_MODE_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_MODE";
 
 const activeCodexCliChildPids = new Set<number>();
 let codexCliParentCleanupInstalled = false;
@@ -84,11 +128,18 @@ class CodexCliProvider implements LlmProvider {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-cli-"));
     const workspacePath = path.join(tempDir, "workspace");
     const outputPath = path.join(tempDir, "last-message.txt");
+    let diagnostics: CodexCliDiagnosticHandle | undefined;
 
     try {
       await mkdir(workspacePath, { recursive: true });
       const request = this.buildRunRequest(prompt, opts, workspacePath, outputPath);
+      diagnostics = await startCodexCliDiagnostics({
+        config: this.config,
+        request,
+        reasoningEffort: this.config.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+      });
       const result = await this.runCodexCli(request);
+      await finishCodexCliDiagnostics(diagnostics, startedAt, { result });
       if (result.status !== 0) {
         const exitLabel = result.signal
           ? `signal ${result.signal}`
@@ -116,6 +167,9 @@ class CodexCliProvider implements LlmProvider {
         latencyMs: Math.round(performance.now() - startedAt),
         model: this.config.model,
       };
+    } catch (error) {
+      await finishCodexCliDiagnostics(diagnostics, startedAt, { error });
+      throw error;
     } finally {
       await rm(tempDir, { force: true, recursive: true });
     }
@@ -265,6 +319,164 @@ function buildIsolatedCodexEnv(apiKey?: string): NodeJS.ProcessEnv {
     env.OPENAI_API_KEY = apiKey;
   }
   return env;
+}
+
+async function startCodexCliDiagnostics(args: {
+  config: CodexCliProviderConfig;
+  request: CodexCliRunRequest;
+  reasoningEffort: string;
+}): Promise<CodexCliDiagnosticHandle | undefined> {
+  const diagnosticsDir = resolveCodexCliDiagnosticsDir(args.config);
+  if (!diagnosticsDir) {
+    return undefined;
+  }
+
+  try {
+    await mkdir(diagnosticsDir, { recursive: true });
+    const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
+    const promptStats = inspectCodexCompletionPrompt(args.request.input);
+    const mode = resolveCodexCliDiagnosticsMode(args.config);
+    const record: CodexCliDiagnosticRecord = {
+      schemaVersion: 1,
+      id,
+      startedAt: new Date().toISOString(),
+      provider: "codex-cli",
+      model: args.config.model,
+      reasoningEffort: args.reasoningEffort,
+      executable: path.basename(args.request.executable),
+      ...(args.request.timeoutMs ? { timeoutMs: args.request.timeoutMs } : {}),
+      workspaceBasename: path.basename(args.request.workspacePath),
+      outputBasename: path.basename(args.request.outputPath),
+      prompt: promptStats,
+      command: {
+        args: redactCodexCliArgs(args.request.args),
+      },
+      ...(mode === "full" ? { fullPrompt: args.request.input } : {}),
+    };
+    const filePath = path.join(diagnosticsDir, `${id}.json`);
+    await writeCodexCliDiagnosticRecord(filePath, record);
+    return { path: filePath, record };
+  } catch {
+    return undefined;
+  }
+}
+
+async function finishCodexCliDiagnostics(
+  handle: CodexCliDiagnosticHandle | undefined,
+  startedAt: number,
+  outcome: { result?: CodexCliRunResult; error?: unknown },
+): Promise<void> {
+  if (!handle) {
+    return;
+  }
+
+  const result = outcome.result;
+  const error = outcome.error;
+  const record: CodexCliDiagnosticRecord = {
+    ...handle.record,
+    finishedAt: new Date().toISOString(),
+    durationMs: Math.round(performance.now() - startedAt),
+    ...(result
+      ? {
+          result: {
+            status: result.status,
+            signal: result.signal,
+            stdoutChars: result.stdout.length,
+            stderrChars: result.stderr.length,
+            outputChars: result.outputText.length,
+            stdoutTail: result.stdout.slice(-2_000),
+            stderrTail: result.stderr.slice(-2_000),
+          },
+        }
+      : {}),
+    ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),
+  };
+  handle.record = record;
+
+  try {
+    await writeCodexCliDiagnosticRecord(handle.path, record);
+  } catch {
+    // Diagnostics must never change benchmark behavior.
+  }
+}
+
+async function writeCodexCliDiagnosticRecord(
+  filePath: string,
+  record: CodexCliDiagnosticRecord,
+): Promise<void> {
+  await writeFile(filePath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+}
+
+function resolveCodexCliDiagnosticsDir(
+  config: CodexCliProviderConfig,
+): string | undefined {
+  const dir = config.diagnosticsDir ?? process.env[CODEX_CLI_DIAGNOSTICS_DIR_ENV];
+  return typeof dir === "string" && dir.trim().length > 0
+    ? path.resolve(dir)
+    : undefined;
+}
+
+function resolveCodexCliDiagnosticsMode(
+  config: CodexCliProviderConfig,
+): "metadata" | "full" {
+  const raw = config.diagnosticsMode ?? process.env[CODEX_CLI_DIAGNOSTICS_MODE_ENV];
+  return raw === "full" ? "full" : "metadata";
+}
+
+function inspectCodexCompletionPrompt(
+  prompt: string,
+): CodexCliDiagnosticRecord["prompt"] {
+  const stats: CodexCliDiagnosticRecord["prompt"] = {
+    sha256: createHash("sha256").update(prompt).digest("hex"),
+    chars: prompt.length,
+    lines: prompt.length === 0 ? 0 : prompt.split("\n").length,
+  };
+  const marker = "BENCHMARK_REQUEST_JSON:";
+  const markerIndex = prompt.indexOf(marker);
+  if (markerIndex < 0) {
+    return stats;
+  }
+
+  try {
+    const parsed = JSON.parse(prompt.slice(markerIndex + marker.length).trim()) as {
+      systemPrompt?: unknown;
+      userPrompt?: unknown;
+    };
+    return {
+      ...stats,
+      ...(typeof parsed.systemPrompt === "string"
+        ? { systemPromptChars: parsed.systemPrompt.length }
+        : {}),
+      ...(typeof parsed.userPrompt === "string"
+        ? { userPromptChars: parsed.userPrompt.length }
+        : {}),
+    };
+  } catch {
+    return stats;
+  }
+}
+
+function redactCodexCliArgs(args: string[]): string[] {
+  const redacted = [...args];
+  for (let index = 0; index < redacted.length; index += 1) {
+    const value = redacted[index];
+    const lowered = value.toLowerCase();
+    if (value === "--cd" || value === "--output-last-message") {
+      if (index + 1 < redacted.length) {
+        redacted[index + 1] = "[redacted]";
+      }
+      continue;
+    }
+    if (
+      lowered.includes("api_key") ||
+      lowered.includes("apikey") ||
+      lowered.includes("token") ||
+      lowered.includes("secret")
+    ) {
+      redacted[index] = "[redacted]";
+    }
+  }
+  return redacted;
 }
 
 function runCodexCliCommand(request: CodexCliRunRequest): Promise<CodexCliRunResult> {

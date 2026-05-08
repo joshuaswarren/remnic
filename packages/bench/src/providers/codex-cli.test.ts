@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -194,6 +194,99 @@ test("codex-cli provider surfaces non-zero CLI exits", async () => {
     provider.complete("hello"),
     /Codex CLI completion failed \(exit 2\): invalid model/,
   );
+});
+
+test("codex-cli provider writes metadata diagnostics without full prompt text", async () => {
+  const diagnosticsDir = await mkdtemp(
+    path.join(os.tmpdir(), "remnic-codex-cli-diag-"),
+  );
+
+  try {
+    const provider = createCodexCliProvider(
+      {
+        provider: "codex-cli",
+        model: "gpt-5.5",
+        diagnosticsDir,
+        reasoningEffort: "xhigh",
+        retryOptions: { timeoutMs: 1234 },
+      },
+      {
+        async runCodexCli() {
+          return {
+            status: 0,
+            signal: null,
+            stdout: "tokens used 44",
+            stderr: "ok",
+            outputText: "final answer",
+          };
+        },
+      },
+    );
+
+    await provider.complete("What is remembered?", {
+      systemPrompt: "Answer using only benchmark context.",
+    });
+
+    const files = await readdir(diagnosticsDir);
+    assert.equal(files.length, 1);
+    const diagnostic = JSON.parse(
+      await readFile(path.join(diagnosticsDir, files[0]!), "utf8"),
+    ) as Record<string, unknown>;
+
+    assert.equal(diagnostic.provider, "codex-cli");
+    assert.equal(diagnostic.model, "gpt-5.5");
+    assert.equal(diagnostic.reasoningEffort, "xhigh");
+    assert.equal(diagnostic.timeoutMs, 1234);
+    assert.equal("fullPrompt" in diagnostic, false);
+    assert.equal((diagnostic.prompt as { userPromptChars: number }).userPromptChars, 19);
+    assert.equal((diagnostic.result as { status: number }).status, 0);
+  } finally {
+    await rm(diagnosticsDir, { force: true, recursive: true });
+  }
+});
+
+test("codex-cli provider writes full diagnostics only when explicitly requested", async () => {
+  const diagnosticsDir = await mkdtemp(
+    path.join(os.tmpdir(), "remnic-codex-cli-diag-"),
+  );
+
+  try {
+    const provider = createCodexCliProvider(
+      {
+        provider: "codex-cli",
+        model: "gpt-5.5",
+        diagnosticsDir,
+        diagnosticsMode: "full",
+      },
+      {
+        async runCodexCli() {
+          return {
+            status: 124,
+            signal: "SIGTERM",
+            stdout: "",
+            stderr: "timed out",
+            outputText: "",
+          };
+        },
+      },
+    );
+
+    await assert.rejects(
+      provider.complete("diagnostic prompt"),
+      /Codex CLI completion failed \(signal SIGTERM\): timed out/,
+    );
+
+    const [file] = await readdir(diagnosticsDir);
+    const diagnostic = JSON.parse(
+      await readFile(path.join(diagnosticsDir, file!), "utf8"),
+    ) as Record<string, unknown>;
+
+    assert.match(String(diagnostic.fullPrompt), /diagnostic prompt/);
+    assert.equal((diagnostic.result as { status: number }).status, 124);
+    assert.match(String(diagnostic.error), /Codex CLI completion failed/);
+  } finally {
+    await rm(diagnosticsDir, { force: true, recursive: true });
+  }
 });
 
 test("codex-cli command terminates subprocess when aborted", async () => {

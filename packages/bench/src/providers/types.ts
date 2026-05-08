@@ -73,6 +73,17 @@ export interface CodexCliProviderConfig extends ProviderBaseConfig {
   reasoningEffort?: BenchReasoningEffort;
   /** Optional executable override for tests or non-standard Codex CLI installs. */
   executable?: string;
+  /**
+   * Optional diagnostics artifact directory. When set, the provider writes
+   * per-call metadata that helps debug slow benchmark completions without
+   * depending on transient temp workspaces.
+   */
+  diagnosticsDir?: string;
+  /**
+   * `metadata` stores hashes/counts only. `full` additionally stores the full
+   * benchmark prompt and should only be used for isolated benchmark datasets.
+   */
+  diagnosticsMode?: "metadata" | "full";
 }
 
 export type ProviderFactoryConfig =

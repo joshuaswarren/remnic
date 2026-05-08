@@ -2319,6 +2319,19 @@ async function runBenchViaPackage(
   const benchStartTime = Date.now();
   const partialTasks: import("@remnic/bench").TaskResult[] = [];
   let system: Awaited<ReturnType<PackageBenchExecutionPlan["createAdapter"]>> | undefined;
+  const previousCodexDiagnosticsDir =
+    process.env[CODEX_CLI_BENCH_DIAGNOSTICS_DIR_ENV];
+  const previousCodexDiagnosticsMode =
+    process.env[CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV];
+  if (!previousCodexDiagnosticsDir) {
+    process.env[CODEX_CLI_BENCH_DIAGNOSTICS_DIR_ENV] = path.join(
+      outputDir,
+      "codex-cli-diagnostics",
+    );
+  }
+  if (!previousCodexDiagnosticsMode) {
+    process.env[CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV] = "metadata";
+  }
 
   try {
     const amaBenchProtocol = buildAmaBenchProtocolOptions(
@@ -2413,8 +2426,27 @@ async function runBenchViaPackage(
     }
     throw err;
   } finally {
-    await system?.destroy();
+    try {
+      await system?.destroy();
+    } finally {
+      restoreOptionalEnv(
+        CODEX_CLI_BENCH_DIAGNOSTICS_DIR_ENV,
+        previousCodexDiagnosticsDir,
+      );
+      restoreOptionalEnv(
+        CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV,
+        previousCodexDiagnosticsMode,
+      );
+    }
   }
+}
+
+function restoreOptionalEnv(key: string, previousValue: string | undefined): void {
+  if (previousValue === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = previousValue;
 }
 
 function buildAmaBenchProtocolOptions(
@@ -2651,6 +2683,10 @@ const BENCH_REPRO_ENV_KEYS = [
   "REMNIC_BENCH_REQUEST_TIMEOUT_MS",
   "XDG_CACHE_HOME",
 ] as const;
+const CODEX_CLI_BENCH_DIAGNOSTICS_DIR_ENV =
+  "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_DIR";
+const CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV =
+  "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_MODE";
 
 function resolveBenchReproEnvKeys(): string[] {
   return BENCH_REPRO_ENV_KEYS.filter((key) => process.env[key] !== undefined);
