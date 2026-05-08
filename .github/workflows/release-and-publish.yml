@@ -450,8 +450,7 @@ jobs:
       - name: Publish OpenClaw plugin to ClawHub
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
-          CLAWHUB_PACKAGE_NAME: "@joshuaswarren/plugin-openclaw"
-          CLAWHUB_OWNER: "joshuaswarren"
+          CLAWHUB_PACKAGE_NAME: "@remnic/plugin-openclaw"
           NPM_PACKAGE_NAME: "@remnic/plugin-openclaw"
           NPM_PACKAGE_PATH: "packages/plugin-openclaw"
         run: |
@@ -479,44 +478,11 @@ jobs:
             exit 1
           fi
 
-          # ClawHub requires package.json name to match the marketplace package name.
-          # Keep npm published as @remnic/plugin-openclaw, then repack for ClawHub.
-          unpack_dir="${pack_dir}/clawhub-package"
-          rm -rf "${unpack_dir}"
-          mkdir -p "${unpack_dir}"
-          tar -xzf "${tarball}" -C "${unpack_dir}"
-          UNPACK_DIR="${unpack_dir}" CLAWHUB_PACKAGE_NAME="${CLAWHUB_PACKAGE_NAME}" node - <<'NODE'
-          const fs = require("fs");
-          const path = require("path");
-
-          const packageJsonPath = path.join(process.env.UNPACK_DIR, "package", "package.json");
-          const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-          pkg.name = process.env.CLAWHUB_PACKAGE_NAME;
-          fs.writeFileSync(packageJsonPath, `${JSON.stringify(pkg, null, 2)}\n`);
-          NODE
-          clawhub_pack_json="$(cd "${unpack_dir}/package" && npm pack --pack-destination "${pack_dir}" --ignore-scripts --json)"
-          clawhub_tarball="$(PACK_DIR="${pack_dir}" PACK_JSON="${clawhub_pack_json}" node - <<'NODE'
-          const path = require("path");
-
-          const pack = JSON.parse(process.env.PACK_JSON);
-          const filename = pack?.[0]?.filename;
-          if (!filename) {
-            throw new Error("npm pack did not report a tarball filename");
-          }
-          console.log(path.join(process.env.PACK_DIR, filename));
-          NODE
-          )"
-          if [ ! -f "${clawhub_tarball}" ]; then
-            echo "No ${CLAWHUB_PACKAGE_NAME} tarball produced" >&2
-            exit 1
-          fi
-
           source_commit="$(git rev-parse HEAD)"
           publish_log="$(mktemp)"
-          if clawhub package publish "${clawhub_tarball}" \
+          if clawhub package publish "${tarball}" \
             --family code-plugin \
             --name "${CLAWHUB_PACKAGE_NAME}" \
-            --owner "${CLAWHUB_OWNER}" \
             --display-name "Remnic OpenClaw Plugin" \
             --version "${package_version}" \
             --host-targets openclaw \
@@ -532,7 +498,7 @@ jobs:
             publish_status=$?
             cat "${publish_log}"
             if grep -q "publisher does not exist on ClawHub" "${publish_log}"; then
-              echo "::notice title=ClawHub publish skipped::${CLAWHUB_OWNER} is not provisioned as a ClawHub publisher yet; create that publisher before enabling marketplace publishing."
+              echo "::notice title=ClawHub publish skipped::The authenticated ClawHub account is not provisioned as a package publisher yet."
               rm -f "${publish_log}"
               exit 0
             fi

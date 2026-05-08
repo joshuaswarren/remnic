@@ -17,14 +17,15 @@ Canonical upstream references for this adapter:
 ## Install
 
 ```bash
-openclaw plugins install clawhub:@joshuaswarren/plugin-openclaw
+openclaw plugins install clawhub:@remnic/plugin-openclaw
 ```
 
 OpenClaw 2026.5.2+ resolves bare plugin package names through ClawHub first and
 then falls back to npm. Remnic is published on ClawHub as
-`@joshuaswarren/plugin-openclaw`, so the explicit `clawhub:` prefix keeps fresh
-installs deterministic. For npm-only fallback or rollback versions, use the
-explicit `npm:` source prefix, such as `npm:@remnic/plugin-openclaw@<version>`.
+`@remnic/plugin-openclaw` under the `joshuaswarren` account, so the explicit
+`clawhub:` prefix keeps fresh installs deterministic. For npm-only fallback or
+rollback versions, use the explicit `npm:` source prefix, such as
+`npm:@remnic/plugin-openclaw@<version>`.
 
 Or use the Remnic installer:
 
@@ -47,9 +48,9 @@ for config-key behavior, backup behavior, and local patch preservation notes.
 Publish ClawHub releases from the built npm/ClawPack tarball, not from the raw
 GitHub source folder. Source-folder publishing does not run the package build,
 so ClawHub can scan an incomplete three-file artifact with no `dist/index.js`.
-The npm package remains `@remnic/plugin-openclaw`; the ClawHub listing is
-published as `@joshuaswarren/plugin-openclaw` because ClawHub package scopes must
-match their owner.
+The ClawHub listing is `@remnic/plugin-openclaw` and is owned by the
+`joshuaswarren` account. Publish it with the authenticated owner account and do
+not pass `--owner` unless deliberately transferring ownership.
 
 ```bash
 pnpm --filter @remnic/plugin-openclaw build
@@ -57,8 +58,7 @@ pnpm run verify:openclaw-clawpack
 clawhub package pack packages/plugin-openclaw --pack-destination /tmp/remnic-clawpack
 clawhub package publish /tmp/remnic-clawpack/remnic-plugin-openclaw-<version>.tgz \
   --family code-plugin \
-  --name @joshuaswarren/plugin-openclaw \
-  --owner joshuaswarren \
+  --name @remnic/plugin-openclaw \
   --display-name "Remnic OpenClaw Plugin" \
   --version <version> \
   --source-repo joshuaswarren/remnic \
