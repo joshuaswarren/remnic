@@ -1037,6 +1037,43 @@ test("buildTrajectoryAnalysisRecallSection treats stable repeated stop moves as 
   assert.doesNotMatch(section, /hidden absolute position by 5 right/);
 });
 
+test("buildTrajectoryAnalysisRecallSection treats no-change stop attempts as blocked, not hidden movement", async () => {
+  const observation = [
+    "Active rules:",
+    "ball is win",
+    "wall is stop",
+    "baba is you",
+    "",
+    "Objects on the map:",
+    "wall 1 step to the right",
+    "rule `wall` 4 step to the left and 1 step up",
+    "rule `is` 3 step to the left and 1 step up",
+    "rule `stop` 2 step to the left and 1 step up",
+  ].join("\n");
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [84, "right", observation],
+      [85, "right", observation],
+      [86, "right", observation],
+      [87, "right", observation],
+      [88, "right", observation],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "Between steps 84 and 88, the agent consistently performed the `right` action, but the game state did not change at all. Were any of these actions relevant to making progress toward the goal? Explain why or why not, using the active rules and object positions from the observation.",
+    maxChars: 6000,
+  });
+
+  assert.match(section, /blocked\/no-progress attempts/);
+  assert.match(section, /wall is 1 step to the right/);
+  assert.match(section, /wall is stop/);
+  assert.doesNotMatch(section, /hidden absolute position by 5 right/);
+});
+
 test("buildTrajectoryAnalysisRecallSection names nearby IS as the missing push target", async () => {
   const engine = new FakeCueEngine({
     ama: makeTrajectoryMessages([
@@ -1277,6 +1314,53 @@ test("buildTrajectoryAnalysisRecallSection explains temporary rule transformatio
   assert.match(section, /BALL IS KEY/);
 });
 
+test("buildTrajectoryAnalysisRecallSection explains pushed phrase groups as diagonal movement", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [
+        9,
+        "right",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "wall 3 steps to the right and 4 steps down",
+          "rule `is` 1 step down",
+          "key 1 step to the right and 1 step down",
+        ].join("\n"),
+      ],
+      [
+        10,
+        "right",
+        [
+          "Active rules:",
+          "baba is you",
+          "",
+          "Objects on the map:",
+          "wall 2 steps to the right and 4 steps down",
+          "rule `is` 1 step to the left and 1 step down",
+          "key 1 step down",
+        ].join("\n"),
+      ],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "In the transition from Step 9 to Step 10, the agent executes the action 'down', pushing the 'is' block. A standard push would only change the block's vertical position. However, the 'is' and 'key' blocks both shift their relative horizontal and vertical positions. Based on this outcome, what hidden movement mechanic affecting pushed objects can be inferred?",
+    maxChars: 6000,
+  });
+
+  assert.match(section, /Pushed phrase-group shift cues/);
+  assert.match(section, /contacts rule IS at 1 step down/);
+  assert.match(section, /adjacent KEY at 1 step to the right and 1 step down/);
+  assert.match(section, /one cell down and one cell to the left/);
+  assert.doesNotMatch(section, /this implies the agent moved right relative to a static object/);
+});
+
 test("buildTrajectoryAnalysisRecallSection calls out self-reversing progress noise", async () => {
   const engine = new FakeCueEngine({
     ama: makeTrajectoryMessages([
@@ -1439,6 +1523,7 @@ test("buildTrajectoryAnalysisRecallSection infers blocked-corner escape directio
   assert.match(section, /blocked to the left and above/);
   assert.match(section, /useful escape direction\(s\) are right and down/);
   assert.match(section, /successful right move at step 15/);
+  assert.doesNotMatch(section, /Failed-push boundary cues/);
 });
 
 test("buildTrajectoryAnalysisRecallSection explains active control-rule interaction setup", async () => {

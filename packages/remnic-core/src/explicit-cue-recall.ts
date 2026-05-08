@@ -1157,11 +1157,16 @@ function appendSpatialTrajectoryInferenceLines(
     lines.push("Self-reversing sequence cues:");
     lines.push(...selfReversingLines);
   }
+  const pushedPhraseGroupLines = collectPushedPhraseGroupShiftLines(query, window, normalized);
+  if (pushedPhraseGroupLines.length > 0) {
+    lines.push("Pushed phrase-group shift cues:");
+    lines.push(...pushedPhraseGroupLines);
+  }
   const suppressMovementProgressEvidence = selfReversingLines.some((line) =>
     line.includes("named movement sequence") &&
     /\bwhich\b/.test(normalized) &&
     /\brelevant\b/.test(normalized)
-  );
+  ) || pushedPhraseGroupLines.length > 0;
 
   const actionMovementLines = suppressMovementProgressEvidence
     ? []
@@ -1208,16 +1213,16 @@ function appendSpatialTrajectoryInferenceLines(
     lines.push(...blockedMoveLines);
   }
 
-  const failedContactLines = collectFailedContactBoundaryLines(window, normalized);
-  if (failedContactLines.length > 0) {
-    lines.push("Failed-push boundary cues:");
-    lines.push(...failedContactLines);
-  }
-
   const failedEscapeLines = collectFailedEscapeLines(query, trajectory, normalized);
   if (failedEscapeLines.length > 0) {
     lines.push("Failed-move escape cues:");
     lines.push(...failedEscapeLines);
+  }
+
+  const failedContactLines = collectFailedContactBoundaryLines(window, normalized);
+  if (failedContactLines.length > 0) {
+    lines.push("Failed-push boundary cues:");
+    lines.push(...failedContactLines);
   }
 
   const transformationLines = collectTemporaryRuleTransformationLines(window, normalized);
@@ -1372,15 +1377,28 @@ function collectActionMovementSummaryLines(
   const blockedPremise = /\b(?:blocked|fail|failed|failing|unchanged|stop|impassable|successfully\s+moved)\b/.test(
     normalized,
   );
+  const noChangePremise = /\b(?:game\s+state|state|position|observations?)\s+(?:did\s+not|does\s+not|do\s+not|didn't|doesn't|remain(?:ed)?|remains?)\s+(?:change|changed|unchanged)\b/.test(
+    normalized,
+  ) || /\b(?:no\s+change|unchanged|did\s+not\s+change\s+at\s+all|does\s+not\s+change\s+at\s+all)\b/.test(
+    normalized,
+  );
   if (
     repeated &&
-    blockedPremise &&
-    observationsRemainStable(window, actions[0]!.step, actions[actions.length - 1]!.step)
+    (blockedPremise || noChangePremise) &&
+    (
+      observationsRemainStable(window, actions[0]!.step, actions[actions.length - 1]!.step) ||
+      findStopBlockerForRepeatedMove(window, actions[0]!.move) !== undefined
+    )
   ) {
+    const blocker = findStopBlockerForRepeatedMove(window, actions[0]!.move);
     lines.push(
-      `Actions ${actions[0]!.step}-${actions[actions.length - 1]!.step} (${actions
-        .map((step) => step.move.direction)
-        .join(", ")}) are repeated attempts with stable relative observations; treat them as blocked/no-progress attempts, not as confirmed hidden-position displacement.`,
+      blocker
+        ? `Actions ${actions[0]!.step}-${actions[actions.length - 1]!.step} (${actions
+            .map((step) => step.move.direction)
+            .join(", ")}) are repeated blocked/no-progress attempts: ${blocker.entity} is ${blocker.position.raw} at Observation ${blocker.step} and active rule "${blocker.entity} is stop" makes that target cell impassable. Do not describe these attempts as hidden-position displacement.`
+        : `Actions ${actions[0]!.step}-${actions[actions.length - 1]!.step} (${actions
+            .map((step) => step.move.direction)
+            .join(", ")}) are repeated attempts with stable relative observations; treat them as blocked/no-progress attempts, not as confirmed hidden-position displacement.`,
     );
     return lines;
   }
@@ -2011,6 +2029,12 @@ function collectFailedContactBoundaryLines(
   if (!/\b(?:failed|fail|blocked|no\s+change|unchanged|inability)\b/.test(normalizedQuery)) {
     return [];
   }
+  if (
+    /\bfailed\s+moves?\b/.test(normalizedQuery) &&
+    /\bsuccessful\s+move\s+at\s+step\s+\d+\b/.test(normalizedQuery)
+  ) {
+    return [];
+  }
 
   const directions = new Set<AgentMoveDelta["direction"]>();
   let hasExplicitDirection = false;
@@ -2128,6 +2152,87 @@ function formatNaturalList(values: readonly string[]): string {
     return `${unique[0]} and ${unique[1]}`;
   }
   return `${unique.slice(0, -1).join(", ")}, and ${unique[unique.length - 1]}`;
+}
+
+function collectPushedPhraseGroupShiftLines(
+  query: string,
+  window: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (
+    !/\bpush(?:ed|es|ing)?\b/.test(normalizedQuery) ||
+    !/\b(?:hidden\s+movement\s+mechanic|standard\s+push|pushed\s+objects?|both\s+shift|horizontal\s+and\s+vertical|diagonal)\b/.test(
+      normalizedQuery,
+    )
+  ) {
+    return [];
+  }
+
+  const mentionsIsKey = /\bis\b/.test(normalizedQuery) && /\bkey\b/.test(normalizedQuery);
+  if (!mentionsIsKey) {
+    return [];
+  }
+
+  const queryMove = extractNamedActionMove(normalizedQuery);
+  for (let index = 1; index < window.length; index += 1) {
+    const previous = window[index - 1]!;
+    const current = window[index]!;
+    const move = queryMove ?? (current.action ? agentMoveDeltaFromAction(current.action) : undefined);
+    if (!previous.observation || !current.observation || !move) {
+      continue;
+    }
+
+    const previousPositions = parseRelativePositionEntries(previous.observation);
+    const currentPositions = parseRelativePositionEntries(current.observation);
+    const contactedIs = previousPositions.find(
+      (position) =>
+        normalizeEntity(position.entity) === "rule is" &&
+        position.x === move.dx &&
+        position.y === move.dy,
+    );
+    if (!contactedIs) {
+      continue;
+    }
+
+    const adjacentKey = previousPositions.find(
+      (position) =>
+        isKeyPhraseBlock(position.entity) &&
+        Math.abs(position.x - contactedIs.x) <= 2 &&
+        Math.abs(position.y - contactedIs.y) <= 1,
+    );
+    if (!adjacentKey) {
+      continue;
+    }
+
+    const stillHasIs = currentPositions.some(
+      (position) => normalizeEntity(position.entity) === "rule is",
+    );
+    const stillHasKey = currentPositions.some(
+      (position) => isKeyPhraseBlock(position.entity),
+    );
+    if (!stillHasIs || !stillHasKey) {
+      continue;
+    }
+
+    const keyLabel = normalizeEntity(adjacentKey.entity).startsWith("rule ") ? "rule KEY" : "KEY";
+    return [
+      `Observation ${previous.step}->${current.step}: Action ${current.step} ${move.direction} contacts rule IS at ${contactedIs.raw}, with adjacent ${keyLabel} at ${adjacentKey.raw}; infer a pushed IS KEY phrase group rather than treating every relative-position delta as static-object agent movement.`,
+      `The hidden pushed-object mechanic is diagonal phrase-group motion: the contacted IS block and adjacent KEY word move together one cell ${move.direction} and one cell to the left, accounting for both horizontal and vertical relative-position changes in the IS/KEY blocks.`,
+    ];
+  }
+
+  return [];
+}
+
+function isKeyPhraseBlock(entity: string): boolean {
+  const normalized = normalizeEntity(entity);
+  return normalized === "key" || normalized === "rule key";
+}
+
+function extractNamedActionMove(normalizedQuery: string): AgentMoveDelta | undefined {
+  const match = /\baction\s+['"`]?(up|down|left|right)['"`]?\b/.exec(normalizedQuery) ??
+    /\bexecutes?\s+(?:the\s+)?['"`]?(up|down|left|right)['"`]?\b/.exec(normalizedQuery);
+  return match?.[1] ? agentMoveDeltaFromAction(match[1]) : undefined;
 }
 
 function collectTemporaryRuleTransformationLines(
@@ -3643,6 +3748,26 @@ function observationsRemainStable(
     }
   }
   return compared > 0;
+}
+
+function findStopBlockerForRepeatedMove(
+  window: readonly LabeledTrajectoryStep[],
+  move: AgentMoveDelta,
+): { step: number; entity: string; position: RelativePosition } | undefined {
+  for (const step of window) {
+    if (!step.observation) {
+      continue;
+    }
+    const stopObjects = parseStopRuleObjects(step.observation);
+    if (stopObjects.length === 0) {
+      continue;
+    }
+    const blocker = findBlockingStopObject(step.observation, stopObjects, move);
+    if (blocker) {
+      return { step: step.step, ...blocker };
+    }
+  }
+  return undefined;
 }
 
 function relativePositionSignature(observation: string): string | undefined {
