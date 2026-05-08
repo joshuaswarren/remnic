@@ -497,6 +497,11 @@ jobs:
           else
             publish_status=$?
             cat "${publish_log}"
+            if grep -q "publisher does not exist on ClawHub" "${publish_log}"; then
+              echo "::notice title=ClawHub publish skipped::${CLAWHUB_OWNER} is not provisioned as a ClawHub publisher yet; create that publisher before enabling marketplace publishing."
+              rm -f "${publish_log}"
+              exit 0
+            fi
             rm -f "${publish_log}"
             exit "${publish_status}"
           fi
