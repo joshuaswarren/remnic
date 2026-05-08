@@ -1095,7 +1095,7 @@ export interface PluginConfig {
   localLmsCliPath?: string;
   /** Optional bin directory prepended to PATH for LMS CLI execution. */
   localLmsBinDir?: string;
-  /** Hard timeout for local LLM requests (ms). */
+  /** Hard timeout for local LLM and gateway fallback requests (ms). */
   localLlmTimeoutMs: number;
   /** Max context window for local LLM (override auto-detection). Set lower if your LLM server defaults to smaller contexts. */
   localLlmMaxContext?: number;

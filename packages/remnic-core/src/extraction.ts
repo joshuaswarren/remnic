@@ -1089,7 +1089,11 @@ export class ExtractionEngine {
       const detailed = await this.fallbackLlm.parseWithSchemaDetailed(
         messages,
         ExtractionResultSchema,
-        this.withGatewayAgent({ temperature: 0.3, maxTokens: 4096, timeoutMs: 30_000 }),
+        this.withGatewayAgent({
+          temperature: 0.3,
+          maxTokens: this.config.extractionMaxOutputTokens,
+          timeoutMs: this.config.localLlmTimeoutMs,
+        }),
       );
 
       const fallbackDurationMs = Date.now() - fallbackStartTime;

@@ -2011,7 +2011,7 @@ export function parseConfig(raw: unknown): PluginConfig {
         ? cfg.localLmsBinDir
         : undefined,
     localLlmTimeoutMs:
-      typeof cfg.localLlmTimeoutMs === "number" ? cfg.localLlmTimeoutMs : 180_000,
+      parseBoundedIntegerMs(cfg.localLlmTimeoutMs, 180_000, 1, 86_400_000),
     localLlmMaxContext:
       typeof cfg.localLlmMaxContext === "number" ? cfg.localLlmMaxContext : undefined,
     // Observability (disabled by default to avoid log spam)
