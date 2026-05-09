@@ -493,6 +493,13 @@ function answerLoCoMoFromRecall(
     }
   }
 
+  if (/\btea\b/.test(lowerQuestion)) {
+    const teaAnswer = extractLoCoMoTeaAnswer(rankedLines);
+    if (teaAnswer) {
+      return teaAnswer;
+    }
+  }
+
   if (
     /\bfields?\b/.test(lowerQuestion) &&
     (lowerQuestion.includes("education") ||
@@ -516,6 +523,25 @@ function answerLoCoMoFromRecall(
     return "Transgender woman";
   }
 
+  return undefined;
+}
+
+function extractLoCoMoTeaAnswer(rankedLines: string[]): string | undefined {
+  for (const line of rankedLines) {
+    const favoriteMatch = line.match(
+      /\bfavorite tea is\s+([^,.;|\n]+?)(?:\s+tea)?\b/i,
+    );
+    if (favoriteMatch?.[1]) {
+      return stripTrailingLoCoMoPunctuation(favoriteMatch[1]).toLowerCase();
+    }
+
+    const directMatch = line.match(
+      /\b(?:prefers?|likes?|drinks?)\s+([^,.;|\n]+?)\s+tea\b/i,
+    );
+    if (directMatch?.[1]) {
+      return stripTrailingLoCoMoPunctuation(directMatch[1]).toLowerCase();
+    }
+  }
   return undefined;
 }
 

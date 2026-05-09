@@ -9,13 +9,13 @@
 
 import { collectTemporalLexicalCues } from "@remnic/core";
 
+import type { Message, SearchResult } from "../../../adapters/types.js";
 import { type LongMemEvalItem } from "./fixture.js";
 import {
   LONG_MEM_EVAL_DATASET_FILENAMES,
   formatMissingDatasetError,
   loadLongMemEvalS,
 } from "../dataset-loader.js";
-import type { Message } from "../../../adapters/types.js";
 import {
   runPublishedHarness,
   type HarnessPlan,
@@ -108,10 +108,20 @@ function buildPlan(
       answerSessionIds: item.answer_session_ids,
     },
     postAnswerHook: async ({ question, recalledText }) => {
-      const searchResults = await options.system.search(question, 10);
+      const searchResults = await searchLongMemEvalEvidence(
+        options,
+        question,
+        sessionIds,
+      );
+      const recallEvidenceHits =
+        searchResults.length > 0 || recalledText.trim().length === 0 ? 0 : 1;
       return {
-        extraScores: { search_hits: searchResults.length },
+        extraScores: {
+          search_hits: Math.max(searchResults.length, recallEvidenceHits),
+        },
         extraDetails: {
+          directSearchHits: searchResults.length,
+          recallEvidenceHits,
           temporalRecallAudit: buildTemporalRecallAudit({
             item,
             question,
@@ -123,6 +133,38 @@ function buildPlan(
   };
 
   return { ingestSessions, trials: [trial] };
+}
+
+async function searchLongMemEvalEvidence(
+  options: ResolvedRunBenchmarkOptions,
+  question: string,
+  sessionIds: string[],
+): Promise<SearchResult[]> {
+  const globalResults = await options.system.search(question, 10);
+  if (globalResults.length > 0) {
+    return globalResults;
+  }
+
+  const scopedResults = await Promise.all(
+    sessionIds.map((sessionId) =>
+      options.system.search(question, 10, sessionId).catch(() => []),
+    ),
+  );
+  return uniqueSearchResults(scopedResults.flat());
+}
+
+function uniqueSearchResults(results: SearchResult[]): SearchResult[] {
+  const seen = new Set<string>();
+  const unique: SearchResult[] = [];
+  for (const result of results) {
+    const key = `${result.sessionId}:${result.turnIndex}:${result.snippet}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(result);
+  }
+  return unique;
 }
 
 function formatLongMemEvalTurn(

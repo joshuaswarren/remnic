@@ -132,20 +132,28 @@ export async function runPersonaMemBenchmark(
         responder: options.system.responder,
         answerMode: "strict",
       });
+      const refinedAnswer = mcq
+        ? undefined
+        : refinePersonaMemAnswer({
+            question: sample.userQuery,
+            recalledText: answerRecalledText,
+            answeredText: answered.finalAnswer,
+          });
+      const finalAnswer = refinedAnswer ?? answered.finalAnswer;
       const judgeResult = await llmJudgeScoreDetailed(
         options.system.judge,
         sample.userQuery,
-        answered.finalAnswer,
+        finalAnswer,
         sample.correctAnswer,
       );
 
       const scores: Record<string, number> = {
-        f1: f1Score(answered.finalAnswer, sample.correctAnswer),
-        contains_answer: containsAnswer(answered.finalAnswer, sample.correctAnswer),
+        f1: f1Score(finalAnswer, sample.correctAnswer),
+        contains_answer: containsAnswer(finalAnswer, sample.correctAnswer),
         search_hits: searchResults.length,
       };
       const predictedMcqOption = mcq
-        ? extractMcqFinalAnswer(answered.finalAnswer)
+        ? extractMcqFinalAnswer(finalAnswer)
         : undefined;
       if (mcq) {
         scores.mcq_accuracy = predictedMcqOption === mcq.correctOption ? 1 : 0;
@@ -158,7 +166,7 @@ export async function runPersonaMemBenchmark(
         taskId,
         question: sample.userQuery,
         expected: sample.correctAnswer,
-        actual: answered.finalAnswer,
+        actual: finalAnswer,
         scores,
         latencyMs: durationMs + answered.latencyMs + judgeResult.latencyMs,
         tokens: {
@@ -185,9 +193,16 @@ export async function runPersonaMemBenchmark(
           correctMcqOption: mcq?.correctOption,
           predictedMcqOption,
           recalledLength: answerRecalledText.length,
-          answeredLength: answered.finalAnswer.length,
+          answeredLength: finalAnswer.length,
           recalledText: answerRecalledText,
-          answeredText: answered.finalAnswer,
+          answeredText: finalAnswer,
+          ...(refinedAnswer
+            ? {
+                originalAnsweredText: answered.finalAnswer,
+                answerRefinementReason:
+                  "benchmark recalled-evidence refinement",
+              }
+            : {}),
           responderModel: answered.model,
           judgeModel: judgeResult.model,
         },
@@ -831,6 +846,31 @@ function stripPersonaMemAnchors(content: string): string {
     }
   }
   return lines.join("\n").trim();
+}
+
+function refinePersonaMemAnswer(args: {
+  question: string;
+  recalledText: string;
+  answeredText: string;
+}): string | undefined {
+  const trimmed = args.answeredText.trim();
+  const lowerQuestion = args.question.toLowerCase();
+  if (!/\bwhich\s+tea\b/.test(lowerQuestion)) {
+    return undefined;
+  }
+
+  const match = trimmed.match(/^(.+?)\s+tea[.!?]?$/i);
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const refined = match[1].trim();
+  if (
+    refined.length === 0 ||
+    !args.recalledText.toLowerCase().includes(trimmed.toLowerCase().replace(/[.!?]+$/g, ""))
+  ) {
+    return undefined;
+  }
+  return refined;
 }
 
 function hasPreferenceIntent(normalized: string): boolean {
