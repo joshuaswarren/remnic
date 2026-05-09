@@ -390,6 +390,10 @@ test("runtime profile can route Remnic internal LLM calls through codex-cli", as
   });
   assert.equal(resolved.remnicConfig.modelSource, "gateway");
   assert.equal(resolved.effectiveRemnicConfig.modelSource, "gateway");
+  assert.equal(resolved.remnicConfig.localLlmTimeoutMs, 900_000);
+  assert.equal(resolved.remnicConfig.localLlmFastTimeoutMs, 900_000);
+  assert.equal(resolved.effectiveRemnicConfig.localLlmTimeoutMs, 900_000);
+  assert.equal(resolved.effectiveRemnicConfig.localLlmFastTimeoutMs, 900_000);
   assert.equal(resolved.remnicConfig.gatewayAgentId, "remnic-bench-internal");
   const gatewayConfig = resolved.effectiveRemnicConfig.gatewayConfig as {
     agents?: { defaults?: { model?: { primary?: string } } };

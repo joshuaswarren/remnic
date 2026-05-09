@@ -491,6 +491,12 @@ function buildInternalRemnicConfigOverrides(
     ...thinkingOverrides,
     modelSource: "gateway",
     localLlmEnabled: false,
+    ...(config.retryOptions?.timeoutMs
+      ? {
+          localLlmTimeoutMs: config.retryOptions.timeoutMs,
+          localLlmFastTimeoutMs: config.retryOptions.timeoutMs,
+        }
+      : {}),
     gatewayConfig: buildInternalGatewayConfig(config, options),
     gatewayAgentId: INTERNAL_GATEWAY_AGENT_ID,
     fastGatewayAgentId: INTERNAL_GATEWAY_AGENT_ID,
