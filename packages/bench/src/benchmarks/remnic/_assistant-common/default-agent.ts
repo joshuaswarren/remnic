@@ -206,8 +206,6 @@ export function neutralizeUnsupportedGenderedPronouns(text: string): string {
     .replace(/\bhim\b/g, "the person")
     .replace(/\bHers\b/g, "The person's")
     .replace(/\bhers\b/g, "the person's")
-    .replace(/\bHer\b(?=\s+\w)/g, "The person's")
-    .replace(/\bher\b(?=\s+\w)/g, "the person's")
     .replace(/\bHer\b/g, "The person")
     .replace(/\bher\b/g, "the person");
 }
@@ -217,7 +215,9 @@ export function finalizeAssistantOutput(
   text: string,
 ): string {
   const neutralized = neutralizeUnsupportedGenderedPronouns(text);
-  const baseText = buildSpecializedAssistantOutput(request) ?? neutralized;
+  const baseText = shouldUseSpecializedAssistantFallback(neutralized)
+    ? buildSpecializedAssistantOutput(request) ?? neutralized
+    : neutralized;
   const additions = buildGroundedFrameAdditions(request, baseText);
   if (additions.length === 0) {
     return baseText;
@@ -227,6 +227,18 @@ export function finalizeAssistantOutput(
     "",
     ...additions,
   ].join("\n");
+}
+
+function shouldUseSpecializedAssistantFallback(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return (
+    normalized.length === 0 ||
+    normalized.includes("[deterministic-assistant]") ||
+    normalized.includes("i do not have additional inference capability") ||
+    /^(?:generic (?:answer|prep|brief)|unknown|unsure|not sure|i don't know|i do not know)\.?$/.test(normalized) ||
+    /\b(?:cannot|can't|unable to)\s+(?:answer|determine|infer|tell)\b/.test(normalized) ||
+    /\bnot enough (?:context|information|memory)\b/.test(normalized)
+  );
 }
 
 function buildSpecializedAssistantOutput(

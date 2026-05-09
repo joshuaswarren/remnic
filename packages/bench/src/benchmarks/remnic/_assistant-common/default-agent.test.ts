@@ -67,6 +67,15 @@ test("neutralizeUnsupportedGenderedPronouns removes unsupported gendered referen
   );
 });
 
+test("neutralizeUnsupportedGenderedPronouns handles object-pronoun her without possessive grammar", () => {
+  assert.equal(
+    neutralizeUnsupportedGenderedPronouns(
+      "Ask her about the deadline, then send her the notes.",
+    ),
+    "Ask the person about the deadline, then send the person the notes.",
+  );
+});
+
 test("finalizeAssistantOutput appends a grounded leverage frame for next-best-action prompts", () => {
   const output = finalizeAssistantOutput(
     {
@@ -91,13 +100,29 @@ test("finalizeAssistantOutput specializes next-best-action with explicit deadlin
       memoryView:
         "Recent memory items:\n- Rollback runbook for Project Atlas is approximately 60% drafted; missing the failback-to-warm-standby section.\n- Remnic PR #481 has been waiting on Alex's review for 48 hours and blocks Jordan's next task.\n- Alex committed to Priya yesterday to send a written latency-target commitment by EOD Thursday.\nStated positions:\n- commitments: Alex treats written commitments as hard deadlines.\n- unblocking peers: Alex prioritizes unblocking peers over own deep work.",
     },
-    "Generic answer.",
+    "[deterministic-assistant]\nGeneric answer.",
   );
 
   assert.match(output, /Do \*\*Remnic PR #481 review\*\* now/);
   assert.match(output, /If the current time is already close to that deadline/);
   assert.match(output, /otherwise, unblock Jordan now/);
   assert.doesNotMatch(output, /only let the written latency commitment jump the queue/);
+});
+
+test("finalizeAssistantOutput preserves provider-backed answers even when specialized fallback data matches", () => {
+  const output = finalizeAssistantOutput(
+    {
+      prompt:
+        "I have 45 minutes free. Given what you know about my current commitments and open work, what's the single highest-leverage thing I should do right now, and why?",
+      memoryView:
+        "Recent memory items:\n- Rollback runbook for Project Atlas is approximately 60% drafted; missing the failback-to-warm-standby section.\n- Remnic PR #481 has been waiting on Alex's review for 48 hours and blocks Jordan's next task.\n- Alex committed to Priya yesterday to send a written latency-target commitment by EOD Thursday.\nStated positions:\n- commitments: Alex treats written commitments as hard deadlines.\n- unblocking peers: Alex prioritizes unblocking peers over own deep work.",
+    },
+    "Review PR #481 first, because it is the only item blocking Jordan's next task.",
+  );
+
+  assert.match(output, /^Review PR #481 first/);
+  assert.doesNotMatch(output, /Do \*\*Remnic PR #481 review\*\* now/);
+  assert.match(output, /Leverage frame:/);
 });
 
 test("finalizeAssistantOutput appends a grounded synthesis frame for synthesis prompts", () => {
@@ -139,7 +164,7 @@ test("finalizeAssistantOutput specializes the Aurora meeting prep brief from mem
       memoryView:
         "Recent memory items:\n- Priya Shah leads the Aurora team; Aurora depends on Atlas's storage API.\n- Priya's last 1:1 with Alex flagged concerns about Atlas write-latency SLOs.\n- Atlas p99 write latency is 180ms; Aurora's target is 120ms.\n- Hiroki Tanaka is joining the meeting; new skip-level, has not met Alex before.\n- Alex decided last week to move Atlas to a sharded read cache rather than expanding the write-through cluster.",
     },
-    "Generic prep.",
+    "[deterministic-assistant]\nGeneric prep.",
   );
 
   assert.match(output, /Atlas\/Aurora latency gap/);
@@ -156,7 +181,7 @@ test("finalizeAssistantOutput specializes Monday morning brief without inventing
       memoryView:
         "Recent memory items:\n- Project Atlas migration has a soft-launch next Tuesday; rollback runbook is partially written.\n- Alex blocks Mondays for deep work and declines non-urgent meetings.\n- Remnic PR #481 is waiting on Alex's review -- touches retrieval-personalization.\n- Jordan Okafor joined the team last week and has not yet been paired with Alex.\nOpen threads:\n- Draft 1 of the Atlas rollback runbook is in progress -- last updated two days ago.\n- Decision pending: whether to co-schedule the Atlas launch with the Aurora team's release window.",
     },
-    "Generic brief.",
+    "[deterministic-assistant]\nGeneric brief.",
   );
 
   assert.match(output, /finish the Atlas rollback runbook/);
