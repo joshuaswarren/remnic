@@ -490,12 +490,14 @@ type PackageBenchModule = {
     preserveRuntimeDefaults?: boolean;
     responder?: unknown;
     judge?: unknown;
+    replayExtractionMode?: "await" | "background" | "skip";
   }) => Promise<{ destroy(): Promise<void> }>;
   createRemnicAdapter?: (options?: {
     configOverrides?: Record<string, unknown>;
     preserveRuntimeDefaults?: boolean;
     responder?: unknown;
     judge?: unknown;
+    replayExtractionMode?: "await" | "background" | "skip";
   }) => Promise<{ destroy(): Promise<void> }>;
   createSyntheticEmailIngestionAdapter?: (options?: {
     system?: unknown;
@@ -2362,8 +2364,13 @@ async function runBenchViaPackage(
   // instead of the user-specified seed, breaking reproducibility.
   const effectiveSeed = parsed.publishedSeed;
   const benchmarkOptions =
-    benchmarkId === "locomo" && parsed.publishedTrialLimit !== undefined
-      ? { trialLimit: parsed.publishedTrialLimit }
+    benchmarkId === "locomo"
+      ? {
+          ...(parsed.publishedTrialLimit !== undefined
+            ? { trialLimit: parsed.publishedTrialLimit }
+            : {}),
+          replayExtractionMode: "skip",
+        }
       : undefined;
 
   try {
@@ -2375,6 +2382,9 @@ async function runBenchViaPackage(
     );
     system = await plan.createAdapter({
       ...plan.runtime.adapterOptions,
+      ...(benchmarkId === "locomo"
+        ? { replayExtractionMode: "skip" as const }
+        : {}),
       ...(amaBenchProtocol.primaryJudge
         ? { judge: amaBenchProtocol.primaryJudge }
         : {}),

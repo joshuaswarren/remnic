@@ -33,6 +33,7 @@ export interface RemnicAdapterOptions {
   responder?: BenchResponder;
   judge?: BenchJudge;
   drainTimeoutMs?: number;
+  replayExtractionMode?: "await" | "background" | "skip";
 }
 
 type BenchAdapterMode = "lightweight" | "direct";
@@ -366,6 +367,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
     options: RemnicAdapterOptions = {},
   ): Promise<BenchMemoryAdapter> {
     const useCoreMemoryPipeline = shouldUseCoreMemoryPipeline(mode, options);
+    const replayExtractionMode = options.replayExtractionMode ?? "await";
     const drainTimeoutMs = normalizeDrainTimeoutMs(options.drainTimeoutMs);
     let state = await createBenchOrchestrator(
       mode,
@@ -429,7 +431,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           })),
         );
 
-        if (!useCoreMemoryPipeline || messages.length === 0) {
+        if (
+          !useCoreMemoryPipeline ||
+          messages.length === 0 ||
+          replayExtractionMode === "skip"
+        ) {
           return;
         }
 
@@ -461,9 +467,14 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           });
         }
 
-        await state.orchestrator.ingestReplayBatch(replayTurns, {
+        const replayExtraction = state.orchestrator.ingestReplayBatch(replayTurns, {
           archiveLcm: false,
         });
+        if (replayExtractionMode === "background") {
+          void replayExtraction.catch(() => undefined);
+          return;
+        }
+        await replayExtraction;
       },
 
       async recall(sessionId: string, query: string, budgetChars?: number): Promise<string> {

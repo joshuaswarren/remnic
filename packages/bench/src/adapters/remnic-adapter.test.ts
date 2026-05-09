@@ -859,6 +859,40 @@ test("runtime-backed adapter stores benchmark turns into Remnic recall surfaces"
   }
 });
 
+test("direct adapter can skip replay extraction while preserving LCM recall", async () => {
+  const adapter = await createRemnicAdapter({
+    replayExtractionMode: "skip",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 0,
+    },
+  });
+
+  try {
+    await adapter.store("locomo-style-session", [
+      {
+        role: "user",
+        content: "Session fact: Caroline went to the support group yesterday.",
+      },
+      {
+        role: "assistant",
+        content: "Session date anchor: 8 May 2023.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "locomo-style-session",
+      "When did Caroline go to the support group?",
+    );
+
+    assert.match(recalled, /support group yesterday/);
+    assert.match(recalled, /8 May 2023/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("runtime-backed adapter preserves transcript order for stored batches", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {
