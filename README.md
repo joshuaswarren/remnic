@@ -1,14 +1,18 @@
 # Remnic
 
-**Persistent, private memory for AI agents.** Your agents forget everything between sessions — Remnic fixes that.
+Open-source memory and context for user-aware agents.
+
+Remnic helps AI agents understand the people they work with: their preferences, projects, constraints, decisions, patterns, and definition of good. The goal is simple: agents that remember responsibly, retrieve the right context, and ask fewer unnecessary questions.
+
+Remnic is not just a memory store. It is an exploration of the systems layer around user-aware agents: scoped memory, provenance, retrieval quality, correction, boundaries, and evals.
 
 **The trace is noise. The primitive is the product.** Remnic's job is the pipeline that distills hours of agent conversation into compressed, searchable, durable memory primitives. ([How it works →](docs/trace-to-primitive.md))
-
-Remnic gives AI agents long-term memory that survives across conversations. Decisions, preferences, project context, personal details, past mistakes — everything your agent learns persists and resurfaces exactly when it's needed. All data stays on your machine as plain markdown files. No cloud services, no subscriptions, no sharing your data with third parties.
 
 [![npm version](https://img.shields.io/npm/v/@remnic/cli)](https://www.npmjs.com/package/@remnic/cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink)](https://github.com/sponsors/joshuaswarren)
+
+Creator and maintainer of Remnic: [Joshua Warren](https://github.com/joshuaswarren).
 
 > **Engram is now Remnic.** Canonical packages live under the `@remnic/*` scope:
 > [`@remnic/core`](https://www.npmjs.com/package/@remnic/core),
@@ -36,9 +40,11 @@ OpenClaw's built-in memory works for simple cases, but it doesn't scale. It lack
 
 ## The Solution
 
-Remnic is an open-source, local-first memory system that replaces OpenClaw's default memory with something much more capable — while keeping everything on your machine. It watches your agent conversations, extracts durable knowledge, and injects the right memories back at the start of every session. Route extraction through the OpenClaw gateway model chain, OpenAI, or a **local LLM** (Ollama, LM Studio, etc.) — your choice.
+Remnic is an open-source memory and context layer for user-aware agents. It watches agent conversations, extracts durable knowledge, and injects the right context back when it is needed. Route extraction through the OpenClaw gateway model chain, OpenAI, or a **local LLM** (Ollama, LM Studio, etc.) -- your choice.
 
-Remnic is the **universal memory layer for AI agents**. It works natively with **[OpenClaw](https://github.com/openclaw/openclaw)**, **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, **[Codex CLI](https://github.com/openai/codex)**, **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**, and any **MCP-compatible client** (Replit, Cursor, etc.). When you tell any agent a preference, every agent knows it — they share one memory store.
+Remnic helps agents understand the people they work with: preferences, projects, constraints, decisions, patterns, and definitions of good. It works natively with **[OpenClaw](https://github.com/openclaw/openclaw)**, **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, **[Codex CLI](https://github.com/openai/codex)**, **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**, and any **MCP-compatible client** (Replit, Cursor, etc.). When you tell any agent a preference, every agent can use the same governed memory store.
+
+Local-first storage is a trust feature. All data can stay on your machine as plain markdown files: no cloud dependency, no subscription, and no third-party memory service required.
 
 Architecture rule: standalone Remnic is first-class. `@remnic/core`, `@remnic/server`, and `@remnic/cli` own the memory engine and must stay host-agnostic. OpenClaw, Hermes, Codex, Claude Code, and future integrations are thin adapters over that shared core, and adapter work should always follow the host's current upstream SDK and documentation instead of recreating host-native behavior inside Remnic.
 
@@ -581,7 +587,7 @@ All memory lives on your filesystem as plain markdown files. No cloud dependency
 
 ### A real upgrade from default OpenClaw memory
 
-OpenClaw's built-in memory is basic — it works for getting started, but lacks semantic search, entity tracking, lifecycle management, governance, and multi-agent isolation. Remnic is a drop-in replacement that brings all of those capabilities while keeping the same local-first philosophy.
+OpenClaw's built-in memory is basic — it works for getting started, but lacks semantic search, entity tracking, lifecycle management, governance, and multi-agent isolation. Remnic is a drop-in replacement that brings all of those capabilities while keeping the same inspectable local trust model.
 
 ### Smart recall, not keyword search
 

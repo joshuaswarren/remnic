@@ -1,8 +1,8 @@
 # @remnic/core
 
-Framework-agnostic memory engine for AI agents. Orchestration, storage, extraction, search, and trust zones -- all local, all private.
+Framework-agnostic memory and context engine for user-aware agents. Orchestration, storage, extraction, search, and trust zones -- inspectable and local by default.
 
-Part of [Remnic](https://github.com/joshuaswarren/remnic), the universal memory layer for AI agents.
+Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory and context for user-aware agents.
 
 ## Install
 
@@ -12,7 +12,7 @@ npm install @remnic/core
 
 ## What it does
 
-Remnic Core is the engine that powers persistent memory across AI agent sessions. It handles:
+Remnic Core is the engine that powers scoped memory and context across AI agent sessions. It handles:
 
 - **Memory orchestration** -- three-phase flow: recall before sessions, buffer during, extract after
 - **Storage** -- plain markdown files with YAML frontmatter on your local filesystem

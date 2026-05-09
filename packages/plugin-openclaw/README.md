@@ -1,8 +1,8 @@
 # @remnic/plugin-openclaw
 
-OpenClaw plugin for Remnic memory. The package bundles the OpenClaw adapter plus the Remnic core runtime so it can run without a separate Remnic service; the adapter registers OpenClaw hooks/tools and delegates memory behavior to [`@remnic/core`](https://www.npmjs.com/package/@remnic/core).
+OpenClaw plugin for Remnic memory and context. The package bundles the OpenClaw adapter plus the Remnic core runtime so it can run without a separate Remnic service; the adapter registers OpenClaw hooks/tools and delegates memory behavior to [`@remnic/core`](https://www.npmjs.com/package/@remnic/core).
 
-Part of [Remnic](https://github.com/joshuaswarren/remnic), the universal memory layer for AI agents.
+Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory and context for user-aware agents.
 
 ## Install
 
