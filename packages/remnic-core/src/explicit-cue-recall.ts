@@ -1598,16 +1598,73 @@ function extractMentionedMoveSequence(query: string): AgentMoveDelta["direction"
   }
 
   const normalized = normalizeTrajectoryQuery(query);
-  const sequence = /(?:sequence\s+of\s+(?:four\s+)?movements?|actions?\s+from\s+step\s+\d+\s+to\s+\d+\s+consist\s+of)\s+((?:up|down|left|right)(?:\s+(?:and|then|,)\s+(?:up|down|left|right))*)/.exec(
-    normalized,
-  )?.[1];
-  if (!sequence) {
-    return [];
+  const tokens = normalized.split(" ").filter(Boolean);
+  const sequenceStart = mentionedMoveSequenceStart(tokens);
+  return sequenceStart === undefined
+    ? []
+    : parseMoveSequenceTokens(tokens, sequenceStart);
+}
+
+function mentionedMoveSequenceStart(tokens: readonly string[]): number | undefined {
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (
+      tokens[index] === "sequence" &&
+      tokens[index + 1] === "of"
+    ) {
+      const movementIndex = tokens[index + 2] === "four" ? index + 3 : index + 2;
+      if (
+        tokens[movementIndex] === "movement" ||
+        tokens[movementIndex] === "movements"
+      ) {
+        return movementIndex + 1;
+      }
+    }
+
+    if (
+      (tokens[index] === "action" || tokens[index] === "actions") &&
+      tokens[index + 1] === "from" &&
+      tokens[index + 2] === "step" &&
+      isAllDigits(tokens[index + 3] ?? "") &&
+      tokens[index + 4] === "to" &&
+      isAllDigits(tokens[index + 5] ?? "") &&
+      tokens[index + 6] === "consist" &&
+      tokens[index + 7] === "of"
+    ) {
+      return index + 8;
+    }
   }
-  return sequence
-    .split(/\s*(?:,|and|then)\s*/)
-    .map((token) => agentMoveDeltaFromAction(token)?.direction)
-    .filter((direction): direction is AgentMoveDelta["direction"] => direction !== undefined);
+  return undefined;
+}
+
+function parseMoveSequenceTokens(
+  tokens: readonly string[],
+  startIndex: number,
+): AgentMoveDelta["direction"][] {
+  const moves: AgentMoveDelta["direction"][] = [];
+  const scanEnd = Math.min(tokens.length, startIndex + 32);
+  for (let index = startIndex; index < scanEnd; index += 1) {
+    const token = tokens[index]!;
+    if (isMoveDirectionToken(token)) {
+      moves.push(token);
+      continue;
+    }
+    if (token === "and" || token === "then") {
+      continue;
+    }
+    if (moves.length > 0) {
+      break;
+    }
+  }
+  return moves;
+}
+
+function isMoveDirectionToken(
+  token: string,
+): token is AgentMoveDelta["direction"] {
+  return token === "up" ||
+    token === "down" ||
+    token === "left" ||
+    token === "right";
 }
 
 function containsAdjacentReversePair(
@@ -1974,11 +2031,7 @@ function collectAdjacentRuleSetupLines(
   window: readonly LabeledTrajectoryStep[],
   normalizedQuery: string,
 ): string[] {
-  if (
-    !/\b(?:final\s+position|relative\s+to\s+(?:the\s+)?rule|rule\s+blocks?|rule\s+words?|strategic\s+advantage|manipulat(?:e|ing)\s+(?:the\s+)?rule|push(?:ed|ing)?\s+(?:the\s+)?(?:is|win|baba|you|key|door)?\s*(?:text\s+)?block)\b/.test(
-      normalizedQuery,
-    )
-  ) {
+  if (!hasAdjacentRuleSetupIntent(normalizedQuery)) {
     return [];
   }
 
@@ -2007,6 +2060,47 @@ function collectAdjacentRuleSetupLines(
     );
   }
   return lines;
+}
+
+function hasAdjacentRuleSetupIntent(normalizedQuery: string): boolean {
+  return normalizedQuery.includes("final position") ||
+    normalizedQuery.includes("relative to rule") ||
+    normalizedQuery.includes("relative to the rule") ||
+    normalizedQuery.includes("rule block") ||
+    normalizedQuery.includes("rule blocks") ||
+    normalizedQuery.includes("rule word") ||
+    normalizedQuery.includes("rule words") ||
+    normalizedQuery.includes("strategic advantage") ||
+    normalizedQuery.includes("manipulate rule") ||
+    normalizedQuery.includes("manipulate the rule") ||
+    normalizedQuery.includes("manipulating rule") ||
+    normalizedQuery.includes("manipulating the rule") ||
+    hasPushBlockSetupIntent(normalizedQuery);
+}
+
+function hasPushBlockSetupIntent(normalizedQuery: string): boolean {
+  const tokens = normalizedQuery.split(" ").filter(Boolean);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token !== "push" && token !== "pushed" && token !== "pushing") {
+      continue;
+    }
+
+    let cursor = index + 1;
+    if (tokens[cursor] === "the") {
+      cursor += 1;
+    }
+    if (["is", "win", "baba", "you", "key", "door"].includes(tokens[cursor] ?? "")) {
+      cursor += 1;
+    }
+    if (tokens[cursor] === "text") {
+      cursor += 1;
+    }
+    if (tokens[cursor] === "block") {
+      return true;
+    }
+  }
+  return false;
 }
 
 function pushDirectionForAdjacentPosition(position: RelativePosition): AgentMoveDelta["direction"] | undefined {
@@ -3332,7 +3426,7 @@ function selectObservationTransition(
   ) {
     return shortest;
   }
-  return nextRepeatedTarget ?? shortest;
+  return nextRepeatedTarget;
 }
 
 function observationsHaveSameFullText(

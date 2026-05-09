@@ -196,30 +196,31 @@ export async function runMemoryAgentBenchBenchmark(
           answerVariants,
           recsysMapping: protocol === "recsys_redial" ? recsysMapping : null,
         });
+        const answerForScoring = officialScoring.parsedAnswer ?? finalAnswer;
         const bestExpectedAnswer = selectBestMatchingAnswer(
-          officialScoring.parsedAnswer ?? finalAnswer,
+          answerForScoring,
           answerVariants,
         );
         const judgeResult = await llmJudgeScoreDetailed(
           options.system.judge,
           question,
-          officialScoring.parsedAnswer ?? finalAnswer,
+          answerForScoring,
           bestExpectedAnswer,
         );
 
         const scores: Record<string, number> = {
           f1: scoreAgainstVariants(
-            officialScoring.parsedAnswer ?? answered.finalAnswer,
+            answerForScoring,
             answerVariants,
             f1Score,
           ),
           contains_answer: answerVariants.some((variant) =>
-            containsAnswer(officialScoring.parsedAnswer ?? answered.finalAnswer, variant),
+            containsAnswer(answerForScoring, variant),
           )
             ? 1
             : 0,
           rouge_l: scoreAgainstVariants(
-            officialScoring.parsedAnswer ?? answered.finalAnswer,
+            answerForScoring,
             answerVariants,
             rougeL,
           ),

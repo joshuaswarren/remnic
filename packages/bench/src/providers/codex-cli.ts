@@ -113,12 +113,16 @@ const CODEX_CLI_DIAGNOSTICS_MODE_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_MODE"
 const CODEX_CLI_EXECUTABLE_ENV = "REMNIC_BENCH_CODEX_CLI_EXECUTABLE";
 const CODEX_CLI_TRANSPORT_ENV = "REMNIC_BENCH_CODEX_CLI_TRANSPORT";
 const CODEX_CLI_VERSION_TIMEOUT_MS = 5_000;
+const CODEX_CLI_HEALTH_CACHE_TTL_MS = 30_000;
 const OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
 const OPENAI_RESPONSES_BASE_URL = "https://api.openai.com/v1";
 
 const activeCodexCliChildPids = new Set<number>();
 let codexCliParentCleanupInstalled = false;
-const codexCliHealthCache = new Map<string, Promise<boolean>>();
+const codexCliHealthCache = new Map<
+  string,
+  { checkedAt: number; promise: Promise<boolean> }
+>();
 
 class CodexCliProvider implements LlmProvider {
   readonly provider = "codex-cli" as const;
@@ -270,12 +274,25 @@ class CodexCliProvider implements LlmProvider {
     }
 
     const cacheKey = `${executable}\0${env.PATH ?? ""}`;
-    let cached = codexCliHealthCache.get(cacheKey);
-    if (!cached) {
-      cached = this.probeCliHealth(executable, env);
-      codexCliHealthCache.set(cacheKey, cached);
+    const cached = codexCliHealthCache.get(cacheKey);
+    if (
+      cached &&
+      Date.now() - cached.checkedAt < CODEX_CLI_HEALTH_CACHE_TTL_MS
+    ) {
+      return cached.promise;
     }
-    return cached;
+    if (cached) {
+      codexCliHealthCache.delete(cacheKey);
+    }
+
+    const promise = this.probeCliHealth(executable, env).then((healthy) => {
+      if (!healthy) {
+        codexCliHealthCache.delete(cacheKey);
+      }
+      return healthy;
+    });
+    codexCliHealthCache.set(cacheKey, { checkedAt: Date.now(), promise });
+    return promise;
   }
 
   private async probeCliHealth(
@@ -523,7 +540,7 @@ function resolveCodexCliExecutable(config: CodexCliProviderConfig): string {
       `${CODEX_CLI_EXECUTABLE_ENV} / codex-cli executable must not be empty`,
     );
   }
-  return trimmed;
+  return expandHomeRelativePath(trimmed);
 }
 
 function buildCodexCompletionPrompt(
@@ -1027,6 +1044,7 @@ export function createCodexCliProvider(
 export const __codexCliProviderTestHooks = {
   buildCodexCompletionPrompt,
   buildIsolatedCodexEnv,
+  clearCodexCliHealthCache: () => codexCliHealthCache.clear(),
   getActiveCodexCliChildCount: () => activeCodexCliChildPids.size,
   parseCodexTokenUsage,
   resolveCodexCliDiagnosticsDir,

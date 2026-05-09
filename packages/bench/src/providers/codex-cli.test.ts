@@ -150,6 +150,17 @@ test("codex-cli provider can use a benchmark-scoped executable env override", as
   }
 });
 
+test("codex-cli provider expands home-relative executable paths", () => {
+  assert.equal(
+    __codexCliProviderTestHooks.resolveCodexCliExecutable({
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      executable: "~/bin/codex",
+    }),
+    path.join(os.homedir(), "bin", "codex"),
+  );
+});
+
 test("codex-cli provider executable config overrides the env override", async () => {
   const previous = process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE;
   process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE = "/tmp/codex-app-binary";

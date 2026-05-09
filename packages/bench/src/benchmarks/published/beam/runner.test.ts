@@ -186,6 +186,71 @@ test("BEAM refines unknown and hedged answers from source-chat evidence", async 
   );
 });
 
+test("BEAM does not refine unrelated unknown answers to incidental latency", async () => {
+  const datasetDir = await mkdtemp(path.join(tmpdir(), "remnic-beam-latency-"));
+  await writeFile(
+    path.join(datasetDir, "100k.json"),
+    JSON.stringify([
+      {
+        conversation_id: "latency-incidental",
+        chat: [
+          [
+            {
+              role: "user",
+              content: "Sprint one should end on March 29.",
+            },
+          ],
+        ],
+        probing_questions: {
+          single_session_preference: [
+            {
+              question: "When does sprint one end?",
+              ideal_answer: "March 29",
+            },
+          ],
+        },
+      },
+    ]),
+  );
+
+  const result = await runBeamBenchmark({
+    benchmark: beamDefinition,
+    mode: "quick",
+    datasetDir,
+    system: {
+      async reset() {},
+      async store() {},
+      async recall() {
+        return "The dashboard API now averages around 250ms.";
+      },
+      async search() {
+        return [{ id: "hit", text: "hit" }];
+      },
+      async destroy() {},
+      async getStats() {
+        return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+      },
+      responder: {
+        async respond() {
+          return {
+            text: "unknown",
+            tokens: { input: 1, output: 1 },
+            latencyMs: 1,
+            model: "beam-test-responder",
+          };
+        },
+      },
+      judge: {
+        async score() {
+          return 0;
+        },
+      },
+    },
+  });
+
+  assert.equal(result.results.tasks[0]?.actual, "unknown");
+});
+
 test("BEAM rubric coverage does not reward negated syntax highlighting answers", async () => {
   const result = await runBeamWithInstructionAnswer(
     "Do not use syntax highlighting for implementation help.",

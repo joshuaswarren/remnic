@@ -449,8 +449,8 @@ function buildTrial(
       }),
     answerFallback: ({ question, recalledText }) =>
       answerLoCoMoFromRecall(question, recalledText),
-    answerRefinement: ({ question, recalledText }) =>
-      answerLoCoMoFromRecall(question, recalledText),
+    answerRefinement: ({ question, recalledText, answeredText }) =>
+      refineLoCoMoAnswerFromRecall({ question, recalledText, answeredText }),
     postAnswerHook: async ({ question, recalledText }) => {
       const hiddenEvidenceIdLeakCount = countHiddenEvidenceIdsInRecall(
         qa.evidence,
@@ -526,6 +526,66 @@ function answerLoCoMoFromRecall(
   return undefined;
 }
 
+function refineLoCoMoAnswerFromRecall(args: {
+  question: string;
+  recalledText: string;
+  answeredText: string;
+}): string | undefined {
+  const recalledAnswer = answerLoCoMoFromRecall(args.question, args.recalledText);
+  if (!recalledAnswer) {
+    return undefined;
+  }
+
+  const current = args.answeredText.trim();
+  if (isLoCoMoUnhelpfulAnswer(current)) {
+    return recalledAnswer;
+  }
+
+  const normalizedCurrent = normalizeLoCoMoAnswerForRefinement(current);
+  const normalizedRecalled = normalizeLoCoMoAnswerForRefinement(recalledAnswer);
+  if (
+    normalizedRecalled.length > 0 &&
+    (normalizedCurrent === normalizedRecalled ||
+      normalizedCurrent.includes(normalizedRecalled) ||
+      normalizedRecalled.includes(normalizedCurrent))
+  ) {
+    return recalledAnswer;
+  }
+
+  return isLoCoMoRelativeTimeQuestion(args.question) &&
+    looksLikeLoCoMoTemporalAnswer(recalledAnswer)
+    ? recalledAnswer
+    : undefined;
+}
+
+function isLoCoMoUnhelpfulAnswer(answer: string): boolean {
+  return answer.length === 0 ||
+    /^(?:unknown|not sure|unsure|i don't know|i do not know)$/i.test(answer) ||
+    /\b(?:cannot|can't|unable to)\s+(?:determine|answer|tell)\b/i.test(answer) ||
+    /\bnot enough (?:information|context)\b/i.test(answer);
+}
+
+function normalizeLoCoMoAnswerForRefinement(answer: string): string {
+  return answer
+    .toLowerCase()
+    .replace(/\btea\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isLoCoMoRelativeTimeQuestion(question: string): boolean {
+  const lowerQuestion = question.toLowerCase();
+  return lowerQuestion.includes("when") ||
+    lowerQuestion.includes("yesterday") ||
+    lowerQuestion.includes("last year");
+}
+
+function looksLikeLoCoMoTemporalAnswer(answer: string): boolean {
+  return /\b\d{1,2}\s+[A-Za-z]+\s+\d{4}\b/.test(answer) ||
+    /\b\d{4}\b/.test(answer);
+}
+
 function extractLoCoMoTeaAnswer(rankedLines: string[]): string | undefined {
   for (const line of rankedLines) {
     const favoriteMatch = line.match(
@@ -592,9 +652,6 @@ function answerLoCoMoRelativeTimeQuestion(
     const anchor = extractFirstLoCoMoAnchorDate(rankedLines);
     if (anchor) {
       return String(anchor.getUTCFullYear() - 1);
-    }
-    if (rankedText.includes("last year")) {
-      return "2022";
     }
   }
 

@@ -405,6 +405,95 @@ test("LoCoMo trims generic tea category nouns from recalled evidence answers", a
   }
 });
 
+test("LoCoMo keeps a useful responder answer when recalled tea evidence disagrees", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-"));
+  const datasetPath = path.join(tempDir, "locomo10.json");
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify([
+        {
+          sample_id: "locomo-tea-preserve-1",
+          conversation: {
+            speaker_a: "Maya",
+            speaker_b: "Assistant",
+            session_1: [
+              {
+                speaker: "Maya",
+                dia_id: "D1:1",
+                text: "My favorite tea is oolong.",
+              },
+            ],
+          },
+          qa: [
+            {
+              question: "What tea does Maya prefer?",
+              answer: "oolong",
+              evidence: ["D1:1"],
+              category: 2,
+            },
+          ],
+        },
+      ]),
+      "utf8",
+    );
+
+    const result = await runLoCoMoBenchmark({
+      benchmark: locomoDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          return [
+            "## LoCoMo Question-Focused Evidence",
+            "Maya: My favorite tea is jasmine.",
+          ].join("\n");
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond() {
+            return {
+              text: "oolong",
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "locomo-test-responder",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "judge-smoke",
+            };
+          },
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.equal(task.actual, "oolong");
+    assert.equal(task.details.originalAnsweredText, undefined);
+    assert.equal(task.scores.f1, 1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-"));
   const datasetPath = path.join(tempDir, "locomo10.json");

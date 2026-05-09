@@ -445,11 +445,9 @@ function refineBeamAnswerFromRecall(args: {
     collectBeamSourceChatIds(args.sourceChatIds),
   );
   const lowerQuestion = args.question.toLowerCase();
+  const asksLatency = asksBeamLatencyQuestion(lowerQuestion);
 
-  if (
-    /\baverage response time\b/.test(lowerQuestion) ||
-    /\bapi\b/.test(lowerQuestion)
-  ) {
+  if (asksLatency) {
     const latency = extractBeamLatency(evidenceLines);
     if (
       latency &&
@@ -490,7 +488,14 @@ function refineBeamAnswerFromRecall(args: {
     }
   }
 
-  return extractBeamLatency(evidenceLines);
+  return asksLatency ? extractBeamLatency(evidenceLines) : undefined;
+}
+
+function asksBeamLatencyQuestion(lowerQuestion: string): boolean {
+  return /\baverage response time\b/.test(lowerQuestion) ||
+    /\bresponse times?\b/.test(lowerQuestion) ||
+    /\blatenc(?:y|ies)\b/.test(lowerQuestion) ||
+    /\bapi\b/.test(lowerQuestion);
 }
 
 function isBeamUnhelpfulAnswer(answer: string): boolean {

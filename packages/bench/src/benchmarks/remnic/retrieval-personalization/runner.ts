@@ -190,7 +190,7 @@ function schemaPenalty(queryTokens: Set<string>, page: SchemaTierPage): number {
   if (!page.frontmatter.created) penalty += 1;
   if (page.timeline.length === 0) penalty += 1;
   if (page.type === "project" && page.seeAlso.length < 2) penalty += 1.5;
-  if ((queryTokens.has("decide") || queryTokens.has("decision")) && !page.frontmatter.type) {
+  if (queryTokens.has("decide") && !page.frontmatter.type) {
     penalty += 3;
   }
 
