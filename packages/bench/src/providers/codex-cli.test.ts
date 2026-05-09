@@ -246,6 +246,127 @@ test("codex-cli provider records token usage when Codex writes token accounting 
   assert.equal(provider.getUsage().totalTokens, 44);
 });
 
+test("codex-cli provider falls back to Responses API when CLI health probe fails", async () => {
+  const previousTransport = process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
+  const previousFetch = globalThis.fetch;
+  let probeCount = 0;
+  let fetchCount = 0;
+
+  delete process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
+  globalThis.fetch = (async (input, init) => {
+    fetchCount += 1;
+    assert.equal(String(input), "https://api.openai.com/v1/responses");
+    assert.equal(
+      (init?.headers as Record<string, string>).authorization,
+      "Bearer test-api-key",
+    );
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    assert.equal(body.model, "gpt-5.5");
+    assert.deepEqual(body.reasoning, { effort: "xhigh" });
+    assert.equal(body.max_output_tokens, 12);
+    assert.equal(body.store, false);
+    assert.match(String(body.instructions), /benchmark LLM completion endpoint/);
+    assert.match(String(body.instructions), /Answer briefly\./);
+    assert.equal(body.input, "What is remembered?");
+    return new Response(
+      JSON.stringify({
+        model: "gpt-5.5",
+        output: [
+          {
+            content: [{ type: "output_text", text: "direct answer" }],
+          },
+        ],
+        usage: { input_tokens: 11, output_tokens: 2, total_tokens: 13 },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+
+  try {
+    const provider = createCodexCliProvider(
+      {
+        provider: "codex-cli",
+        model: "gpt-5.5",
+        apiKey: "test-api-key",
+        reasoningEffort: "xhigh",
+        retryOptions: { timeoutMs: 1234, maxAttempts: 1 },
+      },
+      {
+        async runCodexVersion() {
+          probeCount += 1;
+          return { status: 124, stderr: "version probe timed out" };
+        },
+      },
+    );
+
+    const result = await provider.complete("What is remembered?", {
+      systemPrompt: "Answer briefly.",
+      maxTokens: 12,
+    });
+
+    assert.equal(probeCount, 1);
+    assert.equal(fetchCount, 1);
+    assert.equal(result.text, "direct answer");
+    assert.deepEqual(result.tokens, { input: 11, output: 2 });
+    assert.deepEqual(provider.getUsage(), {
+      inputTokens: 11,
+      outputTokens: 2,
+      totalTokens: 13,
+    });
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousTransport === undefined) {
+      delete process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
+    } else {
+      process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT = previousTransport;
+    }
+  }
+});
+
+test("codex-cli provider fails fast when Responses transport is forced without an API key", async () => {
+  const previousTransport = process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
+  let cliCalled = false;
+
+  process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT = "responses";
+  delete process.env.OPENAI_API_KEY;
+
+  try {
+    const provider = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.5" },
+      {
+        async runCodexCli() {
+          cliCalled = true;
+          return {
+            status: 0,
+            signal: null,
+            stdout: "",
+            stderr: "",
+            outputText: "unexpected",
+          };
+        },
+      },
+    );
+
+    await assert.rejects(
+      provider.complete("hello"),
+      /Codex CLI fallback requires OPENAI_API_KEY/,
+    );
+    assert.equal(cliCalled, false);
+  } finally {
+    if (previousTransport === undefined) {
+      delete process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
+    } else {
+      process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT = previousTransport;
+    }
+    if (previousOpenAiKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousOpenAiKey;
+    }
+  }
+});
+
 test("codex-cli provider surfaces non-zero CLI exits", async () => {
   const provider = createCodexCliProvider(
     { provider: "codex-cli", model: "gpt-5.5" },

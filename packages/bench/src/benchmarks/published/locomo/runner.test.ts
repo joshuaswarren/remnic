@@ -135,6 +135,187 @@ test("LoCoMo normalizes numeric answers and adversarial-answer fallbacks from th
   }
 });
 
+test("LoCoMo uses recalled evidence fallback when responder transport fails", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-"));
+  const datasetPath = path.join(tempDir, "locomo10.json");
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify([
+        {
+          sample_id: "locomo-fallback-1",
+          conversation: {
+            speaker_a: "Caroline",
+            speaker_b: "Melanie",
+            session_1_date_time: "1:56 pm on 8 May, 2023",
+            session_1: [
+              {
+                speaker: "Caroline",
+                dia_id: "D1:3",
+                text: "I went to a LGBTQ support group yesterday and it was powerful.",
+              },
+            ],
+          },
+          qa: [
+            {
+              question: "When did Caroline go to the LGBTQ support group?",
+              answer: "7 May 2023",
+              evidence: ["D1:3"],
+              category: 2,
+            },
+          ],
+        },
+      ]),
+      "utf8",
+    );
+
+    const result = await runLoCoMoBenchmark({
+      benchmark: locomoDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          return [
+            "## LoCoMo Question-Focused Evidence",
+            "Caroline: I went to a LGBTQ support group yesterday and it was powerful. | relative_time: session date 8 May 2023; yesterday = 7 May 2023",
+          ].join("\n");
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond() {
+            throw new Error("codex transport failed");
+          },
+        },
+        judge: {
+          async score() {
+            throw new Error("judge transport failed");
+          },
+          async scoreWithMetrics() {
+            throw new Error("judge transport failed");
+          },
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.equal(task.actual, "7 May 2023");
+    assert.equal(task.scores.f1, 1);
+    assert.equal(task.scores.contains_answer, 1);
+    assert.equal(task.scores.llm_judge, 1);
+    assert.equal(task.details.responderModel, "deterministic-fallback");
+    assert.match(
+      String(task.details.answerFallbackReason),
+      /codex transport failed/,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("LoCoMo refines successful responder answers from recalled evidence", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-"));
+  const datasetPath = path.join(tempDir, "locomo10.json");
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify([
+        {
+          sample_id: "locomo-refine-1",
+          conversation: {
+            speaker_a: "Caroline",
+            speaker_b: "Melanie",
+            session_1_date_time: "1:56 pm on 8 May, 2023",
+            session_1: [
+              {
+                speaker: "Caroline",
+                dia_id: "D1:3",
+                text: "I went to a LGBTQ support group yesterday and it was powerful.",
+              },
+            ],
+          },
+          qa: [
+            {
+              question: "When did Caroline go to the LGBTQ support group?",
+              answer: "7 May 2023",
+              evidence: ["D1:3"],
+              category: 2,
+            },
+          ],
+        },
+      ]),
+      "utf8",
+    );
+
+    const result = await runLoCoMoBenchmark({
+      benchmark: locomoDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          return [
+            "## LoCoMo Question-Focused Evidence",
+            "Caroline: I went to a LGBTQ support group yesterday and it was powerful. | relative_time: session date 8 May 2023; yesterday = 7 May 2023",
+          ].join("\n");
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond() {
+            return {
+              text: "8 May 2023",
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "codex-cli-test",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "judge-smoke",
+            };
+          },
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.equal(task.actual, "7 May 2023");
+    assert.equal(task.details.responderModel, "codex-cli-test");
+    assert.equal(task.details.originalAnsweredText, "8 May 2023");
+    assert.equal(
+      task.details.answerRefinementReason,
+      "benchmark recalled-evidence refinement",
+    );
+    assert.equal(task.scores.f1, 1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-"));
   const datasetPath = path.join(tempDir, "locomo10.json");

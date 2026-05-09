@@ -12,6 +12,7 @@ import type {
   LlmProvider,
   TokenUsage,
 } from "./types.js";
+import { retryFetch } from "./retry-fetch.js";
 
 interface CodexCliRunRequest {
   executable: string;
@@ -38,6 +39,24 @@ interface CodexCliProviderDeps {
     executable: string,
     env: NodeJS.ProcessEnv,
   ) => Promise<{ status: number | null; stderr: string }>;
+}
+
+interface ResponsesApiResponse {
+  model?: string;
+  output_text?: string;
+  output?: Array<{
+    type?: string;
+    text?: string;
+    content?: Array<{
+      type?: string;
+      text?: string;
+    }>;
+  }>;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  };
 }
 
 interface CodexCliDiagnosticRecord {
@@ -92,10 +111,14 @@ const CODEX_CLI_FORCED_PARENT_EXIT_MS = 1_000;
 const CODEX_CLI_DIAGNOSTICS_DIR_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_DIR";
 const CODEX_CLI_DIAGNOSTICS_MODE_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_MODE";
 const CODEX_CLI_EXECUTABLE_ENV = "REMNIC_BENCH_CODEX_CLI_EXECUTABLE";
+const CODEX_CLI_TRANSPORT_ENV = "REMNIC_BENCH_CODEX_CLI_TRANSPORT";
 const CODEX_CLI_VERSION_TIMEOUT_MS = 5_000;
+const OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
+const OPENAI_RESPONSES_BASE_URL = "https://api.openai.com/v1";
 
 const activeCodexCliChildPids = new Set<number>();
 let codexCliParentCleanupInstalled = false;
+const codexCliHealthCache = new Map<string, Promise<boolean>>();
 
 class CodexCliProvider implements LlmProvider {
   readonly provider = "codex-cli" as const;
@@ -108,6 +131,7 @@ class CodexCliProvider implements LlmProvider {
     executable: string,
     env: NodeJS.ProcessEnv,
   ) => Promise<{ status: number | null; stderr: string }>;
+  private readonly shouldProbeCliHealth: boolean;
   private usage: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -118,6 +142,7 @@ class CodexCliProvider implements LlmProvider {
     this.config = config;
     this.runCodexCli = deps.runCodexCli ?? runCodexCliCommand;
     this.runCodexVersion = deps.runCodexVersion ?? runCodexVersionCommand;
+    this.shouldProbeCliHealth = deps.runCodexCli === undefined;
     this.id = `codex-cli:${config.model}`;
     this.name = config.model;
   }
@@ -127,6 +152,10 @@ class CodexCliProvider implements LlmProvider {
     opts: CompletionOpts = {},
   ): Promise<CompletionResult> {
     const startedAt = performance.now();
+    if (await this.shouldUseResponsesFallback()) {
+      return this.completeViaResponsesApi(prompt, opts, startedAt);
+    }
+
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-cli-"));
     const workspacePath = path.join(tempDir, "workspace");
     const outputPath = path.join(tempDir, "last-message.txt");
@@ -218,6 +247,120 @@ class CodexCliProvider implements LlmProvider {
     };
   }
 
+  private async shouldUseResponsesFallback(): Promise<boolean> {
+    const transport = process.env[CODEX_CLI_TRANSPORT_ENV]?.trim().toLowerCase();
+    if (transport === "cli") {
+      return false;
+    }
+    if (transport === "responses") {
+      return true;
+    }
+    if (!this.shouldProbeCliHealth || this.resolveOpenAiApiKey().length === 0) {
+      return false;
+    }
+
+    return !(await this.isCliHealthy());
+  }
+
+  private async isCliHealthy(): Promise<boolean> {
+    const executable = resolveCodexCliExecutable(this.config);
+    const env = buildIsolatedCodexEnv(this.config.apiKey);
+    if (this.runCodexVersion !== runCodexVersionCommand) {
+      return this.probeCliHealth(executable, env);
+    }
+
+    const cacheKey = `${executable}\0${env.PATH ?? ""}`;
+    let cached = codexCliHealthCache.get(cacheKey);
+    if (!cached) {
+      cached = this.probeCliHealth(executable, env);
+      codexCliHealthCache.set(cacheKey, cached);
+    }
+    return cached;
+  }
+
+  private async probeCliHealth(
+    executable: string,
+    env: NodeJS.ProcessEnv,
+  ): Promise<boolean> {
+    try {
+      const version = await this.runCodexVersion(executable, env);
+      return version.status === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private resolveOpenAiApiKey(): string {
+    return (this.config.apiKey ?? process.env[OPENAI_API_KEY_ENV] ?? "").trim();
+  }
+
+  private async completeViaResponsesApi(
+    prompt: string,
+    opts: CompletionOpts,
+    startedAt: number,
+  ): Promise<CompletionResult> {
+    const apiKey = this.resolveOpenAiApiKey();
+    if (apiKey.length === 0) {
+      throw new Error(
+        `Codex CLI fallback requires ${OPENAI_API_KEY_ENV} or codex-cli apiKey.`,
+      );
+    }
+
+    const response = await retryFetch(
+      this.responsesApiUrl(),
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        signal: opts.signal,
+        body: JSON.stringify({
+          model: this.config.model,
+          instructions: buildResponsesInstructions(opts.systemPrompt),
+          input: prompt,
+          reasoning: {
+            effort: this.config.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+          },
+          max_output_tokens: Math.max(1, Math.floor(opts.maxTokens ?? 1024)),
+          store: false,
+        }),
+      },
+      this.config.retryOptions,
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `Codex CLI Responses API fallback failed: ${response.status} ${response.statusText}${await readResponseErrorBody(response)}`,
+      );
+    }
+
+    const payload = (await response.json()) as ResponsesApiResponse;
+    const text = extractResponsesOutputText(payload).trim();
+    if (text.length === 0) {
+      throw new Error("Codex CLI Responses API fallback returned no text.");
+    }
+
+    const inputTokens = payload.usage?.input_tokens ?? 0;
+    const outputTokens = payload.usage?.output_tokens ?? 0;
+    this.recordUsage(inputTokens, outputTokens);
+
+    return {
+      text,
+      tokens: { input: inputTokens, output: outputTokens },
+      latencyMs: Math.round(performance.now() - startedAt),
+      model: payload.model ?? this.config.model,
+    };
+  }
+
+  private responsesApiUrl(): string {
+    const baseUrl = (this.config.baseUrl ?? OPENAI_RESPONSES_BASE_URL).replace(
+      /\/$/,
+      "",
+    );
+    return baseUrl.endsWith("/v1") ? `${baseUrl}/responses` : `${baseUrl}/v1/responses`;
+  }
+
   private buildRunRequest(
     prompt: string,
     opts: CompletionOpts,
@@ -260,6 +403,48 @@ class CodexCliProvider implements LlmProvider {
       env: buildIsolatedCodexEnv(this.config.apiKey),
     };
   }
+}
+
+function buildResponsesInstructions(systemPrompt: string | undefined): string {
+  return [
+    "You are acting as a benchmark LLM completion endpoint, not as a coding agent.",
+    "Use only the user input and the benchmark system instructions.",
+    "Do not inspect files, run commands, browse, use tools, or use persisted memory.",
+    "Return only the final answer text. If the request asks for JSON, return raw JSON only.",
+    ...(systemPrompt?.trim() ? ["", systemPrompt.trim()] : []),
+  ].join("\n");
+}
+
+async function readResponseErrorBody(response: Response): Promise<string> {
+  try {
+    const body = await response.text();
+    return body.trim().length > 0 ? ` — ${body.slice(0, 1_000)}` : "";
+  } catch {
+    return "";
+  }
+}
+
+function extractResponsesOutputText(payload: ResponsesApiResponse): string {
+  if (typeof payload.output_text === "string" && payload.output_text.length > 0) {
+    return payload.output_text;
+  }
+
+  const parts: string[] = [];
+  for (const item of payload.output ?? []) {
+    if (typeof item.text === "string" && item.text.length > 0) {
+      parts.push(item.text);
+    }
+    for (const content of item.content ?? []) {
+      if (
+        typeof content.text === "string" &&
+        content.text.length > 0 &&
+        (content.type === undefined || content.type.endsWith("_text"))
+      ) {
+        parts.push(content.text);
+      }
+    }
+  }
+  return parts.join("\n");
 }
 
 function runCodexVersionCommand(

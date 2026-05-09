@@ -7,7 +7,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-test("llmJudgeScoreDetailed includes failed score wall time in latency metrics", async () => {
+test("llmJudgeScoreDetailed falls back deterministically after score failure", async () => {
   const result = await llmJudgeScoreDetailed(
     {
       async score() {
@@ -20,7 +20,8 @@ test("llmJudgeScoreDetailed includes failed score wall time in latency metrics",
     "expected",
   );
 
-  assert.equal(result.score, -1);
+  assert.equal(result.score, 0);
+  assert.equal(result.model, "deterministic-fallback");
   assert.equal(result.tokens.input, 0);
   assert.equal(result.tokens.output, 0);
   assert.equal(result.latencyMs >= 10, true);
@@ -38,14 +39,34 @@ test("llmJudgeScoreDetailed includes failed scoreWithMetrics wall time in latenc
       },
     },
     "question",
-    "predicted",
+    "The answer is 7 May 2023.",
     "expected",
   );
 
-  assert.equal(result.score, -1);
+  assert.equal(result.score, 0);
   assert.equal(result.tokens.input, 0);
   assert.equal(result.tokens.output, 0);
   assert.equal(result.latencyMs >= 10, true);
+});
+
+test("llmJudgeScoreDetailed deterministic fallback can award obvious matches", async () => {
+  const result = await llmJudgeScoreDetailed(
+    {
+      async score() {
+        throw new Error("unreachable fallback");
+      },
+      async scoreWithMetrics() {
+        await delay(10);
+        throw new Error("structured judge timeout");
+      },
+    },
+    "question",
+    "The answer is 7 May 2023.",
+    "7 May 2023",
+  );
+
+  assert.equal(result.score, 1);
+  assert.equal(result.model, "deterministic-fallback");
 });
 
 test("containsAnswer ignores punctuation-only differences", () => {

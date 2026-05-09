@@ -101,6 +101,7 @@ export function createResponderFromProvider(
         {
           systemPrompt: DEFAULT_RESPONDER_SYSTEM_PROMPT,
           temperature: 0,
+          maxTokens: 256,
           signal: control?.signal,
         },
       );
@@ -554,6 +555,7 @@ function createJudgeFromProvider(provider: LlmProvider): BenchJudge {
       {
         systemPrompt: DEFAULT_JUDGE_SYSTEM_PROMPT,
         temperature: 0,
+        maxTokens: 16,
         signal: control?.signal,
       },
     );
@@ -607,6 +609,7 @@ function createAmaBenchRecommendedJudgeFromProvider(provider: LlmProvider): Benc
       {
         systemPrompt: AMA_BENCH_RECOMMENDED_JUDGE_SYSTEM_PROMPT,
         temperature: 0,
+        maxTokens: 128,
         signal: control?.signal,
       },
     );
@@ -650,6 +653,7 @@ export function createStructuredJudgeFromProvider(
       const completion = await provider.complete(request.user, {
         systemPrompt: request.system,
         temperature: 0,
+        maxTokens: 512,
       });
       return completion.text;
     },
