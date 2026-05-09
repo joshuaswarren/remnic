@@ -92,6 +92,8 @@ export interface ParsedBenchArgs {
   publishedSeed?: number;
   /** `bench published` — item limit forwarded into the dataset loader. */
   publishedLimit?: number;
+  /** `bench published` — scored trial cap forwarded into benchmark-specific options. */
+  publishedTrialLimit?: number;
   /** `bench published` — published artifact output directory. */
   publishedOut?: string;
   /** `bench published` — dry-run: validate + load but do NOT call the model. */
@@ -230,6 +232,7 @@ export function collectBenchmarks(argv: string[]): string[] {
       arg === "--dataset" ||
       arg === "--model" ||
       arg === "--limit" ||
+      arg === "--trial-limit" ||
       arg === "--seed" ||
       arg === "--out" ||
       arg === "--provider" ||
@@ -587,6 +590,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const publishedNameRaw = readBenchOptionValue(args, "--name");
   const publishedModelRaw = readBenchOptionValue(args, "--model");
   const publishedLimitRaw = readBenchOptionValue(args, "--limit");
+  const publishedTrialLimitRaw = readBenchOptionValue(args, "--trial-limit");
   const publishedSeedRaw = readBenchOptionValue(args, "--seed");
   const publishedOutRaw = readBenchOptionValue(args, "--out");
   const publishedProviderRaw = readBenchOptionValue(args, "--provider");
@@ -613,6 +617,33 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       );
     }
     publishedLimit = parsed;
+  }
+
+  let publishedTrialLimit: number | undefined;
+  if (publishedTrialLimitRaw !== undefined) {
+    const parsed = Number(publishedTrialLimitRaw);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new Error(
+        "ERROR: --trial-limit must be a non-negative integer (use 0 to run zero scored trials).",
+      );
+    }
+    publishedTrialLimit = parsed;
+  }
+  const trialLimitTargetsLoCoMo =
+    publishedName === "locomo" ||
+    (
+      publishedName === undefined &&
+      action === "published"
+    ) ||
+    (
+      publishedName === undefined &&
+      action !== "published" &&
+      !args.includes("--all") &&
+      benchmarks.length === 1 &&
+      benchmarks[0] === "locomo"
+    );
+  if (publishedTrialLimit !== undefined && !trialLimitTargetsLoCoMo) {
+    throw new Error("ERROR: --trial-limit is currently supported only for LoCoMo.");
   }
 
   let publishedSeed: number | undefined;
@@ -805,6 +836,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     publishedName,
     publishedSeed,
     publishedLimit,
+    publishedTrialLimit,
     publishedOut: publishedOutRaw
       ? path.resolve(expandTilde(publishedOutRaw))
       : undefined,

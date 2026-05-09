@@ -84,6 +84,83 @@ test("parseBenchArgs rejects non-integer --limit", () => {
   );
 });
 
+test("parseBenchArgs accepts published --trial-limit", () => {
+  const parsed = parseBenchArgs([
+    "published",
+    "--name",
+    "locomo",
+    "--dataset",
+    "/tmp",
+    "--model",
+    "m",
+    "--trial-limit",
+    "25",
+  ]);
+
+  assert.equal(parsed.publishedTrialLimit, 25);
+});
+
+test("parseBenchArgs accepts --trial-limit for bench run locomo", () => {
+  const parsed = parseBenchArgs([
+    "run",
+    "locomo",
+    "--trial-limit",
+    "3",
+  ]);
+
+  assert.equal(parsed.publishedTrialLimit, 3);
+});
+
+test("parseBenchArgs rejects non-integer --trial-limit", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "locomo",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--trial-limit",
+        "2.5",
+      ]),
+    /--trial-limit must be a non-negative integer/,
+  );
+});
+
+test("parseBenchArgs rejects published --trial-limit for non-LoCoMo benchmarks", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "longmemeval",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--trial-limit",
+        "1",
+      ]),
+    /--trial-limit is currently supported only for LoCoMo/,
+  );
+});
+
+test("parseBenchArgs rejects --trial-limit when LoCoMo is not the only selected benchmark", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "locomo",
+        "longmemeval",
+        "--trial-limit",
+        "1",
+      ]),
+    /--trial-limit is currently supported only for LoCoMo/,
+  );
+});
+
 test("parseBenchArgs rejects non-integer --seed", () => {
   assert.throws(
     () =>

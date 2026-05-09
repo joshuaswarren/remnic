@@ -339,6 +339,7 @@ type PackageBenchModule = {
     judgeProvider?: PackageBenchProviderConfig | null;
     internalProvider?: PackageBenchProviderConfig | null;
     remnicConfig?: Record<string, unknown>;
+    benchmarkOptions?: Record<string, unknown>;
     amaBenchJudgeProtocol?: "default" | "recommended";
     amaBenchCrossJudge?: unknown;
     amaBenchCrossJudgeProvider?: PackageBenchProviderConfig | null;
@@ -664,7 +665,7 @@ Commands:
   published --name <longmemeval|locomo> --dataset <path> --model <id>
                            Run a published benchmark with leaderboard-friendly flags
                            (see issue #566 slice 4). Accepts --limit, --seed,
-                           --out, --dry-run, --provider, --base-url.
+                           --trial-limit, --out, --dry-run, --provider, --base-url.
   datasets download [benchmark...]
                            Download local datasets for supported published benchmarks
   datasets status          Show local dataset availability for supported benchmarks
@@ -741,6 +742,7 @@ Options:
   --results-dir <path>     Override the stored benchmark results directory
   --baselines-dir <path>   Override the named baseline directory
   --threshold <value>      Regression threshold for compare (default: 0.05)
+  --trial-limit <n>        Cap scored LoCoMo QA trials for staged published runs
   --detail                 Include per-task details for bench results
   --format <json|csv|html> Output format for bench export
   --output <path>          Write bench export output to a file
@@ -2067,7 +2069,7 @@ async function publishBenchPackageResults(parsed: ParsedBenchArgs): Promise<void
 
 /**
  * `remnic bench published --name <longmemeval|locomo> --dataset <path>
- *    --model <id> --limit <n> --seed <n> --out <dir> [--dry-run]
+ *    --model <id> --limit <n> --trial-limit <n> --seed <n> --out <dir> [--dry-run]
  *    [--provider openai|anthropic|ollama|litellm] [--base-url <url>]`
  *
  * Issue #566 PR 4/7. Thin wrapper that routes the user's flags into the
@@ -2349,6 +2351,21 @@ async function runBenchViaPackage(
     process.env[CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV] = "metadata";
   }
 
+  // `publishedLimit` (from `bench published --limit N`) takes
+  // precedence over the implicit quick-mode limit of 1.
+  const effectiveLimit =
+    parsed.publishedLimit ?? (parsed.quick ? 1 : undefined);
+  // Forward `--seed` through to the runner so the determinism contract
+  // advertised by `bench published --seed N` is actually honored.
+  // Cursor + Codex review on PR #603: without this, `publishedSeed` was
+  // parsed but dropped, and the harness recorded `ctx.options.seed ?? 0`
+  // instead of the user-specified seed, breaking reproducibility.
+  const effectiveSeed = parsed.publishedSeed;
+  const benchmarkOptions =
+    benchmarkId === "locomo" && parsed.publishedTrialLimit !== undefined
+      ? { trialLimit: parsed.publishedTrialLimit }
+      : undefined;
+
   try {
     const amaBenchProtocol = buildAmaBenchProtocolOptions(
       benchModule,
@@ -2362,16 +2379,6 @@ async function runBenchViaPackage(
         ? { judge: amaBenchProtocol.primaryJudge }
         : {}),
     });
-    // `publishedLimit` (from `bench published --limit N`) takes
-    // precedence over the implicit quick-mode limit of 1.
-    const effectiveLimit =
-      parsed.publishedLimit ?? (parsed.quick ? 1 : undefined);
-    // Forward `--seed` through to the runner so the determinism contract
-    // advertised by `bench published --seed N` is actually honored.
-    // Cursor + Codex review on PR #603: without this, `publishedSeed` was
-    // parsed but dropped, and the harness recorded `ctx.options.seed ?? 0`
-    // instead of the user-specified seed, breaking reproducibility.
-    const effectiveSeed = parsed.publishedSeed;
     const result = await benchModule.runBenchmark(benchmarkId, {
       mode: parsed.quick ? "quick" : "full",
       datasetDir,
@@ -2384,6 +2391,7 @@ async function runBenchViaPackage(
       judgeProvider: plan.runtime.judgeProvider,
       internalProvider: plan.runtime.internalProvider,
       remnicConfig: plan.runtime.effectiveRemnicConfig,
+      ...(benchmarkOptions ? { benchmarkOptions } : {}),
       ...(amaBenchProtocol.judgeProtocol
         ? { amaBenchJudgeProtocol: amaBenchProtocol.judgeProtocol }
         : {}),
@@ -2429,6 +2437,7 @@ async function runBenchViaPackage(
         definition,
         partialTasks,
         plan,
+        benchmarkOptions,
         remnicVersion,
         err instanceof Error ? err.message : String(err),
         parsed.quick ? "quick" : "full",
@@ -2573,6 +2582,7 @@ function buildPartialBenchmarkResult(
   definition: { tier?: string; meta?: { category?: string; version?: string } } | undefined,
   tasks: Array<{ taskId: string; scores: Record<string, number>; latencyMs: number; tokens: { input: number; output: number } }>,
   plan: PackageBenchExecutionPlan,
+  benchmarkOptions: Record<string, unknown> | undefined,
   remnicVersion: string,
   failureReason: string,
   mode: "full" | "quick",
@@ -2601,6 +2611,7 @@ function buildPartialBenchmarkResult(
       internalProvider: plan.runtime.internalProvider ?? null,
       adapterMode: plan.adapterMode,
       remnicConfig: plan.runtime.remnicConfig ?? {},
+      ...(benchmarkOptions ? { benchmarkOptions } : {}),
     },
     cost: {
       totalTokens: totalInput + totalOutput,

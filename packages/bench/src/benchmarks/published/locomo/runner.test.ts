@@ -126,3 +126,105 @@ test("LoCoMo normalizes numeric answers and adversarial-answer fallbacks from th
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-"));
+  const datasetPath = path.join(tempDir, "locomo10.json");
+  let storeCallCount = 0;
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify([
+        {
+          sample_id: "locomo-limited-1",
+          conversation: {
+            speaker_a: "Maya",
+            speaker_b: "Assistant",
+            session_1: [
+              {
+                speaker: "Maya",
+                dia_id: "D1:1",
+                text: "The first answer is alpha.",
+              },
+              {
+                speaker: "Maya",
+                dia_id: "D1:2",
+                text: "The second answer is beta.",
+              },
+            ],
+          },
+          qa: [
+            {
+              question: "What is the first answer?",
+              answer: "alpha",
+              evidence: ["D1:1"],
+              category: 1,
+            },
+            {
+              question: "What is the second answer?",
+              answer: "beta",
+              evidence: ["D1:2"],
+              category: 1,
+            },
+          ],
+        },
+      ]),
+      "utf8",
+    );
+
+    const result = await runLoCoMoBenchmark({
+      benchmark: locomoDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      benchmarkOptions: { trialLimit: 1 },
+      system: {
+        async store() {
+          storeCallCount += 1;
+        },
+        async recall() {
+          return "[D1:1] Maya: The first answer is alpha.";
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond() {
+            return {
+              text: "alpha",
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "locomo-test-responder",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "judge-smoke",
+            };
+          },
+        },
+      },
+    });
+
+    assert.equal(result.results.tasks.length, 1);
+    assert.match(result.results.tasks[0]?.taskId ?? "", /q0-single_hop/);
+    assert.equal(result.results.tasks[0]?.expected, "alpha");
+    assert.equal(result.config.benchmarkOptions?.trialLimit, 1);
+    assert.equal(storeCallCount, 1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

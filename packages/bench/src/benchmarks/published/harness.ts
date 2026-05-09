@@ -436,6 +436,9 @@ async function buildBenchmarkResult(
       judgeProvider: ctx.options.judgeProvider ?? null,
       adapterMode: ctx.options.adapterMode ?? "direct",
       remnicConfig: ctx.options.remnicConfig ?? {},
+      ...(ctx.options.benchmarkOptions
+        ? { benchmarkOptions: ctx.options.benchmarkOptions }
+        : {}),
     },
     cost: {
       totalTokens: totalInputTokens + totalOutputTokens,

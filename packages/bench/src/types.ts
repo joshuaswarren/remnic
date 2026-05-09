@@ -224,6 +224,7 @@ export interface RunBenchmarkOptions {
   judgeProvider?: ProviderConfig | null;
   internalProvider?: ProviderConfig | null;
   remnicConfig?: Record<string, unknown>;
+  benchmarkOptions?: Record<string, unknown>;
   amaBenchJudgeProtocol?: AmaBenchJudgeProtocol;
   amaBenchCrossJudge?: import("./adapters/types.js").BenchJudge;
   amaBenchCrossJudgeProvider?: ProviderConfig | null;

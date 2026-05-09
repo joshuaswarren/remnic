@@ -99,17 +99,60 @@ export async function runLoCoMoBenchmark(
     options.datasetDir,
     options.limit,
   );
-
-  const plans: HarnessPlan[] = conversations.map(buildPlan);
+  const trialLimit = resolveTrialLimit(options.benchmarkOptions?.trialLimit);
+  const plans = applyTrialLimit(conversations.map(buildPlan), trialLimit);
+  const benchmarkOptions =
+    trialLimit === undefined
+      ? options.benchmarkOptions
+      : { ...(options.benchmarkOptions ?? {}), trialLimit };
 
   return runPublishedHarness({
-    options,
+    options: { ...options, benchmarkOptions },
     metricsSpec: {
       metrics: ["f1", "contains_answer", "rouge_l", "llm_judge"],
     },
     plans,
     totalCount: plans.reduce((sum, plan) => sum + plan.trials.length, 0),
   });
+}
+
+function resolveTrialLimit(raw: unknown): number | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const parsed = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(
+      "LoCoMo benchmarkOptions.trialLimit must be a non-negative integer.",
+    );
+  }
+  return parsed;
+}
+
+function applyTrialLimit(
+  plans: HarnessPlan[],
+  trialLimit: number | undefined,
+): HarnessPlan[] {
+  if (trialLimit === undefined) {
+    return plans;
+  }
+  if (trialLimit === 0) {
+    return [];
+  }
+
+  const limitedPlans: HarnessPlan[] = [];
+  let remaining = trialLimit;
+  for (const plan of plans) {
+    if (remaining <= 0) {
+      break;
+    }
+    const trials = plan.trials.slice(0, remaining);
+    if (trials.length > 0) {
+      limitedPlans.push({ ...plan, trials });
+      remaining -= trials.length;
+    }
+  }
+  return limitedPlans;
 }
 
 function buildPlan(conversation: LoCoMoConversation): HarnessPlan {
