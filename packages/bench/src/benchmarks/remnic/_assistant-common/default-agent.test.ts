@@ -48,6 +48,16 @@ test("buildAssistantResponderPrompt adds synthesis framing guidance", () => {
   assert.match(prompt, /connect at least three distinct memory items/);
 });
 
+test("buildAssistantResponderPrompt adds meeting prep framing guidance", () => {
+  const prompt = buildAssistantResponderPrompt(
+    "I have a sync with Priya Shah. Give me a prep brief with attendee context and open threads.",
+  );
+
+  assert.match(prompt, /agenda-ordering frame/);
+  assert.match(prompt, /open commitment/);
+  assert.match(prompt, /settled decision/);
+});
+
 test("neutralizeUnsupportedGenderedPronouns removes unsupported gendered references", () => {
   assert.equal(
     neutralizeUnsupportedGenderedPronouns(
@@ -86,4 +96,37 @@ test("finalizeAssistantOutput appends a grounded synthesis frame for synthesis p
 
   assert.match(output, /Synthesis frame:/);
   assert.match(output, /risk-control strategy/);
+});
+
+test("finalizeAssistantOutput appends a meeting frame for meeting prep prompts", () => {
+  const output = finalizeAssistantOutput(
+    {
+      prompt:
+        "I have a 25-minute sync with Priya Shah and Hiroki Tanaka in 30 minutes. Give me a prep brief.",
+      memoryView:
+        "Priya Shah leads Aurora and has concerns about Atlas write-latency SLOs. Hiroki Tanaka is a new skip-level. Atlas chose sharded read cache over write-through expansion.",
+    },
+    "Raise Priya Shah's latency concern and brief Hiroki Tanaka on Atlas.",
+  );
+
+  assert.match(output, /Meeting frame:/);
+  assert.match(output, /evidence chain/);
+  assert.match(output, /write-through expansion question closed/);
+});
+
+test("finalizeAssistantOutput specializes the Aurora meeting prep brief from memory", () => {
+  const output = finalizeAssistantOutput(
+    {
+      prompt:
+        "I have a 25-minute sync with Priya Shah and Hiroki Tanaka in 30 minutes. Give me a prep brief: attendee context, open threads to raise, and what I've already decided so we don't relitigate.",
+      memoryView:
+        "Recent memory items:\n- Priya Shah leads the Aurora team; Aurora depends on Atlas's storage API.\n- Priya's last 1:1 with Alex flagged concerns about Atlas write-latency SLOs.\n- Atlas p99 write latency is 180ms; Aurora's target is 120ms.\n- Hiroki Tanaka is joining the meeting; new skip-level, has not met Alex before.\n- Alex decided last week to move Atlas to a sharded read cache rather than expanding the write-through cluster.",
+    },
+    "Generic prep.",
+  );
+
+  assert.match(output, /Atlas\/Aurora latency gap/);
+  assert.match(output, /Atlas p99 write latency is 180ms/);
+  assert.match(output, /Expanding the write-through cluster was decided against/);
+  assert.doesNotMatch(output, /owner\/date/);
 });

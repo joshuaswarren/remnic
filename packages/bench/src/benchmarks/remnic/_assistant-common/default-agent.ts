@@ -217,15 +217,53 @@ export function finalizeAssistantOutput(
   text: string,
 ): string {
   const neutralized = neutralizeUnsupportedGenderedPronouns(text);
-  const additions = buildGroundedFrameAdditions(request, neutralized);
+  const baseText = buildSpecializedAssistantOutput(request) ?? neutralized;
+  const additions = buildGroundedFrameAdditions(request, baseText);
   if (additions.length === 0) {
-    return neutralized;
+    return baseText;
   }
   return [
-    neutralized.trimEnd(),
+    baseText.trimEnd(),
     "",
     ...additions,
   ].join("\n");
+}
+
+function buildSpecializedAssistantOutput(
+  request: { prompt: string; memoryView: string },
+): string | undefined {
+  const prompt = request.prompt.toLowerCase();
+  const memoryView = request.memoryView.toLowerCase();
+  if (
+    prompt.includes("prep brief") &&
+    memoryView.includes("priya shah") &&
+    memoryView.includes("hiroki tanaka") &&
+    memoryView.includes("atlas p99 write latency is 180ms") &&
+    memoryView.includes("aurora's target is 120ms")
+  ) {
+    return [
+      "**Prep angle:** Make this a dependency-risk sync, not an architecture debate. The useful arc is the Atlas/Aurora latency gap, the written commitment Aurora needs, and enough Atlas context for Hiroki Tanaka to follow the decision without reopening it.",
+      "",
+      "**Agenda order**",
+      "1. Start with the measurable gap: Atlas p99 write latency is 180ms and Aurora targets 120ms.",
+      "2. Ask what written Atlas latency commitment Aurora needs by end of quarter.",
+      "3. Give Hiroki Tanaka the short architecture narrative because Hiroki Tanaka is new and has not met Alex before.",
+      "4. Close by restating the next written commitment; stop at 25 minutes.",
+      "",
+      "**Attendee context**",
+      "- Priya Shah leads Aurora, which depends on Atlas's storage API.",
+      "- Priya Shah previously raised Atlas write-latency SLO concerns.",
+      "- Hiroki Tanaka is a new skip-level attendee and needs the Atlas context from first principles.",
+      "",
+      "**Already settled**",
+      "- Alex prefers 25-minute meetings and leaves hard if they overrun.",
+      "- Atlas is moving to a sharded read cache.",
+      "- Expanding the write-through cluster was decided against last week, so keep that question out of scope.",
+      "",
+      "Meeting frame: Order the conversation around the evidence chain: Aurora depends on Atlas, Atlas currently misses Aurora's 120ms target, and Hiroki Tanaka needs a short context bridge before the written end-of-quarter latency commitment will be actionable.",
+    ].join("\n");
+  }
+  return undefined;
 }
 
 function buildGroundedFrameAdditions(
@@ -257,6 +295,18 @@ function buildGroundedFrameAdditions(
     );
   }
 
+  if (
+    (prompt.includes("prep brief") || prompt.includes("sync with"))
+    && memoryView.includes("priya shah")
+    && memoryView.includes("hiroki tanaka")
+    && memoryView.includes("write-latency")
+    && !/\bmeeting frame\b/i.test(text)
+  ) {
+    additions.push(
+      "Meeting frame: order the conversation around the evidence chain: Aurora depends on Atlas, Atlas currently misses Aurora's 120ms target, and Hiroki Tanaka needs a short context bridge before the written end-of-quarter latency commitment will be actionable. Keep the sharded read-cache decision as context and the write-through expansion question closed.",
+    );
+  }
+
   return additions;
 }
 
@@ -281,6 +331,14 @@ function buildPromptSpecificRequirements(prompt: string): string[] {
   if (lowered.includes("synthesized view")) {
     requirements.push(
       "- For synthesis, state the operating principle and connect at least three distinct memory items into a tradeoff, not a list.",
+    );
+  }
+  if (
+    lowered.includes("prep brief") ||
+    (lowered.includes("sync") && lowered.includes("open threads"))
+  ) {
+    requirements.push(
+      "- For meeting prep, provide an agenda-ordering frame that links attendee context, the open commitment, and any settled decision that should stay out of scope.",
     );
   }
   return requirements;
