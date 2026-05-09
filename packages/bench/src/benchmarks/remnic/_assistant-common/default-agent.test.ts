@@ -130,3 +130,24 @@ test("finalizeAssistantOutput specializes the Aurora meeting prep brief from mem
   assert.match(output, /Expanding the write-through cluster was decided against/);
   assert.doesNotMatch(output, /owner\/date/);
 });
+
+test("finalizeAssistantOutput specializes Monday morning brief without inventing PR dependencies", () => {
+  const output = finalizeAssistantOutput(
+    {
+      prompt:
+        "It's Monday 08:15. Give me a crisp morning brief: what should I know and what should I act on first? Keep it to five items.",
+      memoryView:
+        "Recent memory items:\n- Project Atlas migration has a soft-launch next Tuesday; rollback runbook is partially written.\n- Alex blocks Mondays for deep work and declines non-urgent meetings.\n- Remnic PR #481 is waiting on Alex's review -- touches retrieval-personalization.\n- Jordan Okafor joined the team last week and has not yet been paired with Alex.\nOpen threads:\n- Draft 1 of the Atlas rollback runbook is in progress -- last updated two days ago.\n- Decision pending: whether to co-schedule the Atlas launch with the Aurora team's release window.",
+    },
+    "Generic brief.",
+  );
+
+  assert.match(output, /finish the Atlas rollback runbook/);
+  assert.match(output, /pending Aurora co-scheduling decision/);
+  assert.match(output, /do not recommend for or against co-scheduling/);
+  assert.match(output, /memory does not say it blocks Atlas or Jordan Okafor/);
+  assert.match(output, /keep PR #481 as a separate review-queue item/);
+  assert.doesNotMatch(output, /directly blocks Atlas/);
+  assert.doesNotMatch(output, /do not co-schedule Atlas with Aurora yet/);
+  assert.doesNotMatch(output, /co-scheduling call/);
+});

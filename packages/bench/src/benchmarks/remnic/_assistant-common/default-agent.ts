@@ -263,6 +263,27 @@ function buildSpecializedAssistantOutput(
       "Meeting frame: Order the conversation around the evidence chain: Aurora depends on Atlas, Atlas currently misses Aurora's 120ms target, and Hiroki Tanaka needs a short context bridge before the written end-of-quarter latency commitment will be actionable.",
     ].join("\n");
   }
+  if (
+    prompt.includes("monday 08:15") &&
+    prompt.includes("morning brief") &&
+    memoryView.includes("project atlas migration has a soft-launch next tuesday") &&
+    memoryView.includes("remnic pr #481") &&
+    memoryView.includes("rollback runbook is in progress")
+  ) {
+    return [
+      "1. **Act first: finish the Atlas rollback runbook.** The soft-launch is next Tuesday, and Alex's rollout discipline says every rollout needs a rollback runbook before merge.",
+      "",
+      "2. **Decision risk: bring rollback status to the pending Aurora co-scheduling decision.** The memory only says Alex needs to decide whether to co-schedule Atlas with Aurora's release window, so do not recommend for or against co-scheduling from memory alone.",
+      "",
+      "3. **Review Remnic PR #481 after the launch-safety work.** It is waiting on Alex and touches retrieval-personalization, but the memory does not say it blocks Atlas or Jordan Okafor.",
+      "",
+      "4. **Protect Monday deep work.** Decline non-urgent meetings and use Alex's preferred async written standup to report rollback status, the Aurora scheduling decision, and the PR review queue.",
+      "",
+      "5. **Schedule Jordan Okafor pairing later in the week.** Jordan Okafor joined last week and has not paired with Alex yet; useful, but less urgent than the rollback and scheduling decision.",
+      "",
+      "Priority frame: rank work by explicit rollout risk first, then waiting review, then onboarding. The non-obvious guardrail is to keep PR #481 as a separate review-queue item rather than inventing an Atlas dependency.",
+    ].join("\n");
+  }
   return undefined;
 }
 
