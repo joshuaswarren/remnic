@@ -2,6 +2,8 @@ export interface LoCoMoTurn {
   speaker: string;
   dia_id: string;
   text: string;
+  query?: string;
+  blip_caption?: string;
 }
 
 export interface LoCoMoQA {

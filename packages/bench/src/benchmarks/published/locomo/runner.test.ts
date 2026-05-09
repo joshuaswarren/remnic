@@ -106,7 +106,10 @@ test("LoCoMo normalizes numeric answers and adversarial-answer fallbacks from th
     assert.equal(result.results.tasks[1]?.expected, "blue");
     assert.equal(result.results.tasks[0]?.actual, "2022");
     assert.equal(result.results.tasks[1]?.actual, "blue");
-    assert.equal(result.results.tasks[0]?.details.answerFormat, "short");
+    assert.equal(
+      result.results.tasks[0]?.details.answerFormat,
+      "short-with-specifics",
+    );
     assert.equal(
       result.results.tasks[0]?.scores.locomo_hidden_evidence_id_leak,
       1,
@@ -114,6 +117,11 @@ test("LoCoMo normalizes numeric answers and adversarial-answer fallbacks from th
     assert.equal(result.results.tasks[0]?.details.hiddenEvidenceIdLeakCount, 0);
     assert.equal(result.results.tasks[1]?.details.hiddenEvidenceIdLeakCount, 0);
     assert.match(respondentContexts[0] ?? "", /\[D1:1\]/);
+    assert.match(
+      respondentContexts[0] ?? "",
+      /## LoCoMo Question-Focused Evidence/,
+    );
+    assert.doesNotMatch(respondentContexts[0] ?? "", /Full Recalled Context/);
     assert.equal(/\[D\d+:\d+\]/.test(respondentContexts[1] ?? ""), false);
     assert.match(respondentContexts[0] ?? "", /Maya: I moved in 2022/);
     assert.ok(
@@ -147,7 +155,9 @@ test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async
               {
                 speaker: "Maya",
                 dia_id: "D1:1",
-                text: "The first answer is alpha.",
+                text: "The first answer is alpha yesterday.",
+                query: "alpha visual clue",
+                blip_caption: "a caption about alpha",
               },
               {
                 speaker: "Maya",
@@ -250,9 +260,21 @@ test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async
       /date_time: 3:00 pm on 8 May, 2023/,
     );
     assert.match(storedMessages[0]?.content ?? "", /first answer is alpha/);
-    assert.equal(
-      storedMessages[1]?.content,
-      "[D1:1] Maya: The first answer is alpha.",
+    assert.match(
+      storedMessages[1]?.content ?? "",
+      /^\[D1:1\] Maya: The first answer is alpha yesterday\./,
+    );
+    assert.match(
+      storedMessages[1]?.content ?? "",
+      /image_query: alpha visual clue/,
+    );
+    assert.match(
+      storedMessages[1]?.content ?? "",
+      /image_caption: a caption about alpha/,
+    );
+    assert.match(
+      storedMessages[1]?.content ?? "",
+      /relative_time: session date 8 May 2023; yesterday = 7 May 2023/,
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true });

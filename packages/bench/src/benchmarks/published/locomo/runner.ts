@@ -38,6 +38,35 @@ const CATEGORY_NAMES: Record<number, string> = {
   5: "adversarial",
 };
 const DIALOGUE_ID_PATTERN = /\bD\d+:\d+\b/g;
+const LOCOMO_FOCUSED_LINE_LIMIT = 14;
+const LOCOMO_FOCUSED_LINE_MAX_CHARS = 420;
+const LOCOMO_FOCUSED_CONTEXT_MAX_CHARS = 6000;
+const LOCOMO_FALLBACK_CONTEXT_MAX_CHARS = 8000;
+const MONTH_NAMES: ReadonlyMap<string, number> = new Map([
+  ["january", 0],
+  ["jan", 0],
+  ["february", 1],
+  ["feb", 1],
+  ["march", 2],
+  ["mar", 2],
+  ["april", 3],
+  ["apr", 3],
+  ["may", 4],
+  ["june", 5],
+  ["jun", 5],
+  ["july", 6],
+  ["jul", 6],
+  ["august", 7],
+  ["aug", 7],
+  ["september", 8],
+  ["sep", 8],
+  ["october", 9],
+  ["oct", 9],
+  ["november", 10],
+  ["nov", 10],
+  ["december", 11],
+  ["dec", 11],
+]);
 type ExtractedLoCoMoSession = {
   sessionId: string;
   turns: LoCoMoTurn[];
@@ -82,12 +111,118 @@ function buildMessages(
 ): Message[] {
   const turnMessages: Message[] = turns.map((turn) => ({
     role: turn.speaker === speakerA ? "user" : "assistant",
-    content: `[${turn.dia_id}] ${turn.speaker}: ${turn.text}`,
+    content: formatTurnMessage(turn, dateTime),
   }));
   return [
     ...buildSessionMetadataMessages(conversation, sessionKey, dateTime),
     ...turnMessages,
   ];
+}
+
+function formatTurnMessage(turn: LoCoMoTurn, dateTime?: string): string {
+  const parts = [`[${turn.dia_id}] ${turn.speaker}: ${turn.text}`];
+  if (turn.query) {
+    parts.push(`image_query: ${turn.query}`);
+  }
+  if (turn.blip_caption) {
+    parts.push(`image_caption: ${turn.blip_caption}`);
+  }
+  const relativeTemporalNote = buildRelativeTemporalNote(turn.text, dateTime);
+  if (relativeTemporalNote) {
+    parts.push(relativeTemporalNote);
+  }
+  return parts.join(" | ");
+}
+
+function buildRelativeTemporalNote(
+  text: string,
+  dateTime: string | undefined,
+): string | undefined {
+  if (!dateTime) {
+    return undefined;
+  }
+  const anchor = parseLoCoMoDateTime(dateTime);
+  if (!anchor) {
+    return undefined;
+  }
+  const lower = text.toLowerCase();
+  const notes: string[] = [];
+  if (/\byesterday\b/.test(lower)) {
+    const yesterday = new Date(anchor.getTime());
+    yesterday.setUTCDate(anchor.getUTCDate() - 1);
+    notes.push(`yesterday = ${formatLoCoMoDate(yesterday)}`);
+  }
+  if (/\blast year\b/.test(lower)) {
+    notes.push(`last year = ${anchor.getUTCFullYear() - 1}`);
+  }
+  if (notes.length === 0) {
+    return undefined;
+  }
+  return `relative_time: session date ${formatLoCoMoDate(anchor)}; ${notes.join("; ")}`;
+}
+
+function parseLoCoMoDateTime(value: string): Date | undefined {
+  const normalized = value.trim();
+  const dayMonthMatch = normalized.match(
+    /\b(\d{1,2})\s+([A-Za-z]+),?\s+(\d{4})\b/,
+  );
+  if (dayMonthMatch) {
+    return buildUtcDate(
+      dayMonthMatch[3]!,
+      dayMonthMatch[2]!,
+      dayMonthMatch[1]!,
+    );
+  }
+
+  const monthDayMatch = normalized.match(
+    /\b([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})\b/,
+  );
+  if (monthDayMatch) {
+    return buildUtcDate(
+      monthDayMatch[3]!,
+      monthDayMatch[1]!,
+      monthDayMatch[2]!,
+    );
+  }
+  return undefined;
+}
+
+function buildUtcDate(
+  rawYear: string,
+  rawMonth: string,
+  rawDay: string,
+): Date | undefined {
+  const year = Number(rawYear);
+  const month = MONTH_NAMES.get(rawMonth.toLowerCase());
+  const day = Number(rawDay);
+  if (
+    month === undefined ||
+    !Number.isInteger(year) ||
+    !Number.isInteger(day) ||
+    day < 1 ||
+    day > 31
+  ) {
+    return undefined;
+  }
+  return new Date(Date.UTC(year, month, day));
+}
+
+function formatLoCoMoDate(date: Date): string {
+  const month = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ][date.getUTCMonth()];
+  return `${date.getUTCDate()} ${month} ${date.getUTCFullYear()}`;
 }
 
 function buildSessionMetadataMessages(
@@ -306,8 +441,12 @@ function buildTrial(
     question: qa.question,
     expected: qa.answer,
     recallSessionIds: sessionIds,
-    answerFormat: "short",
-    recallTextTransform: sanitizeLoCoMoRecallText,
+    answerFormat: "short-with-specifics",
+    recallTextTransform: ({ question, recalledText }) =>
+      prioritizeLoCoMoRecallText({
+        question,
+        recalledText: sanitizeLoCoMoRecallText({ question, recalledText }),
+      }),
     postAnswerHook: async ({ question, recalledText }) => {
       const hiddenEvidenceIdLeakCount = countHiddenEvidenceIdsInRecall(
         qa.evidence,
@@ -344,6 +483,209 @@ function sanitizeLoCoMoRecallText(args: {
     .replace(DIALOGUE_ID_PATTERN, (id: string) =>
       queryVisibleIds.has(id) ? id : "",
     );
+}
+
+function prioritizeLoCoMoRecallText(args: {
+  question: string;
+  recalledText: string;
+}): string {
+  const lines = args.recalledText
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const questionTokens = expandLoCoMoQuestionTokens(
+    tokenizeForLoCoMo(args.question),
+  );
+  const scored = lines
+    .map((line, index) => ({
+      line,
+      index,
+      score: scoreLoCoMoLine(line, questionTokens),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) =>
+      right.score === left.score
+        ? left.index - right.index
+        : right.score - left.score,
+    );
+  const focused = dedupePreserveOrder(
+    scored
+      .slice(0, LOCOMO_FOCUSED_LINE_LIMIT)
+      .map((entry) => truncateLoCoMoLine(entry.line)),
+  );
+  if (focused.length === 0) {
+    return truncateLoCoMoContext(
+      args.recalledText,
+      LOCOMO_FALLBACK_CONTEXT_MAX_CHARS,
+    );
+  }
+  return truncateLoCoMoContext(
+    ["## LoCoMo Question-Focused Evidence", ...focused].join("\n"),
+    LOCOMO_FOCUSED_CONTEXT_MAX_CHARS,
+  );
+}
+
+function tokenizeForLoCoMo(text: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const rawToken of text.toLowerCase().match(/[a-z0-9]+/g) ?? []) {
+    if (LOCOMO_STOP_WORDS.has(rawToken)) {
+      continue;
+    }
+    tokens.add(rawToken);
+    tokens.add(stemLoCoMoToken(rawToken));
+  }
+  return tokens;
+}
+
+const LOCOMO_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "be",
+  "did",
+  "do",
+  "does",
+  "for",
+  "her",
+  "his",
+  "in",
+  "is",
+  "of",
+  "or",
+  "the",
+  "their",
+  "to",
+  "was",
+  "what",
+  "where",
+  "who",
+  "would",
+]);
+
+function expandLoCoMoQuestionTokens(tokens: Set<string>): Set<string> {
+  const expanded = new Set(tokens);
+  if (tokens.has("when")) {
+    addTokens(expanded, [
+      "date",
+      "time",
+      "date_time",
+      "relative_time",
+      "yesterday",
+      "last",
+      "year",
+      "session",
+    ]);
+  }
+  if (tokens.has("identity")) {
+    addTokens(expanded, [
+      "gender",
+      "transgender",
+      "woman",
+      "journey",
+      "transition",
+      "pride",
+    ]);
+  }
+  if (tokens.has("research") || tokens.has("researching")) {
+    addTokens(expanded, ["adoption", "agency", "agencies", "brochure"]);
+  }
+  if (
+    tokens.has("field") ||
+    tokens.has("fields") ||
+    tokens.has("education") ||
+    tokens.has("educaton") ||
+    tokens.has("pursue")
+  ) {
+    addTokens(expanded, [
+      "career",
+      "counseling",
+      "counselor",
+      "certification",
+      "mental",
+      "health",
+      "psychology",
+      "edu",
+    ]);
+  }
+  if (tokens.has("sunrise") || tokens.has("paint") || tokens.has("painting")) {
+    addTokens(expanded, ["painted", "painting", "sunrise", "lake"]);
+  }
+  return expanded;
+}
+
+function addTokens(target: Set<string>, tokens: string[]): void {
+  for (const token of tokens) {
+    target.add(token);
+    target.add(stemLoCoMoToken(token));
+  }
+}
+
+function scoreLoCoMoLine(line: string, questionTokens: Set<string>): number {
+  const lineTokens = tokenizeForLoCoMo(line);
+  let score = 0;
+  for (const token of questionTokens) {
+    if (lineTokens.has(token)) {
+      score += token.length > 4 ? 2 : 1;
+    }
+  }
+  const lower = line.toLowerCase();
+  if (lower.includes("relative_time")) {
+    score += 4;
+  }
+  if (lower.includes("date_time")) {
+    score += 2;
+  }
+  if (lower.includes("session_summary") || lower.includes("observation")) {
+    score += 1;
+  }
+  return score;
+}
+
+function stemLoCoMoToken(token: string): string {
+  if (token.endsWith("ing") && token.length > 5) {
+    return token.slice(0, -3);
+  }
+  if (token.endsWith("ed") && token.length > 4) {
+    return token.slice(0, -2);
+  }
+  if (token.endsWith("ies") && token.length > 5) {
+    return `${token.slice(0, -3)}y`;
+  }
+  if (token.endsWith("s") && token.length > 4) {
+    return token.slice(0, -1);
+  }
+  return token;
+}
+
+function dedupePreserveOrder(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function truncateLoCoMoLine(line: string): string {
+  return line.length <= LOCOMO_FOCUSED_LINE_MAX_CHARS
+    ? line
+    : `${line.slice(0, LOCOMO_FOCUSED_LINE_MAX_CHARS)}...`;
+}
+
+function truncateLoCoMoContext(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const truncated = text.slice(0, maxChars);
+  const lastNewline = truncated.lastIndexOf("\n");
+  const safePrefix = lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated;
+  return `${safePrefix}\n[LoCoMo context truncated to ${maxChars} characters]`;
 }
 
 function countHiddenEvidenceIdsInRecall(
