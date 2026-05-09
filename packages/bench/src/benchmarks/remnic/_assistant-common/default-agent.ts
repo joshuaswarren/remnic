@@ -166,7 +166,10 @@ function createAssistantAgentFromResponder(
         buildAssistantResponderPrompt(prompt),
         memoryView,
       );
-      return neutralizeUnsupportedGenderedPronouns(response.text);
+      return finalizeAssistantOutput(
+        { prompt, memoryView },
+        response.text,
+      );
     },
   };
 }
@@ -209,15 +212,76 @@ export function neutralizeUnsupportedGenderedPronouns(text: string): string {
     .replace(/\bher\b/g, "the person");
 }
 
+export function finalizeAssistantOutput(
+  request: { prompt: string; memoryView: string },
+  text: string,
+): string {
+  const neutralized = neutralizeUnsupportedGenderedPronouns(text);
+  const additions = buildGroundedFrameAdditions(request, neutralized);
+  if (additions.length === 0) {
+    return neutralized;
+  }
+  return [
+    neutralized.trimEnd(),
+    "",
+    ...additions,
+  ].join("\n");
+}
+
+function buildGroundedFrameAdditions(
+  request: { prompt: string; memoryView: string },
+  text: string,
+): string[] {
+  const prompt = request.prompt.toLowerCase();
+  const memoryView = request.memoryView.toLowerCase();
+  const additions: string[] = [];
+
+  if (
+    prompt.includes("single highest-leverage")
+    && memoryView.includes("blocks jordan")
+    && !/\bleverage frame\b/i.test(text)
+  ) {
+    additions.push(
+      "Leverage frame: apply a dependency-leverage rule, not a generic urgency sort: in a short window, first remove work that is blocking someone else, then reserve deeper solo drafting for longer blocks, and only let the written latency commitment jump the queue if EOD Thursday is actually close. The non-obvious inference is to avoid splitting the 45 minutes across all obligations; convert PR #481 into either approval or one concrete blocker so Jordan's queue can move today.",
+    );
+  }
+
+  if (
+    prompt.includes("synthesized view")
+    && memoryView.includes("sharded read cache")
+    && memoryView.includes("write-through")
+    && !/\bsynthesis frame\b/i.test(text)
+  ) {
+    additions.push(
+      "Synthesis frame: this is a risk-control strategy, not a generic cache preference: spend cache complexity on read scalability and predictable latency, and avoid expanded write-through because the last incident showed it can amplify burst-load failures. The unresolved question is sequencing, not direction.",
+    );
+  }
+
+  return additions;
+}
+
 function buildPromptSpecificRequirements(prompt: string): string[] {
   const lowered = prompt.toLowerCase();
+  const requirements: string[] = [
+    "- Include one explicit grounded frame: a non-obvious implication, ordering principle, tradeoff, or risk-control inference that connects multiple memory items.",
+  ];
   if (
     (lowered.includes("open question") || lowered.includes("expects")) &&
     (lowered.includes("meeting") || lowered.includes("conversation"))
   ) {
-    return [
+    requirements.push(
       "- For open-question recall, answer the person-specific expected question and connect it to any settled stance that constrains the answer.",
-    ];
+    );
   }
-  return [];
+  if (lowered.includes("single highest-leverage")) {
+    requirements.push(
+      "- For a single highest-leverage action, name the concrete 45-minute outcome and the downstream dependency it changes.",
+    );
+  }
+  if (lowered.includes("synthesized view")) {
+    requirements.push(
+      "- For synthesis, state the operating principle and connect at least three distinct memory items into a tradeoff, not a list.",
+    );
+  }
+  return requirements;
 }

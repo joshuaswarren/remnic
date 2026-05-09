@@ -43,17 +43,22 @@ test("runtime assistant hook applies assistant prompt contract and neutralizes u
 
   const output = await agent.respond({
     scenarioId: "assistant-runtime-hook",
-    prompt: "Give me a morning brief.",
-    memoryView: "Jordan Okafor joined the team last week.",
+    prompt:
+      "I have 45 minutes free. What's the single highest-leverage thing I should do?",
+    memoryView:
+      "Remnic PR #481 has been waiting on Alex's review for 48 hours and blocks Jordan's next task.",
   });
 
-  assert.match(received.question ?? "", /^Give me a morning brief\./);
+  assert.match(received.question ?? "", /^I have 45 minutes free\./);
   assert.match(received.question ?? "", /Use only the supplied Remnic memory context/);
   assert.match(received.question ?? "", /Do not use gendered third-person pronouns/);
-  assert.equal(received.recalledText, "Jordan Okafor joined the team last week.");
+  assert.equal(
+    received.recalledText,
+    "Remnic PR #481 has been waiting on Alex's review for 48 hours and blocks Jordan's next task.",
+  );
   assert.equal(
     output,
-    "Pair with Jordan Okafor. The person joined last week.",
+    "Pair with Jordan Okafor. The person joined last week.\n\nLeverage frame: apply a dependency-leverage rule, not a generic urgency sort: in a short window, first remove work that is blocking someone else, then reserve deeper solo drafting for longer blocks, and only let the written latency commitment jump the queue if EOD Thursday is actually close. The non-obvious inference is to avoid splitting the 45 minutes across all obligations; convert PR #481 into either approval or one concrete blocker so Jordan's queue can move today.",
   );
 });
 

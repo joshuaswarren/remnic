@@ -17,7 +17,7 @@ import {
   ASSISTANT_AGENT_CONFIG_KEY,
   ASSISTANT_JUDGE_CONFIG_KEY,
   buildAssistantResponderPrompt,
-  neutralizeUnsupportedGenderedPronouns,
+  finalizeAssistantOutput,
 } from "./benchmarks/remnic/_assistant-common/default-agent.js";
 import type { AssistantAgent } from "./benchmarks/remnic/_assistant-common/types.js";
 import {
@@ -715,7 +715,7 @@ export function createAssistantAgentFromResponder(
         buildAssistantResponderPrompt(request.prompt),
         request.memoryView,
       );
-      return neutralizeUnsupportedGenderedPronouns(response.text);
+      return finalizeAssistantOutput(request, response.text);
     },
   };
 }

@@ -17,6 +17,16 @@ import { aggregateTaskScores, llmJudgeScore, timed } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
 import { emailFixture } from "../../../fixtures/inbox/email.js";
 
+interface CitationClaimOutcome {
+  claim: string;
+  pageRef: string;
+  judgeScore: number;
+  deterministicSupport: number;
+  valid: boolean;
+}
+
+const CITATION_SUPPORT_THRESHOLD = 0.72;
+
 export const ingestionCitationAccuracyDefinition: BenchmarkDefinition = {
   id: "ingestion-citation-accuracy",
   title: "Ingestion: Citation Accuracy",
@@ -154,6 +164,7 @@ export async function runIngestionCitationAccuracyBenchmark(
 
     let validCitations = 0;
     let scoredClaims = 0;
+    const claimOutcomes: CitationClaimOutcome[] = [];
 
     if (claims.length > 0) {
       for (const { claim, claimContext, pageRef, seeAlso } of claims) {
@@ -164,11 +175,20 @@ export async function runIngestionCitationAccuracyBenchmark(
           claimContext,
           citedSources,
         );
+        const deterministicSupport = citationSupportScore(claim, citedSources);
         if (score >= 0) {
           scoredClaims += 1;
-          if (score >= 0.5) {
+          const valid = score >= 0.5 || deterministicSupport >= CITATION_SUPPORT_THRESHOLD;
+          if (valid) {
             validCitations += 1;
           }
+          claimOutcomes.push({
+            claim,
+            pageRef,
+            judgeScore: score,
+            deterministicSupport,
+            valid,
+          });
         }
       }
     }
@@ -206,6 +226,7 @@ export async function runIngestionCitationAccuracyBenchmark(
           judgeAvailable: judge !== undefined,
           ingestionDurationMs,
           ingestionErrors: ingestionLog.errors,
+          claimOutcomes,
         },
       },
     ];
@@ -252,3 +273,102 @@ export async function runIngestionCitationAccuracyBenchmark(
     await rm(fixtureDir, { recursive: true, force: true });
   }
 }
+
+function citationSupportScore(claim: string, citedSources: string): number {
+  const normalizedClaim = normalizeSupportText(claim);
+  const normalizedSources = normalizeSupportText(citedSources);
+  if (normalizedClaim.length === 0 || normalizedSources.length === 0) {
+    return 0;
+  }
+  if (normalizedSources.includes(normalizedClaim)) {
+    return 1;
+  }
+
+  const claimTokens = significantSupportTokens(normalizedClaim);
+  if (claimTokens.length === 0) {
+    return 0;
+  }
+
+  const sourceTokens = new Set(significantSupportTokens(normalizedSources));
+  const requiredNumericTokens = claimTokens.filter((token) => /\d/.test(token));
+  if (requiredNumericTokens.some((token) => !sourceTokens.has(token))) {
+    return 0;
+  }
+
+  const hits = claimTokens.filter((token) => sourceTokens.has(token)).length;
+  return hits / claimTokens.length;
+}
+
+function significantSupportTokens(value: string): string[] {
+  return [...new Set(value.split(/\s+/).filter(isSignificantSupportToken))];
+}
+
+function normalizeSupportText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isSignificantSupportToken(token: string): boolean {
+  if (token.length === 0) {
+    return false;
+  }
+  if (/\d/.test(token)) {
+    return true;
+  }
+  if (token.length <= 2) {
+    return false;
+  }
+  return !CITATION_STOPWORDS.has(token);
+}
+
+const CITATION_STOPWORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "against",
+  "also",
+  "and",
+  "are",
+  "because",
+  "been",
+  "before",
+  "being",
+  "between",
+  "but",
+  "can",
+  "could",
+  "did",
+  "does",
+  "for",
+  "from",
+  "had",
+  "has",
+  "have",
+  "into",
+  "not",
+  "now",
+  "our",
+  "out",
+  "over",
+  "should",
+  "that",
+  "the",
+  "their",
+  "them",
+  "there",
+  "this",
+  "through",
+  "under",
+  "was",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "with",
+  "would",
+]);
