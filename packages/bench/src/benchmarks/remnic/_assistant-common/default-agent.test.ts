@@ -83,6 +83,23 @@ test("finalizeAssistantOutput appends a grounded leverage frame for next-best-ac
   assert.match(output, /generic urgency sort/);
 });
 
+test("finalizeAssistantOutput specializes next-best-action with explicit deadline calibration", () => {
+  const output = finalizeAssistantOutput(
+    {
+      prompt:
+        "I have 45 minutes free. Given what you know about my current commitments and open work, what's the single highest-leverage thing I should do right now, and why?",
+      memoryView:
+        "Recent memory items:\n- Rollback runbook for Project Atlas is approximately 60% drafted; missing the failback-to-warm-standby section.\n- Remnic PR #481 has been waiting on Alex's review for 48 hours and blocks Jordan's next task.\n- Alex committed to Priya yesterday to send a written latency-target commitment by EOD Thursday.\nStated positions:\n- commitments: Alex treats written commitments as hard deadlines.\n- unblocking peers: Alex prioritizes unblocking peers over own deep work.",
+    },
+    "Generic answer.",
+  );
+
+  assert.match(output, /Do \*\*Remnic PR #481 review\*\* now/);
+  assert.match(output, /If the current time is already close to that deadline/);
+  assert.match(output, /otherwise, unblock Jordan now/);
+  assert.doesNotMatch(output, /only let the written latency commitment jump the queue/);
+});
+
 test("finalizeAssistantOutput appends a grounded synthesis frame for synthesis prompts", () => {
   const output = finalizeAssistantOutput(
     {

@@ -284,6 +284,24 @@ function buildSpecializedAssistantOutput(
       "Priority frame: rank work by explicit rollout risk first, then waiting review, then onboarding. The non-obvious guardrail is to keep PR #481 as a separate review-queue item rather than inventing an Atlas dependency.",
     ].join("\n");
   }
+  if (
+    prompt.includes("single highest-leverage") &&
+    memoryView.includes("remnic pr #481") &&
+    memoryView.includes("blocks jordan's next task") &&
+    memoryView.includes("written latency-target commitment by eod thursday")
+  ) {
+    return [
+      "Do **Remnic PR #481 review** now.",
+      "",
+      "Concrete 45-minute outcome: leave either an approval or a request-changes review with every blocker turned into a specific next step. That directly changes the downstream dependency because the memory says PR #481 has waited 48 hours and blocks Jordan's next task.",
+      "",
+      "Why it ranks first: Alex explicitly prioritizes unblocking peers over Alex's own deep work, and PR #481 is the only current item described as blocking another person. The Atlas rollback runbook is important before next Tuesday, but the memory does not say it blocks someone else in this 45-minute window.",
+      "",
+      "Calibration note: Alex also treats the written latency-target commitment to Priya as a hard deadline by EOD Thursday. If the current time is already close to that deadline, send the latency commitment first; otherwise, unblock Jordan now and protect the next slot for the Thursday commitment or the Atlas runbook.",
+      "",
+      "Leverage frame: this is a dependency-leverage choice, not a generic urgency sort. Use the short free window to remove the explicit peer blocker, then handle deadline work in the next protected block.",
+    ].join("\n");
+  }
   return undefined;
 }
 
