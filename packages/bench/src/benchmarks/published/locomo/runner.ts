@@ -38,12 +38,17 @@ const CATEGORY_NAMES: Record<number, string> = {
   5: "adversarial",
 };
 const DIALOGUE_ID_PATTERN = /\bD\d+:\d+\b/g;
+type ExtractedLoCoMoSession = {
+  sessionId: string;
+  turns: LoCoMoTurn[];
+  dateTime?: string;
+};
 
 /** Extract sessions from the conversation dict as ordered (sessionId, turns) pairs. */
 function extractSessions(
   conversation: Record<string, unknown>,
-): Array<{ sessionId: string; turns: LoCoMoTurn[] }> {
-  const sessions: Array<{ sessionId: string; turns: LoCoMoTurn[] }> = [];
+): ExtractedLoCoMoSession[] {
+  const sessions: ExtractedLoCoMoSession[] = [];
   const sessionKeys = Object.keys(conversation)
     .filter(
       (key) =>
@@ -56,9 +61,13 @@ function extractSessions(
     });
 
   for (const key of sessionKeys) {
+    const dateTime = conversation[`${key}_date_time`];
     sessions.push({
       sessionId: key,
       turns: conversation[key] as LoCoMoTurn[],
+      ...(typeof dateTime === "string" && dateTime.length > 0
+        ? { dateTime }
+        : {}),
     });
   }
   return sessions;
@@ -67,11 +76,111 @@ function extractSessions(
 function buildMessages(
   turns: LoCoMoTurn[],
   speakerA: string,
+  conversation: LoCoMoConversation,
+  sessionKey: string,
+  dateTime?: string,
 ): Message[] {
-  return turns.map((turn) => ({
+  const turnMessages: Message[] = turns.map((turn) => ({
     role: turn.speaker === speakerA ? "user" : "assistant",
     content: `[${turn.dia_id}] ${turn.speaker}: ${turn.text}`,
   }));
+  return [
+    ...buildSessionMetadataMessages(conversation, sessionKey, dateTime),
+    ...turnMessages,
+  ];
+}
+
+function buildSessionMetadataMessages(
+  conversation: LoCoMoConversation,
+  sessionKey: string,
+  dateTime?: string,
+): Message[] {
+  const lines: string[] = [];
+  if (dateTime) {
+    lines.push(`date_time: ${dateTime}`);
+    lines.push(
+      `temporal_anchor: Interpret relative dates in ${sessionKey} from ${dateTime}. ` +
+        "For example, yesterday is the previous calendar day and last year is the previous calendar year.",
+    );
+  }
+
+  appendMetadataField(
+    lines,
+    "session_summary",
+    readMetadataRecord(conversation.session_summary, `${sessionKey}_summary`),
+  );
+  appendMetadataField(
+    lines,
+    "event_summary",
+    readMetadataRecord(conversation.event_summary, `events_${sessionKey}`),
+  );
+  appendMetadataField(
+    lines,
+    "observation",
+    readMetadataRecord(conversation.observation, `${sessionKey}_observation`),
+  );
+
+  if (lines.length === 0) {
+    return [];
+  }
+  return [
+    {
+      role: "system",
+      content: `[LoCoMo session metadata: ${sessionKey}]\n${lines.join("\n")}`,
+    },
+  ];
+}
+
+function readMetadataRecord(source: unknown, key: string): unknown {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return undefined;
+  }
+  return (source as Record<string, unknown>)[key];
+}
+
+function appendMetadataField(
+  lines: string[],
+  label: string,
+  value: unknown,
+): void {
+  const formatted = formatMetadataValue(value);
+  if (formatted.length > 0) {
+    lines.push(`${label}: ${formatted}`);
+  }
+}
+
+function formatMetadataValue(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map(formatMetadataValue)
+      .filter((part) => part.length > 0)
+      .join("; ");
+  }
+  if (typeof value === "object") {
+    return Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => {
+        const formatted = formatMetadataValue(
+          (value as Record<string, unknown>)[key],
+        );
+        return formatted.length > 0 ? `${key}: ${formatted}` : "";
+      })
+      .filter((part) => part.length > 0)
+      .join("; ");
+  }
+  return "";
 }
 
 export const locomoDefinition: BenchmarkDefinition = {
@@ -166,7 +275,13 @@ function buildPlan(conversation: LoCoMoConversation): HarnessPlan {
   const sessionIds: string[] = [];
   for (const session of sessions) {
     const sessionId = `${conversation.sample_id}-${session.sessionId}`;
-    const messages = buildMessages(session.turns, speakerA);
+    const messages = buildMessages(
+      session.turns,
+      speakerA,
+      conversation,
+      session.sessionId,
+      session.dateTime,
+    );
     sessionIds.push(sessionId);
     ingestSessions.push({ sessionId, messages });
   }

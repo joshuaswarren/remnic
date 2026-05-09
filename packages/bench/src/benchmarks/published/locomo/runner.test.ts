@@ -131,6 +131,7 @@ test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-locomo-"));
   const datasetPath = path.join(tempDir, "locomo10.json");
   let storeCallCount = 0;
+  const storedMessages: Message[] = [];
 
   try {
     await writeFile(
@@ -141,6 +142,7 @@ test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async
           conversation: {
             speaker_a: "Maya",
             speaker_b: "Assistant",
+            session_1_date_time: "3:00 pm on 8 May, 2023",
             session_1: [
               {
                 speaker: "Maya",
@@ -153,6 +155,20 @@ test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async
                 text: "The second answer is beta.",
               },
             ],
+          },
+          session_summary: {
+            session_1_summary:
+              "Maya said the first answer is alpha during a conversation on 8 May 2023.",
+          },
+          observation: {
+            session_1_observation: {
+              Maya: [
+                [
+                  "Maya gave alpha as the first answer.",
+                  "D1:1",
+                ],
+              ],
+            },
           },
           qa: [
             {
@@ -179,8 +195,9 @@ test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async
       datasetDir: tempDir,
       benchmarkOptions: { trialLimit: 1 },
       system: {
-        async store() {
+        async store(_sessionId, messages) {
           storeCallCount += 1;
+          storedMessages.push(...messages);
         },
         async recall() {
           return "[D1:1] Maya: The first answer is alpha.";
@@ -224,6 +241,19 @@ test("LoCoMo applies benchmarkOptions.trialLimit across scored QA trials", async
     assert.equal(result.results.tasks[0]?.expected, "alpha");
     assert.equal(result.config.benchmarkOptions?.trialLimit, 1);
     assert.equal(storeCallCount, 1);
+    assert.match(
+      storedMessages[0]?.content ?? "",
+      /\[LoCoMo session metadata: session_1\]/,
+    );
+    assert.match(
+      storedMessages[0]?.content ?? "",
+      /date_time: 3:00 pm on 8 May, 2023/,
+    );
+    assert.match(storedMessages[0]?.content ?? "", /first answer is alpha/);
+    assert.equal(
+      storedMessages[1]?.content,
+      "[D1:1] Maya: The first answer is alpha.",
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
