@@ -457,6 +457,7 @@ test("strict question builder reserves unknown for genuinely missing evidence", 
   const prompt = buildStrictBenchmarkQuestion("What code did I save?");
 
   assert.match(prompt, /best supported answer/);
+  assert.match(prompt, /Which <category>/);
   assert.match(prompt, /only when the supplied context has no relevant evidence/);
   assert.doesNotMatch(prompt, /If the context is insufficient, answer "unknown"/);
 });
@@ -482,6 +483,7 @@ test("strict question builder can answer remembered instructions", () => {
   assert.match(prompt, /instead of performing the requested task/);
   assert.match(prompt, /Always format implementation help/);
   assert.match(prompt, /Do not quote a "please remember" request verbatim/);
-  assert.match(prompt, /code blocks with syntax highlighting/);
+  assert.match(prompt, /syntax-highlighted code blocks/);
+  assert.match(prompt, /do not rewrite them to equivalent wording/);
   assert.match(prompt, /do not answer "unknown"/);
 });

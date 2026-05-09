@@ -170,6 +170,7 @@ export function buildStrictBenchmarkQuestion(
     "- Answer \"unknown\" only when the supplied context has no relevant evidence, has irreconcilably conflicting evidence, or lacks the specific value the question asks for.",
     "- Resolve relative temporal references from the timestamps or dated facts in the memory context when possible.",
     "- For date or year questions, prefer the absolute date or year over relative wording like yesterday or last year.",
+    "- For \"Which <category>\" questions, return only the identifying name or value; omit the generic category noun from the question unless it is part of the proper name or needed to disambiguate.",
   ];
 
   switch (resolvedFormat) {
@@ -187,7 +188,7 @@ export function buildStrictBenchmarkQuestion(
         "- For implementation or action requests, the benchmark is asking which remembered instruction applies; do not answer \"unknown\" merely because the context lacks the implementation details for the requested task.",
         "- Return the applicable instruction in its shortest complete form, preserving concrete required details such as formatting requirements, named tools, labels, dates, or values.",
         "- Do not quote a \"please remember\" request verbatim; restate it as durable assistant behavior, using concise preference wording like \"Always format implementation help ...\" when natural.",
-        "- For formatting requirements, use explicit benchmark-friendly wording such as \"code blocks with syntax highlighting\" when the memory expresses an equivalent syntax-highlighted-code-block requirement.",
+        "- Preserve exact remembered formatting phrases such as \"syntax-highlighted code blocks\"; do not rewrite them to equivalent wording unless the memory uses that wording.",
       );
       break;
     case "structured":
