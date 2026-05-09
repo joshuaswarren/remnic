@@ -108,6 +108,12 @@ test("agentic-memory answering asks responders to synthesize grounded trajectory
         assert.match(question, /prefer pushing nearby rule-word blocks/);
         assert.match(question, /temporary rule formation\/break/);
         assert.match(question, /do not count a temporary closer position/);
+        assert.match(question, /breaks the loop or changes axis\/alignment/);
+        assert.match(question, /causal framing stated in the benchmark question/);
+        assert.match(question, /agent and block moved together in absolute coordinates/);
+        assert.match(question, /approaching the same obstacle or text blocks from a different angle/);
+        assert.match(question, /name the likely rule involving that target/);
+        assert.match(question, /long no-reward movement through a corridor or passage/);
         assert.match(question, /Answer every clause in the question/);
         assert.match(question, /Do not assume an object disappeared/);
         assert.equal(
@@ -335,6 +341,10 @@ test("agentic-memory question builder preserves strict safety while allowing tra
   assert.match(prompt, /reconcile the mismatch from the adjacent evidence/);
   assert.match(prompt, /Action N causes Observation N/);
   assert.match(prompt, /opposing movement sequences/);
+  assert.match(prompt, /concrete actions, step ranges, object names/);
+  assert.match(prompt, /first makes a text block adjacent/);
+  assert.match(prompt, /preserve that named target as the primary strategy/);
+  assert.match(prompt, /strategic repositioning/);
   assert.match(prompt, /Do not answer "unknown" merely because the answer requires inference/);
 });
 
