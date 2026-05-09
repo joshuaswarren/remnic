@@ -473,6 +473,25 @@ test("strict question builder supports concise answers with required specifics",
   assert.match(prompt, /Prefer exact values/);
 });
 
+test("strict choice-number prompts require matching all current state dimensions", () => {
+  const prompt = buildStrictBenchmarkQuestion(
+    [
+      "How should I adapt my plans?",
+      "",
+      "Answer choices:",
+      "1. Option for strict distancing with occasional help.",
+      "2. Option for strict distancing with limited mobility.",
+    ].join("\n"),
+    "choice-number",
+  );
+
+  assert.match(prompt, /Return only the selected option number/);
+  assert.match(prompt, /matches all relevant current values/);
+  assert.match(prompt, /matches only one remembered detail/);
+  assert.match(prompt, /occasional assistance is not limited mobility/);
+  assert.match(prompt, /seasonal projects is not monthly minimal/);
+});
+
 test("strict question builder can answer remembered instructions", () => {
   const prompt = buildStrictBenchmarkQuestion(
     "Could you show me how to implement a login feature?",

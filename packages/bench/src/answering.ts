@@ -180,7 +180,12 @@ export function buildStrictBenchmarkQuestion(
       );
       break;
     case "choice-number":
-      instructions.push("- Return only the selected option number.");
+      instructions.push(
+        "- Return only the selected option number.",
+        "- If the recalled context includes current state, preference, or profile labels, select the option that matches all relevant current values.",
+        "- Do not choose an option that matches only one remembered detail when another option matches the full combination of current details.",
+        "- Treat similar but distinct current values as different: for example, occasional assistance is not limited mobility, seasonal projects is not monthly minimal, and small group is not a workshop series.",
+      );
       break;
     case "instruction":
       instructions.push(

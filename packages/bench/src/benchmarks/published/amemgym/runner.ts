@@ -34,6 +34,7 @@ const DATASET_FILENAMES = [
   "amemgym-tasks.json",
   "data.json",
 ] as const;
+const AMEMGYM_STORE_CHUNK_SIZE = 20;
 
 /**
  * For each QA, find the correct answer based on the final state.
@@ -87,17 +88,21 @@ export async function runAMemGymBenchmark(
 
     const sessionId = `amemgym-${profile.id}`;
     const finalState: Record<string, string> = {};
+    const profileMessages: Message[] = [];
+    const currentExposedState: Record<string, string> = {};
 
     for (const period of profile.periods) {
       Object.assign(finalState, period.state);
 
       for (const session of period.sessions) {
-        const messages = buildSessionMessages(session);
-        if (messages.length > 0) {
-          await options.system.store(sessionId, messages);
-        }
+        Object.assign(currentExposedState, session.exposed_states);
+        profileMessages.push(...buildSessionMessages(session));
       }
     }
+
+    profileMessages.push(...buildCurrentStateMessages(currentExposedState));
+
+    await storeMessagesInChunks(options, sessionId, profileMessages);
 
     try {
       await options.system.drain?.();
@@ -687,6 +692,19 @@ function applyLimit<T>(items: T[], limit: number | undefined): T[] {
   return items.slice(0, limit);
 }
 
+async function storeMessagesInChunks(
+  options: ResolvedRunBenchmarkOptions,
+  sessionId: string,
+  messages: Message[],
+): Promise<void> {
+  for (let index = 0; index < messages.length; index += AMEMGYM_STORE_CHUNK_SIZE) {
+    await options.system.store(
+      sessionId,
+      messages.slice(index, index + AMEMGYM_STORE_CHUNK_SIZE),
+    );
+  }
+}
+
 function buildSessionMessages(session: AMemGymSession): Message[] {
   const messages: Message[] = [];
 
@@ -732,6 +750,26 @@ function formatExposedStateUpdate(
     return undefined;
   }
   return entries.map(([key, value]) => `${key}: ${value}`).join(", ");
+}
+
+function buildCurrentStateMessages(
+  currentState: Record<string, string>,
+): Message[] {
+  const entries = Object.entries(currentState).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  return entries.map(([key, value]) => ({
+    role: "user",
+    content:
+      `[Current user state]: ${key}: ${value} (${humanizeStateToken(key)}: ${humanizeStateToken(value)})`,
+  }));
+}
+
+function humanizeStateToken(value: string): string {
+  return value
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeRole(role: string): Message["role"] {
