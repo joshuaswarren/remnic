@@ -9,6 +9,8 @@ import type {
 import type { IngestionBenchAdapter, IngestionLog, MemoryGraph } from "../ingestion-types.js";
 import type { ProviderConfig } from "../types.js";
 
+const BENCHMARK_TIMEOUT_ABORT_GRACE_MS = 1_500;
+
 export interface TimeoutGuardOptions {
   benchmarkId: string;
   timeoutMs: number;
@@ -276,9 +278,11 @@ async function withTimeout<T>(
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const controller = new AbortController();
+  let timeoutError: Error | undefined;
+  const task = Promise.resolve().then(() => fn(controller.signal));
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      const timeoutError = new Error(
+      timeoutError = new Error(
         `benchmark phase timed out after ${timeoutMs}ms: ${label}`,
       );
       reject(timeoutError);
@@ -290,10 +294,28 @@ async function withTimeout<T>(
   });
 
   try {
-    return await Promise.race([fn(controller.signal), timeout]);
+    return await Promise.race([task, timeout]);
+  } catch (error) {
+    if (error === timeoutError) {
+      await Promise.race([
+        task.then(
+          () => undefined,
+          () => undefined,
+        ),
+        delay(BENCHMARK_TIMEOUT_ABORT_GRACE_MS),
+      ]);
+    }
+    throw error;
   } finally {
     if (timer) {
       clearTimeout(timer);
     }
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
 }

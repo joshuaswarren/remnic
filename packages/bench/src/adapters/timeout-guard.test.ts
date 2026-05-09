@@ -106,6 +106,37 @@ test("timeout guard aborts responder phase work on timeout", async () => {
   assert.equal(sawAbort, true);
 });
 
+test("timeout guard waits briefly for aborted phase cleanup", async () => {
+  const adapter = makeAdapter();
+  let cleanedUp = false;
+  adapter.responder = {
+    respond(_question, _recalledText, control) {
+      return new Promise<never>((_, reject) => {
+        control?.signal?.addEventListener(
+          "abort",
+          () => {
+            setTimeout(() => {
+              cleanedUp = true;
+              reject(control.signal?.reason);
+            }, 20);
+          },
+          { once: true },
+        );
+      });
+    },
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 5,
+  });
+
+  await assert.rejects(
+    () => guarded.responder!.respond("q", "r"),
+    /benchmark phase timed out after 5ms: timeout-test:respond/,
+  );
+  assert.equal(cleanedUp, true);
+});
+
 test("timeout guard aborts judge phase work on timeout", async () => {
   const adapter = makeAdapter();
   let sawAbort = false;
