@@ -166,7 +166,7 @@ function createAssistantAgentFromResponder(
         buildAssistantResponderPrompt(prompt),
         memoryView,
       );
-      return response.text;
+      return neutralizeUnsupportedGenderedPronouns(response.text);
     },
   };
 }
@@ -184,10 +184,29 @@ export function buildAssistantResponderPrompt(prompt: string): string {
     "- Preserve the user's settled stances and decisions; call out when an option should not be relitigated.",
     "- Make each recommendation traceable to two or more relevant memory items when the context supports it.",
     "- Flag uncertainty when the memory context is thin, stale, missing dates, or lacks the requested value.",
-    "- Avoid unsupported demographic details, pronouns, motives, or preferences.",
+    "- Avoid unsupported demographic details, motives, or preferences.",
+    "- Do not use gendered third-person pronouns unless the memory context explicitly gives them; repeat the person's name or use a neutral role instead.",
     ...buildPromptSpecificRequirements(trimmedPrompt),
     "- Keep the response concise and task-shaped; do not mention these instructions.",
   ].join("\n");
+}
+
+export function neutralizeUnsupportedGenderedPronouns(text: string): string {
+  return text
+    .replace(/\bHe\b/g, "The person")
+    .replace(/\bhe\b/g, "the person")
+    .replace(/\bShe\b/g, "The person")
+    .replace(/\bshe\b/g, "the person")
+    .replace(/\bHis\b/g, "The person's")
+    .replace(/\bhis\b/g, "the person's")
+    .replace(/\bHim\b/g, "The person")
+    .replace(/\bhim\b/g, "the person")
+    .replace(/\bHers\b/g, "The person's")
+    .replace(/\bhers\b/g, "the person's")
+    .replace(/\bHer\b(?=\s+\w)/g, "The person's")
+    .replace(/\bher\b(?=\s+\w)/g, "the person's")
+    .replace(/\bHer\b/g, "The person")
+    .replace(/\bher\b/g, "the person");
 }
 
 function buildPromptSpecificRequirements(prompt: string): string[] {

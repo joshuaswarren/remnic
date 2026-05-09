@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildAssistantResponderPrompt } from "./default-agent.js";
+import {
+  buildAssistantResponderPrompt,
+  neutralizeUnsupportedGenderedPronouns,
+} from "./default-agent.js";
 
 test("buildAssistantResponderPrompt preserves prompt and asks for grounded synthesis", () => {
   const prompt = buildAssistantResponderPrompt("What should I do next?");
@@ -12,6 +15,7 @@ test("buildAssistantResponderPrompt preserves prompt and asks for grounded synth
   assert.match(prompt, /what it rules out/);
   assert.match(prompt, /settled stances and decisions/);
   assert.match(prompt, /Avoid unsupported demographic details/);
+  assert.match(prompt, /Do not use gendered third-person pronouns/);
   assert.match(prompt, /Flag uncertainty/);
 });
 
@@ -22,4 +26,13 @@ test("buildAssistantResponderPrompt adds open-question recall guidance", () => {
 
   assert.match(prompt, /person-specific expected question/);
   assert.match(prompt, /settled stance that constrains the answer/);
+});
+
+test("neutralizeUnsupportedGenderedPronouns removes unsupported gendered references", () => {
+  assert.equal(
+    neutralizeUnsupportedGenderedPronouns(
+      "Pair with Jordan Okafor this week. He joined last week and his onboarding is open.",
+    ),
+    "Pair with Jordan Okafor this week. The person joined last week and the person's onboarding is open.",
+  );
 });

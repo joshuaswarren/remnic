@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { buildBenchBaselineRemnicConfig } from "./adapters/remnic-adapter.ts";
 import {
+  createAssistantAgentFromResponder,
   deriveOpenclawRuntimeContext,
   resolveBenchRuntimeProfile,
 } from "./runtime-profiles.ts";
@@ -23,6 +24,37 @@ test("baseline runtime profile keeps the stripped retrieval-only config", async 
   assert.equal(resolved.remnicConfig.rerankEnabled, false);
   assert.equal(resolved.remnicConfig.verifiedRecallEnabled, false);
   assert.equal(resolved.remnicConfig.knowledgeIndexEnabled, false);
+});
+
+test("runtime assistant hook applies assistant prompt contract and neutralizes unsupported pronouns", async () => {
+  const received: { question?: string; recalledText?: string } = {};
+  const agent = createAssistantAgentFromResponder({
+    async respond(question, recalledText) {
+      received.question = question;
+      received.recalledText = recalledText;
+      return {
+        text: "Pair with Jordan Okafor. He joined last week.",
+        tokens: { input: 1, output: 1 },
+        latencyMs: 1,
+        model: "runtime-assistant-test",
+      };
+    },
+  });
+
+  const output = await agent.respond({
+    scenarioId: "assistant-runtime-hook",
+    prompt: "Give me a morning brief.",
+    memoryView: "Jordan Okafor joined the team last week.",
+  });
+
+  assert.match(received.question ?? "", /^Give me a morning brief\./);
+  assert.match(received.question ?? "", /Use only the supplied Remnic memory context/);
+  assert.match(received.question ?? "", /Do not use gendered third-person pronouns/);
+  assert.equal(received.recalledText, "Jordan Okafor joined the team last week.");
+  assert.equal(
+    output,
+    "Pair with Jordan Okafor. The person joined last week.",
+  );
 });
 
 test("real runtime profile preserves the configured Remnic retrieval settings", async () => {
