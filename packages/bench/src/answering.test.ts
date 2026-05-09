@@ -104,16 +104,22 @@ test("agentic-memory answering asks responders to synthesize grounded trajectory
         assert.match(question, /adjacent trajectory evidence contains the named action/);
         assert.match(question, /next concrete maneuver it enables/);
         assert.match(question, /treat an object on the direct path as a blocker/);
+        assert.match(question, /clearing the obstacle's axis/);
         assert.match(question, /prefer rule-text positioning over chasing ordinary objects/);
         assert.match(question, /prefer pushing nearby rule-word blocks/);
         assert.match(question, /temporary rule formation\/break/);
+        assert.match(question, /first action of a two-step maneuver/);
         assert.match(question, /do not count a temporary closer position/);
         assert.match(question, /breaks the loop or changes axis\/alignment/);
         assert.match(question, /causal framing stated in the benchmark question/);
         assert.match(question, /agent and block moved together in absolute coordinates/);
+        assert.match(question, /cumulative absolute displacement/);
+        assert.match(question, /trust the raw labels/);
+        assert.match(question, /only state change/);
         assert.match(question, /approaching the same obstacle or text blocks from a different angle/);
         assert.match(question, /name the likely rule involving that target/);
         assert.match(question, /long no-reward movement through a corridor or passage/);
+        assert.match(question, /corridor traversal to access future rule text/);
         assert.match(question, /Answer every clause in the question/);
         assert.match(question, /Do not assume an object disappeared/);
         assert.equal(
@@ -343,8 +349,11 @@ test("agentic-memory question builder preserves strict safety while allowing tra
   assert.match(prompt, /opposing movement sequences/);
   assert.match(prompt, /concrete actions, step ranges, object names/);
   assert.match(prompt, /first makes a text block adjacent/);
+  assert.match(prompt, /stable relative offset after contacting rule text/);
+  assert.match(prompt, /inside the named span/);
   assert.match(prompt, /preserve that named target as the primary strategy/);
   assert.match(prompt, /strategic repositioning/);
+  assert.match(prompt, /no-reward or no-rule-change movement span/);
   assert.match(prompt, /Do not answer "unknown" merely because the answer requires inference/);
 });
 

@@ -1135,7 +1135,7 @@ function appendSpatialTrajectoryInferenceLines(
   const wantsRules = /\brules?\b/.test(normalized) ||
     /\bwin\s+condition\b/.test(normalized) ||
     /\bpush(?:able)?\s+word\b/.test(normalized);
-  const wantsStrategicOrCounterfactual = /\b(?:blocked|counterproductive|failed|failure|infer|inferred|objective|instead|alternative|progress|goal|necessary|critical|strategic|successful)\b/.test(
+  const wantsStrategicOrCounterfactual = /\b(?:blocked|counterproductive|failed|failure|infer|inferred|objective|instead|alternative|progress|goal|necessary|critical|strategic|successful|relevant|ineffective|only\s+one|caused?\s+a\s+change)\b/.test(
     normalized,
   );
   const wantsStateTransformation = /\b(?:appear|appears|appeared|disappear|disappears|disappeared|temporary|transformation|hidden\s+state|reversed)\b/.test(
@@ -1157,12 +1157,18 @@ function appendSpatialTrajectoryInferenceLines(
     lines.push("Self-reversing sequence cues:");
     lines.push(...selfReversingLines);
   }
+  const onlyEffectiveActionLines = collectOnlyEffectiveActionLines(window, normalized);
+  if (onlyEffectiveActionLines.length > 0) {
+    lines.push("Only-effective action cues:");
+    lines.push(...onlyEffectiveActionLines);
+  }
   const pushedPhraseGroupLines = collectPushedPhraseGroupShiftLines(query, window, normalized);
   if (pushedPhraseGroupLines.length > 0) {
     lines.push("Pushed phrase-group shift cues:");
     lines.push(...pushedPhraseGroupLines);
   }
-  const suppressMovementProgressEvidence = selfReversingLines.some((line) =>
+  const suppressMovementProgressEvidence = onlyEffectiveActionLines.length > 0 ||
+    selfReversingLines.some((line) =>
     line.includes("named movement sequence") &&
     /\bwhich\b/.test(normalized) &&
     /\brelevant\b/.test(normalized)
@@ -1219,7 +1225,15 @@ function appendSpatialTrajectoryInferenceLines(
     lines.push(...failedEscapeLines);
   }
 
-  const failedContactLines = collectFailedContactBoundaryLines(window, normalized);
+  const sameRelativeTextPushLines = collectSameRelativeTextPushLines(window, normalized);
+  if (sameRelativeTextPushLines.length > 0) {
+    lines.push("Same-relative text-push cues:");
+    lines.push(...sameRelativeTextPushLines);
+  }
+
+  const failedContactLines = sameRelativeTextPushLines.length > 0
+    ? []
+    : collectFailedContactBoundaryLines(window, normalized);
   if (failedContactLines.length > 0) {
     lines.push("Failed-push boundary cues:");
     lines.push(...failedContactLines);
@@ -1607,6 +1621,58 @@ function containsAdjacentReversePair(
     }
   }
   return false;
+}
+
+function collectOnlyEffectiveActionLines(
+  window: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (
+    !(
+      /\bonly\s+one\b/.test(normalizedQuery) &&
+      /\b(?:caused?\s+a\s+change|made\s+progress|relevant|ineffective)\b/.test(normalizedQuery)
+    ) &&
+    !/\bother\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine)\b.*\bineffective\b/.test(normalizedQuery)
+  ) {
+    return [];
+  }
+
+  const steps = window.filter((step) => step.action && step.observation);
+  if (steps.length < 3) {
+    return [];
+  }
+
+  const baseline = observationStateSignature(steps[0]!.observation!);
+  if (!baseline) {
+    return [];
+  }
+
+  const unchanged: LabeledTrajectoryStep[] = [];
+  let changed: LabeledTrajectoryStep | undefined;
+  for (const step of steps) {
+    const signature = observationStateSignature(step.observation!);
+    if (signature === baseline && changed === undefined) {
+      unchanged.push(step);
+      continue;
+    }
+    changed = step;
+    break;
+  }
+
+  if (!changed || unchanged.length < 2) {
+    return [];
+  }
+
+  const previous = unchanged[unchanged.length - 1]!;
+  const changedMove = agentMoveDeltaFromAction(changed.action!);
+  const unchangedActions = unchanged
+    .map((step) => `Action ${step.step} ${normalizeActionVerb(step.action!) || step.action}`)
+    .join(", ");
+  const example = positionShiftExample(previous.observation!, changed.observation!);
+  return [
+    `Within the named span, Observations ${unchanged[0]!.step}-${previous.step} have the same object-relative signature after ${unchangedActions}; treat those actions as ineffective/no-progress attempts even if an earlier pre-span observation differs.`,
+    `Observation ${previous.step}->${changed.step} is the first state change inside the span after Action ${changed.step} ${changedMove?.direction ?? changed.action}${example ? ` (${example})` : ""}; answer that Action ${changed.step} ${changedMove?.direction ?? changed.action} is the only progress-making action.`,
+  ];
 }
 
 function collectObjectAlignmentLines(
@@ -2092,6 +2158,118 @@ function collectFailedContactBoundaryLines(
     }
   }
   return uniqueLines(lines).slice(0, 5);
+}
+
+function collectSameRelativeTextPushLines(
+  window: readonly LabeledTrajectoryStep[],
+  normalizedQuery: string,
+): string[] {
+  if (
+    !/\bhidden\b/.test(normalizedQuery) &&
+    !(/\brelative\b/.test(normalizedQuery) && /\b(?:same|unchanged|static)\b/.test(normalizedQuery)) &&
+    !/\bobservation\s+(?:fail|fails|failed)\s+to\s+show\b/.test(normalizedQuery)
+  ) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  for (let index = 1; index < window.length; index += 1) {
+    const previous = window[index - 1]!;
+    const current = window[index]!;
+    const previousMove = previous.action ? agentMoveDeltaFromAction(previous.action) : undefined;
+    const currentMove = current.action ? agentMoveDeltaFromAction(current.action) : undefined;
+    if (
+      !previous.observation ||
+      !current.observation ||
+      !previousMove ||
+      !currentMove ||
+      previousMove.direction !== currentMove.direction
+    ) {
+      continue;
+    }
+
+    const previousPositions = parseRelativePositionEntries(previous.observation);
+    const currentPositions = parseRelativePositions(current.observation);
+    for (const previousPosition of previousPositions) {
+      const normalizedEntity = normalizeEntity(previousPosition.entity);
+      if (
+        !normalizedEntity.startsWith("rule ") ||
+        previousPosition.x !== currentMove.dx ||
+        previousPosition.y !== currentMove.dy
+      ) {
+        continue;
+      }
+      const currentPosition = currentPositions.get(normalizedEntity);
+      if (
+        !currentPosition ||
+        currentPosition.x !== previousPosition.x ||
+        currentPosition.y !== previousPosition.y
+      ) {
+        continue;
+      }
+
+      lines.push(
+        `Actions ${previous.step}-${current.step} are repeated ${currentMove.direction} moves with ${previousPosition.entity} remaining adjacent at ${previousPosition.raw} in both resulting observations; for a hidden-state question, answer the cumulative displacement across the named repeated actions: ${previousPosition.entity} moved one cell ${currentMove.direction} per ${currentMove.direction} action while the agent moved with it, so the relative offset stayed constant.`,
+      );
+    }
+  }
+
+  for (let index = 2; index < window.length; index += 1) {
+    const beforeApproach = window[index - 2]!;
+    const contactStep = window[index - 1]!;
+    const pushStep = window[index]!;
+    const contactMove = contactStep.action ? agentMoveDeltaFromAction(contactStep.action) : undefined;
+    const pushMove = pushStep.action ? agentMoveDeltaFromAction(pushStep.action) : undefined;
+    if (
+      !beforeApproach.observation ||
+      !contactStep.observation ||
+      !pushStep.observation ||
+      !contactMove ||
+      !pushMove ||
+      contactMove.direction !== pushMove.direction
+    ) {
+      continue;
+    }
+
+    const beforePositions = parseRelativePositions(beforeApproach.observation);
+    const contactPositions = parseRelativePositionEntries(contactStep.observation);
+    const afterPositions = parseRelativePositions(pushStep.observation);
+    for (const contactPosition of contactPositions) {
+      const normalizedEntity = normalizeEntity(contactPosition.entity);
+      if (!normalizedEntity.startsWith("rule ")) {
+        continue;
+      }
+      if (
+        contactPosition.x !== pushMove.dx ||
+        contactPosition.y !== pushMove.dy
+      ) {
+        continue;
+      }
+
+      const afterPosition = afterPositions.get(normalizedEntity);
+      if (
+        !afterPosition ||
+        afterPosition.x !== contactPosition.x ||
+        afterPosition.y !== contactPosition.y
+      ) {
+        continue;
+      }
+
+      const beforePosition = beforePositions.get(normalizedEntity);
+      if (
+        beforePosition &&
+        beforePosition.x === contactPosition.x &&
+        beforePosition.y === contactPosition.y
+      ) {
+        continue;
+      }
+
+      lines.push(
+        `Observation ${contactStep.step}->${pushStep.step}: after Action ${contactStep.step} ${contactMove.direction} made ${contactPosition.entity} adjacent at ${contactPosition.raw}, Action ${pushStep.step} ${pushMove.direction} kept it at the same relative offset; infer the agent pushed ${contactPosition.entity} ${pushMove.direction} and moved with it in hidden absolute coordinates. The unchanged relative offset is not by itself a failed-push/boundary cue.`,
+      );
+    }
+  }
+  return uniqueLines(lines).slice(0, 4);
 }
 
 function boundaryNameForDirection(direction: AgentMoveDelta["direction"]): string {
@@ -3779,6 +3957,46 @@ function relativePositionSignature(observation: string): string | undefined {
     .map((position) => `${normalizeEntity(position.entity)}:${position.x}:${position.y}`)
     .sort((left, right) => left.localeCompare(right))
     .join("|");
+}
+
+function observationStateSignature(observation: string): string | undefined {
+  return relativePositionSignature(observation) ?? normalizeObservationCore(observation);
+}
+
+function positionShiftExample(
+  beforeObservation: string,
+  afterObservation: string,
+): string | undefined {
+  const before = parseRelativePositions(beforeObservation);
+  const after = parseRelativePositions(afterObservation);
+  const preferred = [
+    "rule win",
+    "rule is",
+    "rule key",
+    "rule door",
+    "door",
+    "rule baba",
+    "rule you",
+  ];
+  const entities = [
+    ...preferred,
+    ...[...before.keys()].sort((left, right) => left.localeCompare(right)),
+  ];
+  for (const entity of entities) {
+    const beforePosition = before.get(entity);
+    const afterPosition = after.get(entity);
+    if (!beforePosition || !afterPosition) {
+      continue;
+    }
+    if (
+      beforePosition.x === afterPosition.x &&
+      beforePosition.y === afterPosition.y
+    ) {
+      continue;
+    }
+    return `${entity} changed from ${beforePosition.raw} to ${afterPosition.raw}`;
+  }
+  return undefined;
 }
 
 function manhattanDistance(position: RelativePosition): number {

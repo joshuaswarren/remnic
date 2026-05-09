@@ -1417,6 +1417,45 @@ test("buildTrajectoryAnalysisRecallSection infers failed text pushes reveal boun
   assert.match(section, /pressed against the top\/northern edge of the playable area/);
 });
 
+test("buildTrajectoryAnalysisRecallSection treats same-relative text pushes as hidden movement", async () => {
+  const beforeContact = [
+    "Active rules:",
+    "baba is you",
+    "",
+    "Objects on the map:",
+    "rule `door` 2 steps to the left",
+  ].join("\n");
+  const adjacentDoor = [
+    "Active rules:",
+    "baba is you",
+    "",
+    "Objects on the map:",
+    "rule `door` 1 step to the left",
+  ].join("\n");
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [10, "left", beforeContact],
+      [11, "left", adjacentDoor],
+      [12, "left", adjacentDoor],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "At step 12, the observation still showed the `door` text block in the same relative position after a left move. What hidden state change occurred, and why is this not a failed push?",
+    maxChars: 6000,
+  });
+
+  assert.match(section, /Same-relative text-push cues/);
+  assert.match(section, /cumulative displacement across the named repeated actions/);
+  assert.match(section, /rule door moved one cell left per left action/);
+  assert.match(section, /Action 12 left kept it at the same relative offset/);
+  assert.match(section, /pushed rule door left and moved with it in hidden absolute coordinates/);
+  assert.doesNotMatch(section, /Failed-push boundary cues/);
+});
+
 test("buildTrajectoryAnalysisRecallSection recognizes instead-moved alternatives around stop blockers", async () => {
   const observation = [
     "Active rules:",
@@ -1524,6 +1563,48 @@ test("buildTrajectoryAnalysisRecallSection infers blocked-corner escape directio
   assert.match(section, /useful escape direction\(s\) are right and down/);
   assert.match(section, /successful right move at step 15/);
   assert.doesNotMatch(section, /Failed-push boundary cues/);
+});
+
+test("buildTrajectoryAnalysisRecallSection identifies the only effective action inside a span", async () => {
+  const baseline = [
+    "Active rules:",
+    "baba is you",
+    "",
+    "Objects on the map:",
+    "rule `win` 1 step to the right and 1 step up",
+    "rule `door` 1 step to the left",
+  ].join("\n");
+  const changed = [
+    "Active rules:",
+    "baba is you",
+    "",
+    "Objects on the map:",
+    "rule `win` 1 step up",
+    "rule `door` 2 step to the left",
+  ].join("\n");
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [11, "left", baseline],
+      [12, "left", baseline],
+      [13, "up", baseline],
+      [14, "up", baseline],
+      [15, "right", changed],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "In the sequence from step 11 to step 15, only one action caused a change in the game state. Which specific action was relevant, and what evidence proves the other four were ineffective?",
+    maxChars: 6000,
+  });
+
+  assert.match(section, /Only-effective action cues/);
+  assert.match(section, /Observations 11-14 have the same object-relative signature/);
+  assert.match(section, /Action 15 right is the only progress-making action/);
+  assert.match(section, /rule win changed from 1 step to the right and 1 step up to 1 step up/);
+  assert.doesNotMatch(section, /Action movement summary cues/);
 });
 
 test("buildTrajectoryAnalysisRecallSection explains active control-rule interaction setup", async () => {
