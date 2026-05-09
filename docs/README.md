@@ -41,6 +41,7 @@
 - [Pattern Reinforcement](pattern-reinforcement.md) — Cross-session pattern detection: reinforced primitives, `remnic patterns list/explain` CLI, recall boost (issue #687)
 - [Recall X-ray](xray.md) — Per-result retrieval attribution: which tier served each memory and why (issue #570)
 - [Recall Disclosure](recall-disclosure.md) — Three-tier progressive disclosure (chunk / section / raw): cost/quality tradeoffs, auto-escalation policy, and the disclosure-vs-retrieval-tier distinction (issue #677)
+- [User-Aware Agents](user-aware-agents.md) — User-model dimensions, context scopes, and boundary principles
 - [Temporal Recall](temporal-recall.md) — `valid_at` / `invalid_at` fact lifecycle and `as_of` recall filter (issue #680)
 - [Tags](tags.md) — Free-form tag filter on recall and propose; tags vs taxonomy (issue #689)
 - [Live Connectors](live-connectors.md) — Continuous-sync framework for external sources (issue #683)

@@ -177,6 +177,29 @@ export {
 } from "./direct-answer.js";
 
 // ---------------------------------------------------------------------------
+// User-aware agent model
+// ---------------------------------------------------------------------------
+
+export {
+  USER_MODEL_CORE_QUESTION,
+  USER_MODEL_DIMENSIONS,
+  USER_CONTEXT_SCOPES,
+  USER_BOUNDARY_SCOPES,
+  facetHasBoundary,
+  isUserBoundaryScope,
+  isUserContextScope,
+  isUserModelDimension,
+  normalizeUserContextScope,
+  normalizeUserModelDimension,
+  summarizeUserModelCoverage,
+  type UserBoundaryScope,
+  type UserContextScope,
+  type UserModelCoverage,
+  type UserModelDimension,
+  type UserModelFacet,
+} from "./user-model.js";
+
+// ---------------------------------------------------------------------------
 // Hot/cold tier routing (issue #686)
 // ---------------------------------------------------------------------------
 
