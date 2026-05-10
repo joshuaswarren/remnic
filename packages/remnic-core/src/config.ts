@@ -3373,6 +3373,86 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
           : 24,
     },
     {
+      id: "targeted-facts",
+      enabled: cfg.targetedFactRecallEnabled !== false,
+      maxChars:
+        typeof cfg.targetedFactRecallMaxChars === "number"
+          ? Math.max(0, Math.floor(cfg.targetedFactRecallMaxChars))
+          : 2400,
+      maxResults:
+        typeof cfg.targetedFactRecallMaxResults === "number"
+          ? Math.max(0, Math.floor(cfg.targetedFactRecallMaxResults))
+          : 48,
+      maxTurns:
+        typeof cfg.targetedFactRecallScanWindowTurns === "number"
+          ? Math.max(1, Math.floor(cfg.targetedFactRecallScanWindowTurns))
+          : 8,
+      maxTokens:
+        typeof cfg.targetedFactRecallScanWindowTokens === "number"
+          ? Math.max(1, Math.floor(cfg.targetedFactRecallScanWindowTokens))
+          : 12000,
+    },
+    {
+      id: "focused-list",
+      enabled: cfg.focusedListRecallEnabled !== false,
+      maxChars:
+        typeof cfg.focusedListRecallMaxChars === "number"
+          ? Math.max(0, Math.floor(cfg.focusedListRecallMaxChars))
+          : 2600,
+      maxResults:
+        typeof cfg.focusedListRecallMaxResults === "number"
+          ? Math.max(0, Math.floor(cfg.focusedListRecallMaxResults))
+          : 40,
+      maxTurns:
+        typeof cfg.focusedListRecallScanWindowTurns === "number"
+          ? Math.max(1, Math.floor(cfg.focusedListRecallScanWindowTurns))
+          : 64,
+      maxTokens:
+        typeof cfg.focusedListRecallScanWindowTokens === "number"
+          ? Math.max(1, Math.floor(cfg.focusedListRecallScanWindowTokens))
+          : 14000,
+    },
+    {
+      id: "response-guidance",
+      enabled: cfg.responseGuidanceRecallEnabled !== false,
+      maxChars:
+        typeof cfg.responseGuidanceRecallMaxChars === "number"
+          ? Math.max(0, Math.floor(cfg.responseGuidanceRecallMaxChars))
+          : 2400,
+      maxResults:
+        typeof cfg.responseGuidanceRecallMaxResults === "number"
+          ? Math.max(0, Math.floor(cfg.responseGuidanceRecallMaxResults))
+          : 48,
+      maxTurns:
+        typeof cfg.responseGuidanceRecallScanWindowTurns === "number"
+          ? Math.max(1, Math.floor(cfg.responseGuidanceRecallScanWindowTurns))
+          : 64,
+      maxTokens:
+        typeof cfg.responseGuidanceRecallScanWindowTokens === "number"
+          ? Math.max(1, Math.floor(cfg.responseGuidanceRecallScanWindowTokens))
+          : 16000,
+    },
+    {
+      id: "event-order",
+      enabled: cfg.eventOrderRecallEnabled !== false,
+      maxChars:
+        typeof cfg.eventOrderRecallMaxChars === "number"
+          ? Math.max(0, Math.floor(cfg.eventOrderRecallMaxChars))
+          : 3200,
+      maxResults:
+        typeof cfg.eventOrderRecallMaxResults === "number"
+          ? Math.max(0, Math.floor(cfg.eventOrderRecallMaxResults))
+          : 24,
+      maxTurns:
+        typeof cfg.eventOrderRecallScanWindowTurns === "number"
+          ? Math.max(1, Math.floor(cfg.eventOrderRecallScanWindowTurns))
+          : 12,
+      maxTokens:
+        typeof cfg.eventOrderRecallScanWindowTokens === "number"
+          ? Math.max(1, Math.floor(cfg.eventOrderRecallScanWindowTokens))
+          : 24000,
+    },
+    {
       id: "profile",
       enabled: true,
       consolidateTriggerLines: 100,

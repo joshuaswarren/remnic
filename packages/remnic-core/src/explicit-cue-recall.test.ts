@@ -5,6 +5,7 @@ import {
   buildExplicitCueRecallSection,
   buildTrajectoryAnalysisRecallSection,
   collectBenchmarkAnchorCues,
+  collectContentLexicalCues,
   collectExplicitTurnReferences,
   collectLexicalCues,
   collectQuestionSlotCues,
@@ -93,6 +94,12 @@ class FakeCueEngine implements ExplicitCueRecallEngine {
       }
     }
     return { totalMessages, maxTurnIndex: maxTurn };
+  }
+}
+
+class NoSearchCueEngine extends FakeCueEngine {
+  async searchContextFull(): ReturnType<FakeCueEngine["searchContextFull"]> {
+    return [];
   }
 }
 
@@ -195,6 +202,100 @@ test("collectLexicalCues extracts visible ids, dates, and bracket labels", () =>
     }),
     ["accommodation", "dinner", "Jennifer", "join", "same"],
   );
+  assert.deepEqual(
+    collectContentLexicalCues(
+      "How many new columns did I want to add to the transactions table across my requests?",
+    ),
+    [
+      "transactions table",
+      "transactions",
+      "columns",
+      "table",
+      "add",
+      "new",
+    ],
+  );
+  assert.deepEqual(
+    collectLexicalCues(
+      "How many new columns did I want to add to the transactions table across my requests?",
+      { includeContentLexicalCues: true },
+    ),
+    [
+      "add",
+      "columns",
+      "new",
+      "table",
+      "transactions",
+      "transactions table",
+    ],
+  );
+  assert.deepEqual(
+    collectContentLexicalCues(
+      "How many different user roles and security features am I trying to implement across my sessions?",
+    ),
+    [
+      "security features",
+      "user roles",
+      "security",
+      "sessions",
+      "roles",
+      "user",
+    ],
+  );
+  assert.deepEqual(
+    collectLexicalCues(
+      "Could you show me how to implement a login feature?",
+      { includeContentLexicalCues: true },
+    ),
+    [
+      "access control",
+      "account lockout",
+      "account lockout feature",
+      "authentication",
+      "authorization",
+      "code snippets",
+      "failed login attempts",
+      "format all code snippets",
+      "implement login",
+      "implementation details",
+      "login",
+      "login feature",
+      "password hashing",
+      "rate limiting",
+      "redis",
+      "role-based access control",
+      "syntax highlighting",
+    ],
+  );
+  const meetingCues = collectLexicalCues(
+    "When and where did I say I first met Vickie?",
+    { includeContentLexicalCues: true },
+  );
+  assert.ok(meetingCues.includes("I met Vickie"));
+  assert.ok(meetingCues.includes("met Vickie"));
+  assert.ok(meetingCues.includes("Vickie at"));
+  assert.deepEqual(
+    collectLexicalCues(
+      "How many weeks do I have between finishing the transaction management features and the final deployment deadline?",
+      { includeContentLexicalCues: true },
+    ),
+    [
+      "deadline",
+      "deployment",
+      "deployment deadline",
+      "final",
+      "final deployment",
+      "finishing",
+      "management",
+      "management features",
+      "milestones",
+      "schedule",
+      "timeline",
+      "transaction",
+      "transaction management",
+      "weeks",
+    ],
+  );
 });
 
 test("buildExplicitCueRecallSection searches benchmark anchor cues", async () => {
@@ -221,6 +322,388 @@ test("buildExplicitCueRecallSection searches benchmark anchor cues", async () =>
   });
 
   assert.match(section, /plan-specific deployment owner is Nia/);
+});
+
+test("buildExplicitCueRecallSection can search content lexical cues", async () => {
+  const engine = new FakeCueEngine({
+    beam: [
+      {
+        role: "user",
+        content:
+          "I want to add category and notes columns to the transactions table.",
+      },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "How many new columns did I want to add to the transactions table across my requests?",
+    maxChars: 2000,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /category and notes columns/);
+});
+
+test("buildExplicitCueRecallSection searches meeting fact cues for named first-meeting questions", async () => {
+  const engine = new FakeCueEngine({
+    beam: [
+      {
+        role: "assistant",
+        content:
+          "That sounds like a great connection you've made with Vickie, and a laptop could be a useful gift.",
+      },
+      {
+        role: "user",
+        content:
+          "I met Vickie at the New Gary Community Library on January 15, 2023, and we bonded over science fiction books.",
+      },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query: "When and where did I say I first met Vickie?",
+    maxChars: 2000,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /I met Vickie at the New Gary Community Library/);
+  assert.match(section, /January 15, 2023/);
+});
+
+test("buildExplicitCueRecallSection expands implementation intent to durable formatting instructions", async () => {
+  const engine = new FakeCueEngine({
+    beam: [
+      {
+        role: "user",
+        content:
+          "Use Flask-Login for the login feature with authentication and authorization checks.",
+      },
+      {
+        role: "user",
+        content:
+          "Always format all code snippets with syntax highlighting when I ask about implementation details.",
+      },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query: "Could you show me how to implement a login feature?",
+    maxChars: 2000,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /syntax highlighting/);
+  assert.ok(
+    section.indexOf("syntax highlighting") < section.indexOf("Flask-Login"),
+    "durable implementation-formatting instructions should precede broad auth implementation evidence",
+  );
+});
+
+test("buildExplicitCueRecallSection expands security-feature intent to common auth controls", async () => {
+  const engine = new FakeCueEngine({
+    beam: [
+      {
+        role: "user",
+        content: "I am implementing password hashing with Werkzeug.security.",
+      },
+      {
+        role: "user",
+        content: "I am implementing role-based access control for user roles.",
+      },
+      {
+        role: "user",
+        content:
+          "I am implementing account lockout after 5 failed login attempts using Redis.",
+      },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "How many different user roles and security features am I trying to implement across my sessions?",
+    maxChars: 4000,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /password hashing/);
+  assert.match(section, /role-based access control/);
+  assert.match(section, /account lockout/);
+});
+
+test("buildExplicitCueRecallSection searches deeper for security feature enumeration evidence", async () => {
+  const engine = new FakeCueEngine({
+    beam: [
+      {
+        role: "assistant",
+        content: "General authentication advice without account lockout.",
+      },
+      {
+        role: "assistant",
+        content: "A login form example with ordinary validation.",
+      },
+      {
+        role: "assistant",
+        content: "A security checklist with password hashing and RBAC.",
+      },
+      {
+        role: "assistant",
+        content: "Redis can also be used as an efficient session store.",
+      },
+      {
+        role: "user",
+        content:
+          "I am implementing the account lockout feature after 5 failed login attempts using Redis 7.0 for rate limiting.",
+      },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "How many different user roles and security features am I trying to implement across my sessions?",
+    maxChars: 4000,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /account lockout feature/);
+  assert.match(section, /failed login attempts/);
+  assert.match(section, /Redis 7\.0/);
+});
+
+test("buildExplicitCueRecallSection scans exact security cues when FTS misses", async () => {
+  const engine = new NoSearchCueEngine({
+    beam: [
+      {
+        role: "user",
+        content: "I am implementing password hashing with Werkzeug.security.",
+      },
+      {
+        role: "user",
+        content: "I am implementing role-based access control for user roles.",
+      },
+      {
+        role: "user",
+        content:
+          "I am implementing the account lockout feature after 5 failed login attempts using Redis 7.0 for rate limiting.",
+      },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "How many different user roles and security features am I trying to implement across my sessions?",
+    maxChars: 4000,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /password hashing/);
+  assert.match(section, /role-based access control/);
+  assert.match(section, /account lockout feature/);
+  assert.match(section, /failed login attempts/);
+});
+
+test("buildExplicitCueRecallSection scans exact project-summary and contradiction cues when FTS misses", async () => {
+  const engine = new NoSearchCueEngine({
+    beam: [
+      {
+        role: "user",
+        content:
+          "I've never written any Flask routes or handled HTTP requests in this project, so I'm starting from scratch.",
+      },
+      {
+        role: "user",
+        content:
+          "I'm trying to implement the basic homepage route with Flask using @app.route('/').",
+      },
+      {
+        role: "assistant",
+        content:
+          "Use Werkzeug.security with generate_password_hash; the default method is pbkdf2:sha256.",
+      },
+      {
+        role: "assistant",
+        content:
+          "Resolve the SQLite UNIQUE constraint by verifying UUID uniqueness for transactions.",
+      },
+      {
+        role: "assistant",
+        content:
+          "Fix CSRF errors by including hidden_tag(), enabling WTF_CSRF_ENABLED, and checking browser cookies.",
+      },
+      {
+        role: "assistant",
+        content:
+          "The app plan included Initial project setup, transaction CRUD, deployment configuration, integration test coverage, and deployment and test improvements.",
+      },
+      {
+        role: "assistant",
+        content: [
+          "The budget tracker work covered expenses, income, analytics, and data visualization.",
+          "A detailed MVP schedule targeted April 15, 2024.",
+          "The phases covered authentication, transaction management, analytics, and deployment.",
+          "Before launch we added stronger password hashing.",
+          "Token-Based Authentication: issue a JWT access_token for stateless APIs.",
+          "Role-Based Access Control: add user and admin route restrictions.",
+          "Input Validation: validate and sanitize requests to prevent SQL injection.",
+          "Confluence documentation uses tables and diagrams for architecture decisions.",
+        ].join("\n"),
+      },
+    ],
+  });
+
+  const contradictionSection = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query: "Have I worked with Flask routes and handled HTTP requests in this project?",
+    maxChars: 4000,
+    includeContentLexicalCues: true,
+  });
+  assert.match(contradictionSection, /never written any Flask routes/);
+  assert.match(contradictionSection, /basic homepage route/);
+
+  const summarySection = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "Can you give me a comprehensive summary of how I handled the security and database challenges?",
+    maxChars: 4000,
+    includeContentLexicalCues: true,
+  });
+  assert.match(summarySection, /pbkdf2:sha256/);
+  assert.match(summarySection, /UUID uniqueness/);
+  assert.match(summarySection, /WTF_CSRF_ENABLED/);
+
+  const progressSummarySection = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "Can you provide a comprehensive summary of how my budget tracker project has progressed, including the key features implemented, the development timeline, security enhancements, and documentation efforts?",
+    maxChars: 4000,
+    includeContentLexicalCues: true,
+  });
+  assert.match(progressSummarySection, /Token-Based Authentication/);
+  assert.match(progressSummarySection, /JWT access_token/);
+  assert.match(progressSummarySection, /Input Validation/);
+  assert.match(progressSummarySection, /SQL injection/);
+
+  const orderingSection = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "Can you walk me through the order in which I brought up different aspects of my app development and deployment across our conversations?",
+    maxChars: 4000,
+    includeContentLexicalCues: true,
+  });
+  assert.match(orderingSection, /transaction CRUD/);
+  assert.match(orderingSection, /integration test coverage/);
+});
+
+test("buildExplicitCueRecallSection preserves query-focused lines from long evidence", async () => {
+  const engine = new FakeCueEngine({
+    beam: [
+      {
+        role: "user",
+        content: [
+          "BEAM turn anchors: chat_id=2; source_chat_id=2",
+          "Sure, let's break it down for my budget tracker project.",
+          "### Components:",
+          "1. User Authentication",
+          "2. Transaction Management",
+          "   - Add Expense",
+          "   - Edit Expense",
+          "3. Basic Analytics",
+          "   - Monthly Summary",
+          "   - Category Breakdown",
+          "4. Deployment",
+          "### Milestones:",
+          "- Nov 1 - Nov 15, 2023: Initial project setup",
+          "- Nov 16 - Dec 15, 2023: User authentication",
+          "- Dec 16, 2023 - Jan 15, 2024: Develop transaction management features",
+          "- Jan 16 - Feb 15, 2024: Basic analytics",
+          "- Feb 16 - Mar 15, 2024: Final adjustments, testing, and deployment",
+        ].join("\n"),
+      },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "How many weeks do I have between finishing the transaction management features and the final deployment deadline?",
+    maxChars: 900,
+    maxItemChars: 260,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /source_chat_id=2/);
+  assert.match(section, /Dec 16, 2023 - Jan 15, 2024/);
+  assert.match(section, /Feb 16 - Mar 15, 2024/);
+});
+
+test("buildExplicitCueRecallSection searches deeper for temporal schedule evidence", async () => {
+  const engine = new FakeCueEngine({
+    beam: [
+      {
+        role: "assistant",
+        content:
+          "Transaction management validation details for a transactions API endpoint.",
+      },
+      {
+        role: "assistant",
+        content:
+          "Transaction management SQLAlchemy model fields for ordinary CRUD work.",
+      },
+      {
+        role: "assistant",
+        content:
+          "Transaction management pagination and filtering implementation notes.",
+      },
+      {
+        role: "assistant",
+        content:
+          "Transaction management form handling without any project schedule.",
+      },
+      {
+        role: "user",
+        content: [
+          "BEAM turn anchors: chat_id=2; source_chat_id=2",
+          "### Components:",
+          "2. Transaction Management",
+          "4. Deployment",
+          "### Milestones:",
+          "- Dec 16, 2023 - Jan 15, 2024: Develop transaction management features",
+          "- Feb 16 - Mar 15, 2024: Final adjustments, testing, and deployment",
+        ].join("\n"),
+      },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "How many weeks do I have between finishing the transaction management features and the final deployment deadline?",
+    maxChars: 1200,
+    maxItemChars: 360,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /source_chat_id=2/);
+  assert.match(section, /Dec 16, 2023 - Jan 15, 2024/);
+  assert.match(section, /Feb 16 - Mar 15, 2024/);
 });
 
 test("buildTrajectoryAnalysisRecallSection enumerates full action ranges", async () => {
@@ -2328,6 +2811,31 @@ test("buildExplicitCueRecallSection prioritizes latest state updates for current
   assert.ok(
     section.indexOf("city: Denver") < section.indexOf("city: Austin"),
     "latest matching state should appear before superseded history",
+  );
+});
+
+test("buildExplicitCueRecallSection prioritizes latest count updates for how-many questions", async () => {
+  const engine = new FakeCueEngine({
+    beam: [
+      { role: "user", content: "The main branch has 150 commits merged." },
+      { role: "assistant", content: "Review the old repository workflow." },
+      { role: "user", content: "The main branch has now reached 165 commits." },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query: "How many commits have been merged into the main branch?",
+    maxChars: 2000,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /165 commits/);
+  assert.match(section, /150 commits/);
+  assert.ok(
+    section.indexOf("165 commits") < section.indexOf("150 commits"),
+    "later count updates should appear before stale matching counts",
   );
 });
 

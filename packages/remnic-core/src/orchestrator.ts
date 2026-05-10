@@ -132,7 +132,6 @@ import {
   type RecallXraySnapshot,
   type RecallXrayServedBy,
 } from "./recall-xray.js";
-import { buildRetrievedMemoryProvenance } from "./memory-provenance.js";
 import {
   recordEvalShadowRecall,
   type EvalShadowRecallRecord,
@@ -165,6 +164,22 @@ import {
   readRecentEntityTranscriptEntries,
 } from "./entity-retrieval.js";
 import { buildExplicitCueRecallSection } from "./explicit-cue-recall.js";
+import {
+  buildTargetedFactRecallSection,
+  shouldRecallTargetedFactEvidence,
+} from "./targeted-fact-recall.js";
+import {
+  buildFocusedListRecallSection,
+  shouldRecallFocusedListEvidence,
+} from "./focused-list-recall.js";
+import {
+  buildResponseGuidanceRecallSection,
+  shouldRecallResponseGuidance,
+} from "./response-guidance-recall.js";
+import {
+  buildEventOrderRecallSection,
+  shouldRecallEventOrderEvidence,
+} from "./event-order-recall.js";
 import {
   hasBroadGraphIntent,
   inferIntentFromText,
@@ -602,12 +617,6 @@ export interface RecallInvocationOptions {
    * normally be pruned by confidence decay.  Default `false`.
    */
   includeLowConfidence?: boolean;
-  /**
-   * User-aware context scopes active for this recall. X-ray provenance
-   * uses these to decide whether boundary-tagged memories are safe in
-   * the current context.
-   */
-  currentContextScopes?: readonly unknown[];
 }
 
 type QueryAwarePrefilter = {
@@ -6079,7 +6088,6 @@ export class Orchestrator {
     // per-result explain data (e.g. reinforcementBoost) from the result that
     // was actually served.
     let xrayRecalledResults: QmdSearchResult[] = [];
-    const xrayMemoryByPath = new Map<string, MemoryFile>();
     const lcmStructuredXrayResults: RecallXrayResult[] = [];
     // Per-branch pre-limit candidate pool size for the X-ray filter
     // trace (issue #570 PR 1).  `recalledMemoryCount` is assigned
@@ -8430,6 +8438,155 @@ export class Orchestrator {
       }
     }
 
+    // 0b. Targeted factual evidence. This is query-triggered and lossless:
+    // it uses the LCM archive to recover exact numeric facts that broad
+    // compressed-history or search sections can crowd out.
+    const targetedFactMaxChars =
+      this.getRecallSectionMaxChars("targeted-facts") ?? 2400;
+    if (
+      this.isRecallSectionEnabled("targeted-facts") &&
+      targetedFactMaxChars !== 0 &&
+      this.lcmEngine?.enabled &&
+      (recallMode as RecallPlanMode) !== "no_recall" &&
+      shouldRecallTargetedFactEvidence(retrievalQuery)
+    ) {
+      try {
+        const targetedFactSection = await buildTargetedFactRecallSection({
+          engine: this.lcmEngine,
+          sessionId: sessionKey,
+          query: retrievalQuery,
+          maxChars: targetedFactMaxChars ?? 2400,
+          maxSearchResults:
+            this.getRecallSectionNumber("targeted-facts", "maxResults") ?? 48,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("targeted-facts", "maxTurns") ?? 24,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("targeted-facts", "maxTokens") ?? 12_000,
+        });
+        if (targetedFactSection) {
+          this.appendRecallSection(
+            sectionBuckets,
+            "targeted-facts",
+            targetedFactSection,
+          );
+        }
+      } catch (err) {
+        log.debug(`Targeted fact recall assembly error: ${err}`);
+      }
+    }
+
+    // 0c. Focused list/count evidence. This recovers user-specific list
+    // candidates and countable facts that are easy to bury in broad search
+    // results, while staying gated to explicit list/count/recommendation
+    // prompts.
+    const focusedListMaxChars =
+      this.getRecallSectionMaxChars("focused-list") ?? 2600;
+    if (
+      this.isRecallSectionEnabled("focused-list") &&
+      focusedListMaxChars !== 0 &&
+      this.lcmEngine?.enabled &&
+      (recallMode as RecallPlanMode) !== "no_recall" &&
+      shouldRecallFocusedListEvidence(retrievalQuery)
+    ) {
+      try {
+        const focusedListSection = await buildFocusedListRecallSection({
+          engine: this.lcmEngine,
+          sessionId: sessionKey,
+          query: retrievalQuery,
+          maxChars: focusedListMaxChars,
+          maxSearchResults:
+            this.getRecallSectionNumber("focused-list", "maxResults") ?? 40,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("focused-list", "maxTurns") ?? 64,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("focused-list", "maxTokens") ?? 14_000,
+        });
+        if (focusedListSection) {
+          this.appendRecallSection(
+            sectionBuckets,
+            "focused-list",
+            focusedListSection,
+          );
+        }
+      } catch (err) {
+        log.debug(`Focused list recall assembly error: ${err}`);
+      }
+    }
+
+    // 0d. Response guidance evidence. This recovers durable user
+    // instructions and preferences that affect how an answer should be shaped
+    // for the current query, such as requested date formats, tool/version
+    // details, or preferred editing workflows.
+    const responseGuidanceMaxChars =
+      this.getRecallSectionMaxChars("response-guidance") ?? 2400;
+    if (
+      this.isRecallSectionEnabled("response-guidance") &&
+      responseGuidanceMaxChars !== 0 &&
+      this.lcmEngine?.enabled &&
+      (recallMode as RecallPlanMode) !== "no_recall" &&
+      shouldRecallResponseGuidance(retrievalQuery)
+    ) {
+      try {
+        const responseGuidanceSection = await buildResponseGuidanceRecallSection({
+          engine: this.lcmEngine,
+          sessionId: sessionKey,
+          query: retrievalQuery,
+          maxChars: responseGuidanceMaxChars,
+          maxSearchResults:
+            this.getRecallSectionNumber("response-guidance", "maxResults") ?? 48,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("response-guidance", "maxTurns") ?? 64,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("response-guidance", "maxTokens") ?? 16_000,
+        });
+        if (responseGuidanceSection) {
+          this.appendRecallSection(
+            sectionBuckets,
+            "response-guidance",
+            responseGuidanceSection,
+          );
+        }
+      } catch (err) {
+        log.debug(`Response guidance recall assembly error: ${err}`);
+      }
+    }
+
+    // 0e. Chronological event-order evidence. This recovers ordered user
+    // turns for prompts asking how topics unfolded across a conversation.
+    const eventOrderMaxChars =
+      this.getRecallSectionMaxChars("event-order") ?? 3200;
+    if (
+      this.isRecallSectionEnabled("event-order") &&
+      eventOrderMaxChars !== 0 &&
+      this.lcmEngine?.enabled &&
+      (recallMode as RecallPlanMode) !== "no_recall" &&
+      shouldRecallEventOrderEvidence(retrievalQuery)
+    ) {
+      try {
+        const eventOrderSection = await buildEventOrderRecallSection({
+          engine: this.lcmEngine,
+          sessionId: sessionKey,
+          query: retrievalQuery,
+          maxChars: eventOrderMaxChars,
+          maxItems:
+            this.getRecallSectionNumber("event-order", "maxResults") ?? 24,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("event-order", "maxTurns") ?? 12,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("event-order", "maxTokens") ?? 24_000,
+        });
+        if (eventOrderSection) {
+          this.appendRecallSection(
+            sectionBuckets,
+            "event-order",
+            eventOrderSection,
+          );
+        }
+      } catch (err) {
+        log.debug(`Event order recall assembly error: ${err}`);
+      }
+    }
+
     // 1. Profile
     if (profile)
       this.appendRecallSection(
@@ -8834,7 +8991,7 @@ export class Orchestrator {
         recallNamespaces,
         retrievalQuery,
         undefined,
-        { asOfMs, xrayMemoryByPath },
+        { asOfMs },
       );
 
       // Optional LLM reranking (default off). Fail-open if rerank fails/slow.
@@ -9037,7 +9194,7 @@ export class Orchestrator {
           recallNamespaces,
           retrievalQuery,
           undefined,
-          { asOfMs, xrayMemoryByPath },
+          { asOfMs },
         );
         // MMR runs on the pre-truncation pool so diverse candidates just
         // below the cutoff can be promoted into the injected set.
@@ -9087,7 +9244,6 @@ export class Orchestrator {
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
             xrayPoolSizeSink: xrayColdPoolSink,
-            xrayMemoryByPath,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
@@ -9183,7 +9339,7 @@ export class Orchestrator {
         recallNamespaces,
         retrievalQuery,
         undefined,
-        { asOfMs, xrayMemoryByPath },
+        { asOfMs },
       );
       // MMR runs on the pre-truncation pool so diverse candidates just
       // below the cutoff can be promoted into the injected set.
@@ -9298,7 +9454,6 @@ export class Orchestrator {
               queryAwarePrefilter,
               abortSignal: options.abortSignal,
               xrayPoolSizeSink: xrayColdPoolSink,
-              xrayMemoryByPath,
               asOfMs,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
@@ -9349,7 +9504,7 @@ export class Orchestrator {
                 recallNamespaces,
                 retrievalQuery,
                 preloadedMap,
-                { asOfMs, xrayMemoryByPath },
+                { asOfMs },
               )
             ).sort((a, b) => b.score - a.score);
             // MMR runs on the pre-truncation pool so diverse candidates just
@@ -9401,7 +9556,6 @@ export class Orchestrator {
                 queryAwarePrefilter,
                 abortSignal: options.abortSignal,
                 xrayPoolSizeSink: xrayColdPoolSink,
-                xrayMemoryByPath,
                 asOfMs,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
@@ -9445,7 +9599,6 @@ export class Orchestrator {
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
             xrayPoolSizeSink: xrayColdPoolSink,
-            xrayMemoryByPath,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
@@ -9699,7 +9852,6 @@ export class Orchestrator {
           const derivedId = idFromPath(recalledPath);
           if (!derivedId) continue;
           const xrayResult = xrayResultByPath.get(recalledPath);
-          const memory = xrayMemoryByPath.get(recalledPath);
           const scoreDecomposition: RecallXrayScoreDecomposition = {
             final: xrayResult?.score ?? 0,
           };
@@ -9710,21 +9862,13 @@ export class Orchestrator {
             scoreDecomposition.reinforcementBoost =
               xrayResult.explain.reinforcementBoost;
           }
-          const result: RecallXrayResult = {
+          results.push({
             memoryId: derivedId,
             path: recalledPath,
             servedBy,
             scoreDecomposition,
             admittedBy: [],
-          };
-          if (memory) {
-            result.provenance = buildRetrievedMemoryProvenance(memory, {
-              namespace: this.namespaceFromPath(recalledPath),
-              retrievalReason: `served-by=${servedBy}`,
-              currentContextScopes: options.currentContextScopes,
-            });
-          }
-          results.push(result);
+          });
         }
         // `considered` must reflect the pool size of the branch that
         // actually produced the admitted results, NOT the max across
@@ -15101,11 +15245,6 @@ export class Orchestrator {
      * Unset by default so existing call sites are unaffected.
      */
     xrayPoolSizeSink?: { size: number };
-    /**
-     * Optional out-parameter that receives memory frontmatter loaded during
-     * ranking so X-ray capture can attach provenance without a second read.
-     */
-    xrayMemoryByPath?: Map<string, MemoryFile>;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
   }): Promise<QmdSearchResult[]> {
@@ -15197,11 +15336,7 @@ export class Orchestrator {
       options.recallNamespaces,
       options.prompt,
       undefined,
-      {
-        allowLifecycleFiltered: true,
-        asOfMs: options.asOfMs,
-        xrayMemoryByPath: options.xrayMemoryByPath,
-      },
+      { allowLifecycleFiltered: true, asOfMs: options.asOfMs },
     );
 
     if (this.config.rerankEnabled && this.config.rerankProvider === "local") {
@@ -15362,7 +15497,6 @@ export class Orchestrator {
     options?: {
       allowLifecycleFiltered?: boolean;
       allowDedicatedSurface?: boolean;
-      xrayMemoryByPath?: Map<string, MemoryFile>;
       /**
        * Historical recall point in ms-since-epoch (issue #680).  When
        * set, drops candidates that were not authoritative at this
@@ -15445,14 +15579,6 @@ export class Orchestrator {
     let forgottenFilteredCount = 0;
     const boosted: QmdSearchResult[] = [];
     const recencyWeight = this.effectiveRecencyWeight();
-    const rememberXrayMemory = (
-      memory: MemoryFile | undefined,
-      candidatePath: string | undefined,
-    ): void => {
-      if (memory && candidatePath) {
-        options?.xrayMemoryByPath?.set(candidatePath, memory);
-      }
-    };
     for (const r of results) {
       const memory = memoryByPath.get(r.path);
       let score = r.score;
@@ -15652,7 +15778,6 @@ export class Orchestrator {
           score += reinforcementBoost;
         }
         if (reinforcementBoost > 0) {
-          rememberXrayMemory(memory, r.path);
           boosted.push({
             ...r,
             score,
@@ -15662,7 +15787,6 @@ export class Orchestrator {
         }
       }
 
-      rememberXrayMemory(memory, r.path);
       boosted.push({ ...r, score });
     }
     if (lifecycleFilteredCount > 0) {

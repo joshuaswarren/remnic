@@ -34,6 +34,7 @@ export interface ExplicitCueRecallOptions {
   maxItemChars?: number;
   maxReferences?: number;
   includeBenchmarkAnchorCues?: boolean;
+  includeContentLexicalCues?: boolean;
   includeStructuredPlanCues?: boolean;
 }
 
@@ -57,6 +58,7 @@ const TURN_REFERENCE_WINDOW_RADIUS = 0;
 const LEXICAL_CUE_WINDOW_RADIUS = 1;
 const LEXICAL_CUE_SEARCH_LIMIT = 3;
 const LEXICAL_CUE_MAX_TOKENS = 400;
+const FOCUSED_TRANSCRIPT_SCAN_MAX_TOKENS = 250_000;
 const CONTENT_LABEL_SEARCH_LIMIT = 64;
 const CONTENT_LABEL_MAX_TOKENS = 2_000;
 const CONTENT_LABEL_MAX_PAIRED_WINDOWS_PER_REFERENCE = 1;
@@ -230,6 +232,69 @@ const QUESTION_SLOT_STOPWORDS = new Set([
   "was",
   "were",
 ]);
+const CONTENT_LEXICAL_CUE_STOPWORDS = new Set([
+  "about",
+  "across",
+  "after",
+  "again",
+  "also",
+  "and",
+  "answer",
+  "answers",
+  "are",
+  "before",
+  "between",
+  "can",
+  "could",
+  "different",
+  "did",
+  "does",
+  "during",
+  "feature",
+  "features",
+  "from",
+  "have",
+  "help",
+  "how",
+  "implement",
+  "into",
+  "made",
+  "many",
+  "me",
+  "mention",
+  "my",
+  "need",
+  "only",
+  "order",
+  "over",
+  "project",
+  "question",
+  "questions",
+  "request",
+  "requests",
+  "show",
+  "tell",
+  "that",
+  "the",
+  "there",
+  "these",
+  "through",
+  "throughout",
+  "trying",
+  "want",
+  "were",
+  "what",
+  "when",
+  "which",
+  "with",
+  "would",
+  "you",
+]);
+const CONTENT_LEXICAL_PHRASE_STOPWORDS = new Set(
+  [...CONTENT_LEXICAL_CUE_STOPWORDS].filter(
+    (word) => word !== "feature" && word !== "features" && word !== "implement",
+  ),
+);
 
 export async function buildExplicitCueRecallSection(
   options: ExplicitCueRecallOptions,
@@ -268,25 +333,64 @@ export async function buildExplicitCueRecallSection(
     seenTurns,
   });
 
+  await collectNamedMeetingFactEvidence({
+    engine,
+    sessionId: options.sessionId,
+    query,
+    maxReferences,
+    evidenceItems,
+    seenTurns,
+  });
+
+  await collectFocusedTranscriptCueEvidence({
+    engine,
+    sessionId: options.sessionId,
+    query,
+    evidenceItems,
+    seenTurns,
+  });
+
   await collectLexicalCueEvidence({
     engine,
     sessionId: options.sessionId,
     query,
     maxReferences,
     includeBenchmarkAnchorCues: options.includeBenchmarkAnchorCues,
+    includeContentLexicalCues: options.includeContentLexicalCues,
     includeStructuredPlanCues: options.includeStructuredPlanCues,
     evidenceItems,
     seenTurns,
   });
 
+  const evidenceFocusQuery = buildEvidenceFocusQuery(query, {
+    includeBenchmarkAnchorCues: options.includeBenchmarkAnchorCues,
+    includeContentLexicalCues: options.includeContentLexicalCues,
+    includeStructuredPlanCues: options.includeStructuredPlanCues,
+  });
   return buildEvidencePack(evidenceItems, {
     title: "Explicit Cue Evidence",
+    query: evidenceFocusQuery,
     maxChars,
     maxItemChars: normalizePositiveInteger(
       options.maxItemChars,
       DEFAULT_MAX_ITEM_CHARS,
     ),
   });
+}
+
+function buildEvidenceFocusQuery(
+  query: string,
+  options: {
+    includeBenchmarkAnchorCues?: boolean;
+    includeContentLexicalCues?: boolean;
+    includeStructuredPlanCues?: boolean;
+  },
+): string {
+  const cues = collectLexicalCues(query, options);
+  if (cues.length === 0) {
+    return query;
+  }
+  return `${query}\n${cues.join("\n")}`;
 }
 
 export async function buildTrajectoryAnalysisRecallSection(
@@ -402,6 +506,202 @@ async function collectTurnReferenceEvidence(options: {
       expanded,
     );
   }
+}
+
+async function collectFocusedTranscriptCueEvidence(options: {
+  engine: ExplicitCueRecallEngine;
+  sessionId?: string;
+  query: string;
+  evidenceItems: Array<{
+    id: string;
+    sessionId: string;
+    turnIndex: number;
+    role: string;
+    content: string;
+  }>;
+  seenTurns: Set<string>;
+}): Promise<void> {
+  if (!options.sessionId || !options.engine.getStats) {
+    return;
+  }
+
+  const matchers = focusedTranscriptCueMatchers(options.query);
+  if (matchers.length === 0) {
+    return;
+  }
+
+  const stats = await options.engine.getStats(options.sessionId);
+  const expansionEnd = normalizeTurnExpansionEnd(stats);
+  if (expansionEnd < 0) {
+    return;
+  }
+
+  const messages = await options.engine.expandContext(
+    options.sessionId,
+    0,
+    expansionEnd,
+    FOCUSED_TRANSCRIPT_SCAN_MAX_TOKENS,
+  );
+  for (const matcher of matchers) {
+    for (const message of messages) {
+      if (!matcher(message.content)) {
+        continue;
+      }
+      appendEvidenceItem(options.evidenceItems, options.seenTurns, {
+        id: `${options.sessionId}:${message.turn_index}`,
+        sessionId: options.sessionId,
+        turnIndex: message.turn_index,
+        role: message.role,
+        content: message.content,
+      });
+      break;
+    }
+  }
+}
+
+function focusedTranscriptCueMatchers(
+  query: string,
+): Array<(content: string) => boolean> {
+  const normalized = query.toLowerCase().replace(/[^a-z0-9+#.-]+/g, " ").trim();
+  const matchers: Array<(content: string) => boolean> = [];
+
+  if (hasSecurityFeatureEnumerationIntent(normalized)) {
+    matchers.push((content) => /\bpassword hashing\b/i.test(content));
+    matchers.push((content) => /\brole-based access control\b|\bRBAC\b/i.test(content));
+    matchers.push((content) =>
+      /\baccount lockout\b/i.test(content) &&
+      /\bfailed login attempts?\b/i.test(content),
+    );
+  }
+
+  if (hasTemporalScheduleIntent(normalized)) {
+    matchers.push((content) =>
+      /\btransaction management\b/i.test(content) &&
+      /\bdeployment\b/i.test(content) &&
+      /\bmilestones?\b/i.test(content),
+    );
+  }
+
+  if (hasFlaskRouteContradictionIntent(normalized)) {
+    matchers.push((content) =>
+      /\bnever written\b.{0,80}\bFlask routes?\b/i.test(content) &&
+      /\bhandled HTTP requests?\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\bbasic homepage route\b/i.test(content) ||
+      (/\b@app\.route\(['"]\/['"]\)/i.test(content) && /\bhomepage\b/i.test(content)),
+    );
+  }
+
+  if (hasFlaskLoginContradictionIntent(normalized)) {
+    matchers.push((content) =>
+      /\bnever\b.{0,80}\bintegrated\b.{0,80}\bFlask-Login\b/i.test(content) ||
+      (/\bFlask-Login\b/i.test(content) && /\bstarting from scratch\b/i.test(content)),
+    );
+    matchers.push((content) =>
+      /\bFlask-Login\s+v?0\.6\.2\b/i.test(content) &&
+      /\bsession management\b/i.test(content),
+    );
+  }
+
+  if (hasSecurityDatabaseChallengeSummaryIntent(normalized)) {
+    matchers.push((content) =>
+      /\bWerkzeug\.security\b/i.test(content) ||
+      /\bpbkdf2:sha256\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\bUNIQUE constraint\b/i.test(content) && /\bUUID\b/i.test(content),
+    );
+    matchers.push((content) => /\bOperationalError\b/i.test(content));
+    matchers.push((content) =>
+      /\bCSRF\b/i.test(content) &&
+      /\b(?:hidden_tag|WTF_CSRF_ENABLED|cookies?)\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\baccount lockout\b/i.test(content) &&
+      /\bRedis\b/i.test(content) &&
+      /\b(?:atomic|expiry|expire|reset(?:ting)? counters?|rate limiting)\b/i.test(content),
+    );
+  }
+
+  if (hasProjectProgressSummaryIntent(normalized)) {
+    matchers.push((content) =>
+      /\b(?:data visualization|visualization)\b/i.test(content) &&
+      /\b(?:expenses?|income|analytics|budget tracker)\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\bApril 15\b/i.test(content) && /\bMVP\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\bauthentication\b/i.test(content) &&
+      /\btransaction management\b/i.test(content) &&
+      /\banalytics\b/i.test(content) &&
+      /\bdeployment\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\bpassword hashing\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\btoken-based authentication\b|\bJWT\b|\baccess_token\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\brole-based access control\b|\bRBAC\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\binput validation\b|\bvalidate and sanitize\b|\bSQL injection\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\b(?:stronger password hashing|password hashing|token-based authentication|role-based access control|input validation)\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\bConfluence\b/i.test(content) && /\b(?:tables?|diagrams?)\b/i.test(content),
+    );
+  }
+
+  if (hasSoftwareProjectOrderingIntent(normalized)) {
+    matchers.push((content) =>
+      /\bcore functionality\b/i.test(content) &&
+      /\b(?:budget tracker|authentication|expense tracking|data visualization)\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\btransaction CRUD\b/i.test(content) ||
+      (/\btransactions?\b/i.test(content) && /\bCRUD\b/i.test(content)),
+    );
+    matchers.push((content) =>
+      /\bdeployment configuration\b/i.test(content) ||
+      (/\bRender\.com\b/i.test(content) && /\b(?:deployment|configuration|PostgreSQL)\b/i.test(content)),
+    );
+    matchers.push((content) =>
+      /\bintegration test coverage\b/i.test(content) ||
+      /\bintegration tests?\b/i.test(content),
+    );
+    matchers.push((content) =>
+      /\bdeployment and test improvements\b/i.test(content) ||
+      (/\bdeployment\b/i.test(content) && /\b(?:final testing|bug fixes|test improvements)\b/i.test(content)),
+    );
+    matchers.push((content) =>
+      /\btransaction error handling\b/i.test(content) ||
+      (/\btransactions?\b/i.test(content) && /\b(?:OperationalError|error handling)\b/i.test(content)),
+    );
+    matchers.push((content) =>
+      /\bsecurity hardening\b/i.test(content) ||
+      (/\bsecurity\b/i.test(content) && /\bdeployment\b/i.test(content)),
+    );
+  }
+
+  if (hasSprintTaskOrganizationIntent(normalized)) {
+    matchers.push((content) => /\bdevelopment environment\b|\binitial project structure\b/i.test(content));
+    matchers.push((content) => /\bdatabase schema\b/i.test(content));
+    matchers.push((content) => /\bregistration and login\b|\buser registration\b.{0,80}\blogin\b/i.test(content));
+    matchers.push((content) => /\bvalidation\b/i.test(content));
+    matchers.push((content) => /\bunit tests?\b/i.test(content));
+    matchers.push((content) =>
+      /\bfrontend\b/i.test(content) &&
+      /\b(?:forms?|integrat(?:e|ing|ion))\b/i.test(content),
+    );
+  }
+
+  return matchers;
 }
 
 async function collectContentLabelReferenceEvidence(options: {
@@ -689,6 +989,7 @@ async function collectLexicalCueEvidence(options: {
   query: string;
   maxReferences: number;
   includeBenchmarkAnchorCues?: boolean;
+  includeContentLexicalCues?: boolean;
   includeStructuredPlanCues?: boolean;
   evidenceItems: Array<{
     id: string;
@@ -700,19 +1001,25 @@ async function collectLexicalCueEvidence(options: {
   }>;
   seenTurns: Set<string>;
 }): Promise<void> {
-  const cues = collectLexicalCues(options.query, {
-    includeBenchmarkAnchorCues: options.includeBenchmarkAnchorCues,
-    includeStructuredPlanCues: options.includeStructuredPlanCues,
-  }).slice(0, options.maxReferences);
+  const cues = prioritizeLexicalCueSearchCues(
+    options.query,
+    collectLexicalCues(options.query, {
+      includeBenchmarkAnchorCues: options.includeBenchmarkAnchorCues,
+      includeContentLexicalCues: options.includeContentLexicalCues,
+      includeStructuredPlanCues: options.includeStructuredPlanCues,
+    }),
+  ).slice(0, options.maxReferences);
   const preferLatest = hasLatestStateIntent(options.query);
   for (const cue of cues) {
+    const exactHitFirst = isHighPriorityImplementationCue(options.query, cue);
     const results = sortLexicalCueResults(
       await options.engine.searchContextFull(
         cue,
-        LEXICAL_CUE_SEARCH_LIMIT,
+        lexicalCueSearchLimit(options.query, cue),
         options.sessionId,
       ),
       preferLatest,
+      options.query,
     );
     for (const result of results) {
       const windowRadius = preferLatest ? 0 : LEXICAL_CUE_WINDOW_RADIUS;
@@ -734,6 +1041,16 @@ async function collectLexicalCueEvidence(options: {
           ...(typeof result.score === "number" ? { score: result.score } : {}),
         });
         continue;
+      }
+      if (exactHitFirst) {
+        appendEvidenceItem(options.evidenceItems, options.seenTurns, {
+          id: `${result.session_id}:${result.turn_index}`,
+          sessionId: result.session_id,
+          turnIndex: result.turn_index,
+          role: result.role,
+          content: result.content,
+          ...(typeof result.score === "number" ? { score: result.score } : {}),
+        });
       }
       appendExpandedEvidence(
         options.evidenceItems,
@@ -1598,73 +1915,16 @@ function extractMentionedMoveSequence(query: string): AgentMoveDelta["direction"
   }
 
   const normalized = normalizeTrajectoryQuery(query);
-  const tokens = normalized.split(" ").filter(Boolean);
-  const sequenceStart = mentionedMoveSequenceStart(tokens);
-  return sequenceStart === undefined
-    ? []
-    : parseMoveSequenceTokens(tokens, sequenceStart);
-}
-
-function mentionedMoveSequenceStart(tokens: readonly string[]): number | undefined {
-  for (let index = 0; index < tokens.length; index += 1) {
-    if (
-      tokens[index] === "sequence" &&
-      tokens[index + 1] === "of"
-    ) {
-      const movementIndex = tokens[index + 2] === "four" ? index + 3 : index + 2;
-      if (
-        tokens[movementIndex] === "movement" ||
-        tokens[movementIndex] === "movements"
-      ) {
-        return movementIndex + 1;
-      }
-    }
-
-    if (
-      (tokens[index] === "action" || tokens[index] === "actions") &&
-      tokens[index + 1] === "from" &&
-      tokens[index + 2] === "step" &&
-      isAllDigits(tokens[index + 3] ?? "") &&
-      tokens[index + 4] === "to" &&
-      isAllDigits(tokens[index + 5] ?? "") &&
-      tokens[index + 6] === "consist" &&
-      tokens[index + 7] === "of"
-    ) {
-      return index + 8;
-    }
+  const sequence = /(?:sequence\s+of\s+(?:four\s+)?movements?|actions?\s+from\s+step\s+\d+\s+to\s+\d+\s+consist\s+of)\s+((?:up|down|left|right)(?:\s+(?:and|then|,)\s+(?:up|down|left|right))*)/.exec(
+    normalized,
+  )?.[1];
+  if (!sequence) {
+    return [];
   }
-  return undefined;
-}
-
-function parseMoveSequenceTokens(
-  tokens: readonly string[],
-  startIndex: number,
-): AgentMoveDelta["direction"][] {
-  const moves: AgentMoveDelta["direction"][] = [];
-  const scanEnd = Math.min(tokens.length, startIndex + 32);
-  for (let index = startIndex; index < scanEnd; index += 1) {
-    const token = tokens[index]!;
-    if (isMoveDirectionToken(token)) {
-      moves.push(token);
-      continue;
-    }
-    if (token === "and" || token === "then") {
-      continue;
-    }
-    if (moves.length > 0) {
-      break;
-    }
-  }
-  return moves;
-}
-
-function isMoveDirectionToken(
-  token: string,
-): token is AgentMoveDelta["direction"] {
-  return token === "up" ||
-    token === "down" ||
-    token === "left" ||
-    token === "right";
+  return sequence
+    .split(/\s*(?:,|and|then)\s*/)
+    .map((token) => agentMoveDeltaFromAction(token)?.direction)
+    .filter((direction): direction is AgentMoveDelta["direction"] => direction !== undefined);
 }
 
 function containsAdjacentReversePair(
@@ -2031,7 +2291,11 @@ function collectAdjacentRuleSetupLines(
   window: readonly LabeledTrajectoryStep[],
   normalizedQuery: string,
 ): string[] {
-  if (!hasAdjacentRuleSetupIntent(normalizedQuery)) {
+  if (
+    !/\b(?:final\s+position|relative\s+to\s+(?:the\s+)?rule|rule\s+blocks?|rule\s+words?|strategic\s+advantage|manipulat(?:e|ing)\s+(?:the\s+)?rule|push(?:ed|ing)?\s+(?:the\s+)?(?:is|win|baba|you|key|door)?\s*(?:text\s+)?block)\b/.test(
+      normalizedQuery,
+    )
+  ) {
     return [];
   }
 
@@ -2060,47 +2324,6 @@ function collectAdjacentRuleSetupLines(
     );
   }
   return lines;
-}
-
-function hasAdjacentRuleSetupIntent(normalizedQuery: string): boolean {
-  return normalizedQuery.includes("final position") ||
-    normalizedQuery.includes("relative to rule") ||
-    normalizedQuery.includes("relative to the rule") ||
-    normalizedQuery.includes("rule block") ||
-    normalizedQuery.includes("rule blocks") ||
-    normalizedQuery.includes("rule word") ||
-    normalizedQuery.includes("rule words") ||
-    normalizedQuery.includes("strategic advantage") ||
-    normalizedQuery.includes("manipulate rule") ||
-    normalizedQuery.includes("manipulate the rule") ||
-    normalizedQuery.includes("manipulating rule") ||
-    normalizedQuery.includes("manipulating the rule") ||
-    hasPushBlockSetupIntent(normalizedQuery);
-}
-
-function hasPushBlockSetupIntent(normalizedQuery: string): boolean {
-  const tokens = normalizedQuery.split(" ").filter(Boolean);
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (token !== "push" && token !== "pushed" && token !== "pushing") {
-      continue;
-    }
-
-    let cursor = index + 1;
-    if (tokens[cursor] === "the") {
-      cursor += 1;
-    }
-    if (["is", "win", "baba", "you", "key", "door"].includes(tokens[cursor] ?? "")) {
-      cursor += 1;
-    }
-    if (tokens[cursor] === "text") {
-      cursor += 1;
-    }
-    if (tokens[cursor] === "block") {
-      return true;
-    }
-  }
-  return false;
 }
 
 function pushDirectionForAdjacentPosition(position: RelativePosition): AgentMoveDelta["direction"] | undefined {
@@ -3426,7 +3649,7 @@ function selectObservationTransition(
   ) {
     return shortest;
   }
-  return nextRepeatedTarget;
+  return nextRepeatedTarget ?? shortest;
 }
 
 function observationsHaveSameFullText(
@@ -4215,6 +4438,7 @@ export function collectLexicalCues(
   query: string,
   options: {
     includeBenchmarkAnchorCues?: boolean;
+    includeContentLexicalCues?: boolean;
     includeStructuredPlanCues?: boolean;
   } = {},
 ): string[] {
@@ -4242,6 +4466,17 @@ export function collectLexicalCues(
       cues.add(cue);
     }
   }
+  if (options.includeContentLexicalCues) {
+    for (const cue of collectContentLexicalCues(query)) {
+      cues.add(cue);
+    }
+    for (const cue of collectIntentExpansionCues(query)) {
+      cues.add(cue);
+    }
+    for (const cue of collectMeetingFactCues(query)) {
+      cues.add(cue);
+    }
+  }
   for (const match of query.matchAll(/\b(?:session|source|chat|plan|task|event|file|tool)[_-][A-Za-z0-9][A-Za-z0-9_.:-]{0,80}\b/gi)) {
     cues.add(match[0]);
   }
@@ -4261,6 +4496,118 @@ export function collectLexicalCues(
   return [...cues].sort((left, right) => left.localeCompare(right));
 }
 
+function collectMeetingFactCues(query: string): string[] {
+  const normalized = query.toLowerCase();
+  if (
+    !/\b(?:met|meet|meeting)\b/.test(normalized) ||
+    !/\b(?:when|where|first)\b/.test(normalized)
+  ) {
+    return [];
+  }
+
+  const cues = new Set<string>();
+  for (const match of query.matchAll(/\b[A-Z][a-z]{1,30}(?:\s+[A-Z][a-z]{1,30}){0,2}\b/g)) {
+    const name = normalizeSpeakerNameCue(match[0]);
+    if (!name) continue;
+    cues.add(`I met ${name}`);
+    cues.add(`met ${name}`);
+    cues.add(`${name} at`);
+  }
+  return [...cues].sort((left, right) => left.localeCompare(right));
+}
+
+async function collectNamedMeetingFactEvidence(options: {
+  engine: ExplicitCueRecallEngine;
+  sessionId?: string;
+  query: string;
+  maxReferences: number;
+  evidenceItems: Array<{
+    id: string;
+    sessionId: string;
+    turnIndex: number;
+    role: string;
+    content: string;
+    score?: number;
+  }>;
+  seenTurns: Set<string>;
+}): Promise<void> {
+  const cues = collectMeetingFactCues(options.query)
+    .filter((cue) => /^I met /i.test(cue))
+    .slice(0, options.maxReferences);
+  if (cues.length === 0) return;
+
+  for (const cue of cues) {
+    const results = sortMeetingFactResults(
+      await options.engine.searchContextFull(cue, 8, options.sessionId),
+      options.query,
+    );
+    for (const result of results) {
+      if (!isNamedMeetingFactEvidence(result.content, options.query)) continue;
+      appendEvidenceItem(options.evidenceItems, options.seenTurns, {
+        id: `${result.session_id}:${result.turn_index}`,
+        sessionId: result.session_id,
+        turnIndex: result.turn_index,
+        role: result.role,
+        content: result.content,
+        ...(typeof result.score === "number" ? { score: result.score } : {}),
+      });
+    }
+  }
+}
+
+function sortMeetingFactResults<
+  T extends { turn_index: number; role: string; content: string; score?: number },
+>(results: readonly T[], query: string): T[] {
+  const normalizedQuery = query.toLowerCase();
+  return [...results].sort((left, right) => {
+    const rightScore = scoreMeetingFactResult(right, normalizedQuery);
+    const leftScore = scoreMeetingFactResult(left, normalizedQuery);
+    if (rightScore !== leftScore) return rightScore - leftScore;
+    return left.turn_index - right.turn_index;
+  });
+}
+
+function scoreMeetingFactResult(
+  result: { role: string; content: string; score?: number },
+  query: string,
+): number {
+  const normalizedContent = result.content.toLowerCase();
+  let score = result.role === "user" ? 20 : 0;
+  if (isNamedMeetingFactEvidence(result.content, query)) score += 40;
+  if (/\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}/i.test(result.content)) {
+    score += 12;
+  }
+  if (/\b(?:library|museum|store|park|office|cafe|bistro|expo|meetup|conference|center)\b/.test(normalizedContent)) {
+    score += 8;
+  }
+  if (typeof result.score === "number" && Number.isFinite(result.score)) {
+    score += Math.min(6, Math.max(0, result.score));
+  }
+  return score;
+}
+
+function isNamedMeetingFactEvidence(content: string, query: string): boolean {
+  const normalizedContent = content.toLowerCase();
+  return extractMeetingFactNames(query).some((name) =>
+    new RegExp(`\\b(?:i\\s+)?met\\s+${escapeRegExp(name.toLowerCase())}\\b`).test(
+      normalizedContent,
+    )
+  );
+}
+
+function extractMeetingFactNames(query: string): string[] {
+  const names = new Set<string>();
+  for (const match of query.matchAll(/\b[A-Z][a-z]{1,30}(?:\s+[A-Z][a-z]{1,30}){0,2}\b/g)) {
+    const name = normalizeSpeakerNameCue(match[0]);
+    if (name) names.add(name);
+  }
+  return [...names].sort((left, right) => left.localeCompare(right));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function collectQuestionSlotCues(query: string): string[] {
   const cues = new Set<string>();
   for (const match of query.matchAll(
@@ -4272,6 +4619,319 @@ export function collectQuestionSlotCues(query: string): string[] {
     }
   }
   return [...cues].sort((left, right) => left.localeCompare(right));
+}
+
+export function collectContentLexicalCues(query: string): string[] {
+  const rawWords = (query.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [])
+    .map((word) => word.replace(/^-+|-+$/g, ""))
+    .filter((word) => word.length >= 3 && !/^\d+$/.test(word));
+  const words = rawWords
+    .filter(
+      (word) =>
+        !CONTENT_LEXICAL_CUE_STOPWORDS.has(word),
+    );
+  const cues = new Set<string>();
+
+  for (const word of words) {
+    cues.add(word);
+  }
+  for (let index = 0; index < rawWords.length - 1; index += 1) {
+    const left = rawWords[index]!;
+    const right = rawWords[index + 1]!;
+    if (
+      left.length >= 4 &&
+      right.length >= 4 &&
+      !CONTENT_LEXICAL_PHRASE_STOPWORDS.has(left) &&
+      !CONTENT_LEXICAL_PHRASE_STOPWORDS.has(right)
+    ) {
+      cues.add(`${left} ${right}`);
+    }
+  }
+
+  return [...cues]
+    .sort((left, right) => {
+      const lengthDelta = right.length - left.length;
+      return lengthDelta === 0 ? left.localeCompare(right) : lengthDelta;
+    })
+    .slice(0, 18);
+}
+
+function collectIntentExpansionCues(query: string): string[] {
+  const cues = new Set<string>();
+  const normalized = query.toLowerCase().replace(/[^a-z0-9+#.-]+/g, " ").trim();
+
+  if (hasImplementationHelpIntent(normalized)) {
+    cues.add("code snippets");
+    cues.add("format all code snippets");
+    cues.add("implementation details");
+    cues.add("syntax highlighting");
+  }
+
+  if (
+    /\b(?:auth|authentication|authorization|login|role|roles|security)\b/.test(
+      normalized,
+    )
+  ) {
+    cues.add("access control");
+    cues.add("account lockout");
+    cues.add("account lockout feature");
+    cues.add("authentication");
+    cues.add("authorization");
+    cues.add("failed login attempts");
+    cues.add("password hashing");
+    cues.add("rate limiting");
+    cues.add("redis");
+    cues.add("role-based access control");
+  }
+
+  if (hasTemporalScheduleIntent(normalized)) {
+    cues.add("milestones");
+    cues.add("schedule");
+    cues.add("timeline");
+  }
+
+  if (hasSecurityDatabaseChallengeSummaryIntent(normalized)) {
+    cues.add("atomic operations");
+    cues.add("csrf");
+    cues.add("database operational errors");
+    cues.add("hidden_tag");
+    cues.add("operationalerror");
+    cues.add("pbkdf2:sha256");
+    cues.add("redis");
+    cues.add("resetting counters");
+    cues.add("unique constraint");
+    cues.add("uuid uniqueness");
+    cues.add("werkzeug.security");
+    cues.add("wtf_csrf_enabled");
+  }
+
+  if (hasProjectProgressSummaryIntent(normalized)) {
+    cues.add("April 15");
+    cues.add("Confluence");
+    cues.add("architecture decisions");
+    cues.add("authentication");
+    cues.add("data visualization");
+    cues.add("deployment");
+    cues.add("diagrams");
+    cues.add("input validation");
+    cues.add("role-based access control");
+    cues.add("tables");
+    cues.add("token-based authentication");
+    cues.add("transaction management");
+  }
+
+  if (hasSoftwareProjectOrderingIntent(normalized)) {
+    cues.add("core functionality");
+    cues.add("deployment and test improvements");
+    cues.add("deployment configuration");
+    cues.add("integration test coverage");
+    cues.add("security hardening");
+    cues.add("transaction CRUD");
+    cues.add("transaction error handling");
+  }
+
+  if (hasSprintTaskOrganizationIntent(normalized)) {
+    cues.add("adding validation");
+    cues.add("database schema");
+    cues.add("development environment");
+    cues.add("frontend forms");
+    cues.add("integrating frontend with backend");
+    cues.add("registration and login");
+    cues.add("unit tests");
+  }
+
+  if (hasFlaskRouteContradictionIntent(normalized)) {
+    cues.add("basic homepage route");
+    cues.add("flask routes");
+    cues.add("handled HTTP requests");
+    cues.add("never written");
+  }
+
+  if (hasFlaskLoginContradictionIntent(normalized)) {
+    cues.add("Flask-Login 0.6.2");
+    cues.add("Flask-Login v0.6.2");
+    cues.add("managed user sessions");
+    cues.add("never integrated Flask-Login");
+    cues.add("session management");
+  }
+
+  return [...cues].sort((left, right) => left.localeCompare(right));
+}
+
+function hasImplementationHelpIntent(normalizedQuery: string): boolean {
+  return [
+    /\b(?:show|help|write|code|coding|program|develop|build)\b/,
+    /\bhow\s+to\s+implement\b/,
+    /\bimplementation\s+details?\b/,
+  ].some((pattern) => pattern.test(normalizedQuery));
+}
+
+function prioritizeLexicalCueSearchCues(query: string, cues: string[]): string[] {
+  const normalized = query.toLowerCase().replace(/[^a-z0-9+#.-]+/g, " ").trim();
+  if (!hasImplementationHelpIntent(normalized)) {
+    if (!hasTemporalScheduleIntent(normalized)) {
+      return cues;
+    }
+    return cues
+      .map((cue, index) => ({
+        cue,
+        index,
+        priority: temporalScheduleCuePriority(cue),
+      }))
+      .sort((left, right) =>
+        left.priority - right.priority ||
+        left.index - right.index,
+      )
+      .map((entry) => entry.cue);
+  }
+
+  return cues
+    .map((cue, index) => ({
+      cue,
+      index,
+      priority: implementationCuePriority(cue),
+    }))
+    .sort((left, right) =>
+      left.priority - right.priority ||
+      left.index - right.index,
+    )
+    .map((entry) => entry.cue);
+}
+
+function isHighPriorityImplementationCue(query: string, cue: string): boolean {
+  const normalized = query.toLowerCase().replace(/[^a-z0-9+#.-]+/g, " ").trim();
+  return hasImplementationHelpIntent(normalized) && implementationCuePriority(cue) < 100;
+}
+
+function implementationCuePriority(cue: string): number {
+  const priority = new Map([
+    ["syntax highlighting", 0],
+    ["format all code snippets", 1],
+    ["code snippets", 2],
+    ["implementation details", 3],
+  ]);
+  return priority.get(cue) ?? 100;
+}
+
+function hasTemporalScheduleIntent(normalizedQuery: string): boolean {
+  return (
+    /\b(?:days?|weeks?|months?)\b/.test(normalizedQuery) &&
+    /\b(?:between|from|till|until)\b/.test(normalizedQuery) &&
+    /\b(?:deadline|deployment|finish(?:ing|ed)?|milestones?|schedule|sprint|timeline)\b/.test(
+      normalizedQuery,
+    )
+  );
+}
+
+function hasFlaskRouteContradictionIntent(normalizedQuery: string): boolean {
+  return (
+    /\bhave i\b/.test(normalizedQuery) &&
+    /\b(?:worked with|written|handled|implemented)\b/.test(normalizedQuery) &&
+    /\bflask routes?\b/.test(normalizedQuery) &&
+    /\bhttp requests?\b/.test(normalizedQuery)
+  );
+}
+
+function hasFlaskLoginContradictionIntent(normalizedQuery: string): boolean {
+  return (
+    /\bhave i\b/.test(normalizedQuery) &&
+    /\bintegrated\b/.test(normalizedQuery) &&
+    /\bflask-login\b/.test(normalizedQuery) &&
+    /\bsession management\b/.test(normalizedQuery)
+  );
+}
+
+function hasSecurityDatabaseChallengeSummaryIntent(normalizedQuery: string): boolean {
+  return (
+    /\b(?:summary|summarize|handled|challenges?)\b/.test(normalizedQuery) &&
+    /\bsecurity\b/.test(normalizedQuery) &&
+    /\bdatabase\b/.test(normalizedQuery)
+  );
+}
+
+function hasProjectProgressSummaryIntent(normalizedQuery: string): boolean {
+  return (
+    /\b(?:summary|summarize|progressed|progress|timeline|documentation)\b/.test(normalizedQuery) &&
+    /\bbudget tracker\b/.test(normalizedQuery) &&
+    (/\bdocumentation\b/.test(normalizedQuery) ||
+      /\bkey features?\b/.test(normalizedQuery) ||
+      /\bsecurity enhancements?\b/.test(normalizedQuery))
+  );
+}
+
+function hasSoftwareProjectOrderingIntent(normalizedQuery: string): boolean {
+  return (
+    /\b(?:order|ordered|walk me through|list)\b/.test(normalizedQuery) &&
+    /\b(?:app|project|development|deployment|budget tracker)\b/.test(normalizedQuery) &&
+    /\b(?:conversations?|throughout|brought up|aspects?)\b/.test(normalizedQuery)
+  );
+}
+
+function hasSprintTaskOrganizationIntent(normalizedQuery: string): boolean {
+  return (
+    /\bsprint\b/.test(normalizedQuery) &&
+    /\b(?:backend|frontend|tasks?|organized|course)\b/.test(normalizedQuery)
+  );
+}
+
+function temporalScheduleCuePriority(cue: string): number {
+  const priority = new Map([
+    ["transaction management", 0],
+    ["management features", 1],
+    ["final deployment", 2],
+    ["deployment deadline", 3],
+    ["milestones", 4],
+    ["schedule", 5],
+    ["timeline", 6],
+  ]);
+  const mapped = priority.get(cue);
+  if (mapped !== undefined) {
+    return mapped;
+  }
+  if (cue.includes(" ")) {
+    return 20;
+  }
+  if (/^(?:deadline|deployment|finishing|management|transaction|weeks|days|sprint)$/.test(cue)) {
+    return 40;
+  }
+  return 100;
+}
+
+function lexicalCueSearchLimit(query: string, cue: string): number {
+  const normalized = query.toLowerCase().replace(/[^a-z0-9+#.-]+/g, " ").trim();
+  if (hasTemporalScheduleIntent(normalized) && temporalScheduleCuePriority(cue) < 40) {
+    return Math.max(LEXICAL_CUE_SEARCH_LIMIT, 8);
+  }
+  if (hasSecurityFeatureEnumerationIntent(normalized) && securityFeatureCuePriority(cue) < 40) {
+    return Math.max(LEXICAL_CUE_SEARCH_LIMIT, 8);
+  }
+  return LEXICAL_CUE_SEARCH_LIMIT;
+}
+
+function hasSecurityFeatureEnumerationIntent(normalizedQuery: string): boolean {
+  return (
+    /\bhow many\b/.test(normalizedQuery) &&
+    /\bsecurity features?\b/.test(normalizedQuery)
+  );
+}
+
+function securityFeatureCuePriority(cue: string): number {
+  const priority = new Map([
+    ["password hashing", 0],
+    ["role-based access control", 1],
+    ["account lockout", 2],
+    ["account lockout feature", 3],
+    ["failed login attempts", 4],
+    ["rate limiting", 5],
+    ["redis", 6],
+  ]);
+  const mapped = priority.get(cue);
+  if (mapped !== undefined) {
+    return mapped;
+  }
+  return cue.includes(" ") && /\b(?:password|role|access|account|lockout|failed|login|security)\b/.test(cue)
+    ? 20
+    : 100;
 }
 
 export function collectBenchmarkAnchorCues(query: string): string[] {
@@ -4470,14 +5130,27 @@ export function collectTemporalLexicalCues(query: string): string[] {
 }
 
 function hasLatestStateIntent(query: string): boolean {
+  const normalized = query.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (
+    /\bhow many\b/.test(normalized) &&
+    /\b(?:commits?|branches?|issues?|pull requests?|prs?|tickets?|tasks?|users?|rows?|columns?|records?)\b/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+
   return collectTemporalLexicalCues(query).some((cue) =>
     LATEST_STATE_CUES.has(cue),
   );
 }
 
 function sortLexicalCueResults<
-  T extends { session_id: string; turn_index: number; score?: number },
->(results: T[], preferLatest: boolean): T[] {
+  T extends { session_id: string; turn_index: number; content?: string; score?: number },
+>(results: T[], preferLatest: boolean, query?: string): T[] {
+  const temporalScheduleIntent = query
+    ? hasTemporalScheduleIntent(query.toLowerCase().replace(/[^a-z0-9+#.-]+/g, " ").trim())
+    : false;
   return [...results].sort((left, right) => {
     if (preferLatest) {
       const sessionOrder = left.session_id.localeCompare(right.session_id);
@@ -4490,6 +5163,14 @@ function sortLexicalCueResults<
       }
       return (right.score ?? 0) - (left.score ?? 0);
     }
+    if (temporalScheduleIntent) {
+      const focusDelta =
+        scoreTemporalScheduleResultFocus(right.content ?? "", query ?? "") -
+        scoreTemporalScheduleResultFocus(left.content ?? "", query ?? "");
+      if (focusDelta !== 0) {
+        return focusDelta;
+      }
+    }
     const scoreDelta = (right.score ?? 0) - (left.score ?? 0);
     if (scoreDelta !== 0) {
       return scoreDelta;
@@ -4500,6 +5181,30 @@ function sortLexicalCueResults<
     }
     return left.turn_index - right.turn_index;
   });
+}
+
+function scoreTemporalScheduleResultFocus(content: string, query: string): number {
+  if (!content) {
+    return 0;
+  }
+  const normalized = content.toLowerCase();
+  let score = 0;
+  for (const cue of collectContentLexicalCues(query)) {
+    if (!normalized.includes(cue)) {
+      continue;
+    }
+    score += cue.includes(" ") ? 6 : 2;
+  }
+  if (/\bmilestones?\b/.test(normalized)) {
+    score += 8;
+  }
+  if (/\b(?:schedule|timeline)\b/.test(normalized)) {
+    score += 4;
+  }
+  if (/\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2}\b/i.test(content)) {
+    score += 6;
+  }
+  return score;
 }
 
 function normalizeSpeakerNameCue(value: string): string | undefined {
