@@ -110,8 +110,6 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
     }
     if (ctx.config.namespace) {
       config.namespace = ctx.config.namespace;
-    } else {
-      delete config.namespace;
     }
 
     try {
