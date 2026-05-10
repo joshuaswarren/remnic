@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildChatGptMemoryInspectorActionRequest,
   buildChatGptMemoryInspectorResult,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_CANONICAL_TOOL,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
@@ -735,6 +736,87 @@ test("ChatGPT Apps inspector withholds previews when X-ray provenance is unavail
 
   assert.match(result.safeRecallPreview, /X-ray provenance was unavailable/);
   assert.doesNotMatch(result.safeRecallPreview, /unverified memory detail/);
+  assert.match(result.memories[0]?.preview ?? "", /Preview withheld/);
+  assert.doesNotMatch(result.memories[0]?.preview ?? "", /unverified memory detail/);
+});
+
+test("ChatGPT Apps inspector treats missing per-memory provenance as unsafe", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "unverified memory detail",
+    count: 1,
+    memoryIds: ["mem-unverified"],
+    results: [
+      {
+        id: "mem-unverified",
+        path: "memories/mem-unverified.md",
+        category: "preference",
+        status: "active",
+        preview: "unverified memory detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const xray = {
+    schemaVersion: "1" as const,
+    query: "show preferences",
+    snapshotId: "snap-missing-provenance",
+    capturedAt: 1_779_000_000_000,
+    tierExplain: null,
+    results: [
+      {
+        memoryId: "mem-unverified",
+        path: "memories/mem-unverified.md",
+        servedBy: "hybrid" as const,
+        scoreDecomposition: { final: 0.9 },
+        admittedBy: ["test"],
+      },
+    ],
+    filters: [],
+    budget: { chars: 4096, used: 100 },
+    namespace: "work",
+  };
+  const actionRequest = buildChatGptMemoryInspectorActionRequest(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    xray,
+  );
+  const result = buildChatGptMemoryInspectorResult(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    xray,
+    {
+      schemaVersion: 1,
+      decision: "refuse",
+      confidence: 0.2,
+      risk: "medium",
+      contextReadiness: "partial",
+      attentionPolicy: "interruption_budgeting",
+      principle: "A good agent should spend the user's attention carefully.",
+      reasons: [],
+      blockers: ["missing xray provenance"],
+      factors: [],
+      retrievedMemoryCount: 1,
+      usableMemoryCount: 0,
+      staleMemoryCount: 0,
+      correctedMemoryCount: 0,
+      scopeMismatchCount: 0,
+      safeToAct: false,
+    },
+  );
+
+  assert.equal(actionRequest.retrievedMemories?.[0]?.safety, "blocked");
+  assert.equal(actionRequest.retrievedMemories?.[0]?.safeToUse, false);
+  assert.match(
+    actionRequest.retrievedMemories?.[0]?.safetyReasons?.[0] ?? "",
+    /provenance was missing/,
+  );
+  assert.match(result.safeRecallPreview, /1 retrieved memory is missing X-ray provenance/);
+  assert.doesNotMatch(result.safeRecallPreview, /unverified memory detail/);
+  assert.equal(result.memories[0]?.safety, "blocked");
   assert.match(result.memories[0]?.preview ?? "", /Preview withheld/);
   assert.doesNotMatch(result.memories[0]?.preview ?? "", /unverified memory detail/);
 });

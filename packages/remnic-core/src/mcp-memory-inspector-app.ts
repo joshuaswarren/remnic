@@ -73,8 +73,7 @@ export function buildChatGptMemoryInspectorActionRequest(
   xray: RecallXraySnapshot | null,
 ): ActionConfidenceRequest {
   const provenances = (xray?.results ?? [])
-    .map((result) => result.provenance)
-    .filter((value): value is RetrievedMemoryProvenance => value !== undefined);
+    .map((result) => result.provenance ?? missingProvenance(result));
 
   const request: ActionConfidenceRequest = {
     intendedAction: `Use Remnic memory to answer: ${input.query}`,
@@ -119,14 +118,20 @@ export function buildChatGptMemoryInspectorResult(
     xrayById.set(result.memoryId, result);
     xrayByPath.set(result.path, result);
   }
+  const matchXrayResult = (summary: EngramAccessRecallResponse["results"][number]) =>
+    (summary.path ? xrayByPath.get(summary.path) : undefined)
+    ?? xrayById.get(summary.id);
+  const matchedXrayResults = recall.results.map(matchXrayResult);
 
   const memories = recall.results.slice(0, 8).map((summary) => {
-    const xrayResult = (summary.path ? xrayByPath.get(summary.path) : undefined)
-      ?? xrayById.get(summary.id);
+    const xrayResult = matchXrayResult(summary);
     const provenance = xrayResult?.provenance;
+    const unverified = !xrayUnavailable && provenance === undefined;
     const blocked = provenance?.safety === "blocked";
     const preview = xrayUnavailable
       ? "Preview withheld: X-ray provenance was unavailable for this recall."
+      : unverified
+        ? "Preview withheld: X-ray provenance was missing for this memory."
       : blocked
         ? "Preview withheld: this memory is blocked in the current context."
         : summary.preview;
@@ -144,19 +149,25 @@ export function buildChatGptMemoryInspectorResult(
       confidence: provenance?.confidence,
       stale: provenance?.stale,
       corrected: provenance?.corrected,
-      safeToUse: provenance?.safeToUse,
-      safety: provenance?.safety,
-      safetyReasons: provenance?.safetyReasons ?? [],
+      safeToUse: provenance?.safeToUse ?? (unverified ? false : undefined),
+      safety: provenance?.safety ?? (unverified ? "blocked" : undefined),
+      safetyReasons: provenance?.safetyReasons
+        ?? (unverified ? ["X-ray provenance was missing for this memory."] : []),
       userContextScopes: provenance?.userContextScopes ?? [],
     };
   });
-  const blockedCount = (xray?.results ?? [])
-    .filter((result) => result.provenance?.safety === "blocked")
+  const blockedCount = matchedXrayResults
+    .filter((result) => result?.provenance?.safety === "blocked")
+    .length;
+  const missingProvenanceCount = xrayUnavailable
+    ? 0
+    : matchedXrayResults
+      .filter((result) => result?.provenance === undefined)
     .length;
   const safeRecallPreview = xrayUnavailable
     ? "Recall preview withheld: X-ray provenance was unavailable, so memory safety could not be verified."
-    : blockedCount > 0
-      ? `Recall preview withheld: ${blockedCount} retrieved ${blockedCount === 1 ? "memory is" : "memories are"} blocked in the current context.`
+    : blockedCount > 0 || missingProvenanceCount > 0
+      ? formatUnsafeRecallPreview(blockedCount, missingProvenanceCount)
       : truncate(recall.context, 1_500);
 
   const primaryMemoryId = memories[0]?.id ?? "<memory-id>";
@@ -357,6 +368,51 @@ export const REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML = `
 function average(values: number[]): number | undefined {
   if (values.length === 0) return undefined;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function missingProvenance(result: RecallXrayResult): RetrievedMemoryProvenance {
+  return {
+    source: "unknown",
+    scope: "unknown",
+    userContextScopes: [],
+    retrievalReason: `X-ray provenance missing for ${result.memoryId || result.path}`,
+    confidence: 0,
+    stale: false,
+    corrected: false,
+    correctionState: "none",
+    safeToUse: false,
+    safety: "blocked",
+    safetyReasons: ["X-ray provenance was missing for this memory."],
+  };
+}
+
+function formatUnsafeRecallPreview(
+  blockedCount: number,
+  missingProvenanceCount: number,
+): string {
+  const reasons: string[] = [];
+  if (blockedCount > 0) {
+    reasons.push(`${blockedCount} retrieved ${memoryNoun(blockedCount)} ${isAre(blockedCount)} blocked`);
+  }
+  if (missingProvenanceCount > 0) {
+    reasons.push(
+      `${missingProvenanceCount} retrieved ${memoryNoun(missingProvenanceCount)} ${isAre(missingProvenanceCount)} missing X-ray provenance`,
+    );
+  }
+  return `Recall preview withheld: ${joinReasons(reasons)} in the current context.`;
+}
+
+function memoryNoun(count: number): string {
+  return count === 1 ? "memory" : "memories";
+}
+
+function isAre(count: number): string {
+  return count === 1 ? "is" : "are";
+}
+
+function joinReasons(reasons: string[]): string {
+  if (reasons.length <= 1) return reasons[0] ?? "memory safety could not be verified";
+  return `${reasons.slice(0, -1).join(", ")} and ${reasons[reasons.length - 1]}`;
 }
 
 function truncate(value: string, maxChars: number): string {

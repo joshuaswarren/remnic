@@ -2050,7 +2050,6 @@ export class EngramAccessService {
     snapshot?: RecallXraySnapshot;
     recall?: EngramAccessRecallResponse;
   }> {
-    const startedAt = Date.now();
     const query = typeof request.query === "string" ? request.query : "";
     if (query.trim().length === 0) {
       // Match the CLI contract (CLAUDE.md rule 51): reject empty
@@ -2138,6 +2137,7 @@ export class EngramAccessService {
       release = resolve;
     });
     await previousQueue;
+    const recallStartedAt = Date.now();
 
     const recallSessionKey = request.sessionKey?.trim() || undefined;
     let xrayResponse: {
@@ -2247,121 +2247,121 @@ export class EngramAccessService {
         // and raw use full content.  Best-effort only — a missing
         // memory or read failure is silently dropped (CLAUDE.md rule 13).
         if (request.disclosure !== undefined) {
-        // Disclosure already validated up front; pin to the narrowed
-        // type here.  Re-validation inside the queue would be dead code.
-        const disclosure: RecallDisclosure = request.disclosure;
-        const namespace = snapshot.namespace
-          ? this.resolveNamespace(snapshot.namespace)
-          : this.orchestrator.config.defaultNamespace;
-        // Pre-fetch raw excerpts ONCE so the first raw-disclosure
-        // result's token estimate includes the LCM-side excerpt spend
-        // that `shapeMemorySummary` actually attaches in the recall
-        // response.  Without this, raw recalls systematically
-        // undercounted spend on the first result (Cursor Medium review
-        // on PR #699).  Excerpts are scoped to the same session +
-        // namespace as the recall.
-        // Trim sessionKey to match what `orchestrator.recall(...)`
-        // already does (`request.sessionKey?.trim() || undefined`),
-        // otherwise a whitespace-padded key drives recall under one
-        // identity but probes LCM under a different prefix and
-        // misses stored excerpts (Cursor Low review on PR #699).
-        const trimmedSessionKey = request.sessionKey?.trim() || undefined;
-        const rawExcerpts =
-          disclosure === "raw"
-            ? await this.fetchRawExcerpts(disclosure, {
-                query,
-                ...(trimmedSessionKey ? { sessionKey: trimmedSessionKey } : {}),
-                namespace,
-              })
-            : null;
-        const rawExcerptText =
-          rawExcerpts && rawExcerpts.length > 0
-            ? rawExcerpts.map((e) => e.content).join("\n")
-            : "";
-        // Pre-load every memory in parallel so we can:
-        //   (a) re-attribute raw excerpts to the *first readable* result
-        //       rather than always to index 0 (Cursor Low review on PR
-        //       #699: a missing/unreadable result[0] orphaned the excerpt
-        //       budget); and
-        //   (b) include the metadata fields `shapeMemorySummary` actually
-        //       emits at every depth (id, path, category, status, created,
-        //       updated, tags, entityRef) in the token estimate, so the
-        //       summary reflects real spend rather than only payload-body
-        //       spend (Cursor Low review on PR #699).
-        const memoryByIndex = await Promise.all(
-          snapshot.results.map(async (result) => {
-            try {
-              const storage = await this.orchestrator.getStorage(namespace);
-              return await storage.readMemoryByPath(result.path);
-            } catch {
-              return null;
-            }
-          }),
-        );
-        const firstReadableIndex = memoryByIndex.findIndex((m) => m !== null);
-        const baseDir =
-          (await this.orchestrator.getStorage(namespace)).dir;
-        const decorated = snapshot.results.map((result, index) => {
-          const memory = memoryByIndex[index];
-          if (!memory) {
-            // Unreadable result: attach the disclosure tag anyway so
-            // the per-disclosure summary classifies it correctly,
-            // but skip the token estimate since we don't have the
-            // content to measure.  Without the disclosure tag the
-            // result silently flows into the `unspecified` bucket
-            // even though the caller explicitly requested a depth
-            // (Cursor Low review on PR #699).
-            return { ...result, disclosure };
-          }
-          // Build a representative shaped summary so the estimate
-          // counts every field `shapeMemorySummary` actually emits.
-          // The serialized JSON form is a close-enough proxy for the
-          // wire payload size.
-          const shaped = shapeMemorySummary(
-            memory,
-            baseDir,
-            disclosure,
-            disclosure === "raw" &&
-            index === firstReadableIndex &&
-            rawExcerpts &&
-            rawExcerpts.length > 0
-              ? rawExcerpts
-              : undefined,
+          // Disclosure already validated up front; pin to the narrowed
+          // type here.  Re-validation inside the queue would be dead code.
+          const disclosure: RecallDisclosure = request.disclosure;
+          const namespace = snapshot.namespace
+            ? this.resolveNamespace(snapshot.namespace)
+            : this.orchestrator.config.defaultNamespace;
+          // Pre-fetch raw excerpts ONCE so the first raw-disclosure
+          // result's token estimate includes the LCM-side excerpt spend
+          // that `shapeMemorySummary` actually attaches in the recall
+          // response.  Without this, raw recalls systematically
+          // undercounted spend on the first result (Cursor Medium review
+          // on PR #699).  Excerpts are scoped to the same session +
+          // namespace as the recall.
+          // Trim sessionKey to match what `orchestrator.recall(...)`
+          // already does (`request.sessionKey?.trim() || undefined`),
+          // otherwise a whitespace-padded key drives recall under one
+          // identity but probes LCM under a different prefix and
+          // misses stored excerpts (Cursor Low review on PR #699).
+          const trimmedSessionKey = request.sessionKey?.trim() || undefined;
+          const rawExcerpts =
+            disclosure === "raw"
+              ? await this.fetchRawExcerpts(disclosure, {
+                  query,
+                  ...(trimmedSessionKey ? { sessionKey: trimmedSessionKey } : {}),
+                  namespace,
+                })
+              : null;
+          const rawExcerptText =
+            rawExcerpts && rawExcerpts.length > 0
+              ? rawExcerpts.map((e) => e.content).join("\n")
+              : "";
+          // Pre-load every memory in parallel so we can:
+          //   (a) re-attribute raw excerpts to the *first readable* result
+          //       rather than always to index 0 (Cursor Low review on PR
+          //       #699: a missing/unreadable result[0] orphaned the excerpt
+          //       budget); and
+          //   (b) include the metadata fields `shapeMemorySummary` actually
+          //       emits at every depth (id, path, category, status, created,
+          //       updated, tags, entityRef) in the token estimate, so the
+          //       summary reflects real spend rather than only payload-body
+          //       spend (Cursor Low review on PR #699).
+          const memoryByIndex = await Promise.all(
+            snapshot.results.map(async (result) => {
+              try {
+                const storage = await this.orchestrator.getStorage(namespace);
+                return await storage.readMemoryByPath(result.path);
+              } catch {
+                return null;
+              }
+            }),
           );
-          return {
-            ...result,
-            disclosure,
-            estimatedTokens: estimateRecallTokens(JSON.stringify(shaped)),
+          const firstReadableIndex = memoryByIndex.findIndex((m) => m !== null);
+          const baseDir =
+            (await this.orchestrator.getStorage(namespace)).dir;
+          const decorated = snapshot.results.map((result, index) => {
+            const memory = memoryByIndex[index];
+            if (!memory) {
+              // Unreadable result: attach the disclosure tag anyway so
+              // the per-disclosure summary classifies it correctly,
+              // but skip the token estimate since we don't have the
+              // content to measure.  Without the disclosure tag the
+              // result silently flows into the `unspecified` bucket
+              // even though the caller explicitly requested a depth
+              // (Cursor Low review on PR #699).
+              return { ...result, disclosure };
+            }
+            // Build a representative shaped summary so the estimate
+            // counts every field `shapeMemorySummary` actually emits.
+            // The serialized JSON form is a close-enough proxy for the
+            // wire payload size.
+            const shaped = shapeMemorySummary(
+              memory,
+              baseDir,
+              disclosure,
+              disclosure === "raw" &&
+              index === firstReadableIndex &&
+              rawExcerpts &&
+              rawExcerpts.length > 0
+                ? rawExcerpts
+                : undefined,
+            );
+            return {
+              ...result,
+              disclosure,
+              estimatedTokens: estimateRecallTokens(JSON.stringify(shaped)),
+            };
+          });
+          // Edge case: every result was unreadable but rawExcerpts
+          // still has content — credit that spend to result[0] rather
+          // than dropping it on the floor.  Without this, the raw row
+          // in the per-disclosure summary under-reports spend whenever
+          // every memory file is missing/unreadable.
+          if (
+            disclosure === "raw" &&
+            firstReadableIndex === -1 &&
+            rawExcerptText.length > 0 &&
+            decorated.length > 0
+          ) {
+            decorated[0] = {
+              ...decorated[0]!,
+              disclosure,
+              estimatedTokens: estimateRecallTokens(rawExcerptText),
+            };
+          }
+          const decoratedSnapshot = { ...snapshot, results: decorated };
+          xrayResponse = {
+            snapshotFound: true,
+            snapshot: decoratedSnapshot,
           };
-        });
-        // Edge case: every result was unreadable but rawExcerpts
-        // still has content — credit that spend to result[0] rather
-        // than dropping it on the floor.  Without this, the raw row
-        // in the per-disclosure summary under-reports spend whenever
-        // every memory file is missing/unreadable.
-        if (
-          disclosure === "raw" &&
-          firstReadableIndex === -1 &&
-          rawExcerptText.length > 0 &&
-          decorated.length > 0
-        ) {
-          decorated[0] = {
-            ...decorated[0]!,
-            disclosure,
-            estimatedTokens: estimateRecallTokens(rawExcerptText),
+        } else {
+          xrayResponse = {
+            snapshotFound: true,
+            snapshot,
           };
         }
-        const decoratedSnapshot = { ...snapshot, results: decorated };
-        xrayResponse = {
-          snapshotFound: true,
-          snapshot: decoratedSnapshot,
-        };
-      } else {
-        xrayResponse = {
-          snapshotFound: true,
-          snapshot,
-        };
-      }
       }
     } finally {
       release();
@@ -2379,7 +2379,7 @@ export class EngramAccessService {
           sessionKey: recallSessionKey,
           snapshot: xrayResponse.snapshot,
           disclosure,
-          startedAt,
+          startedAt: recallStartedAt,
           requestedMode: request.mode,
           normalizedMode: mode,
         }),

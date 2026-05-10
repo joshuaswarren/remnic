@@ -285,6 +285,54 @@ test("recallXray releases the snapshot mutex before optional recall serializatio
   assert.equal(secondResponse.snapshot?.snapshotId, "snap-second");
 });
 
+test("recallXray includeRecall latency starts after waiting for the snapshot mutex", async () => {
+  const originalDateNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  try {
+    const firstSnapshot = fakeSnapshot({ snapshotId: "snap-first" });
+    const secondSnapshot = fakeSnapshot({ snapshotId: "snap-second" });
+    let resolveFirstRecallStarted: () => void = () => {};
+    const firstRecallStarted = new Promise<void>((resolve) => {
+      resolveFirstRecallStarted = resolve;
+    });
+    let releaseFirstRecall: () => void = () => {};
+    const firstRecallReleased = new Promise<void>((resolve) => {
+      releaseFirstRecall = resolve;
+    });
+    const { orchestrator, state } = stubOrchestrator({});
+    orchestrator.recall = async (prompt: string) => {
+      if (prompt === "first") {
+        resolveFirstRecallStarted();
+        await firstRecallReleased;
+        state.snapshot = firstSnapshot;
+        return "ctx";
+      }
+      state.snapshot = secondSnapshot;
+      now = 5_030;
+      return "ctx";
+    };
+
+    const service = new EngramAccessService(orchestrator as any);
+    const first = service.recallXray({ query: "first" });
+    await firstRecallStarted;
+    now = 1_500;
+    const second = service.recallXray({
+      query: "second",
+      includeRecall: true,
+    });
+    now = 5_000;
+    releaseFirstRecall();
+
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+    assert.equal(firstResponse.snapshot?.snapshotId, "snap-first");
+    assert.equal(secondResponse.snapshot?.snapshotId, "snap-second");
+    assert.equal(secondResponse.recall?.latencyMs, 30);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
 test("recallXray forwards xrayCapture:true to orchestrator.recall", async () => {
   const { orchestrator, state } = stubOrchestrator({ snapshot: null });
   const service = new EngramAccessService(orchestrator as any);
