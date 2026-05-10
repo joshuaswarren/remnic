@@ -125,6 +125,14 @@ provenance, scope/safety signals, action-confidence guidance, and follow-up
 prompts for correction, forget, and scoping flows. See
 [ChatGPT Apps Demo](chatgpt-apps-demo.md).
 
+## Agentic Commerce Demo
+
+The `agentic-commerce-v1` scenario shows user-aware memory for buyer-facing
+agents: brand preferences, fit, budget, exclusions, gift constraints, shipping
+urgency, risk tolerance, and ask-before-checkout rules. It uses synthetic
+catalog data and local trust-zone records, not live merchant access. See
+[Agentic Commerce Demo](agentic-commerce-demo.md).
+
 ## Core Exports
 
 `@remnic/core` exports:

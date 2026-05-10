@@ -52,3 +52,7 @@ for (const benchmarkId of listMemoryEvalBenchmarkIds()) {
 Quick mode is for regression detection. Full mode should compare memory-enabled
 and memory-disabled runs, preserve provenance/scope annotations, and use sealed
 qrels or rubric prompts for publishable claims.
+
+`retrieval-personalization` includes synthetic commerce cases for buyer profile
+matching and ask-before-checkout boundary retrieval. These are the eval hooks
+used by the [Agentic Commerce Demo](agentic-commerce-demo.md).

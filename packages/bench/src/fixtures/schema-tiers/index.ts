@@ -187,6 +187,60 @@ const CLEAN_PAGES: SchemaTierPage[] = [
     dirtySignals: [],
   },
   {
+    id: "taylor-commerce-profile",
+    owner: "taylor",
+    namespace: "taylor/personal",
+    canonicalTitle: "Taylor Commerce Profile",
+    title: "Taylor Commerce Profile",
+    type: "preference",
+    createdAt: "2026-09-10T12:00:00.000Z",
+    aliases: ["Taylor shopping preferences", "Taylor buyer profile"],
+    body:
+      "Taylor prefers repairable outdoor brands, medium tops, 32x32 pants, relaxed fit, easy returns, and routine apparel recommendations under $180.",
+    frontmatter: {
+      title: "Taylor Commerce Profile",
+      type: "preference",
+      state: "active",
+      created: "2026-09-10T12:00:00.000Z",
+      seeAlso: ["taylor-commerce-boundaries"],
+      timeline: [
+        "2026-09-10: recorded brand, size, fit, return-window, and budget preferences for shopping agents",
+      ],
+    },
+    seeAlso: ["taylor-commerce-boundaries"],
+    timeline: [
+      "2026-09-10: recorded brand, size, fit, return-window, and budget preferences for shopping agents",
+    ],
+    dirtySignals: [],
+  },
+  {
+    id: "taylor-commerce-boundaries",
+    owner: "taylor",
+    namespace: "taylor/personal",
+    canonicalTitle: "Taylor Commerce Boundaries",
+    title: "Taylor Commerce Boundaries",
+    type: "rule",
+    createdAt: "2026-09-10T12:05:00.000Z",
+    aliases: ["Taylor checkout rules", "Taylor purchase boundaries"],
+    body:
+      "Taylor allows recommendations and draft carts, but the agent must ask before checkout, subscription enrollment, or any purchase above $75. Never suggest leather goods, fragrances, or final-sale shoes.",
+    frontmatter: {
+      title: "Taylor Commerce Boundaries",
+      type: "rule",
+      state: "active",
+      created: "2026-09-10T12:05:00.000Z",
+      seeAlso: ["taylor-commerce-profile"],
+      timeline: [
+        "2026-09-10: set ask-before-checkout and never-suggest boundaries for commerce agents",
+      ],
+    },
+    seeAlso: ["taylor-commerce-profile"],
+    timeline: [
+      "2026-09-10: set ask-before-checkout and never-suggest boundaries for commerce agents",
+    ],
+    dirtySignals: [],
+  },
+  {
     id: "riley-hiring-advice",
     owner: "riley",
     namespace: "riley/advisory",
@@ -289,6 +343,23 @@ function buildDirtyCorpus(cleanPages: SchemaTierPage[]): SchemaTierPage[] {
         dirtyPage.frontmatter.timeline = [...dirtyPage.timeline];
         dirtyPage.dirtySignals.push("stale-created-date", "stale-timeline-date");
         break;
+      case "taylor-commerce-profile":
+        delete dirtyPage.frontmatter.created;
+        dirtyPage.timeline = [];
+        dirtyPage.frontmatter.timeline = [];
+        dirtyPage.dirtySignals.push("missing-frontmatter-created", "missing-timeline");
+        break;
+      case "taylor-commerce-boundaries":
+        dirtyPage.title = "taylor commerce boundaries";
+        delete dirtyPage.frontmatter.type;
+        dirtyPage.seeAlso = [];
+        dirtyPage.frontmatter.seeAlso = [];
+        dirtyPage.dirtySignals.push(
+          "missing-frontmatter-type",
+          "orphan-page",
+          "title-casing-drift",
+        );
+        break;
       case "riley-hiring-advice":
         delete dirtyPage.frontmatter.title;
         dirtyPage.seeAlso = ["morgan-coffee-preferences"];
@@ -324,6 +395,20 @@ const PERSONALIZATION_CASES: PersonalizationRetrievalCase[] = [
     expectedPageIds: ["riley-hiring-advice"],
     expectedNamespace: "riley/advisory",
     expectedOwner: "riley",
+  },
+  {
+    id: "taylor-commerce-recommendation-context",
+    query: "Which commerce profile should guide Taylor's rain shell recommendation by brand, fit, and budget?",
+    expectedPageIds: ["taylor-commerce-profile"],
+    expectedNamespace: "taylor/personal",
+    expectedOwner: "taylor",
+  },
+  {
+    id: "taylor-commerce-checkout-boundary",
+    query: "What should a shopping agent ask before checkout for Taylor?",
+    expectedPageIds: ["taylor-commerce-boundaries"],
+    expectedNamespace: "taylor/personal",
+    expectedOwner: "taylor",
   },
 ];
 
@@ -389,10 +474,13 @@ export function buildSchemaTierSmokeFixture(seed = DEFAULT_SCHEMA_TIER_SEED): Sc
     "alex-partner-onboarding-brief",
     "morgan-coffee-preferences",
     "morgan-q3-training-plan",
+    "taylor-commerce-profile",
+    "taylor-commerce-boundaries",
   ]);
   const smokeCaseIds = new Set([
     "alex-scope-q3-launch",
     "morgan-scope-coffee",
+    "taylor-commerce-checkout-boundary",
     "alex-last-tuesday-meeting",
     "missing-fact-paris-summit",
   ]);

@@ -139,12 +139,19 @@ export interface TrustZonePromotionReadiness {
 }
 
 export interface TrustZoneDemoSeedResult {
-  scenario: string;
+  scenario: TrustZoneDemoScenario;
   dryRun: boolean;
   recordsWritten: number;
   records: TrustZoneRecord[];
   filePaths: string[];
 }
+
+export type TrustZoneDemoScenario = "enterprise-buyer-v1" | "agentic-commerce-v1";
+
+const TRUST_ZONE_DEMO_SCENARIOS: TrustZoneDemoScenario[] = [
+  "enterprise-buyer-v1",
+  "agentic-commerce-v1",
+];
 
 function validateMetadata(raw: unknown): Record<string, string> | undefined {
   return validateStringRecord(raw, "metadata");
@@ -245,7 +252,7 @@ function hasOverlap(left: string[] | undefined, right: string[] | undefined): bo
 
 function corroborationTags(record: TrustZoneRecord): string[] | undefined {
   if (!record.tags || record.tags.length === 0) return undefined;
-  const filtered = record.tags.filter((tag) => tag !== "trust-zone-demo" && tag !== "enterprise-demo");
+  const filtered = record.tags.filter((tag) => tag !== "trust-zone-demo" && tag !== "enterprise-demo" && tag !== "commerce-demo");
   return filtered.length > 0 ? filtered : undefined;
 }
 
@@ -699,7 +706,15 @@ function buildTrustZoneDemoRecordId(baseId: string, seedRunId: string): string {
   return `${baseId}-${seedRunId}`;
 }
 
-function buildTrustZoneDemoRecords(baseRecordedAt: string, scenario: string): TrustZoneRecord[] {
+function parseTrustZoneDemoScenario(raw: string | undefined): TrustZoneDemoScenario {
+  const scenario = (raw ?? "enterprise-buyer-v1").trim();
+  if (!TRUST_ZONE_DEMO_SCENARIOS.includes(scenario as TrustZoneDemoScenario)) {
+    throw new Error(`unsupported trust-zone demo scenario: ${scenario}`);
+  }
+  return scenario as TrustZoneDemoScenario;
+}
+
+function buildEnterpriseBuyerTrustZoneDemoRecords(baseRecordedAt: string, scenario: TrustZoneDemoScenario): TrustZoneRecord[] {
   const demoTag = "trust-zone-demo";
   const commonMetadata = {
     demoScenario: scenario,
@@ -835,6 +850,236 @@ function buildTrustZoneDemoRecords(baseRecordedAt: string, scenario: string): Tr
   ];
 }
 
+function buildAgenticCommerceTrustZoneDemoRecords(baseRecordedAt: string, scenario: TrustZoneDemoScenario): TrustZoneRecord[] {
+  const demoTag = "trust-zone-demo";
+  const commerceTag = "commerce-demo";
+  const commonMetadata = {
+    demoScenario: scenario,
+    demoSeed: "true",
+    category: "user-aware-commerce",
+  };
+  const seedRunId = buildTrustZoneDemoSeedRunId(baseRecordedAt);
+  return [
+    {
+      schemaVersion: 1,
+      recordId: buildTrustZoneDemoRecordId("tz-demo-agentic-commerce-v1-quarantine-catalog-rainshell", seedRunId),
+      zone: "quarantine",
+      recordedAt: addMinutes(baseRecordedAt, 0),
+      kind: "external",
+      summary: "Merchant catalog candidate: ArcTrail rain shell, price $148, recycled nylon, medium regular fit, two-day shipping eligible.",
+      provenance: {
+        sourceClass: "web_content",
+        observedAt: addMinutes(baseRecordedAt, -3),
+        sessionKey: "demo:agentic-commerce-v1",
+        sourceId: "acp-catalog:merchant.example/products/arctrail-rain-shell",
+        evidenceHash: "sha256:acp-catalog-arctrail-rain-shell",
+      },
+      entityRefs: ["product:arctrail-rain-shell", "merchant:trailhead-outfitters"],
+      tags: [demoTag, commerceTag, "catalog-product", "rain-shell"],
+      metadata: {
+        ...commonMetadata,
+        story: "catalog-candidate-before-personalization",
+        commerceFacet: "product_discovery",
+        scope: "commerce/catalog",
+      },
+    },
+    {
+      schemaVersion: 1,
+      recordId: buildTrustZoneDemoRecordId("tz-demo-agentic-commerce-v1-trusted-brand-preferences", seedRunId),
+      zone: "trusted",
+      recordedAt: addMinutes(baseRecordedAt, 2),
+      kind: "memory",
+      summary: "Buyer prefers repairable outdoor brands such as Patagonia, REI, and Arc'teryx, and avoids fast-fashion marketplaces.",
+      provenance: {
+        sourceClass: "user_input",
+        observedAt: addMinutes(baseRecordedAt, 1),
+        sessionKey: "demo:agentic-commerce-v1",
+        sourceId: "conversation:buyer-preferences",
+        evidenceHash: "sha256:buyer-brand-preferences",
+      },
+      entityRefs: ["buyer:self", "preference:brand"],
+      tags: [demoTag, commerceTag, "brand-preference"],
+      metadata: {
+        ...commonMetadata,
+        story: "trusted-brand-preferences",
+        commerceFacet: "brand_preferences",
+        scope: "personal/commerce",
+      },
+    },
+    {
+      schemaVersion: 1,
+      recordId: buildTrustZoneDemoRecordId("tz-demo-agentic-commerce-v1-trusted-size-fit", seedRunId),
+      zone: "trusted",
+      recordedAt: addMinutes(baseRecordedAt, 4),
+      kind: "memory",
+      summary: "Buyer wears medium tops, 32x32 pants, and prefers relaxed fit with an easy return window.",
+      provenance: {
+        sourceClass: "user_input",
+        observedAt: addMinutes(baseRecordedAt, 3),
+        sessionKey: "demo:agentic-commerce-v1",
+        sourceId: "conversation:size-fit",
+        evidenceHash: "sha256:buyer-size-fit",
+      },
+      entityRefs: ["buyer:self", "preference:size-fit"],
+      tags: [demoTag, commerceTag, "size-fit"],
+      metadata: {
+        ...commonMetadata,
+        story: "trusted-size-fit",
+        commerceFacet: "size_fit",
+        scope: "personal/commerce",
+      },
+    },
+    {
+      schemaVersion: 1,
+      recordId: buildTrustZoneDemoRecordId("tz-demo-agentic-commerce-v1-trusted-budget", seedRunId),
+      zone: "trusted",
+      recordedAt: addMinutes(baseRecordedAt, 6),
+      kind: "memory",
+      summary: "Routine apparel recommendations should stay under $180, and any checkout above $75 requires an explicit ask before purchase.",
+      provenance: {
+        sourceClass: "manual",
+        observedAt: addMinutes(baseRecordedAt, 5),
+        sessionKey: "demo:agentic-commerce-v1",
+        sourceId: "review:buyer-commerce-rules",
+        evidenceHash: "sha256:buyer-budget-thresholds",
+      },
+      entityRefs: ["buyer:self", "rule:ask-before-checkout", "constraint:budget"],
+      tags: [demoTag, commerceTag, "budget-threshold", "ask-before-checkout"],
+      metadata: {
+        ...commonMetadata,
+        story: "trusted-budget-and-ask-before-checkout",
+        commerceFacet: "budget_thresholds",
+        askBefore: "checkout-over-75",
+        scope: "personal/commerce",
+      },
+    },
+    {
+      schemaVersion: 1,
+      recordId: buildTrustZoneDemoRecordId("tz-demo-agentic-commerce-v1-trusted-exclusions", seedRunId),
+      zone: "trusted",
+      recordedAt: addMinutes(baseRecordedAt, 8),
+      kind: "memory",
+      summary: "Never suggest leather goods, fragrances, or final-sale shoes for this buyer.",
+      provenance: {
+        sourceClass: "user_input",
+        observedAt: addMinutes(baseRecordedAt, 7),
+        sessionKey: "demo:agentic-commerce-v1",
+        sourceId: "conversation:excluded-products",
+        evidenceHash: "sha256:buyer-exclusions",
+      },
+      entityRefs: ["buyer:self", "rule:never-suggest", "constraint:excluded-products"],
+      tags: [demoTag, commerceTag, "excluded-products", "never-suggest"],
+      metadata: {
+        ...commonMetadata,
+        story: "trusted-excluded-products",
+        commerceFacet: "excluded_products",
+        neverSuggest: "leather,fragrance,final-sale-shoes",
+        scope: "personal/commerce",
+      },
+    },
+    {
+      schemaVersion: 1,
+      recordId: buildTrustZoneDemoRecordId("tz-demo-agentic-commerce-v1-working-shipping-estimate", seedRunId),
+      zone: "working",
+      recordedAt: addMinutes(baseRecordedAt, 10),
+      kind: "state",
+      summary: "Shipping estimator says the weekend-trip gift can arrive before Friday with two-day delivery.",
+      provenance: {
+        sourceClass: "tool_output",
+        observedAt: addMinutes(baseRecordedAt, 9),
+        sessionKey: "demo:agentic-commerce-v1",
+        sourceId: "tool:shipping-estimate-run-17",
+        evidenceHash: "sha256:shipping-estimate-weekend-trip",
+      },
+      entityRefs: ["purchase:weekend-trip-gift", "constraint:shipping-urgency"],
+      tags: [demoTag, commerceTag, "shipping-urgency", "gift-purchase"],
+      metadata: {
+        ...commonMetadata,
+        story: "working-shipping-urgency",
+        commerceFacet: "shipping_urgency",
+        scope: "commerce/session",
+      },
+    },
+    {
+      schemaVersion: 1,
+      recordId: buildTrustZoneDemoRecordId("tz-demo-agentic-commerce-v1-working-shipping-corroboration", seedRunId),
+      zone: "working",
+      recordedAt: addMinutes(baseRecordedAt, 12),
+      kind: "external",
+      summary: "Merchant shipping policy independently confirms two-day delivery cutoff for the same weekend-trip gift window.",
+      provenance: {
+        sourceClass: "web_content",
+        observedAt: addMinutes(baseRecordedAt, 11),
+        sessionKey: "demo:agentic-commerce-v1",
+        sourceId: "https://merchant.example/shipping/two-day-cutoff",
+        evidenceHash: "sha256:merchant-two-day-cutoff",
+      },
+      entityRefs: ["purchase:weekend-trip-gift", "constraint:shipping-urgency"],
+      tags: [demoTag, commerceTag, "shipping-urgency", "gift-purchase"],
+      metadata: {
+        ...commonMetadata,
+        story: "working-shipping-corroboration",
+        commerceFacet: "shipping_urgency",
+        scope: "commerce/session",
+      },
+    },
+    {
+      schemaVersion: 1,
+      recordId: buildTrustZoneDemoRecordId("tz-demo-agentic-commerce-v1-working-blocked-upsell", seedRunId),
+      zone: "working",
+      recordedAt: addMinutes(baseRecordedAt, 14),
+      kind: "external",
+      summary: "Unverified influencer note claims the buyer wants luxury watch gifts over $500.",
+      provenance: {
+        sourceClass: "subagent_trace",
+        observedAt: addMinutes(baseRecordedAt, 13),
+        sessionKey: "demo:agentic-commerce-v1",
+      },
+      entityRefs: ["buyer:self", "risk:upsell"],
+      tags: [demoTag, commerceTag, "blocked-upsell", "needs-evidence"],
+      metadata: {
+        ...commonMetadata,
+        story: "commerce-blocked-unverified-upsell",
+        commerceFacet: "risk_tolerance",
+        scope: "commerce/session",
+      },
+    },
+    {
+      schemaVersion: 1,
+      recordId: buildTrustZoneDemoRecordId("tz-demo-agentic-commerce-v1-trusted-checkout-boundary", seedRunId),
+      zone: "trusted",
+      recordedAt: addMinutes(baseRecordedAt, 16),
+      kind: "memory",
+      summary: "The agent may recommend products and draft a cart, but must ask before checkout, subscription enrollment, or irreversible purchase actions.",
+      provenance: {
+        sourceClass: "manual",
+        observedAt: addMinutes(baseRecordedAt, 15),
+        sessionKey: "demo:agentic-commerce-v1",
+        sourceId: "review:commerce-action-boundaries",
+        evidenceHash: "sha256:commerce-action-boundaries",
+      },
+      entityRefs: ["buyer:self", "rule:ask-before-checkout", "policy:action-confidence"],
+      tags: [demoTag, commerceTag, "ask-before-checkout", "action-confidence"],
+      metadata: {
+        ...commonMetadata,
+        story: "trusted-checkout-boundary",
+        commerceFacet: "ask_before_checkout",
+        riskTolerance: "low-for-irreversible-purchase-actions",
+        scope: "personal/commerce",
+      },
+    },
+  ];
+}
+
+function buildTrustZoneDemoRecords(baseRecordedAt: string, scenario: TrustZoneDemoScenario): TrustZoneRecord[] {
+  switch (scenario) {
+    case "enterprise-buyer-v1":
+      return buildEnterpriseBuyerTrustZoneDemoRecords(baseRecordedAt, scenario);
+    case "agentic-commerce-v1":
+      return buildAgenticCommerceTrustZoneDemoRecords(baseRecordedAt, scenario);
+  }
+}
+
 export async function seedTrustZoneDemoDataset(options: {
   memoryDir: string;
   trustZoneStoreDir?: string;
@@ -847,10 +1092,7 @@ export async function seedTrustZoneDemoDataset(options: {
     throw new Error("trust zone demo seed requires trustZonesEnabled=true");
   }
 
-  const scenario = (options.scenario ?? "enterprise-buyer-v1").trim();
-  if (scenario !== "enterprise-buyer-v1") {
-    throw new Error(`unsupported trust-zone demo scenario: ${scenario}`);
-  }
+  const scenario = parseTrustZoneDemoScenario(options.scenario);
 
   const baseRecordedAt = assertIsoRecordedAt(options.recordedAt ?? new Date().toISOString(), "recordedAt");
   if (!Number.isFinite(Date.parse(baseRecordedAt))) {

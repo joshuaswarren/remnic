@@ -931,6 +931,7 @@ openclaw engram access mcp-serve   # Start OpenClaw-hosted stdio MCP server
 
 # Trust-zone demos
 openclaw engram trust-zone-demo-seed --dry-run       # Preview the opt-in buyer demo dataset
+openclaw engram trust-zone-demo-seed --scenario agentic-commerce-v1 --dry-run
 openclaw engram trust-zone-demo-seed                 # Explicitly seed the demo dataset
 openclaw engram trust-zone-promote --record-id <id> --target-zone working --reason "Operator review"
 ```
@@ -943,13 +944,23 @@ Trust zones now ship with a dedicated admin-console view plus an explicit demo s
 - **Explicit only** — demo records appear only after you run `openclaw engram trust-zone-demo-seed` or trigger the matching admin-console action.
 - **Buyer-friendly story** — the trust-zone view surfaces provenance strength, promotion readiness, corroboration requirements, and operator promotion actions in one place.
 
-The seeded scenario is `enterprise-buyer-v1`, which creates a small, opinionated dataset covering:
+The default scenario is `enterprise-buyer-v1`, which creates a small, opinionated dataset covering:
 
 - quarantine records that are ready for review
 - working records that are blocked on missing provenance
 - working records that still need corroboration
 - working records with independent corroboration support
 - a trusted operator policy record
+
+The commerce scenario is `agentic-commerce-v1`. It models buyer-aware recommendations using synthetic catalog data plus:
+
+- brand, size, fit, budget, gift, and shipping preferences
+- excluded products and never-suggest rules
+- ask-before-checkout boundaries
+- a blocked unverified upsell claim
+- retrieval eval coverage for commerce personalization and checkout boundaries
+
+See [Agentic Commerce Demo](docs/agentic-commerce-demo.md) for the end-to-end walkthrough.
 
 See the [full CLI reference](docs/api.md#cli-commands) for all commands.
 

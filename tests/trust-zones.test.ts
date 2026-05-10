@@ -865,6 +865,79 @@ test("seedTrustZoneDemoDataset stays explicit and writes the enterprise demo sce
   assert.equal(status.records.byZone.trusted, 2);
 });
 
+test("seedTrustZoneDemoDataset previews the agentic commerce scenario with boundaries", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-trust-zone-commerce-demo-seed-"));
+  const preview = await seedTrustZoneDemoDataset({
+    memoryDir,
+    enabled: true,
+    dryRun: true,
+    scenario: "agentic-commerce-v1",
+    recordedAt: "2026-04-02T16:00:00.000Z",
+  });
+
+  assert.equal(preview.dryRun, true);
+  assert.equal(preview.scenario, "agentic-commerce-v1");
+  assert.equal(preview.recordsWritten, 0);
+  assert.equal(preview.records.length, 9);
+  assert.equal(new Set(preview.records.map((record) => record.recordId)).size, 9);
+  assert.equal(
+    preview.records.filter((record) => record.metadata?.commerceFacet === "ask_before_checkout").length,
+    1,
+  );
+  assert.equal(
+    preview.records.filter((record) => record.metadata?.commerceFacet === "excluded_products").length,
+    1,
+  );
+  assert.equal(
+    preview.records.filter((record) => record.metadata?.commerceFacet === "shipping_urgency").length,
+    2,
+  );
+
+  const blockedUpsell = preview.records.find((record) => record.metadata?.story === "commerce-blocked-unverified-upsell");
+  assert.ok(blockedUpsell);
+  assert.equal(blockedUpsell.zone, "working");
+  const blockedReadiness = summarizeTrustZonePromotionReadiness({
+    record: blockedUpsell,
+    allRecords: preview.records,
+    poisoningDefenseEnabled: true,
+  });
+  assert.equal(blockedReadiness.allowed, false);
+  assert.match(blockedReadiness.reasons.join(" "), /sourceId|evidenceHash/i);
+
+  const shippingEstimate = preview.records.find((record) => record.metadata?.story === "working-shipping-urgency");
+  assert.ok(shippingEstimate);
+  const shippingReadiness = summarizeTrustZonePromotionReadiness({
+    record: shippingEstimate,
+    allRecords: preview.records,
+    poisoningDefenseEnabled: true,
+  });
+  assert.equal(shippingReadiness.allowed, true);
+  assert.equal(shippingReadiness.corroborationCount, 1);
+  assert.deepEqual(shippingReadiness.corroborationSourceClasses, ["web_content"]);
+
+  const written = await runTrustZoneDemoSeedCliCommand({
+    memoryDir,
+    trustZonesEnabled: true,
+    dryRun: false,
+    scenario: "agentic-commerce-v1",
+    recordedAt: "2026-04-02T16:00:00.000Z",
+  });
+  assert.equal(written.dryRun, false);
+  assert.equal(written.recordsWritten, 9);
+  assert.equal(written.scenario, "agentic-commerce-v1");
+
+  const status = await getTrustZoneStoreStatus({
+    memoryDir,
+    enabled: true,
+    promotionEnabled: true,
+    poisoningDefenseEnabled: true,
+  });
+  assert.equal(status.records.valid, 9);
+  assert.equal(status.records.byZone.quarantine, 1);
+  assert.equal(status.records.byZone.working, 3);
+  assert.equal(status.records.byZone.trusted, 5);
+});
+
 test("seedTrustZoneDemoDataset rejects non-parsable recordedAt values before date math", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-trust-zone-demo-seed-invalid-"));
   await assert.rejects(

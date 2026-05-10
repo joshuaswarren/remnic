@@ -59,7 +59,7 @@ Core routes:
 - `GET /engram/v1/trust-zones/status` — trust-zone store status, counts, and latest record summary
 - `GET /engram/v1/trust-zones/records` — browse trust-zone records with zone/source/query filters
 - `POST /engram/v1/trust-zones/promote` — dry-run or apply a trust-zone promotion
-- `POST /engram/v1/trust-zones/demo-seed` — explicitly seed the opt-in buyer demo dataset
+- `POST /engram/v1/trust-zones/demo-seed` — explicitly seed an opt-in buyer demo dataset
 - `POST /engram/v1/review-disposition` — operator review decision write path
 - `POST /engram/v1/observe` — feed conversation messages into LCM archive and extraction pipeline
 - `POST /engram/v1/lcm/search` — full-text search over LCM-archived conversations
@@ -139,12 +139,13 @@ Request fields:
 
 Request fields:
 
-- `scenario` (optional, default: `enterprise-buyer-v1`)
+- `scenario` (optional, default: `enterprise-buyer-v1`; also supports `agentic-commerce-v1`)
 - `recordedAt` (optional base ISO timestamp for demo records)
 - `dryRun`
 - `namespace`
 
 This route is intentionally explicit and never runs automatically. Use it only when you want seeded demo data in the selected namespace.
+`agentic-commerce-v1` is the synthetic commerce walkthrough for buyer preferences, exclusions, shipping urgency, and ask-before-checkout boundaries.
 
 #### `POST /engram/v1/observe`
 
@@ -565,7 +566,7 @@ Run via `openclaw engram <command>`:
 | `action-confidence [--confidence N] [--risk low\|medium\|high\|irreversible\|restricted] [--context none\|partial\|sufficient]` | Evaluate ask/draft/act/refuse/escalate advisory policy |
 | `trust-zone-status` | Show trust-zone store status and aggregate counts |
 | `trust-zone-promote --record-id <id> --target-zone <zone> --reason <text> [--dry-run]` | Preview or apply a trust-zone promotion |
-| `trust-zone-demo-seed [--scenario enterprise-buyer-v1] [--recorded-at <iso>] [--dry-run]` | Explicitly preview or seed the opt-in trust-zone buyer demo dataset |
+| `trust-zone-demo-seed [--scenario enterprise-buyer-v1\|agentic-commerce-v1] [--recorded-at <iso>] [--dry-run]` | Explicitly preview or seed an opt-in trust-zone buyer demo dataset |
 | `versions <list\|show\|diff\|revert> <page-path> [version-id(s)]` | Page version history management |
 | `taxonomy <show\|resolver\|add\|remove> [args]` | MECE taxonomy knowledge directory management |
 | `enrich <entity-name\|--all\|audit\|providers> [--dry-run]` | External entity enrichment pipeline |
