@@ -1558,6 +1558,46 @@ export interface PluginConfig {
   explicitCueRecallMaxChars: number;
   /** Maximum query-visible cues expanded per recall. */
   explicitCueRecallMaxReferences: number;
+  /** Enable targeted fact evidence recall for direct answer questions. */
+  targetedFactRecallEnabled: boolean;
+  /** Character budget for the targeted fact evidence section. */
+  targetedFactRecallMaxChars: number;
+  /** Maximum recalled items for targeted fact evidence. */
+  targetedFactRecallMaxResults: number;
+  /** Recent-turn scan window for targeted fact evidence. */
+  targetedFactRecallScanWindowTurns: number;
+  /** Recent-token scan window for targeted fact evidence. */
+  targetedFactRecallScanWindowTokens: number;
+  /** Enable focused list evidence recall for count, relation, and recommendation questions. */
+  focusedListRecallEnabled: boolean;
+  /** Character budget for the focused list evidence section. */
+  focusedListRecallMaxChars: number;
+  /** Maximum recalled items for focused list evidence. */
+  focusedListRecallMaxResults: number;
+  /** Recent-turn scan window for focused list evidence. */
+  focusedListRecallScanWindowTurns: number;
+  /** Recent-token scan window for focused list evidence. */
+  focusedListRecallScanWindowTokens: number;
+  /** Enable response guidance recall for user answer-shape preferences. */
+  responseGuidanceRecallEnabled: boolean;
+  /** Character budget for the response guidance recall section. */
+  responseGuidanceRecallMaxChars: number;
+  /** Maximum recalled items for response guidance. */
+  responseGuidanceRecallMaxResults: number;
+  /** Recent-turn scan window for response guidance. */
+  responseGuidanceRecallScanWindowTurns: number;
+  /** Recent-token scan window for response guidance. */
+  responseGuidanceRecallScanWindowTokens: number;
+  /** Enable event-order evidence recall for chronology questions. */
+  eventOrderRecallEnabled: boolean;
+  /** Character budget for the event-order evidence section. */
+  eventOrderRecallMaxChars: number;
+  /** Maximum recalled items for event-order evidence. */
+  eventOrderRecallMaxResults: number;
+  /** Recent-turn scan window for event-order evidence. */
+  eventOrderRecallScanWindowTurns: number;
+  /** Recent-token scan window for event-order evidence. */
+  eventOrderRecallScanWindowTokens: number;
   // Lossless Context Management (LCM)
   lcmEnabled: boolean;
   lcmLeafBatchSize: number;

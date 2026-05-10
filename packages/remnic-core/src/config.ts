@@ -2756,6 +2756,43 @@ export function parseConfig(raw: unknown): PluginConfig {
       coerceNumber(cfg.explicitCueRecallMaxReferences) !== undefined
         ? Math.max(0, Math.floor(coerceNumber(cfg.explicitCueRecallMaxReferences)!))
         : 24,
+    targetedFactRecallEnabled: coerceBool(cfg.targetedFactRecallEnabled) ?? true,
+    targetedFactRecallMaxChars:
+      coerceClampedInteger(cfg.targetedFactRecallMaxChars, 2400, 0),
+    targetedFactRecallMaxResults:
+      coerceClampedInteger(cfg.targetedFactRecallMaxResults, 48, 0),
+    targetedFactRecallScanWindowTurns:
+      coerceClampedInteger(cfg.targetedFactRecallScanWindowTurns, 8, 1),
+    targetedFactRecallScanWindowTokens:
+      coerceClampedInteger(cfg.targetedFactRecallScanWindowTokens, 12000, 1),
+    focusedListRecallEnabled: coerceBool(cfg.focusedListRecallEnabled) ?? true,
+    focusedListRecallMaxChars:
+      coerceClampedInteger(cfg.focusedListRecallMaxChars, 2600, 0),
+    focusedListRecallMaxResults:
+      coerceClampedInteger(cfg.focusedListRecallMaxResults, 40, 0),
+    focusedListRecallScanWindowTurns:
+      coerceClampedInteger(cfg.focusedListRecallScanWindowTurns, 64, 1),
+    focusedListRecallScanWindowTokens:
+      coerceClampedInteger(cfg.focusedListRecallScanWindowTokens, 14000, 1),
+    responseGuidanceRecallEnabled:
+      coerceBool(cfg.responseGuidanceRecallEnabled) ?? true,
+    responseGuidanceRecallMaxChars:
+      coerceClampedInteger(cfg.responseGuidanceRecallMaxChars, 2400, 0),
+    responseGuidanceRecallMaxResults:
+      coerceClampedInteger(cfg.responseGuidanceRecallMaxResults, 48, 0),
+    responseGuidanceRecallScanWindowTurns:
+      coerceClampedInteger(cfg.responseGuidanceRecallScanWindowTurns, 64, 1),
+    responseGuidanceRecallScanWindowTokens:
+      coerceClampedInteger(cfg.responseGuidanceRecallScanWindowTokens, 16000, 1),
+    eventOrderRecallEnabled: coerceBool(cfg.eventOrderRecallEnabled) ?? true,
+    eventOrderRecallMaxChars:
+      coerceClampedInteger(cfg.eventOrderRecallMaxChars, 3200, 0),
+    eventOrderRecallMaxResults:
+      coerceClampedInteger(cfg.eventOrderRecallMaxResults, 24, 0),
+    eventOrderRecallScanWindowTurns:
+      coerceClampedInteger(cfg.eventOrderRecallScanWindowTurns, 12, 1),
+    eventOrderRecallScanWindowTokens:
+      coerceClampedInteger(cfg.eventOrderRecallScanWindowTokens, 24000, 1),
     // Lossless Context Management (LCM)
     lcmEnabled: cfg.lcmEnabled === true,
     lcmLeafBatchSize:
@@ -3239,6 +3276,16 @@ function clampNonNegativeNumber(value: unknown): number | undefined {
   return Math.max(0, Math.floor(value));
 }
 
+function coerceClampedInteger(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+): number {
+  const coerced = coerceNumber(value);
+  if (coerced === undefined) return fallback;
+  return Math.max(minimum, Math.floor(coerced));
+}
+
 /**
  * Cursor L on PR #736: numeric config keys must accept BOTH numbers
  * and CLI-string forms (`--config peerProfileReasonerMinInteractions=10`
@@ -3375,82 +3422,34 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
     {
       id: "targeted-facts",
       enabled: coerceBool(cfg.targetedFactRecallEnabled) ?? true,
-      maxChars:
-        typeof cfg.targetedFactRecallMaxChars === "number"
-          ? Math.max(0, Math.floor(cfg.targetedFactRecallMaxChars))
-          : 2400,
-      maxResults:
-        typeof cfg.targetedFactRecallMaxResults === "number"
-          ? Math.max(0, Math.floor(cfg.targetedFactRecallMaxResults))
-          : 48,
-      maxTurns:
-        typeof cfg.targetedFactRecallScanWindowTurns === "number"
-          ? Math.max(1, Math.floor(cfg.targetedFactRecallScanWindowTurns))
-          : 8,
-      maxTokens:
-        typeof cfg.targetedFactRecallScanWindowTokens === "number"
-          ? Math.max(1, Math.floor(cfg.targetedFactRecallScanWindowTokens))
-          : 12000,
+      maxChars: coerceClampedInteger(cfg.targetedFactRecallMaxChars, 2400, 0),
+      maxResults: coerceClampedInteger(cfg.targetedFactRecallMaxResults, 48, 0),
+      maxTurns: coerceClampedInteger(cfg.targetedFactRecallScanWindowTurns, 8, 1),
+      maxTokens: coerceClampedInteger(cfg.targetedFactRecallScanWindowTokens, 12000, 1),
     },
     {
       id: "focused-list",
       enabled: coerceBool(cfg.focusedListRecallEnabled) ?? true,
-      maxChars:
-        typeof cfg.focusedListRecallMaxChars === "number"
-          ? Math.max(0, Math.floor(cfg.focusedListRecallMaxChars))
-          : 2600,
-      maxResults:
-        typeof cfg.focusedListRecallMaxResults === "number"
-          ? Math.max(0, Math.floor(cfg.focusedListRecallMaxResults))
-          : 40,
-      maxTurns:
-        typeof cfg.focusedListRecallScanWindowTurns === "number"
-          ? Math.max(1, Math.floor(cfg.focusedListRecallScanWindowTurns))
-          : 64,
-      maxTokens:
-        typeof cfg.focusedListRecallScanWindowTokens === "number"
-          ? Math.max(1, Math.floor(cfg.focusedListRecallScanWindowTokens))
-          : 14000,
+      maxChars: coerceClampedInteger(cfg.focusedListRecallMaxChars, 2600, 0),
+      maxResults: coerceClampedInteger(cfg.focusedListRecallMaxResults, 40, 0),
+      maxTurns: coerceClampedInteger(cfg.focusedListRecallScanWindowTurns, 64, 1),
+      maxTokens: coerceClampedInteger(cfg.focusedListRecallScanWindowTokens, 14000, 1),
     },
     {
       id: "response-guidance",
       enabled: coerceBool(cfg.responseGuidanceRecallEnabled) ?? true,
-      maxChars:
-        typeof cfg.responseGuidanceRecallMaxChars === "number"
-          ? Math.max(0, Math.floor(cfg.responseGuidanceRecallMaxChars))
-          : 2400,
-      maxResults:
-        typeof cfg.responseGuidanceRecallMaxResults === "number"
-          ? Math.max(0, Math.floor(cfg.responseGuidanceRecallMaxResults))
-          : 48,
-      maxTurns:
-        typeof cfg.responseGuidanceRecallScanWindowTurns === "number"
-          ? Math.max(1, Math.floor(cfg.responseGuidanceRecallScanWindowTurns))
-          : 64,
-      maxTokens:
-        typeof cfg.responseGuidanceRecallScanWindowTokens === "number"
-          ? Math.max(1, Math.floor(cfg.responseGuidanceRecallScanWindowTokens))
-          : 16000,
+      maxChars: coerceClampedInteger(cfg.responseGuidanceRecallMaxChars, 2400, 0),
+      maxResults: coerceClampedInteger(cfg.responseGuidanceRecallMaxResults, 48, 0),
+      maxTurns: coerceClampedInteger(cfg.responseGuidanceRecallScanWindowTurns, 64, 1),
+      maxTokens: coerceClampedInteger(cfg.responseGuidanceRecallScanWindowTokens, 16000, 1),
     },
     {
       id: "event-order",
       enabled: coerceBool(cfg.eventOrderRecallEnabled) ?? true,
-      maxChars:
-        typeof cfg.eventOrderRecallMaxChars === "number"
-          ? Math.max(0, Math.floor(cfg.eventOrderRecallMaxChars))
-          : 3200,
-      maxResults:
-        typeof cfg.eventOrderRecallMaxResults === "number"
-          ? Math.max(0, Math.floor(cfg.eventOrderRecallMaxResults))
-          : 24,
-      maxTurns:
-        typeof cfg.eventOrderRecallScanWindowTurns === "number"
-          ? Math.max(1, Math.floor(cfg.eventOrderRecallScanWindowTurns))
-          : 12,
-      maxTokens:
-        typeof cfg.eventOrderRecallScanWindowTokens === "number"
-          ? Math.max(1, Math.floor(cfg.eventOrderRecallScanWindowTokens))
-          : 24000,
+      maxChars: coerceClampedInteger(cfg.eventOrderRecallMaxChars, 3200, 0),
+      maxResults: coerceClampedInteger(cfg.eventOrderRecallMaxResults, 24, 0),
+      maxTurns: coerceClampedInteger(cfg.eventOrderRecallScanWindowTurns, 12, 1),
+      maxTokens: coerceClampedInteger(cfg.eventOrderRecallScanWindowTokens, 24000, 1),
     },
     {
       id: "profile",

@@ -227,6 +227,7 @@ export {
   parseOpenAiMessageParts,
   parseAnthropicMessageParts,
   parseOpenClawMessageParts,
+  parsePiMessageParts,
   normalizeExplicitParts,
   partsFromRenderedText,
   isLcmMessagePartKind,
@@ -236,6 +237,36 @@ export {
   type MessagePartSourceFormat,
   type ParseMessagePartsOptions,
 } from "./message-parts/index.js";
+
+// ---------------------------------------------------------------------------
+// User-aware memory provenance
+// ---------------------------------------------------------------------------
+
+export {
+  USER_MODEL_CORE_QUESTION,
+  USER_MODEL_DIMENSIONS,
+  USER_CONTEXT_SCOPES,
+  USER_BOUNDARY_SCOPES,
+  normalizeUserModelDimension,
+  normalizeUserContextScope,
+  facetHasBoundary,
+  summarizeUserModelCoverage,
+  type UserModelDimension,
+  type UserContextScope,
+  type UserBoundaryScope,
+  type UserModelFacet,
+  type UserModelCoverage,
+} from "./user-model.js";
+
+export {
+  buildRetrievedMemoryProvenance,
+  normalizeRetrievedMemoryProvenance,
+  summarizeRetrievedMemoryProvenance,
+  type RetrievedMemoryProvenance,
+  type BuildRetrievedMemoryProvenanceOptions,
+  type RetrievedMemoryCorrectionState,
+  type RetrievedMemorySafety,
+} from "./memory-provenance.js";
 
 // ---------------------------------------------------------------------------
 // Inline source attribution (issue #369)
@@ -641,6 +672,7 @@ export {
   installConnector,
   removeConnector,
   doctorConnector,
+  getConnectorToken,
   loadRegistry,
   saveRegistry,
   generateMarketplaceManifest,

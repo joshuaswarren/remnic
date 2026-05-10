@@ -81,3 +81,66 @@ test("parseConfig coerces string false for default specialized recall sections",
     );
   }
 });
+
+test("parseConfig coerces numeric strings for default specialized recall sections", () => {
+  const cfg = parseConfig({
+    targetedFactRecallMaxChars: "0",
+    targetedFactRecallMaxResults: "7",
+    targetedFactRecallScanWindowTurns: "3",
+    targetedFactRecallScanWindowTokens: "1000",
+    focusedListRecallMaxChars: "8",
+    focusedListRecallMaxResults: "0",
+    focusedListRecallScanWindowTurns: "5",
+    focusedListRecallScanWindowTokens: "1200",
+    responseGuidanceRecallMaxChars: "9",
+    responseGuidanceRecallMaxResults: "10",
+    responseGuidanceRecallScanWindowTurns: "6",
+    responseGuidanceRecallScanWindowTokens: "1300",
+    eventOrderRecallMaxChars: "11",
+    eventOrderRecallMaxResults: "12",
+    eventOrderRecallScanWindowTurns: "7",
+    eventOrderRecallScanWindowTokens: "1400",
+  });
+  const section = (id: string) => {
+    const found = cfg.recallPipeline.find((entry) => entry.id === id);
+    assert.ok(found, `${id} section should exist`);
+    return found;
+  };
+
+  assert.deepEqual(
+    {
+      maxChars: section("targeted-facts").maxChars,
+      maxResults: section("targeted-facts").maxResults,
+      maxTurns: section("targeted-facts").maxTurns,
+      maxTokens: section("targeted-facts").maxTokens,
+    },
+    { maxChars: 0, maxResults: 7, maxTurns: 3, maxTokens: 1000 },
+  );
+  assert.deepEqual(
+    {
+      maxChars: section("focused-list").maxChars,
+      maxResults: section("focused-list").maxResults,
+      maxTurns: section("focused-list").maxTurns,
+      maxTokens: section("focused-list").maxTokens,
+    },
+    { maxChars: 8, maxResults: 0, maxTurns: 5, maxTokens: 1200 },
+  );
+  assert.deepEqual(
+    {
+      maxChars: section("response-guidance").maxChars,
+      maxResults: section("response-guidance").maxResults,
+      maxTurns: section("response-guidance").maxTurns,
+      maxTokens: section("response-guidance").maxTokens,
+    },
+    { maxChars: 9, maxResults: 10, maxTurns: 6, maxTokens: 1300 },
+  );
+  assert.deepEqual(
+    {
+      maxChars: section("event-order").maxChars,
+      maxResults: section("event-order").maxResults,
+      maxTurns: section("event-order").maxTurns,
+      maxTokens: section("event-order").maxTokens,
+    },
+    { maxChars: 11, maxResults: 12, maxTurns: 7, maxTokens: 1400 },
+  );
+});

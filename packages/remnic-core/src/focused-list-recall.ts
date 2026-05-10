@@ -769,7 +769,7 @@ function focusedListTitle(intent: FocusedListIntent): string {
 
 function isProbabilityCountQuery(query: string): boolean {
   const normalized = query.toLowerCase();
-  return /\bprobability|calculations?\b/.test(normalized) &&
+  return /\b(?:probability|calculations?)\b/.test(normalized) &&
     /\b(?:coin|coins|tossing|toss|dice|die|rolling|roll)\b/.test(normalized);
 }
 
