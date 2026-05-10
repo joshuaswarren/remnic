@@ -94,6 +94,19 @@ export {
 export type {
   SyntheticEmailIngestionAdapterOptions,
 } from "./ingestion-adapters/synthetic-email-adapter.js";
+export {
+  MEMORY_EVAL_DIMENSIONS,
+  MEMORY_EVAL_PUBLIC_LINE,
+  getMemoryEvalDimension,
+  listMemoryEvalBenchmarkIds,
+  listMemoryEvalDimensions,
+} from "./memory-evals.js";
+export type {
+  MemoryEvalCategory,
+  MemoryEvalDimension,
+  MemoryEvalDimensionId,
+  MemoryEvalMetric,
+} from "./memory-evals.js";
 export type {
   AnthropicProviderConfig,
   CodexCliProviderConfig,

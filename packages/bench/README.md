@@ -26,6 +26,27 @@ The CLI loads `@remnic/bench` via a computed-specifier dynamic import. If it's n
 - **Published feed** — `remnic bench publish --target remnic-ai` builds the tamper-evident integrity manifest consumed by remnic.ai.
 - **Provider discovery** — `remnic bench providers discover` enumerates local OpenAI / Anthropic / Ollama / LiteLLM providers for adapter wiring.
 
+## Memory eval dimensions
+
+Agent memory without evals is vibes with a database.
+
+`@remnic/bench` exports `MEMORY_EVAL_DIMENSIONS` as Remnic's shared eval
+contract for user-aware agents. It covers:
+
+- repeated-context reduction
+- unnecessary-clarification reduction
+- retrieval correctness
+- stale-memory harm
+- scope respect
+- ask-when-needed decisions
+- act-when-enough-context decisions
+- personalization quality
+
+Each dimension maps to existing quick-capable benchmark ids. Use
+`listMemoryEvalBenchmarkIds()` when wiring CI coverage, and use the per-dimension
+`fullModeGuidance` strings when designing publishable eval claims. See
+[`docs/memory-evals.md`](../../docs/memory-evals.md) for the full map.
+
 ## CLI quick reference
 
 ```bash

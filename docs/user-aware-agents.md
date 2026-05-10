@@ -103,6 +103,19 @@ The helper is exposed as:
 - MCP: `remnic.action_confidence` and legacy `engram.action_confidence`
 - CLI: `remnic action-confidence`
 
+## Memory Evals
+
+`@remnic/bench` exports `MEMORY_EVAL_DIMENSIONS` as Remnic's shared eval
+contract for user-aware memory. Public line:
+
+> Agent memory without evals is vibes with a database.
+
+The contract covers repeated-context reduction, unnecessary-clarification
+reduction, retrieval correctness, stale-memory harm, scope respect,
+ask-when-needed decisions, act-when-enough-context decisions, and
+personalization quality. See [Memory Evals](memory-evals.md) for the full
+dimension map, metrics, and quick benchmark coverage.
+
 ## Core Exports
 
 `@remnic/core` exports:
