@@ -75,11 +75,13 @@ function readConfigFile(configPath: string): Record<string, unknown> {
   try {
     const raw = readFileSync(configPath, "utf-8");
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    throw new Error("expected a JSON object");
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to load Remnic Pi config at ${configPath}: ${reason}`);
   }
 }
 

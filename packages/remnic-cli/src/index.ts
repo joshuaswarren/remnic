@@ -5050,6 +5050,12 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       console.error("Usage: remnic connectors remove <id>");
       process.exit(1);
     }
+    const connectorBeforeRemoval = listConnectors().installed.find(
+      (connector) => connector.connectorId === connectorId,
+    );
+    const savedInstallExtension = connectorBeforeRemoval
+      ? coerceInstallExtension(connectorBeforeRemoval.config.installExtension)
+      : undefined;
     const result = removeConnector(connectorId);
     if (result.status === "error") {
       console.error(result.message);
@@ -5057,14 +5063,18 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     }
     console.log(result.message);
     if (result.status === "removed" && connectorId !== "codex-cli") {
-      const pub = publisherForConnector(connectorId);
-      if (pub) {
-        try {
-          await pub.unpublish();
-          console.log("  Removed memory extension");
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`  Warning: memory extension removal failed: ${msg}`);
+      if (savedInstallExtension === false) {
+        console.log("  Memory extension removal skipped via installExtension=false");
+      } else {
+        const pub = publisherForConnector(connectorId);
+        if (pub) {
+          try {
+            await pub.unpublish();
+            console.log("  Removed memory extension");
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`  Warning: memory extension removal failed: ${msg}`);
+          }
         }
       }
     } else if (result.status === "skipped" && result.reason === "config-parse-failed") {

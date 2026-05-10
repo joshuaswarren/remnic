@@ -51,16 +51,31 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
   }
 });
 
-test("loadConfig ignores unreadable or malformed config files", () => {
+test("loadConfig fails closed on malformed config files", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-bad-"));
   const configPath = path.join(root, "remnic.config.json");
   try {
     fs.writeFileSync(configPath, "{not-json");
 
-    const config = loadConfig({ configPath, env: { REMNIC_DAEMON_URL: "http://127.0.0.1:5555" } });
+    assert.throws(
+      () => loadConfig({ configPath, env: { REMNIC_DAEMON_URL: "http://127.0.0.1:5555" } }),
+      /Failed to load Remnic Pi config/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
-    assert.equal(config.remnicDaemonUrl, "http://127.0.0.1:5555");
-    assert.equal(config.authToken, undefined);
+test("loadConfig fails closed when config file is not an object", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-shape-"));
+  const configPath = path.join(root, "remnic.config.json");
+  try {
+    fs.writeFileSync(configPath, "[]");
+
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /expected a JSON object/,
+    );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
