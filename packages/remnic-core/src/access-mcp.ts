@@ -455,6 +455,7 @@ export class EngramMcpServer {
           properties: {
             app: { type: "object" },
             query: { type: "string" },
+            sessionKey: { type: "string" },
             namespace: { type: "string" },
             safeRecallPreview: { type: "string" },
             memoryCount: { type: "number" },

@@ -139,9 +139,11 @@ test("ChatGPT Apps inspector advertises app-compatible tool metadata and aliases
   ) as {
     title?: string;
     annotations?: Record<string, unknown>;
+    outputSchema?: { properties?: Record<string, unknown> };
     _meta?: Record<string, unknown>;
   };
   assert.equal(descriptor.title, "Show Remnic Memory Inspector");
+  assert.deepEqual(descriptor.outputSchema?.properties?.sessionKey, { type: "string" });
   assert.deepEqual(descriptor.annotations, {
     readOnlyHint: true,
     destructiveHint: false,
