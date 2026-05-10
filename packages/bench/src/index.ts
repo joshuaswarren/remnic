@@ -281,6 +281,12 @@ export {
   loadLoCoMo10,
   loadLongMemEvalS,
 } from "./benchmarks/published/dataset-loader.js";
+export {
+  loadBeamDatasetPreview,
+} from "./benchmarks/published/beam/runner.js";
+export type {
+  BeamDatasetPreview,
+} from "./benchmarks/published/beam/runner.js";
 export type {
   DatasetSource,
   LoadedDataset,
