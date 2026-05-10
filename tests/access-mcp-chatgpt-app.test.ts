@@ -179,9 +179,20 @@ test("ChatGPT Apps inspector serves a widget resource over MCP resources/read", 
     { connectDomains: [], resourceDomains: [] },
   );
 
+  const templatesResponse = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 3,
+    method: "resources/templates/list",
+    params: {},
+  });
+  assert.deepEqual(
+    (templatesResponse?.result as { resourceTemplates: unknown[] }).resourceTemplates,
+    [],
+  );
+
   const readResponse = await server.handleRequest({
     jsonrpc: "2.0",
-    id: 2,
+    id: 4,
     method: "resources/read",
     params: { uri: REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI },
   });

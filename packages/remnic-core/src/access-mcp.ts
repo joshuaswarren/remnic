@@ -1690,14 +1690,7 @@ export class EngramMcpServer {
         jsonrpc: "2.0",
         id,
         result: {
-          resourceTemplates: this.resources.map((resource) => ({
-            uriTemplate: resource.uri,
-            name: resource.name,
-            title: resource.title,
-            description: resource.description,
-            mimeType: resource.mimeType,
-            _meta: resource._meta,
-          })),
+          resourceTemplates: [],
         },
       };
     }
