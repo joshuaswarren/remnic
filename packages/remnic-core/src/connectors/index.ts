@@ -670,19 +670,26 @@ function readSavedConnectorConfig(configPath: string): Record<string, unknown> {
   }
 }
 
-function mergeSavedConnectorConfig(
+function removeClearedSavedConnectorConfig(
   savedConnectorConfig: Record<string, unknown>,
-  userConfig: Record<string, unknown>,
+  rawUserConfig: Record<string, unknown>,
 ): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...savedConnectorConfig };
-  for (const [key, value] of Object.entries(userConfig)) {
+  for (const [key, value] of Object.entries(rawUserConfig)) {
     if (value === undefined || value === null || value === "") {
       delete merged[key];
-      continue;
     }
-    merged[key] = value;
   }
   return merged;
+}
+
+function compactConnectorConfigOverrides(rawUserConfig: Record<string, unknown>): Record<string, unknown> {
+  const safeUserConfig: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rawUserConfig)) {
+    if (value === undefined || value === null || value === "") continue;
+    safeUserConfig[key] = value;
+  }
+  return safeUserConfig;
 }
 
 // ── Install connector ───────────────────────────────────────────────────────
@@ -910,9 +917,12 @@ export function installConnector(options: InstallOptions): InstallResult {
   //
   // Strip any stray `token` key the caller may have supplied via options.config
   // so it cannot be persisted to disk even on legacy call paths.
-  const { token: _callerToken, ...safeUserConfig } = (options.config ?? {}) as Record<string, unknown>;
+  const { token: _callerToken, ...rawUserConfig } = (options.config ?? {}) as Record<string, unknown>;
+  const savedConnectorConfigForMerge = removeClearedSavedConnectorConfig(savedConnectorConfig, rawUserConfig);
+  const safeUserConfig = compactConnectorConfigOverrides(rawUserConfig);
   const resolvedConfig: Record<string, unknown> = {
-    ...mergeSavedConnectorConfig(savedConnectorConfig, safeUserConfig),
+    ...savedConnectorConfigForMerge,
+    ...safeUserConfig,
     connectorId: options.connectorId,
     installedAt: new Date().toISOString(),
     // For hermes, always overlay the sanitized/coerced resolved values so that
