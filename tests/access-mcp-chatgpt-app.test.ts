@@ -497,6 +497,56 @@ test("ChatGPT Apps inspector redacts blocked visible memory card previews", () =
   assert.doesNotMatch(result.memories[0]?.preview ?? "", /blocked private detail/);
 });
 
+test("ChatGPT Apps inspector withholds previews when X-ray provenance is unavailable", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "unverified memory detail",
+    count: 1,
+    memoryIds: ["mem-unverified"],
+    results: [
+      {
+        id: "mem-unverified",
+        path: "memories/mem-unverified.md",
+        category: "preference",
+        status: "active",
+        preview: "unverified memory detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const result = buildChatGptMemoryInspectorResult(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    null,
+    {
+      schemaVersion: 1,
+      decision: "ask",
+      confidence: 0.2,
+      risk: "medium",
+      contextReadiness: "partial",
+      attentionPolicy: "interruption_budgeting",
+      principle: "A good agent should spend the user's attention carefully.",
+      reasons: [],
+      blockers: ["missing xray provenance"],
+      factors: [],
+      retrievedMemoryCount: 1,
+      usableMemoryCount: 0,
+      staleMemoryCount: 0,
+      correctedMemoryCount: 0,
+      scopeMismatchCount: 0,
+      safeToAct: false,
+    },
+  );
+
+  assert.match(result.safeRecallPreview, /X-ray provenance was unavailable/);
+  assert.doesNotMatch(result.safeRecallPreview, /unverified memory detail/);
+  assert.match(result.memories[0]?.preview ?? "", /Preview withheld/);
+  assert.doesNotMatch(result.memories[0]?.preview ?? "", /unverified memory detail/);
+});
+
 test("ChatGPT Apps inspector rejects malformed currentContextScopes before service dispatch", async () => {
   const capture: Capture = { recalls: [], xrays: [], actionRequests: [] };
   const server = new EngramMcpServer(fakeService(capture));

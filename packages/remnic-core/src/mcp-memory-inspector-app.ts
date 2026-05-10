@@ -112,6 +112,7 @@ export function buildChatGptMemoryInspectorResult(
   xray: RecallXraySnapshot | null,
   actionConfidence: ActionConfidenceResult,
 ): RemnicChatGptMemoryInspectorResult {
+  const xrayUnavailable = xray === null;
   const xrayById = new Map<string, RecallXrayResult>();
   for (const result of xray?.results ?? []) {
     xrayById.set(result.memoryId, result);
@@ -121,14 +122,17 @@ export function buildChatGptMemoryInspectorResult(
     const xrayResult = xrayById.get(summary.id);
     const provenance = xrayResult?.provenance;
     const blocked = provenance?.safety === "blocked";
+    const preview = xrayUnavailable
+      ? "Preview withheld: X-ray provenance was unavailable for this recall."
+      : blocked
+        ? "Preview withheld: this memory is blocked in the current context."
+        : summary.preview;
     return {
       id: summary.id,
       path: summary.path,
       category: summary.category,
       status: summary.status,
-      preview: blocked
-        ? "Preview withheld: this memory is blocked in the current context."
-        : summary.preview,
+      preview,
       servedBy: xrayResult?.servedBy,
       score: xrayResult?.scoreDecomposition.final,
       source: provenance?.source,
@@ -146,6 +150,11 @@ export function buildChatGptMemoryInspectorResult(
   const blockedCount = (xray?.results ?? [])
     .filter((result) => result.provenance?.safety === "blocked")
     .length;
+  const safeRecallPreview = xrayUnavailable
+    ? "Recall preview withheld: X-ray provenance was unavailable, so memory safety could not be verified."
+    : blockedCount > 0
+      ? `Recall preview withheld: ${blockedCount} retrieved memory ${blockedCount === 1 ? "is" : "are"} blocked in the current context.`
+      : truncate(recall.context, 1_500);
 
   const primaryMemoryId = memories[0]?.id ?? "<memory-id>";
   return {
@@ -157,9 +166,7 @@ export function buildChatGptMemoryInspectorResult(
     query: recall.query || input.query,
     ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
     namespace: recall.namespace,
-    safeRecallPreview: blockedCount > 0
-      ? `Recall preview withheld: ${blockedCount} retrieved memory ${blockedCount === 1 ? "is" : "are"} blocked in the current context.`
-      : truncate(recall.context, 1_500),
+    safeRecallPreview,
     memoryCount: recall.count,
     memoryIds: recall.memoryIds,
     memories,
