@@ -133,6 +133,27 @@ describe("message-parts parsers", () => {
     assert.equal(parts[0]!.filePath, "src/config.ts");
   });
 
+  it("preserves top-level Pi tool results with string content", () => {
+    const parts = parseMessageParts({
+      role: "toolResult",
+      toolName: "read",
+      toolCallId: "call_1",
+      isError: true,
+      content: "Read failed for src/config.ts",
+    });
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "tool_result");
+    assert.equal(parts[0]!.toolName, "read");
+    assert.equal(parts[0]!.filePath, "src/config.ts");
+    assert.deepEqual(parts[0]!.payload, {
+      id: "call_1",
+      name: "read",
+      output: "Read failed for src/config.ts",
+      isError: true,
+    });
+  });
+
   it("extracts Anthropic tool_use blocks as structured file writes", () => {
     const parts = parseAnthropicMessageParts({
       content: [

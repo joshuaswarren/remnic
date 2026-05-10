@@ -5011,7 +5011,6 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
           console.warn(`  Warning: memory extension removal failed: ${msg}`);
         }
       }
-    }
     } else if (result.status === "skipped" && result.reason === "config-parse-failed") {
       // A malformed codex-cli.json means we could not verify or complete removal.
       // This is not a benign no-op — the connector may still be partially installed.

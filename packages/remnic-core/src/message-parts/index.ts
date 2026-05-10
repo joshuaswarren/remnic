@@ -303,6 +303,25 @@ export function parsePiMessageParts(
     ]);
   }
 
+  const topLevelType = asNonEmptyString(input.type ?? input.kind ?? input.role);
+  if (topLevelType === "toolResult" || topLevelType === "tool_result") {
+    const toolName = asNonEmptyString(input.name ?? input.toolName ?? input.tool_name);
+    const output = input.output ?? input.result ?? input.content;
+    const rendered = renderUnknownContent(output ?? input);
+    return withOrdinals([
+      makePart("tool_result", {
+        id: input.id ?? input.toolCallId ?? input.tool_call_id,
+        name: toolName,
+        output: sanitizePayload(output),
+        ...(typeof input.isError === "boolean" ? { isError: input.isError } : {}),
+        ...(typeof input.is_error === "boolean" ? { is_error: input.is_error } : {}),
+      }, {
+        toolName,
+        filePath: firstFilePathFromObject(input) ?? firstFilePath(rendered),
+      }),
+    ]);
+  }
+
   const content = input.content;
   const blocks = Array.isArray(content) ? content.filter(isRecord) : [];
   const parts: LcmMessagePartInput[] = [];
@@ -398,6 +417,7 @@ function inferSourceFormat(input: unknown): MessagePartSourceFormat | undefined 
 
 function isPiMessageObject(obj: Record<string, unknown>): boolean {
   if (obj.role === "bashExecution") return true;
+  if (obj.role === "toolResult" || obj.role === "tool_result") return true;
   const type = asNonEmptyString(obj.type ?? obj.kind);
   if (type === "toolCall" || type === "tool_call" || type === "toolResult" || type === "tool_result") return true;
   if (!Array.isArray(obj.content)) return false;
