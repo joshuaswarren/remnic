@@ -18,6 +18,52 @@ test("resolveConfigPath uses the Pi extension config location by default", () =>
   }
 });
 
+test("resolveConfigPath expands tilde in explicit and env config paths", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-tilde-home-"));
+  const previousHome = process.env.HOME;
+  try {
+    process.env.HOME = home;
+
+    assert.equal(
+      resolveConfigPath({ configPath: "~/custom/remnic.config.json", env: {} }),
+      path.join(home, "custom", "remnic.config.json"),
+    );
+    assert.equal(
+      resolveConfigPath({ env: { REMNIC_PI_CONFIG: "~/env/remnic.config.json" } }),
+      path.join(home, "env", "remnic.config.json"),
+    );
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig reads a tilde-expanded env config path", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-tilde-load-"));
+  const previousHome = process.env.HOME;
+  const configPath = path.join(home, "env", "remnic.config.json");
+  try {
+    process.env.HOME = home;
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ authToken: "remnic_pi_tilde" }));
+
+    const config = loadConfig({ env: { REMNIC_PI_CONFIG: "~/env/remnic.config.json" } });
+
+    assert.equal(config.authToken, "remnic_pi_tilde");
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig merges file values and coerces boolean-like strings", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-"));
   const configPath = path.join(root, "remnic.config.json");

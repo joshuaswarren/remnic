@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { expandTildePath } from "@remnic/core";
+
 export interface RemnicPiConfig {
   remnicDaemonUrl: string;
   authToken?: string;
@@ -93,7 +95,7 @@ function trimTrailingSlashes(value: string): string {
 
 export function resolveConfigPath(options: LoadConfigOptions = {}): string {
   const env = options.env ?? process.env;
-  return options.configPath || env.REMNIC_PI_CONFIG || defaultConfigPath(env);
+  return expandTildePath(options.configPath || env.REMNIC_PI_CONFIG || defaultConfigPath(env));
 }
 
 export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
