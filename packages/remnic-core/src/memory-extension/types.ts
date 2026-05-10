@@ -41,6 +41,7 @@ export interface MemoryExtensionPublisher {
 export interface PublishContext {
   readonly config: {
     memoryDir: string;
+    daemonUrl?: string;
     daemonPort?: number;
     namespace?: string;
   };

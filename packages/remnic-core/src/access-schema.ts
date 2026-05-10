@@ -143,7 +143,7 @@ const messageSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string().min(1, "message content must be non-empty"),
   sourceFormat: z
-    .enum(["openai", "anthropic", "openclaw", "lossless-claw", "remnic"])
+    .enum(["openai", "anthropic", "openclaw", "pi", "lossless-claw", "remnic"])
     .nullable()
     .optional(),
   rawContent: z.unknown().nullable().optional(),
@@ -274,6 +274,18 @@ export const lcmSearchRequestSchema = z.object({
   sessionKey: sessionKeySchema,
   namespace: namespaceSchema,
   limit: z.number().int().min(1).max(100).optional(),
+});
+
+export const lcmCompactionFlushRequestSchema = z.object({
+  sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
+  namespace: namespaceSchema,
+});
+
+export const lcmCompactionRecordRequestSchema = z.object({
+  sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
+  namespace: namespaceSchema,
+  tokensBefore: z.number().int().min(0, "tokensBefore must be a non-negative integer"),
+  tokensAfter: z.number().int().min(0, "tokensAfter must be a non-negative integer"),
 });
 
 // ---------------------------------------------------------------------------
@@ -410,6 +422,8 @@ export type ReviewDispositionRequest = z.infer<typeof reviewDispositionRequestSc
 export type TrustZonePromoteRequest = z.infer<typeof trustZonePromoteRequestSchema>;
 export type TrustZoneDemoSeedRequest = z.infer<typeof trustZoneDemoSeedRequestSchema>;
 export type LcmSearchRequest = z.infer<typeof lcmSearchRequestSchema>;
+export type LcmCompactionFlushRequest = z.infer<typeof lcmCompactionFlushRequestSchema>;
+export type LcmCompactionRecordRequest = z.infer<typeof lcmCompactionRecordRequestSchema>;
 export type DaySummaryRequest = z.infer<typeof daySummaryRequestSchema>;
 export type CapsuleExportRequest = z.infer<typeof capsuleExportRequestSchema>;
 export type CapsuleImportRequest = z.infer<typeof capsuleImportRequestSchema>;
@@ -431,6 +445,8 @@ export type SchemaName =
   | "trustZonePromote"
   | "trustZoneDemoSeed"
   | "lcmSearch"
+  | "lcmCompactionFlush"
+  | "lcmCompactionRecord"
   | "daySummary"
   | "capsuleExport"
   | "capsuleImport"
@@ -448,6 +464,8 @@ export type SchemaTypeFor<N extends SchemaName> =
   : N extends "trustZonePromote" ? TrustZonePromoteRequest
   : N extends "trustZoneDemoSeed" ? TrustZoneDemoSeedRequest
   : N extends "lcmSearch" ? LcmSearchRequest
+  : N extends "lcmCompactionFlush" ? LcmCompactionFlushRequest
+  : N extends "lcmCompactionRecord" ? LcmCompactionRecordRequest
   : N extends "daySummary" ? DaySummaryRequest
   : N extends "capsuleExport" ? CapsuleExportRequest
   : N extends "capsuleImport" ? CapsuleImportRequest
@@ -466,6 +484,8 @@ const schemas: Record<SchemaName, z.ZodTypeAny> = {
   trustZonePromote: trustZonePromoteRequestSchema,
   trustZoneDemoSeed: trustZoneDemoSeedRequestSchema,
   lcmSearch: lcmSearchRequestSchema,
+  lcmCompactionFlush: lcmCompactionFlushRequestSchema,
+  lcmCompactionRecord: lcmCompactionRecordRequestSchema,
   daySummary: daySummaryRequestSchema,
   capsuleExport: capsuleExportRequestSchema,
   capsuleImport: capsuleImportRequestSchema,

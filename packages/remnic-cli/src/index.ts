@@ -130,6 +130,7 @@ import {
   forkCapsule,
   readForkLineage,
 } from "@remnic/core";
+import { PiMemoryExtensionPublisher } from "@remnic/plugin-pi/publisher";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
@@ -212,6 +213,7 @@ export {
 registerPublisher("codex", () => new CodexMemoryExtensionPublisher());
 registerPublisher("claude-code", () => new ClaudeCodeMemoryExtensionPublisher());
 registerPublisher("hermes", () => new HermesMemoryExtensionPublisher());
+registerPublisher("pi", () => new PiMemoryExtensionPublisher());
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -4936,7 +4938,8 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
 
     // Publish memory extension if the connector has a publisher and the
     // install was successful (not error/already_installed/config_required).
-    if (result.status === "installed") {
+    const shouldPublishExtension = coerceInstallExtension(connectorConfig?.installExtension) ?? true;
+    if (result.status === "installed" && shouldPublishExtension) {
       const pub = publisherForConnector(connectorId);
       if (pub) {
         try {
@@ -4950,8 +4953,12 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
               typeof connectorConfig?.namespace === "string" && connectorConfig.namespace.length > 0
                 ? connectorConfig.namespace
                 : undefined;
+            const connectorDaemonUrl =
+              typeof connectorConfig?.remnicDaemonUrl === "string" && connectorConfig.remnicDaemonUrl.trim().length > 0
+                ? connectorConfig.remnicDaemonUrl.trim()
+                : undefined;
             const pubResult = await pub.publish({
-              config: { memoryDir, namespace: connectorNamespace },
+              config: { memoryDir, namespace: connectorNamespace, daemonUrl: connectorDaemonUrl },
               skillsRoot: path.join(memoryDir, "skills"),
               log: { info: console.log, warn: console.warn, error: console.error },
             });
@@ -4966,6 +4973,8 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
           console.warn(`  Warning: memory extension publish failed: ${msg}`);
         }
       }
+    } else if (result.status === "installed" && !shouldPublishExtension) {
+      console.log("  Memory extension publish skipped via installExtension=false");
     }
   } else if (action === "remove") {
     if (!connectorId) {
@@ -4978,6 +4987,18 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       process.exit(1);
     }
     console.log(result.message);
+    if (result.status === "removed" && connectorId !== "codex-cli") {
+      const pub = publisherForConnector(connectorId);
+      if (pub) {
+        try {
+          await pub.unpublish();
+          console.log("  Removed memory extension");
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`  Warning: memory extension removal failed: ${msg}`);
+        }
+      }
+    }
     if (result.status === "skipped" && result.reason === "config-parse-failed") {
       // A malformed codex-cli.json means we could not verify or complete removal.
       // This is not a benign no-op — the connector may still be partially installed.

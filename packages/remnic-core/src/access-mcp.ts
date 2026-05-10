@@ -759,7 +759,7 @@ export class EngramMcpServer {
                   content: { type: "string" },
                   sourceFormat: {
                     type: "string",
-                    enum: ["openai", "anthropic", "openclaw", "lossless-claw", "remnic"],
+                    enum: ["openai", "anthropic", "openclaw", "pi", "lossless-claw", "remnic"],
                   },
                   rawContent: {
                     description: "Optional native provider content blocks for structured message-part capture.",
@@ -825,6 +825,36 @@ export class EngramMcpServer {
             limit: { type: "number", description: "Max results to return" },
           },
           required: ["query"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.lcm_compaction_flush",
+        description:
+          "Flush pending LCM observe work and incremental summaries before a host compacts session context.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionKey: { type: "string", description: "Conversation session identifier" },
+            namespace: { type: "string" },
+          },
+          required: ["sessionKey"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.lcm_compaction_record",
+        description:
+          "Record a host compaction event with before/after token counts in the LCM archive.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionKey: { type: "string", description: "Conversation session identifier" },
+            namespace: { type: "string" },
+            tokensBefore: { type: "integer", minimum: 0 },
+            tokensAfter: { type: "integer", minimum: 0 },
+          },
+          required: ["sessionKey", "tokensBefore", "tokensAfter"],
           additionalProperties: false,
         },
       },
@@ -2420,6 +2450,24 @@ export class EngramMcpServer {
           limit: typeof args.limit === "number" && Number.isFinite(args.limit) ? args.limit : undefined,
           authenticatedPrincipal: effectivePrincipal,
         });
+      case "engram.lcm_compaction_flush": {
+        const body = parseMcpRequest("lcmCompactionFlush", args);
+        return this.service.lcmCompactionFlush({
+          sessionKey: body.sessionKey,
+          namespace: body.namespace,
+          authenticatedPrincipal: effectivePrincipal,
+        });
+      }
+      case "engram.lcm_compaction_record": {
+        const body = parseMcpRequest("lcmCompactionRecord", args);
+        return this.service.lcmCompactionRecord({
+          sessionKey: body.sessionKey,
+          namespace: body.namespace,
+          tokensBefore: body.tokensBefore,
+          tokensAfter: body.tokensAfter,
+          authenticatedPrincipal: effectivePrincipal,
+        });
+      }
       // ── Continuity / Identity tools ───────────────────────────────────
       case "engram.continuity_audit_generate":
         return this.service.continuityAuditGenerate({

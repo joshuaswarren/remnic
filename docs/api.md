@@ -63,6 +63,8 @@ Core routes:
 - `POST /engram/v1/review-disposition` — operator review decision write path
 - `POST /engram/v1/observe` — feed conversation messages into LCM archive and extraction pipeline
 - `POST /engram/v1/lcm/search` — full-text search over LCM-archived conversations
+- `POST /engram/v1/lcm/compaction/flush` — drain pending LCM observations before a host compaction
+- `POST /engram/v1/lcm/compaction/record` — record a completed host compaction checkpoint
 - `GET /engram/v1/lcm/status` — LCM availability and stats
 - `POST /v1/citations/observed` — Record observed citation usage for attribution tracking
 
@@ -155,6 +157,8 @@ Request fields:
 
 - `sessionKey` (string, required) — conversation session identifier
 - `messages` (array, required) — array of `{ role: "user" | "assistant", content: string }` objects; must be non-empty
+- `messages[].sourceFormat` (string, optional) — source payload format; supports `openai`, `anthropic`, `openclaw`, `pi`, `lossless-claw`, and `remnic`
+- `messages[].parts` (array, optional) — structured tool/file/message parts used by coding-agent integrations
 - `namespace` (string, optional) — target namespace; defaults to the resolved namespace from the principal
 - `skipExtraction` (boolean, optional) — when `true`, messages are archived in LCM but not sent through extraction
 - `cwd` (string, optional) — absolute path to the working directory. When provided and no coding context exists for the session, the server resolves git context automatically (see [Coding agent mode](coding-agent.md#project-detection)).
@@ -188,6 +192,42 @@ Response (HTTP 200):
 - `results` — array of `{ sessionId, content, turnIndex }` objects
 - `count` — number of results returned
 - `lcmEnabled` — whether LCM is enabled; if `false`, results will be empty
+
+#### `POST /engram/v1/lcm/compaction/flush`
+
+Drain pending LCM observation work for a session before a host compacts its local context. Pi uses this from `session_before_compact` so Remnic has the latest turns before the compacted checkpoint is generated.
+
+Request fields:
+
+- `sessionKey` (string, required) — conversation session identifier
+- `namespace` (string, optional) — target namespace
+
+Response (HTTP 200):
+
+- `enabled` — whether LCM is enabled
+- `flushed` — whether a flush was performed
+- `sessionKey` — echo of the session key
+- `namespace` — resolved namespace
+- `reason` (optional) — present when LCM is disabled
+
+#### `POST /engram/v1/lcm/compaction/record`
+
+Record the token delta for a completed host compaction. This lets Remnic correlate host-side compaction events with LCM checkpoints and later search/recall behavior.
+
+Request fields:
+
+- `sessionKey` (string, required) — conversation session identifier
+- `namespace` (string, optional) — target namespace
+- `tokensBefore` (integer, required) — non-negative token count before compaction
+- `tokensAfter` (integer, required) — non-negative token count after compaction
+
+Response (HTTP 200):
+
+- `enabled` — whether LCM is enabled
+- `recorded` — whether the compaction event was recorded
+- `sessionKey` — echo of the session key
+- `namespace` — resolved namespace
+- `reason` (optional) — present when LCM is disabled
 
 #### `GET /engram/v1/lcm/status`
 
@@ -243,6 +283,8 @@ Available MCP tools:
 - `remnic.review_queue_list`
 - `remnic.observe` — accepts optional `cwd` and `projectTag` for automatic project detection
 - `remnic.lcm_search`
+- `remnic.lcm_compaction_flush`
+- `remnic.lcm_compaction_record`
 - `remnic.day_summary`
 - `remnic.set_coding_context` — attach or clear a session's coding context; accepts a full `codingContext` object or a `projectTag` shorthand
 
@@ -257,6 +299,8 @@ Feed conversation messages into Remnic's memory pipeline (LCM archive + extracti
 **Parameters:**
 - `sessionKey` (string, required) — conversation session identifier
 - `messages` (array, required) — array of `{ role: "user" | "assistant", content: string }` objects
+- `messages[].sourceFormat` (string, optional) — source payload format, including `pi`
+- `messages[].parts` (array, optional) — structured tool/file/message parts
 - `namespace` (string, optional) — target namespace
 - `skipExtraction` (boolean, optional) — skip extraction, archive in LCM only
 - `cwd` (string, optional) — absolute working directory path for automatic git context resolution
@@ -275,6 +319,28 @@ Search the LCM conversation archive for matching content using full-text search.
 - `limit` (number, optional) — max results to return
 
 **Returns:** `{ query, namespace, results: [{ sessionId, content, turnIndex }], count, lcmEnabled }`
+
+#### `remnic.lcm_compaction_flush`
+
+Flush pending LCM observation work before a host-side context compaction.
+
+**Parameters:**
+- `sessionKey` (string, required) — conversation session identifier
+- `namespace` (string, optional) — target namespace
+
+**Returns:** `{ enabled, flushed, sessionKey, namespace, reason? }`
+
+#### `remnic.lcm_compaction_record`
+
+Record a host-side compaction event after the host has produced the compacted checkpoint.
+
+**Parameters:**
+- `sessionKey` (string, required) — conversation session identifier
+- `namespace` (string, optional) — target namespace
+- `tokensBefore` (integer, required) — non-negative token count before compaction
+- `tokensAfter` (integer, required) — non-negative token count after compaction
+
+**Returns:** `{ enabled, recorded, sessionKey, namespace, reason? }`
 
 #### `remnic.day_summary`
 
@@ -295,7 +361,7 @@ The HTTP server also exposes an MCP JSON-RPC endpoint at `POST /mcp`, allowing r
 openclaw engram access http-serve --host 0.0.0.0 --port 4318 --token "$TOKEN"
 ```
 
-Clients send standard MCP JSON-RPC requests to `http://<host>:4318/mcp` with an `Authorization: Bearer <token>` header. Advertised MCP tools include both canonical `remnic.*` names and legacy `engram.*` aliases where supported. Write operations (`engram.memory_store`, `engram.suggestion_submit`, `engram.observe`) are rate-limited consistently with the REST write endpoints - dry runs and idempotency replays do not count toward the limit.
+Clients send standard MCP JSON-RPC requests to `http://<host>:4318/mcp` with an `Authorization: Bearer <token>` header. Advertised MCP tools include both canonical `remnic.*` names and legacy `engram.*` aliases where supported. Write operations (`engram.memory_store`, `engram.suggestion_submit`, `engram.observe`, `engram.lcm_compaction_flush`, `engram.lcm_compaction_record`) are rate-limited consistently with the REST write endpoints - dry runs and idempotency replays do not count toward the limit.
 
 **Namespace-enabled deployments:** If you have `namespacesEnabled: true`, pass `--principal <name>` to set the authenticated principal for all MCP connections. The principal must appear in `writePrincipals` for the target namespace. Without `--principal`, the principal resolves to `"default"`, which may not have write access:
 
@@ -610,7 +676,7 @@ Every response includes an `X-Request-Id` header with a UUIDv4 correlation ID. U
 
 ### Validation errors
 
-Write endpoints (`recall`, `observe`, `memories`, `suggestions`, `review-disposition`, `trust-zones/promote`, `trust-zones/demo-seed`, `lcm/search`) validate request bodies against Zod schemas before processing. A validation error returns HTTP 400 with `code: "validation_error"` and a `details` array:
+Write endpoints (`recall`, `observe`, `memories`, `suggestions`, `review-disposition`, `trust-zones/promote`, `trust-zones/demo-seed`, `lcm/search`, `lcm/compaction/flush`, `lcm/compaction/record`) validate request bodies against Zod schemas before processing. A validation error returns HTTP 400 with `code: "validation_error"` and a `details` array:
 
 ```json
 {

@@ -739,6 +739,36 @@ export interface EngramAccessLcmStatusResponse {
   stats?: { totalTurns?: number };
 }
 
+export interface EngramAccessLcmCompactionFlushRequest {
+  sessionKey: string;
+  namespace?: string;
+  authenticatedPrincipal?: string;
+}
+
+export interface EngramAccessLcmCompactionFlushResponse {
+  enabled: boolean;
+  flushed: boolean;
+  sessionKey: string;
+  namespace: string;
+  reason?: string;
+}
+
+export interface EngramAccessLcmCompactionRecordRequest {
+  sessionKey: string;
+  namespace?: string;
+  tokensBefore: number;
+  tokensAfter: number;
+  authenticatedPrincipal?: string;
+}
+
+export interface EngramAccessLcmCompactionRecordResponse {
+  enabled: boolean;
+  recorded: boolean;
+  sessionKey: string;
+  namespace: string;
+  reason?: string;
+}
+
 type EngramAccessIdempotencyStatus = "miss" | "replay" | "conflict";
 
 function normalizePagination(limit?: number, offset?: number): { limit: number; offset: number } {
@@ -3696,6 +3726,86 @@ export class EngramAccessService {
       results,
       count: results.length,
       lcmEnabled: true,
+    };
+  }
+
+  async lcmCompactionFlush(
+    request: EngramAccessLcmCompactionFlushRequest,
+  ): Promise<EngramAccessLcmCompactionFlushResponse> {
+    if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
+      throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
+    }
+
+    const namespace = this.resolveWritableNamespace(
+      request.namespace,
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
+    if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
+      return {
+        enabled: false,
+        flushed: false,
+        sessionKey: request.sessionKey,
+        namespace,
+        reason: "LCM is disabled",
+      };
+    }
+
+    const lcmSessionKey = namespace !== this.orchestrator.config.defaultNamespace
+      ? `${namespace}:${request.sessionKey}`
+      : request.sessionKey;
+    await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
+    await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey);
+    return {
+      enabled: true,
+      flushed: true,
+      sessionKey: request.sessionKey,
+      namespace,
+    };
+  }
+
+  async lcmCompactionRecord(
+    request: EngramAccessLcmCompactionRecordRequest,
+  ): Promise<EngramAccessLcmCompactionRecordResponse> {
+    if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
+      throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
+    }
+    if (!Number.isInteger(request.tokensBefore) || request.tokensBefore < 0) {
+      throw new EngramAccessInputError("tokensBefore must be a non-negative integer");
+    }
+    if (!Number.isInteger(request.tokensAfter) || request.tokensAfter < 0) {
+      throw new EngramAccessInputError("tokensAfter must be a non-negative integer");
+    }
+
+    const namespace = this.resolveWritableNamespace(
+      request.namespace,
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
+    if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
+      return {
+        enabled: false,
+        recorded: false,
+        sessionKey: request.sessionKey,
+        namespace,
+        reason: "LCM is disabled",
+      };
+    }
+
+    const lcmSessionKey = namespace !== this.orchestrator.config.defaultNamespace
+      ? `${namespace}:${request.sessionKey}`
+      : request.sessionKey;
+    await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
+    await this.orchestrator.lcmEngine.recordCompaction(
+      lcmSessionKey,
+      request.tokensBefore,
+      request.tokensAfter,
+    );
+    return {
+      enabled: true,
+      recorded: true,
+      sessionKey: request.sessionKey,
+      namespace,
     };
   }
 

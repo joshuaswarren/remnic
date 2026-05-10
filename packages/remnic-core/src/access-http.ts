@@ -757,6 +757,40 @@ export class EngramAccessHttpServer {
       return;
     }
 
+    if (
+      req.method === "POST" &&
+      (pathname === "/engram/v1/lcm/compaction/flush" || pathname === "/remnic/v1/lcm/compaction/flush")
+    ) {
+      const body = await this.readValidatedBody(req, "lcmCompactionFlush");
+      this.ensureWriteRateLimitAvailable();
+      const response = await this.service.lcmCompactionFlush({
+        sessionKey: body.sessionKey,
+        namespace: this.resolveNamespace(req, body.namespace),
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      });
+      this.recordWriteRateLimitHit();
+      this.respondJson(res, 200, response);
+      return;
+    }
+
+    if (
+      req.method === "POST" &&
+      (pathname === "/engram/v1/lcm/compaction/record" || pathname === "/remnic/v1/lcm/compaction/record")
+    ) {
+      const body = await this.readValidatedBody(req, "lcmCompactionRecord");
+      this.ensureWriteRateLimitAvailable();
+      const response = await this.service.lcmCompactionRecord({
+        sessionKey: body.sessionKey,
+        namespace: this.resolveNamespace(req, body.namespace),
+        tokensBefore: body.tokensBefore,
+        tokensAfter: body.tokensAfter,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      });
+      this.recordWriteRateLimitHit();
+      this.respondJson(res, 200, response);
+      return;
+    }
+
     if (req.method === "GET" && pathname === "/engram/v1/lcm/status") {
       this.respondJson(res, 200, await this.service.lcmStatus());
       return;
@@ -1594,6 +1628,10 @@ export class EngramAccessHttpServer {
         toolName === "remnic.suggestion_submit" ||
         toolName === "engram.observe" ||
         toolName === "remnic.observe" ||
+        toolName === "engram.lcm_compaction_flush" ||
+        toolName === "remnic.lcm_compaction_flush" ||
+        toolName === "engram.lcm_compaction_record" ||
+        toolName === "remnic.lcm_compaction_record" ||
         toolName === "engram.capsule_export" ||
         toolName === "remnic.capsule_export" ||
         toolName === "engram.capsule_import" ||

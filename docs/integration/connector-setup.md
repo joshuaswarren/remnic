@@ -73,6 +73,30 @@ See the [full Codex CLI guide](../guides/codex-cli.md) for session-start hooks a
 
 ---
 
+## Pi Coding Agent
+
+Install the native Pi extension:
+
+```bash
+remnic connectors install pi
+```
+
+This writes `~/.pi/agent/extensions/remnic/index.ts` for Pi auto-discovery plus a private `remnic.config.json` containing the Remnic daemon URL, namespace, and connector token.
+
+Optional configuration:
+
+```bash
+remnic connectors install pi \
+  --config remnicDaemonUrl=http://127.0.0.1:4318 \
+  --config namespace=my-project
+```
+
+See the [full Pi integration guide](pi.md) for hooks, slash commands, and compaction behavior.
+
+**Capabilities:** observe, recall, store, search, MCP tools, compaction coordination
+
+---
+
 ## Cursor
 
 Add to `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` globally):

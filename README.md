@@ -42,7 +42,7 @@ OpenClaw's built-in memory works for simple cases, but it doesn't scale. It lack
 
 Remnic is an open-source memory and context layer for user-aware agents. It watches agent conversations, extracts durable knowledge, and injects the right context back when it is needed. Route extraction through the OpenClaw gateway model chain, OpenAI, or a **local LLM** (Ollama, LM Studio, etc.) -- your choice.
 
-Remnic helps agents understand the people they work with: preferences, projects, constraints, decisions, patterns, and definitions of good. It works natively with **[OpenClaw](https://github.com/openclaw/openclaw)**, **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, **[Codex CLI](https://github.com/openai/codex)**, **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**, and any **MCP-compatible client** (Replit, Cursor, etc.). When you tell any agent a preference, every agent can use the same governed memory store.
+Remnic helps agents understand the people they work with: preferences, projects, constraints, decisions, patterns, and definitions of good. It works natively with **[OpenClaw](https://github.com/openclaw/openclaw)**, **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, **[Codex CLI](https://github.com/openai/codex)**, **[Pi Coding Agent](https://pi.dev)**, **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**, and any **MCP-compatible client** (Replit, Cursor, etc.). When you tell any agent a preference, every agent can use the same governed memory store.
 
 Local-first storage is a trust feature. All data can stay on your machine as plain markdown files: no cloud dependency, no subscription, and no third-party memory service required.
 
@@ -164,6 +164,7 @@ Once the Remnic daemon is running, connect any supported agent:
 ```bash
 remnic connectors install claude-code   # Claude Code (hooks + MCP)
 remnic connectors install codex-cli     # Codex CLI (hooks + MCP + memory extension)
+remnic connectors install pi            # Pi Coding Agent (extension + MCP + compaction)
 remnic connectors install replit        # Replit (MCP only)
 pip install --upgrade remnic-hermes     # Hermes Agent (Python MemoryProvider)
 remnic connectors install hermes        # Writes Hermes config + token
@@ -175,6 +176,12 @@ consolidation sub-agent auto-discovers Remnic. Opt out with
 `--config installExtension=false` if you prefer to manage Codex extensions
 yourself.
 
+For Pi Coding Agent, installation writes an auto-discovered extension under
+`~/.pi/agent/extensions/remnic/`. The extension recalls context before turns,
+observes Pi messages and tool activity into Remnic/LCM, exposes Remnic MCP
+tools as Pi tools, and coordinates `session_before_compact` with Remnic LCM
+flush/checkpoint recording. See [docs/integration/pi.md](docs/integration/pi.md).
+
 Each connector generates a unique auth token, installs the appropriate plugin/hooks, and verifies the connection. All agents share the same memory store — tell one agent your preference, and every agent remembers it.
 
 Hermes uses Remnic as a Hermes **MemoryProvider**, not a `context_engine`. Automatic recall runs in `pre_llm_call`, observations run after each turn, and the provider now registers the full Remnic parity tool surface (`remnic_lcm_search`, recall explain/X-ray, memory CRUD, continuity, identity, governance, work-board, shared-context, compounding, day-summary, briefing, checkpoint, and profiling tools) plus legacy `engram_*` aliases. Lossless Context Management is delivered through the daemon recall envelope when `lcmEnabled` is on; no Hermes `context_engine` registration is required. See [docs/plugins/hermes.md](docs/plugins/hermes.md) for the full reference.
@@ -184,6 +191,7 @@ Hermes uses Remnic as a Hermes **MemoryProvider**, not a `context_engine`. Autom
 | **OpenClaw** | Memory slot plugin | Every session | Every response |
 | **Claude Code** | Native hooks + MCP | Every prompt | Every tool use |
 | **Codex CLI** | Native hooks + MCP | Every prompt | Every tool use |
+| **Pi Coding Agent** | Native extension + MCP | Every turn | Every turn |
 | **Hermes** | Python MemoryProvider | Every LLM call | Every turn |
 | **Replit** | MCP only | On demand | On demand |
 
@@ -572,6 +580,7 @@ Remnic is organized as a monorepo with a core engine, standalone server/CLI, and
 | `@remnic/plugin-openclaw` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-openclaw)](https://www.npmjs.com/package/@remnic/plugin-openclaw) | OpenClaw adapter — thin bridge (embedded or delegate mode) |
 | `@remnic/plugin-claude-code` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-claude-code)](https://www.npmjs.com/package/@remnic/plugin-claude-code) | Native Claude Code plugin — hooks, skills, MCP |
 | `@remnic/plugin-codex` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-codex)](https://www.npmjs.com/package/@remnic/plugin-codex) | Native Codex CLI plugin — hooks, skills, MCP |
+| `@remnic/plugin-pi` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-pi)](https://www.npmjs.com/package/@remnic/plugin-pi) | Native Pi Coding Agent extension — recall, observe, MCP tools, and compaction coordination |
 | `@remnic/replit` | [![npm](https://img.shields.io/npm/v/@remnic/replit)](https://www.npmjs.com/package/@remnic/replit) | Replit Agent MCP connector — setup snippet + token helper |
 | `remnic-hermes` | [![PyPI](https://img.shields.io/pypi/v/remnic-hermes)](https://pypi.org/project/remnic-hermes/) | Python MemoryProvider for Hermes Agent |
 
@@ -618,6 +627,7 @@ Use a preset to jump to a recommended level: `conservative`, `balanced`, `resear
 
 - **[OpenClaw](https://github.com/openclaw/openclaw)** — Native plugin with automatic extraction and recall injection
 - **[Codex CLI](https://github.com/openai/codex)** — MCP-over-HTTP with session-start hooks for automatic recall
+- **[Pi Coding Agent](https://pi.dev)** — Native extension with turn recall, observation, MCP tools, and LCM-aware compaction
 - **Any MCP client** — stdio or HTTP transport, 8 tools available
 - **Scripts & automation** — Authenticated REST API for custom integrations
 - **Local LLMs** — Run extraction and reranking with local models (Ollama, LM Studio, etc.)
@@ -854,6 +864,8 @@ Available via both stdio and HTTP transports:
 | `engram.review_queue_list` | View the governance review queue |
 | `engram.observe` | Feed conversation messages into memory pipeline (LCM + extraction) |
 | `engram.lcm_search` | Full-text search over LCM-archived conversations |
+| `engram.lcm_compaction_flush` | Flush pending LCM work before host context compaction |
+| `engram.lcm_compaction_record` | Record host context compaction token deltas |
 | `engram_context_search` | Full-text search across all archived conversation history (LCM) |
 | `engram_context_describe` | Get a compressed summary of a turn range (LCM) |
 | `engram_context_expand` | Retrieve raw lossless messages for a turn range (LCM) |

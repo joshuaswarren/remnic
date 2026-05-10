@@ -661,6 +661,7 @@ export {
   installConnector,
   removeConnector,
   doctorConnector,
+  getConnectorToken,
   loadRegistry,
   saveRegistry,
   generateMarketplaceManifest,

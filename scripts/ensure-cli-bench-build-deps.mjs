@@ -28,6 +28,16 @@ ensurePackageBuild(
 );
 ensurePackageBuild(
   repoRoot,
+  "@remnic/plugin-pi",
+  path.join(repoRoot, "packages", "plugin-pi", "dist", "publisher.js"),
+  [
+    path.join(repoRoot, "packages", "plugin-pi", "src"),
+    path.join(repoRoot, "packages", "plugin-pi", "package.json"),
+    path.join(repoRoot, "packages", "plugin-pi", "tsconfig.json"),
+  ],
+);
+ensurePackageBuild(
+  repoRoot,
   "@remnic/export-weclone",
   path.join(repoRoot, "packages", "export-weclone", "dist", "index.js"),
   [

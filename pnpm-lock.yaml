@@ -305,11 +305,30 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/plugin-pi:
+    dependencies:
+      '@remnic/core':
+        specifier: workspace:^
+        version: link:../remnic-core
+    devDependencies:
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   packages/remnic-cli:
     dependencies:
       '@remnic/core':
         specifier: workspace:^
         version: link:../remnic-core
+      '@remnic/plugin-pi':
+        specifier: workspace:^
+        version: link:../plugin-pi
       yaml:
         specifier: ^2.4.2
         version: 2.8.3
