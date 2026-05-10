@@ -135,6 +135,11 @@ import {
   defaultCapsulesDir,
   type CapsuleListEntry,
 } from "./capsule-cli.js";
+import {
+  evaluateActionConfidence,
+  type ActionConfidenceInput,
+  type ActionConfidenceResult,
+} from "./action-confidence.js";
 import { formatProfileTraceAscii } from "./profiling.js";
 
 export class EngramAccessInputError extends Error {}
@@ -594,6 +599,9 @@ export interface EngramAccessCapsuleListResponse {
   capsulesDir: string;
   capsules: CapsuleListEntry[];
 }
+
+export type EngramAccessActionConfidenceRequest = ActionConfidenceInput;
+export type EngramAccessActionConfidenceResponse = ActionConfidenceResult;
 
 async function buildProjectedGovernanceProposedActions(
   storage: Awaited<ReturnType<Orchestrator["getStorage"]>>,
@@ -1270,6 +1278,12 @@ export class EngramAccessService {
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
     };
+  }
+
+  async actionConfidence(
+    request: EngramAccessActionConfidenceRequest = {},
+  ): Promise<EngramAccessActionConfidenceResponse> {
+    return evaluateActionConfidence(request);
   }
 
   async daySummary(

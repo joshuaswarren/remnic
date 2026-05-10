@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { EngramAccessInputError, type EngramAccessService, type EngramAccessRecallResponse } from "./access-service.js";
 import {
   validateRequest,
+  type ActionConfidenceRequest,
   type CapsuleExportRequest,
   type CapsuleImportRequest,
   type CapsuleListRequest,
@@ -292,6 +293,86 @@ export class EngramMcpServer {
             },
           },
           required: ["query"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.action_confidence",
+        description:
+          "Advisory ask/draft/act/refuse/escalate decision helper for interruption budgeting. Read-only; never mutates memory.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            intendedAction: { type: "string" },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            risk: {
+              type: "string",
+              enum: ["low", "medium", "high", "irreversible", "restricted"],
+            },
+            contextReadiness: {
+              type: "string",
+              enum: ["none", "partial", "sufficient"],
+            },
+            currentContextScopes: {
+              type: "array",
+              items: { type: "string" },
+            },
+            userRules: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  kind: {
+                    type: "string",
+                    enum: [
+                      "ask-before",
+                      "do-not-use-outside-this-context",
+                      "never",
+                      "requires-escalation",
+                    ],
+                  },
+                  description: { type: "string" },
+                  matched: { type: "boolean" },
+                },
+                required: ["kind"],
+                additionalProperties: false,
+              },
+            },
+            retrievedMemories: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  source: { type: "string" },
+                  created: { type: "string" },
+                  updated: { type: "string" },
+                  scope: { type: "string" },
+                  userContextScopes: {
+                    type: "array",
+                    items: { type: "string" },
+                  },
+                  retrievalReason: { type: "string" },
+                  confidence: { type: "number", minimum: 0, maximum: 1 },
+                  stale: { type: "boolean" },
+                  corrected: { type: "boolean" },
+                  correctionState: {
+                    type: "string",
+                    enum: ["none", "correction", "superseded", "disputed", "forgotten"],
+                  },
+                  safeToUse: { type: "boolean" },
+                  safety: {
+                    type: "string",
+                    enum: ["safe", "requires-review", "blocked"],
+                  },
+                  safetyReasons: {
+                    type: "array",
+                    items: { type: "string" },
+                  },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
           additionalProperties: false,
         },
       },
@@ -1897,6 +1978,10 @@ export class EngramMcpServer {
             ? { disclosure: disclosure as import("./types.js").RecallDisclosure }
             : {}),
         });
+      }
+      case "engram.action_confidence": {
+        const body: ActionConfidenceRequest = parseMcpRequest("actionConfidence", args);
+        return this.service.actionConfidence(body);
       }
       case "engram.day_summary":
         return this.service.daySummary({

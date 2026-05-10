@@ -122,6 +122,9 @@ import {
   formatProcedureStatsText,
   parseXrayCliOptions,
   renderXray,
+  buildActionConfidenceInputFromOptions,
+  evaluateActionConfidence,
+  renderActionConfidenceText,
   expandTildePath,
   // capsule fork — issue #676 PR 4/6
   forkCapsule,
@@ -134,7 +137,12 @@ import { loadWecloneExportModule } from "./optional-weclone-export.js";
 import type {
   BinaryLifecycleConfig,
 } from "@remnic/core";
-import type { MemoryCategory, Taxonomy, TaxonomyCategory } from "@remnic/core";
+import type {
+  ActionConfidenceInput,
+  MemoryCategory,
+  Taxonomy,
+  TaxonomyCategory,
+} from "@remnic/core";
 // @remnic/bench is an optional install surface. Import types only at the
 // top level (erased at compile time); runtime access goes through
 // loadBenchModule() / tryLoadBenchModule() so the CLI stays functional for
@@ -237,6 +245,7 @@ type CommandName =
   | "training:export"
   | "import"
   | "import-lossless-claw"
+  | "action-confidence"
   | "xray"
   | "capsule";
 
@@ -3465,6 +3474,82 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
     // maintenance; the daemon/gateway process performs full warmup instead.
     orchestrator.abortDeferredInit();
   }
+}
+
+// ── Action confidence ──────────────────────────────────────────────────────
+
+function parseActionConfidenceRest(rest: string[]): {
+  input: ActionConfidenceInput;
+  json: boolean;
+} {
+  const valueFlags = new Set([
+    "--action",
+    "--confidence",
+    "--risk",
+    "--context",
+    "--rule",
+    "--current-scope",
+    "--memory-scope",
+  ]);
+  const booleanFlags = new Set(["--json", "--stale", "--corrected", "--unsafe"]);
+  const options: Record<string, string | boolean> = {};
+  const positional: string[] = [];
+
+  for (let i = 0; i < rest.length; i++) {
+    const token = rest[i];
+    if (!token.startsWith("--")) {
+      positional.push(token);
+      continue;
+    }
+    if (booleanFlags.has(token)) {
+      options[token.slice(2)] = true;
+      continue;
+    }
+    if (!valueFlags.has(token)) {
+      throw new Error(
+        `Unknown flag ${JSON.stringify(token)}. Supported flags: --action, --confidence, --risk, --context, --rule, --current-scope, --memory-scope, --stale, --corrected, --unsafe, --json.`,
+      );
+    }
+    const next = rest[i + 1];
+    if (next === undefined || next.startsWith("--")) {
+      throw new Error(`${token} requires a value.`);
+    }
+    options[token.slice(2)] = next;
+    i++;
+  }
+
+  const intendedAction =
+    typeof options.action === "string"
+      ? options.action
+      : positional.length > 0
+        ? positional.join(" ")
+        : undefined;
+
+  const input = buildActionConfidenceInputFromOptions({
+    action: intendedAction,
+    confidence: options.confidence,
+    risk: options.risk,
+    context: options.context,
+    rule: options.rule,
+    currentScope: options["current-scope"],
+    memoryScope: options["memory-scope"],
+    stale: options.stale,
+    corrected: options.corrected,
+    unsafe: options.unsafe,
+  });
+  return { input, json: options.json === true };
+}
+
+async function cmdActionConfidence(rest: string[]): Promise<void> {
+  let parsed: ReturnType<typeof parseActionConfidenceRest>;
+  try {
+    parsed = parseActionConfidenceRest(rest);
+  } catch (err) {
+    console.error(`action-confidence: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  const result = evaluateActionConfidence(parsed.input);
+  console.log(parsed.json ? JSON.stringify(result, null, 2) : renderActionConfidenceText(result));
 }
 
 // ── Recall X-ray (issue #570) ──────────────────────────────────────────────
@@ -7617,6 +7702,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await cmdQuery(queryText, json, explain);
       break;
     }
+
+    case "action-confidence":
+      await cmdActionConfidence(rest);
+      break;
 
     case "xray":
       // `remnic xray "<query>"` — recall with X-ray capture and print

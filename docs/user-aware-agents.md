@@ -76,6 +76,33 @@ and out-of-context `do-not-use-outside-this-context` memories are marked
 temporary memories are marked `requires-review` unless the current context
 matches the boundary.
 
+## Action Confidence
+
+`@remnic/core` exports an `evaluateActionConfidence` helper for read-only
+ask-versus-act decisions. It returns one of:
+
+- `ask`
+- `draft`
+- `act`
+- `refuse`
+- `escalate`
+
+The helper is an advisory interruption-budgeting surface, not an executor. It
+uses confidence, provenance strength, scope match, staleness, correction
+history, user rules, context readiness, and action risk to decide whether an
+agent has enough context to proceed.
+
+Public line:
+
+> A good agent should spend the user's attention carefully.
+
+The helper is exposed as:
+
+- core: `evaluateActionConfidence(input)`
+- HTTP: `POST /remnic/v1/action-confidence`
+- MCP: `remnic.action_confidence` and legacy `engram.action_confidence`
+- CLI: `remnic action-confidence`
+
 ## Core Exports
 
 `@remnic/core` exports:
@@ -91,6 +118,8 @@ matches the boundary.
 - `buildRetrievedMemoryProvenance`
 - `normalizeRetrievedMemoryProvenance`
 - `summarizeRetrievedMemoryProvenance`
+- `evaluateActionConfidence`
+- `renderActionConfidenceText`
 
 This contract is intentionally host-agnostic. OpenClaw, Hermes, Codex, MCP, and
 future adapters should consume the core model rather than defining their own

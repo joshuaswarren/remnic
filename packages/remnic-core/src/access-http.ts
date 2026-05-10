@@ -588,6 +588,15 @@ export class EngramAccessHttpServer {
       return;
     }
 
+    if (
+      req.method === "POST" &&
+      (pathname === "/engram/v1/action-confidence" || pathname === "/remnic/v1/action-confidence")
+    ) {
+      const body = await this.readValidatedBody(req, "actionConfidence");
+      this.respondJson(res, 200, await this.service.actionConfidence(body));
+      return;
+    }
+
     // Tier-explain (issue #518): structured per-result annotation from
     // the direct-answer retrieval tier.  Orthogonal to /recall/explain
     // above, which returns a graph-path explanation document.

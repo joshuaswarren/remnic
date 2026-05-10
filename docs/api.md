@@ -294,7 +294,7 @@ The HTTP server also exposes an MCP JSON-RPC endpoint at `POST /mcp`, allowing r
 openclaw engram access http-serve --host 0.0.0.0 --port 4318 --token "$TOKEN"
 ```
 
-Clients send standard MCP JSON-RPC requests to `http://<host>:4318/mcp` with an `Authorization: Bearer <token>` header. All 10 MCP tools are available. Write operations (`engram.memory_store`, `engram.suggestion_submit`, `engram.observe`) are rate-limited consistently with the REST write endpoints — dry runs and idempotency replays do not count toward the limit.
+Clients send standard MCP JSON-RPC requests to `http://<host>:4318/mcp` with an `Authorization: Bearer <token>` header. Advertised MCP tools include both canonical `remnic.*` names and legacy `engram.*` aliases where supported. Write operations (`engram.memory_store`, `engram.suggestion_submit`, `engram.observe`) are rate-limited consistently with the REST write endpoints - dry runs and idempotency replays do not count toward the limit.
 
 **Namespace-enabled deployments:** If you have `namespacesEnabled: true`, pass `--principal <name>` to set the authenticated principal for all MCP connections. The principal must appear in `writePrincipals` for the target namespace. Without `--principal`, the principal resolves to `"default"`, which may not have write access:
 
@@ -429,6 +429,29 @@ Record a memory-action telemetry event with optional safe dry-run mode.
 
 ---
 
+### `action_confidence`
+
+Return a read-only interruption-budgeting decision: `ask`, `draft`, `act`,
+`refuse`, or `escalate`.
+
+**HTTP:** `POST /remnic/v1/action-confidence` or
+`POST /engram/v1/action-confidence`
+
+**MCP:** `remnic.action_confidence` or `engram.action_confidence`
+
+**Parameters:**
+- `confidence` (number, optional) - Overall confidence score 0-1.
+- `risk` (string, optional) - One of: `low`, `medium`, `high`, `irreversible`, `restricted`.
+- `contextReadiness` (string, optional) - One of: `none`, `partial`, `sufficient`.
+- `retrievedMemories` (array, optional) - Provenance/safety summaries for recalled memories.
+- `currentContextScopes` (array, optional) - Current user-context scopes.
+- `userRules` (array, optional) - Matched `ask-before`, `do-not-use-outside-this-context`, `never`, or `requires-escalation` rules.
+
+**Returns:** The decision, confidence, blockers, reasons, factor breakdown, and
+`attentionPolicy: "interruption_budgeting"`.
+
+---
+
 ### `identity_anchor_get`
 
 Read the identity continuity anchor document used for recovery-safe identity context.
@@ -539,6 +562,7 @@ Run via `openclaw engram <command>`:
 | `continuity incident-open --symptom <text> [--trigger-window <text>] [--suspected-cause <text>]` | Open a continuity incident |
 | `continuity incident-close --id <id> --fix-applied <text> --verification-result <text> [--preventive-rule <text>]` | Close a continuity incident |
 | `action-audit [--namespace <name>] [--limit N]` | Show namespace-aware memory action outcomes and policy decisions |
+| `action-confidence [--confidence N] [--risk low\|medium\|high\|irreversible\|restricted] [--context none\|partial\|sufficient]` | Evaluate ask/draft/act/refuse/escalate advisory policy |
 | `trust-zone-status` | Show trust-zone store status and aggregate counts |
 | `trust-zone-promote --record-id <id> --target-zone <zone> --reason <text> [--dry-run]` | Preview or apply a trust-zone promotion |
 | `trust-zone-demo-seed [--scenario enterprise-buyer-v1] [--recorded-at <iso>] [--dry-run]` | Explicitly preview or seed the opt-in trust-zone buyer demo dataset |
