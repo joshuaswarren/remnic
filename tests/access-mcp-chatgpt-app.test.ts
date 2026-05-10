@@ -291,6 +291,40 @@ test("ChatGPT Apps inspector dispatches canonical alias through recall, X-ray, a
   );
 });
 
+test("ChatGPT Apps inspector uses internal session metadata for sessionless authenticated calls", async () => {
+  const capture: Capture = { recalls: [], xrays: [], actionRequests: [] };
+  const server = new EngramMcpServer(fakeService(capture), { principal: "user-a" });
+
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: REMNIC_CHATGPT_MEMORY_INSPECTOR_CANONICAL_TOOL,
+      arguments: {
+        query: "What preferences matter here?",
+        namespace: "work",
+      },
+    },
+  });
+
+  const result = response?.result as {
+    isError?: boolean;
+    structuredContent?: RemnicChatGptMemoryInspectorResult;
+  };
+  assert.equal(result.isError, false);
+  assert.ok(result.structuredContent, "expected structured content");
+  assert.equal(result.structuredContent.sessionKey, undefined);
+  assert.equal(result.structuredContent.memoryCount, 1);
+  assert.deepEqual(result.structuredContent.memoryIds, ["mem-preference-1"]);
+
+  const recallSessionKey = capture.recalls[0]?.sessionKey;
+  assert.equal(typeof recallSessionKey, "string");
+  assert.match(String(recallSessionKey), /^remnic:chatgpt-memory-inspector:/);
+  assert.equal(capture.xrays[0]?.sessionKey, recallSessionKey);
+  assert.notEqual(recallSessionKey, "user-a");
+});
+
 test("ChatGPT Apps inspector withholds preview when blocked memory is beyond visible cards", () => {
   const recallResults = Array.from({ length: 9 }, (_, index) => ({
     id: `mem-${index + 1}`,

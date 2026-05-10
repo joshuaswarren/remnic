@@ -77,6 +77,15 @@ function withToolAliases(tool: McpTool): McpTool[] {
   return [canonicalTool, tool];
 }
 
+function resolveChatGptInspectorRecallSessionKey(
+  explicitSessionKey: string | undefined,
+  authenticatedPrincipal: string | undefined,
+): string | undefined {
+  if (explicitSessionKey) return explicitSessionKey;
+  if (!authenticatedPrincipal) return undefined;
+  return `remnic:chatgpt-memory-inspector:${randomUUID()}`;
+}
+
 const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
   capsuleExport: [
     "name",
@@ -2197,9 +2206,13 @@ export class EngramMcpServer {
         if (currentContextScopes !== undefined) {
           input.currentContextScopes = currentContextScopes;
         }
+        const recallSessionKey = resolveChatGptInspectorRecallSessionKey(
+          input.sessionKey,
+          effectivePrincipal,
+        );
         const recall = await this.service.recall({
           query: input.query,
-          sessionKey: input.sessionKey,
+          sessionKey: recallSessionKey,
           namespace: input.namespace,
           authenticatedPrincipal: effectivePrincipal,
           mode: "full",
@@ -2207,7 +2220,7 @@ export class EngramMcpServer {
         });
         const xrayResponse = await this.service.recallXray({
           query: input.query,
-          sessionKey: input.sessionKey,
+          sessionKey: recallSessionKey,
           namespace: input.namespace,
           currentContextScopes: input.currentContextScopes,
           authenticatedPrincipal: effectivePrincipal,
