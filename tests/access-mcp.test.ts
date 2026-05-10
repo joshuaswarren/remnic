@@ -341,6 +341,8 @@ test("MCP server advertises tools and dispatches recall", async () => {
     "engram.review_queue_list",
     "engram.observe",
     "engram.lcm_search",
+    "engram.lcm_compaction_flush",
+    "engram.lcm_compaction_record",
     "engram.continuity_audit_generate",
     "engram.continuity_incident_open",
     "engram.continuity_incident_close",

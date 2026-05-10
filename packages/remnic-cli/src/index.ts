@@ -130,7 +130,6 @@ import {
   forkCapsule,
   readForkLineage,
 } from "@remnic/core";
-import { PiMemoryExtensionPublisher } from "@remnic/plugin-pi/publisher";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
@@ -140,7 +139,10 @@ import type {
 } from "@remnic/core";
 import type {
   ActionConfidenceInput,
+  MemoryExtensionPublisher,
   MemoryCategory,
+  PublishContext,
+  PublishResult,
   Taxonomy,
   TaxonomyCategory,
 } from "@remnic/core";
@@ -207,13 +209,64 @@ export {
   parseBenchArgs,
 } from "./bench-args.js";
 
+type PiPublisherModule = {
+  PiMemoryExtensionPublisher: new () => MemoryExtensionPublisher;
+};
+
+class LazyPiMemoryExtensionPublisher implements MemoryExtensionPublisher {
+  readonly hostId = "pi";
+  private delegate: Promise<MemoryExtensionPublisher> | undefined;
+
+  async resolveExtensionRoot(env?: NodeJS.ProcessEnv): Promise<string> {
+    return (await this.load()).resolveExtensionRoot(env);
+  }
+
+  async isHostAvailable(): Promise<boolean> {
+    return (await this.load()).isHostAvailable();
+  }
+
+  async renderInstructions(ctx: PublishContext): Promise<string> {
+    return (await this.load()).renderInstructions(ctx);
+  }
+
+  async publish(ctx: PublishContext): Promise<PublishResult> {
+    return (await this.load()).publish(ctx);
+  }
+
+  async unpublish(): Promise<void> {
+    return (await this.load()).unpublish();
+  }
+
+  private async load(): Promise<MemoryExtensionPublisher> {
+    this.delegate ??= loadPiPublisherModule().then(
+      (mod) => new mod.PiMemoryExtensionPublisher(),
+    );
+    return this.delegate;
+  }
+}
+
+async function loadPiPublisherModule(): Promise<PiPublisherModule> {
+  try {
+    return await import("@remnic/plugin-pi/publisher") as PiPublisherModule;
+  } catch (err) {
+    if (!isMissingPiPublisherBuild(err)) throw err;
+    return await import(new URL("../../plugin-pi/src/publisher.ts", import.meta.url).href) as PiPublisherModule;
+  }
+}
+
+function isMissingPiPublisherBuild(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === "ERR_MODULE_NOT_FOUND" && err.message.includes("@remnic/plugin-pi/dist/publisher.js");
+}
+
 // ── Host-specific publisher registrations ───────────────────────────────────
 // Publisher classes live in @remnic/core, but wiring them into the registry
 // belongs in the host adapter layer (CLAUDE.md gotcha #31).
 registerPublisher("codex", () => new CodexMemoryExtensionPublisher());
 registerPublisher("claude-code", () => new ClaudeCodeMemoryExtensionPublisher());
 registerPublisher("hermes", () => new HermesMemoryExtensionPublisher());
-registerPublisher("pi", () => new PiMemoryExtensionPublisher());
+registerPublisher("pi", () => new LazyPiMemoryExtensionPublisher());
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
