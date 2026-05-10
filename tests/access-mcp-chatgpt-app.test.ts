@@ -47,6 +47,26 @@ function fakeService(capture: Capture): EngramAccessService {
     },
     recallXray: async (request: Record<string, unknown>) => {
       capture.xrays.push({ ...request });
+      const recall = {
+        query: String(request.query ?? ""),
+        sessionKey: typeof request.sessionKey === "string" ? request.sessionKey : undefined,
+        namespace: typeof request.namespace === "string" ? request.namespace : "global",
+        context: "Prefers concise, implementation-focused updates.",
+        count: 1,
+        memoryIds: ["mem-preference-1"],
+        results: [
+          {
+            id: "mem-preference-1",
+            path: "preferences/2026-05-01/update-style.md",
+            category: "preference",
+            status: "active",
+            preview: "Prefers concise, implementation-focused updates.",
+          },
+        ],
+        fallbackUsed: false,
+        sourcesUsed: ["memories"],
+        disclosure: "chunk",
+      };
       return {
         snapshotFound: true,
         snapshot: {
@@ -85,6 +105,7 @@ function fakeService(capture: Capture): EngramAccessService {
           namespace: typeof request.namespace === "string" ? request.namespace : "global",
           sessionKey: typeof request.sessionKey === "string" ? request.sessionKey : undefined,
         },
+        recall,
       };
     },
     actionConfidence: async (request: Record<string, unknown>) => {
@@ -223,7 +244,7 @@ test("ChatGPT Apps inspector serves a widget resource over MCP resources/read", 
   assert.match(contents[0]?.text ?? "", /sendFollowUpMessage/);
 });
 
-test("ChatGPT Apps inspector dispatches canonical alias through recall, X-ray, and action confidence", async () => {
+test("ChatGPT Apps inspector dispatches canonical alias through X-ray and action confidence", async () => {
   const capture: Capture = { recalls: [], xrays: [], actionRequests: [] };
   const server = new EngramMcpServer(fakeService(capture), { principal: "user-a" });
 
@@ -262,16 +283,7 @@ test("ChatGPT Apps inspector dispatches canonical alias through recall, X-ray, a
   assert.equal(structured.actionConfidence.decision, "draft");
   assert.equal(structured.affordances.length, 4);
 
-  assert.deepEqual(capture.recalls, [
-    {
-      query: "What preferences matter here?",
-      sessionKey: "sess-1",
-      namespace: "work",
-      authenticatedPrincipal: "user-a",
-      mode: "full",
-      disclosure: "chunk",
-    },
-  ]);
+  assert.deepEqual(capture.recalls, []);
   assert.deepEqual(capture.xrays, [
     {
       query: "What preferences matter here?",
@@ -280,6 +292,8 @@ test("ChatGPT Apps inspector dispatches canonical alias through recall, X-ray, a
       currentContextScopes: ["work", "repo"],
       authenticatedPrincipal: "user-a",
       mode: "full",
+      disclosure: "chunk",
+      includeRecall: true,
     },
   ]);
   assert.equal(capture.actionRequests[0]?.risk, "medium");
@@ -318,10 +332,10 @@ test("ChatGPT Apps inspector uses internal session metadata for sessionless auth
   assert.equal(result.structuredContent.memoryCount, 1);
   assert.deepEqual(result.structuredContent.memoryIds, ["mem-preference-1"]);
 
-  const recallSessionKey = capture.recalls[0]?.sessionKey;
+  assert.deepEqual(capture.recalls, []);
+  const recallSessionKey = capture.xrays[0]?.sessionKey;
   assert.equal(typeof recallSessionKey, "string");
   assert.match(String(recallSessionKey), /^remnic:chatgpt-memory-inspector:/);
-  assert.equal(capture.xrays[0]?.sessionKey, recallSessionKey);
   assert.notEqual(recallSessionKey, "user-a");
 });
 

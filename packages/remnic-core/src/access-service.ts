@@ -98,7 +98,7 @@ import type {
   RecallPlanMode,
 } from "./types.js";
 import { DEFAULT_RECALL_DISCLOSURE, isRecallDisclosure } from "./types.js";
-import { estimateRecallTokens } from "./recall-xray.js";
+import { estimateRecallTokens, type RecallXraySnapshot } from "./recall-xray.js";
 import type {
   LcmMessagePartInput,
   MessagePartSourceFormat,
@@ -1059,6 +1059,84 @@ export class EngramAccessService {
       : undefined;
   }
 
+  private async buildRecallResponseFromXraySnapshot(options: {
+    query: string;
+    sessionKey?: string;
+    snapshot: RecallXraySnapshot;
+    disclosure: RecallDisclosure;
+    startedAt: number;
+    requestedMode?: RecallPlanMode | "auto";
+    normalizedMode?: RecallPlanMode;
+  }): Promise<EngramAccessRecallResponse> {
+    const memoryIds = options.snapshot.results.map((result) => result.memoryId);
+    const resultPaths = options.snapshot.results.map((result) => result.path);
+    const namespace = options.snapshot.namespace
+      ? this.resolveNamespace(options.snapshot.namespace)
+      : this.orchestrator.config.defaultNamespace;
+    const sourcesUsed = Array.from(
+      new Set(options.snapshot.results.map((result) => result.servedBy)),
+    );
+    const snapshotForSerialization: LastRecallSnapshot = {
+      sessionKey: options.sessionKey ?? "",
+      recordedAt: new Date(options.snapshot.capturedAt).toISOString(),
+      queryHash: createHash("sha256").update(options.query).digest("hex"),
+      queryLen: options.query.length,
+      memoryIds,
+      namespace,
+      traceId: options.snapshot.traceId,
+      plannerMode: options.normalizedMode,
+      requestedMode:
+        options.requestedMode && options.requestedMode !== "auto"
+          ? options.requestedMode
+          : undefined,
+      sourcesUsed,
+      budgetsApplied: {
+        appliedTopK: memoryIds.length,
+        recallBudgetChars: options.snapshot.budget.chars,
+        maxMemoryTokens: this.orchestrator.config.maxMemoryTokens,
+        finalContextChars: options.snapshot.budget.used,
+      },
+      latencyMs: Date.now() - options.startedAt,
+      resultPaths,
+    };
+    const results = await this.serializeRecallResults(
+      snapshotForSerialization,
+      options.disclosure,
+      {
+        query: options.query,
+        ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
+      },
+    );
+    const context = results
+      .map((result) => {
+        const content =
+          typeof result.content === "string" && result.content.length > 0
+            ? result.content
+            : "";
+        return content || result.preview;
+      })
+      .filter((text) => text.length > 0)
+      .join("\n\n");
+
+    return {
+      query: options.query,
+      ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
+      namespace,
+      context,
+      count: memoryIds.length,
+      memoryIds,
+      results,
+      recordedAt: snapshotForSerialization.recordedAt,
+      traceId: options.snapshot.traceId,
+      plannerMode: options.normalizedMode,
+      fallbackUsed: sourcesUsed.some((source) => source !== "hybrid"),
+      sourcesUsed,
+      disclosure: options.disclosure,
+      budgetsApplied: snapshotForSerialization.budgetsApplied,
+      latencyMs: snapshotForSerialization.latencyMs,
+    };
+  }
+
   private async serializeRecallResults(
     snapshot: LastRecallSnapshot | null,
     disclosure: RecallDisclosure,
@@ -1961,10 +2039,18 @@ export class EngramAccessService {
      * the caller's real context instead of an empty-context default.
      */
     currentContextScopes?: readonly unknown[];
+    /**
+     * Internal inspector affordance: include a recall-shaped response
+     * derived from the same X-ray snapshot. Left off by default so the
+     * regular X-ray API/CLI/MCP surfaces keep their existing payload shape.
+     */
+    includeRecall?: boolean;
   }): Promise<{
     snapshotFound: boolean;
-    snapshot?: import("./recall-xray.js").RecallXraySnapshot;
+    snapshot?: RecallXraySnapshot;
+    recall?: EngramAccessRecallResponse;
   }> {
+    const startedAt = Date.now();
     const query = typeof request.query === "string" ? request.query : "";
     if (query.trim().length === 0) {
       // Match the CLI contract (CLAUDE.md rule 51): reject empty
@@ -2036,6 +2122,7 @@ export class EngramAccessService {
       budgetOverride = parsed;
     }
     const mode = this.normalizeRecallMode(request.mode);
+    const disclosure = request.disclosure ?? DEFAULT_RECALL_DISCLOSURE;
 
     // Serialize x-ray invocations behind a per-service mutex so the
     // per-process `getLastXraySnapshot()` slot cannot be clobbered by
@@ -2057,7 +2144,8 @@ export class EngramAccessService {
       // `{snapshotFound: false}` rather than returning stale data
       // from an earlier call on the same orchestrator.
       this.orchestrator.clearLastXraySnapshot();
-      await this.orchestrator.recall(query, request.sessionKey?.trim() || undefined, {
+      const recallSessionKey = request.sessionKey?.trim() || undefined;
+      await this.orchestrator.recall(query, recallSessionKey, {
         xrayCapture: true,
         ...(requestedNamespace ? { namespace: requestedNamespace } : {}),
         ...(budgetOverride !== undefined
@@ -2254,12 +2342,42 @@ export class EngramAccessService {
             estimatedTokens: estimateRecallTokens(rawExcerptText),
           };
         }
+        const decoratedSnapshot = { ...snapshot, results: decorated };
         return {
           snapshotFound: true,
-          snapshot: { ...snapshot, results: decorated },
+          snapshot: decoratedSnapshot,
+          ...(request.includeRecall === true
+            ? {
+                recall: await this.buildRecallResponseFromXraySnapshot({
+                  query,
+                  sessionKey: recallSessionKey,
+                  snapshot: decoratedSnapshot,
+                  disclosure,
+                  startedAt,
+                  requestedMode: request.mode,
+                  normalizedMode: mode,
+                }),
+              }
+            : {}),
         };
       }
-      return { snapshotFound: true, snapshot };
+      return {
+        snapshotFound: true,
+        snapshot,
+        ...(request.includeRecall === true
+          ? {
+              recall: await this.buildRecallResponseFromXraySnapshot({
+                query,
+                sessionKey: recallSessionKey,
+                snapshot,
+                disclosure,
+                startedAt,
+                requestedMode: request.mode,
+                normalizedMode: mode,
+              }),
+            }
+          : {}),
+      };
     } finally {
       release();
     }

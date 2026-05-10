@@ -2228,14 +2228,6 @@ export class EngramMcpServer {
           input.sessionKey,
           effectivePrincipal,
         );
-        const recall = await this.service.recall({
-          query: input.query,
-          sessionKey: recallSessionKey,
-          namespace: input.namespace,
-          authenticatedPrincipal: effectivePrincipal,
-          mode: "full",
-          disclosure: "chunk",
-        });
         const xrayResponse = await this.service.recallXray({
           query: input.query,
           sessionKey: recallSessionKey,
@@ -2243,10 +2235,23 @@ export class EngramMcpServer {
           currentContextScopes: input.currentContextScopes,
           authenticatedPrincipal: effectivePrincipal,
           mode: "full",
+          disclosure: "chunk",
+          includeRecall: true,
         });
         const xray = xrayResponse.snapshotFound === true
           ? xrayResponse.snapshot ?? null
           : null;
+        const recall = xrayResponse.recall ?? {
+          query: input.query,
+          namespace: input.namespace ?? xray?.namespace ?? "global",
+          context: "",
+          count: 0,
+          memoryIds: [],
+          results: [],
+          fallbackUsed: false,
+          sourcesUsed: [],
+          disclosure: "chunk",
+        };
         const actionRequest = buildChatGptMemoryInspectorActionRequest(
           input,
           recall,
