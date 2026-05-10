@@ -261,7 +261,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-async function observeMessages(
+export async function observeMessages(
   ctx: any,
   client: RemnicClient,
   rawMessages: unknown[],
@@ -269,17 +269,19 @@ async function observeMessages(
 ): Promise<void> {
   const sessionKey = sessionKeyFromContext(ctx);
   const messages: ObserveMessage[] = [];
+  const pendingHashes = new Set<string>();
   for (const raw of rawMessages) {
     const message = toObserveMessage(raw);
     if (!message) continue;
     const hash = hashObservedMessage(message, sessionKey);
-    if (observedHashes.has(hash)) continue;
-    observedHashes.add(hash);
+    if (observedHashes.has(hash) || pendingHashes.has(hash)) continue;
+    pendingHashes.add(hash);
     messages.push(message);
   }
   if (messages.length === 0) return;
   try {
     await client.observe(sessionKey, ctx.cwd, messages);
+    for (const hash of pendingHashes) observedHashes.add(hash);
   } catch (err) {
     notify(ctx, `Remnic observe failed: ${errorMessage(err)}`, "warning");
   }
