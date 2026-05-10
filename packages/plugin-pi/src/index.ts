@@ -23,17 +23,23 @@ export interface RemnicPiExtensionOptions extends LoadConfigOptions {
 
 const STATE_CUSTOM_TYPE = "remnic_state";
 const MAX_OBSERVED_HASHES = 2000;
+const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
+
+type PiSessionState = {
+  observedHashes: Set<string>;
+  lastInjectedQuery: string;
+};
 
 export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) {
   const config = options.config ?? loadConfig(options);
   const client = new RemnicClient(config);
-  const observedHashes = new Set<string>();
-  let lastInjectedKey = "";
+  const sessionStates = new Map<string, PiSessionState>();
 
   return async function remnicPiExtension(pi: PiApi): Promise<void> {
     pi.on("session_start", async (_event, ctx) => {
-      restoreObservedState(ctx, observedHashes);
+      const { state } = getSessionState(ctx, sessionStates);
+      restoreObservedState(ctx, state.observedHashes);
       if (!config.statusEnabled) return;
       await setStatus(ctx, client, config);
     });
@@ -43,9 +49,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const query = latestUserQuery(Array.isArray(event.messages) ? event.messages : []);
       if (!query) return;
       const sessionKey = sessionKeyFromContext(ctx);
-      const key = `${sessionKey}:${query}`;
-      if (key === lastInjectedKey) return;
-      lastInjectedKey = key;
+      const { state } = getSessionState(ctx, sessionStates);
+      if (query === state.lastInjectedQuery) return;
+      state.lastInjectedQuery = query;
 
       try {
         const recalled = await client.recall(query, sessionKey, ctx.cwd);
@@ -68,21 +74,25 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
 
     pi.on("agent_end", async (event, ctx) => {
       if (!config.observeEnabled || !Array.isArray(event.messages)) return;
-      await observeMessages(ctx, client, event.messages, observedHashes);
+      const { state } = getSessionState(ctx, sessionStates);
+      await observeMessages(ctx, client, event.messages, state.observedHashes);
     });
 
     pi.on("turn_end", async (event, ctx) => {
       if (!config.observeEnabled) return;
       const messages = [event.message, ...(Array.isArray(event.toolResults) ? event.toolResults : [])];
-      await observeMessages(ctx, client, messages, observedHashes);
+      const { state } = getSessionState(ctx, sessionStates);
+      await observeMessages(ctx, client, messages, state.observedHashes);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
+      const { sessionKey, state } = getSessionState(ctx, sessionStates);
       if (config.observeEnabled) {
         const branch = safeBranch(ctx);
-        if (branch.length > 0) await observeMessages(ctx, client, branch.map((entry) => entry.message).filter(Boolean), observedHashes);
+        if (branch.length > 0) await observeMessages(ctx, client, branch.map((entry) => entry.message).filter(Boolean), state.observedHashes);
       }
-      persistObservedState(pi, observedHashes);
+      persistObservedState(pi, state.observedHashes);
+      sessionStates.delete(sessionKey);
     });
 
     pi.on("session_before_compact", async (event, ctx) => {
@@ -259,6 +269,25 @@ export function stripSessionOwnedSchemaFields(inputSchema: unknown): Record<stri
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getSessionState(ctx: any, states: Map<string, PiSessionState>): { sessionKey: string; state: PiSessionState } {
+  const sessionKey = sessionKeyFromContext(ctx);
+  let state = states.get(sessionKey);
+  if (!state) {
+    state = { observedHashes: new Set<string>(), lastInjectedQuery: "" };
+    states.set(sessionKey, state);
+    pruneSessionStates(states);
+  }
+  return { sessionKey, state };
+}
+
+function pruneSessionStates(states: Map<string, PiSessionState>): void {
+  while (states.size > MAX_SESSION_STATES) {
+    const oldest = states.keys().next().value;
+    if (typeof oldest !== "string") return;
+    states.delete(oldest);
+  }
 }
 
 export async function observeMessages(

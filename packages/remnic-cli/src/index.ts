@@ -4892,6 +4892,18 @@ function cmdDedup(json: boolean): void {
   console.log(`Duration: ${result.durationMs}ms`);
 }
 
+function readInstalledConnectorConfig(configPath: string | undefined, fallback: Record<string, unknown>): Record<string, unknown> {
+  if (!configPath) return fallback;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fallback;
+    const { token: _token, ...config } = parsed as Record<string, unknown>;
+    return config;
+  } catch {
+    return fallback;
+  }
+}
+
 // ── M5 connectors command ────────────────────────────────────────────────────
 
 async function cmdConnectors(action: string, rest: string[], json: boolean): Promise<void> {
@@ -4935,10 +4947,11 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     if (result.configPath) console.log(`  Config: ${result.configPath}`);
     if (result.status === "already_installed") console.log("Use --force to reinstall.");
     if (result.status === "config_required") console.log("Set config with --config <key>=<value>");
+    const effectiveConnectorConfig = readInstalledConnectorConfig(result.configPath, connectorConfig);
 
     // Publish memory extension if the connector has a publisher and the
     // install was successful (not error/already_installed/config_required).
-    const shouldPublishExtension = coerceInstallExtension(connectorConfig?.installExtension) ?? true;
+    const shouldPublishExtension = coerceInstallExtension(effectiveConnectorConfig.installExtension) ?? true;
     if (result.status === "installed" && shouldPublishExtension) {
       const pub = publisherForConnector(connectorId);
       if (pub) {
@@ -4950,12 +4963,12 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
             // the publish context so publishers use the actual namespace
             // instead of falling back to "default".
             const connectorNamespace =
-              typeof connectorConfig?.namespace === "string" && connectorConfig.namespace.length > 0
-                ? connectorConfig.namespace
+              typeof effectiveConnectorConfig.namespace === "string" && effectiveConnectorConfig.namespace.length > 0
+                ? effectiveConnectorConfig.namespace
                 : undefined;
             const connectorDaemonUrl =
-              typeof connectorConfig?.remnicDaemonUrl === "string" && connectorConfig.remnicDaemonUrl.trim().length > 0
-                ? connectorConfig.remnicDaemonUrl.trim()
+              typeof effectiveConnectorConfig.remnicDaemonUrl === "string" && effectiveConnectorConfig.remnicDaemonUrl.trim().length > 0
+                ? effectiveConnectorConfig.remnicDaemonUrl.trim()
                 : undefined;
             const pubResult = await pub.publish({
               config: { memoryDir, namespace: connectorNamespace, daemonUrl: connectorDaemonUrl },
@@ -4999,7 +5012,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
         }
       }
     }
-    if (result.status === "skipped" && result.reason === "config-parse-failed") {
+    } else if (result.status === "skipped" && result.reason === "config-parse-failed") {
       // A malformed codex-cli.json means we could not verify or complete removal.
       // This is not a benign no-op — the connector may still be partially installed.
       // Exit non-zero so automation does not treat a failed removal as success.

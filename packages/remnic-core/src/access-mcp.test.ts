@@ -365,6 +365,25 @@ test("MCP LCM compaction flush dispatches sanitized args to the access service",
   assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
 });
 
+test("MCP tools/list exposes LCM compaction tools under remnic aliases", async () => {
+  const server = new EngramMcpServer(makeMockService());
+
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/list",
+    params: {},
+  });
+  const listed = ((response as Record<string, unknown>).result as { tools: Array<{ name: string }> }).tools.map(
+    (tool) => tool.name,
+  );
+
+  assert.ok(listed.includes("remnic.lcm_compaction_flush"));
+  assert.ok(listed.includes("engram.lcm_compaction_flush"));
+  assert.ok(listed.includes("remnic.lcm_compaction_record"));
+  assert.ok(listed.includes("engram.lcm_compaction_record"));
+});
+
 test("MCP LCM compaction record rejects invalid token counts before dispatch", async () => {
   let called = false;
   const service = {
