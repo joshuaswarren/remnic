@@ -45,8 +45,8 @@ export function toObserveMessage(message: unknown): ObserveMessage | null {
   };
 }
 
-export function hashObservedMessage(message: ObserveMessage): string {
-  return `${message.role}:${message.content}`;
+export function hashObservedMessage(message: ObserveMessage, sessionKey = ""): string {
+  return `${sessionKey}:${message.role}:${message.content}`;
 }
 
 export function summarizeMessages(messages: unknown[], maxChars: number): string {
@@ -88,6 +88,26 @@ function textFromContent(content: unknown): string {
 }
 
 function partsFromMessage(message: PiMessage, renderedContent: string): ObserveMessagePart[] {
+  if (message.role === "toolResult") {
+    const toolName = typeof message.toolName === "string"
+      ? message.toolName
+      : typeof message.tool_name === "string"
+        ? message.tool_name
+        : undefined;
+    return [{
+      ordinal: 0,
+      kind: "tool_result",
+      payload: {
+        toolName,
+        content: renderedContent,
+        ...(typeof message.isError === "boolean" ? { isError: message.isError } : {}),
+        ...(typeof message.is_error === "boolean" ? { is_error: message.is_error } : {}),
+      },
+      toolName,
+      filePath: firstFilePath(renderedContent),
+    }];
+  }
+
   const parts: ObserveMessagePart[] = [];
   const content = message.content;
   if (Array.isArray(content)) {

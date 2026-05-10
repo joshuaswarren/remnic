@@ -213,7 +213,7 @@ async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicP
       name: piToolName,
       label: tool.name,
       description: tool.description ?? `Call ${tool.name}`,
-      parameters: tool.inputSchema ?? { type: "object", properties: {}, additionalProperties: true },
+      parameters: stripSessionOwnedSchemaFields(tool.inputSchema),
       async execute(_toolCallId: string, params: Record<string, unknown>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
         const sessionKey = sessionKeyFromContext(ctx);
         const {
@@ -237,24 +237,49 @@ async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicP
   }
 }
 
+export function stripSessionOwnedSchemaFields(inputSchema: unknown): Record<string, unknown> {
+  if (!isRecord(inputSchema)) {
+    return { type: "object", properties: {}, additionalProperties: true };
+  }
+  const schema: Record<string, unknown> = { ...inputSchema };
+  const properties = isRecord(inputSchema.properties)
+    ? { ...inputSchema.properties }
+    : {};
+  delete properties.sessionKey;
+  delete properties.namespace;
+  delete properties.cwd;
+  schema.properties = properties;
+  if (Array.isArray(inputSchema.required)) {
+    schema.required = inputSchema.required.filter(
+      (field) => field !== "sessionKey" && field !== "namespace" && field !== "cwd",
+    );
+  }
+  return schema;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 async function observeMessages(
   ctx: any,
   client: RemnicClient,
   rawMessages: unknown[],
   observedHashes: Set<string>,
 ): Promise<void> {
+  const sessionKey = sessionKeyFromContext(ctx);
   const messages: ObserveMessage[] = [];
   for (const raw of rawMessages) {
     const message = toObserveMessage(raw);
     if (!message) continue;
-    const hash = hashObservedMessage(message);
+    const hash = hashObservedMessage(message, sessionKey);
     if (observedHashes.has(hash)) continue;
     observedHashes.add(hash);
     messages.push(message);
   }
   if (messages.length === 0) return;
   try {
-    await client.observe(sessionKeyFromContext(ctx), ctx.cwd, messages);
+    await client.observe(sessionKey, ctx.cwd, messages);
   } catch (err) {
     notify(ctx, `Remnic observe failed: ${errorMessage(err)}`, "warning");
   }

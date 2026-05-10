@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  hashObservedMessage,
   latestUserQuery,
   sessionKeyFromContext,
   summarizeMessages,
@@ -39,6 +40,32 @@ test("toObserveMessage marks Pi messages with structured tool parts", () => {
   assert.equal(observed.role, "assistant");
   assert.equal(observed.parts?.[1]?.kind, "file_write");
   assert.equal(observed.parts?.[1]?.filePath, "src/index.ts");
+});
+
+test("toObserveMessage preserves Pi tool result messages", () => {
+  const observed = toObserveMessage({
+    role: "toolResult",
+    toolName: "read",
+    content: [{ type: "text", text: "Read src/index.ts" }],
+    isError: false,
+  });
+
+  assert.ok(observed);
+  assert.equal(observed.role, "assistant");
+  assert.equal(observed.parts?.[0]?.kind, "tool_result");
+  assert.equal(observed.parts?.[0]?.toolName, "read");
+  assert.equal(observed.parts?.[0]?.filePath, "src/index.ts");
+  assert.equal(observed.parts?.[0]?.payload.isError, false);
+});
+
+test("hashObservedMessage scopes duplicate detection by session", () => {
+  const observed = toObserveMessage({ role: "user", content: "same" });
+
+  assert.ok(observed);
+  assert.notEqual(
+    hashObservedMessage(observed, "pi:one"),
+    hashObservedMessage(observed, "pi:two"),
+  );
 });
 
 test("textFromMessage renders bash executions for observation", () => {
