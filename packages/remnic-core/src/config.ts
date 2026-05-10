@@ -3374,7 +3374,7 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
     },
     {
       id: "targeted-facts",
-      enabled: cfg.targetedFactRecallEnabled !== false,
+      enabled: coerceBool(cfg.targetedFactRecallEnabled) ?? true,
       maxChars:
         typeof cfg.targetedFactRecallMaxChars === "number"
           ? Math.max(0, Math.floor(cfg.targetedFactRecallMaxChars))
@@ -3394,7 +3394,7 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
     },
     {
       id: "focused-list",
-      enabled: cfg.focusedListRecallEnabled !== false,
+      enabled: coerceBool(cfg.focusedListRecallEnabled) ?? true,
       maxChars:
         typeof cfg.focusedListRecallMaxChars === "number"
           ? Math.max(0, Math.floor(cfg.focusedListRecallMaxChars))
@@ -3414,7 +3414,7 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
     },
     {
       id: "response-guidance",
-      enabled: cfg.responseGuidanceRecallEnabled !== false,
+      enabled: coerceBool(cfg.responseGuidanceRecallEnabled) ?? true,
       maxChars:
         typeof cfg.responseGuidanceRecallMaxChars === "number"
           ? Math.max(0, Math.floor(cfg.responseGuidanceRecallMaxChars))
@@ -3434,7 +3434,7 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
     },
     {
       id: "event-order",
-      enabled: cfg.eventOrderRecallEnabled !== false,
+      enabled: coerceBool(cfg.eventOrderRecallEnabled) ?? true,
       maxChars:
         typeof cfg.eventOrderRecallMaxChars === "number"
           ? Math.max(0, Math.floor(cfg.eventOrderRecallMaxChars))

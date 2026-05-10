@@ -59,3 +59,25 @@ test("parseConfig accepts custom recall pipeline entries", () => {
   assert.equal(cfg.recallPipeline[1]?.maxResults, 3);
   assert.equal(cfg.recallPipeline[2]?.enabled, false);
 });
+
+test("parseConfig coerces string false for default specialized recall sections", () => {
+  const cfg = parseConfig({
+    targetedFactRecallEnabled: "false",
+    focusedListRecallEnabled: "0",
+    responseGuidanceRecallEnabled: "no",
+    eventOrderRecallEnabled: "off",
+  });
+
+  for (const id of [
+    "targeted-facts",
+    "focused-list",
+    "response-guidance",
+    "event-order",
+  ]) {
+    assert.equal(
+      cfg.recallPipeline.find((entry) => entry.id === id)?.enabled,
+      false,
+      `${id} should honor string false config`,
+    );
+  }
+});
