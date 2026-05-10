@@ -67,6 +67,24 @@ test("toObserveMessage preserves Pi tool result messages", () => {
   assert.equal(observed.parts?.[0]?.payload.isError, false);
 });
 
+test("toObserveMessage encodes Pi bash executions as tool results", () => {
+  const observed = toObserveMessage({
+    role: "bashExecution",
+    command: "cat src/index.ts",
+    output: "src/index.ts contents",
+    exitCode: 0,
+  });
+
+  assert.ok(observed);
+  assert.equal(observed.role, "user");
+  assert.equal(observed.parts?.[0]?.kind, "tool_result");
+  assert.equal(observed.parts?.[0]?.toolName, "bashExecution");
+  assert.equal(observed.parts?.[0]?.filePath, "src/index.ts");
+  assert.equal(observed.parts?.[0]?.payload.command, "cat src/index.ts");
+  assert.equal(observed.parts?.[0]?.payload.output, "src/index.ts contents");
+  assert.equal(observed.parts?.[0]?.payload.exitCode, 0);
+});
+
 test("toObserveMessage skips Pi context-excluded messages", () => {
   assert.equal(
     toObserveMessage({ role: "bashExecution", command: "secret", output: "private", excludeFromContext: true }),

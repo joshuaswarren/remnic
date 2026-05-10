@@ -238,9 +238,12 @@ class LazyPiMemoryExtensionPublisher implements MemoryExtensionPublisher {
   }
 
   private async load(): Promise<MemoryExtensionPublisher> {
-    this.delegate ??= loadPiPublisherModule().then(
-      (mod) => new mod.PiMemoryExtensionPublisher(),
-    );
+    this.delegate ??= loadPiPublisherModule()
+      .then((mod) => new mod.PiMemoryExtensionPublisher())
+      .catch((err) => {
+        this.delegate = undefined;
+        throw err;
+      });
     return this.delegate;
   }
 }

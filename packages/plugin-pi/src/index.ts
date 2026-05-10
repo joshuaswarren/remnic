@@ -2,8 +2,8 @@ import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./confi
 import { RemnicClient, type McpTool, type ObserveMessage } from "./client.js";
 import {
   estimateTokens,
-  hashObservedMessage,
   latestUserQuery,
+  observedMessageDedupeKey,
   sessionKeyFromContext,
   summarizeMessages,
   textFromMessage,
@@ -299,12 +299,16 @@ export async function observeMessages(
   const sessionKey = sessionKeyFromContext(ctx);
   const messages: ObserveMessage[] = [];
   const pendingHashes = new Set<string>();
-  for (const raw of rawMessages) {
+  for (const [index, raw] of rawMessages.entries()) {
     const message = toObserveMessage(raw);
     if (!message) continue;
-    const hash = hashObservedMessage(message, sessionKey);
-    if (observedHashes.has(hash) || pendingHashes.has(hash)) continue;
-    pendingHashes.add(hash);
+    const hash = observedMessageDedupeKey(
+      message,
+      sessionKey,
+      rawMessages.length > 1 ? index : undefined,
+    );
+    if (hash && (observedHashes.has(hash) || pendingHashes.has(hash))) continue;
+    if (hash) pendingHashes.add(hash);
     messages.push(message);
   }
   if (messages.length === 0) return;

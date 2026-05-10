@@ -49,14 +49,25 @@ export function toObserveMessage(message: unknown): ObserveMessage | null {
   };
 }
 
-export function hashObservedMessage(message: ObserveMessage, sessionKey = ""): string {
+export function hashObservedMessage(message: ObserveMessage, sessionKey = "", identity = "content"): string {
   return createHash("sha256")
     .update(sessionKey)
     .update("\0")
     .update(message.role)
     .update("\0")
+    .update(identity)
+    .update("\0")
     .update(message.content)
     .digest("hex");
+}
+
+export function observedMessageDedupeKey(
+  message: ObserveMessage,
+  sessionKey = "",
+  ordinal?: number,
+): string | null {
+  const identity = stableObservedMessageIdentity(message.rawContent, ordinal);
+  return identity ? hashObservedMessage(message, sessionKey, identity) : null;
 }
 
 export function summarizeMessages(messages: unknown[], maxChars: number): string {
@@ -103,6 +114,27 @@ function textFromContent(content: unknown): string {
 }
 
 function partsFromMessage(message: PiMessage, renderedContent: string): ObserveMessagePart[] {
+  if (message.role === "bashExecution") {
+    const command = typeof message.command === "string" ? message.command : undefined;
+    const output = typeof message.output === "string" ? message.output : undefined;
+    const filePath = firstFilePathFromObject(message) ?? firstFilePath([command, output, renderedContent].filter(Boolean).join("\n"));
+    return [{
+      ordinal: 0,
+      kind: "tool_result",
+      payload: {
+        role: "bashExecution",
+        command,
+        output,
+        content: renderedContent,
+        ...(message.exitCode !== undefined ? { exitCode: message.exitCode } : {}),
+        ...(message.exit_code !== undefined ? { exit_code: message.exit_code } : {}),
+        ...(typeof message.truncated === "boolean" ? { truncated: message.truncated } : {}),
+      },
+      toolName: "bashExecution",
+      filePath,
+    }];
+  }
+
   if (message.role === "toolResult") {
     const toolName = typeof message.toolName === "string"
       ? message.toolName
@@ -148,6 +180,39 @@ function partsFromMessage(message: PiMessage, renderedContent: string): ObserveM
     parts.push({ ordinal: 0, kind: "text", payload: { text: renderedContent }, filePath: firstFilePath(renderedContent) });
   }
   return parts;
+}
+
+function stableObservedMessageIdentity(rawContent: unknown, ordinal?: number): string | null {
+  if (rawContent && typeof rawContent === "object") {
+    const obj = rawContent as PiMessage;
+    const fields = [
+      "id",
+      "entryId",
+      "entry_id",
+      "messageId",
+      "message_id",
+      "turnId",
+      "turn_id",
+      "timestamp",
+      "createdAt",
+      "created_at",
+    ];
+    for (const field of fields) {
+      const value = obj[field];
+      if (typeof value === "string" && value.length > 0) return `${field}:${value}`;
+      if (typeof value === "number" && Number.isFinite(value)) return `${field}:${value}`;
+    }
+  }
+  return ordinal === undefined ? null : `ordinal:${ordinal}`;
+}
+
+function firstFilePathFromObject(obj: PiMessage): string | null {
+  for (const value of Object.values(obj)) {
+    if (typeof value !== "string") continue;
+    const match = firstFilePath(value);
+    if (match) return match;
+  }
+  return null;
 }
 
 function classifyToolCall(name: string): ObserveMessagePart["kind"] {

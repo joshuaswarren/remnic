@@ -38,7 +38,7 @@ test("observeMessages only records dedupe hashes after a successful observe", as
     },
   };
 
-  await observeMessages(ctx, client as any, [{ role: "user", content: "same prompt" }], observedHashes);
+  await observeMessages(ctx, client as any, [{ id: "same-1", role: "user", content: "same prompt" }], observedHashes);
 
   assert.equal(calls, 1);
   assert.equal(observedHashes.size, 0);
@@ -47,8 +47,8 @@ test("observeMessages only records dedupe hashes after a successful observe", as
     calls += 1;
   };
 
-  await observeMessages(ctx, client as any, [{ role: "user", content: "same prompt" }], observedHashes);
-  await observeMessages(ctx, client as any, [{ role: "user", content: "same prompt" }], observedHashes);
+  await observeMessages(ctx, client as any, [{ id: "same-1", role: "user", content: "same prompt" }], observedHashes);
+  await observeMessages(ctx, client as any, [{ id: "same-1", role: "user", content: "same prompt" }], observedHashes);
 
   assert.equal(calls, 2);
   assert.equal(observedHashes.size, 1);
@@ -65,10 +65,51 @@ test("observeMessages caps persisted dedupe hashes during long sessions", async 
   };
 
   for (let index = 0; index < 2005; index++) {
-    await observeMessages(ctx, client as any, [{ role: "user", content: `message ${index}` }], observedHashes);
+    await observeMessages(ctx, client as any, [{ id: `message-${index}`, role: "user", content: `message ${index}` }], observedHashes);
   }
 
   assert.equal(observedHashes.size, 2000);
+});
+
+test("observeMessages preserves repeated turns without stable Pi identity", async () => {
+  const observedHashes = new Set<string>();
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "repeat-test" },
+  };
+  const batches: unknown[][] = [];
+  const client: { observe: (_sessionKey: string, _cwd: string, messages: unknown[]) => Promise<void> } = {
+    observe: async (_sessionKey, _cwd, messages) => {
+      batches.push(messages);
+    },
+  };
+
+  await observeMessages(ctx, client as any, [{ role: "user", content: "yes" }], observedHashes);
+  await observeMessages(ctx, client as any, [{ role: "user", content: "yes" }], observedHashes);
+
+  assert.equal(batches.length, 2);
+  assert.equal(observedHashes.size, 0);
+});
+
+test("observeMessages dedupes replayed Pi entries with stable identity", async () => {
+  const observedHashes = new Set<string>();
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "entry-test" },
+  };
+  let calls = 0;
+  const client: { observe: () => Promise<void> } = {
+    observe: async () => {
+      calls += 1;
+    },
+  };
+  const raw = [{ id: "entry-1", role: "user", content: "yes" }];
+
+  await observeMessages(ctx, client as any, raw, observedHashes);
+  await observeMessages(ctx, client as any, raw, observedHashes);
+
+  assert.equal(calls, 1);
+  assert.equal(observedHashes.size, 1);
 });
 
 test("buildCompactionSummary returns empty content for empty compaction preparations", () => {
