@@ -170,6 +170,9 @@ function trimTrailingSlashes(value: string): string {
 }
 
 function resolvePiAgentHome(env: NodeJS.ProcessEnv): string {
+  const explicitCodingAgentDir = env.PI_CODING_AGENT_DIR?.trim();
+  if (explicitCodingAgentDir) return path.resolve(expandTildePath(explicitCodingAgentDir));
+
   const explicitAgentHome = env.PI_AGENT_HOME?.trim();
   if (explicitAgentHome) return path.resolve(expandTildePath(explicitAgentHome));
 

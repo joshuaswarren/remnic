@@ -72,12 +72,6 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       }
     });
 
-    pi.on("agent_end", async (event, ctx) => {
-      if (!config.observeEnabled || !Array.isArray(event.messages)) return;
-      const { state } = getSessionState(ctx, sessionStates);
-      await observeMessages(ctx, client, event.messages, state.observedHashes);
-    });
-
     pi.on("turn_end", async (event, ctx) => {
       if (!config.observeEnabled) return;
       const messages = [event.message, ...(Array.isArray(event.toolResults) ? event.toolResults : [])];

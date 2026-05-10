@@ -15,6 +15,23 @@ class FailingPiPublisher extends PiMemoryExtensionPublisher {
   }
 }
 
+test("Pi publisher honors PI_CODING_AGENT_DIR for extension root", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-publisher-dir-test-"));
+  try {
+    const publisher = new PiMemoryExtensionPublisher();
+    const piDir = path.join(root, "pi-config");
+    const extensionRoot = await publisher.resolveExtensionRoot({
+      PI_CODING_AGENT_DIR: piDir,
+      PI_AGENT_HOME: path.join(root, "wrong-agent-home"),
+      PI_HOME: path.join(root, "wrong-pi-home"),
+    });
+
+    assert.equal(extensionRoot, path.join(piDir, "extensions", "remnic"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Pi publisher restores prior extension files and token-store entry when publish fails", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-publisher-test-"));
   const home = path.join(root, "home");

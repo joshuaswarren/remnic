@@ -161,6 +161,44 @@ test("session_shutdown preserves Pi branch entry identity before observing", asy
   assert.equal(rawContent.timestamp, 1710000000000);
 });
 
+test("agent_end does not duplicate turn_end observation", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const observeBodies: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/engram/v1/observe")) {
+      observeBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "agent-end-duplicate-test" },
+  };
+  const message = { role: "assistant", content: "done" };
+
+  await emit("turn_end", { message }, ctx);
+  await emit("agent_end", { messages: [message] }, ctx);
+
+  assert.equal(observeBodies.length, 1);
+});
+
 test("buildCompactionSummary returns empty content for empty compaction preparations", () => {
   assert.equal(buildCompactionSummary({}), "");
 });
