@@ -6,6 +6,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   expandTildePath,
   getConnectorToken,
+  loadTokenStore,
+  saveTokenStore,
   type MemoryExtensionPublisher,
   type PublishContext,
   type PublishResult,
@@ -16,6 +18,13 @@ import type { RemnicPiConfig } from "./config.js";
 
 const REMNIC_EXTENSION_DIR_NAME = "remnic";
 const DEFAULT_DAEMON_PORT = 4318;
+
+type FileSnapshot = {
+  path: string;
+  existed: boolean;
+  content?: Buffer;
+  mode?: number;
+};
 
 export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
   readonly hostId = "pi";
@@ -70,11 +79,13 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
     const skipped: string[] = [];
 
     ctx.log.info(`Publishing Pi memory extension to ${extensionRoot}`);
-    fs.mkdirSync(extensionRoot, { recursive: true });
 
     const configPath = path.join(extensionRoot, "remnic.config.json");
     const wrapperPath = path.join(extensionRoot, "index.ts");
     const readmePath = path.join(extensionRoot, "README.md");
+    const rootExisted = fs.existsSync(extensionRoot);
+    const snapshots = snapshotFiles([configPath, wrapperPath, readmePath]);
+    const priorAuthToken = readPriorAuthToken(configPath);
 
     const token = getConnectorToken("pi");
     if (!token) {
@@ -97,14 +108,30 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
       requestTimeoutMs: 5000,
     };
 
-    atomicWriteFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
-    filesWritten.push(configPath);
+    try {
+      fs.mkdirSync(extensionRoot, { recursive: true });
 
-    atomicWriteFile(wrapperPath, renderWrapper(resolveExtensionModulePath(), configPath), 0o644);
-    filesWritten.push(wrapperPath);
+      atomicWriteFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
+      filesWritten.push(configPath);
 
-    atomicWriteFile(readmePath, `${await this.renderInstructions(ctx)}\n`, 0o644);
-    filesWritten.push(readmePath);
+      atomicWriteFile(wrapperPath, renderWrapper(resolveExtensionModulePath(), configPath), 0o644);
+      filesWritten.push(wrapperPath);
+
+      atomicWriteFile(readmePath, `${await this.renderInstructions(ctx)}\n`, 0o644);
+      filesWritten.push(readmePath);
+    } catch (err) {
+      try {
+        restorePublishSnapshot(extensionRoot, rootExisted, snapshots);
+      } catch (restoreErr) {
+        ctx.log.warn(`Pi extension rollback failed: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`);
+      }
+      try {
+        rollbackPiToken(priorAuthToken);
+      } catch (tokenErr) {
+        ctx.log.warn(`Pi connector token rollback failed: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`);
+      }
+      throw err;
+    }
 
     return {
       hostId: this.hostId,
@@ -184,4 +211,63 @@ function atomicWriteFile(filePath: string, content: string, mode: number): void 
     }
     throw err;
   }
+}
+
+function snapshotFiles(paths: string[]): FileSnapshot[] {
+  return paths.map((filePath) => {
+    if (!fs.existsSync(filePath)) return { path: filePath, existed: false };
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return { path: filePath, existed: false };
+    return {
+      path: filePath,
+      existed: true,
+      content: fs.readFileSync(filePath),
+      mode: stat.mode & 0o777,
+    };
+  });
+}
+
+function restorePublishSnapshot(extensionRoot: string, rootExisted: boolean, snapshots: FileSnapshot[]): void {
+  if (!rootExisted) {
+    fs.rmSync(extensionRoot, { recursive: true, force: true });
+    return;
+  }
+
+  for (const snapshot of snapshots) {
+    if (!snapshot.existed) {
+      fs.rmSync(snapshot.path, { force: true });
+      continue;
+    }
+    fs.mkdirSync(path.dirname(snapshot.path), { recursive: true });
+    fs.writeFileSync(snapshot.path, snapshot.content ?? Buffer.alloc(0), { mode: snapshot.mode });
+    if (snapshot.mode !== undefined) {
+      try {
+        fs.chmodSync(snapshot.path, snapshot.mode);
+      } catch {
+        // Best effort for platforms that do not support chmod.
+      }
+    }
+  }
+}
+
+function readPriorAuthToken(configPath: string): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    return typeof parsed.authToken === "string" && parsed.authToken.length > 0 ? parsed.authToken : null;
+  } catch {
+    return null;
+  }
+}
+
+function rollbackPiToken(priorAuthToken: string | null): void {
+  const store = loadTokenStore();
+  store.tokens = store.tokens.filter((entry) => entry.connector !== "pi");
+  if (priorAuthToken) {
+    store.tokens.push({
+      connector: "pi",
+      token: priorAuthToken,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  saveTokenStore(store);
 }

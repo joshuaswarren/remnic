@@ -26,6 +26,15 @@ test("latestUserQuery extracts the newest user text", () => {
   assert.equal(latestUserQuery(messages), "newer");
 });
 
+test("latestUserQuery skips Pi context-excluded messages", () => {
+  const messages = [
+    { role: "user", content: "usable" },
+    { role: "user", content: "private", excludeFromContext: true },
+  ];
+
+  assert.equal(latestUserQuery(messages), "usable");
+});
+
 test("toObserveMessage marks Pi messages with structured tool parts", () => {
   const observed = toObserveMessage({
     role: "assistant",
@@ -58,14 +67,21 @@ test("toObserveMessage preserves Pi tool result messages", () => {
   assert.equal(observed.parts?.[0]?.payload.isError, false);
 });
 
+test("toObserveMessage skips Pi context-excluded messages", () => {
+  assert.equal(
+    toObserveMessage({ role: "bashExecution", command: "secret", output: "private", excludeFromContext: true }),
+    null,
+  );
+});
+
 test("hashObservedMessage scopes duplicate detection by session", () => {
   const observed = toObserveMessage({ role: "user", content: "same" });
 
   assert.ok(observed);
-  assert.notEqual(
-    hashObservedMessage(observed, "pi:one"),
-    hashObservedMessage(observed, "pi:two"),
-  );
+  const hash = hashObservedMessage(observed, "pi:one");
+  assert.equal(hash.length, 64);
+  assert.notEqual(hash, hashObservedMessage(observed, "pi:two"));
+  assert.equal(hash.includes("same"), false);
 });
 
 test("textFromMessage renders bash executions for observation", () => {
@@ -89,4 +105,13 @@ test("summarizeMessages counts separators against max character budget", () => {
 
   assert.ok(summary.length <= 20);
   assert.equal(summary, "[user] a\n\n[assistant");
+});
+
+test("summarizeMessages skips Pi context-excluded messages", () => {
+  const summary = summarizeMessages([
+    { role: "user", content: "keep" },
+    { role: "bashExecution", command: "private", output: "secret", excludeFromContext: true },
+  ], 1000);
+
+  assert.equal(summary, "[user] keep");
 });

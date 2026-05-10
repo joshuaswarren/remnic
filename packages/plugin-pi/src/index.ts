@@ -310,28 +310,39 @@ export async function observeMessages(
   if (messages.length === 0) return;
   try {
     await client.observe(sessionKey, ctx.cwd, messages);
-    for (const hash of pendingHashes) observedHashes.add(hash);
+    for (const hash of pendingHashes) rememberObservedHash(observedHashes, hash);
   } catch (err) {
     notify(ctx, `Remnic observe failed: ${errorMessage(err)}`, "warning");
   }
 }
 
-function buildCompactionSummary(preparation: any): string {
-  const sections: string[] = [
-    "## Remnic Pi Context Checkpoint",
-    "",
-    "This checkpoint was created by Remnic during Pi context compaction.",
-  ];
-  if (typeof preparation.previousSummary === "string" && preparation.previousSummary.trim()) {
-    sections.push("", "## Previous Summary", preparation.previousSummary.trim());
-  }
+export function buildCompactionSummary(preparation: any): string {
+  const previousSummary = typeof preparation.previousSummary === "string"
+    ? preparation.previousSummary.trim()
+    : "";
   const messages = [
     ...(Array.isArray(preparation.messagesToSummarize) ? preparation.messagesToSummarize : []),
     ...(Array.isArray(preparation.turnPrefixMessages) ? preparation.turnPrefixMessages : []),
   ];
   const transcript = summarizeMessages(messages, 24000);
-  if (transcript) sections.push("", "## Conversation Excerpt", transcript);
   const details = fileDetailsFromPreparation(preparation);
+
+  if (
+    !previousSummary &&
+    !transcript &&
+    details.readFiles.length === 0 &&
+    details.modifiedFiles.length === 0
+  ) {
+    return "";
+  }
+
+  const sections: string[] = [
+    "## Remnic Pi Context Checkpoint",
+    "",
+    "This checkpoint was created by Remnic during Pi context compaction.",
+  ];
+  if (previousSummary) sections.push("", "## Previous Summary", previousSummary);
+  if (transcript) sections.push("", "## Conversation Excerpt", transcript);
   if (details.readFiles.length > 0) sections.push("", "<read-files>", ...details.readFiles, "</read-files>");
   if (details.modifiedFiles.length > 0) sections.push("", "<modified-files>", ...details.modifiedFiles, "</modified-files>");
   return sections.join("\n");
@@ -355,10 +366,20 @@ function restoreObservedState(ctx: any, observedHashes: Set<string>): void {
     const hashes = entry.data?.observedHashes;
     if (Array.isArray(hashes)) {
       for (const hash of hashes) {
-        if (typeof hash === "string") observedHashes.add(hash);
+        if (typeof hash === "string") rememberObservedHash(observedHashes, hash);
       }
     }
   }
+}
+
+function rememberObservedHash(observedHashes: Set<string>, hash: string): void {
+  if (observedHashes.has(hash)) return;
+  while (observedHashes.size >= MAX_OBSERVED_HASHES) {
+    const oldest = observedHashes.keys().next().value;
+    if (typeof oldest !== "string") break;
+    observedHashes.delete(oldest);
+  }
+  observedHashes.add(hash);
 }
 
 function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {

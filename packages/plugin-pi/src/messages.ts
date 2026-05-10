@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ObserveMessage, ObserveMessagePart } from "./client.js";
 
 type PiMessage = Record<string, unknown>;
@@ -22,6 +24,7 @@ export function textFromMessage(message: unknown): string {
 export function latestUserQuery(messages: unknown[]): string {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index] as PiMessage;
+    if (isExcludedFromContext(message)) continue;
     if (message?.role === "user") {
       const text = textFromMessage(message);
       if (text.length > 0) return text;
@@ -33,6 +36,7 @@ export function latestUserQuery(messages: unknown[]): string {
 export function toObserveMessage(message: unknown): ObserveMessage | null {
   if (!message || typeof message !== "object") return null;
   const obj = message as PiMessage;
+  if (isExcludedFromContext(obj)) return null;
   const role = obj.role === "user" || obj.role === "bashExecution" ? "user" : "assistant";
   const content = textFromMessage(obj);
   if (content.length === 0) return null;
@@ -46,13 +50,20 @@ export function toObserveMessage(message: unknown): ObserveMessage | null {
 }
 
 export function hashObservedMessage(message: ObserveMessage, sessionKey = ""): string {
-  return `${sessionKey}:${message.role}:${message.content}`;
+  return createHash("sha256")
+    .update(sessionKey)
+    .update("\0")
+    .update(message.role)
+    .update("\0")
+    .update(message.content)
+    .digest("hex");
 }
 
 export function summarizeMessages(messages: unknown[], maxChars: number): string {
   const chunks: string[] = [];
   let used = 0;
   for (const message of messages) {
+    if (isExcludedFromContext(message)) continue;
     const text = textFromMessage(message);
     if (!text) continue;
     const role = typeof (message as PiMessage)?.role === "string" ? (message as PiMessage).role : "message";
@@ -70,6 +81,10 @@ export function summarizeMessages(messages: unknown[], maxChars: number): string
 
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
+}
+
+export function isExcludedFromContext(message: unknown): boolean {
+  return !!message && typeof message === "object" && (message as PiMessage).excludeFromContext === true;
 }
 
 function textFromContent(content: unknown): string {

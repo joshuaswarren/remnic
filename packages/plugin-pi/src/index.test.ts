@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createRemnicPiExtension, observeMessages, stripSessionOwnedSchemaFields } from "./index.js";
+import { buildCompactionSummary, createRemnicPiExtension, observeMessages, stripSessionOwnedSchemaFields } from "./index.js";
 import type { RemnicPiConfig } from "./config.js";
 
 test("stripSessionOwnedSchemaFields hides session routing fields from Pi tools", () => {
@@ -52,6 +52,41 @@ test("observeMessages only records dedupe hashes after a successful observe", as
 
   assert.equal(calls, 2);
   assert.equal(observedHashes.size, 1);
+});
+
+test("observeMessages caps persisted dedupe hashes during long sessions", async () => {
+  const observedHashes = new Set<string>();
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "cap-test" },
+  };
+  const client: { observe: () => Promise<void> } = {
+    observe: async () => undefined,
+  };
+
+  for (let index = 0; index < 2005; index++) {
+    await observeMessages(ctx, client as any, [{ role: "user", content: `message ${index}` }], observedHashes);
+  }
+
+  assert.equal(observedHashes.size, 2000);
+});
+
+test("buildCompactionSummary returns empty content for empty compaction preparations", () => {
+  assert.equal(buildCompactionSummary({}), "");
+});
+
+test("buildCompactionSummary includes only meaningful compaction content", () => {
+  const summary = buildCompactionSummary({
+    messagesToSummarize: [
+      { role: "user", content: "keep this" },
+      { role: "bashExecution", command: "private", output: "secret", excludeFromContext: true },
+    ],
+  });
+
+  assert.ok(summary.includes("## Remnic Pi Context Checkpoint"));
+  assert.ok(summary.includes("[user] keep this"));
+  assert.equal(summary.includes("private"), false);
+  assert.equal(summary.includes("secret"), false);
 });
 
 test("singleton extension clears per-session recall suppression on shutdown", async (t) => {
