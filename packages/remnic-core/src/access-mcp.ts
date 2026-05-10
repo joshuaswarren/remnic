@@ -1995,6 +1995,7 @@ export class EngramMcpServer {
         const response = await this.service.recall({
           query: typeof args.query === "string" ? args.query : "",
           sessionKey: typeof args.sessionKey === "string" ? args.sessionKey : undefined,
+          authenticatedPrincipal: effectivePrincipal,
           namespace: typeof args.namespace === "string" ? args.namespace : undefined,
           topK: typeof args.topK === "number" && Number.isFinite(args.topK) ? args.topK : undefined,
           mode: typeof args.mode === "string" ? args.mode as RecallPlanMode | "auto" : undefined,

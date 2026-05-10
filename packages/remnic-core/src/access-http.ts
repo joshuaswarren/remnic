@@ -505,6 +505,7 @@ export class EngramAccessHttpServer {
       const response = await this.service.recall({
         query: body.query ?? "",
         sessionKey: body.sessionKey,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
         namespace: this.resolveNamespace(req, body.namespace),
         topK: body.topK,
         mode: body.mode as RecallPlanMode | "auto" | undefined,
