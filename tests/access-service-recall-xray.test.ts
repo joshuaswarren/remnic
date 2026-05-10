@@ -136,6 +136,16 @@ test("recallXray forwards xrayCapture:true to orchestrator.recall", async () => 
   assert.equal(state.lastOptions?.xrayCapture, true);
 });
 
+test("recallXray forwards current context scopes through invocation options", async () => {
+  const { orchestrator, state } = stubOrchestrator({ snapshot: null });
+  const service = new EngramAccessService(orchestrator as any);
+  await service.recallXray({
+    query: "q",
+    currentContextScopes: ["work", "repo"],
+  });
+  assert.deepEqual(state.lastOptions?.currentContextScopes, ["work", "repo"]);
+});
+
 test("recallXray clears any prior snapshot before capturing", async () => {
   const { orchestrator, state } = stubOrchestrator({
     snapshot: fakeSnapshot({ snapshotId: "stale" }),

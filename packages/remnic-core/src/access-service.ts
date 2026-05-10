@@ -1945,6 +1945,12 @@ export class EngramAccessService {
     tags?: string[];
     /** Match mode for `tags`. See `EngramAccessRecallRequest.tagMatch`. */
     tagMatch?: "any" | "all";
+    /**
+     * User-aware context scopes active for this recall. Forwarded into
+     * provenance construction so boundary scopes are evaluated against
+     * the caller's real context instead of an empty-context default.
+     */
+    currentContextScopes?: readonly unknown[];
   }): Promise<{
     snapshotFound: boolean;
     snapshot?: import("./recall-xray.js").RecallXraySnapshot;
@@ -2058,6 +2064,9 @@ export class EngramAccessService {
         // (CLAUDE.md rule 42).
         ...(authenticatedPrincipal
           ? { principalOverride: authenticatedPrincipal }
+          : {}),
+        ...(request.currentContextScopes !== undefined
+          ? { currentContextScopes: request.currentContextScopes }
           : {}),
       });
 

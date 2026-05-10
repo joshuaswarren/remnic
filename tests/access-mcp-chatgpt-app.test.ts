@@ -197,10 +197,23 @@ test("ChatGPT Apps inspector serves a widget resource over MCP resources/read", 
     params: { uri: REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI },
   });
   const contents = (readResponse?.result as {
-    contents: Array<{ uri: string; mimeType: string; text: string }>;
+    contents: Array<{
+      uri: string;
+      mimeType: string;
+      text: string;
+      _meta?: Record<string, unknown>;
+    }>;
   }).contents;
   assert.equal(contents[0]?.uri, REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI);
   assert.equal(contents[0]?.mimeType, REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE);
+  assert.deepEqual(
+    ((contents[0]?._meta as { ui?: { csp?: unknown } } | undefined)?.ui?.csp),
+    { connectDomains: [], resourceDomains: [] },
+  );
+  assert.equal(
+    contents[0]?._meta?.["openai/widgetDescription"],
+    "Inspect retrieved Remnic memories, provenance, safety, and correction/scoping affordances.",
+  );
   assert.match(contents[0]?.text ?? "", /ui\/notifications\/tool-result/);
   assert.match(contents[0]?.text ?? "", /window\.openai/);
   assert.match(contents[0]?.text ?? "", /sendFollowUpMessage/);
@@ -259,6 +272,7 @@ test("ChatGPT Apps inspector dispatches canonical alias through recall, X-ray, a
       query: "What preferences matter here?",
       sessionKey: "sess-1",
       namespace: "work",
+      currentContextScopes: ["work", "repo"],
       authenticatedPrincipal: "user-a",
     },
   ]);

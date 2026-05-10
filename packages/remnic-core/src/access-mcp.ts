@@ -1697,7 +1697,8 @@ export class EngramMcpServer {
     if (method === "resources/read") {
       const params = request.params ?? {};
       const uri = typeof params.uri === "string" ? params.uri : "";
-      if (uri !== REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI) {
+      const resource = this.resources.find((entry) => entry.uri === uri);
+      if (!resource) {
         return {
           jsonrpc: "2.0",
           id,
@@ -1713,9 +1714,10 @@ export class EngramMcpServer {
         result: {
           contents: [
             {
-              uri,
-              mimeType: REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
+              uri: resource.uri,
+              mimeType: resource.mimeType,
               text: REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
+              _meta: resource._meta,
             },
           ],
         },
@@ -2206,6 +2208,7 @@ export class EngramMcpServer {
           query: input.query,
           sessionKey: input.sessionKey,
           namespace: input.namespace,
+          currentContextScopes: input.currentContextScopes,
           authenticatedPrincipal: effectivePrincipal,
         });
         const xray = xrayResponse.snapshotFound === true

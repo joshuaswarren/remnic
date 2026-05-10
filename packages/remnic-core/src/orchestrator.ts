@@ -602,6 +602,12 @@ export interface RecallInvocationOptions {
    * normally be pruned by confidence decay.  Default `false`.
    */
   includeLowConfidence?: boolean;
+  /**
+   * User-aware context scopes active for this recall. X-ray provenance
+   * uses these to decide whether boundary-tagged memories are safe in
+   * the current context.
+   */
+  currentContextScopes?: readonly unknown[];
 }
 
 type QueryAwarePrefilter = {
@@ -9715,6 +9721,7 @@ export class Orchestrator {
             result.provenance = buildRetrievedMemoryProvenance(memory, {
               namespace: this.namespaceFromPath(recalledPath),
               retrievalReason: `served-by=${servedBy}`,
+              currentContextScopes: options.currentContextScopes,
             });
           }
           results.push(result);
