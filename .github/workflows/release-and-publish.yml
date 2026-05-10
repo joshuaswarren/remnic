@@ -371,6 +371,7 @@ jobs:
             packages/connector-replit
             packages/hermes-provider
             packages/remnic-server
+            packages/plugin-pi
             packages/remnic-cli
             packages/plugin-openclaw
             packages/plugin-claude-code

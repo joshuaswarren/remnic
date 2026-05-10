@@ -4,9 +4,9 @@ import test from "node:test";
 
 // Topological publish order: core first, then the à-la-carte companion
 // packages (bench, importer/exporter family, connector-replit) that install
-// surfaces depend on, then the depend-on-core runtimes (server, CLI) and
-// plugin bundles (openclaw + per-agent plugins), and finally the legacy
-// shim that lives at the tail. Keep in sync with PUBLISH_ORDER in
+// surfaces depend on, then the depend-on-core runtimes and plugin bundles.
+// Packages that the CLI depends on, such as plugin-pi, must publish before
+// remnic-cli. The legacy shim lives at the tail. Keep in sync with PUBLISH_ORDER in
 // .github/workflows/release-and-publish.yml and AGENTS.md §44.
 const expectedPublishDirs = [
   "packages/remnic-core",
@@ -23,6 +23,7 @@ const expectedPublishDirs = [
   "packages/connector-replit",
   "packages/hermes-provider",
   "packages/remnic-server",
+  "packages/plugin-pi",
   "packages/remnic-cli",
   "packages/plugin-openclaw",
   "packages/plugin-claude-code",
