@@ -161,6 +161,49 @@ test("session_shutdown preserves Pi branch entry identity before observing", asy
   assert.equal(rawContent.timestamp, 1710000000000);
 });
 
+test("session_shutdown skips branch messages already observed at turn_end", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const observeBodies: Array<Record<string, any>> = [];
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/engram/v1/observe")) {
+      observeBodies.push(JSON.parse(String(init?.body ?? "{}")));
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const message = { role: "assistant", content: "done" };
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: {
+      getSessionId: () => "shutdown-live-observed-test",
+      getEntries: () => [],
+      getBranch: () => [{ id: "entry-1", message }],
+    },
+  };
+
+  await emit("turn_end", { message }, ctx);
+  await emit("session_shutdown", {}, ctx);
+
+  assert.equal(observeBodies.length, 1);
+  assert.equal(observeBodies[0].messages?.[0]?.rawContent?.entryId, undefined);
+});
+
 test("agent_end does not duplicate turn_end observation", async (t) => {
   const originalFetch = globalThis.fetch;
   const observeBodies: Array<Record<string, unknown>> = [];

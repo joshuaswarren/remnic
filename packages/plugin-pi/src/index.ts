@@ -1,6 +1,7 @@
 import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./config.js";
 import { RemnicClient, type McpTool, type ObserveMessage } from "./client.js";
 import {
+  hashObservedMessage,
   latestUserQuery,
   observedMessageDedupeKey,
   sessionKeyFromContext,
@@ -27,6 +28,7 @@ const MAX_CONTEXT_CHARS = 12000;
 
 type PiSessionState = {
   observedHashes: Set<string>;
+  liveObservedReplayKeys: Map<string, number>;
   lastInjectedQuery: string;
 };
 
@@ -75,7 +77,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!config.observeEnabled) return;
       const messages = [event.message, ...(Array.isArray(event.toolResults) ? event.toolResults : [])];
       const { state } = getSessionState(ctx, sessionStates);
-      await observeMessages(ctx, client, messages, state.observedHashes);
+      await observeMessages(ctx, client, messages, state.observedHashes, state.liveObservedReplayKeys);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
@@ -83,7 +85,8 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (config.observeEnabled) {
         const branch = safeBranch(ctx);
         const branchMessages = branchMessagesWithEntryIdentity(branch);
-        if (branchMessages.length > 0) await observeMessages(ctx, client, branchMessages, state.observedHashes);
+        const unobservedBranchMessages = skipLiveObservedReplayMessages(ctx, branchMessages, state.liveObservedReplayKeys);
+        if (unobservedBranchMessages.length > 0) await observeMessages(ctx, client, unobservedBranchMessages, state.observedHashes);
       }
       persistObservedState(pi, state.observedHashes);
       sessionStates.delete(sessionKey);
@@ -272,7 +275,11 @@ function getSessionState(ctx: any, states: Map<string, PiSessionState>): { sessi
   const sessionKey = sessionKeyFromContext(ctx);
   let state = states.get(sessionKey);
   if (!state) {
-    state = { observedHashes: new Set<string>(), lastInjectedQuery: "" };
+    state = {
+      observedHashes: new Set<string>(),
+      liveObservedReplayKeys: new Map<string, number>(),
+      lastInjectedQuery: "",
+    };
     states.set(sessionKey, state);
     pruneSessionStates(states);
   }
@@ -292,6 +299,7 @@ export async function observeMessages(
   client: RemnicClient,
   rawMessages: unknown[],
   observedHashes: Set<string>,
+  liveObservedReplayKeys?: Map<string, number>,
 ): Promise<void> {
   const sessionKey = sessionKeyFromContext(ctx);
   const messages: ObserveMessage[] = [];
@@ -312,6 +320,11 @@ export async function observeMessages(
   try {
     await client.observe(sessionKey, ctx.cwd, messages);
     for (const hash of pendingHashes) rememberObservedHash(observedHashes, hash);
+    if (liveObservedReplayKeys) {
+      for (const message of messages) {
+        rememberLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, sessionKey));
+      }
+    }
   } catch (err) {
     notify(ctx, `Remnic observe failed: ${errorMessage(err)}`, "warning");
   }
@@ -383,6 +396,40 @@ function rememberObservedHash(observedHashes: Set<string>, hash: string): void {
   observedHashes.add(hash);
 }
 
+function rememberLiveObservedReplayKey(liveObservedReplayKeys: Map<string, number>, key: string): void {
+  liveObservedReplayKeys.set(key, (liveObservedReplayKeys.get(key) ?? 0) + 1);
+}
+
+function consumeLiveObservedReplayKey(liveObservedReplayKeys: Map<string, number>, key: string): boolean {
+  const count = liveObservedReplayKeys.get(key) ?? 0;
+  if (count <= 0) return false;
+  if (count === 1) liveObservedReplayKeys.delete(key);
+  else liveObservedReplayKeys.set(key, count - 1);
+  return true;
+}
+
+function skipLiveObservedReplayMessages(
+  ctx: any,
+  rawMessages: unknown[],
+  liveObservedReplayKeys: Map<string, number>,
+): unknown[] {
+  if (liveObservedReplayKeys.size === 0) return rawMessages;
+  const sessionKey = sessionKeyFromContext(ctx);
+  const unobserved: unknown[] = [];
+  for (const raw of rawMessages) {
+    const message = toObserveMessage(raw);
+    if (message && consumeLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, sessionKey))) {
+      continue;
+    }
+    unobserved.push(raw);
+  }
+  return unobserved;
+}
+
+function liveReplayKey(message: ObserveMessage, sessionKey: string): string {
+  return hashObservedMessage(message, sessionKey, "live-replay");
+}
+
 function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
   const observed = Array.from(observedHashes).slice(-MAX_OBSERVED_HASHES);
   pi.appendEntry(STATE_CUSTOM_TYPE, {
@@ -441,8 +488,13 @@ function messageWithEntryIdentity(entry: any): unknown | null {
 
 function assignMissingIdentity(target: Record<string, unknown>, field: string, value: unknown): void {
   if (target[field] !== undefined) return;
-  if (typeof value === "string" && value.length > 0) target[field] = value;
-  if (typeof value === "number" && Number.isFinite(value)) target[field] = value;
+  if (typeof value === "string" && value.length > 0) {
+    target[field] = value;
+    return;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    target[field] = value;
+  }
 }
 
 function trimContext(value: string, budget: number): string {
