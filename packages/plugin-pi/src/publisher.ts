@@ -1,10 +1,8 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
-  expandTildePath,
   getConnectorToken,
   loadTokenStore,
   saveTokenStore,
@@ -15,7 +13,8 @@ import {
   type TokenEntry,
 } from "@remnic/core";
 
-const REMNIC_EXTENSION_DIR_NAME = "remnic";
+import { resolvePiExtensionRoot } from "./paths.js";
+
 const DEFAULT_DAEMON_PORT = 4318;
 
 type FileSnapshot = {
@@ -36,7 +35,7 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
   };
 
   async resolveExtensionRoot(env?: NodeJS.ProcessEnv): Promise<string> {
-    return path.join(resolvePiAgentHome(env ?? process.env), "extensions", REMNIC_EXTENSION_DIR_NAME);
+    return resolvePiExtensionRoot(env ?? process.env);
   }
 
   async isHostAvailable(): Promise<boolean> {
@@ -169,19 +168,6 @@ function trimTrailingSlashes(value: string): string {
   return value.slice(0, end);
 }
 
-function resolvePiAgentHome(env: NodeJS.ProcessEnv): string {
-  const explicitCodingAgentDir = env.PI_CODING_AGENT_DIR?.trim();
-  if (explicitCodingAgentDir) return path.resolve(expandTildePath(explicitCodingAgentDir));
-
-  const explicitAgentHome = env.PI_AGENT_HOME?.trim();
-  if (explicitAgentHome) return path.resolve(expandTildePath(explicitAgentHome));
-
-  const explicitPiHome = env.PI_HOME?.trim();
-  if (explicitPiHome) return path.join(path.resolve(expandTildePath(explicitPiHome)), "agent");
-
-  return path.join(env.HOME ?? env.USERPROFILE ?? os.homedir(), ".pi", "agent");
-}
-
 function resolveExtensionModulePath(): string {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const built = path.join(moduleDir, "index.js");
@@ -261,13 +247,16 @@ function restorePublishSnapshot(extensionRoot: string, rootExisted: boolean, sna
 }
 
 function readPriorConfig(configPath: string): Record<string, unknown> {
+  if (!fs.existsSync(configPath)) return {};
   try {
     const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    throw new Error("expected a JSON object");
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to load existing Remnic Pi config at ${configPath}: ${reason}`);
   }
 }
 

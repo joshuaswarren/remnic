@@ -1,8 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { expandTildePath } from "@remnic/core";
+
+import { REMNIC_PI_EXTENSION_DIR_NAME, resolvePiAgentHome } from "./paths.js";
 
 export interface RemnicPiConfig {
   remnicDaemonUrl: string;
@@ -40,8 +41,7 @@ const DEFAULT_CONFIG: RemnicPiConfig = {
 };
 
 function defaultConfigPath(env: NodeJS.ProcessEnv): string {
-  const home = env.HOME || env.USERPROFILE || os.homedir();
-  return path.join(home, ".pi", "agent", "extensions", "remnic", "remnic.config.json");
+  return path.join(resolvePiAgentHome(env), "extensions", REMNIC_PI_EXTENSION_DIR_NAME, "remnic.config.json");
 }
 
 function coerceBoolean(value: unknown, fallback: boolean): boolean {

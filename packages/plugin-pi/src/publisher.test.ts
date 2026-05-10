@@ -153,3 +153,48 @@ test("Pi publisher preserves user-managed extension settings on reinstall", asyn
   assert.equal(publishedConfig.statusEnabled, false);
   assert.equal(publishedConfig.requestTimeoutMs, 1234);
 });
+
+test("Pi publisher fails closed when existing config cannot be parsed", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-publisher-bad-config-"));
+  const home = path.join(root, "home");
+  const piAgentHome = path.join(root, "pi-agent");
+  const extensionRoot = path.join(piAgentHome, "extensions", "remnic");
+  const configPath = path.join(extensionRoot, "remnic.config.json");
+  fs.mkdirSync(extensionRoot, { recursive: true });
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  fs.writeFileSync(configPath, "{bad-json");
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousPiAgentHome = process.env.PI_AGENT_HOME;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  process.env.PI_AGENT_HOME = piAgentHome;
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+    if (previousPiAgentHome === undefined) delete process.env.PI_AGENT_HOME;
+    else process.env.PI_AGENT_HOME = previousPiAgentHome;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "pi", token: "new-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  const publisher = new PiMemoryExtensionPublisher();
+  await assert.rejects(
+    () => publisher.publish({
+      config: { memoryDir: path.join(root, "memory") },
+      skillsRoot: path.join(root, "memory", "skills"),
+      log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    }),
+    /Failed to load existing Remnic Pi config/,
+  );
+
+  assert.equal(fs.readFileSync(configPath, "utf8"), "{bad-json");
+  assert.equal(fs.existsSync(path.join(extensionRoot, "index.ts")), false);
+  assert.equal(fs.existsSync(path.join(extensionRoot, "README.md")), false);
+});

@@ -18,6 +18,38 @@ test("resolveConfigPath uses the Pi extension config location by default", () =>
   }
 });
 
+test("resolveConfigPath honors Pi agent directory overrides", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-roots-"));
+  try {
+    const home = path.join(root, "home");
+    const codingAgentDir = path.join(root, "coding-agent");
+    const agentHome = path.join(root, "agent-home");
+    const piHome = path.join(root, "pi-home");
+
+    assert.equal(
+      resolveConfigPath({
+        env: {
+          HOME: home,
+          PI_CODING_AGENT_DIR: codingAgentDir,
+          PI_AGENT_HOME: path.join(root, "wrong-agent-home"),
+          PI_HOME: path.join(root, "wrong-pi-home"),
+        },
+      }),
+      path.join(codingAgentDir, "extensions", "remnic", "remnic.config.json"),
+    );
+    assert.equal(
+      resolveConfigPath({ env: { HOME: home, PI_AGENT_HOME: agentHome } }),
+      path.join(agentHome, "extensions", "remnic", "remnic.config.json"),
+    );
+    assert.equal(
+      resolveConfigPath({ env: { HOME: home, PI_HOME: piHome } }),
+      path.join(piHome, "agent", "extensions", "remnic", "remnic.config.json"),
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("resolveConfigPath expands tilde in explicit and env config paths", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-tilde-home-"));
   const previousHome = process.env.HOME;
