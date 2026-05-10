@@ -83,6 +83,12 @@ function readConfigFile(configPath: string): Record<string, unknown> {
   }
 }
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
+}
+
 export function resolveConfigPath(options: LoadConfigOptions = {}): string {
   const env = options.env ?? process.env;
   return options.configPath || env.REMNIC_PI_CONFIG || defaultConfigPath(env);
@@ -109,7 +115,7 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
       : undefined;
 
   return {
-    remnicDaemonUrl: daemonUrl.replace(/\/+$/, ""),
+    remnicDaemonUrl: trimTrailingSlashes(daemonUrl),
     authToken,
     namespace,
     recallMode: normalizeRecallMode(fileConfig.recallMode),

@@ -124,9 +124,15 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
 
 function resolveDaemonUrl(ctx: PublishContext): string {
   if (ctx.config.daemonUrl && ctx.config.daemonUrl.trim().length > 0) {
-    return ctx.config.daemonUrl.trim().replace(/\/+$/, "");
+    return trimTrailingSlashes(ctx.config.daemonUrl.trim());
   }
   return `http://127.0.0.1:${ctx.config.daemonPort ?? DEFAULT_DAEMON_PORT}`;
+}
+
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
 }
 
 function resolvePiAgentHome(env: NodeJS.ProcessEnv): string {
