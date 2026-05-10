@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { Kind } from "@sinclair/typebox";
 
-import {
+import remnicPiExtension, {
   buildCompactionSummary,
   createRemnicPiExtension,
   observeMessages,
@@ -77,6 +77,49 @@ test("module import does not load the default Pi config eagerly", async (t) => {
     }
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("default Pi extension creates isolated state for each host invocation", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-default-isolation-"));
+  const configPath = path.join(root, "remnic.config.json");
+  fs.writeFileSync(configPath, JSON.stringify({
+    authToken: "test-token",
+    observeEnabled: false,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: false,
+  }));
+
+  const previousConfig = process.env.REMNIC_PI_CONFIG;
+  const originalFetch = globalThis.fetch;
+  const recallBodies: unknown[] = [];
+  process.env.REMNIC_PI_CONFIG = configPath;
+  globalThis.fetch = async (_input, init) => {
+    recallBodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
+  };
+  t.after(() => {
+    if (previousConfig === undefined) delete process.env.REMNIC_PI_CONFIG;
+    else process.env.REMNIC_PI_CONFIG = previousConfig;
+    globalThis.fetch = originalFetch;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const first = makePiHarness();
+  const second = makePiHarness();
+  await remnicPiExtension(first.pi as any);
+  await remnicPiExtension(second.pi as any);
+
+  const event = { messages: [{ role: "user", content: "same prompt" }] };
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "shared-session" },
+  };
+
+  await first.emit("context", event, ctx);
+  await second.emit("context", event, ctx);
+
+  assert.equal(recallBodies.length, 2);
 });
 
 test("observeMessages only records dedupe hashes after a successful observe", async () => {

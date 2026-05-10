@@ -61,7 +61,7 @@ async function withScenarioRegistration(
   } finally {
     restoreRegisterMigrationForCaptureTest(previousMigration);
     restoreOpenClawRegistrationGlobals(saved);
-    fs.rmSync(memoryDir, { force: true, recursive: true });
+    fs.rmSync(memoryDir, { force: true, recursive: true, maxRetries: 5, retryDelay: 50 });
   }
 }
 

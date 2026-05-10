@@ -141,11 +141,8 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
   };
 }
 
-let defaultExtension: ReturnType<typeof createRemnicPiExtension> | undefined;
-
 export default async function remnicPiExtension(pi: PiApi): Promise<void> {
-  defaultExtension ??= createRemnicPiExtension();
-  await defaultExtension(pi);
+  await createRemnicPiExtension()(pi);
 }
 
 function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfig): void {
