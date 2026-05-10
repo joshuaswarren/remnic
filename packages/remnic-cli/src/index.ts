@@ -145,6 +145,7 @@ import type {
   PublishResult,
   Taxonomy,
   TaxonomyCategory,
+  TokenEntry,
 } from "@remnic/core";
 // @remnic/bench is an optional install surface. Import types only at the
 // top level (erased at compile time); runtime access goes through
@@ -4949,6 +4950,11 @@ function readInstalledConnectorConfig(configPath: string | undefined, fallback: 
   }
 }
 
+function snapshotConnectorTokenEntry(connectorId: string): TokenEntry | null {
+  const entry = listTokens().find((candidate) => candidate.connector === connectorId);
+  return entry ? { ...entry } : null;
+}
+
 // ── M5 connectors command ────────────────────────────────────────────────────
 
 async function cmdConnectors(action: string, rest: string[], json: boolean): Promise<void> {
@@ -4979,6 +4985,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       process.exit(1);
     }
     const connectorConfig = parseConnectorConfig(rest);
+    const preInstallTokenEntry = snapshotConnectorTokenEntry(connectorId);
     const result = installConnector({
       connectorId,
       config: connectorConfig,
@@ -5018,6 +5025,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
             const pubResult = await pub.publish({
               config: { memoryDir, namespace: connectorNamespace, daemonUrl: connectorDaemonUrl },
               skillsRoot: path.join(memoryDir, "skills"),
+              rollbackTokenEntry: preInstallTokenEntry,
               log: { info: console.log, warn: console.warn, error: console.error },
             });
             if (pubResult.filesWritten.length > 0) {

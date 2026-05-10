@@ -71,6 +71,11 @@ test("Pi publisher restores prior extension files and token-store entry when pub
     () => publisher.publish({
       config: { memoryDir: path.join(root, "memory") },
       skillsRoot: path.join(root, "memory", "skills"),
+      rollbackTokenEntry: {
+        connector: "pi",
+        token: "old-token",
+        createdAt: "2026-05-09T00:00:00.000Z",
+      },
       log: { info: () => undefined, warn: () => undefined, error: () => undefined },
     }),
     /readme write failed/,
@@ -80,7 +85,7 @@ test("Pi publisher restores prior extension files and token-store entry when pub
   assert.equal(fs.readFileSync(wrapperPath, "utf8"), "old wrapper\n");
   assert.equal(fs.readFileSync(readmePath, "utf8"), "old readme\n");
   const piToken = loadTokenStore().tokens.find((entry) => entry.connector === "pi");
-  assert.equal(piToken?.token, "new-token");
+  assert.equal(piToken?.token, "old-token");
 });
 
 test("Pi publisher preserves user-managed extension settings on reinstall", async (t) => {

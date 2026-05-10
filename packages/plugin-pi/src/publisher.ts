@@ -84,7 +84,8 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
     const rootExisted = fs.existsSync(extensionRoot);
     const snapshots = snapshotFiles([configPath, wrapperPath, readmePath]);
     const priorConfig = readPriorConfig(configPath);
-    const priorTokenEntry = snapshotPiTokenEntry();
+    const priorTokenEntry =
+      ctx.rollbackTokenEntry === undefined ? snapshotPiTokenEntry() : cloneTokenEntry(ctx.rollbackTokenEntry);
 
     const token = getConnectorToken("pi");
     if (!token) {
@@ -260,6 +261,10 @@ function readPriorConfig(configPath: string): Record<string, unknown> {
 
 function snapshotPiTokenEntry(): TokenEntry | null {
   const entry = loadTokenStore().tokens.find((candidate) => candidate.connector === "pi");
+  return cloneTokenEntry(entry ?? null);
+}
+
+function cloneTokenEntry(entry: TokenEntry | null): TokenEntry | null {
   return entry ? { ...entry } : null;
 }
 
