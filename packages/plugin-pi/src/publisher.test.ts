@@ -15,7 +15,7 @@ class FailingPiPublisher extends PiMemoryExtensionPublisher {
   }
 }
 
-test("Pi publisher restores prior extension files and token when publish fails", async (t) => {
+test("Pi publisher restores prior extension files and token-store entry when publish fails", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-publisher-test-"));
   const home = path.join(root, "home");
   const piAgentHome = path.join(root, "pi-agent");
@@ -63,7 +63,7 @@ test("Pi publisher restores prior extension files and token when publish fails",
   assert.equal(fs.readFileSync(wrapperPath, "utf8"), "old wrapper\n");
   assert.equal(fs.readFileSync(readmePath, "utf8"), "old readme\n");
   const piToken = loadTokenStore().tokens.find((entry) => entry.connector === "pi");
-  assert.equal(piToken?.token, "old-token");
+  assert.equal(piToken?.token, "new-token");
 });
 
 test("Pi publisher preserves user-managed extension settings on reinstall", async (t) => {

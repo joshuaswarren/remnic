@@ -112,6 +112,55 @@ test("observeMessages dedupes replayed Pi entries with stable identity", async (
   assert.equal(observedHashes.size, 1);
 });
 
+test("session_shutdown preserves Pi branch entry identity before observing", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const observeBodies: Array<Record<string, any>> = [];
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/engram/v1/observe")) {
+      observeBodies.push(JSON.parse(String(init?.body ?? "{}")));
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: {
+      getSessionId: () => "branch-entry-test",
+      getEntries: () => [],
+      getBranch: () => [
+        {
+          id: "entry-1",
+          timestamp: 1710000000000,
+          message: { role: "user", content: "remember this" },
+        },
+      ],
+    },
+  };
+
+  await emit("session_shutdown", {}, ctx);
+
+  assert.equal(observeBodies.length, 1);
+  const rawContent = observeBodies[0].messages?.[0]?.rawContent as Record<string, unknown>;
+  assert.equal(rawContent.entryId, "entry-1");
+  assert.equal(rawContent.timestamp, 1710000000000);
+});
+
 test("buildCompactionSummary returns empty content for empty compaction preparations", () => {
   assert.equal(buildCompactionSummary({}), "");
 });

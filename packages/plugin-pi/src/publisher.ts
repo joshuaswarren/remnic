@@ -12,6 +12,7 @@ import {
   type PublishContext,
   type PublishResult,
   type PublisherCapabilities,
+  type TokenEntry,
 } from "@remnic/core";
 
 const REMNIC_EXTENSION_DIR_NAME = "remnic";
@@ -84,7 +85,7 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
     const rootExisted = fs.existsSync(extensionRoot);
     const snapshots = snapshotFiles([configPath, wrapperPath, readmePath]);
     const priorConfig = readPriorConfig(configPath);
-    const priorAuthToken = readAuthTokenFromConfig(priorConfig);
+    const priorTokenEntry = snapshotPiTokenEntry();
 
     const token = getConnectorToken("pi");
     if (!token) {
@@ -132,7 +133,7 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
         ctx.log.warn(`Pi extension rollback failed: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`);
       }
       try {
-        rollbackPiToken(priorAuthToken);
+        restorePiTokenEntry(priorTokenEntry);
       } catch (tokenErr) {
         ctx.log.warn(`Pi connector token rollback failed: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`);
       }
@@ -267,19 +268,14 @@ function readPriorConfig(configPath: string): Record<string, unknown> {
   }
 }
 
-function readAuthTokenFromConfig(config: Record<string, unknown>): string | null {
-  return typeof config.authToken === "string" && config.authToken.length > 0 ? config.authToken : null;
+function snapshotPiTokenEntry(): TokenEntry | null {
+  const entry = loadTokenStore().tokens.find((candidate) => candidate.connector === "pi");
+  return entry ? { ...entry } : null;
 }
 
-function rollbackPiToken(priorAuthToken: string | null): void {
+function restorePiTokenEntry(priorEntry: TokenEntry | null): void {
   const store = loadTokenStore();
   store.tokens = store.tokens.filter((entry) => entry.connector !== "pi");
-  if (priorAuthToken) {
-    store.tokens.push({
-      connector: "pi",
-      token: priorAuthToken,
-      createdAt: new Date().toISOString(),
-    });
-  }
+  if (priorEntry) store.tokens.push(priorEntry);
   saveTokenStore(store);
 }

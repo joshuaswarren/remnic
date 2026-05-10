@@ -89,7 +89,8 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const { sessionKey, state } = getSessionState(ctx, sessionStates);
       if (config.observeEnabled) {
         const branch = safeBranch(ctx);
-        if (branch.length > 0) await observeMessages(ctx, client, branch.map((entry) => entry.message).filter(Boolean), state.observedHashes);
+        const branchMessages = branchMessagesWithEntryIdentity(branch);
+        if (branchMessages.length > 0) await observeMessages(ctx, client, branchMessages, state.observedHashes);
       }
       persistObservedState(pi, state.observedHashes);
       sessionStates.delete(sessionKey);
@@ -419,6 +420,33 @@ function safeBranch(ctx: any): any[] {
   } catch {
     return [];
   }
+}
+
+function branchMessagesWithEntryIdentity(branch: any[]): unknown[] {
+  const messages: unknown[] = [];
+  for (const entry of branch) {
+    const message = messageWithEntryIdentity(entry);
+    if (message) messages.push(message);
+  }
+  return messages;
+}
+
+function messageWithEntryIdentity(entry: any): unknown | null {
+  const message = entry?.message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) return message ?? null;
+
+  const source = isRecord(entry) ? entry : {};
+  const enriched: Record<string, unknown> = { ...(message as Record<string, unknown>) };
+  assignMissingIdentity(enriched, "entryId", source.id ?? source.entryId ?? source.entry_id);
+  assignMissingIdentity(enriched, "timestamp", source.timestamp);
+  assignMissingIdentity(enriched, "createdAt", source.createdAt ?? source.created_at);
+  return enriched;
+}
+
+function assignMissingIdentity(target: Record<string, unknown>, field: string, value: unknown): void {
+  if (target[field] !== undefined) return;
+  if (typeof value === "string" && value.length > 0) target[field] = value;
+  if (typeof value === "number" && Number.isFinite(value)) target[field] = value;
 }
 
 function trimContext(value: string, budget: number): string {
