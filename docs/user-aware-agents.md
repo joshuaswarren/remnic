@@ -116,6 +116,15 @@ ask-when-needed decisions, act-when-enough-context decisions, and
 personalization quality. See [Memory Evals](memory-evals.md) for the full
 dimension map, metrics, and quick benchmark coverage.
 
+## ChatGPT Apps Demo
+
+The existing Remnic MCP runtime exposes a local ChatGPT Apps-compatible memory
+inspector as `remnic.chatgpt_memory_inspector` with a widget resource at
+`ui://remnic/memory-inspector.v1.html`. It shows safe recall previews,
+provenance, scope/safety signals, action-confidence guidance, and follow-up
+prompts for correction, forget, and scoping flows. See
+[ChatGPT Apps Demo](chatgpt-apps-demo.md).
+
 ## Core Exports
 
 `@remnic/core` exports:

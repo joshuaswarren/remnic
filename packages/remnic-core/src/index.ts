@@ -322,6 +322,18 @@ export {
 export { EngramAccessService, EngramAccessInputError } from "./access-service.js";
 export { EngramAccessHttpServer } from "./access-http.js";
 export { EngramMcpServer } from "./access-mcp.js";
+export {
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_CANONICAL_TOOL,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+  buildChatGptMemoryInspectorActionRequest,
+  buildChatGptMemoryInspectorResult,
+  type RemnicChatGptMemoryCard,
+  type RemnicChatGptMemoryInspectorInput,
+  type RemnicChatGptMemoryInspectorResult,
+} from "./mcp-memory-inspector-app.js";
 
 // agentAccessHttp.authToken SecretRef resolution (issue #757). Exposed so
 // host-specific bootstrap code (the OpenClaw plugin in `src/index.ts`, the
