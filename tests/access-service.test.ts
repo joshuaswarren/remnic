@@ -1059,6 +1059,62 @@ test("access service allows readable namespace overrides outside default recall 
   });
 });
 
+test("access service recall uses authenticated principal for namespace authorization", async () => {
+  let capturedOptions: unknown;
+  const service = new EngramAccessService({
+    config: {
+      memoryDir: "/tmp/engram",
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [
+        {
+          name: "project-y",
+          readPrincipals: ["chatgpt-user"],
+          writePrincipals: ["project-y"],
+        },
+      ],
+      defaultRecallNamespaces: ["self"],
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: false,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 10,
+      recallCrossNamespaceBudgetHardLimit: 30,
+    },
+    recall: async (_query: string, _sessionKey?: string, options?: unknown) => {
+      capturedOptions = options;
+      return "ctx";
+    },
+    lastRecall: {
+      get: () => null,
+      getMostRecent: () => null,
+    },
+    getStorage: async () => ({
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  const response = await service.recall({
+    query: "hello",
+    namespace: "project-y",
+    authenticatedPrincipal: "chatgpt-user",
+    mode: "full",
+  });
+
+  assert.equal(response.namespace, "project-y");
+  assert.deepEqual(capturedOptions, {
+    namespace: "project-y",
+    topK: undefined,
+    mode: "full",
+    principalOverride: "chatgpt-user",
+  });
+});
+
 test("access service rejects unreadable namespace-scoped recall overrides", async () => {
   const service = createService();
   await assert.rejects(

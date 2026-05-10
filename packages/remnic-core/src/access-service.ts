@@ -213,6 +213,7 @@ export interface EngramAccessRecallRequest {
   query: string;
   sessionKey?: string;
   namespace?: string;
+  authenticatedPrincipal?: string;
   topK?: number;
   mode?: RecallPlanMode | "auto";
   includeDebug?: boolean;
@@ -956,18 +957,22 @@ export class EngramAccessService {
     throw new EngramAccessInputError(`unsupported recall mode: ${mode}`);
   }
 
-  private resolveRecallNamespace(namespace: string | undefined, sessionKey: string | undefined): string | undefined {
+  private resolveRecallNamespace(
+    namespace: string | undefined,
+    sessionKey: string | undefined,
+    authenticatedPrincipal?: string,
+  ): string | undefined {
     const requested = namespace?.trim();
     if (!requested) return undefined;
     const resolved = this.resolveNamespace(requested);
-    const principal = resolvePrincipal(sessionKey, this.orchestrator.config);
+    const principal = this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal);
     if (!canReadNamespace(principal, resolved, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace override is not readable: ${resolved}`);
     }
     return resolved;
   }
 
-  private resolveWritePrincipal(sessionKey: string | undefined, authenticatedPrincipal?: string): string {
+  private resolveRequestPrincipal(sessionKey: string | undefined, authenticatedPrincipal?: string): string {
     const trusted = authenticatedPrincipal?.trim();
     if (trusted) return trusted;
     return resolvePrincipal(sessionKey, this.orchestrator.config);
@@ -979,7 +984,7 @@ export class EngramAccessService {
     authenticatedPrincipal?: string,
   ): string {
     const resolved = this.resolveNamespace(namespace);
-    const principal = this.resolveWritePrincipal(sessionKey, authenticatedPrincipal);
+    const principal = this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal);
     if (!canWriteNamespace(principal, resolved, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not writable: ${resolved}`);
     }
@@ -1534,12 +1539,17 @@ export class EngramAccessService {
         projectTag: request.projectTag,
       });
     }
-    const namespaceOverride = this.resolveRecallNamespace(request.namespace, request.sessionKey);
+    const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
+    const namespaceOverride = this.resolveRecallNamespace(
+      request.namespace,
+      request.sessionKey,
+      authenticatedPrincipal,
+    );
     const namespace = namespaceOverride ?? this.orchestrator.config.defaultNamespace;
     // Normalize mode early so that no_recall / invalid modes skip budget
     // accounting (Codex P1: budget recorded before mode validation).
     const mode = this.normalizeRecallMode(request.mode);
-    const principal = resolvePrincipal(request.sessionKey, this.orchestrator.config);
+    const principal = this.resolveRequestPrincipal(request.sessionKey, authenticatedPrincipal);
     const principalNamespace = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
     // Skip budget checks for modes that never perform a cross-namespace read.
     const modeSkipsBudget = mode === "no_recall";
@@ -1642,6 +1652,7 @@ export class EngramAccessService {
       namespace: namespaceOverride,
       topK,
       mode,
+      ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
     };
@@ -1779,10 +1790,7 @@ export class EngramAccessService {
     let auditAnomalies: AccessAuditResult["anomalies"] | undefined;
     if (this.auditAdapter) {
       try {
-        const resolvedAgentId = resolvePrincipal(
-          request.sessionKey,
-          this.orchestrator.config,
-        );
+        const resolvedAgentId = principal;
         const auditEntry = {
           ts: new Date().toISOString(),
           sessionKey: request.sessionKey ?? "",
@@ -1945,6 +1953,8 @@ export class EngramAccessService {
     tags?: string[];
     /** Match mode for `tags`. See `EngramAccessRecallRequest.tagMatch`. */
     tagMatch?: "any" | "all";
+    /** Recall planner mode override. Mirrors `EngramAccessRecallRequest.mode`. */
+    mode?: RecallPlanMode | "auto";
     /**
      * User-aware context scopes active for this recall. Forwarded into
      * provenance construction so boundary scopes are evaluated against
@@ -2025,6 +2035,7 @@ export class EngramAccessService {
       }
       budgetOverride = parsed;
     }
+    const mode = this.normalizeRecallMode(request.mode);
 
     // Serialize x-ray invocations behind a per-service mutex so the
     // per-process `getLastXraySnapshot()` slot cannot be clobbered by
@@ -2052,6 +2063,7 @@ export class EngramAccessService {
         ...(budgetOverride !== undefined
           ? { budgetCharsOverride: budgetOverride }
           : {}),
+        ...(mode !== undefined ? { mode } : {}),
         // When the caller supplies an authenticated principal, forward
         // it via the dedicated override channel so orchestrator-side
         // ACL decisions use the SAME principal the access-surface
@@ -3387,7 +3399,7 @@ export class EngramAccessService {
     const hasExplicitNamespace =
       typeof request.namespace === "string" &&
       request.namespace.trim().length > 0;
-    const principal = this.resolveWritePrincipal(
+    const principal = this.resolveRequestPrincipal(
       request.sessionKey,
       request.authenticatedPrincipal,
     );
@@ -3526,7 +3538,7 @@ export class EngramAccessService {
       throw new EngramAccessInputError("query is required and must be a non-empty string");
     }
 
-    const principal = this.resolveWritePrincipal(request.sessionKey, request.authenticatedPrincipal);
+    const principal = this.resolveRequestPrincipal(request.sessionKey, request.authenticatedPrincipal);
     const namespace = this.resolveReadableNamespace(request.namespace, principal);
 
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {

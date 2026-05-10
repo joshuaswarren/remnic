@@ -263,6 +263,7 @@ test("ChatGPT Apps inspector dispatches canonical alias through recall, X-ray, a
       query: "What preferences matter here?",
       sessionKey: "sess-1",
       namespace: "work",
+      authenticatedPrincipal: "user-a",
       mode: "full",
       disclosure: "chunk",
     },
@@ -274,6 +275,7 @@ test("ChatGPT Apps inspector dispatches canonical alias through recall, X-ray, a
       namespace: "work",
       currentContextScopes: ["work", "repo"],
       authenticatedPrincipal: "user-a",
+      mode: "full",
     },
   ]);
   assert.equal(capture.actionRequests[0]?.risk, "medium");

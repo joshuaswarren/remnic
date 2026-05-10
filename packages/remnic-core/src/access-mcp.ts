@@ -2201,6 +2201,7 @@ export class EngramMcpServer {
           query: input.query,
           sessionKey: input.sessionKey,
           namespace: input.namespace,
+          authenticatedPrincipal: effectivePrincipal,
           mode: "full",
           disclosure: "chunk",
         });
@@ -2210,6 +2211,7 @@ export class EngramMcpServer {
           namespace: input.namespace,
           currentContextScopes: input.currentContextScopes,
           authenticatedPrincipal: effectivePrincipal,
+          mode: "full",
         });
         const xray = xrayResponse.snapshotFound === true
           ? xrayResponse.snapshot ?? null
