@@ -14,8 +14,6 @@ import {
   type PublisherCapabilities,
 } from "@remnic/core";
 
-import type { RemnicPiConfig } from "./config.js";
-
 const REMNIC_EXTENSION_DIR_NAME = "remnic";
 const DEFAULT_DAEMON_PORT = 4318;
 
@@ -85,17 +83,15 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
     const readmePath = path.join(extensionRoot, "README.md");
     const rootExisted = fs.existsSync(extensionRoot);
     const snapshots = snapshotFiles([configPath, wrapperPath, readmePath]);
-    const priorAuthToken = readPriorAuthToken(configPath);
+    const priorConfig = readPriorConfig(configPath);
+    const priorAuthToken = readAuthTokenFromConfig(priorConfig);
 
     const token = getConnectorToken("pi");
     if (!token) {
       skipped.push("auth token unavailable; run `remnic token generate pi` and reinstall the connector");
     }
 
-    const config: RemnicPiConfig = {
-      remnicDaemonUrl: resolveDaemonUrl(ctx),
-      ...(token ? { authToken: token } : {}),
-      ...(ctx.config.namespace ? { namespace: ctx.config.namespace } : {}),
+    const config: Record<string, unknown> = {
       recallMode: "auto",
       recallTopK: 8,
       recallBudgetChars: 12000,
@@ -106,7 +102,17 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
       mcpToolsEnabled: true,
       statusEnabled: true,
       requestTimeoutMs: 5000,
+      ...priorConfig,
+      remnicDaemonUrl: resolveDaemonUrl(ctx),
     };
+    if (token) {
+      config.authToken = token;
+    }
+    if (ctx.config.namespace) {
+      config.namespace = ctx.config.namespace;
+    } else {
+      delete config.namespace;
+    }
 
     try {
       fs.mkdirSync(extensionRoot, { recursive: true });
@@ -250,13 +256,19 @@ function restorePublishSnapshot(extensionRoot: string, rootExisted: boolean, sna
   }
 }
 
-function readPriorAuthToken(configPath: string): string | null {
+function readPriorConfig(configPath: string): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-    return typeof parsed.authToken === "string" && parsed.authToken.length > 0 ? parsed.authToken : null;
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
   } catch {
-    return null;
+    return {};
   }
+}
+
+function readAuthTokenFromConfig(config: Record<string, unknown>): string | null {
+  return typeof config.authToken === "string" && config.authToken.length > 0 ? config.authToken : null;
 }
 
 function rollbackPiToken(priorAuthToken: string | null): void {
