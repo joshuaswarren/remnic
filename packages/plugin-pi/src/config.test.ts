@@ -50,3 +50,18 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("loadConfig ignores unreadable or malformed config files", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-bad-"));
+  const configPath = path.join(root, "remnic.config.json");
+  try {
+    fs.writeFileSync(configPath, "{not-json");
+
+    const config = loadConfig({ configPath, env: { REMNIC_DAEMON_URL: "http://127.0.0.1:5555" } });
+
+    assert.equal(config.remnicDaemonUrl, "http://127.0.0.1:5555");
+    assert.equal(config.authToken, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

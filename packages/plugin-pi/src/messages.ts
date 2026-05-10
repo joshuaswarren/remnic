@@ -57,9 +57,12 @@ export function summarizeMessages(messages: unknown[], maxChars: number): string
     if (!text) continue;
     const role = typeof (message as PiMessage)?.role === "string" ? (message as PiMessage).role : "message";
     const line = `[${role}] ${text}`;
-    const clipped = line.length + used > maxChars ? line.slice(0, Math.max(0, maxChars - used)) : line;
+    const separatorLength = chunks.length > 0 ? 2 : 0;
+    const remaining = maxChars - used - separatorLength;
+    if (remaining <= 0) break;
+    const clipped = line.length > remaining ? line.slice(0, remaining) : line;
     if (clipped.length > 0) chunks.push(clipped);
-    used += clipped.length;
+    used += separatorLength + clipped.length;
     if (used >= maxChars) break;
   }
   return chunks.join("\n\n");

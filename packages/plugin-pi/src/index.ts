@@ -127,15 +127,15 @@ export default createRemnicPiExtension();
 function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfig): void {
   pi.registerCommand("remnic-status", {
     description: "Check Remnic daemon status",
-    handler: async (_args, ctx) => {
+    handler: commandHandler(async (_args, ctx) => {
       const health = await client.health();
       notify(ctx, `Remnic ${health.ok ? "healthy" : "unhealthy"} at ${config.remnicDaemonUrl}`, health.ok ? "success" : "warning");
-    },
+    }),
   });
 
   pi.registerCommand("remnic-recall", {
     description: "Recall Remnic context for a query",
-    handler: async (args, ctx) => {
+    handler: commandHandler(async (args, ctx) => {
       const query = args.trim();
       if (!query) {
         notify(ctx, "Usage: /remnic-recall <query>", "warning");
@@ -143,12 +143,12 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
       }
       const result = await client.recall(query, sessionKeyFromContext(ctx), ctx.cwd);
       notify(ctx, trimContext(result.context ?? "(no Remnic context)", MAX_CONTEXT_CHARS), "info");
-    },
+    }),
   });
 
   pi.registerCommand("remnic-remember", {
     description: "Store a Remnic memory",
-    handler: async (args, ctx) => {
+    handler: commandHandler(async (args, ctx) => {
       const content = args.trim();
       if (!content) {
         notify(ctx, "Usage: /remnic-remember <memory>", "warning");
@@ -156,12 +156,12 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
       }
       await client.storeMemory(content, sessionKeyFromContext(ctx));
       notify(ctx, "Stored Remnic memory", "success");
-    },
+    }),
   });
 
   pi.registerCommand("remnic-lcm-search", {
     description: "Search Remnic LCM archived Pi context",
-    handler: async (args, ctx) => {
+    handler: commandHandler(async (args, ctx) => {
       const query = args.trim();
       if (!query) {
         notify(ctx, "Usage: /remnic-lcm-search <query>", "warning");
@@ -169,24 +169,34 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
       }
       const result = await client.lcmSearch(query, sessionKeyFromContext(ctx));
       notify(ctx, JSON.stringify(result, null, 2), "info");
-    },
+    }),
   });
 
   pi.registerCommand("remnic-why", {
     description: "Explain the last Remnic recall",
-    handler: async (_args, ctx) => {
+    handler: commandHandler(async (_args, ctx) => {
       const result = await client.recallExplain(sessionKeyFromContext(ctx));
       notify(ctx, JSON.stringify(result, null, 2), "info");
-    },
+    }),
   });
 
   pi.registerCommand("remnic-compact", {
     description: "Trigger Pi compaction with Remnic LCM coordination",
-    handler: async (_args, ctx) => {
+    handler: commandHandler(async (_args, ctx) => {
       ctx.compact?.();
       notify(ctx, "Compaction requested", "info");
-    },
+    }),
   });
+}
+
+function commandHandler(handler: (args: string, ctx: any) => Promise<void>): (args: string, ctx: any) => Promise<void> {
+  return async (args, ctx) => {
+    try {
+      await handler(args, ctx);
+    } catch (err) {
+      notify(ctx, `Remnic command failed: ${errorMessage(err)}`, "warning");
+    }
+  };
 }
 
 async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicPiConfig): Promise<void> {
@@ -206,11 +216,17 @@ async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicP
       parameters: tool.inputSchema ?? { type: "object", properties: {}, additionalProperties: true },
       async execute(_toolCallId: string, params: Record<string, unknown>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
         const sessionKey = sessionKeyFromContext(ctx);
+        const {
+          sessionKey: _ignoredSessionKey,
+          namespace: _ignoredNamespace,
+          cwd: _ignoredCwd,
+          ...safeParams
+        } = params ?? {};
         const result = await client.mcpTool(tool.name, {
+          ...safeParams,
           sessionKey,
           namespace: config.namespace,
           cwd: ctx.cwd,
-          ...params,
         });
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

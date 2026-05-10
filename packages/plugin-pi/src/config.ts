@@ -72,11 +72,15 @@ function normalizeRecallMode(value: unknown): RemnicPiConfig["recallMode"] {
 
 function readConfigFile(configPath: string): Record<string, unknown> {
   if (!existsSync(configPath)) return {};
-  const raw = readFileSync(configPath, "utf-8");
-  const parsed = JSON.parse(raw);
-  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-    ? parsed as Record<string, unknown>
-    : {};
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 export function resolveConfigPath(options: LoadConfigOptions = {}): string {

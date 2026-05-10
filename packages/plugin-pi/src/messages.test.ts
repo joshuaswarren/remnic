@@ -52,3 +52,14 @@ test("summarizeMessages respects max character budget", () => {
   const summary = summarizeMessages([{ role: "user", content: "abcdef" }], 10);
   assert.equal(summary.length, 10);
 });
+
+test("summarizeMessages counts separators against max character budget", () => {
+  const summary = summarizeMessages([
+    { role: "user", content: "a" },
+    { role: "assistant", content: "b" },
+    { role: "user", content: "c" },
+  ], 20);
+
+  assert.ok(summary.length <= 20);
+  assert.equal(summary, "[user] a\n\n[assistant");
+});

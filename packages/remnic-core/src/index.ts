@@ -259,6 +259,7 @@ export {
   parseOpenAiMessageParts,
   parseAnthropicMessageParts,
   parseOpenClawMessageParts,
+  parsePiMessageParts,
   normalizeExplicitParts,
   partsFromRenderedText,
   isLcmMessagePartKind,

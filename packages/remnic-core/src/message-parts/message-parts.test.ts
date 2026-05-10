@@ -6,6 +6,7 @@ import {
   parseMessageParts,
   parseOpenClawMessageParts,
   parseOpenAiMessageParts,
+  parsePiMessageParts,
 } from "./index.js";
 
 describe("message-parts parsers", () => {
@@ -100,6 +101,36 @@ describe("message-parts parsers", () => {
     assert.equal(parts.length, 1);
     assert.equal(parts[0]!.kind, "text");
     assert.equal(parts[0]!.filePath, "src/openclaw.ts");
+  });
+
+  it("extracts Pi tool-call content blocks as structured file writes", () => {
+    const parts = parsePiMessageParts({
+      role: "assistant",
+      content: [
+        { type: "text", text: "Updated packages/plugin-pi/src/index.ts" },
+        { type: "toolCall", name: "edit", arguments: { path: "packages/plugin-pi/src/index.ts" } },
+      ],
+    });
+
+    assert.equal(parts.length, 2);
+    assert.equal(parts[0]!.kind, "text");
+    assert.equal(parts[0]!.filePath, "packages/plugin-pi/src/index.ts");
+    assert.equal(parts[1]!.kind, "file_write");
+    assert.equal(parts[1]!.toolName, "edit");
+    assert.equal(parts[1]!.filePath, "packages/plugin-pi/src/index.ts");
+  });
+
+  it("infers Pi source format for Pi-shaped raw content", () => {
+    const parts = parseMessageParts({
+      role: "assistant",
+      content: [
+        { type: "toolCall", name: "read", arguments: { path: "src/config.ts" } },
+      ],
+    });
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "file_read");
+    assert.equal(parts[0]!.filePath, "src/config.ts");
   });
 
   it("extracts Anthropic tool_use blocks as structured file writes", () => {
