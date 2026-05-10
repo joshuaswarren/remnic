@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildChatGptMemoryInspectorResult,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_CANONICAL_TOOL,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
@@ -8,7 +9,10 @@ import {
   type RemnicChatGptMemoryInspectorResult,
 } from "../src/mcp-memory-inspector-app.js";
 import { EngramMcpServer } from "../src/access-mcp.js";
-import type { EngramAccessService } from "../src/access-service.js";
+import type {
+  EngramAccessRecallResponse,
+  EngramAccessService,
+} from "../src/access-service.js";
 
 interface Capture {
   recalls: Array<Record<string, unknown>>;
@@ -285,6 +289,84 @@ test("ChatGPT Apps inspector dispatches canonical alias through recall, X-ray, a
     (capture.actionRequests[0]?.retrievedMemories as Array<Record<string, unknown>>)[0]?.source,
     "conversation",
   );
+});
+
+test("ChatGPT Apps inspector withholds preview when blocked memory is beyond visible cards", () => {
+  const recallResults = Array.from({ length: 9 }, (_, index) => ({
+    id: `mem-${index + 1}`,
+    path: `memories/mem-${index + 1}.md`,
+    category: "preference",
+    status: "active",
+    preview: index === 8 ? "blocked private detail" : `safe preview ${index + 1}`,
+  }));
+  const xrayResults = recallResults.map((memory, index) => ({
+    memoryId: memory.id,
+    path: memory.path,
+    servedBy: "hybrid" as const,
+    scoreDecomposition: { final: 0.9 },
+    admittedBy: ["test"],
+    provenance: {
+      source: "conversation",
+      scope: "namespace:work",
+      userContextScopes: ["work"],
+      retrievalReason: "test",
+      confidence: 0.9,
+      stale: false,
+      corrected: false,
+      correctionState: "none" as const,
+      safeToUse: index !== 8,
+      safety: index === 8 ? ("blocked" as const) : ("safe" as const),
+      safetyReasons: index === 8 ? ["blocked in current context"] : [],
+    },
+  }));
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "safe public detail\nblocked private detail",
+    count: 9,
+    memoryIds: recallResults.map((memory) => memory.id),
+    results: recallResults,
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const result = buildChatGptMemoryInspectorResult(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    {
+      schemaVersion: "1",
+      query: "show preferences",
+      snapshotId: "snap-blocked-after-visible-slice",
+      capturedAt: 1_779_000_000_000,
+      tierExplain: null,
+      results: xrayResults,
+      filters: [],
+      budget: { chars: 4096, used: 100 },
+      namespace: "work",
+    },
+    {
+      schemaVersion: 1,
+      decision: "ask",
+      confidence: 0.5,
+      risk: "medium",
+      contextReadiness: "partial",
+      attentionPolicy: "interruption_budgeting",
+      principle: "A good agent should spend the user's attention carefully.",
+      reasons: [],
+      blockers: [],
+      factors: [],
+      retrievedMemoryCount: 9,
+      usableMemoryCount: 8,
+      staleMemoryCount: 0,
+      correctedMemoryCount: 0,
+      scopeMismatchCount: 1,
+      safeToAct: false,
+    },
+  );
+
+  assert.equal(result.memories.length, 8);
+  assert.match(result.safeRecallPreview, /1 retrieved memory is blocked/);
+  assert.doesNotMatch(result.safeRecallPreview, /blocked private detail/);
 });
 
 test("ChatGPT Apps inspector rejects malformed currentContextScopes before service dispatch", async () => {

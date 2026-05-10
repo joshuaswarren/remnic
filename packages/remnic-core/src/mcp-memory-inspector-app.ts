@@ -140,7 +140,9 @@ export function buildChatGptMemoryInspectorResult(
       userContextScopes: provenance?.userContextScopes ?? [],
     };
   });
-  const blockedCount = memories.filter((memory) => memory.safety === "blocked").length;
+  const blockedCount = (xray?.results ?? [])
+    .filter((result) => result.provenance?.safety === "blocked")
+    .length;
 
   const primaryMemoryId = memories[0]?.id ?? "<memory-id>";
   return {
