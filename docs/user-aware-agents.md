@@ -50,6 +50,32 @@ Useful principle:
 
 > Personalization without boundaries becomes surveillance. Personalization with correction and control becomes agency.
 
+## Retrieved Memory Provenance
+
+`@remnic/core` also exports a `RetrievedMemoryProvenance` contract for recall
+surfaces. It answers the operational questions a user-aware agent needs before
+using a memory:
+
+- Where did this memory come from?
+- When was it created or updated?
+- What namespace or user context scope does it belong to?
+- Why was it retrieved for this request?
+- How confident is Remnic in the memory?
+- Is it stale, corrected, disputed, forgotten, or superseded?
+- Is it safe to use in the current context?
+
+Recall X-ray attaches this provenance per result when retrieval already loaded
+the memory frontmatter. The concrete scope is always present as the namespace
+or storage path. User context scopes are inferred from explicit in-memory
+metadata when provided by callers and from existing tags such as `work`, `repo`,
+`private`, and `do-not-use-outside-this-context`.
+
+Boundary scopes affect the safety decision. Forgotten, rejected, quarantined,
+and out-of-context `do-not-use-outside-this-context` memories are marked
+`blocked`; stale, pending-review, superseded, archived, disputed, private, and
+temporary memories are marked `requires-review` unless the current context
+matches the boundary.
+
 ## Core Exports
 
 `@remnic/core` exports:
@@ -62,6 +88,9 @@ Useful principle:
 - `normalizeUserContextScope`
 - `facetHasBoundary`
 - `summarizeUserModelCoverage`
+- `buildRetrievedMemoryProvenance`
+- `normalizeRetrievedMemoryProvenance`
+- `summarizeRetrievedMemoryProvenance`
 
 This contract is intentionally host-agnostic. OpenClaw, Hermes, Codex, MCP, and
 future adapters should consume the core model rather than defining their own

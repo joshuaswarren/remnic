@@ -197,3 +197,42 @@ test("recall without xrayCapture does not overwrite a prior captured snapshot", 
   assert.ok(stillCaptured);
   assert.equal(stillCaptured.query, "first");
 });
+
+test("recall X-ray attaches provenance for surfaced memory results", async () => {
+  const orchestrator = await makeOrchestrator("engram-xray-provenance-");
+  (orchestrator as any).initPromise = null;
+
+  await (orchestrator as any).storage.writeMemory(
+    "fact",
+    "The recall cache TTL is twenty minutes.",
+    {
+      source: "test",
+      confidence: 0.92,
+      tags: ["repo", "private"],
+    },
+  );
+
+  await orchestrator.recall(
+    "recall cache TTL",
+    "agent:test:xray-provenance",
+    { xrayCapture: true, mode: "full" },
+  );
+
+  const snapshot = orchestrator.getLastXraySnapshot();
+  assert.ok(snapshot);
+  assert.equal(snapshot.results.length, 1);
+  const result = snapshot.results[0]!;
+  assert.equal(result.servedBy, "recent-scan");
+  const provenance = result.provenance;
+  assert.ok(provenance, "surfaced memory should carry provenance");
+  assert.equal(provenance.source, "test");
+  assert.equal(provenance.scope, "namespace:default");
+  assert.deepEqual(provenance.userContextScopes, ["repo", "private"]);
+  assert.equal(provenance.retrievalReason, "served-by=recent-scan");
+  assert.equal(provenance.confidence, 0.92);
+  assert.equal(provenance.stale, false);
+  assert.equal(provenance.corrected, false);
+  assert.equal(provenance.safeToUse, false);
+  assert.equal(provenance.safety, "requires-review");
+  assert.ok(provenance.safetyReasons.includes("boundary-review=private"));
+});

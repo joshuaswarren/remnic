@@ -199,6 +199,16 @@ export {
   type UserModelFacet,
 } from "./user-model.js";
 
+export {
+  buildRetrievedMemoryProvenance,
+  normalizeRetrievedMemoryProvenance,
+  summarizeRetrievedMemoryProvenance,
+  type BuildRetrievedMemoryProvenanceOptions,
+  type RetrievedMemoryCorrectionState,
+  type RetrievedMemoryProvenance,
+  type RetrievedMemorySafety,
+} from "./memory-provenance.js";
+
 // ---------------------------------------------------------------------------
 // Hot/cold tier routing (issue #686)
 // ---------------------------------------------------------------------------

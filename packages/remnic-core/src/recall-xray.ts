@@ -19,6 +19,10 @@
 
 import { randomUUID } from "node:crypto";
 
+import {
+  normalizeRetrievedMemoryProvenance,
+  type RetrievedMemoryProvenance,
+} from "./memory-provenance.js";
 import type { RecallDisclosure, RecallTierExplain } from "./types.js";
 import { isRecallDisclosure } from "./types.js";
 
@@ -162,6 +166,11 @@ export interface RecallXrayResult {
    * could not be read.
    */
   tags?: string[];
+  /**
+   * Per-result memory provenance and safety context. Populated by recall
+   * capture when the memory frontmatter was already loaded by retrieval.
+   */
+  provenance?: RetrievedMemoryProvenance;
 }
 
 /**
@@ -508,6 +517,10 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
     if (cleanedTags.length > 0) {
       out.tags = cleanedTags;
     }
+  }
+  const provenance = normalizeRetrievedMemoryProvenance(result.provenance);
+  if (provenance !== undefined) {
+    out.provenance = provenance;
   }
   return out;
 }

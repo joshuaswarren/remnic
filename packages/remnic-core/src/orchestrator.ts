@@ -132,6 +132,7 @@ import {
   type RecallXraySnapshot,
   type RecallXrayServedBy,
 } from "./recall-xray.js";
+import { buildRetrievedMemoryProvenance } from "./memory-provenance.js";
 import {
   recordEvalShadowRecall,
   type EvalShadowRecallRecord,
@@ -6072,6 +6073,7 @@ export class Orchestrator {
     // per-result explain data (e.g. reinforcementBoost) from the result that
     // was actually served.
     let xrayRecalledResults: QmdSearchResult[] = [];
+    const xrayMemoryByPath = new Map<string, MemoryFile>();
     const lcmStructuredXrayResults: RecallXrayResult[] = [];
     // Per-branch pre-limit candidate pool size for the X-ray filter
     // trace (issue #570 PR 1).  `recalledMemoryCount` is assigned
@@ -8826,7 +8828,7 @@ export class Orchestrator {
         recallNamespaces,
         retrievalQuery,
         undefined,
-        { asOfMs },
+        { asOfMs, xrayMemoryByPath },
       );
 
       // Optional LLM reranking (default off). Fail-open if rerank fails/slow.
@@ -9029,7 +9031,7 @@ export class Orchestrator {
           recallNamespaces,
           retrievalQuery,
           undefined,
-          { asOfMs },
+          { asOfMs, xrayMemoryByPath },
         );
         // MMR runs on the pre-truncation pool so diverse candidates just
         // below the cutoff can be promoted into the injected set.
@@ -9079,6 +9081,7 @@ export class Orchestrator {
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
             xrayPoolSizeSink: xrayColdPoolSink,
+            xrayMemoryByPath,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
@@ -9174,7 +9177,7 @@ export class Orchestrator {
         recallNamespaces,
         retrievalQuery,
         undefined,
-        { asOfMs },
+        { asOfMs, xrayMemoryByPath },
       );
       // MMR runs on the pre-truncation pool so diverse candidates just
       // below the cutoff can be promoted into the injected set.
@@ -9289,6 +9292,7 @@ export class Orchestrator {
               queryAwarePrefilter,
               abortSignal: options.abortSignal,
               xrayPoolSizeSink: xrayColdPoolSink,
+              xrayMemoryByPath,
               asOfMs,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
@@ -9339,7 +9343,7 @@ export class Orchestrator {
                 recallNamespaces,
                 retrievalQuery,
                 preloadedMap,
-                { asOfMs },
+                { asOfMs, xrayMemoryByPath },
               )
             ).sort((a, b) => b.score - a.score);
             // MMR runs on the pre-truncation pool so diverse candidates just
@@ -9391,6 +9395,7 @@ export class Orchestrator {
                 queryAwarePrefilter,
                 abortSignal: options.abortSignal,
                 xrayPoolSizeSink: xrayColdPoolSink,
+                xrayMemoryByPath,
                 asOfMs,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
@@ -9434,6 +9439,7 @@ export class Orchestrator {
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
             xrayPoolSizeSink: xrayColdPoolSink,
+            xrayMemoryByPath,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
@@ -9687,6 +9693,7 @@ export class Orchestrator {
           const derivedId = idFromPath(recalledPath);
           if (!derivedId) continue;
           const xrayResult = xrayResultByPath.get(recalledPath);
+          const memory = xrayMemoryByPath.get(recalledPath);
           const scoreDecomposition: RecallXrayScoreDecomposition = {
             final: xrayResult?.score ?? 0,
           };
@@ -9697,13 +9704,20 @@ export class Orchestrator {
             scoreDecomposition.reinforcementBoost =
               xrayResult.explain.reinforcementBoost;
           }
-          results.push({
+          const result: RecallXrayResult = {
             memoryId: derivedId,
             path: recalledPath,
             servedBy,
             scoreDecomposition,
             admittedBy: [],
-          });
+          };
+          if (memory) {
+            result.provenance = buildRetrievedMemoryProvenance(memory, {
+              namespace: this.namespaceFromPath(recalledPath),
+              retrievalReason: `served-by=${servedBy}`,
+            });
+          }
+          results.push(result);
         }
         // `considered` must reflect the pool size of the branch that
         // actually produced the admitted results, NOT the max across
@@ -15080,6 +15094,11 @@ export class Orchestrator {
      * Unset by default so existing call sites are unaffected.
      */
     xrayPoolSizeSink?: { size: number };
+    /**
+     * Optional out-parameter that receives memory frontmatter loaded during
+     * ranking so X-ray capture can attach provenance without a second read.
+     */
+    xrayMemoryByPath?: Map<string, MemoryFile>;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
   }): Promise<QmdSearchResult[]> {
@@ -15171,7 +15190,11 @@ export class Orchestrator {
       options.recallNamespaces,
       options.prompt,
       undefined,
-      { allowLifecycleFiltered: true, asOfMs: options.asOfMs },
+      {
+        allowLifecycleFiltered: true,
+        asOfMs: options.asOfMs,
+        xrayMemoryByPath: options.xrayMemoryByPath,
+      },
     );
 
     if (this.config.rerankEnabled && this.config.rerankProvider === "local") {
@@ -15332,6 +15355,7 @@ export class Orchestrator {
     options?: {
       allowLifecycleFiltered?: boolean;
       allowDedicatedSurface?: boolean;
+      xrayMemoryByPath?: Map<string, MemoryFile>;
       /**
        * Historical recall point in ms-since-epoch (issue #680).  When
        * set, drops candidates that were not authoritative at this
@@ -15414,6 +15438,14 @@ export class Orchestrator {
     let forgottenFilteredCount = 0;
     const boosted: QmdSearchResult[] = [];
     const recencyWeight = this.effectiveRecencyWeight();
+    const rememberXrayMemory = (
+      memory: MemoryFile | undefined,
+      candidatePath: string | undefined,
+    ): void => {
+      if (memory && candidatePath) {
+        options?.xrayMemoryByPath?.set(candidatePath, memory);
+      }
+    };
     for (const r of results) {
       const memory = memoryByPath.get(r.path);
       let score = r.score;
@@ -15613,6 +15645,7 @@ export class Orchestrator {
           score += reinforcementBoost;
         }
         if (reinforcementBoost > 0) {
+          rememberXrayMemory(memory, r.path);
           boosted.push({
             ...r,
             score,
@@ -15622,6 +15655,7 @@ export class Orchestrator {
         }
       }
 
+      rememberXrayMemory(memory, r.path);
       boosted.push({ ...r, score });
     }
     if (lifecycleFilteredCount > 0) {
