@@ -670,6 +670,21 @@ function readSavedConnectorConfig(configPath: string): Record<string, unknown> {
   }
 }
 
+function mergeSavedConnectorConfig(
+  savedConnectorConfig: Record<string, unknown>,
+  userConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...savedConnectorConfig };
+  for (const [key, value] of Object.entries(userConfig)) {
+    if (value === undefined || value === null || value === "") {
+      delete merged[key];
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
 // ── Install connector ───────────────────────────────────────────────────────
 
 export function installConnector(options: InstallOptions): InstallResult {
@@ -897,8 +912,7 @@ export function installConnector(options: InstallOptions): InstallResult {
   // so it cannot be persisted to disk even on legacy call paths.
   const { token: _callerToken, ...safeUserConfig } = (options.config ?? {}) as Record<string, unknown>;
   const resolvedConfig: Record<string, unknown> = {
-    ...savedConnectorConfig,
-    ...safeUserConfig,
+    ...mergeSavedConnectorConfig(savedConnectorConfig, safeUserConfig),
     connectorId: options.connectorId,
     installedAt: new Date().toISOString(),
     // For hermes, always overlay the sanitized/coerced resolved values so that

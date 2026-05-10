@@ -1404,6 +1404,43 @@ test("installConnector force reinstall preserves saved Pi connector config", asy
   );
 });
 
+test("installConnector force reinstall lets explicit blank config clear saved Pi connector keys", async (t) => {
+  const sandbox = makeSandbox(t);
+
+  await withEnv(
+    {
+      HOME: sandbox.home,
+      USERPROFILE: sandbox.home,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+    },
+    () => {
+      const first = installConnector({
+        connectorId: "pi",
+        config: {
+          installExtension: "false",
+          namespace: "client-work",
+          remnicDaemonUrl: "http://127.0.0.1:9999",
+        },
+      });
+      assert.equal(first.status, "installed");
+
+      const second = installConnector({
+        connectorId: "pi",
+        force: true,
+        config: { namespace: "" },
+      });
+      assert.equal(second.status, "installed");
+      assert.ok(second.configPath, "configPath should be set");
+      const saved = JSON.parse(fs.readFileSync(second.configPath as string, "utf8")) as Record<string, unknown>;
+
+      assert.equal("namespace" in saved, false);
+      assert.equal(saved.installExtension, "false");
+      assert.equal(saved.remnicDaemonUrl, "http://127.0.0.1:9999");
+      assert.equal(saved.connectorId, "pi");
+    },
+  );
+});
+
 // ── PRRT_kwDORJXyws56VRJ4 (Cursor High): loadRegistry built-in precedence ──
 //
 // Regression test: stale registry.json entries for built-in connectors (written
