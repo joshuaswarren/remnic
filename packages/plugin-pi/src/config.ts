@@ -62,14 +62,18 @@ function coercePositiveInt(value: unknown, fallback: number, max: number): numbe
   return Math.min(parsed, max);
 }
 
-function normalizeRecallMode(value: unknown): RemnicPiConfig["recallMode"] {
-  return value === "minimal" ||
+function coerceRecallMode(value: unknown): RemnicPiConfig["recallMode"] {
+  if (value === undefined || value === null || value === "") return DEFAULT_CONFIG.recallMode;
+  if (
+    value === "minimal" ||
     value === "full" ||
     value === "graph_mode" ||
     value === "no_recall" ||
     value === "auto"
-    ? value
-    : "auto";
+  ) {
+    return value;
+  }
+  throw new Error(`Invalid recallMode value for Remnic Pi config: ${JSON.stringify(value)}`);
 }
 
 function readConfigFile(configPath: string): Record<string, unknown> {
@@ -122,7 +126,7 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     remnicDaemonUrl: trimTrailingSlashes(daemonUrl),
     authToken,
     namespace,
-    recallMode: normalizeRecallMode(fileConfig.recallMode),
+    recallMode: coerceRecallMode(fileConfig.recallMode),
     recallTopK: coercePositiveInt(fileConfig.recallTopK, DEFAULT_CONFIG.recallTopK, 50),
     recallBudgetChars: coercePositiveInt(fileConfig.recallBudgetChars, DEFAULT_CONFIG.recallBudgetChars, 64000),
     recallEnabled: coerceBoolean(fileConfig.recallEnabled, DEFAULT_CONFIG.recallEnabled, "recallEnabled"),

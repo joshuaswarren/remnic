@@ -173,3 +173,18 @@ test("loadConfig fails closed on invalid boolean gate values", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("loadConfig fails closed on invalid recall modes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-recall-mode-"));
+  const configPath = path.join(root, "remnic.config.json");
+  try {
+    fs.writeFileSync(configPath, JSON.stringify({ recallMode: "no-recall" }));
+
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid recallMode value for Remnic Pi config/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

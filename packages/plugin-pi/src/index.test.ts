@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { buildCompactionSummary, createRemnicPiExtension, observeMessages, stripSessionOwnedSchemaFields } from "./index.js";
@@ -22,6 +25,29 @@ test("stripSessionOwnedSchemaFields hides session routing fields from Pi tools",
   });
   assert.deepEqual(schema.required, ["query"]);
   assert.equal(schema.additionalProperties, false);
+});
+
+test("module import does not load the default Pi config eagerly", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-import-"));
+  const configPath = path.join(root, "remnic.config.json");
+  const previousConfig = process.env.REMNIC_PI_CONFIG;
+  try {
+    fs.writeFileSync(configPath, "{not-json");
+    process.env.REMNIC_PI_CONFIG = configPath;
+
+    const moduleUrl = new URL(`./index.ts?bad-config-import=${Date.now()}`, import.meta.url).href;
+    const mod = await import(moduleUrl);
+
+    assert.equal(typeof mod.createRemnicPiExtension, "function");
+    assert.equal(typeof mod.default, "function");
+  } finally {
+    if (previousConfig === undefined) {
+      delete process.env.REMNIC_PI_CONFIG;
+    } else {
+      process.env.REMNIC_PI_CONFIG = previousConfig;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("observeMessages only records dedupe hashes after a successful observe", async () => {
