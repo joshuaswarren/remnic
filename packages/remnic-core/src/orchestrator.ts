@@ -106,6 +106,7 @@ import {
 } from "./memory-worth-filter.js";
 import { reorderRecallResultsWithMmr } from "./recall-mmr.js";
 import { applyReasoningTraceBoost } from "./reasoning-trace-recall.js";
+import { buildRetrievedMemoryProvenance } from "./memory-provenance.js";
 import {
   applyTemporalSupersession,
   normalizeSupersessionKey,
@@ -9862,12 +9863,29 @@ export class Orchestrator {
             scoreDecomposition.reinforcementBoost =
               xrayResult.explain.reinforcementBoost;
           }
+          const resultNamespace = this.namespaceFromPath(recalledPath);
+          let provenance: RecallXrayResult["provenance"] | undefined;
+          try {
+            const resultStorage =
+              await this.storageRouter.storageFor(resultNamespace);
+            const memory = await resultStorage.readMemoryByPath(recalledPath);
+            if (memory) {
+              provenance = buildRetrievedMemoryProvenance(memory, {
+                namespace: resultNamespace,
+                retrievalReason: `served-by=${servedBy}`,
+              });
+            }
+          } catch {
+            // X-ray capture is best-effort; missing provenance must not
+            // perturb recall or suppress the surfaced result.
+          }
           results.push({
             memoryId: derivedId,
             path: recalledPath,
             servedBy,
             scoreDecomposition,
             admittedBy: [],
+            ...(provenance ? { provenance } : {}),
           });
         }
         // `considered` must reflect the pool size of the branch that

@@ -1915,16 +1915,79 @@ function extractMentionedMoveSequence(query: string): AgentMoveDelta["direction"
   }
 
   const normalized = normalizeTrajectoryQuery(query);
-  const sequence = /(?:sequence\s+of\s+(?:four\s+)?movements?|actions?\s+from\s+step\s+\d+\s+to\s+\d+\s+consist\s+of)\s+((?:up|down|left|right)(?:\s+(?:and|then|,)\s+(?:up|down|left|right))*)/.exec(
-    normalized,
-  )?.[1];
-  if (!sequence) {
-    return [];
+  const tokens = normalized.split(" ").filter(Boolean);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const startIndex = moveSequenceStartIndex(tokens, index);
+    if (startIndex === undefined) {
+      continue;
+    }
+    const sequence = collectMoveSequenceTokens(tokens, startIndex);
+    if (sequence.length > 0) {
+      return sequence;
+    }
   }
-  return sequence
-    .split(/\s*(?:,|and|then)\s*/)
-    .map((token) => agentMoveDeltaFromAction(token)?.direction)
-    .filter((direction): direction is AgentMoveDelta["direction"] => direction !== undefined);
+  return [];
+}
+
+function moveSequenceStartIndex(
+  tokens: readonly string[],
+  index: number,
+): number | undefined {
+  if (tokens[index] === "sequence" && tokens[index + 1] === "of") {
+    let cursor = index + 2;
+    if (tokens[cursor] === "four" || parseNonNegativeIntegerToken(tokens[cursor] ?? "") !== undefined) {
+      cursor += 1;
+    }
+    const label = tokens[cursor];
+    if (label === "movement" || label === "movements") {
+      return cursor + 1;
+    }
+  }
+
+  const token = tokens[index];
+  if (token !== "action" && token !== "actions") {
+    return undefined;
+  }
+  if (tokens[index + 1] !== "from" || tokens[index + 2] !== "step") {
+    return undefined;
+  }
+  let cursor = index + 3;
+  if (parseNonNegativeIntegerToken(tokens[cursor] ?? "") !== undefined) {
+    cursor += 1;
+  }
+  if (tokens[cursor] !== "to") {
+    return undefined;
+  }
+  cursor += 1;
+  if (tokens[cursor] === "step") {
+    cursor += 1;
+  }
+  if (parseNonNegativeIntegerToken(tokens[cursor] ?? "") !== undefined) {
+    cursor += 1;
+  }
+  return tokens[cursor] === "consist" && tokens[cursor + 1] === "of"
+    ? cursor + 2
+    : undefined;
+}
+
+function collectMoveSequenceTokens(
+  tokens: readonly string[],
+  startIndex: number,
+): AgentMoveDelta["direction"][] {
+  const moves: AgentMoveDelta["direction"][] = [];
+  for (let index = startIndex; index < tokens.length && moves.length < 16; index += 1) {
+    const token = tokens[index]!;
+    const move = agentMoveDeltaFromAction(token);
+    if (move) {
+      moves.push(move.direction);
+      continue;
+    }
+    if (moves.length > 0 && (token === "and" || token === "then")) {
+      continue;
+    }
+    break;
+  }
+  return moves;
 }
 
 function containsAdjacentReversePair(
@@ -2291,11 +2354,7 @@ function collectAdjacentRuleSetupLines(
   window: readonly LabeledTrajectoryStep[],
   normalizedQuery: string,
 ): string[] {
-  if (
-    !/\b(?:final\s+position|relative\s+to\s+(?:the\s+)?rule|rule\s+blocks?|rule\s+words?|strategic\s+advantage|manipulat(?:e|ing)\s+(?:the\s+)?rule|push(?:ed|ing)?\s+(?:the\s+)?(?:is|win|baba|you|key|door)?\s*(?:text\s+)?block)\b/.test(
-      normalizedQuery,
-    )
-  ) {
+  if (!hasAdjacentRuleSetupIntent(normalizedQuery)) {
     return [];
   }
 
@@ -2324,6 +2383,43 @@ function collectAdjacentRuleSetupLines(
     );
   }
   return lines;
+}
+
+function hasAdjacentRuleSetupIntent(normalizedQuery: string): boolean {
+  for (const phrase of [
+    "final position",
+    "relative to rule",
+    "relative to the rule",
+    "rule block",
+    "rule blocks",
+    "rule word",
+    "rule words",
+    "strategic advantage",
+    "manipulate rule",
+    "manipulate the rule",
+    "manipulating rule",
+    "manipulating the rule",
+  ]) {
+    if (containsBoundedPhrase(normalizedQuery, phrase)) {
+      return true;
+    }
+  }
+  return hasPushBlockIntent(normalizedQuery);
+}
+
+function hasPushBlockIntent(normalizedQuery: string): boolean {
+  const tokens = normalizedQuery.split(" ").filter(Boolean);
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token !== "push" && token !== "pushed" && token !== "pushing") {
+      continue;
+    }
+    const window = tokens.slice(index + 1, index + 8);
+    if (window.includes("block") || window.includes("blocks")) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function pushDirectionForAdjacentPosition(position: RelativePosition): AgentMoveDelta["direction"] | undefined {
@@ -4623,7 +4719,7 @@ export function collectQuestionSlotCues(query: string): string[] {
 
 export function collectContentLexicalCues(query: string): string[] {
   const rawWords = (query.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [])
-    .map((word) => word.replace(/^-+|-+$/g, ""))
+    .map(trimLexicalCueBoundaryHyphens)
     .filter((word) => word.length >= 3 && !/^\d+$/.test(word));
   const words = rawWords
     .filter(
@@ -4654,6 +4750,18 @@ export function collectContentLexicalCues(query: string): string[] {
       return lengthDelta === 0 ? left.localeCompare(right) : lengthDelta;
     })
     .slice(0, 18);
+}
+
+function trimLexicalCueBoundaryHyphens(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "-") {
+    start += 1;
+  }
+  while (end > start && value[end - 1] === "-") {
+    end -= 1;
+  }
+  return start === 0 && end === value.length ? value : value.slice(start, end);
 }
 
 function collectIntentExpansionCues(query: string): string[] {

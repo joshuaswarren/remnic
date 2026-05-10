@@ -219,7 +219,7 @@ function buildQueryFocusedExcerpt(
 
 function collectQueryFocusCues(query: string): string[] {
   const words = (query.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [])
-    .map((word) => word.replace(/^-+|-+$/g, ""))
+    .map(trimBoundaryHyphens)
     .filter(
       (word) =>
         word.length >= 3 &&
@@ -246,6 +246,18 @@ function collectQueryFocusCues(query: string): string[] {
     }
   }
   return [...cues].sort((left, right) => right.length - left.length || left.localeCompare(right));
+}
+
+function trimBoundaryHyphens(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "-") {
+    start += 1;
+  }
+  while (end > start && value[end - 1] === "-") {
+    end -= 1;
+  }
+  return start === 0 && end === value.length ? value : value.slice(start, end);
 }
 
 function hasTemporalFocusIntent(query: string): boolean {

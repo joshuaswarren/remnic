@@ -401,6 +401,30 @@ export {
 } from "./active-memory-bridge.js";
 
 // ---------------------------------------------------------------------------
+// Action confidence
+// ---------------------------------------------------------------------------
+
+export {
+  ACTION_CONFIDENCE_CONTEXT_READINESS,
+  ACTION_CONFIDENCE_DECISIONS,
+  ACTION_CONFIDENCE_RISK_CATEGORIES,
+  ACTION_CONFIDENCE_RULE_KINDS,
+  buildActionConfidenceInputFromOptions,
+  evaluateActionConfidence,
+  renderActionConfidenceText,
+  type ActionConfidenceContextReadiness,
+  type ActionConfidenceDecision,
+  type ActionConfidenceFactor,
+  type ActionConfidenceInput,
+  type ActionConfidenceMemoryInput,
+  type ActionConfidenceOptionInput,
+  type ActionConfidenceResult,
+  type ActionConfidenceRiskCategory,
+  type ActionConfidenceRule,
+  type ActionConfidenceRuleKind,
+} from "./action-confidence.js";
+
+// ---------------------------------------------------------------------------
 // Daily Context Briefing (#370)
 // ---------------------------------------------------------------------------
 
