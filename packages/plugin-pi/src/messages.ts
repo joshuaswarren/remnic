@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+import { parsePiMessageParts, type LcmMessagePartInput } from "@remnic/core";
+
 import type { ObserveMessage, ObserveMessagePart } from "./client.js";
 
 type PiMessage = Record<string, unknown>;
@@ -109,72 +111,21 @@ function textFromContent(content: unknown): string {
 }
 
 function partsFromMessage(message: PiMessage, renderedContent: string): ObserveMessagePart[] {
-  if (message.role === "bashExecution") {
-    const command = typeof message.command === "string" ? message.command : undefined;
-    const output = typeof message.output === "string" ? message.output : undefined;
-    const filePath = firstFilePathFromObject(message) ?? firstFilePath([command, output, renderedContent].filter(Boolean).join("\n"));
-    return [{
-      ordinal: 0,
-      kind: "tool_result",
-      payload: {
-        role: "bashExecution",
-        command,
-        output,
-        content: renderedContent,
-        ...(message.exitCode !== undefined ? { exitCode: message.exitCode } : {}),
-        ...(message.exit_code !== undefined ? { exit_code: message.exit_code } : {}),
-        ...(typeof message.truncated === "boolean" ? { truncated: message.truncated } : {}),
-      },
-      toolName: "bashExecution",
-      filePath,
-    }];
-  }
+  return parsePiMessageParts(message, {
+    renderedContent,
+    allowRenderedFallback: true,
+  }).map(toObserveMessagePart);
+}
 
-  if (message.role === "toolResult") {
-    const toolName = typeof message.toolName === "string"
-      ? message.toolName
-      : typeof message.tool_name === "string"
-        ? message.tool_name
-        : undefined;
-    return [{
-      ordinal: 0,
-      kind: "tool_result",
-      payload: {
-        toolName,
-        content: renderedContent,
-        ...(typeof message.isError === "boolean" ? { isError: message.isError } : {}),
-        ...(typeof message.is_error === "boolean" ? { is_error: message.is_error } : {}),
-      },
-      toolName,
-      filePath: firstFilePath(renderedContent),
-    }];
-  }
-
-  const parts: ObserveMessagePart[] = [];
-  const content = message.content;
-  if (Array.isArray(content)) {
-    content.forEach((block, index) => {
-      if (!block || typeof block !== "object") return;
-      const obj = block as PiMessage;
-      if (obj.type === "text" && typeof obj.text === "string") {
-        parts.push({ ordinal: index, kind: "text", payload: { text: obj.text }, filePath: firstFilePath(obj.text) });
-      }
-      if (obj.type === "toolCall" && typeof obj.name === "string") {
-        const filePath = filePathFromArgs(obj.arguments);
-        parts.push({
-          ordinal: index,
-          kind: classifyToolCall(obj.name),
-          payload: { name: obj.name, arguments: obj.arguments ?? {} },
-          toolName: obj.name,
-          filePath,
-        });
-      }
-    });
-  }
-  if (parts.length === 0) {
-    parts.push({ ordinal: 0, kind: "text", payload: { text: renderedContent }, filePath: firstFilePath(renderedContent) });
-  }
-  return parts;
+function toObserveMessagePart(part: LcmMessagePartInput): ObserveMessagePart {
+  return {
+    ordinal: part.ordinal ?? undefined,
+    kind: part.kind,
+    payload: part.payload,
+    toolName: part.toolName ?? part.tool_name ?? undefined,
+    filePath: part.filePath ?? part.file_path ?? undefined,
+    createdAt: part.createdAt ?? part.created_at ?? undefined,
+  };
 }
 
 function stableObservedMessageIdentity(rawContent: unknown): string | null {
@@ -199,32 +150,4 @@ function stableObservedMessageIdentity(rawContent: unknown): string | null {
     }
   }
   return null;
-}
-
-function firstFilePathFromObject(obj: PiMessage): string | null {
-  for (const value of Object.values(obj)) {
-    if (typeof value !== "string") continue;
-    const match = firstFilePath(value);
-    if (match) return match;
-  }
-  return null;
-}
-
-function classifyToolCall(name: string): ObserveMessagePart["kind"] {
-  if (name === "read") return "file_read";
-  if (name === "write" || name === "edit") return "file_write";
-  return "tool_call";
-}
-
-function filePathFromArgs(args: unknown): string | null {
-  if (!args || typeof args !== "object") return null;
-  const value = (args as { path?: unknown; filePath?: unknown; file_path?: unknown }).path ??
-    (args as { filePath?: unknown }).filePath ??
-    (args as { file_path?: unknown }).file_path;
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function firstFilePath(text: string): string | null {
-  const match = text.match(/(?:^|\s)([./~]?[\w.-]+(?:\/[\w .@()[\]-]+)+)/);
-  return match?.[1] ?? null;
 }

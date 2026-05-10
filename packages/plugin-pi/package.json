@@ -43,7 +43,8 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@remnic/core": "workspace:^"
+    "@remnic/core": "workspace:^",
+    "@sinclair/typebox": "^0.34.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

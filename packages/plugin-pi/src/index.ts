@@ -1,3 +1,5 @@
+import { Type, type TSchema } from "@sinclair/typebox";
+
 import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./config.js";
 import { RemnicClient, type McpTool, type ObserveMessage } from "./client.js";
 import {
@@ -235,7 +237,7 @@ async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicP
       name: piToolName,
       label: tool.name,
       description: tool.description ?? `Call ${tool.name}`,
-      parameters: stripSessionOwnedSchemaFields(tool.inputSchema),
+      parameters: toPiToolParametersSchema(tool.inputSchema),
       async execute(_toolCallId: string, params: Record<string, unknown>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
         const sessionKey = sessionKeyFromContext(ctx);
         const {
@@ -257,6 +259,10 @@ async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicP
       },
     });
   }
+}
+
+export function toPiToolParametersSchema(inputSchema: unknown): TSchema {
+  return Type.Unsafe(stripSessionOwnedSchemaFields(inputSchema));
 }
 
 export function stripSessionOwnedSchemaFields(inputSchema: unknown): Record<string, unknown> {

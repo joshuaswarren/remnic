@@ -4,7 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildCompactionSummary, createRemnicPiExtension, observeMessages, stripSessionOwnedSchemaFields } from "./index.js";
+import { Kind } from "@sinclair/typebox";
+
+import {
+  buildCompactionSummary,
+  createRemnicPiExtension,
+  observeMessages,
+  stripSessionOwnedSchemaFields,
+  toPiToolParametersSchema,
+} from "./index.js";
 import type { RemnicPiConfig } from "./config.js";
 
 test("stripSessionOwnedSchemaFields hides session routing fields from Pi tools", () => {
@@ -20,6 +28,27 @@ test("stripSessionOwnedSchemaFields hides session routing fields from Pi tools",
     additionalProperties: false,
   });
 
+  assert.deepEqual(schema.properties, {
+    query: { type: "string" },
+  });
+  assert.deepEqual(schema.required, ["query"]);
+  assert.equal(schema.additionalProperties, false);
+});
+
+test("toPiToolParametersSchema wraps stripped MCP schemas as TypeBox schemas", () => {
+  const schema = toPiToolParametersSchema({
+    type: "object",
+    properties: {
+      sessionKey: { type: "string" },
+      namespace: { type: "string" },
+      cwd: { type: "string" },
+      query: { type: "string" },
+    },
+    required: ["sessionKey", "query"],
+    additionalProperties: false,
+  }) as any;
+
+  assert.equal(schema[Kind], "Unsafe");
   assert.deepEqual(schema.properties, {
     query: { type: "string" },
   });

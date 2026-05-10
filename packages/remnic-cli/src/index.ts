@@ -249,18 +249,7 @@ class LazyPiMemoryExtensionPublisher implements MemoryExtensionPublisher {
 }
 
 async function loadPiPublisherModule(): Promise<PiPublisherModule> {
-  try {
-    return await import("@remnic/plugin-pi/publisher") as PiPublisherModule;
-  } catch (err) {
-    if (!isMissingPiPublisherBuild(err)) throw err;
-    return await import(new URL("../../plugin-pi/src/publisher.ts", import.meta.url).href) as PiPublisherModule;
-  }
-}
-
-function isMissingPiPublisherBuild(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const code = (err as NodeJS.ErrnoException).code;
-  return code === "ERR_MODULE_NOT_FOUND" && err.message.includes("@remnic/plugin-pi/dist/publisher.js");
+  return await import("@remnic/plugin-pi/publisher") as PiPublisherModule;
 }
 
 // ── Host-specific publisher registrations ───────────────────────────────────
