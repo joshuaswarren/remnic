@@ -29,6 +29,7 @@ import { DEFAULT_BENCH_RECALL_BUDGET_CHARS } from "../recall-budget.js";
 
 export interface RemnicAdapterOptions {
   configOverrides?: Record<string, unknown>;
+  memoryDir?: string;
   preserveRuntimeDefaults?: boolean;
   responder?: BenchResponder;
   judge?: BenchJudge;
@@ -220,8 +221,17 @@ async function createBenchOrchestrator(
   mode: BenchAdapterMode,
   overrides?: Record<string, unknown>,
   preserveRuntimeDefaults = false,
-): Promise<{ tempDir: string; orchestrator: Orchestrator; qmdSandbox: BenchQmdSandbox }> {
-  const tempDir = await mkdtemp(path.join(tmpdir(), `remnic-bench-${mode}-`));
+  configuredMemoryDir?: string,
+): Promise<{
+  tempDir: string;
+  ownsTempDir: boolean;
+  orchestrator: Orchestrator;
+  qmdSandbox: BenchQmdSandbox;
+}> {
+  const tempDir = configuredMemoryDir
+    ? path.resolve(configuredMemoryDir)
+    : await mkdtemp(path.join(tmpdir(), `remnic-bench-${mode}-`));
+  const ownsTempDir = !configuredMemoryDir;
   await mkdir(path.join(tempDir, "state"), { recursive: true });
   const qmdSandbox = await createBenchQmdSandbox(tempDir, overrides);
 
@@ -247,7 +257,7 @@ async function createBenchOrchestrator(
     throw new Error("Remnic benchmark adapter requires LCM to be enabled.");
   }
 
-  return { tempDir, orchestrator, qmdSandbox };
+  return { tempDir, ownsTempDir, orchestrator, qmdSandbox };
 }
 
 async function createBenchQmdSandbox(
@@ -373,6 +383,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       mode,
       options.configOverrides,
       options.preserveRuntimeDefaults === true,
+      options.memoryDir,
     );
     const sessionTurnCounters = new Map<string, number>();
 
@@ -408,7 +419,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         // QMD sandbox cleanup is best-effort; the benchmark temp dir must
         // still be removed even if a sqlite/config artifact is busy.
       }
-      await rm(state.tempDir, { recursive: true, force: true });
+      if (state.ownsTempDir) {
+        await rm(state.tempDir, { recursive: true, force: true });
+      }
     };
 
     const rebuild = async (): Promise<void> => {
@@ -417,6 +430,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         mode,
         options.configOverrides,
         options.preserveRuntimeDefaults === true,
+        options.memoryDir,
       );
       sessionTurnCounters.clear();
     };

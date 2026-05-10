@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -121,6 +121,36 @@ test("adapter QMD wrapper resolves relative binaries and isolates QMD env", asyn
   } finally {
     await adapter.destroy();
     await rm(fakeRoot, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter can use a caller-owned memory directory", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-owned-"));
+  const adapter = await createRemnicAdapter({ memoryDir });
+
+  try {
+    await adapter.store("owned-memory-session", [
+      {
+        role: "user",
+        content: "Remember the caller-owned memory directory code is amber-17.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "owned-memory-session",
+      "What is the caller-owned memory directory code?",
+    );
+
+    assert.match(recalled, /amber-17/);
+  } finally {
+    await adapter.destroy();
+  }
+
+  try {
+    assert.equal((await stat(memoryDir)).isDirectory(), true);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
 
