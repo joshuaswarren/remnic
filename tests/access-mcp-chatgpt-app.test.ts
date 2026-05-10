@@ -497,6 +497,198 @@ test("ChatGPT Apps inspector redacts blocked visible memory card previews", () =
   assert.doesNotMatch(result.memories[0]?.preview ?? "", /blocked private detail/);
 });
 
+test("ChatGPT Apps inspector matches X-ray provenance by path before duplicate ids", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "blocked private detail\nsafe work detail",
+    count: 2,
+    memoryIds: ["mem-shared", "mem-shared"],
+    results: [
+      {
+        id: "mem-shared",
+        path: "private/mem-shared.md",
+        category: "preference",
+        status: "active",
+        preview: "blocked private detail",
+      },
+      {
+        id: "mem-shared",
+        path: "work/mem-shared.md",
+        category: "preference",
+        status: "active",
+        preview: "safe work detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const result = buildChatGptMemoryInspectorResult(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    {
+      schemaVersion: "1",
+      query: "show preferences",
+      snapshotId: "snap-duplicate-id-paths",
+      capturedAt: 1_779_000_000_000,
+      tierExplain: null,
+      results: [
+        {
+          memoryId: "mem-shared",
+          path: "private/mem-shared.md",
+          servedBy: "hybrid",
+          scoreDecomposition: { final: 0.9 },
+          admittedBy: ["test"],
+          provenance: {
+            source: "conversation",
+            scope: "namespace:private",
+            userContextScopes: ["work"],
+            retrievalReason: "test",
+            confidence: 0.9,
+            stale: false,
+            corrected: false,
+            correctionState: "none",
+            safeToUse: false,
+            safety: "blocked",
+            safetyReasons: ["blocked in current context"],
+          },
+        },
+        {
+          memoryId: "mem-shared",
+          path: "work/mem-shared.md",
+          servedBy: "hybrid",
+          scoreDecomposition: { final: 0.8 },
+          admittedBy: ["test"],
+          provenance: {
+            source: "conversation",
+            scope: "namespace:work",
+            userContextScopes: ["work"],
+            retrievalReason: "test",
+            confidence: 0.8,
+            stale: false,
+            corrected: false,
+            correctionState: "none",
+            safeToUse: true,
+            safety: "safe",
+            safetyReasons: [],
+          },
+        },
+      ],
+      filters: [],
+      budget: { chars: 4096, used: 100 },
+      namespace: "work",
+    },
+    {
+      schemaVersion: 1,
+      decision: "ask",
+      confidence: 0.5,
+      risk: "medium",
+      contextReadiness: "partial",
+      attentionPolicy: "interruption_budgeting",
+      principle: "A good agent should spend the user's attention carefully.",
+      reasons: [],
+      blockers: [],
+      factors: [],
+      retrievedMemoryCount: 2,
+      usableMemoryCount: 1,
+      staleMemoryCount: 0,
+      correctedMemoryCount: 0,
+      scopeMismatchCount: 1,
+      safeToAct: false,
+    },
+  );
+
+  assert.match(result.memories[0]?.preview ?? "", /Preview withheld/);
+  assert.doesNotMatch(result.memories[0]?.preview ?? "", /blocked private detail/);
+  assert.equal(result.memories[1]?.preview, "safe work detail");
+});
+
+test("ChatGPT Apps inspector pluralizes blocked memory preview messages", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "blocked first detail\nblocked second detail",
+    count: 2,
+    memoryIds: ["mem-blocked-1", "mem-blocked-2"],
+    results: [
+      {
+        id: "mem-blocked-1",
+        path: "memories/mem-blocked-1.md",
+        category: "preference",
+        status: "active",
+        preview: "blocked first detail",
+      },
+      {
+        id: "mem-blocked-2",
+        path: "memories/mem-blocked-2.md",
+        category: "preference",
+        status: "active",
+        preview: "blocked second detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const blockedXrayResults = recall.results.map((summary) => ({
+    memoryId: summary.id,
+    path: summary.path ?? "",
+    servedBy: "hybrid" as const,
+    scoreDecomposition: { final: 0.9 },
+    admittedBy: ["test"],
+    provenance: {
+      source: "conversation",
+      scope: "namespace:private",
+      userContextScopes: ["work"],
+      retrievalReason: "test",
+      confidence: 0.9,
+      stale: false,
+      corrected: false,
+      correctionState: "none" as const,
+      safeToUse: false,
+      safety: "blocked" as const,
+      safetyReasons: ["blocked in current context"],
+    },
+  }));
+  const result = buildChatGptMemoryInspectorResult(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    {
+      schemaVersion: "1",
+      query: "show preferences",
+      snapshotId: "snap-two-blocked",
+      capturedAt: 1_779_000_000_000,
+      tierExplain: null,
+      results: blockedXrayResults,
+      filters: [],
+      budget: { chars: 4096, used: 100 },
+      namespace: "work",
+    },
+    {
+      schemaVersion: 1,
+      decision: "ask",
+      confidence: 0.5,
+      risk: "medium",
+      contextReadiness: "partial",
+      attentionPolicy: "interruption_budgeting",
+      principle: "A good agent should spend the user's attention carefully.",
+      reasons: [],
+      blockers: [],
+      factors: [],
+      retrievedMemoryCount: 2,
+      usableMemoryCount: 0,
+      staleMemoryCount: 0,
+      correctedMemoryCount: 0,
+      scopeMismatchCount: 2,
+      safeToAct: false,
+    },
+  );
+
+  assert.match(result.safeRecallPreview, /2 retrieved memories are blocked/);
+  assert.doesNotMatch(result.safeRecallPreview, /2 retrieved memory are blocked/);
+});
+
 test("ChatGPT Apps inspector withholds previews when X-ray provenance is unavailable", () => {
   const recall: EngramAccessRecallResponse = {
     query: "show preferences",

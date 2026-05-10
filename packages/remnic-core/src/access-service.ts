@@ -2139,12 +2139,17 @@ export class EngramAccessService {
     });
     await previousQueue;
 
+    const recallSessionKey = request.sessionKey?.trim() || undefined;
+    let xrayResponse: {
+      snapshotFound: boolean;
+      snapshot?: RecallXraySnapshot;
+    } = { snapshotFound: false };
+
     try {
       // Clear any prior snapshot so a capture failure surfaces as
       // `{snapshotFound: false}` rather than returning stale data
       // from an earlier call on the same orchestrator.
       this.orchestrator.clearLastXraySnapshot();
-      const recallSessionKey = request.sessionKey?.trim() || undefined;
       await this.orchestrator.recall(query, recallSessionKey, {
         xrayCapture: true,
         ...(requestedNamespace ? { namespace: requestedNamespace } : {}),
@@ -2171,73 +2176,77 @@ export class EngramAccessService {
       });
 
       const rawSnapshot = this.orchestrator.getLastXraySnapshot();
-      if (!rawSnapshot) return { snapshotFound: false };
       // Re-check namespace after capture: the recall may have served
       // from a different namespace than the caller requested.  Drop
       // the snapshot rather than leak cross-tenant data (CLAUDE.md
       // rules 42 + 47).  The comparison is strict so a snapshot whose
       // namespace is `undefined` cannot bypass the scope the caller
       // asked for.
-      if (requestedNamespace && rawSnapshot.namespace !== requestedNamespace) {
-        return { snapshotFound: false };
-      }
-      // Tag filter (issue #689). Mirrors `recall()` semantics — applied
-      // post-capture by reading each result's frontmatter tags and
-      // dropping non-matching results. Filter activity surfaces as a
-      // `tag-filter` entry in `snapshot.filters` so X-ray consumers can
-      // see the "considered → admitted" delta.
-      let snapshot = rawSnapshot;
-      const xrayFilterTags = normalizeTags(request.tags);
-      let xrayTagMatch: TagMatchMode | undefined;
-      try {
-        xrayTagMatch = parseTagMatch(request.tagMatch);
-      } catch (err) {
-        throw new EngramAccessInputError(
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-      if (xrayFilterTags && xrayFilterTags.length > 0) {
-        const namespace = snapshot.namespace
-          ? this.resolveNamespace(snapshot.namespace)
-          : this.orchestrator.config.defaultNamespace;
-        const tagsByIndex = await Promise.all(
-          snapshot.results.map(async (result) => {
-            try {
-              const storage = await this.orchestrator.getStorage(namespace);
-              const memory = await storage.readMemoryByPath(result.path);
-              const t = memory?.frontmatter?.tags;
-              // Normalize identically to the recall path
-              // (`normalizeProjectionTags`): trim and drop empty strings
-              // so X-ray tag matching stays consistent with the recall
-              // surface. Without this, a frontmatter tag like " draft "
-              // would match in recall but not in X-ray (cursor review).
-              return Array.isArray(t) ? normalizeProjectionTags(t) : [];
-            } catch {
-              return [];
-            }
-          }),
-        );
-        const tagged = snapshot.results.map((result, index) => ({
-          result,
-          tags: tagsByIndex[index] ?? [],
-        }));
-        const { results: admittedTagged, trace } = applyTagFilter(tagged, {
-          tags: xrayFilterTags,
-          tagMatch: xrayTagMatch,
-        });
-        const admittedResults = admittedTagged.map((entry) => entry.result);
-        const filters = trace ? [...snapshot.filters, trace] : snapshot.filters;
-        snapshot = { ...snapshot, results: admittedResults, filters };
-      }
-      // Decorate per-result disclosure + token estimate when the caller
-      // wired a depth knob (issue #677 PR 3/4 — codex review on #699
-      // flagged that the renderer's per-disclosure summary stays empty
-      // until callers populate these fields).  Estimate tokens from
-      // the actual rendered payload at the requested depth so the
-      // summary reflects real spend; chunk uses the preview, section
-      // and raw use full content.  Best-effort only — a missing
-      // memory or read failure is silently dropped (CLAUDE.md rule 13).
-      if (request.disclosure !== undefined) {
+      const namespaceMismatch =
+        requestedNamespace !== undefined &&
+        rawSnapshot?.namespace !== requestedNamespace;
+      if (!rawSnapshot) {
+        xrayResponse = { snapshotFound: false };
+      } else if (namespaceMismatch) {
+        xrayResponse = { snapshotFound: false };
+      } else {
+        // Tag filter (issue #689). Mirrors `recall()` semantics — applied
+        // post-capture by reading each result's frontmatter tags and
+        // dropping non-matching results. Filter activity surfaces as a
+        // `tag-filter` entry in `snapshot.filters` so X-ray consumers can
+        // see the "considered → admitted" delta.
+        let snapshot = rawSnapshot;
+        const xrayFilterTags = normalizeTags(request.tags);
+        let xrayTagMatch: TagMatchMode | undefined;
+        try {
+          xrayTagMatch = parseTagMatch(request.tagMatch);
+        } catch (err) {
+          throw new EngramAccessInputError(
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+        if (xrayFilterTags && xrayFilterTags.length > 0) {
+          const namespace = snapshot.namespace
+            ? this.resolveNamespace(snapshot.namespace)
+            : this.orchestrator.config.defaultNamespace;
+          const tagsByIndex = await Promise.all(
+            snapshot.results.map(async (result) => {
+              try {
+                const storage = await this.orchestrator.getStorage(namespace);
+                const memory = await storage.readMemoryByPath(result.path);
+                const t = memory?.frontmatter?.tags;
+                // Normalize identically to the recall path
+                // (`normalizeProjectionTags`): trim and drop empty strings
+                // so X-ray tag matching stays consistent with the recall
+                // surface. Without this, a frontmatter tag like " draft "
+                // would match in recall but not in X-ray (cursor review).
+                return Array.isArray(t) ? normalizeProjectionTags(t) : [];
+              } catch {
+                return [];
+              }
+            }),
+          );
+          const tagged = snapshot.results.map((result, index) => ({
+            result,
+            tags: tagsByIndex[index] ?? [],
+          }));
+          const { results: admittedTagged, trace } = applyTagFilter(tagged, {
+            tags: xrayFilterTags,
+            tagMatch: xrayTagMatch,
+          });
+          const admittedResults = admittedTagged.map((entry) => entry.result);
+          const filters = trace ? [...snapshot.filters, trace] : snapshot.filters;
+          snapshot = { ...snapshot, results: admittedResults, filters };
+        }
+        // Decorate per-result disclosure + token estimate when the caller
+        // wired a depth knob (issue #677 PR 3/4 — codex review on #699
+        // flagged that the renderer's per-disclosure summary stays empty
+        // until callers populate these fields).  Estimate tokens from
+        // the actual rendered payload at the requested depth so the
+        // summary reflects real spend; chunk uses the preview, section
+        // and raw use full content.  Best-effort only — a missing
+        // memory or read failure is silently dropped (CLAUDE.md rule 13).
+        if (request.disclosure !== undefined) {
         // Disclosure already validated up front; pin to the narrowed
         // type here.  Re-validation inside the queue would be dead code.
         const disclosure: RecallDisclosure = request.disclosure;
@@ -2343,44 +2352,40 @@ export class EngramAccessService {
           };
         }
         const decoratedSnapshot = { ...snapshot, results: decorated };
-        return {
+        xrayResponse = {
           snapshotFound: true,
           snapshot: decoratedSnapshot,
-          ...(request.includeRecall === true
-            ? {
-                recall: await this.buildRecallResponseFromXraySnapshot({
-                  query,
-                  sessionKey: recallSessionKey,
-                  snapshot: decoratedSnapshot,
-                  disclosure,
-                  startedAt,
-                  requestedMode: request.mode,
-                  normalizedMode: mode,
-                }),
-              }
-            : {}),
+        };
+      } else {
+        xrayResponse = {
+          snapshotFound: true,
+          snapshot,
         };
       }
-      return {
-        snapshotFound: true,
-        snapshot,
-        ...(request.includeRecall === true
-          ? {
-              recall: await this.buildRecallResponseFromXraySnapshot({
-                query,
-                sessionKey: recallSessionKey,
-                snapshot,
-                disclosure,
-                startedAt,
-                requestedMode: request.mode,
-                normalizedMode: mode,
-              }),
-            }
-          : {}),
-      };
+      }
     } finally {
       release();
     }
+
+    if (
+      request.includeRecall === true &&
+      xrayResponse.snapshotFound === true &&
+      xrayResponse.snapshot
+    ) {
+      return {
+        ...xrayResponse,
+        recall: await this.buildRecallResponseFromXraySnapshot({
+          query,
+          sessionKey: recallSessionKey,
+          snapshot: xrayResponse.snapshot,
+          disclosure,
+          startedAt,
+          requestedMode: request.mode,
+          normalizedMode: mode,
+        }),
+      };
+    }
+    return xrayResponse;
   }
   // Sequence lock for `recallXray` — see comment inside the method.
   // Lives on the instance so every x-ray call on the same service

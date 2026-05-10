@@ -114,12 +114,15 @@ export function buildChatGptMemoryInspectorResult(
 ): RemnicChatGptMemoryInspectorResult {
   const xrayUnavailable = xray === null;
   const xrayById = new Map<string, RecallXrayResult>();
+  const xrayByPath = new Map<string, RecallXrayResult>();
   for (const result of xray?.results ?? []) {
     xrayById.set(result.memoryId, result);
+    xrayByPath.set(result.path, result);
   }
 
   const memories = recall.results.slice(0, 8).map((summary) => {
-    const xrayResult = xrayById.get(summary.id);
+    const xrayResult = (summary.path ? xrayByPath.get(summary.path) : undefined)
+      ?? xrayById.get(summary.id);
     const provenance = xrayResult?.provenance;
     const blocked = provenance?.safety === "blocked";
     const preview = xrayUnavailable
@@ -153,7 +156,7 @@ export function buildChatGptMemoryInspectorResult(
   const safeRecallPreview = xrayUnavailable
     ? "Recall preview withheld: X-ray provenance was unavailable, so memory safety could not be verified."
     : blockedCount > 0
-      ? `Recall preview withheld: ${blockedCount} retrieved memory ${blockedCount === 1 ? "is" : "are"} blocked in the current context.`
+      ? `Recall preview withheld: ${blockedCount} retrieved ${blockedCount === 1 ? "memory is" : "memories are"} blocked in the current context.`
       : truncate(recall.context, 1_500);
 
   const primaryMemoryId = memories[0]?.id ?? "<memory-id>";
