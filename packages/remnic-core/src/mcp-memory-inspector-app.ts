@@ -120,12 +120,15 @@ export function buildChatGptMemoryInspectorResult(
   const memories = recall.results.slice(0, 8).map((summary) => {
     const xrayResult = xrayById.get(summary.id);
     const provenance = xrayResult?.provenance;
+    const blocked = provenance?.safety === "blocked";
     return {
       id: summary.id,
       path: summary.path,
       category: summary.category,
       status: summary.status,
-      preview: summary.preview,
+      preview: blocked
+        ? "Preview withheld: this memory is blocked in the current context."
+        : summary.preview,
       servedBy: xrayResult?.servedBy,
       score: xrayResult?.scoreDecomposition.final,
       source: provenance?.source,

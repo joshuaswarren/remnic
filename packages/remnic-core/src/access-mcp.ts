@@ -146,6 +146,7 @@ export class EngramMcpServer {
   private flushTask: Promise<void> | null = null;
   private readonly tools: McpTool[];
   private readonly resources: McpResource[];
+  private readonly resourceTextByUri: Map<string, string>;
   private readonly authenticatedPrincipal?: string;
   /**
    * MCP client info keyed by server-assigned session ID. On each `initialize`
@@ -198,6 +199,12 @@ export class EngramMcpServer {
         },
       },
     ];
+    this.resourceTextByUri = new Map([
+      [
+        REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+        REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
+      ],
+    ]);
     this.tools = [
       {
         name: "engram.recall",
@@ -1717,6 +1724,17 @@ export class EngramMcpServer {
           },
         };
       }
+      const text = this.resourceTextByUri.get(resource.uri);
+      if (text === undefined) {
+        return {
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: -32603,
+            message: `Resource content unavailable: ${resource.uri}`,
+          },
+        };
+      }
       return {
         jsonrpc: "2.0",
         id,
@@ -1725,7 +1743,7 @@ export class EngramMcpServer {
             {
               uri: resource.uri,
               mimeType: resource.mimeType,
-              text: REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
+              text,
               _meta: resource._meta,
             },
           ],
