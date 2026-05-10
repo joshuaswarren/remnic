@@ -51,10 +51,10 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const sessionKey = sessionKeyFromContext(ctx);
       const { state } = getSessionState(ctx, sessionStates);
       if (query === state.lastInjectedQuery) return;
-      state.lastInjectedQuery = query;
 
       try {
         const recalled = await client.recall(query, sessionKey, ctx.cwd);
+        state.lastInjectedQuery = query;
         const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
         if (!context) return;
         return {

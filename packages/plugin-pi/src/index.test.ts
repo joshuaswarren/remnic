@@ -90,6 +90,44 @@ test("singleton extension clears per-session recall suppression on shutdown", as
   assert.equal(recallBodies.length, 2);
 });
 
+test("failed recall does not suppress retry for same query", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("offline");
+    return new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "retry-recall" },
+  };
+  const event = { messages: [{ role: "user", content: "same prompt" }] };
+
+  await emit("context", event, ctx);
+  await emit("context", event, ctx);
+  await emit("context", event, ctx);
+
+  assert.equal(calls, 2);
+});
+
 function baseConfig(): RemnicPiConfig {
   return {
     remnicDaemonUrl: "http://127.0.0.1:4318",
