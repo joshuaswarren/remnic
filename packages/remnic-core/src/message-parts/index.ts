@@ -402,6 +402,7 @@ function inferSourceFormat(input: unknown): MessagePartSourceFormat | undefined 
     if (Array.isArray(obj.output)) return "openai";
     if (isOpenAiResponseItem(obj)) return "openai";
     if (Array.isArray(obj.content) && obj.content.some(isOpenAiContentBlock)) return "openai";
+    if (isAnthropicMessageObject(obj)) return "anthropic";
     if (isPiMessageObject(obj)) return "pi";
     if (Array.isArray(obj.content)) return "anthropic";
   }
@@ -426,6 +427,19 @@ function isPiMessageObject(obj: Record<string, unknown>): boolean {
     const blockType = asNonEmptyString(block.type ?? block.kind);
     return blockType === "toolCall" || blockType === "tool_call" || blockType === "toolResult" || blockType === "tool_result";
   });
+}
+
+function isAnthropicMessageObject(obj: Record<string, unknown>): boolean {
+  if (isAnthropicContentBlock(obj)) return true;
+  if (!Array.isArray(obj.content)) return false;
+  return obj.content.some(isAnthropicContentBlock);
+}
+
+function isAnthropicContentBlock(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const type = asNonEmptyString(value.type ?? value.kind);
+  if (type === "tool_use" || type === "thinking" || type === "redacted_thinking") return true;
+  return type === "tool_result" && value.tool_use_id !== undefined;
 }
 
 function isOpenAiResponseItem(obj: Record<string, unknown>): boolean {
