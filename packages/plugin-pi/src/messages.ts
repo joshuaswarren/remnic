@@ -89,10 +89,6 @@ export function summarizeMessages(messages: unknown[], maxChars: number): string
   return chunks.join("\n\n");
 }
 
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
 export function isExcludedFromContext(message: unknown): boolean {
   return !!message && typeof message === "object" && (message as PiMessage).excludeFromContext === true;
 }
