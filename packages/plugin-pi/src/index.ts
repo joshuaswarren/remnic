@@ -55,9 +55,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
 
       try {
         const recalled = await client.recall(query, sessionKey, ctx.cwd);
-        state.lastInjectedQuery = query;
         const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
         if (!context) return;
+        state.lastInjectedQuery = query;
         return {
           messages: [
             {
@@ -71,6 +71,12 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       } catch (err) {
         notify(ctx, `Remnic recall unavailable: ${errorMessage(err)}`, "warning");
       }
+    });
+
+    pi.on("message_end", async (event, ctx) => {
+      if (!config.observeEnabled || !isUserMessage(event.message)) return;
+      const { state } = getSessionState(ctx, sessionStates);
+      await observeMessages(ctx, client, [event.message], state.observedHashes, state.liveObservedReplayKeys);
     });
 
     pi.on("turn_end", async (event, ctx) => {
@@ -269,6 +275,10 @@ export function stripSessionOwnedSchemaFields(inputSchema: unknown): Record<stri
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isUserMessage(message: unknown): boolean {
+  return isRecord(message) && message.role === "user";
 }
 
 function getSessionState(ctx: any, states: Map<string, PiSessionState>): { sessionKey: string; state: PiSessionState } {

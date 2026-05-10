@@ -204,6 +204,49 @@ test("session_shutdown skips branch messages already observed at turn_end", asyn
   assert.equal(observeBodies[0].messages?.[0]?.rawContent?.entryId, undefined);
 });
 
+test("message_end observes user prompts before shutdown replay", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const observeBodies: Array<Record<string, any>> = [];
+  globalThis.fetch = async (input, init) => {
+    if (String(input).endsWith("/engram/v1/observe")) {
+      observeBodies.push(JSON.parse(String(init?.body ?? "{}")));
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const message = { role: "user", content: "remember my preference" };
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: {
+      getSessionId: () => "message-end-live-observed-test",
+      getEntries: () => [],
+      getBranch: () => [{ id: "entry-1", message }],
+    },
+  };
+
+  await emit("message_end", { message }, ctx);
+  await emit("session_shutdown", {}, ctx);
+
+  assert.equal(observeBodies.length, 1);
+  assert.equal(observeBodies[0].messages?.[0]?.content, "remember my preference");
+});
+
 test("agent_end does not duplicate turn_end observation", async (t) => {
   const originalFetch = globalThis.fetch;
   const observeBodies: Array<Record<string, unknown>> = [];
@@ -339,6 +382,43 @@ test("singleton extension clears per-session recall suppression on shutdown", as
   await emit("context", event, secondCtx);
 
   assert.equal(recallBodies.length, 2);
+});
+
+test("empty recall responses do not suppress retry for same query", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ context: calls === 1 ? "" : "remembered context" }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "empty-recall-retry" },
+  };
+  const event = { messages: [{ role: "user", content: "same prompt" }] };
+
+  assert.equal(await emit("context", event, ctx), undefined);
+  const result = await emit("context", event, ctx) as { messages?: Array<{ content?: Array<{ text?: string }> }> };
+
+  assert.equal(calls, 2);
+  assert.ok(result.messages?.[0]?.content?.[0]?.text?.includes("remembered context"));
 });
 
 test("failed recall does not suppress retry for same query", async (t) => {
