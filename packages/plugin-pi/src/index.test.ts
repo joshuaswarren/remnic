@@ -217,6 +217,51 @@ test("buildCompactionSummary includes only meaningful compaction content", () =>
   assert.equal(summary.includes("secret"), false);
 });
 
+test("session_before_compact records token counts only when Pi supplies both counts", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const compactionRecords: Array<Record<string, unknown>> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+    if (url.endsWith("/engram/v1/lcm/compaction/record")) {
+      compactionRecords.push(body);
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "compact-token-count-test" },
+  };
+  const messagesToSummarize = [{ role: "user", content: "compact this" }];
+
+  await emit("session_before_compact", { preparation: { tokensBefore: 100, messagesToSummarize } }, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(compactionRecords.length, 0);
+
+  await emit("session_before_compact", { preparation: { tokensBefore: 100, tokensAfter: 42, messagesToSummarize } }, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(compactionRecords.length, 1);
+  assert.equal(compactionRecords[0].tokensBefore, 100);
+  assert.equal(compactionRecords[0].tokensAfter, 42);
+});
+
 test("singleton extension clears per-session recall suppression on shutdown", async (t) => {
   const originalFetch = globalThis.fetch;
   const recallBodies: unknown[] = [];

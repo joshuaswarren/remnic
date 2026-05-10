@@ -1,7 +1,6 @@
 import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./config.js";
 import { RemnicClient, type McpTool, type ObserveMessage } from "./client.js";
 import {
-  estimateTokens,
   latestUserQuery,
   observedMessageDedupeKey,
   sessionKeyFromContext,
@@ -104,8 +103,11 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const summary = buildCompactionSummary(preparation);
       if (!summary.trim()) return;
       void client.contextCheckpoint(sessionKey, summary).catch(() => undefined);
-      const tokensAfter = estimateTokens(summary);
-      void client.lcmCompactionRecord(sessionKey, preparation.tokensBefore ?? 0, tokensAfter).catch(() => undefined);
+      const tokensBefore = finiteTokenCount(preparation.tokensBefore);
+      const tokensAfter = finiteTokenCount(preparation.tokensAfter);
+      if (tokensBefore !== null && tokensAfter !== null) {
+        void client.lcmCompactionRecord(sessionKey, tokensBefore, tokensAfter).catch(() => undefined);
+      }
       const details = fileDetailsFromPreparation(preparation);
       return {
         compaction: {
@@ -455,6 +457,10 @@ function notify(ctx: any, message: string, level: "info" | "success" | "warning"
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function finiteTokenCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 function isString(value: unknown): value is string {
