@@ -154,6 +154,17 @@ describe("message-parts parsers", () => {
     });
   });
 
+  it("uses rendered fallback inside the Pi parser when structured parsing finds no parts", () => {
+    const parts = parsePiMessageParts(
+      { role: "assistant", content: [{ type: "unknown", value: "ignored" }] },
+      { renderedContent: "Updated packages/plugin-pi/src/index.ts" },
+    );
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "file_read");
+    assert.equal(parts[0]!.filePath, "packages/plugin-pi/src/index.ts");
+  });
+
   it("extracts Anthropic tool_use blocks as structured file writes", () => {
     const parts = parseAnthropicMessageParts({
       content: [

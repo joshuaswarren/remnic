@@ -280,11 +280,11 @@ export function parseOpenClawMessageParts(
 
 export function parsePiMessageParts(
   input: unknown,
-  _options: ParseMessagePartsOptions = {},
+  options: ParseMessagePartsOptions = {},
 ): LcmMessagePartInput[] {
   const explicit = normalizeExplicitParts(input);
   if (explicit.length > 0) return explicit;
-  if (!isRecord(input)) return [];
+  if (!isRecord(input)) return renderedFallbackParts(options);
 
   if (input.role === "bashExecution") {
     const command = asNonEmptyString(input.command);
@@ -374,7 +374,7 @@ export function parsePiMessageParts(
     }));
   }
 
-  return withOrdinals(parts);
+  return withRenderedFallback(withOrdinals(parts), options);
 }
 
 export function partsFromRenderedText(text: string): LcmMessagePartInput[] {

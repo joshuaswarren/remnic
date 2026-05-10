@@ -472,6 +472,39 @@ test("empty recall responses do not suppress retry for same query", async (t) =>
   assert.ok(result.messages?.[0]?.content?.[0]?.text?.includes("remembered context"));
 });
 
+test("recall context truncation stays within the configured budget", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ context: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" }), { status: 200 });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      recallBudgetChars: 40,
+    },
+  });
+  await extension(pi as any);
+
+  const result = await emit("context", { messages: [{ role: "user", content: "same prompt" }] }, {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "recall-budget-test" },
+  }) as { messages?: Array<{ content?: Array<{ text?: string }> }> };
+
+  const text = result.messages?.[0]?.content?.[0]?.text ?? "";
+  const context = text.split("Remnic recalled context for this turn:\n\n")[1] ?? "";
+  assert.equal(context.length, 40);
+  assert.ok(context.endsWith("[Remnic context truncated]"));
+});
+
 test("failed recall does not suppress retry for same query", async (t) => {
   const originalFetch = globalThis.fetch;
   let calls = 0;

@@ -55,11 +55,13 @@ function coerceBoolean(value: unknown, fallback: boolean, fieldName: string): bo
   throw new Error(`Invalid boolean value for Remnic Pi config field ${fieldName}`);
 }
 
-function coercePositiveInt(value: unknown, fallback: number, max: number): number {
+function coercePositiveInt(value: unknown, fallback: number, max: number, fieldName: string): number {
   if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
-  return Math.min(parsed, max);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > max) {
+    throw new Error(`Invalid numeric value for Remnic Pi config field ${fieldName}: expected an integer from 1 to ${max}`);
+  }
+  return parsed;
 }
 
 function coerceRecallMode(value: unknown): RemnicPiConfig["recallMode"] {
@@ -127,14 +129,14 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     authToken,
     namespace,
     recallMode: coerceRecallMode(fileConfig.recallMode),
-    recallTopK: coercePositiveInt(fileConfig.recallTopK, DEFAULT_CONFIG.recallTopK, 50),
-    recallBudgetChars: coercePositiveInt(fileConfig.recallBudgetChars, DEFAULT_CONFIG.recallBudgetChars, 64000),
+    recallTopK: coercePositiveInt(fileConfig.recallTopK, DEFAULT_CONFIG.recallTopK, 50, "recallTopK"),
+    recallBudgetChars: coercePositiveInt(fileConfig.recallBudgetChars, DEFAULT_CONFIG.recallBudgetChars, 64000, "recallBudgetChars"),
     recallEnabled: coerceBoolean(fileConfig.recallEnabled, DEFAULT_CONFIG.recallEnabled, "recallEnabled"),
     observeEnabled: coerceBoolean(fileConfig.observeEnabled, DEFAULT_CONFIG.observeEnabled, "observeEnabled"),
     observeSkipExtraction: coerceBoolean(fileConfig.observeSkipExtraction, DEFAULT_CONFIG.observeSkipExtraction, "observeSkipExtraction"),
     compactionEnabled: coerceBoolean(fileConfig.compactionEnabled, DEFAULT_CONFIG.compactionEnabled, "compactionEnabled"),
     mcpToolsEnabled: coerceBoolean(fileConfig.mcpToolsEnabled, DEFAULT_CONFIG.mcpToolsEnabled, "mcpToolsEnabled"),
     statusEnabled: coerceBoolean(fileConfig.statusEnabled, DEFAULT_CONFIG.statusEnabled, "statusEnabled"),
-    requestTimeoutMs: coercePositiveInt(fileConfig.requestTimeoutMs, DEFAULT_CONFIG.requestTimeoutMs, 60_000),
+    requestTimeoutMs: coercePositiveInt(fileConfig.requestTimeoutMs, DEFAULT_CONFIG.requestTimeoutMs, 60_000, "requestTimeoutMs"),
   };
 }

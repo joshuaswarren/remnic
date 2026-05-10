@@ -25,6 +25,7 @@ const STATE_CUSTOM_TYPE = "remnic_state";
 const MAX_OBSERVED_HASHES = 2000;
 const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
+const TRUNCATION_NOTICE = "\n\n[Remnic context truncated]";
 
 type PiSessionState = {
   observedHashes: Set<string>;
@@ -510,7 +511,8 @@ function assignMissingIdentity(target: Record<string, unknown>, field: string, v
 
 function trimContext(value: string, budget: number): string {
   if (value.length <= budget) return value;
-  return `${value.slice(0, budget)}\n\n[Remnic context truncated]`;
+  if (budget <= TRUNCATION_NOTICE.length) return TRUNCATION_NOTICE.slice(0, budget);
+  return `${value.slice(0, budget - TRUNCATION_NOTICE.length)}${TRUNCATION_NOTICE}`;
 }
 
 function notify(ctx: any, message: string, level: "info" | "success" | "warning" | "error"): void {

@@ -109,7 +109,7 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
         recallEnabled: "false",
         observeSkipExtraction: "1",
         mcpToolsEnabled: "0",
-        recallTopK: 500,
+        recallTopK: 50,
         requestTimeoutMs: 10,
       }),
     );
@@ -183,6 +183,32 @@ test("loadConfig fails closed on invalid recall modes", () => {
     assert.throws(
       () => loadConfig({ configPath, env: {} }),
       /Invalid recallMode value for Remnic Pi config/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig fails closed on invalid numeric values", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-number-"));
+  const configPath = path.join(root, "remnic.config.json");
+  try {
+    fs.writeFileSync(configPath, JSON.stringify({ recallTopK: "abc" }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid numeric value for Remnic Pi config field recallTopK/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({ recallBudgetChars: 0 }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid numeric value for Remnic Pi config field recallBudgetChars/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({ requestTimeoutMs: 10.5 }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid numeric value for Remnic Pi config field requestTimeoutMs/,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
