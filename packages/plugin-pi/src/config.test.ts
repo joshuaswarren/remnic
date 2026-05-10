@@ -174,6 +174,47 @@ test("loadConfig fails closed on invalid boolean gate values", () => {
   }
 });
 
+test("loadConfig fails closed on invalid daemon URL values", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-daemon-"));
+  const configPath = path.join(root, "remnic.config.json");
+  try {
+    fs.writeFileSync(configPath, JSON.stringify({ remnicDaemonUrl: 4318 }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid URL value for Remnic Pi config field remnicDaemonUrl/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({ remnicDaemonUrl: "not-a-url" }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid URL value for Remnic Pi config field remnicDaemonUrl/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({}));
+    assert.throws(
+      () => loadConfig({ configPath, env: { REMNIC_DAEMON_URL: "not-a-url" } }),
+      /Invalid URL value for Remnic Pi config field REMNIC_DAEMON_URL/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig fails closed on invalid auth token values", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-token-"));
+  const configPath = path.join(root, "remnic.config.json");
+  try {
+    fs.writeFileSync(configPath, JSON.stringify({ authToken: ["remnic_pi_token"] }));
+
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid string value for Remnic Pi config field authToken/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig fails closed on invalid recall modes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-recall-mode-"));
   const configPath = path.join(root, "remnic.config.json");

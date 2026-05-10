@@ -82,6 +82,31 @@ function coerceOptionalNonEmptyString(value: unknown, fieldName: string): string
   throw new Error(`Invalid string value for Remnic Pi config field ${fieldName}`);
 }
 
+function coerceOptionalString(value: unknown, fieldName: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  throw new Error(`Invalid string value for Remnic Pi config field ${fieldName}`);
+}
+
+function coerceOptionalHttpUrl(value: unknown, fieldName: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`Invalid URL value for Remnic Pi config field ${fieldName}: expected an http or https URL`);
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return trimTrailingSlashes(trimmed);
+  } catch {
+    // Fall through to the shared error below.
+  }
+  throw new Error(`Invalid URL value for Remnic Pi config field ${fieldName}: expected an http or https URL`);
+}
+
 function coerceRecallMode(value: unknown): RemnicPiConfig["recallMode"] {
   if (value === undefined || value === null || value === "") return DEFAULT_CONFIG.recallMode;
   if (
@@ -126,21 +151,16 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
   const env = options.env ?? process.env;
   const fileConfig = readConfigFile(resolveConfigPath(options));
   const daemonUrl =
-    typeof fileConfig.remnicDaemonUrl === "string" && fileConfig.remnicDaemonUrl.trim().length > 0
-      ? fileConfig.remnicDaemonUrl.trim()
-      : typeof env.REMNIC_DAEMON_URL === "string" && env.REMNIC_DAEMON_URL.trim().length > 0
-        ? env.REMNIC_DAEMON_URL.trim()
-        : DEFAULT_CONFIG.remnicDaemonUrl;
+    coerceOptionalHttpUrl(fileConfig.remnicDaemonUrl, "remnicDaemonUrl") ??
+    coerceOptionalHttpUrl(env.REMNIC_DAEMON_URL, "REMNIC_DAEMON_URL") ??
+    DEFAULT_CONFIG.remnicDaemonUrl;
   const authToken =
-    typeof fileConfig.authToken === "string" && fileConfig.authToken.trim().length > 0
-      ? fileConfig.authToken.trim()
-      : typeof env.REMNIC_PI_AUTH_TOKEN === "string" && env.REMNIC_PI_AUTH_TOKEN.trim().length > 0
-        ? env.REMNIC_PI_AUTH_TOKEN.trim()
-        : undefined;
+    coerceOptionalString(fileConfig.authToken, "authToken") ??
+    coerceOptionalString(env.REMNIC_PI_AUTH_TOKEN, "REMNIC_PI_AUTH_TOKEN");
   const namespace = coerceOptionalNonEmptyString(fileConfig.namespace, "namespace");
 
   return {
-    remnicDaemonUrl: trimTrailingSlashes(daemonUrl),
+    remnicDaemonUrl: daemonUrl,
     authToken,
     namespace,
     recallMode: coerceRecallMode(fileConfig.recallMode),
