@@ -314,14 +314,10 @@ export async function observeMessages(
   const sessionKey = sessionKeyFromContext(ctx);
   const messages: ObserveMessage[] = [];
   const pendingHashes = new Set<string>();
-  for (const [index, raw] of rawMessages.entries()) {
+  for (const raw of rawMessages) {
     const message = toObserveMessage(raw);
     if (!message) continue;
-    const hash = observedMessageDedupeKey(
-      message,
-      sessionKey,
-      rawMessages.length > 1 ? index : undefined,
-    );
+    const hash = observedMessageDedupeKey(message, sessionKey);
     if (hash && (observedHashes.has(hash) || pendingHashes.has(hash))) continue;
     if (hash) pendingHashes.add(hash);
     messages.push(message);

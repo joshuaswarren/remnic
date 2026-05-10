@@ -91,6 +91,31 @@ test("observeMessages preserves repeated turns without stable Pi identity", asyn
   assert.equal(observedHashes.size, 0);
 });
 
+test("observeMessages preserves repeated multi-message turns without stable Pi identity", async () => {
+  const observedHashes = new Set<string>();
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "repeat-multi-message-test" },
+  };
+  const batches: unknown[][] = [];
+  const client: { observe: (_sessionKey: string, _cwd: string, messages: unknown[]) => Promise<void> } = {
+    observe: async (_sessionKey, _cwd, messages) => {
+      batches.push(messages);
+    },
+  };
+  const turn = [
+    { role: "assistant", content: "done" },
+    { role: "bashExecution", command: "npm test", output: "passed" },
+  ];
+
+  await observeMessages(ctx, client as any, turn, observedHashes);
+  await observeMessages(ctx, client as any, turn, observedHashes);
+
+  assert.equal(batches.length, 2);
+  assert.deepEqual(batches.map((batch) => batch.length), [2, 2]);
+  assert.equal(observedHashes.size, 0);
+});
+
 test("observeMessages dedupes replayed Pi entries with stable identity", async () => {
   const observedHashes = new Set<string>();
   const ctx = {

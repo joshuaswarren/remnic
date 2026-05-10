@@ -44,7 +44,7 @@ function defaultConfigPath(env: NodeJS.ProcessEnv): string {
   return path.join(resolvePiAgentHome(env), "extensions", REMNIC_PI_EXTENSION_DIR_NAME, "remnic.config.json");
 }
 
-function coerceBoolean(value: unknown, fallback: boolean): boolean {
+function coerceBoolean(value: unknown, fallback: boolean, fieldName: string): boolean {
   if (value === undefined || value === null) return fallback;
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -52,7 +52,7 @@ function coerceBoolean(value: unknown, fallback: boolean): boolean {
     if (["true", "1", "yes", "on"].includes(normalized)) return true;
     if (["false", "0", "no", "off"].includes(normalized)) return false;
   }
-  return fallback;
+  throw new Error(`Invalid boolean value for Remnic Pi config field ${fieldName}`);
 }
 
 function coercePositiveInt(value: unknown, fallback: number, max: number): number {
@@ -125,12 +125,12 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     recallMode: normalizeRecallMode(fileConfig.recallMode),
     recallTopK: coercePositiveInt(fileConfig.recallTopK, DEFAULT_CONFIG.recallTopK, 50),
     recallBudgetChars: coercePositiveInt(fileConfig.recallBudgetChars, DEFAULT_CONFIG.recallBudgetChars, 64000),
-    recallEnabled: coerceBoolean(fileConfig.recallEnabled, DEFAULT_CONFIG.recallEnabled),
-    observeEnabled: coerceBoolean(fileConfig.observeEnabled, DEFAULT_CONFIG.observeEnabled),
-    observeSkipExtraction: coerceBoolean(fileConfig.observeSkipExtraction, DEFAULT_CONFIG.observeSkipExtraction),
-    compactionEnabled: coerceBoolean(fileConfig.compactionEnabled, DEFAULT_CONFIG.compactionEnabled),
-    mcpToolsEnabled: coerceBoolean(fileConfig.mcpToolsEnabled, DEFAULT_CONFIG.mcpToolsEnabled),
-    statusEnabled: coerceBoolean(fileConfig.statusEnabled, DEFAULT_CONFIG.statusEnabled),
+    recallEnabled: coerceBoolean(fileConfig.recallEnabled, DEFAULT_CONFIG.recallEnabled, "recallEnabled"),
+    observeEnabled: coerceBoolean(fileConfig.observeEnabled, DEFAULT_CONFIG.observeEnabled, "observeEnabled"),
+    observeSkipExtraction: coerceBoolean(fileConfig.observeSkipExtraction, DEFAULT_CONFIG.observeSkipExtraction, "observeSkipExtraction"),
+    compactionEnabled: coerceBoolean(fileConfig.compactionEnabled, DEFAULT_CONFIG.compactionEnabled, "compactionEnabled"),
+    mcpToolsEnabled: coerceBoolean(fileConfig.mcpToolsEnabled, DEFAULT_CONFIG.mcpToolsEnabled, "mcpToolsEnabled"),
+    statusEnabled: coerceBoolean(fileConfig.statusEnabled, DEFAULT_CONFIG.statusEnabled, "statusEnabled"),
     requestTimeoutMs: coercePositiveInt(fileConfig.requestTimeoutMs, DEFAULT_CONFIG.requestTimeoutMs, 60_000),
   };
 }

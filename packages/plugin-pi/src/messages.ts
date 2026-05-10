@@ -64,9 +64,8 @@ export function hashObservedMessage(message: ObserveMessage, sessionKey = "", id
 export function observedMessageDedupeKey(
   message: ObserveMessage,
   sessionKey = "",
-  ordinal?: number,
 ): string | null {
-  const identity = stableObservedMessageIdentity(message.rawContent, ordinal);
+  const identity = stableObservedMessageIdentity(message.rawContent);
   return identity ? hashObservedMessage(message, sessionKey, identity) : null;
 }
 
@@ -182,7 +181,7 @@ function partsFromMessage(message: PiMessage, renderedContent: string): ObserveM
   return parts;
 }
 
-function stableObservedMessageIdentity(rawContent: unknown, ordinal?: number): string | null {
+function stableObservedMessageIdentity(rawContent: unknown): string | null {
   if (rawContent && typeof rawContent === "object") {
     const obj = rawContent as PiMessage;
     const fields = [
@@ -203,7 +202,7 @@ function stableObservedMessageIdentity(rawContent: unknown, ordinal?: number): s
       if (typeof value === "number" && Number.isFinite(value)) return `${field}:${value}`;
     }
   }
-  return ordinal === undefined ? null : `ordinal:${ordinal}`;
+  return null;
 }
 
 function firstFilePathFromObject(obj: PiMessage): string | null {

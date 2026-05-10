@@ -158,3 +158,18 @@ test("loadConfig fails closed when config file is not an object", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("loadConfig fails closed on invalid boolean gate values", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-bool-"));
+  const configPath = path.join(root, "remnic.config.json");
+  try {
+    fs.writeFileSync(configPath, JSON.stringify({ observeEnabled: "flase" }));
+
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid boolean value for Remnic Pi config field observeEnabled/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
