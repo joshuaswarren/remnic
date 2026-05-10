@@ -56,3 +56,9 @@ qrels or rubric prompts for publishable claims.
 `retrieval-personalization` includes synthetic commerce cases for buyer profile
 matching and ask-before-checkout boundary retrieval. These are the eval hooks
 used by the [Agentic Commerce Demo](agentic-commerce-demo.md).
+
+`coding-recall` includes synthetic developer workflow cases for repo
+conventions, architecture boundaries, test expectations, release process,
+common failure modes, past bugs, review preferences, ask-before-public-API
+rules, and always-run-checks rules. These cases report `workflow_coverage` and
+back the [Developer Workflow Demo](developer-workflow-demo.md).

@@ -257,6 +257,23 @@ recall candidate list; it never removes candidates. Memories whose
 `entityRefs` mention a touched file float up, so an agent reviewing a
 PR sees prior decisions about those exact files first.
 
+## Developer workflow demo
+
+The same project-scoped recall path now has a synthetic developer workflow demo
+for coding agents. It covers repo conventions, preferred architecture patterns,
+test expectations, release process, common failure modes, past bugs, review
+preferences, ask-before-public-API rules, and always-run-checks rules.
+
+Run it through the deterministic benchmark:
+
+```bash
+remnic bench run --quick coding-recall
+```
+
+The benchmark reports `workflow_coverage` for the developer workflow cases,
+alongside the existing precision and isolation metrics. See
+[Developer Workflow Demo](developer-workflow-demo.md).
+
 ## Per-connector behavior
 
 Since the `recall` and `observe` endpoints now accept `cwd` and

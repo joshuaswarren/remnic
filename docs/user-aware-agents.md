@@ -133,6 +133,15 @@ urgency, risk tolerance, and ask-before-checkout rules. It uses synthetic
 catalog data and local trust-zone records, not live merchant access. See
 [Agentic Commerce Demo](agentic-commerce-demo.md).
 
+## Developer Workflow Demo
+
+The coding-agent workflow demo shows Remnic memory for repo conventions,
+preferred architecture patterns, test expectations, release process, common
+failure modes, past bugs, review preferences, ask-before-public-API rules, and
+always-run-checks rules. It extends the existing project/branch-scoped
+`coding-recall` benchmark with workflow coverage cases. See
+[Developer Workflow Demo](developer-workflow-demo.md).
+
 ## Core Exports
 
 `@remnic/core` exports:

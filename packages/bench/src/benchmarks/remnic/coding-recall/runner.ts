@@ -3,8 +3,12 @@
  *
  * Measures whether the retrieval layer correctly honours the three #569
  * invariants: cross-project isolation, branch isolation with project
- * fallback, and review-context ranking. The benchmark is deterministic —
- * no LLM, no storage — so it runs in CI without any daemon.
+ * fallback, and review-context ranking. It also covers the developer
+ * workflow memory shape Remnic should support for coding agents: repo
+ * conventions, architecture patterns, tests, release process, past bugs,
+ * common failure modes, review preferences, ask-before rules, and
+ * always-run checks. The benchmark is deterministic — no LLM, no storage —
+ * so it runs in CI without any daemon.
  */
 
 import { randomUUID } from "node:crypto";
@@ -24,11 +28,12 @@ import {
   CODING_RECALL_SMOKE_FIXTURE,
   type CodingRecallCase,
   type CodingRecallCaseMemory,
+  type DeveloperWorkflowFacet,
 } from "./fixture.js";
 
 export const codingRecallDefinition: BenchmarkDefinition = {
   id: "coding-recall",
-  title: "Coding-Agent Recall (project/branch isolation + review context)",
+  title: "Coding-Agent Recall (project/branch isolation + developer workflow)",
   tier: "remnic",
   status: "ready",
   runnerAvailable: true,
@@ -36,7 +41,7 @@ export const codingRecallDefinition: BenchmarkDefinition = {
     name: "coding-recall",
     version: "1.0.0",
     description:
-      "Deterministic benchmark for the #569 coding-agent features: project/branch namespace isolation and diff-aware review-context ranking.",
+      "Deterministic benchmark for coding-agent memory: project/branch namespace isolation, diff-aware review-context ranking, and developer workflow context.",
     category: "retrieval",
     citation: "Remnic internal synthetic benchmark for issue #569",
   },
@@ -61,27 +66,43 @@ export async function runCodingRecallBenchmark(
     // Isolation metric — 1.0 when no forbidden id leaks, 0.0 on any leak.
     const leaked = retrievedIds.filter((id) => sample.forbiddenIds.includes(id));
     const isolationScore = leaked.length === 0 ? 1 : 0;
+    const requiredWorkflowFacets = sample.requiredWorkflowFacets ?? [];
+    const retrievedWorkflowFacets = collectWorkflowFacets(retrieved);
+    const missingWorkflowFacets = requiredWorkflowFacets.filter(
+      (facet) => !retrievedWorkflowFacets.includes(facet),
+    );
+    const scores: Record<string, number> = {
+      p_at_1: precisionAtK(retrievedIds, sample.expectedIds, 1),
+      p_at_3: precisionAtK(retrievedIds, sample.expectedIds, 3),
+      p_at_5: precisionAtK(retrievedIds, sample.expectedIds, 5),
+      isolation: isolationScore,
+    };
+    const details: Record<string, unknown> = {
+      kind: sample.kind,
+      sessionNamespaces: sample.sessionNamespaces,
+      forbiddenIds: sample.forbiddenIds,
+      leaked,
+      retrievedIds,
+    };
+
+    if (requiredWorkflowFacets.length > 0) {
+      scores.workflow_coverage =
+        (requiredWorkflowFacets.length - missingWorkflowFacets.length) /
+        requiredWorkflowFacets.length;
+      details.requiredWorkflowFacets = requiredWorkflowFacets;
+      details.retrievedWorkflowFacets = retrievedWorkflowFacets;
+      details.missingWorkflowFacets = missingWorkflowFacets;
+    }
 
     tasks.push({
       taskId: sample.id,
       question: sample.title,
       expected: expectedJson,
       actual: actualJson,
-      scores: {
-        p_at_1: precisionAtK(retrievedIds, sample.expectedIds, 1),
-        p_at_3: precisionAtK(retrievedIds, sample.expectedIds, 3),
-        p_at_5: precisionAtK(retrievedIds, sample.expectedIds, 5),
-        isolation: isolationScore,
-      },
+      scores,
       latencyMs,
       tokens: { input: 0, output: 0 },
-      details: {
-        kind: sample.kind,
-        sessionNamespaces: sample.sessionNamespaces,
-        forbiddenIds: sample.forbiddenIds,
-        leaked,
-        retrievedIds,
-      },
+      details,
     });
   }
 
@@ -159,6 +180,14 @@ function scoreCase(sample: CodingRecallCase): CodingRecallCaseMemory[] {
   return ranked
     .map((r) => byId.get(r.id))
     .filter((c): c is CodingRecallCaseMemory => c !== undefined);
+}
+
+function collectWorkflowFacets(
+  memories: CodingRecallCaseMemory[],
+): DeveloperWorkflowFacet[] {
+  return Array.from(
+    new Set(memories.flatMap((memory) => memory.workflowFacets ?? [])),
+  ).sort();
 }
 
 // ──────────────────────────────────────────────────────────────────────────
