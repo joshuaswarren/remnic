@@ -109,8 +109,8 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
         recallEnabled: "false",
         observeSkipExtraction: "1",
         mcpToolsEnabled: "0",
-        recallTopK: 50,
-        requestTimeoutMs: 10,
+        recallTopK: "50",
+        requestTimeoutMs: "10",
       }),
     );
 
@@ -209,6 +209,38 @@ test("loadConfig fails closed on invalid numeric values", () => {
     assert.throws(
       () => loadConfig({ configPath, env: {} }),
       /Invalid numeric value for Remnic Pi config field requestTimeoutMs/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({ recallTopK: true }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid numeric value for Remnic Pi config field recallTopK/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({ recallTopK: [5] }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid numeric value for Remnic Pi config field recallTopK/,
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig fails closed on invalid namespace values", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-namespace-"));
+  const configPath = path.join(root, "remnic.config.json");
+  try {
+    fs.writeFileSync(configPath, JSON.stringify({ namespace: ["work"] }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid string value for Remnic Pi config field namespace/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({ namespace: "   " }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid string value for Remnic Pi config field namespace/,
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

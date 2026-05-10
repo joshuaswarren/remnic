@@ -57,11 +57,29 @@ function coerceBoolean(value: unknown, fallback: boolean, fieldName: string): bo
 
 function coercePositiveInt(value: unknown, fallback: number, max: number, fieldName: string): number {
   if (value === undefined || value === null || value === "") return fallback;
-  const parsed = Number(value);
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return fallback;
+    if (!/^[+-]?\d+$/.test(trimmed)) {
+      throw new Error(`Invalid numeric value for Remnic Pi config field ${fieldName}: expected an integer from 1 to ${max}`);
+    }
+    parsed = Number(trimmed);
+  } else {
+    throw new Error(`Invalid numeric value for Remnic Pi config field ${fieldName}: expected an integer from 1 to ${max}`);
+  }
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > max) {
     throw new Error(`Invalid numeric value for Remnic Pi config field ${fieldName}: expected an integer from 1 to ${max}`);
   }
   return parsed;
+}
+
+function coerceOptionalNonEmptyString(value: unknown, fieldName: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  throw new Error(`Invalid string value for Remnic Pi config field ${fieldName}`);
 }
 
 function coerceRecallMode(value: unknown): RemnicPiConfig["recallMode"] {
@@ -119,10 +137,7 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
       : typeof env.REMNIC_PI_AUTH_TOKEN === "string" && env.REMNIC_PI_AUTH_TOKEN.trim().length > 0
         ? env.REMNIC_PI_AUTH_TOKEN.trim()
         : undefined;
-  const namespace =
-    typeof fileConfig.namespace === "string" && fileConfig.namespace.trim().length > 0
-      ? fileConfig.namespace.trim()
-      : undefined;
+  const namespace = coerceOptionalNonEmptyString(fileConfig.namespace, "namespace");
 
   return {
     remnicDaemonUrl: trimTrailingSlashes(daemonUrl),
