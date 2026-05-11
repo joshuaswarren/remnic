@@ -8,7 +8,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -60,23 +61,30 @@ function shellQuote(value) {
 }
 
 function checkBridgeStarts(bridgePath, remnicRepoPath) {
-  const result = spawnSync(
-    "pnpm",
-    ["exec", "tsx", bridgePath],
-    {
-      cwd: remnicRepoPath,
-      encoding: "utf8",
-      input: `${JSON.stringify({ id: 1, method: "reset", params: {} })}\n`,
-      timeout: 20_000,
-      env: {
-        ...process.env,
-        REMNIC_REPO_PATH: remnicRepoPath,
-        REMNIC_AMB_REPLAY_EXTRACTION_MODE: "skip",
-        REMNIC_AMB_DRAIN_AFTER_INGEST: "false",
-        REMNIC_AMB_SESSION_PREFIX: "beam",
+  const tempStoreDir = mkdtempSync(path.join(tmpdir(), "remnic-amb-preflight-"));
+  let result;
+  try {
+    result = spawnSync(
+      "pnpm",
+      ["exec", "tsx", bridgePath],
+      {
+        cwd: remnicRepoPath,
+        encoding: "utf8",
+        input: `${JSON.stringify({ id: 1, method: "reset", params: {} })}\n`,
+        timeout: 20_000,
+        env: {
+          ...process.env,
+          REMNIC_REPO_PATH: remnicRepoPath,
+          REMNIC_AMB_STORE_DIR: tempStoreDir,
+          REMNIC_AMB_REPLAY_EXTRACTION_MODE: "skip",
+          REMNIC_AMB_DRAIN_AFTER_INGEST: "false",
+          REMNIC_AMB_SESSION_PREFIX: "beam",
+        },
       },
-    },
-  );
+    );
+  } finally {
+    rmSync(tempStoreDir, { recursive: true, force: true });
+  }
 
   if (result.status !== 0) {
     return {
