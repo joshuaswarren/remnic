@@ -513,8 +513,8 @@ test("AMB bridge can derive grouped session id for legacy skipped-ingestion stor
   assert.match(result.documents[0]?.content ?? "", /Marisol/);
 });
 
-test("AMB bridge derives grouped legacy sessions when other users are indexed", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-index-partial-"));
+test("AMB bridge treats a loaded session index as authoritative for missing users", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-index-authoritative-"));
   const sessionIndexPath = path.join(dir, "amb-session-index.json");
   const recallCalls = [];
 
@@ -558,9 +558,10 @@ test("AMB bridge derives grouped legacy sessions when other users are indexed", 
       user_id: "conv-1",
     });
 
-    assert.deepEqual(recallCalls, ["beam-conv-1"]);
-    assert.equal(result.raw_response.session_count, 1);
-    assert.match(result.documents[0]?.content ?? "", /Marisol/);
+    assert.deepEqual(recallCalls, []);
+    assert.deepEqual(result.documents, []);
+    assert.equal(result.raw_response.session_count, 0);
+    assert.equal(result.raw_response.user_id, "conv-1");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

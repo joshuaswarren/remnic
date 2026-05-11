@@ -530,6 +530,7 @@ export class RemnicAmbBridge {
     this.allSessions = [];
     this.allSessionIds = new Set();
     this.sessionIndexLoaded = false;
+    this.hasAuthoritativeSessionIndex = false;
     this.hasIngested = false;
   }
 
@@ -590,6 +591,7 @@ export class RemnicAmbBridge {
       }
     }
     this.sessionIndexLoaded = true;
+    this.hasAuthoritativeSessionIndex = true;
   }
 
   async persistSessionIndex() {
@@ -607,6 +609,7 @@ export class RemnicAmbBridge {
     await writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
     await rename(tempPath, this.options.sessionIndexPath);
     this.sessionIndexLoaded = true;
+    this.hasAuthoritativeSessionIndex = true;
   }
 
   async ingest(documents) {
@@ -657,6 +660,7 @@ export class RemnicAmbBridge {
     const sessionIds = indexedSessionIds.length === 0
       && scopedUserId
       && !this.hasIngested
+      && !this.hasAuthoritativeSessionIndex
       && this.options.groupDocumentsByUser !== false
         ? buildSkippedIngestionFallbackSessionIds(
             scopedUserId,
