@@ -172,6 +172,23 @@ def run(llm: str): _resolve_gemini_key(); ds = get_dataset(dataset)
   );
 });
 
+test("patchAmbCli handles resolvers preceded on the same physical line", () => {
+  const cli = `import os; import typer; def _resolve_gemini_key() -> None: key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"); os.environ["GOOGLE_API_KEY"] = key
+@app.command()
+def run(llm: str): _resolve_gemini_key(); ds = get_dataset(dataset)
+`;
+
+  const patched = patchAmbCli(cli);
+
+  assert.doesNotMatch(patched, /;\s*def _resolve_gemini_key/);
+  assert.match(patched, /import os; import typer\ndef _resolve_gemini_key\(\) -> None:/);
+  assert.match(patched, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
+  assert.match(
+    patched,
+    /os\.environ\.__setitem__\("OMB_ANSWER_LLM", llm\) if llm else None; _resolve_gemini_key\(\); ds = get_dataset\(dataset\)/,
+  );
+});
+
 test("RemnicMemoryProvider cleanup does not hang on an unresponsive bridge", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-provider-test-"));
   const packageDir = path.join(tempDir, "memory_bench");

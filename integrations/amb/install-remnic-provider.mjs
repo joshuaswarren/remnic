@@ -126,10 +126,13 @@ export function patchAmbCli(cli) {
     os.environ["GOOGLE_API_KEY"] = key
 `;
   const resolvePattern =
-    /^def\s+_resolve_gemini_key\s*\(\s*\)\s*->\s*None\s*:[\s\S]*?(?=^@|^def\s+|^class\s+|$(?![\s\S]))/m;
+    /(^|[;\n])([ \t]*)def\s+_resolve_gemini_key\s*\(\s*\)\s*->\s*None\s*:[\s\S]*?(?=(?:^|[;\n])\s*(?:@|def\s+|class\s+)|$(?![\s\S]))/m;
   let patched = cli;
   if (!patched.includes(codexAwareGeminiGateMarker)) {
-    const resolvePatched = patched.replace(resolvePattern, newResolve);
+    const resolvePatched = patched.replace(
+      resolvePattern,
+      (_match, delimiter) => `${delimiter === ";" ? "\n" : delimiter}${newResolve}`,
+    );
     if (resolvePatched === patched) {
       throw new Error("AMB CLI Gemini key resolver was not found.");
     }
