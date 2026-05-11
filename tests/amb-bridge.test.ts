@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   ambRecallBudgetForSessionCount,
+  buildRemnicAmbAdapterOptions,
   buildAmbMessages,
   buildAmbRecallDocuments,
   buildAmbRecallQuery,
@@ -148,6 +149,18 @@ test("AMB bridge uses document timestamps as turn anchors when markers omit time
   assert.match(messages[1]?.content ?? "", /time_anchor=2026-05-10T12:00:00\.000Z/);
   assert.match(messages[1]?.content ?? "", /date=2026-05-10/);
   assert.equal(messages[1]?.timestamp, "2026-05-10T12:00:00.000Z");
+});
+
+test("AMB bridge normalizes BEAM month-name turn dates", () => {
+  const messages = buildAmbMessages({
+    id: "doc-beam-month-date",
+    content: "[March-15-2024 | Turn 9] User: The renewal happened on the BEAM date.",
+  });
+
+  assert.match(messages[1]?.content ?? "", /turn_id=9/);
+  assert.match(messages[1]?.content ?? "", /time_anchor=2024-03-15/);
+  assert.match(messages[1]?.content ?? "", /date=2024-03-15/);
+  assert.equal(messages[1]?.timestamp, "2024-03-15T00:00:00.000Z");
 });
 
 test("AMB bridge prefers structured document messages when present", () => {
@@ -660,4 +673,59 @@ test("AMB bridge parses inline JSON config", async () => {
     }),
     { qmdEnabled: true },
   );
+});
+
+test("AMB bridge builds Codex CLI internal LLM adapter options", async () => {
+  const calls = [];
+  const benchModule = {
+    async resolveBenchRuntimeProfile(options) {
+      calls.push(options);
+      return {
+        effectiveRemnicConfig: {
+          modelSource: "gateway",
+          gatewayAgentId: "remnic-bench-internal",
+          gatewayConfig: {
+            models: {
+              providers: {
+                "remnic-bench-internal": {
+                  api: "codex-cli",
+                  models: [{ id: "gpt-5.5", name: "gpt-5.5" }],
+                },
+              },
+            },
+          },
+        },
+        internalProvider: {
+          provider: "codex-cli",
+          model: "gpt-5.5",
+          baseUrl: "codex-cli://local",
+          reasoningEffort: "xhigh",
+        },
+        adapterOptions: { drainTimeoutMs: 900000 },
+      };
+    },
+  };
+
+  const options = await buildRemnicAmbAdapterOptions(benchModule, {
+    REMNIC_AMB_CONFIG_JSON: JSON.stringify({ remnic: { recallPlannerEnabled: true } }),
+    REMNIC_AMB_INTERNAL_PROVIDER: "codex-cli",
+    REMNIC_AMB_INTERNAL_MODEL: "gpt-5.5",
+    REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT: "xhigh",
+    REMNIC_AMB_INTERNAL_TIMEOUT_MS: "900000",
+  });
+
+  assert.deepEqual(calls, [
+    {
+      runtimeProfile: "baseline",
+      internalProvider: "codex-cli",
+      internalModel: "gpt-5.5",
+      internalCodexReasoningEffort: "xhigh",
+      requestTimeout: 900000,
+    },
+  ]);
+  assert.equal(options.configOverrides.recallPlannerEnabled, true);
+  assert.equal(options.configOverrides.modelSource, "gateway");
+  assert.equal(options.configOverrides.gatewayAgentId, "remnic-bench-internal");
+  assert.equal(options.internalProvider?.provider, "codex-cli");
+  assert.equal(options.drainTimeoutMs, 900000);
 });

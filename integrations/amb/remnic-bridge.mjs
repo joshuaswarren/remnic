@@ -14,11 +14,37 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
-import { expandTildePath, parseFlexibleIsoTimestamp } from "@remnic/core";
+import { expandTildePath } from "@remnic/core";
 
 const DEFAULT_RECALL_BUDGET_CHARS = 49_152;
 const DEFAULT_DRAIN_TIMEOUT_MS = 8 * 60 * 60 * 1000;
 const AMB_SESSION_INDEX_FILE = "amb-session-index.json";
+const AMB_MONTH_NAME_TO_NUMBER = new Map([
+  ["jan", 1],
+  ["january", 1],
+  ["feb", 2],
+  ["february", 2],
+  ["mar", 3],
+  ["march", 3],
+  ["apr", 4],
+  ["april", 4],
+  ["may", 5],
+  ["jun", 6],
+  ["june", 6],
+  ["jul", 7],
+  ["july", 7],
+  ["aug", 8],
+  ["august", 8],
+  ["sep", 9],
+  ["sept", 9],
+  ["september", 9],
+  ["oct", 10],
+  ["october", 10],
+  ["nov", 11],
+  ["november", 11],
+  ["dec", 12],
+  ["december", 12],
+]);
 
 function parsePositiveInteger(value, label, defaultValue) {
   if (value === undefined || value === "") {
@@ -49,6 +75,75 @@ function parseReplayExtractionMode(value) {
     return value;
   }
   throw new Error('REMNIC_AMB_REPLAY_EXTRACTION_MODE must be "await", "background", or "skip".');
+}
+
+function normalizeOptionalEnvString(value) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeOptionalPositiveInteger(value, label) {
+  const trimmed = normalizeOptionalEnvString(value);
+  if (trimmed === undefined) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer; received ${String(value)}`);
+  }
+  return parsed;
+}
+
+function normalizeCodexReasoningEffort(value, label) {
+  const trimmed = normalizeOptionalEnvString(value);
+  if (trimmed === undefined) {
+    return undefined;
+  }
+  if (["low", "medium", "high", "xhigh"].includes(trimmed)) {
+    return trimmed;
+  }
+  throw new Error(`${label} must be one of low, medium, high, xhigh; received ${String(value)}`);
+}
+
+function ambInternalProviderOptions(env = process.env) {
+  const provider = normalizeOptionalEnvString(
+    env.REMNIC_AMB_INTERNAL_PROVIDER ?? env.REMNIC_AMB_INTERNAL_LLM,
+  );
+  const model = normalizeOptionalEnvString(env.REMNIC_AMB_INTERNAL_MODEL);
+  const reasoningEffort = normalizeCodexReasoningEffort(
+    env.REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT,
+    "REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT",
+  );
+  const timeoutMs = normalizeOptionalPositiveInteger(
+    env.REMNIC_AMB_INTERNAL_TIMEOUT_MS,
+    "REMNIC_AMB_INTERNAL_TIMEOUT_MS",
+  );
+  const baseUrl = normalizeOptionalEnvString(env.REMNIC_AMB_INTERNAL_BASE_URL);
+  const apiKey = normalizeOptionalEnvString(env.REMNIC_AMB_INTERNAL_API_KEY);
+  const disableThinking = parseBoolean(env.REMNIC_AMB_INTERNAL_DISABLE_THINKING, false);
+
+  if (!provider && !model && !reasoningEffort && timeoutMs === undefined && !baseUrl && !apiKey) {
+    return null;
+  }
+  if (!provider || !model) {
+    throw new Error(
+      "REMNIC_AMB_INTERNAL_PROVIDER and REMNIC_AMB_INTERNAL_MODEL are both required when configuring an AMB internal LLM provider.",
+    );
+  }
+
+  return {
+    runtimeProfile: "baseline",
+    internalProvider: provider,
+    internalModel: model,
+    ...(baseUrl ? { internalBaseUrl: baseUrl } : {}),
+    ...(apiKey ? { internalApiKey: apiKey } : {}),
+    ...(reasoningEffort ? { internalCodexReasoningEffort: reasoningEffort } : {}),
+    ...(timeoutMs !== undefined ? { requestTimeout: timeoutMs } : {}),
+    ...(disableThinking ? { internalDisableThinking: true } : {}),
+  };
 }
 
 function isJsonObject(value) {
@@ -144,8 +239,98 @@ function extractAmbIsoDate(value) {
   return match?.[1] ?? "";
 }
 
+function ambDaysInMonth(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function parseFlexibleAmbIsoTimestamp(value) {
+  const match = typeof value === "string"
+    ? value.match(
+      /^(\d{4})-(\d{2})-(\d{2})(?:[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:[Zz]|([+-])(\d{2}):(\d{2}))?)?$/,
+    )
+    : null;
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = match[4] === undefined ? 0 : Number(match[4]);
+  const minute = match[5] === undefined ? 0 : Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  const offsetHour = match[8] === undefined ? undefined : Number(match[8]);
+  const offsetMinute = match[9] === undefined ? undefined : Number(match[9]);
+  const hasTime = match[4] !== undefined;
+  const hasOffset = offsetHour !== undefined && offsetMinute !== undefined;
+  const hasTimezone = /(?:[Zz]|[+-]\d{2}:\d{2})$/.test(value);
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > ambDaysInMonth(year, month) ||
+    (hasTime && !hasTimezone)
+  ) {
+    return null;
+  }
+  if (hasTime && (hour > 23 || minute > 59 || second > 59)) {
+    return null;
+  }
+  if (
+    hasOffset &&
+    (offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute > 0))
+  ) {
+    return null;
+  }
+
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : null;
+}
+
+function parseAmbMonthNameDate(value) {
+  const match = String(value ?? "").trim().match(
+    /^([A-Za-z]+)[\s-]+(\d{1,2})(?:,)?[\s-]+(\d{4})$/,
+  );
+  if (!match) {
+    return null;
+  }
+  const month = AMB_MONTH_NAME_TO_NUMBER.get(match[1].toLowerCase());
+  const day = Number(match[2]);
+  const year = Number(match[3]);
+  if (!month || !Number.isInteger(day) || day < 1 || day > ambDaysInMonth(year, month)) {
+    return null;
+  }
+  return Date.UTC(year, month - 1, day);
+}
+
+function parseAmbSourceTimestamp(value) {
+  const isoParsed = parseFlexibleAmbIsoTimestamp(value);
+  if (isoParsed !== null) {
+    return isoParsed;
+  }
+  return parseAmbMonthNameDate(value);
+}
+
+function normalizeAmbTimeAnchor(value) {
+  const normalized = normalizeAmbAnchorValue(value);
+  if (!normalized) {
+    return "";
+  }
+  if (parseFlexibleAmbIsoTimestamp(normalized) !== null) {
+    return normalized;
+  }
+  const parsedMonthDate = parseAmbMonthNameDate(normalized);
+  if (parsedMonthDate !== null) {
+    return new Date(parsedMonthDate).toISOString().slice(0, 10);
+  }
+  throw new Error(
+    `AMB source timestamp must be a valid ISO 8601 timestamp or AMB month-name date; received ${value}`,
+  );
+}
+
 function parseStrictIsoTimestamp(value, label) {
-  const parsed = parseFlexibleIsoTimestamp(value);
+  const parsed = parseFlexibleAmbIsoTimestamp(value);
   if (parsed === null) {
     throw new Error(`${label} must be a valid ISO 8601 timestamp; received ${value}`);
   }
@@ -172,13 +357,18 @@ function normalizeAmbSourceTimestamp(value) {
     return "";
   }
   if (typeof value !== "string") {
-    throw new Error("AMB source timestamp must be an ISO 8601 timestamp string when provided.");
+    throw new Error("AMB source timestamp must be a string when provided.");
   }
   const normalized = normalizeAmbAnchorValue(value);
   if (!normalized) {
     return "";
   }
-  const parsed = parseStrictIsoTimestamp(normalized, "AMB source timestamp");
+  const parsed = parseAmbSourceTimestamp(normalized);
+  if (parsed === null) {
+    throw new Error(
+      `AMB source timestamp must be a valid ISO 8601 timestamp or AMB month-name date; received ${value}`,
+    );
+  }
   return new Date(parsed).toISOString();
 }
 
@@ -203,7 +393,9 @@ function buildAmbTurnAnchor(document, marker) {
     fields.push(`source_chat_id=${turnId}`);
   }
   const markerTimeAnchor = extractAmbTimeAnchor(cleanedMarker);
-  const timeAnchor = markerTimeAnchor || normalizeAmbSourceTimestamp(document?.timestamp || "");
+  const timeAnchor = markerTimeAnchor
+    ? normalizeAmbTimeAnchor(markerTimeAnchor)
+    : normalizeAmbSourceTimestamp(document?.timestamp || "");
   if (timeAnchor) {
     fields.push(`time_anchor=${timeAnchor}`);
     const date = extractAmbIsoDate(timeAnchor);
@@ -481,6 +673,33 @@ export async function loadRemnicAmbConfig(env = process.env) {
   return {};
 }
 
+export async function buildRemnicAmbAdapterOptions(benchModule, env = process.env) {
+  const configOverrides = await loadRemnicAmbConfig(env);
+  const internalOptions = ambInternalProviderOptions(env);
+  if (!internalOptions) {
+    return {
+      configOverrides,
+      internalProvider: null,
+    };
+  }
+
+  if (typeof benchModule.resolveBenchRuntimeProfile !== "function") {
+    throw new Error("@remnic/bench does not expose resolveBenchRuntimeProfile for AMB internal LLM setup.");
+  }
+
+  const resolved = await benchModule.resolveBenchRuntimeProfile(internalOptions);
+  return {
+    configOverrides: {
+      ...configOverrides,
+      ...resolved.effectiveRemnicConfig,
+    },
+    internalProvider: resolved.internalProvider ?? null,
+    ...(resolved.adapterOptions?.drainTimeoutMs
+      ? { drainTimeoutMs: resolved.adapterOptions.drainTimeoutMs }
+      : {}),
+  };
+}
+
 export function parseJsonlBridgeRequest(line) {
   let request;
   try {
@@ -709,7 +928,7 @@ export class RemnicAmbBridge {
 
 async function createBridge(env = process.env) {
   const bench = await loadBenchModule(env);
-  const configOverrides = await loadRemnicAmbConfig(env);
+  const adapterOptions = await buildRemnicAmbAdapterOptions(bench, env);
   const preserveRuntimeDefaults = parseBoolean(
     env.REMNIC_AMB_PRESERVE_RUNTIME_DEFAULTS,
     true,
@@ -717,7 +936,7 @@ async function createBridge(env = process.env) {
   const adapter = await bench.createRemnicAdapter({
     configOverrides: {
       lcmEnabled: true,
-      ...configOverrides,
+      ...adapterOptions.configOverrides,
     },
     preserveRuntimeDefaults,
     sandboxDir: env.REMNIC_AMB_STORE_DIR,
@@ -725,7 +944,7 @@ async function createBridge(env = process.env) {
     drainTimeoutMs: parsePositiveInteger(
       env.REMNIC_AMB_DRAIN_TIMEOUT_MS,
       "REMNIC_AMB_DRAIN_TIMEOUT_MS",
-      DEFAULT_DRAIN_TIMEOUT_MS,
+      adapterOptions.drainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS,
     ),
   });
   const storeDir = typeof env.REMNIC_AMB_STORE_DIR === "string" && env.REMNIC_AMB_STORE_DIR.trim()

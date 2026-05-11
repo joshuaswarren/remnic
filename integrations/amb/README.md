@@ -56,6 +56,38 @@ export OMB_JUDGE_LLM=gemini
 export OMB_JUDGE_MODEL=gemini-2.5-flash-lite
 ```
 
+For local iteration runs that use the operator's Codex CLI auth instead of
+direct benchmark API keys, the installer also registers an AMB LLM provider named
+`codex_cli`:
+
+```bash
+export OMB_ANSWER_LLM=codex_cli
+export OMB_ANSWER_MODEL=gpt-5.5
+export OMB_JUDGE_LLM=codex_cli
+export OMB_JUDGE_MODEL=gpt-5.5
+export OMB_CODEX_REASONING_EFFORT=xhigh
+export OMB_CODEX_TIMEOUT_SECONDS=900
+```
+
+To route Remnic's internal extraction/planning LLM through the same Codex CLI
+transport during AMB runs, add:
+
+```bash
+export REMNIC_AMB_INTERNAL_PROVIDER=codex-cli
+export REMNIC_AMB_INTERNAL_MODEL=gpt-5.5
+export REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT=xhigh
+export REMNIC_AMB_INTERNAL_TIMEOUT_MS=900000
+```
+
+Internal `xhigh` runs can be slow because ingestion may call Codex before AMB
+starts answer generation. For quick bridge smoke tests, omit the internal
+provider variables or use a lower internal reasoning effort; for serious
+improvement runs, keep the internal provider aligned with the answer and judge.
+
+Codex CLI runs are useful for improvement loops and smoke checks, but they are
+not a replacement for a public-comparable run unless the target leaderboard uses
+the same answer and judge model setup.
+
 Check the local setup before starting a long run:
 
 ```bash

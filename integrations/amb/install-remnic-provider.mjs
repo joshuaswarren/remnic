@@ -15,14 +15,22 @@ function usage() {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const providerSource = path.join(here, "remnic_provider.py");
+const codexLlmSource = path.join(here, "codex_cli_llm.py");
 const scriptPath = fileURLToPath(import.meta.url);
 const remnicImport = "from .remnic import RemnicMemoryProvider";
 const remnicRegistryEntry = '"remnic": RemnicMemoryProvider';
+const codexLlmImport = "from .codex_cli import CodexCliLLM";
+const codexLlmRegistryEntry = '"codex_cli": CodexCliLLM';
 const providerImportPattern =
   /\bfrom\s+\.[A-Za-z_][A-Za-z0-9_.]*\s+import\s+(?:\([^)]+\)|[A-Za-z_][A-Za-z0-9_]*(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?)*)/g;
+const codexAwareGeminiGateMarker = "REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE";
 
 function hasRemnicRegistryEntry(registry) {
   return /["']remnic["']\s*:\s*RemnicMemoryProvider/.test(registry);
+}
+
+function hasCodexLlmRegistryEntry(registry) {
+  return /["']codex_cli["']\s*:\s*CodexCliLLM/.test(registry);
 }
 
 export function patchAmbMemoryRegistry(registry) {
@@ -55,6 +63,83 @@ export function patchAmbMemoryRegistry(registry) {
   return patched;
 }
 
+export function patchAmbLlmRegistry(registry) {
+  let patched = registry;
+
+  if (!patched.includes(codexLlmImport)) {
+    const imports = [...patched.matchAll(providerImportPattern)];
+    if (imports.length === 0) {
+      throw new Error("AMB LLM registry has no provider imports to patch.");
+    }
+    const lastImport = imports.at(-1);
+    const insertAt = (lastImport?.index ?? 0) + (lastImport?.[0].length ?? 0);
+    const tail = patched.slice(insertAt).replace(/^\s*;\s*/, "");
+    patched = `${patched.slice(0, insertAt)}\n${codexLlmImport}\n${tail}`;
+  }
+
+  if (!hasCodexLlmRegistryEntry(patched)) {
+    const registryStart = /REGISTRY\s*(?::\s*[^=]+)?=\s*\{/.exec(patched);
+    if (!registryStart || registryStart.index === undefined) {
+      throw new Error("AMB LLM REGISTRY object was not found.");
+    }
+    const insertAt = registryStart.index + registryStart[0].length;
+    patched = `${patched.slice(0, insertAt)}\n    ${codexLlmRegistryEntry},${patched.slice(insertAt)}`;
+  }
+
+  if (!patched.includes(codexLlmImport) || !hasCodexLlmRegistryEntry(patched)) {
+    throw new Error("Failed to register Codex CLI in the AMB LLM registry.");
+  }
+
+  return patched;
+}
+
+export function patchAmbCli(cli) {
+  if (cli.includes(codexAwareGeminiGateMarker)) {
+    return cli;
+  }
+
+  const oldResolve = `def _resolve_gemini_key() -> None:
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        typer.echo("Error: GEMINI_API_KEY environment variable is not set.", err=True)
+        raise typer.Exit(1)
+    os.environ["GOOGLE_API_KEY"] = key
+`;
+  const newResolve = `def _resolve_gemini_key() -> None:
+    # ${codexAwareGeminiGateMarker}
+    answer_provider = os.environ.get("OMB_ANSWER_LLM", "groq")
+    judge_provider = os.environ.get("OMB_JUDGE_LLM", "gemini")
+    if answer_provider != "gemini" and judge_provider != "gemini":
+        return
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        typer.echo("Error: GEMINI_API_KEY or GOOGLE_API_KEY environment variable is not set.", err=True)
+        raise typer.Exit(1)
+    os.environ["GOOGLE_API_KEY"] = key
+`;
+  let patched = cli.replace(oldResolve, newResolve);
+  if (patched === cli) {
+    throw new Error("AMB CLI Gemini key resolver was not found.");
+  }
+
+  const oldCall = `    _resolve_gemini_key()
+
+    ds = get_dataset(dataset)
+`;
+  const newCall = `    if llm:
+        os.environ["OMB_ANSWER_LLM"] = llm
+    _resolve_gemini_key()
+
+    ds = get_dataset(dataset)
+`;
+  const callPatched = patched.replace(oldCall, newCall);
+  if (callPatched === patched) {
+    throw new Error("AMB CLI run entrypoint was not patched.");
+  }
+  patched = callPatched;
+  return patched;
+}
+
 export async function installRemnicProvider(targetRoot) {
   const memoryDir = path.join(targetRoot, "src", "memory_bench", "memory");
   const registryPath = path.join(memoryDir, "__init__.py");
@@ -68,21 +153,68 @@ export async function installRemnicProvider(targetRoot) {
     throw new Error(`AMB memory registry not found: ${registryPath}`);
   }
 
+  const llmDir = path.join(targetRoot, "src", "memory_bench", "llm");
+  const llmRegistryPath = path.join(llmDir, "__init__.py");
+  const shouldInstallCodexLlm = existsSync(llmRegistryPath);
+  const codexLlmTarget = path.join(llmDir, "codex_cli.py");
+  const codexLlmTemp = path.join(
+    llmDir,
+    `.codex_cli.py.${process.pid}.${Date.now()}.tmp`,
+  );
+  const cliPath = path.join(targetRoot, "src", "memory_bench", "cli.py");
+  const shouldPatchCli = existsSync(cliPath);
+
   const registry = await readFile(registryPath, "utf8");
   const patchedRegistry = patchAmbMemoryRegistry(registry);
+  const llmRegistry = shouldInstallCodexLlm
+    ? await readFile(llmRegistryPath, "utf8")
+    : undefined;
+  const patchedLlmRegistry = llmRegistry === undefined
+    ? undefined
+    : patchAmbLlmRegistry(llmRegistry);
+  const cli = shouldPatchCli ? await readFile(cliPath, "utf8") : undefined;
+  const patchedCli = cli === undefined ? undefined : patchAmbCli(cli);
 
   let tempProviderWritten = false;
+  let tempCodexLlmWritten = false;
   let registryWritten = false;
+  let llmRegistryWritten = false;
+  let cliWritten = false;
   try {
     await copyFile(providerSource, providerTemp);
     tempProviderWritten = true;
+    if (shouldInstallCodexLlm) {
+      await copyFile(codexLlmSource, codexLlmTemp);
+      tempCodexLlmWritten = true;
+    }
     await writeFile(registryPath, patchedRegistry);
     registryWritten = true;
+    if (shouldInstallCodexLlm && patchedLlmRegistry !== undefined) {
+      await writeFile(llmRegistryPath, patchedLlmRegistry);
+      llmRegistryWritten = true;
+    }
+    if (shouldPatchCli && patchedCli !== undefined) {
+      await writeFile(cliPath, patchedCli);
+      cliWritten = true;
+    }
     await rename(providerTemp, providerTarget);
     tempProviderWritten = false;
+    if (shouldInstallCodexLlm) {
+      await rename(codexLlmTemp, codexLlmTarget);
+      tempCodexLlmWritten = false;
+    }
   } catch (error) {
+    if (cliWritten && cli !== undefined) {
+      await writeFile(cliPath, cli).catch(() => undefined);
+    }
+    if (llmRegistryWritten && llmRegistry !== undefined) {
+      await writeFile(llmRegistryPath, llmRegistry).catch(() => undefined);
+    }
     if (registryWritten) {
       await writeFile(registryPath, registry).catch(() => undefined);
+    }
+    if (tempCodexLlmWritten) {
+      await unlink(codexLlmTemp).catch(() => undefined);
     }
     if (tempProviderWritten) {
       await unlink(providerTemp).catch(() => undefined);

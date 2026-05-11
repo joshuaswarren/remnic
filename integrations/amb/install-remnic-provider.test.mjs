@@ -6,7 +6,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { patchAmbMemoryRegistry } from "./install-remnic-provider.mjs";
+import {
+  patchAmbCli,
+  patchAmbLlmRegistry,
+  patchAmbMemoryRegistry,
+} from "./install-remnic-provider.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,6 +65,87 @@ REGISTRY: dict[str, type[MemoryProvider]] = {
     patched.match(/["']remnic["']:\s*RemnicMemoryProvider/g)?.length,
     1,
   );
+});
+
+test("patchAmbLlmRegistry handles compact single-line registries", () => {
+  const compactRegistry =
+    "import os; from .base import LLM, Schema; from .gemini import GeminiLLM; from .openai import OpenAILLM; REGISTRY: dict[str, type[LLM]] = {\"gemini\": GeminiLLM, \"openai\": OpenAILLM}; def get_answer_llm() -> LLM: return OpenAILLM()";
+
+  const patched = patchAmbLlmRegistry(compactRegistry);
+
+  assert.match(patched, /from \.codex_cli import CodexCliLLM/);
+  assert.match(patched, /["']codex_cli["']:\s*CodexCliLLM/);
+  assert.match(
+    patched,
+    /from \.codex_cli import CodexCliLLM\nREGISTRY/,
+    "Codex CLI import should remain on its own physical line before REGISTRY",
+  );
+  assert.ok(
+    patched.indexOf("from .codex_cli import CodexCliLLM") <
+      patched.indexOf("REGISTRY"),
+    "Codex CLI import should be inserted before the registry object",
+  );
+  assert.ok(
+    patched.indexOf('"codex_cli": CodexCliLLM') <
+      patched.indexOf('"gemini": GeminiLLM'),
+    "Codex CLI registry entry should be inserted at the start of REGISTRY",
+  );
+  assert.match(
+    patched,
+    /def get_answer_llm\(\) -> LLM:/,
+    "the registry patch must not insert text inside the LLM function",
+  );
+});
+
+test("patchAmbLlmRegistry remains idempotent for existing Codex CLI entries", () => {
+  const registry = `import os
+
+from .base import LLM, Schema
+from .codex_cli import CodexCliLLM
+from .gemini import GeminiLLM
+
+REGISTRY: dict[str, type[LLM]] = {
+    "codex_cli": CodexCliLLM,
+    "gemini": GeminiLLM,
+}
+`;
+
+  const patched = patchAmbLlmRegistry(registry);
+
+  assert.equal(
+    patched.match(/from \.codex_cli import CodexCliLLM/g)?.length,
+    1,
+  );
+  assert.equal(
+    patched.match(/["']codex_cli["']:\s*CodexCliLLM/g)?.length,
+    1,
+  );
+});
+
+test("patchAmbCli makes the Gemini key gate provider-aware", () => {
+  const cli = `import os
+import typer
+
+def _resolve_gemini_key() -> None:
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        typer.echo("Error: GEMINI_API_KEY environment variable is not set.", err=True)
+        raise typer.Exit(1)
+    os.environ["GOOGLE_API_KEY"] = key
+
+def run(llm: str):
+    _resolve_gemini_key()
+
+    ds = get_dataset(dataset)
+`;
+
+  const patched = patchAmbCli(cli);
+  const patchedAgain = patchAmbCli(patched);
+
+  assert.equal(patchedAgain, patched);
+  assert.match(patched, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
+  assert.match(patched, /answer_provider != "gemini" and judge_provider != "gemini"/);
+  assert.match(patched, /os\.environ\["OMB_ANSWER_LLM"\] = llm/);
 });
 
 test("RemnicMemoryProvider cleanup does not hang on an unresponsive bridge", async () => {

@@ -19,6 +19,22 @@ async function writeAmbRegistry(root: string, registry: string): Promise<string>
   return registryPath;
 }
 
+async function writeAmbLlmRegistry(root: string, registry: string): Promise<string> {
+  const llmDir = path.join(root, "src", "memory_bench", "llm");
+  await mkdir(llmDir, { recursive: true });
+  const registryPath = path.join(llmDir, "__init__.py");
+  await writeFile(registryPath, registry, "utf8");
+  return registryPath;
+}
+
+async function writeAmbCli(root: string, cli: string): Promise<string> {
+  const packageDir = path.join(root, "src", "memory_bench");
+  await mkdir(packageDir, { recursive: true });
+  const cliPath = path.join(packageDir, "cli.py");
+  await writeFile(cliPath, cli, "utf8");
+  return cliPath;
+}
+
 test("AMB provider installer patches one-line memory registries", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-amb-install-"));
   const registryPath = await writeAmbRegistry(
@@ -56,6 +72,117 @@ test("AMB provider installer patches one-line memory registries", async () => {
     );
     assert.equal(registry.match(/["']remnic["']:\s*RemnicMemoryProvider/g)?.length, 1);
     assert.match(registry, /["']bm25["']:\s*BM25MemoryProvider/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AMB provider installer also patches LLM registries for Codex CLI runs", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-amb-install-llm-"));
+  await writeAmbRegistry(
+    root,
+    [
+      "from .base import MemoryProvider",
+      "from .bm25 import BM25MemoryProvider",
+      'REGISTRY: dict[str, type[MemoryProvider]] = {"bm25": BM25MemoryProvider}',
+      "",
+    ].join("\n"),
+  );
+  const llmRegistryPath = await writeAmbLlmRegistry(
+    root,
+    [
+      "import os",
+      "from .base import LLM, Schema",
+      "from .gemini import GeminiLLM",
+      "from .openai import OpenAILLM",
+      'REGISTRY: dict[str, type[LLM]] = {"gemini": GeminiLLM, "openai": OpenAILLM}',
+      "",
+    ].join("\n"),
+  );
+
+  try {
+    await execFileAsync(
+      process.execPath,
+      [path.join(repoRoot, "integrations", "amb", "install-remnic-provider.mjs"), root],
+      { cwd: repoRoot },
+    );
+    await execFileAsync(
+      process.execPath,
+      [path.join(repoRoot, "integrations", "amb", "install-remnic-provider.mjs"), root],
+      { cwd: repoRoot },
+    );
+
+    const registry = await readFile(llmRegistryPath, "utf8");
+    const provider = await readFile(
+      path.join(root, "src", "memory_bench", "llm", "codex_cli.py"),
+      "utf8",
+    );
+
+    assert.match(provider, /class CodexCliLLM/);
+    assert.equal(
+      registry.match(/from \.codex_cli import CodexCliLLM/g)?.length,
+      1,
+    );
+    assert.equal(registry.match(/["']codex_cli["']:\s*CodexCliLLM/g)?.length, 1);
+    assert.match(registry, /["']gemini["']:\s*GeminiLLM/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AMB provider installer patches CLI Gemini gate for non-Gemini providers", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-amb-install-cli-"));
+  await writeAmbRegistry(
+    root,
+    [
+      "from .base import MemoryProvider",
+      "from .bm25 import BM25MemoryProvider",
+      'REGISTRY: dict[str, type[MemoryProvider]] = {"bm25": BM25MemoryProvider}',
+      "",
+    ].join("\n"),
+  );
+  await writeAmbLlmRegistry(
+    root,
+    [
+      "import os",
+      "from .base import LLM, Schema",
+      "from .gemini import GeminiLLM",
+      'REGISTRY: dict[str, type[LLM]] = {"gemini": GeminiLLM}',
+      "",
+    ].join("\n"),
+  );
+  const cliPath = await writeAmbCli(
+    root,
+    [
+      "import os",
+      "import typer",
+      "",
+      "def _resolve_gemini_key() -> None:",
+      '    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")',
+      "    if not key:",
+      '        typer.echo("Error: GEMINI_API_KEY environment variable is not set.", err=True)',
+      "        raise typer.Exit(1)",
+      '    os.environ["GOOGLE_API_KEY"] = key',
+      "",
+      "def run(llm: str):",
+      "    _resolve_gemini_key()",
+      "",
+      "    ds = get_dataset(dataset)",
+      "",
+    ].join("\n"),
+  );
+
+  try {
+    await execFileAsync(
+      process.execPath,
+      [path.join(repoRoot, "integrations", "amb", "install-remnic-provider.mjs"), root],
+      { cwd: repoRoot },
+    );
+
+    const cli = await readFile(cliPath, "utf8");
+    assert.match(cli, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
+    assert.match(cli, /answer_provider != "gemini" and judge_provider != "gemini"/);
+    assert.match(cli, /os\.environ\["OMB_ANSWER_LLM"\] = llm/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
