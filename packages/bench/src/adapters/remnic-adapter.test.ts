@@ -971,6 +971,16 @@ test("runtime-backed adapter rejects historical recall when replay extraction is
           "beam-historical-session",
           "What is the future-only benchmark leak marker?",
           24_000,
+          { asOf: "2026-05-10T12:00+23:00" },
+        ),
+      /benchmark recall asOf must be a valid timestamp/,
+    );
+    await assert.rejects(
+      () =>
+        adapter.recall(
+          "beam-historical-session",
+          "What is the future-only benchmark leak marker?",
+          24_000,
           { asOf: "2026-02-30" },
         ),
       /benchmark recall asOf must be a valid timestamp/,

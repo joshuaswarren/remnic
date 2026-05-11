@@ -143,8 +143,9 @@ export function parseFlexibleIsoTimestamp(value: string): number | null {
     hour > 23 ||
     minute > 59 ||
     second > 59 ||
-    offsetHour > 23 ||
-    offsetMinute > 59
+    offsetHour > 14 ||
+    offsetMinute > 59 ||
+    (offsetHour === 14 && offsetMinute > 0)
   ) {
     return null;
   }
