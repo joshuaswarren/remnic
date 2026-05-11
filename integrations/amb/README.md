@@ -19,6 +19,13 @@ Set the bridge path for the AMB process:
 export REMNIC_REPO_PATH=/path/to/remnic
 ```
 
+If the default `uv` cache directory is not writable in your environment, point
+`uv` at a writable cache before running AMB commands:
+
+```bash
+export UV_CACHE_DIR=/tmp/uv-cache-remnic
+```
+
 Optional Remnic runtime configuration:
 
 ```bash
@@ -64,6 +71,9 @@ uv run omb providers
 uv run omb run --dataset beam --split 100k --memory remnic --mode rag --query-limit 20
 uv run omb run --dataset personamem --split 32k --memory remnic --mode rag --query-limit 20
 ```
+
+These commands inherit `REMNIC_REPO_PATH`, the model settings, and the optional
+`UV_CACHE_DIR` from the setup shell.
 
 Full BEAM runs follow the same AMB command shape:
 
