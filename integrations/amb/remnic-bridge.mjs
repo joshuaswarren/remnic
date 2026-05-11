@@ -186,14 +186,6 @@ function timestampedAmbMessage(role, content, timestamp) {
   return timestamp ? { role, content, timestamp } : { role, content };
 }
 
-function tryNormalizeAmbSourceTimestamp(value) {
-  try {
-    return normalizeAmbSourceTimestamp(value);
-  } catch {
-    return "";
-  }
-}
-
 function buildAmbTurnAnchor(document, marker) {
   const rawMarker = typeof marker === "string" ? marker.trim() : "";
   const turnMatch = rawMarker.match(/\bTurn\s+([A-Za-z0-9_.:-]+)\b/i);
