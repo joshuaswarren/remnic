@@ -14,6 +14,29 @@ test("parseConfig sets recall pipeline defaults", () => {
   assert.ok(profile);
   assert.equal(profile?.consolidateTriggerLines, 100);
   assert.equal(profile?.consolidateTargetLines, 50);
+
+  assert.deepEqual(
+    cfg.recallPipeline.find((entry) => entry.id === "event-order"),
+    {
+      id: "event-order",
+      enabled: true,
+      maxChars: 3200,
+      maxResults: 24,
+      maxTurns: 12,
+      maxTokens: 24000,
+    },
+  );
+  assert.deepEqual(
+    cfg.recallPipeline.find((entry) => entry.id === "response-guidance"),
+    {
+      id: "response-guidance",
+      enabled: true,
+      maxChars: 2400,
+      maxResults: 48,
+      maxTurns: 64,
+      maxTokens: 16000,
+    },
+  );
 });
 
 test("parseConfig preserves explicit recallBudgetChars including zero", () => {
