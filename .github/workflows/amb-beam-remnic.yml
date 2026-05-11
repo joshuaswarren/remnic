@@ -26,12 +26,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      AMB_DIR: ${{ runner.temp }}/agent-memory-benchmark
+      AMB_DIR: /tmp/agent-memory-benchmark
       REMNIC_REPO_PATH: ${{ github.workspace }}
       REMNIC_AMB_SESSION_PREFIX: beam
       REMNIC_AMB_RECALL_BUDGET_CHARS: "49152"
       REMNIC_AMB_DRAIN_TIMEOUT_MS: "28800000"
-      UV_CACHE_DIR: ${{ runner.temp }}/uv-cache
+      UV_CACHE_DIR: /tmp/uv-cache
       OMB_ANSWER_LLM: gemini
       OMB_ANSWER_MODEL: gemini-3.1-pro-preview
       OMB_JUDGE_LLM: gemini
