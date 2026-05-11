@@ -322,6 +322,22 @@ test("AMB bridge rejects invalid query timestamps", () => {
     () => buildAmbRecallQuery("What happened?", "2026-05-10T12:00+14:30"),
     /query_timestamp must be a valid ISO 8601 timestamp/,
   );
+  assert.match(
+    buildAmbRecallQuery("What happened?", "2026-05-10T12:00+14:00"),
+    /query_timestamp=2026-05-10T12:00\+14:00/,
+  );
+  assert.match(
+    buildAmbRecallQuery("What happened?", "2026-05-10T12:00-12:00"),
+    /query_timestamp=2026-05-10T12:00-12:00/,
+  );
+  assert.throws(
+    () => buildAmbRecallQuery("What happened?", "2026-05-10T12:00-12:30"),
+    /query_timestamp must be a valid ISO 8601 timestamp/,
+  );
+  assert.throws(
+    () => buildAmbRecallQuery("What happened?", "2026-05-10T12:00-13:00"),
+    /query_timestamp must be a valid ISO 8601 timestamp/,
+  );
   assert.throws(
     () => buildAmbRecallQuery("What happened?", "2026-05-10T12:00:00"),
     /query_timestamp must be a valid ISO 8601 timestamp/,

@@ -12,6 +12,7 @@ of a direct API key.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -120,8 +121,8 @@ def _parse_positive_float(value: str | None, default: float, label: str) -> floa
     if value is None or value == "":
         return default
     parsed = float(value)
-    if parsed <= 0:
-        raise ValueError(f"{label} must be positive; received {value!r}")
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise ValueError(f"{label} must be a finite positive number; received {value!r}")
     return parsed
 
 
