@@ -34,6 +34,23 @@ waits for ingestion/extraction drain before AMB starts retrieval.
 Use `REMNIC_AMB_SESSION_PREFIX=beam` for BEAM runs so Remnic's benchmark
 adapter can apply BEAM-specific cue handling while AMB still owns scoring.
 
+For a public-comparable BEAM run, match the model settings used by current AMB
+BEAM leaderboard entries:
+
+```bash
+export GEMINI_API_KEY=<key> # or GOOGLE_API_KEY=<key>
+export OMB_ANSWER_LLM=gemini
+export OMB_ANSWER_MODEL=gemini-3.1-pro-preview
+export OMB_JUDGE_LLM=gemini
+export OMB_JUDGE_MODEL=gemini-2.5-flash-lite
+```
+
+Check the local setup before starting a long run:
+
+```bash
+node integrations/amb/check-remnic-run.mjs /tmp/agent-memory-benchmark
+```
+
 ## Run
 
 From the AMB checkout:
@@ -60,6 +77,12 @@ Compress and publish with AMB's own workflow:
 
 ```bash
 uv run amb publish-results outputs/beam/remnic/rag/10m.json
+```
+
+Compare a completed Remnic BEAM result against the current public leaderboard:
+
+```bash
+node /path/to/remnic/integrations/amb/compare-beam-result.mjs outputs/beam/remnic/rag/10m.json
 ```
 
 ## Notes
