@@ -8,6 +8,13 @@ import {
 } from "./targeted-fact-recall.js";
 
 class FakeTargetedFactEngine {
+  readonly expandCalls: Array<{
+    sessionId: string;
+    fromTurn: number;
+    toTurn: number;
+    maxTokens?: number;
+  }> = [];
+
   constructor(
     private readonly sessionId: string,
     private readonly messages: Array<{ turn_index: number; role: string; content: string }>,
@@ -45,7 +52,9 @@ class FakeTargetedFactEngine {
     sessionId: string,
     fromTurn: number,
     toTurn: number,
+    maxTokens?: number,
   ): Promise<Array<{ turn_index: number; role: string; content: string }>> {
+    this.expandCalls.push({ sessionId, fromTurn, toTurn, maxTokens });
     if (sessionId !== this.sessionId) return [];
     const windowMessages = this.messages.filter(
       (message) => message.turn_index >= fromTurn && message.turn_index <= toTurn,
@@ -408,7 +417,7 @@ test("targeted fact recall normalizes salary facts and updates", async () => {
       content:
         "I'm kinda worried about how my recent raise to $80,000 CAD as a senior engineer at Saint Pierre Manufacturing Ltd will affect my relationships.",
     },
-  ], [58]);
+  ], [43, 58, 172]);
 
   const baseSalary = await buildTargetedFactRecallSection({
     engine,
@@ -467,7 +476,7 @@ test("targeted fact recall extracts enrolled training costs over generic course 
       content:
         "I'm worried about the cost of this strategic thinking course, $500 is a lot, can I really afford it?",
     },
-  ], [310, 702]);
+  ], [38, 310, 702]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -513,7 +522,7 @@ test("targeted fact recall computes portfolio fee totals across named charges", 
       content:
         "How do I minimize the $90 transaction fees I paid during a later rebalancing via Vanguard?",
     },
-  ], [550]);
+  ], [140, 396, 500, 550]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -553,7 +562,7 @@ test("targeted fact recall favors latest Roth IRA monthly contribution updates",
       content:
         "I'm trying to boost my retirement savings, so I increased my monthly Roth IRA contributions to $475 starting February 15.",
     },
-  ], [26]);
+  ], [26, 412, 872]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -586,7 +595,7 @@ test("targeted fact recall computes benchmark-style TF-IDF beta-release interval
       content:
         "I'm planning the beta release for February 25, 2024, and I want to make sure everything is ready for the 50 internal users who will be testing the application.",
     },
-  ], [102]);
+  ], [30, 102]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -647,7 +656,7 @@ test("targeted fact recall extracts population-model growth rates", async () => 
       content:
         "For a different logistic growth model, the estimated carrying capacity is K=5000 and the growth rate is r=0.1 from sample data points.",
     },
-  ], [102]);
+  ], [30, 102]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -796,7 +805,7 @@ test("targeted fact recall favors updated device purchase budget ceilings", asyn
         "For phone accessories, assume a total budget of $150 after the Bluetooth gaming headset and screen protector discounts.",
     },
   ];
-  const engine = new FakeTargetedFactEngine(sessionId, messages, [95, 716, 910]);
+  const engine = new FakeTargetedFactEngine(sessionId, messages, [40, 130, 95, 716, 910]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -839,7 +848,7 @@ test("targeted fact recall computes induction quiz score deltas", async () => {
         "Later, after additional practice, my final practice test score increased to 98%.",
     },
   ];
-  const engine = new FakeTargetedFactEngine(sessionId, messages, [12]);
+  const engine = new FakeTargetedFactEngine(sessionId, messages, [12, 88]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -925,7 +934,7 @@ test("targeted fact recall keeps metric scan windows below expansion clipping", 
         "Congratulations on reaching a feature-complete milestone and achieving a solid 85% test coverage on your core modules.",
     },
   ].sort((left, right) => left.turn_index - right.turn_index);
-  const engine = new FakeTargetedFactEngine(sessionId, messages, [193, 71], 8);
+  const engine = new FakeTargetedFactEngine(sessionId, messages, [60, 193, 71], 8);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -997,7 +1006,7 @@ test("targeted fact recall extracts plain street addresses", async () => {
       content:
         "Put the location and timing in the invitation so guests know where to go.",
     },
-  ], [6]);
+  ], [10, 6]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -1031,7 +1040,7 @@ test("targeted fact recall computes combined baking purchase totals", async () =
       content:
         "The extra $13 for organic almond flour can be worthwhile if the flavor improvement matters to you.",
     },
-  ], [132]);
+  ], [50, 124, 132]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -1120,7 +1129,7 @@ test("targeted fact recall captures Redis TTL updates for cache configuration qu
       content:
         "Always include cache configuration details when I ask about performance optimizations.",
     },
-  ], [344]);
+  ], [466, 344]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -1171,7 +1180,7 @@ test("targeted fact recall summarizes game caching and authentication tool count
       content:
         "I'm trying to optimize my authentication system to reduce database load with a Redis caching layer for cached users.",
     },
-  ], [214]);
+  ], [32, 37, 81, 214]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -1205,7 +1214,7 @@ test("targeted fact recall summarizes geometry type counts", async () => {
       content:
         "Triangle angle sums differ across Euclidean, spherical, and hyperbolic geometries: 180 degrees, more than 180 degrees, and less than 180 degrees.",
     },
-  ], [93]);
+  ], [17, 93]);
 
   const recalled = await buildTargetedFactRecallSection({
     engine,
@@ -1277,6 +1286,43 @@ test("targeted fact recall computes combined crypto transaction fees", async () 
   assert.match(recalled, /Computed crypto transaction fees: \$5 for the Ethereum purchase and wallet transfer, \$2\.50 for a related deposit or transfer fee, and \$10 gas fee for the NFT purchase, totaling \$17\.50/);
   assert.match(recalled, /\$2\.50 staking transaction fee/);
   assert.match(recalled, /\$10 in Ethereum gas fees for an NFT purchase/);
+});
+
+test("targeted fact scan is capped to the recent configured turn window", async () => {
+  const sessionId = "targeted-recent-window";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 0,
+      role: "user",
+      content:
+        "I reached 60% of my emergency fund goal after saving $3,000.",
+    },
+    {
+      turn_index: 99,
+      role: "assistant",
+      content: "We can revisit the savings plan later.",
+    },
+    {
+      turn_index: 100,
+      role: "user",
+      content: "Let's talk about something unrelated now.",
+    },
+  ]);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How much money had I saved when I reached 60% of my emergency fund goal?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 2,
+    maxScanWindowTokens: 500,
+  });
+
+  assert.equal(recalled, "");
+  assert.deepEqual(engine.expandCalls, [
+    { sessionId, fromTurn: 99, toTurn: 100, maxTokens: 500 },
+  ]);
 });
 
 test("default recall pipeline exposes targeted fact recall as a disableable section", () => {

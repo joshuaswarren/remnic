@@ -153,25 +153,23 @@ async function collectFocusedListScanItems(
   );
   const items: EvidencePackItem[] = [];
 
-  for (let fromTurn = 0; fromTurn <= maxTurn; fromTurn += windowTurns) {
-    const toTurn = Math.min(maxTurn, fromTurn + windowTurns - 1);
-    const messages = await engine.expandContext(
-      options.sessionId,
-      fromTurn,
-      toTurn,
-      windowTokens,
-    );
-    for (const message of messages) {
-      const candidate = {
-        id: `${options.sessionId}:${message.turn_index}`,
-        sessionId: options.sessionId,
-        turnIndex: message.turn_index,
-        role: message.role,
-        content: message.content,
-      };
-      if (!isFocusedListEvidence(candidate, options.query, intent)) continue;
-      items.push(candidate);
-    }
+  const fromTurn = Math.max(0, maxTurn - windowTurns + 1);
+  const messages = await engine.expandContext(
+    options.sessionId,
+    fromTurn,
+    maxTurn,
+    windowTokens,
+  );
+  for (const message of messages) {
+    const candidate = {
+      id: `${options.sessionId}:${message.turn_index}`,
+      sessionId: options.sessionId,
+      turnIndex: message.turn_index,
+      role: message.role,
+      content: message.content,
+    };
+    if (!isFocusedListEvidence(candidate, options.query, intent)) continue;
+    items.push(candidate);
   }
 
   return items;

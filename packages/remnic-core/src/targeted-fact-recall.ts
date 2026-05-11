@@ -124,27 +124,7 @@ async function collectTargetedFactScanItems(
 
   const windowTurns = Math.max(
     1,
-    classifyTargetedFactIntent(options.query) === "address" ||
-    classifyTargetedFactIntent(options.query) === "baking_purchase_total" ||
-    classifyTargetedFactIntent(options.query) === "trip_equipment_total" ||
-    classifyTargetedFactIntent(options.query) === "metric" ||
-    classifyTargetedFactIntent(options.query) === "writing_metric" ||
-      classifyTargetedFactIntent(options.query) === "tutoring_duration" ||
-      classifyTargetedFactIntent(options.query) === "purchase_budget" ||
-      classifyTargetedFactIntent(options.query) === "portfolio_fee_total" ||
-      classifyTargetedFactIntent(options.query) === "training_cost" ||
-      classifyTargetedFactIntent(options.query) === "retirement_contribution" ||
-      classifyTargetedFactIntent(options.query) === "salary" ||
-      classifyTargetedFactIntent(options.query) === "confidence_boost_total" ||
-      classifyTargetedFactIntent(options.query) === "game_auth_tool_count" ||
-      classifyTargetedFactIntent(options.query) === "geometry_type_count" ||
-      classifyTargetedFactIntent(options.query) === "bitcoin_investment_platform" ||
-      classifyTargetedFactIntent(options.query) === "crypto_fee_total" ||
-      classifyTargetedFactIntent(options.query) === "population_growth_rate" ||
-      classifyTargetedFactIntent(options.query) === "cache_ttl" ||
-      classifyTargetedFactIntent(options.query) === "project_duration"
-      ? 1
-      : normalizePositiveInteger(options.maxScanWindowTurns ?? DEFAULT_SCAN_WINDOW_TURNS),
+    normalizePositiveInteger(options.maxScanWindowTurns ?? DEFAULT_SCAN_WINDOW_TURNS),
   );
   const windowTokens = Math.max(
     1,
@@ -152,24 +132,22 @@ async function collectTargetedFactScanItems(
   );
   const items: EvidencePackItem[] = [];
 
-  for (let fromTurn = 0; fromTurn <= maxTurn; fromTurn += windowTurns) {
-    const toTurn = Math.min(maxTurn, fromTurn + windowTurns - 1);
-    const messages = await engine.expandContext(
-      options.sessionId,
-      fromTurn,
-      toTurn,
-      windowTokens,
-    );
-    for (const message of messages) {
-      if (!isTargetedFactEvidence(message.content, options.query)) continue;
-      items.push({
-        id: `${options.sessionId}:${message.turn_index}`,
-        sessionId: options.sessionId,
-        turnIndex: message.turn_index,
-        role: message.role,
-        content: message.content,
-      });
-    }
+  const fromTurn = Math.max(0, maxTurn - windowTurns + 1);
+  const messages = await engine.expandContext(
+    options.sessionId,
+    fromTurn,
+    maxTurn,
+    windowTokens,
+  );
+  for (const message of messages) {
+    if (!isTargetedFactEvidence(message.content, options.query)) continue;
+    items.push({
+      id: `${options.sessionId}:${message.turn_index}`,
+      sessionId: options.sessionId,
+      turnIndex: message.turn_index,
+      role: message.role,
+      content: message.content,
+    });
   }
 
   return items;

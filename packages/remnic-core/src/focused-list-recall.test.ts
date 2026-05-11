@@ -8,6 +8,13 @@ import {
 } from "./focused-list-recall.js";
 
 class FakeFocusedListEngine {
+  readonly expandCalls: Array<{
+    sessionId: string;
+    fromTurn: number;
+    toTurn: number;
+    maxTokens: number;
+  }> = [];
+
   constructor(
     private readonly sessionId: string,
     private readonly messages: Array<{ turn_index: number; role: string; content: string }>,
@@ -47,8 +54,9 @@ class FakeFocusedListEngine {
     sessionId: string,
     fromTurn: number,
     toTurn: number,
-    _maxTokens: number,
+    maxTokens: number,
   ): Promise<Array<{ turn_index: number; role: string; content: string }>> {
+    this.expandCalls.push({ sessionId, fromTurn, toTurn, maxTokens });
     if (sessionId !== this.sessionId) return [];
     return this.messages.filter(
       (message) => message.turn_index >= fromTurn && message.turn_index <= toTurn,
@@ -411,6 +419,43 @@ test("focused list recall collects planned event locations for people", async ()
   assert.match(recalled, /## Focused relation evidence/);
   assert.match(recalled, /weekend getaway to Blue Bay Resort with David/);
   assert.match(recalled, /anniversary dinner with David at The Coral Reef, East Janethaven/);
+});
+
+test("focused list scan is capped to the recent configured turn window", async () => {
+  const sessionId = "focused-recent-window";
+  const engine = new FakeFocusedListEngine(sessionId, [
+    {
+      turn_index: 3,
+      role: "user",
+      content:
+        "I've used coconut aminos as a soy sauce substitute and also bought liquid aminos.",
+    },
+    {
+      turn_index: 50,
+      role: "assistant",
+      content: "We can keep the grocery notes organized.",
+    },
+    {
+      turn_index: 55,
+      role: "user",
+      content: "Let's discuss dinner timing instead.",
+    },
+  ]);
+
+  const recalled = await buildFocusedListRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How many different soy sauce substitutes have I mentioned using or buying across my conversations?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 4,
+    maxScanWindowTokens: 700,
+  });
+
+  assert.equal(recalled, "");
+  assert.deepEqual(engine.expandCalls, [
+    { sessionId, fromTurn: 52, toTurn: 55, maxTokens: 700 },
+  ]);
 });
 
 test("default recall pipeline exposes focused list recall as a disableable section", () => {
