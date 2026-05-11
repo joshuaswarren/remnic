@@ -145,12 +145,17 @@ class RemnicMemoryProvider(MemoryProvider):
         return self._select_unit_id(candidates, "retrieve query")
 
     def _select_unit_id(self, candidates: set[str], label: str) -> str:
+        supplied_candidates = set(candidates)
         if self._unit_ids:
             candidates = {candidate for candidate in candidates if candidate in self._unit_ids}
         if len(candidates) == 1:
             return next(iter(candidates))
-        if not candidates and len(self._unit_ids) == 1:
+        if not candidates and not supplied_candidates and len(self._unit_ids) == 1:
             return next(iter(self._unit_ids))
+        if not candidates and supplied_candidates:
+            raise RuntimeError(
+                f"unknown AMB unit id for {label}; received {sorted(supplied_candidates)}"
+            )
         if not candidates:
             raise RuntimeError(f"unable to determine AMB unit id for {label}.")
         raise RuntimeError(

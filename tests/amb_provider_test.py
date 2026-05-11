@@ -211,6 +211,16 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
             self.assertEqual(docs[0].user_id, "alpha")
             self.assertEqual(raw, {"store": str(alpha)})
 
+    def test_isolated_retrieve_rejects_unknown_unit_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = self.provider_class()
+            provider.prepare(Path(tmp), {"alpha"}, reset=False)
+
+            with self.assertRaisesRegex(RuntimeError, "unknown AMB unit id"):
+                provider.retrieve("who owned it?", user_id="missing")
+
+            self.assertEqual(provider.requests, [])
+
     def test_isolated_ingest_requires_one_unit_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             provider = self.provider_class()
