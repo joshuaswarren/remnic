@@ -15,6 +15,7 @@ import os
 import shlex
 import subprocess
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -39,28 +40,27 @@ class RemnicMemoryProvider(MemoryProvider):
         self._next_id = 1
         self._lock = threading.Lock()
         self._per_unit = False
+        self._store_dir: Path | None = None
+        self._active_store_dir: Path | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=200)
+        self._stderr_thread: threading.Thread | None = None
 
     def initialize(self) -> None:
         self._ensure_proc()
 
     def cleanup(self) -> None:
-        proc = self._proc
-        if proc is None:
-            return
-        try:
-            self._request("cleanup", {})
-        except Exception:
-            pass
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=10)
-        self._proc = None
+        self._stop_proc(send_cleanup=True)
 
     def prepare(self, store_dir: Path, unit_ids: set[str] | None = None, reset: bool = True) -> None:
         self._per_unit = unit_ids is not None
+        resolved_store_dir = store_dir.expanduser().resolve()
+        if (
+            self._proc is not None
+            and self._proc.poll() is None
+            and self._active_store_dir != resolved_store_dir
+        ):
+            self._stop_proc(send_cleanup=True)
+        self._store_dir = resolved_store_dir
         self._ensure_proc()
         if reset:
             self._request("reset", {})
@@ -70,13 +70,7 @@ class RemnicMemoryProvider(MemoryProvider):
             self._request("reset", {})
         payload = {
             "documents": [
-                {
-                    "id": doc.id,
-                    "content": doc.content,
-                    "user_id": doc.user_id,
-                    "timestamp": doc.timestamp,
-                    "context": doc.context,
-                }
+                self._serialize_document(doc)
                 for doc in documents
             ]
         }
@@ -116,6 +110,9 @@ class RemnicMemoryProvider(MemoryProvider):
         cmd = self._bridge_command()
         env = os.environ.copy()
         cwd = env.get("REMNIC_REPO_PATH")
+        if self._store_dir is not None:
+            env["REMNIC_AMB_STORE_DIR"] = str(self._store_dir)
+        self._stderr_tail.clear()
         self._proc = subprocess.Popen(
             cmd,
             cwd=cwd,
@@ -126,6 +123,8 @@ class RemnicMemoryProvider(MemoryProvider):
             text=True,
             bufsize=1,
         )
+        self._active_store_dir = self._store_dir
+        self._start_stderr_drain(self._proc)
 
     def _bridge_command(self) -> list[str]:
         explicit = os.environ.get("REMNIC_AMB_BRIDGE_CMD")
@@ -141,8 +140,14 @@ class RemnicMemoryProvider(MemoryProvider):
         bridge = Path(repo) / "integrations" / "amb" / "remnic-bridge.mjs"
         return ["pnpm", "exec", "tsx", str(bridge)]
 
-    def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_proc()
+    def _request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        ensure_running: bool = True,
+    ) -> dict[str, Any]:
+        if ensure_running:
+            self._ensure_proc()
         assert self._proc is not None
         assert self._proc.stdin is not None
         assert self._proc.stdout is not None
@@ -167,10 +172,98 @@ class RemnicMemoryProvider(MemoryProvider):
         return result if isinstance(result, dict) else {}
 
     def _read_stderr_tail(self) -> str:
+        if not self._stderr_tail:
+            return ""
+        tail = "\n".join(self._stderr_tail)
+        if len(tail) > 4000:
+            tail = tail[-4000:]
+        return f"stderr tail:\n{tail}"
+
+    def _start_stderr_drain(self, proc: subprocess.Popen[str]) -> None:
+        if proc.stderr is None:
+            return
+
+        def drain() -> None:
+            assert proc.stderr is not None
+            try:
+                for line in proc.stderr:
+                    self._stderr_tail.append(line.rstrip())
+            except Exception:
+                return
+
+        self._stderr_thread = threading.Thread(
+            target=drain,
+            name="remnic-amb-bridge-stderr",
+            daemon=True,
+        )
+        self._stderr_thread.start()
+
+    def _stop_proc(self, send_cleanup: bool) -> None:
         proc = self._proc
-        if proc is None or proc.stderr is None:
-            return ""
+        if proc is None:
+            return
         try:
-            return proc.stderr.read(4000)
-        except Exception:
-            return ""
+            if send_cleanup and proc.poll() is None:
+                try:
+                    self._request("cleanup", {}, ensure_running=False)
+                except Exception:
+                    pass
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=10)
+        finally:
+            if self._proc is proc:
+                self._proc = None
+                self._active_store_dir = None
+
+    def _serialize_document(self, doc: Document) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "id": doc.id,
+            "content": doc.content,
+            "user_id": doc.user_id,
+            "timestamp": doc.timestamp,
+            "context": doc.context,
+        }
+        messages = getattr(doc, "messages", None)
+        if messages is not None:
+            serialized_messages = []
+            for message in messages:
+                serialized = self._jsonable_message(message)
+                if serialized:
+                    serialized_messages.append(serialized)
+            payload["messages"] = serialized_messages
+        return payload
+
+    def _jsonable_message(self, message: Any) -> dict[str, Any]:
+        if isinstance(message, dict):
+            raw = message
+        elif hasattr(message, "model_dump"):
+            raw = message.model_dump()
+        elif hasattr(message, "dict"):
+            raw = message.dict()
+        else:
+            raw = {
+                key: getattr(message, key)
+                for key in ("id", "turn_id", "turnId", "role", "timestamp", "content")
+                if hasattr(message, key)
+            }
+        jsonable = self._jsonable(raw)
+        return jsonable if isinstance(jsonable, dict) else {}
+
+    def _jsonable(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            result: dict[str, Any] = {}
+            for key, entry in value.items():
+                jsonable_entry = self._jsonable(entry)
+                if jsonable_entry is not None:
+                    result[str(key)] = jsonable_entry
+            return result
+        if isinstance(value, (list, tuple)):
+            return [self._jsonable(entry) for entry in value]
+        return str(value)

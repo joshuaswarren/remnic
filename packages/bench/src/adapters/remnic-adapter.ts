@@ -13,6 +13,7 @@ import {
   buildExplicitCueRecallSection,
   buildTrajectoryAnalysisRecallSection,
   collectExplicitTurnReferences,
+  expandTildePath,
   normalizeTurnExpansionEnd,
   Orchestrator,
   parseConfig,
@@ -35,6 +36,7 @@ export interface RemnicAdapterOptions {
   judge?: BenchJudge;
   drainTimeoutMs?: number;
   replayExtractionMode?: "await" | "background" | "skip";
+  sandboxDir?: string;
 }
 
 type BenchAdapterMode = "lightweight" | "direct";
@@ -133,6 +135,13 @@ type OrchestratorDrainDiagnosticsView = {
   tierMigrationInFlight?: boolean;
 };
 
+type BenchOrchestratorState = {
+  tempDir: string;
+  ownsTempDir: boolean;
+  orchestrator: Orchestrator;
+  qmdSandbox: BenchQmdSandbox;
+};
+
 const BENCH_TEARDOWN_DEFERRED_READY_WAIT_MS = 500;
 const DEFAULT_BENCH_DRAIN_TIMEOUT_MS = 5 * 60_000;
 const CORE_EXPLICIT_CUE_MAX_CHARS = 18_000;
@@ -221,8 +230,14 @@ async function createBenchOrchestrator(
   mode: BenchAdapterMode,
   overrides?: Record<string, unknown>,
   preserveRuntimeDefaults = false,
-): Promise<{ tempDir: string; orchestrator: Orchestrator; qmdSandbox: BenchQmdSandbox }> {
-  const tempDir = await mkdtemp(path.join(tmpdir(), `remnic-bench-${mode}-`));
+  sandboxDir?: string,
+): Promise<BenchOrchestratorState> {
+  const configuredSandboxDir =
+    typeof sandboxDir === "string" && sandboxDir.trim().length > 0
+      ? path.resolve(expandTildePath(sandboxDir.trim()))
+      : undefined;
+  const tempDir = configuredSandboxDir ?? await mkdtemp(path.join(tmpdir(), `remnic-bench-${mode}-`));
+  await mkdir(tempDir, { recursive: true });
   await mkdir(path.join(tempDir, "state"), { recursive: true });
   const qmdSandbox = await createBenchQmdSandbox(tempDir, overrides);
 
@@ -248,7 +263,12 @@ async function createBenchOrchestrator(
     throw new Error("Remnic benchmark adapter requires LCM to be enabled.");
   }
 
-  return { tempDir, orchestrator, qmdSandbox };
+  return {
+    tempDir,
+    ownsTempDir: configuredSandboxDir === undefined,
+    orchestrator,
+    qmdSandbox,
+  };
 }
 
 async function createBenchQmdSandbox(
@@ -374,6 +394,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       mode,
       options.configOverrides,
       options.preserveRuntimeDefaults === true,
+      options.sandboxDir,
     );
     const sessionTurnCounters = new Map<string, number>();
 
@@ -385,7 +406,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       return engine;
     };
 
-    const cleanup = async (): Promise<void> => {
+    const cleanup = async (
+      optionsForCleanup: { removePersistentDir?: boolean } = {},
+    ): Promise<void> => {
       const orchestrator = state.orchestrator as unknown as OrchestratorTeardownView;
 
       orchestrator.abortDeferredInit();
@@ -403,21 +426,25 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       ]);
       await orchestrator.qmd.dispose?.();
       orchestrator.lcmEngine?.close();
-      try {
-        await removeBenchQmdSandbox(state.qmdSandbox);
-      } catch {
-        // QMD sandbox cleanup is best-effort; the benchmark temp dir must
-        // still be removed even if a sqlite/config artifact is busy.
+      const shouldRemoveSandbox = state.ownsTempDir || optionsForCleanup.removePersistentDir === true;
+      if (shouldRemoveSandbox) {
+        try {
+          await removeBenchQmdSandbox(state.qmdSandbox);
+        } catch {
+          // QMD sandbox cleanup is best-effort; the benchmark temp dir must
+          // still be removed even if a sqlite/config artifact is busy.
+        }
+        await rm(state.tempDir, { recursive: true, force: true });
       }
-      await rm(state.tempDir, { recursive: true, force: true });
     };
 
     const rebuild = async (): Promise<void> => {
-      await cleanup();
+      await cleanup({ removePersistentDir: true });
       state = await createBenchOrchestrator(
         mode,
         options.configOverrides,
         options.preserveRuntimeDefaults === true,
+        options.sandboxDir,
       );
       sessionTurnCounters.clear();
     };

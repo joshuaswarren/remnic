@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -237,6 +240,43 @@ test("AMB bridge forwards query timestamps as recall asOf metadata", async () =>
   assert.match(result.documents[0]?.content ?? "", /Marisol/);
 });
 
+test("AMB bridge returns empty recall for unknown scoped users", async () => {
+  const bridge = new RemnicAmbBridge(
+    {
+      async reset() {},
+      async store() {},
+      async recall() {
+        throw new Error("recall should not be called for unknown scoped users");
+      },
+      async destroy() {},
+    },
+    {
+      drainAfterIngest: false,
+      groupDocumentsByUser: true,
+      resetBeforeIngest: false,
+      recallBudgetChars: 4096,
+      sessionPrefix: "beam",
+    },
+  );
+
+  await bridge.ingest([
+    {
+      id: "conv-1_s0_0",
+      user_id: "conv-1",
+      content: "User: Marisol owned it.",
+    },
+  ]);
+  const result = await bridge.retrieve({
+    query: "Who owned the launch decision?",
+    k: 10,
+    user_id: "missing-user",
+  });
+
+  assert.deepEqual(result.documents, []);
+  assert.equal(result.raw_response.session_count, 0);
+  assert.equal(result.raw_response.user_id, "missing-user");
+});
+
 test("AMB bridge rejects conflicting config env vars", async () => {
   await assert.rejects(
     () =>
@@ -246,6 +286,32 @@ test("AMB bridge rejects conflicting config env vars", async () => {
       }),
     /Set only one/,
   );
+});
+
+test("AMB bridge expands tilde config paths", async () => {
+  const oldHome = process.env.HOME;
+  const homeDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-home-"));
+  try {
+    process.env.HOME = homeDir;
+    await writeFile(
+      path.join(homeDir, "amb-config.json"),
+      JSON.stringify({ remnic: { qmdEnabled: true } }),
+    );
+
+    assert.deepEqual(
+      await loadRemnicAmbConfig({
+        REMNIC_AMB_CONFIG_PATH: "~/amb-config.json",
+      }),
+      { qmdEnabled: true },
+    );
+  } finally {
+    if (oldHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = oldHome;
+    }
+    await rm(homeDir, { recursive: true, force: true });
+  }
 });
 
 test("AMB bridge parses inline JSON config", async () => {

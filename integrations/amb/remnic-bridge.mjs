@@ -14,6 +14,7 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
+import { expandTildePath } from "@remnic/core";
 
 const DEFAULT_RECALL_BUDGET_CHARS = 49_152;
 const DEFAULT_DRAIN_TIMEOUT_MS = 8 * 60 * 60 * 1000;
@@ -327,7 +328,8 @@ export async function loadRemnicAmbConfig(env = process.env) {
   }
 
   if (configPath) {
-    const parsed = JSON.parse(await readFile(configPath, "utf8"));
+    const expandedPath = expandTildePath(configPath);
+    const parsed = JSON.parse(await readFile(expandedPath, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error(`REMNIC_AMB_CONFIG_PATH must point to a JSON object: ${configPath}`);
     }
@@ -425,12 +427,22 @@ export class RemnicAmbBridge {
   async retrieve({ query, k, user_id, query_timestamp }) {
     const recallAsOf = normalizeAmbQueryTimestamp(query_timestamp);
     const recallQuery = buildAmbRecallQuery(query, recallAsOf);
-    const sessionIds =
-      user_id && this.sessionsByUser.has(String(user_id))
-        ? this.sessionsByUser.get(String(user_id))
-        : this.allSessions;
+    const scopedUserId = user_id === undefined || user_id === null
+      ? ""
+      : String(user_id).trim();
+    const sessionIds = scopedUserId
+      ? this.sessionsByUser.get(scopedUserId) ?? []
+      : this.allSessions;
     if (!sessionIds || sessionIds.length === 0) {
-      return { documents: [], raw_response: { session_count: 0 } };
+      return {
+        documents: [],
+        raw_response: {
+          session_count: 0,
+          returned_chars: 0,
+          query_timestamp: recallAsOf || null,
+          user_id: scopedUserId || null,
+        },
+      };
     }
 
     const chunks = [];
@@ -458,6 +470,7 @@ export class RemnicAmbBridge {
         session_budget_chars: perSessionBudget,
         returned_chars: joined.length,
         query_timestamp: recallAsOf || null,
+        user_id: scopedUserId || null,
       },
     };
   }
@@ -480,6 +493,7 @@ async function createBridge(env = process.env) {
       ...configOverrides,
     },
     preserveRuntimeDefaults,
+    sandboxDir: env.REMNIC_AMB_STORE_DIR,
     replayExtractionMode: parseReplayExtractionMode(env.REMNIC_AMB_REPLAY_EXTRACTION_MODE),
     drainTimeoutMs: parsePositiveInteger(
       env.REMNIC_AMB_DRAIN_TIMEOUT_MS,
@@ -503,6 +517,12 @@ async function createBridge(env = process.env) {
 
 async function runJsonlServer() {
   let bridge = await createBridge();
+  const requireBridge = async () => {
+    if (!bridge) {
+      bridge = await createBridge();
+    }
+    return bridge;
+  };
   const rl = createInterface({
     input: process.stdin,
     crlfDelay: Infinity,
@@ -523,17 +543,21 @@ async function runJsonlServer() {
       let result;
       switch (request.method) {
         case "reset":
-          result = await bridge.reset();
+          result = await (await requireBridge()).reset();
           break;
         case "ingest":
-          result = await bridge.ingest(request.params?.documents);
+          result = await (await requireBridge()).ingest(request.params?.documents);
           break;
         case "retrieve":
-          result = await bridge.retrieve(request.params ?? {});
+          result = await (await requireBridge()).retrieve(request.params ?? {});
           break;
         case "cleanup":
-          result = await bridge.cleanup();
-          bridge = await createBridge();
+          if (bridge) {
+            result = await bridge.cleanup();
+            bridge = null;
+          } else {
+            result = null;
+          }
           break;
         default:
           throw new Error(`unknown method: ${String(request.method)}`);
@@ -548,7 +572,9 @@ async function runJsonlServer() {
     }
   }
 
-  await bridge.cleanup();
+  if (bridge) {
+    await bridge.cleanup();
+  }
 }
 
 function isEntrypoint() {
