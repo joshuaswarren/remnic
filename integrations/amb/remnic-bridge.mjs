@@ -7,7 +7,7 @@
  * only exposes Remnic memory operations through a tiny request/response protocol.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -104,7 +104,13 @@ function normalizeAmbSessionIndex(value, label) {
 function sanitizeSessionPart(value) {
   const raw = String(value ?? "").trim();
   if (!raw) return "unknown";
-  return raw.replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, 120) || "unknown";
+  const safe = raw.replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, 120) || "unknown";
+  if (safe === raw) {
+    return safe;
+  }
+  const hash = createHash("sha256").update(raw).digest("hex").slice(0, 12);
+  const prefix = safe.slice(0, 107).replace(/-+$/, "") || "unknown";
+  return `${prefix}-${hash}`;
 }
 
 function normalizeAmbRole(value) {

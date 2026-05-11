@@ -18,16 +18,16 @@ import {
 } from "../integrations/amb/remnic-bridge.mjs";
 
 test("AMB bridge builds stable sanitized session ids", () => {
-  assert.equal(
-    buildAmbSessionId({ id: "doc one", user_id: "conv/42" }, 3),
-    "amb-conv-42-doc-one-3",
-  );
+  const sessionId = buildAmbSessionId({ id: "doc one", user_id: "conv/42" }, 3);
+
+  assert.match(sessionId, /^amb-conv-42-[a-f0-9]{12}-doc-one-[a-f0-9]{12}-3$/);
+  assert.equal(sessionId, buildAmbSessionId({ id: "doc one", user_id: "conv/42" }, 3));
 });
 
 test("AMB bridge can use benchmark-specific session prefixes", () => {
-  assert.equal(
+  assert.match(
     buildAmbSessionId({ id: "doc one", user_id: "conv/42" }, 3, "beam"),
-    "beam-conv-42-doc-one-3",
+    /^beam-conv-42-[a-f0-9]{12}-doc-one-[a-f0-9]{12}-3$/,
   );
 });
 
@@ -40,6 +40,15 @@ test("AMB bridge groups chunked documents by AMB user session by default", () =>
     buildAmbStorageSessionId({ id: "conv-1_s0_1", user_id: "conv-1" }, 1, "beam"),
     "beam-conv-1",
   );
+});
+
+test("AMB bridge keeps sanitized grouped session ids collision-resistant", () => {
+  const slashSession = buildAmbStorageSessionId({ id: "doc-1", user_id: "team/a" }, 0, "amb");
+  const spaceSession = buildAmbStorageSessionId({ id: "doc-2", user_id: "team a" }, 0, "amb");
+
+  assert.notEqual(slashSession, spaceSession);
+  assert.match(slashSession, /^amb-team-a-[a-f0-9]{12}$/);
+  assert.match(spaceSession, /^amb-team-a-[a-f0-9]{12}$/);
 });
 
 test("AMB bridge can keep document-specific sessions when grouping is disabled", () => {
@@ -453,6 +462,7 @@ test("AMB bridge reloads persisted session index for skipped-ingestion recall", 
 
 test("AMB bridge can derive grouped session id for legacy skipped-ingestion stores", async () => {
   const recallCalls = [];
+  const expectedSession = buildAmbStorageSessionId({ user_id: "conv/1" }, 0, "beam");
   const bridge = new RemnicAmbBridge(
     {
       async reset() {},
@@ -477,10 +487,10 @@ test("AMB bridge can derive grouped session id for legacy skipped-ingestion stor
   const result = await bridge.retrieve({
     query: "Who owned it?",
     k: 10,
-    user_id: "conv-1",
+    user_id: "conv/1",
   });
 
-  assert.deepEqual(recallCalls, ["beam-conv-1"]);
+  assert.deepEqual(recallCalls, [expectedSession]);
   assert.equal(result.raw_response.session_count, 1);
   assert.match(result.documents[0]?.content ?? "", /Marisol/);
 });
