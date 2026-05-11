@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, copyFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { patchAmbMemoryRegistry } from "./install-remnic-provider.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 test("patchAmbMemoryRegistry handles compact single-line registries", () => {
   const compactRegistry =
@@ -54,4 +61,75 @@ REGISTRY: dict[str, type[MemoryProvider]] = {
     patched.match(/["']remnic["']:\s*RemnicMemoryProvider/g)?.length,
     1,
   );
+});
+
+test("RemnicMemoryProvider cleanup does not hang on an unresponsive bridge", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-provider-test-"));
+  const packageDir = path.join(tempDir, "memory_bench");
+  const memoryDir = path.join(packageDir, "memory");
+  await mkdir(memoryDir, { recursive: true });
+  await writeFile(path.join(packageDir, "__init__.py"), "");
+  await writeFile(path.join(memoryDir, "__init__.py"), "");
+  await writeFile(
+    path.join(packageDir, "models.py"),
+    "class Document:\n    pass\n",
+  );
+  await writeFile(
+    path.join(memoryDir, "base.py"),
+    "class MemoryProvider:\n    pass\n",
+  );
+  await copyFile(
+    path.join(__dirname, "remnic_provider.py"),
+    path.join(memoryDir, "remnic.py"),
+  );
+
+  const script = `
+import time
+from memory_bench.memory.remnic import RemnicMemoryProvider
+
+class BlockingStdout:
+    def readline(self):
+        time.sleep(30)
+        return ""
+
+class FakeStdin:
+    def write(self, _value):
+        pass
+    def flush(self):
+        pass
+
+class FakeProc:
+    def __init__(self):
+        self.stdin = FakeStdin()
+        self.stdout = BlockingStdout()
+        self.terminated = False
+        self._returncode = None
+    def poll(self):
+        return self._returncode
+    def terminate(self):
+        self.terminated = True
+        self._returncode = 0
+    def wait(self, timeout=None):
+        return self._returncode
+    def kill(self):
+        self._returncode = -9
+
+provider = RemnicMemoryProvider()
+provider._cleanup_timeout_seconds = 0.05
+proc = FakeProc()
+provider._proc = proc
+started = time.monotonic()
+provider._stop_proc(send_cleanup=True)
+elapsed = time.monotonic() - started
+assert elapsed < 1.0, elapsed
+assert proc.terminated
+assert provider._proc is None
+`;
+
+  const result = spawnSync("python3", ["-c", script], {
+    cwd: tempDir,
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });

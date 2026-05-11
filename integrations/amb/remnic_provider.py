@@ -27,6 +27,7 @@ from .base import MemoryProvider
 
 
 UNIT_ID_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9._:-]+")
+BRIDGE_CLEANUP_TIMEOUT_SECONDS = 2.0
 
 
 class RemnicMemoryProvider(MemoryProvider):
@@ -52,6 +53,7 @@ class RemnicMemoryProvider(MemoryProvider):
         self._active_store_dir: Path | None = None
         self._stderr_tail: deque[str] = deque(maxlen=200)
         self._stderr_thread: threading.Thread | None = None
+        self._cleanup_timeout_seconds = BRIDGE_CLEANUP_TIMEOUT_SECONDS
 
     def initialize(self) -> None:
         self._ensure_proc()
@@ -282,10 +284,7 @@ class RemnicMemoryProvider(MemoryProvider):
             return
         try:
             if send_cleanup and proc.poll() is None:
-                try:
-                    self._request("cleanup", {}, ensure_running=False)
-                except Exception:
-                    pass
+                self._request_cleanup_best_effort(proc)
             if proc.poll() is None:
                 proc.terminate()
                 try:
@@ -297,6 +296,34 @@ class RemnicMemoryProvider(MemoryProvider):
             if self._proc is proc:
                 self._proc = None
                 self._active_store_dir = None
+
+    def _request_cleanup_best_effort(self, proc: subprocess.Popen[str]) -> None:
+        if proc.stdin is None or proc.stdout is None:
+            return
+
+        def cleanup() -> None:
+            try:
+                with self._lock:
+                    if proc.poll() is not None:
+                        return
+                    request_id = self._next_id
+                    self._next_id += 1
+                    proc.stdin.write(
+                        json.dumps({"id": request_id, "method": "cleanup", "params": {}})
+                        + "\n"
+                    )
+                    proc.stdin.flush()
+                    proc.stdout.readline()
+            except Exception:
+                return
+
+        thread = threading.Thread(
+            target=cleanup,
+            name="remnic-amb-bridge-cleanup",
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=self._cleanup_timeout_seconds)
 
     def _serialize_document(self, doc: Document) -> dict[str, Any]:
         payload: dict[str, Any] = {
