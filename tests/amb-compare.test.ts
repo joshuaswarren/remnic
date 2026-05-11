@@ -8,6 +8,7 @@ import {
   assertFullComparableRun,
   assertPublicComparableBeamResult,
   findSplitSota,
+  normalizeAccuracy,
   normalizeBeamMode,
   readResult,
 } from "../integrations/amb/compare-beam-result.mjs";
@@ -108,6 +109,18 @@ test("AMB comparator rejects mismatched result counts", () => {
       ),
     /result\.results length 399 does not match total_queries=400/,
   );
+});
+
+test("AMB comparator rejects null accuracy instead of coercing it to zero", () => {
+  assert.throws(
+    () => normalizeAccuracy({ accuracy: null }),
+    /result\.accuracy must be a finite number/,
+  );
+  assert.throws(
+    () => normalizeAccuracy({ accuracy: "0.9" }),
+    /result\.accuracy must be a finite number/,
+  );
+  assert.equal(normalizeAccuracy({ accuracy: 0 }), 0);
 });
 
 test("AMB comparator rejects JSON files that are not objects", async () => {

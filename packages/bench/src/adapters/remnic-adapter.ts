@@ -391,6 +391,24 @@ function normalizeBenchRecallAsOf(value: unknown): string | undefined {
   return normalized;
 }
 
+function normalizeBenchMessageTimestamp(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(
+      `benchmark message timestamp must be a non-empty timestamp string; received ${String(value)}`,
+    );
+  }
+  const parsed = Date.parse(value.trim());
+  if (!Number.isFinite(parsed)) {
+    throw new Error(
+      `benchmark message timestamp must be a parseable timestamp; received ${value}`,
+    );
+  }
+  return new Date(parsed).toISOString();
+}
+
 async function removeBenchQmdSandbox(sandbox: BenchQmdSandbox): Promise<void> {
   if (!sandbox.indexName.startsWith("remnic-bench-")) {
     return;
@@ -469,11 +487,16 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
     return {
       async store(sessionId: string, messages: Message[]): Promise<void> {
+        const timestampedMessages = messages.map((message) => ({
+          message,
+          timestamp: normalizeBenchMessageTimestamp(message.timestamp),
+        }));
+
         await getEngine().observeMessages(
           sessionId,
-          messages.map((message) => ({
-            role: message.role,
-            content: message.content,
+          timestampedMessages.map((entry) => ({
+            role: entry.message.role,
+            content: entry.message.content,
           })),
         );
 
@@ -486,15 +509,21 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
 
         const batchStartMs = Date.now();
-        const conversationalMessages = messages.filter(
-          (message): message is Message & { role: "user" | "assistant" } =>
-            message.role === "user" || message.role === "assistant",
+        const conversationalMessages = timestampedMessages.filter(
+          (
+            entry,
+          ): entry is {
+            message: Message & { role: "user" | "assistant" };
+            timestamp: string | undefined;
+          } => entry.message.role === "user" || entry.message.role === "assistant",
         );
-        const replayTurns = conversationalMessages.map((message, index) => ({
+        const replayTurns = conversationalMessages.map((entry, index) => ({
           source: "openclaw" as const,
-          role: message.role,
-          content: message.content,
-          timestamp: new Date(batchStartMs + index).toISOString(),
+          role: entry.message.role,
+          content: entry.message.content,
+          timestamp:
+            entry.timestamp ??
+            new Date(batchStartMs + index).toISOString(),
           sessionKey: sessionId,
         }));
 

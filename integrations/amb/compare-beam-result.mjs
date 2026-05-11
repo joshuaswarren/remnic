@@ -36,7 +36,10 @@ export function readResult(file) {
 }
 
 export function normalizeAccuracy(result) {
-  const accuracy = Number(result.accuracy);
+  if (typeof result.accuracy !== "number") {
+    throw new Error("result.accuracy must be a finite number");
+  }
+  const accuracy = result.accuracy;
   if (!Number.isFinite(accuracy)) {
     throw new Error("result.accuracy must be a finite number");
   }

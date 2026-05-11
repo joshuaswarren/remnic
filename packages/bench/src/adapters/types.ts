@@ -5,6 +5,8 @@
 export interface Message {
   role: "user" | "assistant" | "system";
   content: string;
+  /** Optional source timestamp for benchmarks with historical query times. */
+  timestamp?: string;
 }
 
 export interface SearchResult {

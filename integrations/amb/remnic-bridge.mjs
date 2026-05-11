@@ -149,6 +149,36 @@ function normalizeAmbQueryTimestamp(value) {
   return normalized;
 }
 
+function normalizeAmbSourceTimestamp(value) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  if (typeof value !== "string") {
+    throw new Error("AMB source timestamp must be an ISO 8601 timestamp string when provided.");
+  }
+  const normalized = normalizeAmbAnchorValue(value);
+  if (!normalized) {
+    return "";
+  }
+  const parsed = Date.parse(normalized);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`AMB source timestamp must be a parseable ISO 8601 timestamp; received ${value}`);
+  }
+  return new Date(parsed).toISOString();
+}
+
+function timestampedAmbMessage(role, content, timestamp) {
+  return timestamp ? { role, content, timestamp } : { role, content };
+}
+
+function tryNormalizeAmbSourceTimestamp(value) {
+  try {
+    return normalizeAmbSourceTimestamp(value);
+  } catch {
+    return "";
+  }
+}
+
 function buildAmbTurnAnchor(document, marker) {
   const rawMarker = typeof marker === "string" ? marker.trim() : "";
   const turnMatch = rawMarker.match(/\bTurn\s+([A-Za-z0-9_.:-]+)\b/i);
@@ -179,6 +209,16 @@ function buildAmbTurnAnchor(document, marker) {
   return fields.length > 0 ? `AMB turn anchors: ${fields.join("; ")}` : "";
 }
 
+function sourceTimestampFromAmbMarker(document, marker) {
+  const rawMarker = typeof marker === "string" ? marker.trim() : "";
+  const cleanedMarker = normalizeAmbAnchorValue(rawMarker.replace(/^\[/, "").replace(/\]$/, ""));
+  const timeAnchor = extractAmbTimeAnchor(cleanedMarker);
+  return (
+    tryNormalizeAmbSourceTimestamp(timeAnchor) ||
+    normalizeAmbSourceTimestamp(document?.timestamp || "")
+  );
+}
+
 function buildStructuredAmbMessages(document) {
   if (!Array.isArray(document?.messages)) {
     return [];
@@ -203,11 +243,13 @@ function buildStructuredAmbMessages(document) {
         ? `${timestamp} | Turn ${turnMarker}`
         : `Turn ${turnMarker}`;
     const anchor = buildAmbTurnAnchor(document, marker);
+    const sourceTimestamp = normalizeAmbSourceTimestamp(timestamp || document?.timestamp || "");
     return [
-      {
-        role: normalizeAmbRole(message.role),
-        content: anchor ? `${anchor}\n${content}` : content,
-      },
+      timestampedAmbMessage(
+        normalizeAmbRole(message.role),
+        anchor ? `${anchor}\n${content}` : content,
+        sourceTimestamp,
+      ),
     ];
   });
 }
@@ -240,10 +282,13 @@ function parseFormattedAmbContent(document) {
     }
     const marker = (match[2] ?? "").trim();
     const anchor = buildAmbTurnAnchor(document, marker);
-    parsed.push({
-      role: normalizeAmbRole(match[3]),
-      content: anchor ? `${anchor}\n${body}` : body,
-    });
+    parsed.push(
+      timestampedAmbMessage(
+        normalizeAmbRole(match[3]),
+        anchor ? `${anchor}\n${body}` : body,
+        sourceTimestampFromAmbMarker(document, marker),
+      ),
+    );
   }
 
   return parsed;
@@ -292,10 +337,13 @@ export function buildAmbMessages(document) {
   if (parsedMessages.length > 0) {
     messages.push(...parsedMessages);
   } else if (content.trim().length > 0) {
-    messages.push({
-      role: "user",
-      content: content.trim(),
-    });
+    messages.push(
+      timestampedAmbMessage(
+        "user",
+        content.trim(),
+        normalizeAmbSourceTimestamp(document?.timestamp || ""),
+      ),
+    );
   }
   return messages;
 }

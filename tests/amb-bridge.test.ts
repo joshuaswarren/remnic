@@ -71,6 +71,7 @@ test("AMB bridge preserves document metadata and parses formatted content", () =
     {
       role: "user",
       content: "The launch date is June 3.",
+      timestamp: "2026-05-10T12:00:00.000Z",
     },
   ]);
 });
@@ -99,6 +100,7 @@ test("AMB bridge adds benchmark-visible anchors for BEAM turn ids", () => {
   assert.match(messages[2]?.content ?? "", /time_anchor=2026-05-10T12:00:00Z/);
   assert.match(messages[2]?.content ?? "", /date=2026-05-10/);
   assert.match(messages[2]?.content ?? "", /Confirmed by the release note/);
+  assert.equal(messages[2]?.timestamp, "2026-05-10T12:00:00.000Z");
 });
 
 test("AMB bridge prefers structured document messages when present", () => {
@@ -122,8 +124,30 @@ test("AMB bridge prefers structured document messages when present", () => {
   assert.match(messages[1]?.content ?? "", /time_anchor=2026-07-09T09:00:00Z/);
   assert.match(messages[1]?.content ?? "", /date=2026-07-09/);
   assert.match(messages[1]?.content ?? "", /Structured launch date is July 9/);
+  assert.equal(messages[1]?.timestamp, "2026-07-09T09:00:00.000Z");
   assert.equal(messages[2]?.role, "assistant");
   assert.equal(messages[2]?.content, "Stored as structured assistant context.");
+});
+
+test("AMB bridge carries document timestamps into raw message fallback", () => {
+  assert.deepEqual(
+    buildAmbMessages({
+      id: "doc-raw-time",
+      timestamp: "2026-08-01T13:14:15Z",
+      content: "Plain timed document content without role markers.",
+    }),
+    [
+      {
+        role: "system",
+        content: "AMB document metadata: document_id=doc-raw-time; timestamp=2026-08-01T13:14:15Z",
+      },
+      {
+        role: "user",
+        content: "Plain timed document content without role markers.",
+        timestamp: "2026-08-01T13:14:15.000Z",
+      },
+    ],
+  );
 });
 
 test("AMB bridge falls back to raw content when no transcript markers exist", () => {

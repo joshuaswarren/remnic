@@ -941,6 +941,59 @@ test("runtime-backed adapter does not use LCM fallback for historical recall", a
   }
 });
 
+test("runtime-backed adapter preserves source timestamps for historical recall", async () => {
+  const sandboxDir = await mkdtemp(path.join(tmpdir(), "remnic-source-time-"));
+  const adapter = await createRemnicAdapter({
+    sandboxDir,
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    await adapter.store("beam-source-time-session", [
+      {
+        role: "user",
+        content: "Source-dated launch marker is amber-31.",
+        timestamp: "1999-12-31T23:59:59Z",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const transcriptPath = path.join(
+      sandboxDir,
+      "transcripts",
+      "other",
+      "default",
+      `${new Date().toISOString().slice(0, 10)}.jsonl`,
+    );
+    const transcriptLines = (await readFile(transcriptPath, "utf8"))
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => JSON.parse(line) as { sessionKey?: string; timestamp?: string });
+    const storedTurn = transcriptLines.find(
+      (entry) => entry.sessionKey === "beam-source-time-session",
+    );
+    assert.equal(storedTurn?.timestamp, "1999-12-31T23:59:59.000Z");
+
+    await assert.rejects(
+      () =>
+        adapter.store("beam-source-time-session", [
+          {
+            role: "user",
+            content: "Bad timestamp should be rejected.",
+            timestamp: "not-a-date",
+          },
+        ]),
+      /benchmark message timestamp must be a parseable timestamp/,
+    );
+  } finally {
+    await adapter.destroy();
+    await rm(sandboxDir, { recursive: true, force: true });
+  }
+});
+
 test("runtime-backed adapter preserves transcript order for stored batches", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {
