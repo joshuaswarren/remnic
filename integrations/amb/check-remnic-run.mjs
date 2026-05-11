@@ -118,11 +118,13 @@ const remnicRepoPath = path.resolve(process.env.REMNIC_REPO_PATH || repoRoot);
 const bridgePath = path.join(remnicRepoPath, "integrations", "amb", "remnic-bridge.mjs");
 const providerPath = path.join(ambRoot, "src", "memory_bench", "memory", "remnic.py");
 const registryPath = path.join(ambRoot, "src", "memory_bench", "memory", "__init__.py");
+const modeRegistryPath = path.join(ambRoot, "src", "memory_bench", "modes", "__init__.py");
 
 add("uv is available", commandExists("uv"), "required by the public AMB workflow");
 add("pnpm is available", commandExists("pnpm"), "required to launch the Remnic bridge");
 add("AMB checkout exists", existsSync(path.join(ambRoot, "pyproject.toml")), ambRoot);
 add("AMB memory registry exists", existsSync(registryPath), registryPath);
+add("AMB response mode registry exists", existsSync(modeRegistryPath), modeRegistryPath);
 add("Remnic provider installed", existsSync(providerPath), providerPath);
 
 if (existsSync(registryPath)) {
@@ -131,6 +133,15 @@ if (existsSync(registryPath)) {
     "Remnic registered in AMB registry",
     registry.includes("RemnicMemoryProvider") && registry.includes('"remnic"'),
     registryPath,
+  );
+}
+
+if (existsSync(modeRegistryPath)) {
+  const registry = readFileSync(modeRegistryPath, "utf8");
+  add(
+    "AMB exposes current single-query mode",
+    registry.includes('"rag"') && registry.includes("RAGMode"),
+    "current AMB CLI uses --mode rag for the public single-query response flow",
   );
 }
 

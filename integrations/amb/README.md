@@ -67,6 +67,10 @@ Full BEAM runs follow the same AMB command shape:
 uv run omb run --dataset beam --split 10m --memory remnic --mode rag
 ```
 
+Current AMB names this response mode `rag` in the CLI. Existing published BEAM
+leaderboard artifacts may still label the same single-query RAG flow as
+`single-query`.
+
 The AMB result is written by AMB itself under:
 
 ```text
@@ -87,7 +91,8 @@ node /path/to/remnic/integrations/amb/compare-beam-result.mjs outputs/beam/remni
 
 ## Notes
 
-- Use AMB `--mode rag` for comparable retrieval + generated-answer runs.
+- Use AMB `--mode rag` for comparable single-query retrieval + generated-answer
+  runs.
 - BEAM has `isolation_unit = "conversation"`. The provider resets Remnic before
   each isolated conversation ingest, matching AMB's unit-sequential evaluation.
 - The provider returns Remnic recall context as the retrieved document passed to

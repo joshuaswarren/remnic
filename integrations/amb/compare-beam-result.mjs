@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 /**
  * Compare a local Remnic BEAM result file against the current public AMB
- * leaderboard for the same split.
+ * leaderboard for the same split and comparable response mode.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
 const RESULTS_API = "https://agentmemorybenchmark.ai/api/results";
 const EPSILON = 1e-12;
+const PUBLIC_SINGLE_QUERY_MODE = "single-query";
 
 function usage() {
   return [
@@ -19,7 +21,7 @@ function usage() {
   ].join("\n");
 }
 
-function readResult(file) {
+export function readResult(file) {
   const bytes = readFileSync(file);
   const text = file.endsWith(".gz")
     ? gunzipSync(bytes).toString("utf8")
@@ -27,7 +29,7 @@ function readResult(file) {
   return JSON.parse(text);
 }
 
-function normalizeAccuracy(result) {
+export function normalizeAccuracy(result) {
   const accuracy = Number(result.accuracy);
   if (!Number.isFinite(accuracy)) {
     throw new Error("result.accuracy must be a finite number");
@@ -35,7 +37,7 @@ function normalizeAccuracy(result) {
   return accuracy;
 }
 
-async function fetchPublicBeamRows() {
+export async function fetchPublicBeamRows() {
   const response = await fetch(RESULTS_API);
   if (!response.ok) {
     throw new Error(`failed to fetch AMB results: ${response.status} ${response.statusText}`);
@@ -47,45 +49,59 @@ async function fetchPublicBeamRows() {
   return rows.filter((row) => row.dataset === "beam");
 }
 
-function findSplitSota(rows, split) {
-  const matching = rows.filter((row) => row.split === split);
+export function normalizeBeamMode(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  return normalized === "rag" ? PUBLIC_SINGLE_QUERY_MODE : normalized;
+}
+
+export function assertPublicComparableBeamResult(result) {
+  if (result.dataset !== "beam") {
+    throw new Error(`expected dataset=beam, received ${String(result.dataset)}`);
+  }
+  const split = String(result.split || "");
+  if (!split) {
+    throw new Error("result.split is required");
+  }
+  const mode = normalizeBeamMode(result.mode);
+  if (mode !== PUBLIC_SINGLE_QUERY_MODE) {
+    throw new Error(
+      `expected mode=rag or mode=single-query for public BEAM single-query comparison, received ${String(result.mode)}`,
+    );
+  }
+  return { split, mode };
+}
+
+export function findSplitSota(rows, split, mode = PUBLIC_SINGLE_QUERY_MODE) {
+  const normalizedMode = normalizeBeamMode(mode);
+  const matching = rows.filter(
+    (row) => row.split === split && normalizeBeamMode(row.mode) === normalizedMode,
+  );
   if (matching.length === 0) {
-    throw new Error(`no public BEAM rows found for split ${split}`);
+    throw new Error(`no public BEAM rows found for split ${split} and mode ${normalizedMode}`);
   }
   return matching.reduce((best, row) =>
     Number(row.accuracy) > Number(best.accuracy) ? row : best,
   );
 }
 
-const file = process.argv[2];
-if (!file || file === "--help" || file === "-h") {
-  console.error(usage());
-  process.exit(file ? 0 : 2);
-}
-
-try {
+export async function compareBeamResult(file) {
   const local = readResult(file);
-  if (local.dataset !== "beam") {
-    throw new Error(`expected dataset=beam, received ${String(local.dataset)}`);
-  }
-  const split = String(local.split || "");
-  if (!split) {
-    throw new Error("result.split is required");
-  }
+  const { split, mode } = assertPublicComparableBeamResult(local);
 
   const localAccuracy = normalizeAccuracy(local);
   const publicRows = await fetchPublicBeamRows();
-  const sota = findSplitSota(publicRows, split);
+  const sota = findSplitSota(publicRows, split, mode);
   const sotaAccuracy = Number(sota.accuracy);
   const delta = localAccuracy - sotaAccuracy;
   const isSota = delta + EPSILON >= 0;
 
-  console.log(JSON.stringify({
+  return {
     split,
     local: {
       run_name: local.run_name,
       memory_provider: local.memory_provider,
       mode: local.mode,
+      comparable_mode: mode,
       accuracy: localAccuracy,
       total_queries: local.total_queries,
       answer_llm: local.answer_llm,
@@ -101,10 +117,30 @@ try {
     },
     delta,
     is_sota: isSota,
-  }, null, 2));
+  };
+}
 
-  process.exit(isSota ? 0 : 1);
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
+function isDirectEntrypoint() {
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectEntrypoint()) {
+  const file = process.argv[2];
+  if (!file || file === "--help" || file === "-h") {
+    console.error(usage());
+    process.exit(file ? 0 : 2);
+  }
+
+  try {
+    const comparison = await compareBeamResult(file);
+    console.log(JSON.stringify(comparison, null, 2));
+    process.exit(comparison.is_sota ? 0 : 1);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
 }
