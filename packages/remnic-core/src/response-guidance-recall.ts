@@ -146,13 +146,9 @@ export async function buildResponseGuidanceRecallSection(
     options.maxSearchResults ?? DEFAULT_MAX_SEARCH_RESULTS,
   );
   const intents = classifyGuidanceIntents(options.query);
-  if (!options.engine || budget <= 0 || intents.length === 0) {
+  if (!options.engine || budget <= 0 || maxResults <= 0 || intents.length === 0) {
     return "";
   }
-  if (maxResults <= 0) {
-    return "";
-  }
-
   const items = await collectGuidanceItems(options, intents);
   const ranked = rankAndDedupeGuidanceItems(items, options.query, intents)
     .slice(0, maxResults);

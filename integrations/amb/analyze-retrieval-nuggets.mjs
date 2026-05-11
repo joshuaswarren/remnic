@@ -86,10 +86,12 @@ function parseArgs(argv) {
     const arg = argv[index];
     switch (arg) {
       case "--threshold":
-        args.threshold = Number(argv[++index] ?? "");
+        args.threshold = Number(readRequiredOptionValue(argv, index, "--threshold"));
+        index += 1;
         break;
       case "--top":
-        args.top = Number(argv[++index] ?? "");
+        args.top = Number(readRequiredOptionValue(argv, index, "--top"));
+        index += 1;
         break;
       case "-h":
       case "--help":
@@ -111,6 +113,14 @@ function parseArgs(argv) {
     throw new Error("--top must be a non-negative integer");
   }
   return args;
+}
+
+function readRequiredOptionValue(argv, index, flag) {
+  const value = argv[index + 1];
+  if (value === undefined || value.trim() === "" || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
 }
 
 function normalizeText(value) {

@@ -618,6 +618,12 @@ export interface RecallInvocationOptions {
    * normally be pruned by confidence decay.  Default `false`.
    */
   includeLowConfidence?: boolean;
+  /**
+   * User-aware context scopes active for this recall. Used by X-ray
+   * provenance safety checks so boundary-scoped memories are evaluated
+   * against the caller's real context.
+   */
+  currentContextScopes?: readonly unknown[];
 }
 
 type QueryAwarePrefilter = {
@@ -9911,6 +9917,7 @@ export class Orchestrator {
               provenance = buildRetrievedMemoryProvenance(memory, {
                 namespace: resultNamespace,
                 retrievalReason: `served-by=${servedBy}`,
+                currentContextScopes: options.currentContextScopes,
               });
             }
           } catch {

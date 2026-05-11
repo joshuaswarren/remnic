@@ -47,20 +47,24 @@ export async function buildTargetedFactRecallSection(
   ).slice(0, maxResults);
 
   const title = options.title ?? "Targeted fact evidence";
+  const summary = buildTargetedFactSummary(ranked, options.query);
+  const summaryInsert = summary ? `\n\n${summary}` : "";
+  const evidenceBudget = summaryInsert
+    ? Math.max(0, budget - summaryInsert.length)
+    : budget;
   const evidence = buildEvidencePack(ranked, {
     title,
-    maxChars: budget,
+    maxChars: evidenceBudget,
     maxItemChars: options.maxItemChars,
     query: buildTargetedFactQuery(options.query),
   });
-  if (!evidence) {
-    return "";
+  if (!summary) {
+    return evidence;
   }
-
-  const summary = buildTargetedFactSummary(ranked, options.query);
-  return summary
-    ? evidence.replace(`## ${title}`, `## ${title}\n\n${summary}`)
-    : evidence;
+  if (!evidence) {
+    return clipTextToBudget(`## ${title}${summaryInsert}`, budget);
+  }
+  return evidence.replace(`## ${title}`, `## ${title}${summaryInsert}`);
 }
 
 async function collectTargetedFactSearchItems(
@@ -2693,6 +2697,16 @@ function normalizePositiveInteger(value: number): number {
     return 0;
   }
   return Math.floor(value);
+}
+
+function clipTextToBudget(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  if (maxChars <= 3) {
+    return text.slice(0, Math.max(0, maxChars));
+  }
+  return `${text.slice(0, maxChars - 3).trimEnd()}...`;
 }
 
 function escapeRegExp(value: string): string {

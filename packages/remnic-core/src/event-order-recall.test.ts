@@ -7,6 +7,8 @@ import {
 } from "./event-order-recall.js";
 
 class FakeEventOrderEngine {
+  readonly expandCalls: Array<{ sessionId: string; fromTurn: number; toTurn: number; maxTokens: number }> = [];
+
   constructor(
     private readonly sessionId: string,
     private readonly messages: Array<{ turn_index: number; role: string; content: string }>,
@@ -28,8 +30,9 @@ class FakeEventOrderEngine {
     sessionId: string,
     fromTurn: number,
     toTurn: number,
-    _maxTokens: number,
+    maxTokens: number,
   ): Promise<Array<{ turn_index: number; role: string; content: string }>> {
+    this.expandCalls.push({ sessionId, fromTurn, toTurn, maxTokens });
     if (sessionId !== this.sessionId) return [];
     return this.messages.filter(
       (message) => message.turn_index >= fromTurn && message.turn_index <= toTurn,
@@ -155,6 +158,27 @@ test("event order recall is query-triggered", () => {
     shouldRecallEventOrderEvidence("What was my espresso code?"),
     false,
   );
+});
+
+test("event order recall honors zero max items without scanning", async () => {
+  const engine = new FakeEventOrderEngine("event-order-zero", [
+    {
+      turn_index: 0,
+      role: "user",
+      content: "First I introduced the database migration issue.",
+    },
+  ]);
+
+  const recalled = await buildEventOrderRecallSection({
+    engine,
+    sessionId: "event-order-zero",
+    query: "Walk me through the order in which I introduced project topics in order.",
+    maxChars: 2000,
+    maxItems: 0,
+  });
+
+  assert.equal(recalled, "");
+  assert.deepEqual(engine.expandCalls, []);
 });
 
 test("event order recall returns relevant user turns in chronological order", async () => {

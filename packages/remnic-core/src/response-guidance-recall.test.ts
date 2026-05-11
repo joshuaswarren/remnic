@@ -7,6 +7,9 @@ import {
 } from "./response-guidance-recall.js";
 
 class FakeGuidanceEngine {
+  readonly searchCalls: Array<{ query: string; limit: number; sessionId?: string }> = [];
+  readonly expandCalls: Array<{ sessionId: string; fromTurn: number; toTurn: number; maxTokens: number }> = [];
+
   constructor(
     private readonly sessionId: string,
     private readonly messages: Array<{ turn_index: number; role: string; content: string }>,
@@ -14,8 +17,8 @@ class FakeGuidanceEngine {
   ) {}
 
   async searchContextFull(
-    _query: string,
-    _limit: number,
+    query: string,
+    limit: number,
     sessionId?: string,
   ): Promise<
     Array<{
@@ -26,6 +29,7 @@ class FakeGuidanceEngine {
       score: number;
     }>
   > {
+    this.searchCalls.push({ query, limit, sessionId });
     if (sessionId && sessionId !== this.sessionId) return [];
     return this.searchTurnIndexes
       .map((turnIndex, index) => {
@@ -46,8 +50,9 @@ class FakeGuidanceEngine {
     sessionId: string,
     fromTurn: number,
     toTurn: number,
-    _maxTokens: number,
+    maxTokens: number,
   ): Promise<Array<{ turn_index: number; role: string; content: string }>> {
+    this.expandCalls.push({ sessionId, fromTurn, toTurn, maxTokens });
     if (sessionId !== this.sessionId) return [];
     return this.messages.filter(
       (message) => message.turn_index >= fromTurn && message.turn_index <= toTurn,
@@ -574,6 +579,28 @@ test("response guidance recall is query-triggered", () => {
     true,
   );
   assert.equal(shouldRecallResponseGuidance("What is my espresso code?"), false);
+});
+
+test("response guidance recall honors zero max results without search or scan", async () => {
+  const engine = new FakeGuidanceEngine("guidance-zero", [
+    {
+      turn_index: 0,
+      role: "user",
+      content: "I need a step-by-step editing process for revising drafts.",
+    },
+  ], [0]);
+
+  const recalled = await buildResponseGuidanceRecallSection({
+    engine,
+    sessionId: "guidance-zero",
+    query: "How should I approach editing my draft?",
+    maxChars: 2000,
+    maxSearchResults: 0,
+  });
+
+  assert.equal(recalled, "");
+  assert.deepEqual(engine.searchCalls, []);
+  assert.deepEqual(engine.expandCalls, []);
 });
 
 test("response guidance recall recovers durable editing instructions", async () => {

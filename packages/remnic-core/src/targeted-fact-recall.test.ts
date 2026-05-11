@@ -826,6 +826,36 @@ test("targeted fact recall favors updated device purchase budget ceilings", asyn
   assert.doesNotMatch(recalled, /\$150 budget ceiling/);
 });
 
+test("targeted fact recall reserves budget for computed summary", async () => {
+  const sessionId = "beam-phone-budget-summary-budget";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 10,
+      role: "user",
+      content:
+        "I set a $700 budget ceiling for the new phone, prioritizing camera and battery life.",
+    },
+    {
+      turn_index: 20,
+      role: "user",
+      content:
+        "I'm looking to buy a new smartphone for photography and gaming, and I've just adjusted my budget to $750, so I can get something with really good camera and battery features.",
+    },
+  ], [10, 20]);
+
+  const maxChars = 110;
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "What budget ceiling have I set for purchasing a new phone with a focus on camera and battery life?",
+    maxChars,
+  });
+
+  assert.ok(recalled.length <= maxChars);
+  assert.match(recalled, /Most recent purchase budget evidence: \$750 budget ceiling/);
+});
+
 test("targeted fact recall computes induction quiz score deltas", async () => {
   const sessionId = "beam-induction-score-delta-core";
   const messages = [

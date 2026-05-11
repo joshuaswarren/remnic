@@ -41,7 +41,11 @@ export async function buildEventOrderRecallSection(
   options: EventOrderRecallOptions,
 ): Promise<string> {
   const budget = normalizePositiveInteger(options.maxChars);
+  const maxItems = normalizePositiveInteger(options.maxItems ?? DEFAULT_MAX_ITEMS);
   if (!options.engine || !options.sessionId || budget <= 0) {
+    return "";
+  }
+  if (maxItems <= 0) {
     return "";
   }
   if (!shouldRecallEventOrderEvidence(options.query)) {
@@ -49,7 +53,7 @@ export async function buildEventOrderRecallSection(
   }
 
   const items = await collectEventOrderItems(options);
-  const ranked = rankAndSelectEventOrderItems(items, options);
+  const ranked = rankAndSelectEventOrderItems(items, options, maxItems);
   if (ranked.length === 0) {
     return "";
   }
@@ -66,7 +70,7 @@ export async function buildEventOrderRecallSection(
 
   const requested = parseRequestedItemCount(options.query);
   const outlineSource = requested
-    ? rankEventOrderItemsForOutline(items, options.query)
+    ? rankEventOrderItemsForOutline(items, options.query).slice(0, maxItems)
     : ranked;
   const outline = buildChronologyOutline(outlineSource, options.query, requested);
   const summary = [
@@ -132,12 +136,9 @@ async function collectEventOrderItems(
 function rankAndSelectEventOrderItems(
   items: EvidencePackItem[],
   options: EventOrderRecallOptions,
+  maxItems: number,
 ): RankedEventItem[] {
   const requested = parseRequestedItemCount(options.query);
-  const maxItems = Math.max(
-    requested ? requested * 3 : DEFAULT_MAX_ITEMS,
-    normalizePositiveInteger(options.maxItems ?? DEFAULT_MAX_ITEMS),
-  );
   const rankedByScore = items
     .map((item) => ({
       ...item,
@@ -155,7 +156,11 @@ function rankAndSelectEventOrderItems(
   const selectedById = new Map<string, RankedEventItem>();
   if (requested) {
     const queryTerms = extractEventOrderTerms(options.query);
-    const tailReserve = Math.min(6, Math.max(2, Math.floor(requested / 3)));
+    const tailReserve = Math.min(
+      maxItems,
+      6,
+      Math.max(1, Math.floor(Math.min(requested, maxItems) / 3)),
+    );
     const primaryLimit = Math.max(0, maxItems - tailReserve);
     for (const item of rankedByScore.slice(0, primaryLimit)) {
       selectedById.set(eventItemSelectionKey(item), item);
@@ -215,6 +220,7 @@ function rankAndSelectEventOrderItems(
       })
       .slice(0, tailReserve);
     for (const item of lateHighValue) {
+      if (selectedById.size >= maxItems) break;
       selectedById.set(eventItemSelectionKey(item), item);
     }
   }

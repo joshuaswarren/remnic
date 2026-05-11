@@ -236,3 +236,32 @@ test("recall X-ray attaches provenance for surfaced memory results", async () =>
   assert.equal(provenance.safety, "requires-review");
   assert.ok(provenance.safetyReasons.includes("boundary-review=private"));
 });
+
+test("recall X-ray provenance uses caller current context scopes for safety", async () => {
+  const orchestrator = await makeOrchestrator("engram-xray-provenance-scope-");
+  (orchestrator as any).initPromise = null;
+
+  await (orchestrator as any).storage.writeMemory(
+    "fact",
+    "The recall cache TTL is twenty minutes.",
+    {
+      source: "test",
+      confidence: 0.92,
+      tags: ["repo", "private"],
+    },
+  );
+
+  await orchestrator.recall(
+    "recall cache TTL",
+    "agent:test:xray-provenance-scope",
+    { xrayCapture: true, mode: "full", currentContextScopes: ["private"] },
+  );
+
+  const snapshot = orchestrator.getLastXraySnapshot();
+  assert.ok(snapshot);
+  const provenance = snapshot.results[0]?.provenance;
+  assert.ok(provenance, "surfaced memory should carry provenance");
+  assert.equal(provenance.safeToUse, true);
+  assert.equal(provenance.safety, "safe");
+  assert.deepEqual(provenance.safetyReasons, []);
+});
