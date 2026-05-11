@@ -496,6 +496,15 @@ function buildStructuredAmbMessages(document) {
   });
 }
 
+function formattedAmbRoleMarkerStart(match) {
+  return (match.index ?? 0) + (match[1]?.length ?? 0);
+}
+
+function formattedAmbMessageBodyStart(match) {
+  const separatorLength = match[1]?.length ?? 0;
+  return formattedAmbRoleMarkerStart(match) + match[0].length - separatorLength;
+}
+
 function parseFormattedAmbContent(document) {
   const content = typeof document?.content === "string" ? document.content.trim() : "";
   if (!content) {
@@ -505,7 +514,8 @@ function parseFormattedAmbContent(document) {
   const markerPattern =
     /(^|\n+)(\[[^\]\n]*\]\s*)?(User|Assistant|System|Unknown):\s*/g;
   const matches = [...content.matchAll(markerPattern)];
-  if (matches.length === 0 || matches[0]?.index !== 0) {
+  const firstMarkerStart = matches[0] ? formattedAmbRoleMarkerStart(matches[0]) : -1;
+  if (matches.length === 0 || firstMarkerStart !== 0) {
     return [];
   }
 
@@ -516,7 +526,7 @@ function parseFormattedAmbContent(document) {
     if (match.index === undefined) {
       continue;
     }
-    const bodyStart = match.index + match[0].length;
+    const bodyStart = formattedAmbMessageBodyStart(match);
     const bodyEnd = next?.index ?? content.length;
     const body = content.slice(bodyStart, bodyEnd).trim();
     if (!body) {

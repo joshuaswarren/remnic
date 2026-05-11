@@ -303,9 +303,9 @@ for (const check of checks) {
 }
 
 const failures = checks.filter((check) => !check.ok);
+const label = expectedProfile?.description ?? "Remnic BEAM";
 if (failures.length > 0) {
   console.error("");
-  const label = expectedProfile?.description ?? "Remnic BEAM";
   console.error(`Remnic AMB ${label} preflight failed (${failures.length} issue(s)).`);
   if (expectedProfile) {
     printRequiredExports(expectedProfile, displayRepoRoot);
@@ -316,4 +316,4 @@ if (failures.length > 0) {
 }
 
 console.log("");
-console.log(`Remnic AMB ${expectedProfile.description} preflight passed.`);
+console.log(`Remnic AMB ${label} preflight passed.`);

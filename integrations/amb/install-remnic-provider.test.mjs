@@ -340,6 +340,27 @@ test("check-remnic-run keeps the public BEAM profile strict by default", async (
   }
 });
 
+test("check-remnic-run reports unsupported profiles without crashing", async () => {
+  const ambDir = await createAmbFixture();
+
+  try {
+    const result = runAmbPreflight(ambDir, {
+      REMNIC_REPO_PATH: path.resolve(__dirname, "../.."),
+      REMNIC_AMB_RUN_PROFILE: "experimental",
+      REMNIC_AMB_SESSION_PREFIX: "beam",
+      REMNIC_AMB_REPLAY_EXTRACTION_MODE: "skip",
+      REMNIC_AMB_DRAIN_AFTER_INGEST: "false",
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.stderr, /TypeError/);
+    assert.match(result.stdout, /REMNIC_AMB_RUN_PROFILE=experimental/);
+    assert.match(result.stderr, /Set REMNIC_AMB_RUN_PROFILE to public-beam or codex-cli/);
+  } finally {
+    await rm(ambDir, { recursive: true, force: true });
+  }
+});
+
 test("RemnicMemoryProvider cleanup does not hang on an unresponsive bridge", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-provider-test-"));
   const packageDir = path.join(tempDir, "memory_bench");

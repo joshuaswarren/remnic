@@ -172,6 +172,35 @@ test("AMB bridge splits formatted content on single newlines", () => {
   assert.equal(messages[3]?.timestamp, "2026-05-10T13:00:00.000Z");
 });
 
+test("AMB bridge parses formatted content with leading blank lines", () => {
+  const messages = buildAmbMessages({
+    id: "doc-leading-newlines",
+    timestamp: "2026-05-10T12:00:00Z",
+    content: "\n\nUser: The launch owner was Marisol.\nAssistant: Acknowledged.",
+  });
+
+  assert.equal(messages.length, 3);
+  assert.equal(messages[1]?.role, "user");
+  assert.equal(messages[1]?.content, "The launch owner was Marisol.");
+  assert.equal(messages[2]?.role, "assistant");
+  assert.equal(messages[2]?.content, "Acknowledged.");
+});
+
+test("AMB bridge falls back to raw content when formatted markers have text preamble", () => {
+  const messages = buildAmbMessages({
+    id: "doc-preamble",
+    timestamp: "2026-05-10T12:00:00Z",
+    content: "Transcript follows.\nUser: The launch owner was Marisol.",
+  });
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[1]?.role, "user");
+  assert.equal(
+    messages[1]?.content,
+    "Transcript follows.\nUser: The launch owner was Marisol.",
+  );
+});
+
 test("AMB bridge uses document timestamps as turn anchors when markers omit time", () => {
   const messages = buildAmbMessages({
     id: "doc-turn-time-fallback",
