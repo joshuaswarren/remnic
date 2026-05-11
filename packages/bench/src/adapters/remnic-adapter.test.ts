@@ -420,6 +420,57 @@ test("direct adapter front-loads the latest matching numeric evidence", async ()
   }
 });
 
+test("direct adapter counts only user-stated implementation targets across sessions", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-implementation-targets", [
+      {
+        role: "user",
+        content:
+          "I'm trying to estimate the time it'll take to implement user registration with password hashing and validation.",
+      },
+      {
+        role: "assistant",
+        content:
+          "You could also consider MFA, CSRF protection, JWT rotation, security headers, and audit logging as general best practices.",
+      },
+      {
+        role: "user",
+        content:
+          "I'm trying to implement role-based access control for my application, specifically for the 'user' role.",
+      },
+      {
+        role: "assistant",
+        content:
+          "For authorization, broad best practices include RBAC, ABAC, scopes, permissions, and policy engines.",
+      },
+      {
+        role: "user",
+        content:
+          "I'm trying to implement the account lockout feature after 5 failed login attempts using Redis 7.0 for rate limiting.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-implementation-targets",
+      "How many different user roles and security features am I trying to implement across my sessions?",
+      24_000,
+    );
+
+    assert.match(recalled, /## User-stated implementation targets/);
+    assert.match(recalled, /Distinct user-stated targets found: 3/);
+    assert.match(recalled, /password hashing/);
+    assert.match(recalled, /role-based access control/);
+    assert.match(recalled, /account lockout after failed login attempts/);
+    assert.doesNotMatch(recalled, /MFA/);
+    assert.doesNotMatch(recalled, /JWT rotation/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("direct adapter archives stored messages into LCM once", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {

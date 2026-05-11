@@ -624,11 +624,14 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           !historicalRecall && shouldRequireDirectTemporalEvidence(query);
         const requireLatestQuantitativeEvidence =
           !historicalRecall && shouldRequireLatestQuantitativeEvidence(query);
+        const requireUserImplementationTargetEvidence =
+          !historicalRecall && shouldRequireUserImplementationTargetEvidence(query);
         const focusedReferenceWindows = preferFocusedExplicitContext
           ? buildFocusedReferenceWindows(
             explicitReferences.map((reference) => reference.number),
           )
           : [];
+        let hasUserImplementationTargetEvidence = false;
 
         if (requireLatestQuantitativeEvidence) {
           const latestQuantitativeEvidence =
@@ -641,6 +644,20 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           if (latestQuantitativeEvidence) {
             sections.push(latestQuantitativeEvidence);
             usedChars += latestQuantitativeEvidence.length;
+          }
+        }
+
+        if (requireUserImplementationTargetEvidence) {
+          const userImplementationTargetEvidence =
+            await buildUserImplementationTargetEvidenceSection({
+              engine,
+              sessionId,
+              maxChars: Math.min(3_500, Math.floor(budget * 0.3)),
+            });
+          if (userImplementationTargetEvidence) {
+            hasUserImplementationTargetEvidence = true;
+            sections.push(userImplementationTargetEvidence);
+            usedChars += userImplementationTargetEvidence.length;
           }
         }
 
@@ -680,7 +697,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         if (
           useCoreMemoryPipeline &&
           !requireDirectPersonalHistoryEvidence &&
-          !requireDirectTemporalEvidence
+          !requireDirectTemporalEvidence &&
+          !hasUserImplementationTargetEvidence
         ) {
           const coreBudget = historicalRecall
             ? Math.max(0, budget - usedChars)
@@ -721,9 +739,10 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           historicalRecall ||
           requireDirectPersonalHistoryEvidence ||
           requireDirectTemporalEvidence ||
+          hasUserImplementationTargetEvidence ||
           (preferFocusedExplicitContext && !!exactReferenceEvidence);
 
-        if (query && !historicalRecall) {
+        if (query && !historicalRecall && !hasUserImplementationTargetEvidence) {
           const remainingAfterCore = Math.max(0, budget - usedChars);
           const searchBudget = useCoreMemoryPipeline
             ? Math.max(0, Math.floor(remainingAfterCore * 0.75))
@@ -1387,6 +1406,139 @@ function matchesRequiredQuantitativeUnit(
     return true;
   }
   return unitTerms.some((term) => matchesLatestQuantitativeSubjectTerm(text, term));
+}
+
+async function buildUserImplementationTargetEvidenceSection(options: {
+  engine: BenchRecallEngine;
+  sessionId: string;
+  maxChars: number;
+}): Promise<string> {
+  if (options.maxChars <= 0) {
+    return "";
+  }
+
+  const stats = await options.engine.getStats(options.sessionId);
+  if (
+    stats.totalMessages <= 0 ||
+    typeof stats.maxTurnIndex !== "number" ||
+    stats.maxTurnIndex < 0
+  ) {
+    return "";
+  }
+
+  const evidenceByTarget = new Map<
+    string,
+    { sessionId: string; turnIndex: number; role: string; content: string }
+  >();
+  const windowSize = 12;
+  for (let end = stats.maxTurnIndex; end >= 0; end -= windowSize) {
+    const start = Math.max(0, end - windowSize + 1);
+    const messages = await options.engine.expandContext(
+      options.sessionId,
+      start,
+      end,
+      12_000,
+    );
+    for (const message of [...messages].reverse()) {
+      if (message.role !== "user" || !hasImplementationIntentCue(message.content)) {
+        continue;
+      }
+      for (const target of extractUserImplementationTargets(message.content)) {
+        if (evidenceByTarget.has(target)) {
+          continue;
+        }
+        evidenceByTarget.set(target, {
+          sessionId: options.sessionId,
+          turnIndex: message.turn_index,
+          role: message.role,
+          content: message.content,
+        });
+      }
+    }
+  }
+
+  const orderedTargets = USER_IMPLEMENTATION_TARGETS
+    .map((target) => target.label)
+    .filter((target) => evidenceByTarget.has(target));
+  if (orderedTargets.length === 0) {
+    return "";
+  }
+
+  const lines = [
+    "## User-stated implementation targets",
+    `Distinct user-stated targets found: ${orderedTargets.length}.`,
+    "Count only these targets for implementation-count questions. Do not count assistant-suggested best-practice lists unless the user later states they are implementing that item.",
+  ];
+  for (const target of orderedTargets) {
+    const evidence = evidenceByTarget.get(target);
+    if (!evidence) {
+      continue;
+    }
+    const item = formatEvidenceItem(evidence, Math.min(700, options.maxChars));
+    if (item) {
+      lines.push(`- ${target}: ${item}`);
+    }
+  }
+
+  const section = lines.join("\n");
+  return section.length <= options.maxChars
+    ? section
+    : section.slice(0, options.maxChars);
+}
+
+function shouldRequireUserImplementationTargetEvidence(query: string): boolean {
+  const text = query.toLowerCase();
+  return /\bimplement(?:ing)?\b/.test(text) &&
+    /\bacross (?:my )?sessions\b/.test(text) &&
+    /\b(?:different|how many|what|which)\b/.test(text);
+}
+
+const USER_IMPLEMENTATION_TARGETS: ReadonlyArray<{
+  label: string;
+  patterns: readonly RegExp[];
+}> = [
+  {
+    label: "password hashing",
+    patterns: [
+      /\bpassword[- ]hash(?:ing|es|ed)?\b/i,
+      /\bpassword\s+(?:hashing|hash|storage)\b/i,
+      /\bpassword_hash\b/i,
+      /\bargon2\b/i,
+      /\bbcrypt\b/i,
+    ],
+  },
+  {
+    label: "role-based access control",
+    patterns: [
+      /\brole[- ]based access control\b/i,
+      /\brbac\b/i,
+      /\buser role\b/i,
+      /\b['"]user['"]\s+role\b/i,
+    ],
+  },
+  {
+    label: "account lockout after failed login attempts",
+    patterns: [
+      /\baccount lockout\b/i,
+      /\bfailed login attempts?\b/i,
+      /\blockout\b[\s\S]{0,80}\bfailed login\b/i,
+      /\brate limiting\b[\s\S]{0,120}\bfailed login\b/i,
+    ],
+  },
+];
+
+function hasImplementationIntentCue(content: string): boolean {
+  return /\b(?:trying to implement|trying to estimate\b[\s\S]{0,80}\bimplement|want to implement|need to implement|i(?:'| a)?m trying to|i(?:'| ha)?ve added|i have added|switching to|switched to|need to add|i(?:'| woul)d like to|i want to)\b/i.test(content);
+}
+
+function extractUserImplementationTargets(content: string): string[] {
+  const targets: string[] = [];
+  for (const target of USER_IMPLEMENTATION_TARGETS) {
+    if (target.patterns.some((pattern) => pattern.test(content))) {
+      targets.push(target.label);
+    }
+  }
+  return targets;
 }
 
 function formatEvidenceItem(
