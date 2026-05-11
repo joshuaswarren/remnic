@@ -359,6 +359,20 @@ export type {
   RecallFilterTrace,
 } from "./recall-xray.js";
 
+// ChatGPT Apps-compatible memory inspector demo.
+export {
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_CANONICAL_TOOL,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
+  buildChatGptMemoryInspectorActionRequest,
+  buildChatGptMemoryInspectorResult,
+  type RemnicChatGptMemoryInspectorInput,
+  type RemnicChatGptMemoryCard,
+  type RemnicChatGptMemoryInspectorResult,
+} from "./mcp-memory-inspector-app.js";
+
 // Coding-agent subsystem (issue #569)
 export {
   resolveGitContext,

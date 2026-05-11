@@ -321,7 +321,7 @@ test("focused list recall counts soy sauce substitutes from user replacement evi
     maxScanWindowTurns: 8,
   });
 
-  assert.match(recalled, /Two substitutes: coconut aminos; Bragg Liquid Aminos/);
+  assert.match(recalled, /Two substitutes: coconut aminos; liquid aminos/);
   assert.match(recalled, /Deduplicated candidate count: 2 \(two\)/);
   assert.match(recalled, /coconut aminos/);
   assert.match(recalled, /Bragg Liquid Aminos/);

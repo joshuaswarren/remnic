@@ -501,9 +501,9 @@ function deriveSoySauceSubstituteCountCandidates(
       patterns: [/\bcoconut aminos\b/],
     },
     {
-      key: "bragg-liquid-aminos",
-      label: "Bragg Liquid Aminos",
-      patterns: [/\bbragg liquid aminos\b/],
+      key: "liquid-aminos",
+      label: "liquid aminos",
+      patterns: [/\bliquid aminos\b/],
     },
   ];
 
@@ -614,7 +614,7 @@ function isFocusedListEvidence(
         /\b(?:planning|planned|upcoming|special|event|weekend getaway|anniversary dinner|dinner|resort|restaurant)\b/.test(
           content,
         ) &&
-        /\b(?:at|to|in|resort|restaurant|reef|bay|janethaven|where|location|place)\b/.test(
+        /\b(?:at|to|in|resort|restaurant|venue|where|location|place)\b/.test(
           content,
         );
     }
@@ -672,7 +672,7 @@ function scoreFocusedListEvidence(
     if (/\b(?:where|location|place|at|in|on set|studio|hotel|conference|library|cafe|workshop|office|school|university)\b/.test(content)) {
       score += 10;
     }
-    if (isSpecialEventLocationQuery(query) && /\b(?:weekend getaway|anniversary dinner|resort|restaurant|coral reef|blue bay)\b/.test(content)) {
+    if (isSpecialEventLocationQuery(query) && /\b(?:weekend getaway|anniversary dinner|resort|restaurant|venue)\b/.test(content)) {
       score += 16;
       if (item.role === "user") score += 14;
       score += extractSpecialEventPersonTerms(query.toLowerCase()).filter((term) =>
@@ -741,7 +741,7 @@ function buildFocusedListQuery(query: string, intent: FocusedListIntent): string
       cues.push("security authentication user roles password hashing role-based access control RBAC account lockout failed login attempts");
     }
     if (isSoySauceSubstituteCountQuery(query)) {
-      cues.push("soy sauce substitute substitutes coconut aminos Bragg Liquid Aminos liquid aminos Brandon allergy soy-free stir-fry");
+      cues.push("soy sauce substitute substitutes coconut aminos liquid aminos allergy soy-free stir-fry bought replaced");
     }
   } else {
     cues.push("recommend suggest preference advice should consider features places options");
@@ -755,7 +755,7 @@ function buildFocusedListQuery(query: string, intent: FocusedListIntent): string
   if (intent === "relation") {
     cues.push("met where location place on set studio introduced connected recommended relationship person special events planning resort dinner restaurant");
     if (isSpecialEventLocationQuery(query)) {
-      cues.push("weekend getaway Blue Bay Resort anniversary dinner The Coral Reef East Janethaven David");
+      cues.push("weekend getaway anniversary dinner venue resort restaurant date planning");
     }
   }
   return cues.join(" ");
@@ -803,7 +803,7 @@ function isSoySauceSubstituteCountQuery(query: string): boolean {
 
 function isSoySauceSubstituteEvidenceText(content: string): boolean {
   return /\bsoy sauce\b/.test(content) &&
-    /\b(?:coconut aminos|bragg liquid aminos)\b/.test(content) &&
+    /\b(?:coconut aminos|liquid aminos)\b/.test(content) &&
     /\b(?:substitute|replace|replaced|instead of|remov(?:e|ed|ing)|buy|buying|bought|use|using)\b/.test(
       content,
     );
