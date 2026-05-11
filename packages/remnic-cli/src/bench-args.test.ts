@@ -581,6 +581,65 @@ test("parseBenchArgs accepts BEAM diagnostic --task-filter", () => {
   assert.deepEqual(parsed.benchmarks, []);
 });
 
+test("parseBenchArgs accepts --task-filter for bench run beam", () => {
+  const parsed = parseBenchArgs([
+    "run",
+    "beam",
+    "--task-filter",
+    "instruction_following",
+  ]);
+
+  assert.equal(parsed.publishedTaskFilter, "instruction_following");
+  assert.deepEqual(parsed.benchmarks, ["beam"]);
+});
+
+test("parseBenchArgs rejects --task-filter for non-BEAM benchmarks", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "locomo",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--task-filter",
+        "instruction_following",
+      ]),
+    /--task-filter is currently supported only for BEAM/,
+  );
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "longmemeval",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--task-filter",
+        "instruction_following",
+      ]),
+    /--task-filter is currently supported only for BEAM/,
+  );
+});
+
+test("parseBenchArgs rejects --task-filter when BEAM is not the only selected benchmark", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "beam",
+        "locomo",
+        "--task-filter",
+        "instruction_following",
+      ]),
+    /--task-filter is currently supported only for BEAM/,
+  );
+});
+
 test("parseBenchArgs rejects empty --task-filter", () => {
   assert.throws(
     () =>

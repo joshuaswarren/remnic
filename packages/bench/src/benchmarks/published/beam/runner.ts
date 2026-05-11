@@ -52,6 +52,7 @@ const SPLIT_ORDER: Record<string, number> = {
   "1M": 2,
   "10M": 3,
 };
+const PARQUET_ROW_BATCH_SIZE = 256;
 const SYNTAX_HIGHLIGHTING_RUBRIC_PATTERN =
   "(?:syntax highlight(?:ed|ing) code blocks?|code blocks? with syntax highlighting)";
 const SYNTAX_HIGHLIGHTING_WEAKENING_AFTER_PATTERN =
@@ -992,18 +993,29 @@ async function* streamParquetDataset(
       `BEAM dataset file ${filename} has an invalid parquet row count.`,
     );
   }
-  const rowEnd = limit === undefined ? rowCount : Math.min(rowCount, limit);
-  const rows = await parquetReadObjects({
-    file,
-    rowStart: 0,
-    rowEnd,
-  });
+  const requestedRows =
+    limit === undefined ? rowCount : Math.min(rowCount, limit);
 
-  for (let index = 0; index < rows.length; index += 1) {
-    yield validateConversation(
-      normalizeParquetValue(rows[index]),
-      `${filename}[${index}]`,
-    );
+  for (
+    let rowStart = 0;
+    rowStart < requestedRows;
+    rowStart += PARQUET_ROW_BATCH_SIZE
+  ) {
+    const rowEnd = Math.min(rowStart + PARQUET_ROW_BATCH_SIZE, requestedRows);
+    const rows = await parquetReadObjects({
+      file,
+      metadata,
+      rowStart,
+      rowEnd,
+      useOffsetIndex: true,
+    });
+
+    for (let offset = 0; offset < rows.length; offset += 1) {
+      yield validateConversation(
+        normalizeParquetValue(rows[offset]),
+        `${filename}[${rowStart + offset}]`,
+      );
+    }
   }
 }
 

@@ -652,6 +652,18 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
 
   let publishedTaskFilter: string | undefined;
   if (publishedTaskFilterRaw !== undefined) {
+    const taskFilterTargetsBeam =
+      publishedName === "beam" ||
+      (
+        publishedName === undefined &&
+        action !== "published" &&
+        !args.includes("--all") &&
+        benchmarks.length === 1 &&
+        benchmarks[0] === "beam"
+      );
+    if (!taskFilterTargetsBeam) {
+      throw new Error("ERROR: --task-filter is currently supported only for BEAM.");
+    }
     const trimmed = publishedTaskFilterRaw.trim();
     if (trimmed.length === 0) {
       throw new Error("ERROR: --task-filter must not be empty.");

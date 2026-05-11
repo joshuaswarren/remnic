@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -62,6 +62,19 @@ test("BEAM dataset preview detects parquet dataset files", async () => {
   assert.deepEqual(preview.files, ["beam_100k.parquet"]);
   assert.equal(preview.errors.length, 1);
   assert.ok((preview.errors[0] ?? "").length > 0);
+});
+
+test("BEAM parquet loader reads bounded row batches instead of whole shards", async () => {
+  const source = await readFile(new URL("./runner.ts", import.meta.url), "utf8");
+
+  assert.match(source, /const PARQUET_ROW_BATCH_SIZE = 256;/);
+  assert.match(source, /rowStart \+= PARQUET_ROW_BATCH_SIZE/);
+  assert.match(source, /metadata,/);
+  assert.match(source, /useOffsetIndex: true,/);
+  assert.doesNotMatch(
+    source,
+    /const rows = await parquetReadObjects\(\{\s*file,\s*rowStart: 0,\s*rowEnd,/s,
+  );
 });
 
 test("BEAM dataset preview reports missing full datasets", async () => {

@@ -111,18 +111,18 @@ huggingface-cli download snap-research/locomo10 \\
 #   "https://huggingface.co/datasets/snap-research/locomo10/resolve/main/locomo10.json"
 
 # 4. BEAM 100K/500K/1M  (https://huggingface.co/datasets/Mohammadta/BEAM)
-huggingface-cli download Mohammadta/BEAM \
-  --repo-type dataset \
-  --local-dir "${BEAM_DIR}" \
-  --include "data/100K-00000-of-00001.parquet" \
-            "data/500K-00000-of-00001.parquet" \
+huggingface-cli download Mohammadta/BEAM \\
+  --repo-type dataset \\
+  --local-dir "${BEAM_DIR}" \\
+  --include "data/100K-00000-of-00001.parquet" \\
+            "data/500K-00000-of-00001.parquet" \\
             "data/1M-00000-of-00001.parquet"
 
 # BEAM 10M  (https://huggingface.co/datasets/Mohammadta/BEAM-10M)
-huggingface-cli download Mohammadta/BEAM-10M \
-  --repo-type dataset \
-  --local-dir "${BEAM_DIR}" \
-  --include "data/10M-00000-of-00002.parquet" \
+huggingface-cli download Mohammadta/BEAM-10M \\
+  --repo-type dataset \\
+  --local-dir "${BEAM_DIR}" \\
+  --include "data/10M-00000-of-00002.parquet" \\
             "data/10M-00001-of-00002.parquet"
 
 # 5. Smoke-check that the runner sees your files (quick-mode, no model calls):
@@ -130,7 +130,7 @@ huggingface-cli download Mohammadta/BEAM-10M \
 #    pnpm exec remnic bench run --quick locomo      --dataset-dir "${LOCOMO_DIR}"
 #    pnpm exec remnic bench published --name beam --dataset "${BEAM_DIR}/data" --model gpt-5.5 --dry-run --limit 1
 #
-# The `bench published --dry-run` command validates dataset loading without model calls.
+# The 'bench published --dry-run' command validates dataset loading without model calls.
 
 EOF
 
