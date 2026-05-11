@@ -11181,6 +11181,8 @@ export class Orchestrator {
       // to avoid a maintenance hazard where the two guard paths could diverge.
       return attachCitation(content, citationContext, citationTemplate);
     };
+    const supersessionOrderingAt = (validAt?: string): string =>
+      validAt && validAt.length > 0 ? validAt : new Date().toISOString();
     const persistedIds: string[] = [];
     const persistedIdsByStorage = new Map<
       string,
@@ -11411,25 +11413,26 @@ export class Orchestrator {
               hashDedupLookupComplete = true;
               if (hashDedupMatchingFact) {
                 // Finding UvU1 (PR #402 round-11): anchor supersession to the
-                // CURRENT wall-clock time, not the existing fact's persisted
-                // `created`.  The matching fact may be an old shared copy whose
-                // `created` predates the incoming promotion event — using it as
+                // incoming event's time, not the existing fact's persisted
+                // `created`.  For source-dated replay/import, this is the
+                // source valid_at; otherwise it is the current wall-clock. The
+                // matching fact may be an old shared copy whose `created`
+                // predates the incoming promotion event — using it as
                 // `createdAt` would make the new memory appear older than the
                 // existing one, preventing supersession from firing.
                 // PR #402 round-12 (Finding Uyui): the matching fact is an
                 // existing OLD memory — its persisted `frontmatter.created` is
                 // stale relative to the incoming promotion event.  Pass
                 // `useCallerTimestamp: true` so the function uses
-                // `createdAt` (current wall-clock) as the ordering anchor
-                // instead of the old fact's timestamp, ensuring supersession
-                // fires correctly even when the matching fact predates
-                // conflicting candidates.
+                // `createdAt` as the ordering anchor instead of the old fact's
+                // timestamp, ensuring supersession fires correctly even when
+                // the matching fact predates conflicting candidates.
                 await applyTemporalSupersession({
                   storage: sharedStorage,
                   newMemoryId: hashDedupMatchingFact.frontmatter.id,
                   entityRef: options.entityRef,
                   structuredAttributes: options.structuredAttributes,
-                  createdAt: new Date().toISOString(),
+                  createdAt: supersessionOrderingAt(options.validAt),
                   enabled: true,
                   useCallerTimestamp: true,
                 });
@@ -11518,7 +11521,7 @@ export class Orchestrator {
               newMemoryId: promotedId,
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
-              createdAt: new Date().toISOString(),
+              createdAt: supersessionOrderingAt(options.validAt),
               enabled: true,
             });
           } catch (sharedSupersessionErr) {
@@ -12372,7 +12375,7 @@ export class Orchestrator {
               newMemoryId: parentId,
               entityRef: supersessionEntityRef,
               structuredAttributes: fact.structuredAttributes,
-              createdAt: new Date().toISOString(),
+              createdAt: supersessionOrderingAt(sourceContext?.validAt),
               enabled: this.config.temporalSupersessionEnabled,
             });
           } catch (err) {
@@ -12571,7 +12574,7 @@ export class Orchestrator {
           newMemoryId: memoryId,
           entityRef: supersessionEntityRef,
           structuredAttributes: fact.structuredAttributes,
-          createdAt: new Date().toISOString(),
+          createdAt: supersessionOrderingAt(sourceContext?.validAt),
           enabled: this.config.temporalSupersessionEnabled,
         });
       } catch (err) {
