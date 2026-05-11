@@ -102,9 +102,18 @@ jobs:
           uv run omb "${args[@]}"
 
       - name: Compare against public BEAM leaderboard
+        if: env.BEAM_QUERY_LIMIT == ''
         run: |
           result="$AMB_DIR/outputs/beam/remnic/rag/$BEAM_SPLIT.json"
           node integrations/amb/compare-beam-result.mjs "$result" | tee "$RUNNER_TEMP/remnic-beam-comparison.txt"
+
+      - name: Note smoke run comparison skip
+        if: env.BEAM_QUERY_LIMIT != ''
+        run: |
+          {
+            echo "Skipped public leaderboard comparison."
+            echo "Reason: query_limit=$BEAM_QUERY_LIMIT produces a partial smoke result, not a public-comparable full BEAM split."
+          } | tee "$RUNNER_TEMP/remnic-beam-comparison.txt"
 
       - name: Upload AMB BEAM artifacts
         if: always()

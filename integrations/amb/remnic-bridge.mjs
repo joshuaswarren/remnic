@@ -228,10 +228,10 @@ function sourceTimestampFromAmbMarker(document, marker) {
   const rawMarker = typeof marker === "string" ? marker.trim() : "";
   const cleanedMarker = normalizeAmbAnchorValue(rawMarker.replace(/^\[/, "").replace(/\]$/, ""));
   const timeAnchor = extractAmbTimeAnchor(cleanedMarker);
-  return (
-    tryNormalizeAmbSourceTimestamp(timeAnchor) ||
-    normalizeAmbSourceTimestamp(document?.timestamp || "")
-  );
+  if (timeAnchor) {
+    return normalizeAmbSourceTimestamp(timeAnchor);
+  }
+  return normalizeAmbSourceTimestamp(document?.timestamp || "");
 }
 
 function buildStructuredAmbMessages(document) {

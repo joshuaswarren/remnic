@@ -196,6 +196,17 @@ test("AMB bridge rejects overflowing document timestamps", () => {
   );
 });
 
+test("AMB bridge rejects invalid formatted turn marker timestamps", () => {
+  assert.throws(
+    () =>
+      buildAmbMessages({
+        id: "doc-marker-overflow-time",
+        content: "[2026-02-30 | Turn 1] User: Invalid marker timestamp.",
+      }),
+    /AMB source timestamp must be a valid ISO 8601 timestamp/,
+  );
+});
+
 test("AMB bridge falls back to raw content when no transcript markers exist", () => {
   assert.deepEqual(
     buildAmbMessages({

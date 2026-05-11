@@ -66,8 +66,10 @@ You can also run the same public-comparable BEAM command from GitHub Actions
 with the manual `AMB BEAM Remnic` workflow. Configure either the
 `GEMINI_API_KEY` or `GOOGLE_API_KEY` repository secret first. The workflow
 checks out the public AMB repository, installs the Remnic provider, runs the
-same preflight, executes AMB, compares the result against the current public
-BEAM leaderboard, and uploads the raw result JSON plus comparison output.
+same preflight, executes AMB, compares full-split results against the current
+public BEAM leaderboard, and uploads the raw result JSON plus comparison
+output. Runs with a `query_limit` are smoke runs; the workflow uploads the
+partial result but skips the public leaderboard comparison.
 
 ## Run
 
