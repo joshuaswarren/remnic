@@ -162,6 +162,10 @@ class RemnicMemoryProvider(MemoryProvider):
             char if char.isalnum() or char in "._:-" else "-"
             for char in raw
         )[:120]
+        if safe == ".":
+            return "dot"
+        if safe == "..":
+            return "dot-dot"
         return safe or "unknown"
 
     def _ensure_proc(self) -> None:

@@ -465,6 +465,59 @@ test("AMB bridge can derive grouped session id for legacy skipped-ingestion stor
   assert.match(result.documents[0]?.content ?? "", /Marisol/);
 });
 
+test("AMB bridge derives grouped legacy sessions when other users are indexed", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-index-partial-"));
+  const sessionIndexPath = path.join(dir, "amb-session-index.json");
+  const recallCalls = [];
+
+  try {
+    await writeFile(
+      sessionIndexPath,
+      JSON.stringify({
+        version: 1,
+        allSessions: ["beam-conv-2"],
+        sessionsByUser: {
+          "conv-2": ["beam-conv-2"],
+        },
+      }),
+      "utf8",
+    );
+    const bridge = new RemnicAmbBridge(
+      {
+        async reset() {},
+        async store() {
+          throw new Error("retrieve should not ingest");
+        },
+        async recall(sessionId) {
+          recallCalls.push(sessionId);
+          return sessionId === "beam-conv-1" ? "Marisol owned it." : "";
+        },
+        async destroy() {},
+      },
+      {
+        drainAfterIngest: false,
+        groupDocumentsByUser: true,
+        resetBeforeIngest: false,
+        recallBudgetChars: 4096,
+        sessionPrefix: "beam",
+        sessionIndexPath,
+      },
+    );
+
+    const result = await bridge.retrieve({
+      query: "Who owned it?",
+      k: 10,
+      user_id: "conv-1",
+    });
+
+    assert.deepEqual(recallCalls, ["beam-conv-1"]);
+    assert.equal(result.raw_response.session_count, 1);
+    assert.match(result.documents[0]?.content ?? "", /Marisol/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("AMB bridge rejects conflicting config env vars", async () => {
   await assert.rejects(
     () =>

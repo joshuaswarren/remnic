@@ -133,6 +133,29 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
             self.assertEqual(docs[0].content, "Marisol owned it.")
             self.assertEqual(raw, {"store": str(unit_one)})
 
+    def test_dot_segment_unit_ids_stay_under_unit_store_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            resolved_base = base.expanduser().resolve()
+            provider = self.provider_class()
+            provider.prepare(base, {".", ".."}, reset=True)
+
+            provider.ingest([Document(id="dot-doc", content="dot", user_id=".")])
+            provider.ingest([Document(id="parent-doc", content="parent", user_id="..")])
+
+            unit_root = resolved_base / "amb-units"
+            dot = unit_root / "dot"
+            dot_dot = unit_root / "dot-dot"
+            reset_stores = [
+                store
+                for method, _params, store in provider.requests
+                if method == "reset"
+            ]
+
+            self.assertEqual(reset_stores, [dot, dot_dot])
+            self.assertTrue(all(store is not None and unit_root in store.parents for store in reset_stores))
+            self.assertNotIn(resolved_base, reset_stores)
+
     def test_skip_ingestion_prepare_preserves_unit_stores_until_retrieve(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

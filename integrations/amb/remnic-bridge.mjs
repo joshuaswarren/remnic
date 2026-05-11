@@ -503,6 +503,7 @@ export class RemnicAmbBridge {
     this.allSessions = [];
     this.allSessionIds = new Set();
     this.sessionIndexLoaded = false;
+    this.hasIngested = false;
   }
 
   async reset() {
@@ -510,6 +511,7 @@ export class RemnicAmbBridge {
     this.sessionsByUser.clear();
     this.allSessions = [];
     this.allSessionIds.clear();
+    this.hasIngested = false;
     await this.persistSessionIndex();
   }
 
@@ -588,6 +590,7 @@ export class RemnicAmbBridge {
       await this.reset();
     }
 
+    let storedCount = 0;
     for (const [index, document] of documents.entries()) {
       const messages = buildAmbMessages(document);
       if (messages.length === 0) {
@@ -601,6 +604,10 @@ export class RemnicAmbBridge {
       );
       await this.adapter.store(sessionId, messages);
       this.recordSession(sessionId, document?.user_id ? String(document.user_id) : "");
+      storedCount += 1;
+    }
+    if (storedCount > 0) {
+      this.hasIngested = true;
     }
 
     await this.persistSessionIndex();
@@ -622,7 +629,7 @@ export class RemnicAmbBridge {
       : this.allSessions;
     const sessionIds = indexedSessionIds.length === 0
       && scopedUserId
-      && this.allSessions.length === 0
+      && !this.hasIngested
       && this.options.groupDocumentsByUser !== false
         ? [
             buildAmbStorageSessionId(
