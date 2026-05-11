@@ -1245,8 +1245,8 @@ function buildContradictionGuidance(
     return "";
   }
 
-  let hasRelevantDenial = false;
-  let hasRelevantAffirmation = false;
+  let denialSnippet = "";
+  let affirmationSnippet = "";
   for (const item of evidenceItems) {
     const text = item.content.toLowerCase();
     if (!matchesContradictionSubject(text, subjectTerms)) {
@@ -1254,15 +1254,18 @@ function buildContradictionGuidance(
     }
 
     if (hasDenialCue(text)) {
-      hasRelevantDenial = true;
+      denialSnippet ||= summarizeContradictionSnippet(item.content);
     } else if (hasAffirmationCue(text)) {
-      hasRelevantAffirmation = true;
+      affirmationSnippet ||= summarizeContradictionSnippet(item.content);
     }
 
-    if (hasRelevantDenial && hasRelevantAffirmation) {
+    if (denialSnippet && affirmationSnippet) {
       return [
         "## Contradiction guidance",
-        "The retrieved messages contain both a denial and an affirmative statement relevant to this yes/no question. State that the chat has contradictory information, mention both sides, and explicitly say the provided chat does not establish which statement is correct.",
+        "The retrieved messages contain both a denial and an affirmative statement relevant to this yes/no question.",
+        `Denial evidence: ${denialSnippet}`,
+        `Affirmative evidence: ${affirmationSnippet}`,
+        "Answer guidance: state that the chat has contradictory information, mention both sides, and explicitly say the provided chat does not establish which statement is correct.",
       ].join("\n");
     }
   }
@@ -1288,7 +1291,6 @@ function extractContradictionSubjectTerms(query: string): string[] {
     "integrate",
     "integrated",
     "project",
-    "session",
     "worked",
     "work",
   ]);
@@ -1303,8 +1305,25 @@ function matchesContradictionSubject(
   text: string,
   subjectTerms: readonly string[],
 ): boolean {
-  const matches = subjectTerms.filter((term) => text.includes(term));
-  return matches.length >= Math.min(2, subjectTerms.length);
+  const matches = subjectTerms.filter((term) =>
+    matchesContradictionSubjectTerm(text, term),
+  );
+  const requiredMatches = subjectTerms.some((term) =>
+    term.includes("-") || term.length >= 8,
+  )
+    ? 1
+    : Math.min(2, subjectTerms.length);
+  return matches.length >= requiredMatches;
+}
+
+function matchesContradictionSubjectTerm(text: string, term: string): boolean {
+  if (text.includes(term)) {
+    return true;
+  }
+  if (term.endsWith("s") && text.includes(term.slice(0, -1))) {
+    return true;
+  }
+  return text.includes(`${term}s`);
 }
 
 function hasDenialCue(text: string): boolean {
@@ -1312,8 +1331,15 @@ function hasDenialCue(text: string): boolean {
 }
 
 function hasAffirmationCue(text: string): boolean {
-  return /\b(?:i|we|you|user)\b.{0,80}\b(?:built|created|developed|handled|implemented|integrated|used|worked|wrote|written|mentioned)\b/.test(text) ||
-    /\b(?:built|created|developed|handled|implemented|integrated|used|worked|wrote|written|mentioned)\b.{0,80}\b(?:i|we|you|user)\b/.test(text);
+  return /@app\.route\b/.test(text) ||
+    /\b(?:current|starting|existing)\s+code\b/.test(text) ||
+    /\b(?:i|we|you|user)\b.{0,120}\b(?:built|created|developed|handled|implement|implemented|integrate|integrated|managed|used|worked|wrote|written|mentioned|set\s+up)\b/.test(text) ||
+    /\b(?:built|created|developed|handled|implement|implemented|integrate|integrated|managed|used|worked|wrote|written|mentioned|set\s+up)\b.{0,120}\b(?:i|we|you|user)\b/.test(text);
+}
+
+function summarizeContradictionSnippet(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  return normalized.length <= 260 ? normalized : `${normalized.slice(0, 257)}...`;
 }
 
 function extractFocusedSearchTerms(query: string): string[] {

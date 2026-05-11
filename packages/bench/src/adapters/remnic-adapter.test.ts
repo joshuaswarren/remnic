@@ -354,7 +354,7 @@ test("direct adapter adds contradiction guidance when evidence contains both sid
       {
         role: "user",
         content:
-          "I implemented a basic homepage route in Flask that handles GET requests.",
+          "I'm trying to implement the basic homepage route with Flask, and I've managed to return static HTML. Here's my current code: @app.route('/') def homepage(): return render_template('homepage.html')",
       },
     ]);
     await adapter.drain?.();
@@ -366,9 +366,11 @@ test("direct adapter adds contradiction guidance when evidence contains both sid
     );
 
     assert.match(recalled, /## Contradiction guidance/);
+    assert.match(recalled, /Denial evidence:/);
+    assert.match(recalled, /Affirmative evidence:/);
     assert.match(recalled, /does not establish which statement is correct/);
     assert.match(recalled, /never written any Flask routes/);
-    assert.match(recalled, /implemented a basic homepage route/);
+    assert.match(recalled, /trying to implement the basic homepage route/);
   } finally {
     await adapter.destroy();
   }
