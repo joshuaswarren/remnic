@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseConfig } from "../src/config.js";
+import { Orchestrator } from "../src/orchestrator.js";
 
 test("parseConfig sets recall pipeline defaults", () => {
   const cfg = parseConfig({ openaiApiKey: "sk-test" });
@@ -142,5 +143,50 @@ test("parseConfig coerces numeric strings for default specialized recall section
       maxTokens: section("event-order").maxTokens,
     },
     { maxChars: 11, maxResults: 12, maxTurns: 7, maxTokens: 1400 },
+  );
+});
+
+test("orchestrator honors top-level specialized recall gates with custom pipelines", () => {
+  const cfg = parseConfig({
+    targetedFactRecallEnabled: false,
+    focusedListRecallEnabled: false,
+    responseGuidanceRecallEnabled: false,
+    eventOrderRecallEnabled: false,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+      { id: "compounding", enabled: true },
+    ],
+  });
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = cfg;
+
+  assert.equal(
+    orchestrator.isTopLevelRecallSectionEnabled(
+      "targeted-facts",
+      cfg.targetedFactRecallEnabled,
+    ),
+    false,
+  );
+  assert.equal(
+    orchestrator.isTopLevelRecallSectionEnabled(
+      "focused-list",
+      cfg.focusedListRecallEnabled,
+    ),
+    false,
+  );
+  assert.equal(
+    orchestrator.isTopLevelRecallSectionEnabled(
+      "response-guidance",
+      cfg.responseGuidanceRecallEnabled,
+    ),
+    false,
+  );
+  assert.equal(
+    orchestrator.isTopLevelRecallSectionEnabled(
+      "event-order",
+      cfg.eventOrderRecallEnabled,
+    ),
+    false,
   );
 });

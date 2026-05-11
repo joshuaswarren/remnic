@@ -5746,6 +5746,14 @@ export class Orchestrator {
     return entry.enabled !== false;
   }
 
+  private isTopLevelRecallSectionEnabled(
+    sectionId: string,
+    topLevelEnabled: boolean,
+    defaultEnabled: boolean = true,
+  ): boolean {
+    return topLevelEnabled && this.isRecallSectionEnabled(sectionId, defaultEnabled);
+  }
+
   private getRecallSectionMaxChars(
     sectionId: string,
   ): number | null | undefined {
@@ -8443,9 +8451,13 @@ export class Orchestrator {
     // it uses the LCM archive to recover exact numeric facts that broad
     // compressed-history or search sections can crowd out.
     const targetedFactMaxChars =
-      this.getRecallSectionMaxChars("targeted-facts") ?? 2400;
+      this.getRecallSectionMaxChars("targeted-facts") ??
+      this.config.targetedFactRecallMaxChars;
     if (
-      this.isRecallSectionEnabled("targeted-facts") &&
+      this.isTopLevelRecallSectionEnabled(
+        "targeted-facts",
+        this.config.targetedFactRecallEnabled,
+      ) &&
       targetedFactMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
@@ -8456,13 +8468,16 @@ export class Orchestrator {
           engine: this.lcmEngine,
           sessionId: sessionKey,
           query: retrievalQuery,
-          maxChars: targetedFactMaxChars ?? 2400,
+          maxChars: targetedFactMaxChars,
           maxSearchResults:
-            this.getRecallSectionNumber("targeted-facts", "maxResults") ?? 48,
+            this.getRecallSectionNumber("targeted-facts", "maxResults") ??
+            this.config.targetedFactRecallMaxResults,
           maxScanWindowTurns:
-            this.getRecallSectionNumber("targeted-facts", "maxTurns") ?? 24,
+            this.getRecallSectionNumber("targeted-facts", "maxTurns") ??
+            this.config.targetedFactRecallScanWindowTurns,
           maxScanWindowTokens:
-            this.getRecallSectionNumber("targeted-facts", "maxTokens") ?? 12_000,
+            this.getRecallSectionNumber("targeted-facts", "maxTokens") ??
+            this.config.targetedFactRecallScanWindowTokens,
         });
         if (targetedFactSection) {
           this.appendRecallSection(
@@ -8481,9 +8496,13 @@ export class Orchestrator {
     // results, while staying gated to explicit list/count/recommendation
     // prompts.
     const focusedListMaxChars =
-      this.getRecallSectionMaxChars("focused-list") ?? 2600;
+      this.getRecallSectionMaxChars("focused-list") ??
+      this.config.focusedListRecallMaxChars;
     if (
-      this.isRecallSectionEnabled("focused-list") &&
+      this.isTopLevelRecallSectionEnabled(
+        "focused-list",
+        this.config.focusedListRecallEnabled,
+      ) &&
       focusedListMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
@@ -8496,11 +8515,14 @@ export class Orchestrator {
           query: retrievalQuery,
           maxChars: focusedListMaxChars,
           maxSearchResults:
-            this.getRecallSectionNumber("focused-list", "maxResults") ?? 40,
+            this.getRecallSectionNumber("focused-list", "maxResults") ??
+            this.config.focusedListRecallMaxResults,
           maxScanWindowTurns:
-            this.getRecallSectionNumber("focused-list", "maxTurns") ?? 64,
+            this.getRecallSectionNumber("focused-list", "maxTurns") ??
+            this.config.focusedListRecallScanWindowTurns,
           maxScanWindowTokens:
-            this.getRecallSectionNumber("focused-list", "maxTokens") ?? 14_000,
+            this.getRecallSectionNumber("focused-list", "maxTokens") ??
+            this.config.focusedListRecallScanWindowTokens,
         });
         if (focusedListSection) {
           this.appendRecallSection(
@@ -8519,9 +8541,13 @@ export class Orchestrator {
     // for the current query, such as requested date formats, tool/version
     // details, or preferred editing workflows.
     const responseGuidanceMaxChars =
-      this.getRecallSectionMaxChars("response-guidance") ?? 2400;
+      this.getRecallSectionMaxChars("response-guidance") ??
+      this.config.responseGuidanceRecallMaxChars;
     if (
-      this.isRecallSectionEnabled("response-guidance") &&
+      this.isTopLevelRecallSectionEnabled(
+        "response-guidance",
+        this.config.responseGuidanceRecallEnabled,
+      ) &&
       responseGuidanceMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
@@ -8534,11 +8560,14 @@ export class Orchestrator {
           query: retrievalQuery,
           maxChars: responseGuidanceMaxChars,
           maxSearchResults:
-            this.getRecallSectionNumber("response-guidance", "maxResults") ?? 48,
+            this.getRecallSectionNumber("response-guidance", "maxResults") ??
+            this.config.responseGuidanceRecallMaxResults,
           maxScanWindowTurns:
-            this.getRecallSectionNumber("response-guidance", "maxTurns") ?? 64,
+            this.getRecallSectionNumber("response-guidance", "maxTurns") ??
+            this.config.responseGuidanceRecallScanWindowTurns,
           maxScanWindowTokens:
-            this.getRecallSectionNumber("response-guidance", "maxTokens") ?? 16_000,
+            this.getRecallSectionNumber("response-guidance", "maxTokens") ??
+            this.config.responseGuidanceRecallScanWindowTokens,
         });
         if (responseGuidanceSection) {
           this.appendRecallSection(
@@ -8555,9 +8584,13 @@ export class Orchestrator {
     // 0e. Chronological event-order evidence. This recovers ordered user
     // turns for prompts asking how topics unfolded across a conversation.
     const eventOrderMaxChars =
-      this.getRecallSectionMaxChars("event-order") ?? 3200;
+      this.getRecallSectionMaxChars("event-order") ??
+      this.config.eventOrderRecallMaxChars;
     if (
-      this.isRecallSectionEnabled("event-order") &&
+      this.isTopLevelRecallSectionEnabled(
+        "event-order",
+        this.config.eventOrderRecallEnabled,
+      ) &&
       eventOrderMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
@@ -8570,11 +8603,14 @@ export class Orchestrator {
           query: retrievalQuery,
           maxChars: eventOrderMaxChars,
           maxItems:
-            this.getRecallSectionNumber("event-order", "maxResults") ?? 24,
+            this.getRecallSectionNumber("event-order", "maxResults") ??
+            this.config.eventOrderRecallMaxResults,
           maxScanWindowTurns:
-            this.getRecallSectionNumber("event-order", "maxTurns") ?? 12,
+            this.getRecallSectionNumber("event-order", "maxTurns") ??
+            this.config.eventOrderRecallScanWindowTurns,
           maxScanWindowTokens:
-            this.getRecallSectionNumber("event-order", "maxTokens") ?? 24_000,
+            this.getRecallSectionNumber("event-order", "maxTokens") ??
+            this.config.eventOrderRecallScanWindowTokens,
         });
         if (eventOrderSection) {
           this.appendRecallSection(
