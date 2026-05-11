@@ -244,3 +244,61 @@ test("AMB provider installer does not expose provider file when registry write f
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("AMB provider installer removes installed provider when LLM provider rename fails", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-amb-install-llm-rename-fail-"));
+  const registryPath = await writeAmbRegistry(
+    root,
+    [
+      "from .base import MemoryProvider",
+      "from .bm25 import BM25MemoryProvider",
+      'REGISTRY: dict[str, type[MemoryProvider]] = {"bm25": BM25MemoryProvider}',
+      "",
+    ].join("\n"),
+  );
+  const originalRegistry = await readFile(registryPath, "utf8");
+  const llmRegistryPath = await writeAmbLlmRegistry(
+    root,
+    [
+      "import os",
+      "from .base import LLM, Schema",
+      "from .gemini import GeminiLLM",
+      'REGISTRY: dict[str, type[LLM]] = {"gemini": GeminiLLM}',
+      "",
+    ].join("\n"),
+  );
+  const originalLlmRegistry = await readFile(llmRegistryPath, "utf8");
+  const memoryDir = path.dirname(registryPath);
+  const llmDir = path.dirname(llmRegistryPath);
+  const providerPath = path.join(memoryDir, "remnic.py");
+  const codexLlmPath = path.join(llmDir, "codex_cli.py");
+
+  try {
+    await mkdir(codexLlmPath);
+    await assert.rejects(
+      () =>
+        execFileAsync(
+          process.execPath,
+          [path.join(repoRoot, "integrations", "amb", "install-remnic-provider.mjs"), root],
+          { cwd: repoRoot },
+        ),
+      /EISDIR|is a directory|ENOTDIR|not a directory/i,
+    );
+
+    assert.equal(existsSync(providerPath), false);
+    assert.equal(await readFile(registryPath, "utf8"), originalRegistry);
+    assert.equal(await readFile(llmRegistryPath, "utf8"), originalLlmRegistry);
+    const memoryEntries = await readdir(memoryDir);
+    const llmEntries = await readdir(llmDir);
+    assert.equal(
+      memoryEntries.some((entry) => entry.startsWith(".remnic.py.")),
+      false,
+    );
+    assert.equal(
+      llmEntries.some((entry) => entry.startsWith(".codex_cli.py.")),
+      false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

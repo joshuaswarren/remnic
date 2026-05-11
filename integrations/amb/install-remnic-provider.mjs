@@ -25,6 +25,25 @@ const providerImportPattern =
   /\bfrom\s+\.[A-Za-z_][A-Za-z0-9_.]*\s+import\s+(?:\([^)]+\)|[A-Za-z_][A-Za-z0-9_]*(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?)*)/g;
 const codexAwareGeminiGateMarker = "REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE";
 
+async function readExistingFile(filePath) {
+  try {
+    return await readFile(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "EISDIR") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function restoreInstalledFile(filePath, previousContent) {
+  if (previousContent === undefined) {
+    await unlink(filePath).catch(() => undefined);
+    return;
+  }
+  await writeFile(filePath, previousContent).catch(() => undefined);
+}
+
 function hasRemnicRegistryEntry(registry) {
   return /["']remnic["']\s*:\s*RemnicMemoryProvider/.test(registry);
 }
@@ -174,9 +193,15 @@ export async function installRemnicProvider(targetRoot) {
     : patchAmbLlmRegistry(llmRegistry);
   const cli = shouldPatchCli ? await readFile(cliPath, "utf8") : undefined;
   const patchedCli = cli === undefined ? undefined : patchAmbCli(cli);
+  const previousProviderTarget = await readExistingFile(providerTarget);
+  const previousCodexLlmTarget = shouldInstallCodexLlm
+    ? await readExistingFile(codexLlmTarget)
+    : undefined;
 
   let tempProviderWritten = false;
   let tempCodexLlmWritten = false;
+  let providerTargetWritten = false;
+  let codexLlmTargetWritten = false;
   let registryWritten = false;
   let llmRegistryWritten = false;
   let cliWritten = false;
@@ -199,9 +224,11 @@ export async function installRemnicProvider(targetRoot) {
     }
     await rename(providerTemp, providerTarget);
     tempProviderWritten = false;
+    providerTargetWritten = true;
     if (shouldInstallCodexLlm) {
       await rename(codexLlmTemp, codexLlmTarget);
       tempCodexLlmWritten = false;
+      codexLlmTargetWritten = true;
     }
   } catch (error) {
     if (cliWritten && cli !== undefined) {
@@ -212,6 +239,12 @@ export async function installRemnicProvider(targetRoot) {
     }
     if (registryWritten) {
       await writeFile(registryPath, registry).catch(() => undefined);
+    }
+    if (codexLlmTargetWritten) {
+      await restoreInstalledFile(codexLlmTarget, previousCodexLlmTarget);
+    }
+    if (providerTargetWritten) {
+      await restoreInstalledFile(providerTarget, previousProviderTarget);
     }
     if (tempCodexLlmWritten) {
       await unlink(codexLlmTemp).catch(() => undefined);
