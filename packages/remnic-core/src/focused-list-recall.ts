@@ -90,13 +90,23 @@ async function collectFocusedListItems(
     normalizePositiveInteger(options.maxSearchResults ?? DEFAULT_MAX_SEARCH_RESULTS),
     options.sessionId,
   );
+  const searchWindowTurns = Math.max(
+    1,
+    normalizePositiveInteger(options.maxScanWindowTurns ?? DEFAULT_SCAN_WINDOW_TURNS),
+  );
+  const searchWindowBefore = Math.floor((searchWindowTurns - 1) / 2);
+  const searchWindowAfter = Math.ceil((searchWindowTurns - 1) / 2);
+  const searchWindowTokens = Math.max(
+    1,
+    normalizePositiveInteger(options.maxScanWindowTokens ?? DEFAULT_SCAN_WINDOW_TOKENS),
+  );
 
   for (const result of searchResults) {
     const expanded = await engine.expandContext(
       result.session_id,
-      Math.max(0, result.turn_index - 2),
-      result.turn_index + 2,
-      DEFAULT_SCAN_WINDOW_TOKENS,
+      Math.max(0, result.turn_index - searchWindowBefore),
+      result.turn_index + searchWindowAfter,
+      searchWindowTokens,
     );
     const candidates = expanded.length > 0
       ? expanded.map((message) => ({

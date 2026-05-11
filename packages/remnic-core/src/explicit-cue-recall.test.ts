@@ -2884,6 +2884,30 @@ test("buildExplicitCueRecallSection prioritizes latest count updates for how-man
   );
 });
 
+test("buildExplicitCueRecallSection keeps enumeration queries in historical order", async () => {
+  const engine = new FakeCueEngine({
+    beam: [
+      { role: "user", content: "I need admin user roles and baseline authentication." },
+      { role: "user", content: "I also need editor user roles and security audit features." },
+    ],
+  });
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query: "How many different user roles and security features am I trying to implement?",
+    maxChars: 2000,
+    includeContentLexicalCues: true,
+  });
+
+  assert.match(section, /admin user roles/);
+  assert.match(section, /editor user roles/);
+  assert.ok(
+    section.indexOf("admin user roles") < section.indexOf("editor user roles"),
+    "enumeration queries should keep historical evidence order instead of latest-only ordering",
+  );
+});
+
 test("buildExplicitCueRecallSection searches structured plan field cues", async () => {
   const engine = new FakeCueEngine({
     arena: [

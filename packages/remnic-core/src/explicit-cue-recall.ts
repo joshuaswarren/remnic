@@ -5250,7 +5250,7 @@ function hasLatestStateIntent(query: string): boolean {
   const normalized = query.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   if (
     /\bhow many\b/.test(normalized) &&
-    /\b(?:commits?|branches?|issues?|pull requests?|prs?|tickets?|tasks?|users?|rows?|columns?|records?)\b/.test(
+    /\b(?:commits?|branches?|issues?|pull requests?|prs?|tickets?|tasks?|rows?|columns?|records?)\b/.test(
       normalized,
     )
   ) {

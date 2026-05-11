@@ -521,6 +521,45 @@ test("focused list scan is capped to the recent configured turn window", async (
   ]);
 });
 
+test("focused list search expansion honors configured scan caps", async () => {
+  const sessionId = "focused-search-window";
+  const engine = new FakeFocusedListEngine(sessionId, [
+    {
+      turn_index: 20,
+      role: "assistant",
+      content: "Old soy sauce substitute context should stay outside the search hit window.",
+    },
+    {
+      turn_index: 21,
+      role: "user",
+      content: "I've used coconut aminos as a soy sauce substitute.",
+    },
+    {
+      turn_index: 22,
+      role: "assistant",
+      content: "Later soy sauce substitute context should also stay outside the configured cap.",
+    },
+  ], [21]);
+
+  const recalled = await buildFocusedListRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How many different soy sauce substitutes have I mentioned using or buying across my conversations?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 1,
+    maxScanWindowTokens: 222,
+  });
+
+  assert.match(recalled, /coconut aminos/);
+  assert.deepEqual(engine.expandCalls, [
+    { sessionId, fromTurn: 21, toTurn: 21, maxTokens: 222 },
+    { sessionId, fromTurn: 22, toTurn: 22, maxTokens: 222 },
+  ]);
+  assert.doesNotMatch(recalled, /Old soy sauce substitute context/);
+  assert.doesNotMatch(recalled, /Later soy sauce substitute context/);
+});
+
 test("default recall pipeline exposes focused list recall as an explicitly enableable section", () => {
   const parsed = parseConfig({});
   const focusedListSection = parsed.recallPipeline.find(

@@ -1381,6 +1381,45 @@ test("targeted fact scan is capped to the recent configured turn window", async 
   ]);
 });
 
+test("targeted fact search expansion honors configured scan caps", async () => {
+  const sessionId = "targeted-search-window";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 10,
+      role: "assistant",
+      content: "Older emergency fund context should stay outside this search hit window.",
+    },
+    {
+      turn_index: 11,
+      role: "user",
+      content: "I reached 60% of my emergency fund goal after saving $3,000.",
+    },
+    {
+      turn_index: 12,
+      role: "assistant",
+      content: "Later emergency fund context should also stay outside the configured cap.",
+    },
+  ], [11]);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How much money had I saved when I reached 60% of my emergency fund goal?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 1,
+    maxScanWindowTokens: 321,
+  });
+
+  assert.match(recalled, /\$3,000/);
+  assert.deepEqual(engine.expandCalls, [
+    { sessionId, fromTurn: 11, toTurn: 11, maxTokens: 321 },
+    { sessionId, fromTurn: 12, toTurn: 12, maxTokens: 321 },
+  ]);
+  assert.doesNotMatch(recalled, /Older emergency fund context/);
+  assert.doesNotMatch(recalled, /Later emergency fund context/);
+});
+
 test("targeted fact recall respects zero maxSearchResults after scan collection", async () => {
   const sessionId = "beam-targeted-max-results";
   const engine = new FakeTargetedFactEngine(sessionId, [
