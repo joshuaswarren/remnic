@@ -155,7 +155,15 @@ function ambInternalProviderOptions(env = process.env) {
   const apiKey = normalizeOptionalEnvString(env.REMNIC_AMB_INTERNAL_API_KEY);
   const disableThinking = parseBoolean(env.REMNIC_AMB_INTERNAL_DISABLE_THINKING, false);
 
-  if (!provider && !model && !reasoningEffort && timeoutMs === undefined && !baseUrl && !apiKey) {
+  if (
+    !provider &&
+    !model &&
+    !reasoningEffort &&
+    timeoutMs === undefined &&
+    !baseUrl &&
+    !apiKey &&
+    !disableThinking
+  ) {
     return null;
   }
   if (!provider || !model) {

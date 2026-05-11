@@ -779,3 +779,19 @@ test("AMB bridge builds Codex CLI internal LLM adapter options", async () => {
   assert.equal(options.internalProvider?.provider, "codex-cli");
   assert.equal(options.drainTimeoutMs, 900000);
 });
+
+test("AMB bridge requires provider and model when only internal thinking is disabled", async () => {
+  const benchModule = {
+    async resolveBenchRuntimeProfile() {
+      throw new Error("resolveBenchRuntimeProfile should not be called");
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      buildRemnicAmbAdapterOptions(benchModule, {
+        REMNIC_AMB_INTERNAL_DISABLE_THINKING: "true",
+      }),
+    /REMNIC_AMB_INTERNAL_PROVIDER and REMNIC_AMB_INTERNAL_MODEL are both required/,
+  );
+});
