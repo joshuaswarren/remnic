@@ -103,6 +103,30 @@ test("AMB bridge adds benchmark-visible anchors for BEAM turn ids", () => {
   assert.equal(messages[2]?.timestamp, "2026-05-10T12:00:00.000Z");
 });
 
+test("AMB bridge splits formatted content on single newlines", () => {
+  const messages = buildAmbMessages({
+    id: "doc-line-oriented",
+    timestamp: "2026-05-10T12:00:00Z",
+    content: [
+      "User: The launch owner was Marisol.",
+      "Assistant: Marisol approved the plan.",
+      "[2026-05-10T13:00:00Z | Turn 3] System: Launch approval logged.",
+    ].join("\n"),
+  });
+
+  assert.equal(messages.length, 4);
+  assert.equal(messages[1]?.role, "user");
+  assert.equal(messages[1]?.content, "The launch owner was Marisol.");
+  assert.equal(messages[1]?.timestamp, "2026-05-10T12:00:00.000Z");
+  assert.equal(messages[2]?.role, "assistant");
+  assert.equal(messages[2]?.content, "Marisol approved the plan.");
+  assert.equal(messages[2]?.timestamp, "2026-05-10T12:00:00.000Z");
+  assert.equal(messages[3]?.role, "system");
+  assert.match(messages[3]?.content ?? "", /chat_id=3/);
+  assert.match(messages[3]?.content ?? "", /Launch approval logged/);
+  assert.equal(messages[3]?.timestamp, "2026-05-10T13:00:00.000Z");
+});
+
 test("AMB bridge prefers structured document messages when present", () => {
   const messages = buildAmbMessages({
     id: "doc-structured",

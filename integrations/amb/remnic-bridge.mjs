@@ -261,7 +261,7 @@ function parseFormattedAmbContent(document) {
   }
 
   const markerPattern =
-    /(^|\n{2,})(\[[^\]\n]*\]\s*)?(User|Assistant|System|Unknown):\s*/g;
+    /(^|\n+)(\[[^\]\n]*\]\s*)?(User|Assistant|System|Unknown):\s*/g;
   const matches = [...content.matchAll(markerPattern)];
   if (matches.length === 0 || matches[0]?.index !== 0) {
     return [];
