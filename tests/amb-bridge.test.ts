@@ -16,6 +16,7 @@ import {
   loadRemnicAmbConfig,
   parseJsonlBridgeRequest,
   RemnicAmbBridge,
+  resolveAmbReplaySourceValidAtMode,
 } from "../integrations/amb/remnic-bridge.mjs";
 
 test("AMB bridge builds stable sanitized session ids", () => {
@@ -61,6 +62,39 @@ test("AMB bridge can keep document-specific sessions when grouping is disabled",
       { groupDocumentsByUser: false },
     ),
     "beam-conv-1-conv-1_s0_1-1",
+  );
+});
+
+test("AMB bridge defaults BEAM replay source validity to batch mode", () => {
+  assert.equal(resolveAmbReplaySourceValidAtMode({}), "historical");
+  assert.equal(
+    resolveAmbReplaySourceValidAtMode({ REMNIC_AMB_SESSION_PREFIX: "beam" }),
+    "batch",
+  );
+  assert.equal(
+    resolveAmbReplaySourceValidAtMode({ REMNIC_AMB_SESSION_PREFIX: "beam-smoke" }),
+    "batch",
+  );
+  assert.equal(
+    resolveAmbReplaySourceValidAtMode({
+      REMNIC_AMB_SESSION_PREFIX: "beam",
+      REMNIC_AMB_REPLAY_SOURCE_VALID_AT_MODE: "historical",
+    }),
+    "historical",
+  );
+  assert.equal(
+    resolveAmbReplaySourceValidAtMode({
+      REMNIC_AMB_SESSION_PREFIX: "locomo",
+      REMNIC_AMB_REPLAY_SOURCE_VALID_AT_MODE: "batch",
+    }),
+    "batch",
+  );
+  assert.throws(
+    () =>
+      resolveAmbReplaySourceValidAtMode({
+        REMNIC_AMB_REPLAY_SOURCE_VALID_AT_MODE: "daily",
+      }),
+    /REMNIC_AMB_REPLAY_SOURCE_VALID_AT_MODE/,
   );
 });
 

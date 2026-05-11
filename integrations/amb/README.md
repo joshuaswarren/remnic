@@ -34,6 +34,7 @@ export REMNIC_AMB_RECALL_BUDGET_CHARS=49152
 export REMNIC_AMB_DRAIN_TIMEOUT_MS=28800000
 export REMNIC_AMB_SESSION_PREFIX=beam
 export REMNIC_AMB_GROUP_DOCUMENTS_BY_USER=true
+export REMNIC_AMB_REPLAY_SOURCE_VALID_AT_MODE=batch
 ```
 
 `REMNIC_AMB_CONFIG_JSON` may be used instead of `REMNIC_AMB_CONFIG_PATH`.
@@ -41,6 +42,10 @@ Set only one. By default the bridge preserves Remnic runtime defaults and
 waits for ingestion/extraction drain before AMB starts retrieval.
 Use `REMNIC_AMB_SESSION_PREFIX=beam` for BEAM runs so Remnic's benchmark
 adapter can apply BEAM-specific cue handling while AMB still owns scoring.
+BEAM runs default `REMNIC_AMB_REPLAY_SOURCE_VALID_AT_MODE` to `batch`, which
+preserves turn timestamps in transcripts without splitting replay extraction by
+each dated turn. Use `historical` for datasets that pass `query_timestamp` and
+require as-of recall semantics.
 By default, the bridge stores all AMB documents with the same `user_id` in one
 Remnic session. This preserves BEAM's full per-conversation timeline when AMB
 splits a long conversation into multiple document chunks.

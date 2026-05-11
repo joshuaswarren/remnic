@@ -1232,6 +1232,69 @@ test("runtime-backed adapter forwards real message timestamps as source validity
   }
 });
 
+test("runtime-backed adapter can batch dated replay turns without historical validity", async () => {
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  const observedBatches: Array<Array<{ timestamp: string; sourceValidAt?: string }>> = [];
+  Orchestrator.prototype.ingestReplayBatch = async function patchedIngestReplayBatch(turns) {
+    observedBatches.push(
+      turns.map((turn) => ({
+        timestamp: turn.timestamp,
+        sourceValidAt: turn.sourceValidAt,
+      })),
+    );
+  };
+
+  const adapter = await createRemnicAdapter({
+    replaySourceValidAtMode: "batch",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 0,
+    },
+  });
+
+  try {
+    await adapter.store("beam-dated-batch-session", [
+      {
+        role: "user",
+        content: "Dated BEAM turn one should remain in the same replay batch.",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+      {
+        role: "assistant",
+        content: "Dated BEAM turn two should not create an as-of replay slice.",
+        timestamp: "2025-01-02T00:00:00Z",
+      },
+    ]);
+
+    assert.deepEqual(observedBatches, [
+      [
+        {
+          timestamp: "2025-01-01T00:00:00.000Z",
+          sourceValidAt: undefined,
+        },
+        {
+          timestamp: "2025-01-02T00:00:00.000Z",
+          sourceValidAt: undefined,
+        },
+      ],
+    ]);
+
+    await assert.rejects(
+      () =>
+        adapter.recall(
+          "beam-dated-batch-session",
+          "What happened in the dated batch?",
+          24_000,
+          { asOf: "2025-01-03T00:00:00.000Z" },
+        ),
+      /benchmark historical recall requires core replay extraction/,
+    );
+  } finally {
+    await adapter.destroy();
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+  }
+});
+
 test("lightweight adapter suppresses real Remnic pipeline even when feature overrides are present", async () => {
   const adapter = await createLightweightAdapter({
     configOverrides: {

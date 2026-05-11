@@ -77,6 +77,28 @@ function parseReplayExtractionMode(value) {
   throw new Error('REMNIC_AMB_REPLAY_EXTRACTION_MODE must be "await", "background", or "skip".');
 }
 
+function parseReplaySourceValidAtMode(value, defaultValue) {
+  if (value === undefined || value === "") {
+    return defaultValue;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "historical" || normalized === "batch") {
+    return normalized;
+  }
+  throw new Error('REMNIC_AMB_REPLAY_SOURCE_VALID_AT_MODE must be "historical" or "batch".');
+}
+
+function isBeamSessionPrefix(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "beam" || normalized.startsWith("beam-");
+}
+
+export function resolveAmbReplaySourceValidAtMode(env = process.env) {
+  const sessionPrefix = env.REMNIC_AMB_SESSION_PREFIX || "amb";
+  const defaultValue = isBeamSessionPrefix(sessionPrefix) ? "batch" : "historical";
+  return parseReplaySourceValidAtMode(env.REMNIC_AMB_REPLAY_SOURCE_VALID_AT_MODE, defaultValue);
+}
+
 function normalizeOptionalEnvString(value) {
   if (typeof value !== "string") {
     return undefined;
@@ -953,6 +975,7 @@ async function createBridge(env = process.env) {
     preserveRuntimeDefaults,
     sandboxDir: env.REMNIC_AMB_STORE_DIR,
     replayExtractionMode: parseReplayExtractionMode(env.REMNIC_AMB_REPLAY_EXTRACTION_MODE),
+    replaySourceValidAtMode: resolveAmbReplaySourceValidAtMode(env),
     drainTimeoutMs: parsePositiveInteger(
       env.REMNIC_AMB_DRAIN_TIMEOUT_MS,
       "REMNIC_AMB_DRAIN_TIMEOUT_MS",

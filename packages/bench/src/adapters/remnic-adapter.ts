@@ -37,6 +37,7 @@ export interface RemnicAdapterOptions {
   judge?: BenchJudge;
   drainTimeoutMs?: number;
   replayExtractionMode?: "await" | "background" | "skip";
+  replaySourceValidAtMode?: "historical" | "batch";
   sandboxDir?: string;
 }
 
@@ -150,6 +151,18 @@ const CORE_EXPLICIT_CUE_MAX_ITEM_CHARS = 2_400;
 const CORE_EXPLICIT_CUE_MAX_REFERENCES = 24;
 const CORE_TRAJECTORY_ANALYSIS_MAX_CHARS = 18_000;
 const execFileAsync = promisify(execFile);
+
+function normalizeReplaySourceValidAtMode(
+  value: RemnicAdapterOptions["replaySourceValidAtMode"],
+): "historical" | "batch" {
+  if (value === undefined) {
+    return "historical";
+  }
+  if (value === "historical" || value === "batch") {
+    return value;
+  }
+  throw new Error('replaySourceValidAtMode must be "historical" or "batch".');
+}
 
 function cloneBenchConfig(config: Record<string, unknown>): Record<string, unknown> {
   return cloneBenchConfigValue(config) as Record<string, unknown>;
@@ -425,6 +438,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
   ): Promise<BenchMemoryAdapter> {
     const useCoreMemoryPipeline = shouldUseCoreMemoryPipeline(mode, options);
     const replayExtractionMode = options.replayExtractionMode ?? "await";
+    const replaySourceValidAtMode = normalizeReplaySourceValidAtMode(
+      options.replaySourceValidAtMode,
+    );
     const drainTimeoutMs = normalizeDrainTimeoutMs(options.drainTimeoutMs);
     let state = await createBenchOrchestrator(
       mode,
@@ -524,7 +540,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           timestamp:
             entry.timestamp ??
             new Date(batchStartMs + index).toISOString(),
-          sourceValidAt: entry.timestamp,
+          ...(replaySourceValidAtMode === "historical" && entry.timestamp
+            ? { sourceValidAt: entry.timestamp }
+            : {}),
           sessionKey: sessionId,
         }));
 
@@ -569,10 +587,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         const historicalRecall = recallAsOf !== undefined;
         if (
           historicalRecall &&
-          (!useCoreMemoryPipeline || replayExtractionMode === "skip")
+          (!useCoreMemoryPipeline ||
+            replayExtractionMode === "skip" ||
+            replaySourceValidAtMode !== "historical")
         ) {
           throw new Error(
-            "benchmark historical recall requires core replay extraction; enable the core memory pipeline and do not use replayExtractionMode=skip",
+            "benchmark historical recall requires core replay extraction with replaySourceValidAtMode=historical; enable the core memory pipeline and do not use replayExtractionMode=skip",
           );
         }
         const sections: string[] = [];
