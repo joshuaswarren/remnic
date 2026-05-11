@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 
@@ -124,6 +124,17 @@ function existingResultFile(base, split) {
   return undefined;
 }
 
+function directoryExists(dir) {
+  try {
+    return statSync(dir).isDirectory();
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") {
+      return false;
+    }
+    throw error;
+  }
+}
+
 function expectedResultPath(outputRoot, runName, mode, split) {
   return path.join(outputRoot, "beam", runName, mode, `${split}.json`);
 }
@@ -140,7 +151,7 @@ function findResultFile(outputRoot, runName, mode, split) {
   }
 
   const runRoot = path.join(outputRoot, "beam", runName);
-  if (!existsSync(runRoot)) {
+  if (!directoryExists(runRoot)) {
     return {
       status: "missing",
       mode: null,

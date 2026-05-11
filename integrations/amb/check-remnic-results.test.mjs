@@ -268,3 +268,33 @@ test("mode discovery succeeds with one matching result and fails when ambiguous"
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("mode discovery treats a non-directory run path as missing", () => {
+  const root = makeAmbFixture();
+  try {
+    writeJson(path.join(root, "outputs", "beam", "remnic"), {
+      unexpected: "file",
+    });
+
+    const result = runChecker([
+      "--amb-dir", root,
+      "--run-name", "remnic",
+      "--mode", "any",
+      "--splits", "100k",
+    ]);
+
+    assert.equal(result.code, 1);
+    assert.equal(result.output.ok, false);
+    assert.equal(result.output.rows[0].status, "missing");
+    assert.equal(result.output.rows[0].file, path.join(
+      root,
+      "outputs",
+      "beam",
+      "remnic",
+      "*",
+      "100k.json",
+    ));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
