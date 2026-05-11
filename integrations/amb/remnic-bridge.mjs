@@ -63,10 +63,22 @@ function normalizeAmbRole(value) {
   return "user";
 }
 
+function normalizeAmbAnchorValue(value) {
+  return String(value ?? "").trim().replace(/[;\r\n]+/g, " ").replace(/\s+/g, " ");
+}
+
+function extractAmbTimeAnchor(cleanedMarker) {
+  const parts = cleanedMarker
+    .split("|")
+    .map((part) => normalizeAmbAnchorValue(part))
+    .filter((part) => part.length > 0);
+  return parts.find((part) => !/\bTurn\s+[A-Za-z0-9_.:-]+\b/i.test(part)) ?? "";
+}
+
 function buildAmbTurnAnchor(document, marker) {
   const rawMarker = typeof marker === "string" ? marker.trim() : "";
   const turnMatch = rawMarker.match(/\bTurn\s+([A-Za-z0-9_.:-]+)\b/i);
-  const cleanedMarker = rawMarker.replace(/^\[/, "").replace(/\]$/, "").trim();
+  const cleanedMarker = normalizeAmbAnchorValue(rawMarker.replace(/^\[/, "").replace(/\]$/, ""));
   if (!turnMatch?.[1] && !cleanedMarker) {
     return "";
   }
@@ -78,6 +90,14 @@ function buildAmbTurnAnchor(document, marker) {
     fields.push(`turn_id=${turnId}`);
     fields.push(`chat_id=${turnId}`);
     fields.push(`source_chat_id=${turnId}`);
+  }
+  const timeAnchor = extractAmbTimeAnchor(cleanedMarker);
+  if (timeAnchor) {
+    fields.push(`time_anchor=${timeAnchor}`);
+    const dateMatch = timeAnchor.match(/(?:^|[^\d])(\d{4}-\d{2}-\d{2})(?=$|[^\d])/);
+    if (dateMatch?.[1]) {
+      fields.push(`date=${dateMatch[1]}`);
+    }
   }
   if (cleanedMarker) {
     fields.push(`turn_marker=${cleanedMarker}`);
@@ -102,9 +122,12 @@ function buildStructuredAmbMessages(document) {
       message.turn_id ??
       message.turnId ??
       message.id;
+    const timestamp = typeof message.timestamp === "string" ? message.timestamp.trim() : "";
     const marker = turnMarker === undefined || turnMarker === null || turnMarker === ""
-      ? message.timestamp ?? ""
-      : `Turn ${turnMarker}`;
+      ? timestamp
+      : timestamp
+        ? `${timestamp} | Turn ${turnMarker}`
+        : `Turn ${turnMarker}`;
     const anchor = buildAmbTurnAnchor(document, marker);
     return [
       {

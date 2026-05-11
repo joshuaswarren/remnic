@@ -91,6 +91,8 @@ test("AMB bridge adds benchmark-visible anchors for BEAM turn ids", () => {
   assert.match(messages[1]?.content ?? "", /Marisol owns late referenced chat evidence/);
   assert.equal(messages[2]?.role, "assistant");
   assert.match(messages[2]?.content ?? "", /chat_id=28/);
+  assert.match(messages[2]?.content ?? "", /time_anchor=2026-05-10T12:00:00Z/);
+  assert.match(messages[2]?.content ?? "", /date=2026-05-10/);
   assert.match(messages[2]?.content ?? "", /Confirmed by the release note/);
 });
 
@@ -99,7 +101,12 @@ test("AMB bridge prefers structured document messages when present", () => {
     id: "doc-structured",
     content: "Unstructured fallback should not be duplicated.",
     messages: [
-      { id: 7, role: "user", content: "Structured launch date is July 9." },
+      {
+        id: 7,
+        role: "user",
+        timestamp: "2026-07-09T09:00:00Z",
+        content: "Structured launch date is July 9.",
+      },
       { role: "assistant", content: "Stored as structured assistant context." },
     ],
   });
@@ -107,6 +114,8 @@ test("AMB bridge prefers structured document messages when present", () => {
   assert.equal(messages.length, 3);
   assert.equal(messages[1]?.role, "user");
   assert.match(messages[1]?.content ?? "", /chat_id=7/);
+  assert.match(messages[1]?.content ?? "", /time_anchor=2026-07-09T09:00:00Z/);
+  assert.match(messages[1]?.content ?? "", /date=2026-07-09/);
   assert.match(messages[1]?.content ?? "", /Structured launch date is July 9/);
   assert.equal(messages[2]?.role, "assistant");
   assert.equal(messages[2]?.content, "Stored as structured assistant context.");
