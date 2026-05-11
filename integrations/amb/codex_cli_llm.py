@@ -42,7 +42,11 @@ class CodexCliLLM(LLM):
             _DEFAULT_TIMEOUT_SECONDS,
             "OMB_CODEX_TIMEOUT_SECONDS",
         )
-        self._executable = os.environ.get("OMB_CODEX_EXECUTABLE", "codex")
+        self._executable = (
+            os.environ.get("OMB_CODEX_EXECUTABLE")
+            or os.environ.get("REMNIC_BENCH_CODEX_CLI_EXECUTABLE")
+            or "codex"
+        )
         self._cwd = os.environ.get("OMB_CODEX_CWD") or os.environ.get("REMNIC_REPO_PATH")
 
     @property

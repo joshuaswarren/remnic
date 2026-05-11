@@ -119,6 +119,7 @@ test("AMB provider installer also patches LLM registries for Codex CLI runs", as
     );
 
     assert.match(provider, /class CodexCliLLM/);
+    assert.match(provider, /REMNIC_BENCH_CODEX_CLI_EXECUTABLE/);
     assert.equal(
       registry.match(/from \.codex_cli import CodexCliLLM/g)?.length,
       1,

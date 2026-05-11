@@ -253,6 +253,56 @@ def run(llm: str): _resolve_gemini_key(); ds = get_dataset(dataset)
   );
 });
 
+test("patchAmbCli rewrites legacy answer LLM assignments before the Gemini gate", () => {
+  const cli = `import os
+import typer
+
+def _resolve_gemini_key() -> None:
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        typer.echo("Error: GEMINI_API_KEY environment variable is not set.", err=True)
+        raise typer.Exit(1)
+    os.environ["GOOGLE_API_KEY"] = key
+
+def run(llm: str):
+    os.environ["OMB_ANSWER_LLM"] = llm
+    _resolve_gemini_key()
+
+    ds = get_dataset(dataset)
+`;
+
+  const patched = patchAmbCli(cli);
+  const patchedAgain = patchAmbCli(patched);
+
+  assert.equal(patchedAgain, patched);
+  assert.match(patched, /_remnic_apply_answer_llm\(llm\)\n\s*_resolve_gemini_key\(\)/);
+  assert.doesNotMatch(
+    patched,
+    /os\.environ\["OMB_ANSWER_LLM"\]\s*=\s*llm\n\s*_resolve_gemini_key\(\)/,
+  );
+});
+
+test("patchAmbCli rewrites compact legacy __setitem__ answer LLM patches", () => {
+  const cli = `import os
+import typer
+
+def _resolve_gemini_key() -> None:
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key: typer.echo("Error: GEMINI_API_KEY environment variable is not set.", err=True); raise typer.Exit(1)
+    os.environ["GOOGLE_API_KEY"] = key
+@app.command()
+def run(llm: str): os.environ.__setitem__("OMB_ANSWER_LLM", llm) if llm else None; _resolve_gemini_key(); ds = get_dataset(dataset)
+`;
+
+  const patched = patchAmbCli(cli);
+
+  assert.match(
+    patched,
+    /_remnic_apply_answer_llm\(llm\); _resolve_gemini_key\(\); ds = get_dataset\(dataset\)/,
+  );
+  assert.doesNotMatch(patched, /__setitem__\("OMB_ANSWER_LLM",\s*llm\).*_resolve_gemini_key/);
+});
+
 test("patchAmbCli handles resolvers preceded on the same physical line", () => {
   const cli = `import os; import typer; def _resolve_gemini_key() -> None: key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"); os.environ["GOOGLE_API_KEY"] = key
 @app.command()

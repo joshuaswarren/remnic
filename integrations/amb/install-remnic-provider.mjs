@@ -24,6 +24,8 @@ const codexLlmRegistryEntry = '"codex_cli": CodexCliLLM';
 const providerImportPattern =
   /\bfrom\s+\.[A-Za-z_][A-Za-z0-9_.]*\s+import\s+(?:\([^)]+\)|[A-Za-z_][A-Za-z0-9_]*(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?)*)/g;
 const codexAwareGeminiGateMarker = "REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE";
+const legacyAnswerLlmBeforeResolvePattern =
+  /(^|[;:\n])([ \t]*)(?:os\.environ\["OMB_ANSWER_LLM"\]\s*=\s*llm|os\.environ\.__setitem__\(\s*["']OMB_ANSWER_LLM["']\s*,\s*llm\s*\))(?:\s+if\s+llm\s+else\s+None)?(\s*(?:[;\n])\s*_resolve_gemini_key\(\))/g;
 
 async function readExistingFile(filePath) {
   try {
@@ -112,6 +114,14 @@ export function patchAmbLlmRegistry(registry) {
   return patched;
 }
 
+function rewriteLegacyAnswerLlmPatch(cli) {
+  return cli.replace(
+    legacyAnswerLlmBeforeResolvePattern,
+    (_match, delimiter, indent, resolverCall) =>
+      `${delimiter}${indent}_remnic_apply_answer_llm(llm)${resolverCall}`,
+  );
+}
+
 export function patchAmbCli(cli) {
   const newResolve = `def _resolve_gemini_key() -> None:
     # ${codexAwareGeminiGateMarker}
@@ -131,7 +141,7 @@ def _remnic_apply_answer_llm(llm) -> None:
 `;
   const resolvePattern =
     /(^|[;\n])([ \t]*)def\s+_resolve_gemini_key\s*\(\s*\)\s*->\s*None\s*:[\s\S]*?(?=(?:^|[;\n])\s*(?:@|def\s+|class\s+)|$(?![\s\S]))/m;
-  let patched = cli;
+  let patched = rewriteLegacyAnswerLlmPatch(cli);
   if (!patched.includes(codexAwareGeminiGateMarker)) {
     const resolvePatched = patched.replace(
       resolvePattern,
@@ -144,10 +154,7 @@ def _remnic_apply_answer_llm(llm) -> None:
   }
 
   const hasAnswerLlmPatch =
-    /(^|[;:\n])\s*_remnic_apply_answer_llm\(llm\)\s*(?:[;\n])/.test(patched) ||
-    /(^|[;:\n])\s*(?:os\.environ\["OMB_ANSWER_LLM"\]\s*=\s*llm|os\.environ\.__setitem__\("OMB_ANSWER_LLM",\s*llm\))\s*(?:[;\n])\s*_resolve_gemini_key\(\)/.test(
-      patched,
-    );
+    /(^|[;:\n])\s*_remnic_apply_answer_llm\(llm\)\s*(?:[;\n])/.test(patched);
   if (!hasAnswerLlmPatch) {
     const callPattern =
       /^([ \t]*)_resolve_gemini_key\(\)\s*\n([ \t]*\n)?([ \t]*ds\s*=\s*get_dataset\(dataset\))/m;
