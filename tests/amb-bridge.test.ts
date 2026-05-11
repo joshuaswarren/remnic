@@ -15,6 +15,13 @@ test("AMB bridge builds stable sanitized session ids", () => {
   );
 });
 
+test("AMB bridge can use benchmark-specific session prefixes", () => {
+  assert.equal(
+    buildAmbSessionId({ id: "doc one", user_id: "conv/42" }, 3, "beam"),
+    "beam-conv-42-doc-one-3",
+  );
+});
+
 test("AMB bridge preserves document metadata and content as Remnic messages", () => {
   const messages = buildAmbMessages({
     id: "doc-1",

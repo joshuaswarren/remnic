@@ -25,11 +25,14 @@ Optional Remnic runtime configuration:
 export REMNIC_AMB_CONFIG_PATH=/path/to/remnic.config.json
 export REMNIC_AMB_RECALL_BUDGET_CHARS=49152
 export REMNIC_AMB_DRAIN_TIMEOUT_MS=28800000
+export REMNIC_AMB_SESSION_PREFIX=beam
 ```
 
 `REMNIC_AMB_CONFIG_JSON` may be used instead of `REMNIC_AMB_CONFIG_PATH`.
 Set only one. By default the bridge preserves Remnic runtime defaults and
 waits for ingestion/extraction drain before AMB starts retrieval.
+Use `REMNIC_AMB_SESSION_PREFIX=beam` for BEAM runs so Remnic's benchmark
+adapter can apply BEAM-specific cue handling while AMB still owns scoring.
 
 ## Run
 

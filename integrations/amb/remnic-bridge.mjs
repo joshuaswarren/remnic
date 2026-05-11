@@ -8,6 +8,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -54,10 +55,11 @@ function sanitizeSessionPart(value) {
   return raw.replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, 120) || "unknown";
 }
 
-export function buildAmbSessionId(document, index) {
+export function buildAmbSessionId(document, index, prefix = "amb") {
+  const normalizedPrefix = sanitizeSessionPart(prefix);
   const user = sanitizeSessionPart(document?.user_id ?? "global");
   const id = sanitizeSessionPart(document?.id ?? index);
-  return `amb-${user}-${id}-${index}`;
+  return `${normalizedPrefix}-${user}-${id}-${index}`;
 }
 
 export function buildAmbMessages(document) {
@@ -174,7 +176,11 @@ class RemnicAmbBridge {
       if (messages.length === 0) {
         continue;
       }
-      const sessionId = buildAmbSessionId(document, this.allSessions.length + index);
+      const sessionId = buildAmbSessionId(
+        document,
+        this.allSessions.length + index,
+        this.options.sessionPrefix,
+      );
       await this.adapter.store(sessionId, messages);
       this.allSessions.push(sessionId);
       const userId = document?.user_id ? String(document.user_id) : "";
@@ -255,6 +261,7 @@ async function createBridge(env = process.env) {
       "REMNIC_AMB_RECALL_BUDGET_CHARS",
       DEFAULT_RECALL_BUDGET_CHARS,
     ),
+    sessionPrefix: env.REMNIC_AMB_SESSION_PREFIX || "amb",
   });
 }
 
@@ -308,7 +315,16 @@ async function runJsonlServer() {
   await bridge.cleanup();
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+function isEntrypoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+  }
+}
+
+if (isEntrypoint()) {
   runJsonlServer().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
     process.exitCode = 1;
