@@ -614,7 +614,7 @@ export class RemnicAmbBridge {
     }
 
     let storedCount = 0;
-    for (const [index, document] of documents.entries()) {
+    for (const document of documents) {
       const messages = buildAmbMessages(document);
       if (messages.length === 0) {
         continue;

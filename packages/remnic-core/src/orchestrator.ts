@@ -288,6 +288,7 @@ import {
   CompoundingEngine,
   defaultTierMigrationCycleBudget,
 } from "./compounding/engine.js";
+import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 // IRC preference consolidation — used by eval adapter directly;
 // orchestrator integration planned for future PR.
 // import { consolidatePreferences, buildQueryAwarePreferenceSection, synthesizePreferencesFromLcm } from "./compounding/preference-consolidator.js";
@@ -684,6 +685,19 @@ export function sanitizeSessionKeyForFilename(sessionKey: string): string {
     .digest("hex")
     .slice(0, 12);
   return `${readable}-${hash}`;
+}
+
+function latestSourceValidAtFromTurns(turns: readonly BufferTurn[]): string | undefined {
+  let latestMs: number | null = null;
+  for (const turn of turns) {
+    if (typeof turn.sourceValidAt !== "string") continue;
+    const parsed = parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
+    if (parsed === null) continue;
+    if (latestMs === null || parsed > latestMs) {
+      latestMs = parsed;
+    }
+  }
+  return latestMs === null ? undefined : new Date(latestMs).toISOString();
 }
 
 export function isArtifactMemoryPath(filePath: string): boolean {
@@ -10012,6 +10026,7 @@ export class Orchestrator {
         role: turn.role,
         content: turn.content,
         timestamp: turn.timestamp,
+        sourceValidAt: turn.timestamp,
         sessionKey: key,
         parts: turn.parts,
         rawContent: turn.rawContent,
@@ -10142,6 +10157,7 @@ export class Orchestrator {
         role: turn.role,
         content: turn.content,
         timestamp: turn.timestamp,
+        sourceValidAt: turn.timestamp,
         sessionKey,
         parts: turn.parts,
         rawContent: turn.rawContent,
@@ -10488,6 +10504,7 @@ export class Orchestrator {
         content: t.content.trim().slice(0, this.config.extractionMaxTurnChars),
       }))
       .filter((t) => t.content.length > 0);
+    const sourceValidAt = latestSourceValidAtFromTurns(normalizedTurns);
     throwIfDeadlineExceeded("before_extract");
     throwIfAborted("before_extract");
 
@@ -10604,7 +10621,7 @@ export class Orchestrator {
       result,
       storage,
       threadIdForExtraction,
-      { sessionKey, principal },
+      { sessionKey, principal, validAt: sourceValidAt },
     );
     meta ??= await storage.loadMeta();
     if (extractionFingerprint && shouldPersistProcessedFingerprint) {
@@ -11079,7 +11096,7 @@ export class Orchestrator {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string },
+    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
@@ -11211,6 +11228,7 @@ export class Orchestrator {
       intentActionType?: string;
       intentEntityTypes?: string[];
       memoryKind?: MemoryFrontmatter["memoryKind"];
+      validAt?: string;
       source: string;
     }): Promise<void> => {
       if (
@@ -11422,6 +11440,7 @@ export class Orchestrator {
             intentActionType: options.intentActionType,
             intentEntityTypes: options.intentEntityTypes,
             memoryKind: options.memoryKind,
+            validAt: options.validAt,
             // Index the RAW content hash so hasFactContentHash(rawContent)
             // returns true on subsequent extractions. Without this, the index
             // would record the hash of citedContent (which changes every call
@@ -12231,6 +12250,7 @@ export class Orchestrator {
               intentEntityTypes: inferredIntent?.entityTypes,
               memoryKind,
               structuredAttributes: fact.structuredAttributes,
+              validAt: sourceContext?.validAt,
               contentHashSource: rawChunkedContent,
             },
           );
@@ -12266,6 +12286,7 @@ export class Orchestrator {
                 intentActionType: inferredIntent?.actionType,
                 intentEntityTypes: inferredIntent?.entityTypes,
                 memoryKind,
+                validAt: sourceContext?.validAt,
               },
             );
           }
@@ -12319,6 +12340,7 @@ export class Orchestrator {
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
             memoryKind,
+            validAt: sourceContext?.validAt,
             source: extractionWriteSource,
           });
           // Register chunked content in hash index too.
@@ -12475,6 +12497,7 @@ export class Orchestrator {
           intentEntityTypes: inferredIntent?.entityTypes,
           memoryKind,
           structuredAttributes: fact.structuredAttributes,
+          validAt: sourceContext?.validAt,
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
         },
       );
@@ -12538,6 +12561,7 @@ export class Orchestrator {
         intentActionType: inferredIntent?.actionType,
         intentEntityTypes: inferredIntent?.entityTypes,
         memoryKind,
+        validAt: sourceContext?.validAt,
         source: extractionWriteSource,
       });
       // v8.2: graph edge building (fail-open — errors caught inside GraphIndex)
@@ -12630,11 +12654,12 @@ export class Orchestrator {
         const safeFacts = Array.isArray((entity as any)?.facts)
           ? (entity as any).facts.filter((f: any) => typeof f === "string")
           : [];
-        const id = await storage.writeEntity(name, type, safeFacts, {
-          source: typeof (entity as any)?.source === "string" ? (entity as any).source : "extraction",
-          sessionKey: sourceContext?.sessionKey,
-          principal: sourceContext?.principal,
-          structuredSections: Array.isArray((entity as any)?.structuredSections)
+          const id = await storage.writeEntity(name, type, safeFacts, {
+            source: typeof (entity as any)?.source === "string" ? (entity as any).source : "extraction",
+            timestamp: sourceContext?.validAt,
+            sessionKey: sourceContext?.sessionKey,
+            principal: sourceContext?.principal,
+            structuredSections: Array.isArray((entity as any)?.structuredSections)
             ? (entity as any).structuredSections
             : undefined,
         });

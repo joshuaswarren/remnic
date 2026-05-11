@@ -89,6 +89,57 @@ test("persistExtraction is a no-op by default — no inline citation is injected
   assert.ok(written.content.includes(factBody));
 });
 
+test("ingestReplayBatch propagates source timestamps to persisted valid_at", async () => {
+  const { orchestrator, storage } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  const factBody = "The BEAM fixture records the passphrase as alpine tea.";
+  orchestrator.extraction = {
+    extract: async (turns: any[]) => {
+      assert.deepEqual(
+        turns.map((turn) => turn.sourceValidAt),
+        ["2025-01-01T00:00:00Z", "2025-01-02T03:04:05Z"],
+      );
+      return {
+        facts: [makeFact(factBody)],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  await orchestrator.ingestReplayBatch(
+    [
+      {
+        source: "openclaw",
+        sessionKey: "beam-source-validity",
+        role: "user",
+        content: "Earlier source-dated turn.",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-source-validity",
+        role: "assistant",
+        content: "Later source-dated turn.",
+        timestamp: "2025-01-02T03:04:05Z",
+      },
+    ],
+    { archiveLcm: false },
+  );
+
+  storage.invalidateAllMemoriesCacheForDir();
+  const memories = await storage.readAllMemories();
+  const written = memories.find((memory: any) => memory.content.includes(factBody));
+  assert.ok(written, "replay extraction should persist the extracted fact");
+  assert.equal(written.frontmatter.valid_at, "2025-01-02T03:04:05.000Z");
+});
+
 test("persistExtraction injects the inline citation when the flag is enabled", async () => {
   const { orchestrator, storage } = await makeOrchestrator({
     inlineSourceAttributionEnabled: true,

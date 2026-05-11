@@ -92,6 +92,46 @@ test("storage: valid_at / invalid_at round-trip exactly when set", async () => {
   }
 });
 
+test("storage: writeMemory persists explicit validAt as valid_at", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const id = await storage.writeMemory(
+      "fact",
+      "project X launched from the source transcript",
+      {
+        entityRef: TEST_ENTITY,
+        source: "test",
+        confidence: 0.9,
+        tags: [],
+        validAt: "2025-03-04T05:06:07Z",
+      },
+    );
+
+    const fm = await readFrontmatterById(storage, id);
+    assert.equal(fm?.valid_at, "2025-03-04T05:06:07.000Z");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("storage: writeMemory rejects invalid validAt values", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    await assert.rejects(
+      () =>
+        storage.writeMemory("fact", "invalid source timestamp", {
+          source: "test",
+          confidence: 0.9,
+          tags: [],
+          validAt: "2025-02-31T00:00:00Z",
+        }),
+      /validAt must be a valid ISO timestamp/,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("storage: legacy memories without valid_at parse as undefined (no backfill)", async () => {
   const { storage, cleanup } = await makeStorage();
   try {

@@ -1958,6 +1958,7 @@ export interface BufferTurn {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
+  sourceValidAt?: string;
   sessionKey?: string;
   logicalSessionKey?: string;
   providerThreadId?: string | null;
