@@ -708,7 +708,7 @@ test("AMB bridge builds Codex CLI internal LLM adapter options", async () => {
 
   const options = await buildRemnicAmbAdapterOptions(benchModule, {
     REMNIC_AMB_CONFIG_JSON: JSON.stringify({ remnic: { recallPlannerEnabled: true } }),
-    REMNIC_AMB_INTERNAL_PROVIDER: "codex-cli",
+    REMNIC_AMB_INTERNAL_LLM: " codex_cli ",
     REMNIC_AMB_INTERNAL_MODEL: "gpt-5.5",
     REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT: "xhigh",
     REMNIC_AMB_INTERNAL_TIMEOUT_MS: "900000",

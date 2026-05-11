@@ -85,6 +85,14 @@ function normalizeOptionalEnvString(value) {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function normalizeAmbInternalProvider(value) {
+  const trimmed = normalizeOptionalEnvString(value);
+  if (trimmed === undefined) {
+    return undefined;
+  }
+  return trimmed === "codex_cli" ? "codex-cli" : trimmed;
+}
+
 function normalizeOptionalPositiveInteger(value, label) {
   const trimmed = normalizeOptionalEnvString(value);
   if (trimmed === undefined) {
@@ -109,7 +117,7 @@ function normalizeCodexReasoningEffort(value, label) {
 }
 
 function ambInternalProviderOptions(env = process.env) {
-  const provider = normalizeOptionalEnvString(
+  const provider = normalizeAmbInternalProvider(
     env.REMNIC_AMB_INTERNAL_PROVIDER ?? env.REMNIC_AMB_INTERNAL_LLM,
   );
   const model = normalizeOptionalEnvString(env.REMNIC_AMB_INTERNAL_MODEL);
