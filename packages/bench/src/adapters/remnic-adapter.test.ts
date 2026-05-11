@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseConfig } from "@remnic/core";
+import { Orchestrator, parseConfig } from "@remnic/core";
 
 import {
   buildBenchAdapterConfig,
@@ -1144,6 +1144,91 @@ test("runtime-backed adapter preserves transcript order for stored batches", asy
     assert.equal(firstIndex < secondIndex, true);
   } finally {
     await adapter.destroy();
+  }
+});
+
+test("runtime-backed adapter does not turn synthetic ordering timestamps into source validity", async () => {
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  const observedBatches: Array<Array<{ timestamp: string; sourceValidAt?: string }>> = [];
+  Orchestrator.prototype.ingestReplayBatch = async function patchedIngestReplayBatch(turns) {
+    observedBatches.push(
+      turns.map((turn) => ({
+        timestamp: turn.timestamp,
+        sourceValidAt: turn.sourceValidAt,
+      })),
+    );
+  };
+
+  const adapter = await createRemnicAdapter({
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 0,
+    },
+  });
+
+  try {
+    await adapter.store("beam-undated-bench-session", [
+      {
+        role: "user",
+        content: "Undated BEAM turn one uses synthetic transcript order only.",
+      },
+      {
+        role: "assistant",
+        content: "Undated BEAM turn two should share the replay batch.",
+      },
+    ]);
+
+    assert.equal(observedBatches.length, 1);
+    assert.equal(observedBatches[0]?.length, 2);
+    assert.equal(typeof observedBatches[0]?.[0]?.timestamp, "string");
+    assert.equal(typeof observedBatches[0]?.[1]?.timestamp, "string");
+    assert.equal(observedBatches[0]?.[0]?.sourceValidAt, undefined);
+    assert.equal(observedBatches[0]?.[1]?.sourceValidAt, undefined);
+  } finally {
+    await adapter.destroy();
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+  }
+});
+
+test("runtime-backed adapter forwards real message timestamps as source validity", async () => {
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  const observedBatches: Array<Array<{ timestamp: string; sourceValidAt?: string }>> = [];
+  Orchestrator.prototype.ingestReplayBatch = async function patchedIngestReplayBatch(turns) {
+    observedBatches.push(
+      turns.map((turn) => ({
+        timestamp: turn.timestamp,
+        sourceValidAt: turn.sourceValidAt,
+      })),
+    );
+  };
+
+  const adapter = await createRemnicAdapter({
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 0,
+    },
+  });
+
+  try {
+    await adapter.store("beam-dated-bench-session", [
+      {
+        role: "user",
+        content: "Dated BEAM turn one has a historical source time.",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+    ]);
+
+    assert.deepEqual(observedBatches, [
+      [
+        {
+          timestamp: "2025-01-01T00:00:00.000Z",
+          sourceValidAt: "2025-01-01T00:00:00.000Z",
+        },
+      ],
+    ]);
+  } finally {
+    await adapter.destroy();
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
   }
 });
 

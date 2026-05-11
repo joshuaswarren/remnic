@@ -133,6 +133,7 @@ test("ingestReplayBatch splits mixed source timestamps before persisting valid_a
         role: "user",
         content: "Earlier source-dated turn.",
         timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
       },
       {
         source: "openclaw",
@@ -140,6 +141,7 @@ test("ingestReplayBatch splits mixed source timestamps before persisting valid_a
         role: "assistant",
         content: "Earlier source-dated response.",
         timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
       },
       {
         source: "openclaw",
@@ -147,6 +149,7 @@ test("ingestReplayBatch splits mixed source timestamps before persisting valid_a
         role: "user",
         content: "Later source-dated turn.",
         timestamp: "2025-01-02T03:04:05Z",
+        sourceValidAt: "2025-01-02T03:04:05Z",
       },
       {
         source: "openclaw",
@@ -154,6 +157,7 @@ test("ingestReplayBatch splits mixed source timestamps before persisting valid_a
         role: "assistant",
         content: "Later source-dated response.",
         timestamp: "2025-01-02T03:04:05Z",
+        sourceValidAt: "2025-01-02T03:04:05Z",
       },
     ],
     { archiveLcm: false },
@@ -219,6 +223,7 @@ test("ingestReplayBatch queues source timestamps chronologically without future 
         role: "user",
         content: "Later source-dated turn must not become earlier context.",
         timestamp: "2025-01-03T00:00:00Z",
+        sourceValidAt: "2025-01-03T00:00:00Z",
       },
       {
         source: "openclaw",
@@ -226,6 +231,7 @@ test("ingestReplayBatch queues source timestamps chronologically without future 
         role: "assistant",
         content: "Later source-dated response must not become earlier context.",
         timestamp: "2025-01-03T00:00:00Z",
+        sourceValidAt: "2025-01-03T00:00:00Z",
       },
       {
         source: "openclaw",
@@ -233,6 +239,7 @@ test("ingestReplayBatch queues source timestamps chronologically without future 
         role: "user",
         content: "Earlier source-dated turn.",
         timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
       },
       {
         source: "openclaw",
@@ -240,6 +247,7 @@ test("ingestReplayBatch queues source timestamps chronologically without future 
         role: "assistant",
         content: "Earlier source-dated response.",
         timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
       },
     ],
     { archiveLcm: false },
@@ -313,6 +321,7 @@ test("ingestReplayBatch globally queues source timestamps across sessions", asyn
         role: "user",
         content: "Later session source-dated turn.",
         timestamp: "2025-01-03T00:00:00Z",
+        sourceValidAt: "2025-01-03T00:00:00Z",
       },
       {
         source: "openclaw",
@@ -320,6 +329,7 @@ test("ingestReplayBatch globally queues source timestamps across sessions", asyn
         role: "user",
         content: "Earlier session source-dated turn.",
         timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
       },
     ],
     { archiveLcm: false },
@@ -337,6 +347,75 @@ test("ingestReplayBatch globally queues source timestamps across sessions", asyn
       content: "Later session source-dated turn.",
     },
   ]);
+});
+
+test("ingestReplayBatch preserves undated replay batches without synthetic valid_at slicing", async () => {
+  const { orchestrator, storage } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  const observedSourceGroups: Array<
+    Array<{ sourceValidAt: string | undefined; content: string }>
+  > = [];
+  const undatedFact = "The BEAM undated fixture stores the project codename as river glass.";
+  orchestrator.extraction = {
+    extract: async (turns: any[]) => {
+      observedSourceGroups.push(
+        turns.map((turn) => ({
+          sourceValidAt: turn.sourceValidAt,
+          content: turn.content,
+        })),
+      );
+      return {
+        facts: [makeFact(undatedFact)],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  await orchestrator.ingestReplayBatch(
+    [
+      {
+        source: "openclaw",
+        sessionKey: "beam-undated-replay",
+        role: "user",
+        content: "[Turn 1] The codename is river glass.",
+        timestamp: "2026-05-11T09:00:00.000Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-undated-replay",
+        role: "assistant",
+        content: "[Turn 2] I will remember river glass.",
+        timestamp: "2026-05-11T09:00:00.001Z",
+      },
+    ],
+    { archiveLcm: false },
+  );
+
+  assert.deepEqual(observedSourceGroups, [
+    [
+      {
+        sourceValidAt: undefined,
+        content: "[Turn 1] The codename is river glass.",
+      },
+      {
+        sourceValidAt: undefined,
+        content: "[Turn 2] I will remember river glass.",
+      },
+    ],
+  ]);
+
+  storage.invalidateAllMemoriesCacheForDir();
+  const memories = await storage.readAllMemories();
+  const written = memories.find((memory: any) => memory.content.includes(undatedFact));
+  assert.ok(written, "undated replay batch should still persist extracted facts");
+  assert.equal(written.frontmatter.valid_at, undefined);
 });
 
 test("context-only replay turns do not satisfy the normal user-turn threshold", async () => {

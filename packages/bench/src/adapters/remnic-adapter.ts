@@ -524,6 +524,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           timestamp:
             entry.timestamp ??
             new Date(batchStartMs + index).toISOString(),
+          sourceValidAt: entry.timestamp,
           sessionKey: sessionId,
         }));
 

@@ -10129,7 +10129,7 @@ export class Orchestrator {
         role: turn.role,
         content: turn.content,
         timestamp: turn.timestamp,
-        sourceValidAt: turn.timestamp,
+        sourceValidAt: turn.sourceValidAt,
         sessionKey: key,
         parts: turn.parts,
         rawContent: turn.rawContent,

@@ -118,6 +118,7 @@ export const chatgptReplayNormalizer: ReplayNormalizer = {
           role,
           content,
           timestamp,
+          sourceValidAt: timestamp,
           externalId: typeof externalIdRaw === "string" ? externalIdRaw : undefined,
           metadata: {
             conversationId: convId,

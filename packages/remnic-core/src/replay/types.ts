@@ -9,6 +9,7 @@ export interface ReplayTurn {
   role: ReplayRole;
   content: string;
   timestamp: string;
+  sourceValidAt?: string;
   externalId?: string;
   metadata?: Record<string, unknown>;
   parts?: import("../message-parts/index.js").LcmMessagePartInput[];
@@ -122,6 +123,18 @@ export function validateReplayTurn(turn: ReplayTurn, index?: number): ReplayVali
     issues.push({
       code: "turn.timestamp.invalid",
       message: `Replay timestamp must be a valid ISO timestamp, received '${String(turn.timestamp)}'.`,
+      index,
+    });
+  }
+
+  if (
+    turn.sourceValidAt !== undefined &&
+    (typeof turn.sourceValidAt !== "string" ||
+      parseIsoTimestamp(turn.sourceValidAt) === null)
+  ) {
+    issues.push({
+      code: "turn.sourceValidAt.invalid",
+      message: `Replay sourceValidAt must be a valid ISO timestamp when provided, received '${String(turn.sourceValidAt)}'.`,
       index,
     });
   }
