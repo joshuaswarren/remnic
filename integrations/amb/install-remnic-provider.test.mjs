@@ -168,7 +168,12 @@ def run(llm: str):
   assert.equal(patchedAgain, patched);
   assert.match(patched, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
   assert.match(patched, /answer_provider != "gemini" and judge_provider != "gemini"/);
-  assert.match(patched, /os\.environ\["OMB_ANSWER_LLM"\] = llm/);
+  assert.match(patched, /def _remnic_apply_answer_llm\(llm\) -> None:/);
+  assert.match(
+    patched,
+    /if llm and \(llm != "gemini" or not os\.environ\.get\("OMB_ANSWER_LLM"\)\):/,
+  );
+  assert.match(patched, /_remnic_apply_answer_llm\(llm\)\n\s*_resolve_gemini_key\(\)/);
 });
 
 test("patchAmbCli handles compact upstream run entrypoints", () => {
@@ -191,7 +196,7 @@ def run(llm: str): _resolve_gemini_key(); ds = get_dataset(dataset)
   assert.match(patched, /answer_provider != "gemini" and judge_provider != "gemini"/);
   assert.match(
     patched,
-    /os\.environ\.__setitem__\("OMB_ANSWER_LLM", llm\) if llm else None; _resolve_gemini_key\(\); ds = get_dataset\(dataset\)/,
+    /_remnic_apply_answer_llm\(llm\); _resolve_gemini_key\(\); ds = get_dataset\(dataset\)/,
   );
 });
 
@@ -208,7 +213,7 @@ def run(llm: str): _resolve_gemini_key(); ds = get_dataset(dataset)
   assert.match(patched, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
   assert.match(
     patched,
-    /os\.environ\.__setitem__\("OMB_ANSWER_LLM", llm\) if llm else None; _resolve_gemini_key\(\); ds = get_dataset\(dataset\)/,
+    /_remnic_apply_answer_llm\(llm\); _resolve_gemini_key\(\); ds = get_dataset\(dataset\)/,
   );
 });
 

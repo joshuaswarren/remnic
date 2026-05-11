@@ -124,6 +124,10 @@ export function patchAmbCli(cli) {
         typer.echo("Error: GEMINI_API_KEY or GOOGLE_API_KEY environment variable is not set.", err=True)
         raise typer.Exit(1)
     os.environ["GOOGLE_API_KEY"] = key
+
+def _remnic_apply_answer_llm(llm) -> None:
+    if llm and (llm != "gemini" or not os.environ.get("OMB_ANSWER_LLM")):
+        os.environ["OMB_ANSWER_LLM"] = llm
 `;
   const resolvePattern =
     /(^|[;\n])([ \t]*)def\s+_resolve_gemini_key\s*\(\s*\)\s*->\s*None\s*:[\s\S]*?(?=(?:^|[;\n])\s*(?:@|def\s+|class\s+)|$(?![\s\S]))/m;
@@ -139,17 +143,18 @@ export function patchAmbCli(cli) {
     patched = resolvePatched;
   }
 
-  if (
-    !patched.includes('os.environ["OMB_ANSWER_LLM"] = llm') &&
-    !patched.includes('os.environ.__setitem__("OMB_ANSWER_LLM", llm)')
-  ) {
+  const hasAnswerLlmPatch =
+    /(^|[;:\n])\s*_remnic_apply_answer_llm\(llm\)\s*(?:[;\n])/.test(patched) ||
+    /(^|[;:\n])\s*(?:os\.environ\["OMB_ANSWER_LLM"\]\s*=\s*llm|os\.environ\.__setitem__\("OMB_ANSWER_LLM",\s*llm\))\s*(?:[;\n])\s*_resolve_gemini_key\(\)/.test(
+      patched,
+    );
+  if (!hasAnswerLlmPatch) {
     const callPattern =
       /^([ \t]*)_resolve_gemini_key\(\)\s*\n([ \t]*\n)?([ \t]*ds\s*=\s*get_dataset\(dataset\))/m;
     const callPatched = patched.replace(
       callPattern,
       (_match, indent, blankLine = "", datasetLine) =>
-        `${indent}if llm:\n` +
-        `${indent}    os.environ["OMB_ANSWER_LLM"] = llm\n` +
+        `${indent}_remnic_apply_answer_llm(llm)\n` +
         `${indent}_resolve_gemini_key()\n` +
         `${blankLine}${datasetLine}`,
     );
@@ -160,7 +165,7 @@ export function patchAmbCli(cli) {
         /\b_resolve_gemini_key\(\)(\s*;\s*ds\s*=\s*get_dataset\(dataset\))/;
       const compactCallPatched = patched.replace(
         compactCallPattern,
-        'os.environ.__setitem__("OMB_ANSWER_LLM", llm) if llm else None; _resolve_gemini_key()$1',
+        '_remnic_apply_answer_llm(llm); _resolve_gemini_key()$1',
       );
       if (compactCallPatched === patched) {
         throw new Error("AMB CLI run entrypoint was not patched.");
