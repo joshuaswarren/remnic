@@ -132,9 +132,10 @@ export function parseFlexibleIsoTimestamp(value: string): number | null {
   const hour = match[4] === undefined ? 0 : Number(match[4]);
   const minute = match[5] === undefined ? 0 : Number(match[5]);
   const second = match[6] === undefined ? 0 : Number(match[6]);
-  const offsetHour = match[8] === undefined ? 0 : Number(match[8]);
-  const offsetMinute = match[9] === undefined ? 0 : Number(match[9]);
+  const offsetHour = match[8] === undefined ? undefined : Number(match[8]);
+  const offsetMinute = match[9] === undefined ? undefined : Number(match[9]);
   const hasTime = match[4] !== undefined;
+  const hasOffset = offsetHour !== undefined && offsetMinute !== undefined;
   const hasTimezone = /(?:[Zz]|[+-]\d{2}:\d{2})$/.test(value);
 
   if (
@@ -142,13 +143,16 @@ export function parseFlexibleIsoTimestamp(value: string): number | null {
     month > 12 ||
     day < 1 ||
     day > isoDaysInMonth(year, month) ||
-    (hasTime && !hasTimezone) ||
-    hour > 23 ||
-    minute > 59 ||
-    second > 59 ||
-    offsetHour > 14 ||
-    offsetMinute > 59 ||
-    (offsetHour === 14 && offsetMinute > 0)
+    (hasTime && !hasTimezone)
+  ) {
+    return null;
+  }
+  if (hasTime && (hour > 23 || minute > 59 || second > 59)) {
+    return null;
+  }
+  if (
+    hasOffset &&
+    (offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute > 0))
   ) {
     return null;
   }
