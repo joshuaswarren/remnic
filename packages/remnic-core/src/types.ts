@@ -1964,6 +1964,7 @@ export interface BufferTurn {
   providerThreadId?: string | null;
   turnFingerprint?: string;
   persistProcessedFingerprint?: boolean;
+  extractionContextOnly?: boolean;
   parts?: import("./message-parts/index.js").LcmMessagePartInput[];
   rawContent?: unknown;
   sourceFormat?: import("./message-parts/index.js").MessagePartSourceFormat;

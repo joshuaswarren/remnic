@@ -956,7 +956,11 @@ export class ExtractionEngine {
       }))
       .filter((turn) => turn.content.trim().length > 0);
     const conversation = boundedTurns
-      .map((t) => `[${t.role}] ${t.content}`)
+      .map((t) => {
+        const roleLabel =
+          t.extractionContextOnly === true ? `context ${t.role}` : t.role;
+        return `[${roleLabel}] ${t.content}`;
+      })
       .join("\n\n");
     if (conversation.trim().length === 0) {
       log.debug("extraction skipped — conversation only contained non-memory work-layer context");
@@ -1235,6 +1239,7 @@ These are durable insights - capture them:
 - Confidence: Explicit (0.95-1.0), Implied (0.70-0.94), Inferred (0.40-0.69), Speculative (0.00-0.39)
 - Corrections get highest confidence (0.95+)
 - Each fact should be standalone and self-contained
+- Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
 - CRITICAL: Use canonical hyphenated entity names (e.g., "jane-doe" not "janedoe")
 - CRITICAL: NEVER extract the same fact twice - check for duplicates before adding to facts array
 - CRITICAL: NEVER extract cron job schedules, automation configurations, or system monitoring details (these are operational noise)
@@ -1481,6 +1486,7 @@ Rules:
 - Priority: corrections > principles${this.config.causalRuleExtractionEnabled ? " > rules" : ""} > preferences > commitments > decisions > relationships > entities > moments > skills > facts
 - Corrections (user saying "actually, don't do X" or "I prefer Y") get highest confidence
 - Each fact should be a standalone, self-contained statement
+- Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
 - Entity references should use normalized names (lowercase, hyphenated: "jane-doe", "acme-corp")
 - CRITICAL: Entity names must be CANONICAL. Always use the hyphenated multi-word form: "acme-corp" NOT "acmecorp" or "acme". "jane-doe" NOT "janedoe" or "jane". If unsure, prefer the most specific full name.
 - Avoid creating entities typed as "other" when a more specific type fits (company, project, tool, person, place)

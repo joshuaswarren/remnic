@@ -98,13 +98,23 @@ test("ingestReplayBatch splits mixed source timestamps before persisting valid_a
 
   const firstFact = "The BEAM fixture records the passphrase as alpine tea.";
   const secondFact = "The BEAM fixture records the depot as cedar hall.";
-  const observedSourceGroups: string[][] = [];
+  const observedSourceGroups: Array<
+    Array<{ sourceValidAt: string | undefined; contextOnly: boolean }>
+  > = [];
   orchestrator.extraction = {
     extract: async (turns: any[]) => {
-      const sourceGroup = turns.map((turn) => turn.sourceValidAt);
+      const sourceGroup = turns.map((turn) => ({
+        sourceValidAt: turn.sourceValidAt,
+        contextOnly: turn.extractionContextOnly === true,
+      }));
       observedSourceGroups.push(sourceGroup);
+      const firstTarget = turns.find(
+        (turn) => turn.extractionContextOnly !== true,
+      );
       const factBody =
-        sourceGroup[0] === "2025-01-01T00:00:00Z" ? firstFact : secondFact;
+        firstTarget?.sourceValidAt === "2025-01-01T00:00:00Z"
+          ? firstFact
+          : secondFact;
       return {
         facts: [makeFact(factBody)],
         entities: [],
@@ -150,8 +160,16 @@ test("ingestReplayBatch splits mixed source timestamps before persisting valid_a
   );
 
   assert.deepEqual(observedSourceGroups, [
-    ["2025-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
-    ["2025-01-02T03:04:05Z", "2025-01-02T03:04:05Z"],
+    [
+      { sourceValidAt: "2025-01-01T00:00:00Z", contextOnly: false },
+      { sourceValidAt: "2025-01-01T00:00:00Z", contextOnly: false },
+    ],
+    [
+      { sourceValidAt: "2025-01-01T00:00:00Z", contextOnly: true },
+      { sourceValidAt: "2025-01-01T00:00:00Z", contextOnly: true },
+      { sourceValidAt: "2025-01-02T03:04:05Z", contextOnly: false },
+      { sourceValidAt: "2025-01-02T03:04:05Z", contextOnly: false },
+    ],
   ]);
 
   storage.invalidateAllMemoriesCacheForDir();

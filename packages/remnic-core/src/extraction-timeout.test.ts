@@ -66,6 +66,81 @@ test("gateway extraction fallback honors configured timeout and output budget", 
   assert.equal(capturedOptions?.maxTokens, 32_768);
 });
 
+test("gateway extraction labels context-only replay turns", async () => {
+  const config = parseConfig({
+    modelSource: "gateway",
+    gatewayConfig: {
+      agents: {
+        defaults: { model: { primary: "bench-internal/gpt-5.5" } },
+        list: [],
+      },
+      models: {
+        providers: {
+          "bench-internal": {
+            api: "codex-cli",
+            baseUrl: "codex-cli://local",
+            models: [{ id: "gpt-5.5", name: "gpt-5.5" }],
+          },
+        },
+      },
+    },
+  });
+  const engine = new ExtractionEngine(config);
+  let capturedMessages:
+    | Array<{ role: string; content: string }>
+    | undefined;
+
+  (engine as unknown as {
+    fallbackLlm: {
+      parseWithSchemaDetailed(
+        messages: Array<{ role: string; content: string }>,
+      ): Promise<unknown>;
+    };
+  }).fallbackLlm = {
+    async parseWithSchemaDetailed(messages) {
+      capturedMessages = messages;
+      return {
+        modelUsed: "bench-internal/gpt-5.5",
+        result: {
+          facts: [],
+          profileUpdates: [],
+          entities: [],
+          questions: [],
+        },
+      };
+    },
+  };
+
+  const turns: BufferTurn[] = [
+    {
+      role: "user",
+      content: "What does the fixture call the depot?",
+      timestamp: "2026-05-08T00:00:00.000Z",
+      extractionContextOnly: true,
+    },
+    {
+      role: "assistant",
+      content: "It calls the depot cedar hall.",
+      timestamp: "2026-05-08T00:00:01.000Z",
+    },
+  ];
+
+  await engine.extract(turns);
+
+  assert.ok(capturedMessages);
+  const systemPrompt = capturedMessages[0]?.content ?? "";
+  const conversationPrompt = capturedMessages[1]?.content ?? "";
+  assert.match(systemPrompt, /reference context only/);
+  assert.match(
+    conversationPrompt,
+    /\[context user\] What does the fixture call the depot\?/,
+  );
+  assert.match(
+    conversationPrompt,
+    /\[assistant\] It calls the depot cedar hall\./,
+  );
+});
+
 test("extraction skips mechanical action telemetry without durable memory cues", async () => {
   const config = parseConfig({
     modelSource: "gateway",

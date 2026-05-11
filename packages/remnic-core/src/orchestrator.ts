@@ -690,6 +690,7 @@ export function sanitizeSessionKeyForFilename(sessionKey: string): string {
 function latestSourceValidAtFromTurns(turns: readonly BufferTurn[]): string | undefined {
   let latestMs: number | null = null;
   for (const turn of turns) {
+    if (turn.extractionContextOnly === true) continue;
     if (typeof turn.sourceValidAt !== "string") continue;
     const parsed = parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
     if (parsed === null) continue;
@@ -705,36 +706,46 @@ function sourceValidAtMs(turn: BufferTurn): number | null {
   return parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
 }
 
+const SOURCE_VALID_AT_CONTEXT_TURNS = 2;
+
+function sourceValidAtSliceKey(turn: BufferTurn, index: number): string {
+  const validAtMs = sourceValidAtMs(turn);
+  return validAtMs === null ? `unknown:${index}` : String(validAtMs);
+}
+
+function asExtractionContextTurn(turn: BufferTurn): BufferTurn {
+  return { ...turn, extractionContextOnly: true };
+}
+
+function asExtractionTargetTurn(turn: BufferTurn): BufferTurn {
+  const { extractionContextOnly: _contextOnly, ...targetTurn } = turn;
+  return targetTurn;
+}
+
 function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][] {
   if (turns.length === 0) return [];
-  const annotated = turns.map((turn, index) => ({
-    turn,
-    index,
-    validAtMs: sourceValidAtMs(turn),
-  }));
-  if (!annotated.some((entry) => entry.validAtMs !== null)) {
+  if (!turns.some((turn) => sourceValidAtMs(turn) !== null)) {
     return [[...turns]];
   }
 
-  annotated.sort((a, b) => {
-    if (a.validAtMs !== null && b.validAtMs !== null) {
-      const byTime = a.validAtMs - b.validAtMs;
-      return byTime === 0 ? a.index - b.index : byTime;
-    }
-    if (a.validAtMs !== null) return -1;
-    if (b.validAtMs !== null) return 1;
-    return a.index - b.index;
-  });
-
   const slices: BufferTurn[][] = [];
-  let activeKey: string | null = null;
-  for (const entry of annotated) {
-    const key = entry.validAtMs === null ? `unknown:${entry.index}` : String(entry.validAtMs);
-    if (key !== activeKey) {
-      slices.push([]);
-      activeKey = key;
+  let start = 0;
+  while (start < turns.length) {
+    const activeKey = sourceValidAtSliceKey(turns[start], start);
+    let end = start + 1;
+    while (
+      end < turns.length &&
+      sourceValidAtSliceKey(turns[end], end) === activeKey
+    ) {
+      end += 1;
     }
-    slices[slices.length - 1].push(entry.turn);
+
+    const contextStart = Math.max(0, start - SOURCE_VALID_AT_CONTEXT_TURNS);
+    slices.push([
+      ...turns.slice(contextStart, start).map(asExtractionContextTurn),
+      ...turns.slice(start, end).map(asExtractionTargetTurn),
+    ]);
+    start = end;
   }
   return slices;
 }
@@ -10556,12 +10567,20 @@ export class Orchestrator {
         content: t.content.trim().slice(0, this.config.extractionMaxTurnChars),
       }))
       .filter((t) => t.content.length > 0);
-    const sourceValidAt = latestSourceValidAtFromTurns(normalizedTurns);
+    const targetTurns = normalizedTurns.filter(
+      (turn) => turn.extractionContextOnly !== true,
+    );
+    if (targetTurns.length === 0) {
+      log.debug("skipping extraction: no non-context turns after normalization");
+      await clearBuffer();
+      return;
+    }
+    const sourceValidAt = latestSourceValidAtFromTurns(targetTurns);
     throwIfDeadlineExceeded("before_extract");
     throwIfAborted("before_extract");
 
     const userTurns = normalizedTurns.filter((t) => t.role === "user");
-    const totalChars = normalizedTurns.reduce(
+    const totalChars = targetTurns.reduce(
       (sum, t) => sum + t.content.length,
       0,
     );
@@ -10590,11 +10609,11 @@ export class Orchestrator {
             defaultNamespaceForPrincipal(principal, this.config),
           );
     const storage = await this.storageRouter.storageFor(selfNamespace);
-    const shouldPersistProcessedFingerprint = normalizedTurns.some(
+    const shouldPersistProcessedFingerprint = targetTurns.some(
       (turn) => turn.persistProcessedFingerprint === true,
     );
     const extractionFingerprint = this.buildExtractionFingerprint(
-      normalizedTurns,
+      targetTurns,
       bufferKey,
     );
     let meta =
