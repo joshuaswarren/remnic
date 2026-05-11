@@ -1,6 +1,8 @@
 # Build output
 dist/
 *.map
+__pycache__/
+*.pyc
 
 # Dependencies
 node_modules/
