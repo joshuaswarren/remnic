@@ -28,6 +28,11 @@ export { PLUGIN_ID, LEGACY_PLUGIN_ID, resolveRemnicPluginEntry } from "./plugin-
 
 export { parseConfig } from "./config.js";
 export {
+  parseFlexibleIsoTimestamp,
+  parseIsoOffsetTimestamp,
+  parseIsoUtcTimestamp,
+} from "./utils/iso-timestamp.js";
+export {
   migrateFromEngram,
   rollbackFromEngramMigration,
   type MigrationResult,

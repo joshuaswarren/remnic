@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
-import { expandTildePath } from "@remnic/core";
+import { expandTildePath, parseFlexibleIsoTimestamp } from "@remnic/core";
 
 const DEFAULT_RECALL_BUDGET_CHARS = 49_152;
 const DEFAULT_DRAIN_TIMEOUT_MS = 8 * 60 * 60 * 1000;
@@ -138,48 +138,9 @@ function extractAmbIsoDate(value) {
   return match?.[1] ?? "";
 }
 
-function daysInMonth(year, month) {
-  const monthDays = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  return monthDays[month - 1] ?? 0;
-}
-
-function isLeapYear(year) {
-  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-}
-
 function parseStrictIsoTimestamp(value, label) {
-  const match = value.match(
-    /^(\d{4})-(\d{2})-(\d{2})(?:[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:[Zz]|([+-])(\d{2}):?(\d{2}))?)?$/,
-  );
-  if (!match) {
-    throw new Error(`${label} must be a valid ISO 8601 timestamp; received ${value}`);
-  }
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const hour = match[4] === undefined ? 0 : Number(match[4]);
-  const minute = match[5] === undefined ? 0 : Number(match[5]);
-  const second = match[6] === undefined ? 0 : Number(match[6]);
-  const offsetHour = match[8] === undefined ? 0 : Number(match[8]);
-  const offsetMinute = match[9] === undefined ? 0 : Number(match[9]);
-
-  if (
-    month < 1 ||
-    month > 12 ||
-    day < 1 ||
-    day > daysInMonth(year, month) ||
-    hour > 23 ||
-    minute > 59 ||
-    second > 59 ||
-    offsetHour > 23 ||
-    offsetMinute > 59
-  ) {
-    throw new Error(`${label} must be a valid ISO 8601 timestamp; received ${value}`);
-  }
-
-  const parsed = Date.parse(value);
-  if (!Number.isFinite(parsed)) {
+  const parsed = parseFlexibleIsoTimestamp(value);
+  if (parsed === null) {
     throw new Error(`${label} must be a valid ISO 8601 timestamp; received ${value}`);
   }
   return parsed;
