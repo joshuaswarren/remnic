@@ -21,8 +21,8 @@ test("ingestReplayBatch enqueues replay slices without clearing shared buffer", 
   );
   assert.match(
     source,
-    /skipDedupeCheck:\s*true,\s*clearBufferAfterExtraction:\s*false,\s*skipCharThreshold:\s*true,\s*bufferKey:\s*key,/m,
-    "replay ingestion should clear the session-specific buffer key after extraction, not the default buffer",
+    /skipDedupeCheck:\s*true,\s*clearBufferAfterExtraction:\s*false,\s*skipCharThreshold:\s*true,\s*skipUserTurnThreshold:\s*true,\s*bufferKey:\s*key,/m,
+    "replay ingestion should explicitly bypass replay slice thresholds and use the session-specific buffer key",
   );
   assert.match(
     source,
@@ -44,7 +44,7 @@ test("queueBufferedExtraction preserves explicit false clearBufferAfterExtractio
   );
 });
 
-test("runExtraction bypass only skips char threshold and still enforces user-turn threshold", () => {
+test("runExtraction threshold bypasses are explicit and independent", () => {
   const source = readFileSync(
     resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
     "utf-8",
@@ -57,13 +57,23 @@ test("runExtraction bypass only skips char threshold and still enforces user-tur
   );
   assert.match(
     source,
-    /const belowCharThreshold = totalChars < this\.config\.extractionMinChars;\s*const belowUserTurnThreshold =\s*userTurns\.length < this\.config\.extractionMinUserTurns;/m,
-    "runExtraction should compute char and user-turn minimums independently",
+    /const skipUserTurnThreshold = options\.skipUserTurnThreshold \?\? false;/m,
+    "runExtraction should support explicit user-turn threshold bypass",
+  );
+  assert.match(
+    source,
+    /const userTurns = targetTurns\.filter\(\(t\) => t\.role === "user"\);\s*const totalChars = targetTurns\.reduce\(/m,
+    "runExtraction should compute threshold inputs from non-context target turns",
+  );
+  assert.match(
+    source,
+    /const belowCharThreshold = totalChars < this\.config\.extractionMinChars;\s*const belowUserTurnThreshold =\s*!skipUserTurnThreshold &&\s*userTurns\.length < this\.config\.extractionMinUserTurns;/m,
+    "runExtraction should keep char and user-turn threshold bypasses separate",
   );
   assert.match(
     source,
     /if \(\(!skipCharThreshold && belowCharThreshold\) \|\| belowUserTurnThreshold\)/m,
-    "user-turn threshold should always be enforced, even when char threshold bypass is enabled",
+    "threshold checks should honor only their explicit bypass flag",
   );
 });
 
