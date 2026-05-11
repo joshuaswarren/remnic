@@ -722,6 +722,22 @@ function asExtractionTargetTurn(turn: BufferTurn): BufferTurn {
   return targetTurn;
 }
 
+function sourceValidAtContextTurns(
+  turns: readonly BufferTurn[],
+  contextStart: number,
+  start: number,
+  targetValidAtMs: number | null,
+): BufferTurn[] {
+  if (targetValidAtMs === null) return [];
+  return turns
+    .slice(contextStart, start)
+    .filter((turn) => {
+      const contextValidAtMs = sourceValidAtMs(turn);
+      return contextValidAtMs !== null && contextValidAtMs <= targetValidAtMs;
+    })
+    .map(asExtractionContextTurn);
+}
+
 function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][] {
   if (turns.length === 0) return [];
   if (!turns.some((turn) => sourceValidAtMs(turn) !== null)) {
@@ -731,6 +747,7 @@ function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][]
   const slices: BufferTurn[][] = [];
   let start = 0;
   while (start < turns.length) {
+    const targetValidAtMs = sourceValidAtMs(turns[start]);
     const activeKey = sourceValidAtSliceKey(turns[start], start);
     let end = start + 1;
     while (
@@ -742,7 +759,12 @@ function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][]
 
     const contextStart = Math.max(0, start - SOURCE_VALID_AT_CONTEXT_TURNS);
     slices.push([
-      ...turns.slice(contextStart, start).map(asExtractionContextTurn),
+      ...sourceValidAtContextTurns(
+        turns,
+        contextStart,
+        start,
+        targetValidAtMs,
+      ),
       ...turns.slice(start, end).map(asExtractionTargetTurn),
     ]);
     start = end;

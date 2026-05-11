@@ -182,6 +182,97 @@ test("ingestReplayBatch splits mixed source timestamps before persisting valid_a
   assert.equal(secondWritten.frontmatter.valid_at, "2025-01-02T03:04:05.000Z");
 });
 
+test("ingestReplayBatch does not leak future source turns into earlier context", async () => {
+  const { orchestrator } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  const observedSourceGroups: Array<
+    Array<{ sourceValidAt: string | undefined; contextOnly: boolean; content: string }>
+  > = [];
+  orchestrator.extraction = {
+    extract: async (turns: any[]) => {
+      observedSourceGroups.push(
+        turns.map((turn) => ({
+          sourceValidAt: turn.sourceValidAt,
+          contextOnly: turn.extractionContextOnly === true,
+          content: turn.content,
+        })),
+      );
+      return {
+        facts: [makeFact(`Observed slice ${observedSourceGroups.length}.`)],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  await orchestrator.ingestReplayBatch(
+    [
+      {
+        source: "openclaw",
+        sessionKey: "beam-future-context",
+        role: "user",
+        content: "Later source-dated turn must not become earlier context.",
+        timestamp: "2025-01-03T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-future-context",
+        role: "assistant",
+        content: "Later source-dated response must not become earlier context.",
+        timestamp: "2025-01-03T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-future-context",
+        role: "user",
+        content: "Earlier source-dated turn.",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-future-context",
+        role: "assistant",
+        content: "Earlier source-dated response.",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+    ],
+    { archiveLcm: false },
+  );
+
+  assert.deepEqual(observedSourceGroups, [
+    [
+      {
+        sourceValidAt: "2025-01-03T00:00:00Z",
+        contextOnly: false,
+        content: "Later source-dated turn must not become earlier context.",
+      },
+      {
+        sourceValidAt: "2025-01-03T00:00:00Z",
+        contextOnly: false,
+        content: "Later source-dated response must not become earlier context.",
+      },
+    ],
+    [
+      {
+        sourceValidAt: "2025-01-01T00:00:00Z",
+        contextOnly: false,
+        content: "Earlier source-dated turn.",
+      },
+      {
+        sourceValidAt: "2025-01-01T00:00:00Z",
+        contextOnly: false,
+        content: "Earlier source-dated response.",
+      },
+    ],
+  ]);
+});
+
 test("context-only replay turns do not satisfy the normal user-turn threshold", async () => {
   const { orchestrator } = await makeOrchestrator({
     extractionMinChars: 0,
