@@ -202,7 +202,8 @@ function buildAmbTurnAnchor(document, marker) {
     fields.push(`chat_id=${turnId}`);
     fields.push(`source_chat_id=${turnId}`);
   }
-  const timeAnchor = extractAmbTimeAnchor(cleanedMarker);
+  const markerTimeAnchor = extractAmbTimeAnchor(cleanedMarker);
+  const timeAnchor = markerTimeAnchor || normalizeAmbSourceTimestamp(document?.timestamp || "");
   if (timeAnchor) {
     fields.push(`time_anchor=${timeAnchor}`);
     const date = extractAmbIsoDate(timeAnchor);

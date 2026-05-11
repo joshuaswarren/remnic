@@ -137,6 +137,19 @@ test("AMB bridge splits formatted content on single newlines", () => {
   assert.equal(messages[3]?.timestamp, "2026-05-10T13:00:00.000Z");
 });
 
+test("AMB bridge uses document timestamps as turn anchors when markers omit time", () => {
+  const messages = buildAmbMessages({
+    id: "doc-turn-time-fallback",
+    timestamp: "2026-05-10T12:00:00Z",
+    content: "[Turn 7] User: The deployment window starts at noon.",
+  });
+
+  assert.match(messages[1]?.content ?? "", /turn_id=7/);
+  assert.match(messages[1]?.content ?? "", /time_anchor=2026-05-10T12:00:00\.000Z/);
+  assert.match(messages[1]?.content ?? "", /date=2026-05-10/);
+  assert.equal(messages[1]?.timestamp, "2026-05-10T12:00:00.000Z");
+});
+
 test("AMB bridge prefers structured document messages when present", () => {
   const messages = buildAmbMessages({
     id: "doc-structured",
