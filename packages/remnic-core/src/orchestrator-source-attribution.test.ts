@@ -89,20 +89,22 @@ test("persistExtraction is a no-op by default — no inline citation is injected
   assert.ok(written.content.includes(factBody));
 });
 
-test("ingestReplayBatch propagates source timestamps to persisted valid_at", async () => {
+test("ingestReplayBatch splits mixed source timestamps before persisting valid_at", async () => {
   const { orchestrator, storage } = await makeOrchestrator({
     extractionMinChars: 0,
     extractionMinUserTurns: 1,
     threadingEnabled: false,
   });
 
-  const factBody = "The BEAM fixture records the passphrase as alpine tea.";
+  const firstFact = "The BEAM fixture records the passphrase as alpine tea.";
+  const secondFact = "The BEAM fixture records the depot as cedar hall.";
+  const observedSourceGroups: string[][] = [];
   orchestrator.extraction = {
     extract: async (turns: any[]) => {
-      assert.deepEqual(
-        turns.map((turn) => turn.sourceValidAt),
-        ["2025-01-01T00:00:00Z", "2025-01-02T03:04:05Z"],
-      );
+      const sourceGroup = turns.map((turn) => turn.sourceValidAt);
+      observedSourceGroups.push(sourceGroup);
+      const factBody =
+        sourceGroup[0] === "2025-01-01T00:00:00Z" ? firstFact : secondFact;
       return {
         facts: [makeFact(factBody)],
         entities: [],
@@ -126,18 +128,40 @@ test("ingestReplayBatch propagates source timestamps to persisted valid_at", asy
         source: "openclaw",
         sessionKey: "beam-source-validity",
         role: "assistant",
+        content: "Earlier source-dated response.",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-source-validity",
+        role: "user",
         content: "Later source-dated turn.",
+        timestamp: "2025-01-02T03:04:05Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-source-validity",
+        role: "assistant",
+        content: "Later source-dated response.",
         timestamp: "2025-01-02T03:04:05Z",
       },
     ],
     { archiveLcm: false },
   );
 
+  assert.deepEqual(observedSourceGroups, [
+    ["2025-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
+    ["2025-01-02T03:04:05Z", "2025-01-02T03:04:05Z"],
+  ]);
+
   storage.invalidateAllMemoriesCacheForDir();
   const memories = await storage.readAllMemories();
-  const written = memories.find((memory: any) => memory.content.includes(factBody));
-  assert.ok(written, "replay extraction should persist the extracted fact");
-  assert.equal(written.frontmatter.valid_at, "2025-01-02T03:04:05.000Z");
+  const firstWritten = memories.find((memory: any) => memory.content.includes(firstFact));
+  const secondWritten = memories.find((memory: any) => memory.content.includes(secondFact));
+  assert.ok(firstWritten, "first replay slice should persist its extracted fact");
+  assert.ok(secondWritten, "second replay slice should persist its extracted fact");
+  assert.equal(firstWritten.frontmatter.valid_at, "2025-01-01T00:00:00.000Z");
+  assert.equal(secondWritten.frontmatter.valid_at, "2025-01-02T03:04:05.000Z");
 });
 
 test("persistExtraction injects the inline citation when the flag is enabled", async () => {

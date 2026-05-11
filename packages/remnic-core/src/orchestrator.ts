@@ -700,6 +700,45 @@ function latestSourceValidAtFromTurns(turns: readonly BufferTurn[]): string | un
   return latestMs === null ? undefined : new Date(latestMs).toISOString();
 }
 
+function sourceValidAtMs(turn: BufferTurn): number | null {
+  if (typeof turn.sourceValidAt !== "string") return null;
+  return parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
+}
+
+function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][] {
+  if (turns.length === 0) return [];
+  const annotated = turns.map((turn, index) => ({
+    turn,
+    index,
+    validAtMs: sourceValidAtMs(turn),
+  }));
+  if (!annotated.some((entry) => entry.validAtMs !== null)) {
+    return [[...turns]];
+  }
+
+  annotated.sort((a, b) => {
+    if (a.validAtMs !== null && b.validAtMs !== null) {
+      const byTime = a.validAtMs - b.validAtMs;
+      return byTime === 0 ? a.index - b.index : byTime;
+    }
+    if (a.validAtMs !== null) return -1;
+    if (b.validAtMs !== null) return 1;
+    return a.index - b.index;
+  });
+
+  const slices: BufferTurn[][] = [];
+  let activeKey: string | null = null;
+  for (const entry of annotated) {
+    const key = entry.validAtMs === null ? `unknown:${entry.index}` : String(entry.validAtMs);
+    if (key !== activeKey) {
+      slices.push([]);
+      activeKey = key;
+    }
+    slices[slices.length - 1].push(entry.turn);
+  }
+  return slices;
+}
+
 export function isArtifactMemoryPath(filePath: string): boolean {
   return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(filePath);
 }
@@ -10050,18 +10089,20 @@ export class Orchestrator {
           })),
         );
       }
-      replayTasks.push(
-        new Promise<void>((resolve, reject) => {
-          void this.queueBufferedExtraction(sessionTurns, "trigger_mode", {
-            skipDedupeCheck: true,
-            clearBufferAfterExtraction: false,
-            skipCharThreshold: true,
-            bufferKey: key,
-            extractionDeadlineMs: options.deadlineMs,
-            onTaskSettled: (err) => (err ? reject(err) : resolve()),
-          }).catch(reject);
-        }),
-      );
+      for (const sessionSlice of splitTurnsBySourceValidAt(sessionTurns)) {
+        replayTasks.push(
+          new Promise<void>((resolve, reject) => {
+            void this.queueBufferedExtraction(sessionSlice, "trigger_mode", {
+              skipDedupeCheck: true,
+              clearBufferAfterExtraction: false,
+              skipCharThreshold: true,
+              bufferKey: key,
+              extractionDeadlineMs: options.deadlineMs,
+              onTaskSettled: (err) => (err ? reject(err) : resolve()),
+            }).catch(reject);
+          }),
+        );
+      }
     }
     if (replayTasks.length > 0) {
       const settled = await Promise.allSettled(replayTasks);
@@ -10179,17 +10220,28 @@ export class Orchestrator {
       );
     }
 
-    await new Promise<void>((resolve, reject) => {
-      void this.queueBufferedExtraction(sessionTurns, "trigger_mode", {
-        skipDedupeCheck: true,
-        clearBufferAfterExtraction: false,
-        skipCharThreshold: true,
-        bufferKey: sessionKey,
-        extractionDeadlineMs: options.deadlineMs,
-        writeNamespaceOverride: this.bulkImportWriteNamespace(),
-        onTaskSettled: (err) => (err ? reject(err) : resolve()),
-      }).catch(reject);
-    });
+    const importTasks = splitTurnsBySourceValidAt(sessionTurns).map(
+      (sessionSlice) =>
+        new Promise<void>((resolve, reject) => {
+          void this.queueBufferedExtraction(sessionSlice, "trigger_mode", {
+            skipDedupeCheck: true,
+            clearBufferAfterExtraction: false,
+            skipCharThreshold: true,
+            bufferKey: sessionKey,
+            extractionDeadlineMs: options.deadlineMs,
+            writeNamespaceOverride: this.bulkImportWriteNamespace(),
+            onTaskSettled: (err) => (err ? reject(err) : resolve()),
+          }).catch(reject);
+        }),
+    );
+    const settled = await Promise.allSettled(importTasks);
+    const firstRejected = settled.find(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected",
+    );
+    if (firstRejected) {
+      throw firstRejected.reason;
+    }
   }
 
   async observeSessionHeartbeat(
