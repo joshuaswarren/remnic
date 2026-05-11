@@ -13,6 +13,7 @@ import {
   buildAmbStorageSessionId,
   joinAmbRecallChunks,
   loadRemnicAmbConfig,
+  parseJsonlBridgeRequest,
   RemnicAmbBridge,
 } from "../integrations/amb/remnic-bridge.mjs";
 
@@ -242,6 +243,29 @@ test("AMB bridge rejects invalid query timestamps", () => {
   assert.throws(
     () => buildAmbRecallQuery("What happened?", "not-a-date"),
     /query_timestamp must be a parseable ISO 8601 timestamp/,
+  );
+});
+
+test("AMB bridge JSONL request parser rejects non-object JSON", () => {
+  assert.deepEqual(
+    parseJsonlBridgeRequest('{"id":"1","method":"cleanup"}'),
+    { id: "1", method: "cleanup" },
+  );
+  assert.throws(
+    () => parseJsonlBridgeRequest("null"),
+    /request must be a JSON object/,
+  );
+  assert.throws(
+    () => parseJsonlBridgeRequest("42"),
+    /request must be a JSON object/,
+  );
+  assert.throws(
+    () => parseJsonlBridgeRequest("[]"),
+    /request must be a JSON object/,
+  );
+  assert.throws(
+    () => parseJsonlBridgeRequest("{"),
+    /invalid JSON:/,
   );
 });
 

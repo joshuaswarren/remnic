@@ -461,6 +461,20 @@ export async function loadRemnicAmbConfig(env = process.env) {
   return {};
 }
 
+export function parseJsonlBridgeRequest(line) {
+  let request;
+  try {
+    request = JSON.parse(line);
+  } catch (error) {
+    throw new Error(`invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!isJsonObject(request)) {
+    throw new Error("request must be a JSON object.");
+  }
+  return request;
+}
+
 async function loadBenchModule(env = process.env) {
   if (env.REMNIC_AMB_IMPORT === "package") {
     return import("@remnic/bench");
@@ -722,9 +736,12 @@ async function runJsonlServer() {
     if (!line.trim()) continue;
     let request;
     try {
-      request = JSON.parse(line);
+      request = parseJsonlBridgeRequest(line);
     } catch (error) {
-      process.stdout.write(`${JSON.stringify({ ok: false, error: `invalid JSON: ${error.message}` })}\n`);
+      process.stdout.write(`${JSON.stringify({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      })}\n`);
       continue;
     }
 
