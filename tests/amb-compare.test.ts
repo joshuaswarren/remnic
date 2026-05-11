@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -6,6 +9,7 @@ import {
   assertPublicComparableBeamResult,
   findSplitSota,
   normalizeBeamMode,
+  readResult,
 } from "../integrations/amb/compare-beam-result.mjs";
 
 test("AMB comparator treats current rag mode as public single-query mode", () => {
@@ -104,4 +108,25 @@ test("AMB comparator rejects mismatched result counts", () => {
       ),
     /result\.results length 399 does not match total_queries=400/,
   );
+});
+
+test("AMB comparator rejects JSON files that are not objects", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-compare-"));
+  const file = path.join(dir, "result.json");
+
+  try {
+    await writeFile(file, "null", "utf8");
+    assert.throws(
+      () => readResult(file),
+      /result file must contain a JSON object/,
+    );
+
+    await writeFile(file, "[]", "utf8");
+    assert.throws(
+      () => readResult(file),
+      /result file must contain a JSON object/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

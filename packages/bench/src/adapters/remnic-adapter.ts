@@ -373,6 +373,24 @@ function normalizeDrainTimeoutMs(value: unknown): number {
   return value;
 }
 
+function normalizeBenchRecallAsOf(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(
+      `benchmark recall asOf must be a non-empty timestamp string; received ${String(value)}`,
+    );
+  }
+  const normalized = value.trim();
+  if (!Number.isFinite(Date.parse(normalized))) {
+    throw new Error(
+      `benchmark recall asOf must be a parseable timestamp; received ${value}`,
+    );
+  }
+  return normalized;
+}
+
 async function removeBenchQmdSandbox(sandbox: BenchQmdSandbox): Promise<void> {
   if (!sandbox.indexName.startsWith("remnic-bench-")) {
     return;
@@ -517,9 +535,13 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           return "";
         }
 
+        const recallAsOf = normalizeBenchRecallAsOf(recallOptions.asOf);
+        const historicalRecall = recallAsOf !== undefined;
         const sections: string[] = [];
         let usedChars = 0;
-        const explicitReferences = collectExplicitTurnReferences(query);
+        const explicitReferences = historicalRecall
+          ? []
+          : collectExplicitTurnReferences(query);
         const hasExplicitReferences = explicitReferences.length > 0;
         const preferFocusedExplicitContext =
           hasExplicitReferences && sessionId.startsWith("ama-");
@@ -529,22 +551,24 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           )
           : [];
 
-        const exactReferenceEvidence = await buildExplicitCueRecallSection({
-          engine,
-          sessionId,
-          query,
-          maxChars: Math.min(CORE_EXPLICIT_CUE_MAX_CHARS, Math.floor(budget * 0.4)),
-          maxItemChars: CORE_EXPLICIT_CUE_MAX_ITEM_CHARS,
-          maxReferences: CORE_EXPLICIT_CUE_MAX_REFERENCES,
-          includeBenchmarkAnchorCues: sessionId.startsWith("beam-"),
-          includeStructuredPlanCues: sessionId.startsWith("arena-"),
-        });
+        const exactReferenceEvidence = historicalRecall
+          ? ""
+          : await buildExplicitCueRecallSection({
+              engine,
+              sessionId,
+              query,
+              maxChars: Math.min(CORE_EXPLICIT_CUE_MAX_CHARS, Math.floor(budget * 0.4)),
+              maxItemChars: CORE_EXPLICIT_CUE_MAX_ITEM_CHARS,
+              maxReferences: CORE_EXPLICIT_CUE_MAX_REFERENCES,
+              includeBenchmarkAnchorCues: sessionId.startsWith("beam-"),
+              includeStructuredPlanCues: sessionId.startsWith("arena-"),
+            });
         if (exactReferenceEvidence) {
           sections.push(exactReferenceEvidence);
           usedChars += exactReferenceEvidence.length;
         }
 
-        const trajectoryAnalysisEvidence = sessionId.startsWith("ama-")
+        const trajectoryAnalysisEvidence = !historicalRecall && sessionId.startsWith("ama-")
           ? await buildTrajectoryAnalysisRecallSection({
               engine,
               sessionId,
@@ -561,19 +585,21 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
 
         if (useCoreMemoryPipeline) {
-          const coreBudget = Math.max(
-            0,
-            Math.min(
-              Math.floor(budget * (preferFocusedExplicitContext ? 0.25 : 0.55)),
-              Math.floor(
-                (budget - usedChars) * (preferFocusedExplicitContext ? 0.35 : 0.7),
-              ),
-            ),
-          );
+          const coreBudget = historicalRecall
+            ? Math.max(0, budget - usedChars)
+            : Math.max(
+                0,
+                Math.min(
+                  Math.floor(budget * (preferFocusedExplicitContext ? 0.25 : 0.55)),
+                  Math.floor(
+                    (budget - usedChars) * (preferFocusedExplicitContext ? 0.35 : 0.7),
+                  ),
+                ),
+              );
           const coreRecall = await state.orchestrator.recall(query, sessionId, {
             budgetCharsOverride: coreBudget,
             mode: "full",
-            ...(recallOptions.asOf ? { asOf: recallOptions.asOf } : {}),
+            ...(recallAsOf ? { asOf: recallAsOf } : {}),
           });
           if (coreRecall.trim().length > 0) {
             const section = `## Remnic recall pipeline\n${coreRecall.trim()}`;
@@ -583,9 +609,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
 
         const suppressBroadSummary =
-          preferFocusedExplicitContext && !!exactReferenceEvidence;
+          historicalRecall || (preferFocusedExplicitContext && !!exactReferenceEvidence);
 
-        if (query) {
+        if (query && !historicalRecall) {
           const remainingAfterCore = Math.max(0, budget - usedChars);
           const searchBudget = useCoreMemoryPipeline
             ? Math.max(0, Math.floor(remainingAfterCore * 0.75))
@@ -696,7 +722,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           }
         }
 
-        if (sections.length === 0) {
+        if (!historicalRecall && sections.length === 0) {
           const stats = await engine.getStats(sessionId);
           if (stats.totalMessages > 0) {
             const toTurn = normalizeTurnExpansionEnd(stats);

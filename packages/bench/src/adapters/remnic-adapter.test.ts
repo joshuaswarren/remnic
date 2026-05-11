@@ -893,6 +893,54 @@ test("direct adapter can skip replay extraction while preserving LCM recall", as
   }
 });
 
+test("runtime-backed adapter does not use LCM fallback for historical recall", async () => {
+  const adapter = await createRemnicAdapter({
+    replayExtractionMode: "skip",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 0,
+    },
+  });
+
+  try {
+    await adapter.store("beam-historical-session", [
+      {
+        role: "user",
+        content: "Future-only benchmark leak marker is cobalt-99.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-historical-session",
+      "What is the future-only benchmark leak marker?",
+      24_000,
+    );
+    assert.match(recalled, /cobalt-99/);
+
+    const historicalRecall = await adapter.recall(
+      "beam-historical-session",
+      "What is the future-only benchmark leak marker?",
+      24_000,
+      { asOf: "2000-01-01T00:00:00.000Z" },
+    );
+    assert.doesNotMatch(historicalRecall, /cobalt-99/);
+
+    await assert.rejects(
+      () =>
+        adapter.recall(
+          "beam-historical-session",
+          "What is the future-only benchmark leak marker?",
+          24_000,
+          { asOf: "not-a-date" },
+        ),
+      /benchmark recall asOf must be a parseable timestamp/,
+    );
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("runtime-backed adapter preserves transcript order for stored batches", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {

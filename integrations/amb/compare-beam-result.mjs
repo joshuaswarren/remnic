@@ -28,7 +28,11 @@ export function readResult(file) {
   const text = file.endsWith(".gz")
     ? gunzipSync(bytes).toString("utf8")
     : bytes.toString("utf8");
-  return JSON.parse(text);
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("result file must contain a JSON object");
+  }
+  return parsed;
 }
 
 export function normalizeAccuracy(result) {
