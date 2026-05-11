@@ -18,6 +18,8 @@ const providerSource = path.join(here, "remnic_provider.py");
 const scriptPath = fileURLToPath(import.meta.url);
 const remnicImport = "from .remnic import RemnicMemoryProvider";
 const remnicRegistryEntry = '"remnic": RemnicMemoryProvider';
+const providerImportPattern =
+  /\bfrom\s+\.[A-Za-z_][A-Za-z0-9_.]*\s+import\s+(?:\([^)]+\)|[A-Za-z_][A-Za-z0-9_]*(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*(?:\s+as\s+[A-Za-z_][A-Za-z0-9_]*)?)*)/g;
 
 function hasRemnicRegistryEntry(registry) {
   return /["']remnic["']\s*:\s*RemnicMemoryProvider/.test(registry);
@@ -27,7 +29,7 @@ export function patchAmbMemoryRegistry(registry) {
   let patched = registry;
 
   if (!patched.includes(remnicImport)) {
-    const imports = [...patched.matchAll(/^from \.[^\n]+$/gm)];
+    const imports = [...patched.matchAll(providerImportPattern)];
     if (imports.length === 0) {
       throw new Error("AMB memory registry has no provider imports to patch.");
     }
