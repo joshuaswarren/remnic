@@ -268,6 +268,16 @@ test("ingestReplayBatch queues source timestamps chronologically without future 
     ],
     [
       {
+        sourceValidAt: "2025-01-01T00:00:00Z",
+        contextOnly: true,
+        content: "Earlier source-dated turn.",
+      },
+      {
+        sourceValidAt: "2025-01-01T00:00:00Z",
+        contextOnly: true,
+        content: "Earlier source-dated response.",
+      },
+      {
         sourceValidAt: "2025-01-03T00:00:00Z",
         contextOnly: false,
         content: "Later source-dated turn must not become earlier context.",
