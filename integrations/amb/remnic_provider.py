@@ -11,6 +11,7 @@ responsible for datasets, answer generation, judging, scoring, and result files.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shlex
 import shutil
@@ -166,6 +167,10 @@ class RemnicMemoryProvider(MemoryProvider):
             return "dot"
         if safe == "..":
             return "dot-dot"
+        if safe != raw:
+            digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+            prefix = safe[:107].rstrip("-") or "unknown"
+            return f"{prefix}-{digest}"
         return safe or "unknown"
 
     def _ensure_proc(self) -> None:

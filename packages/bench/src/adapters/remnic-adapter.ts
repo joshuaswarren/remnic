@@ -373,6 +373,49 @@ function normalizeDrainTimeoutMs(value: unknown): number {
   return value;
 }
 
+function benchDaysInMonth(year: number, month: number): number {
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0;
+}
+
+function parseStrictBenchTimestamp(value: string, label: string): number {
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:[Zz]|([+-])(\d{2}):?(\d{2}))?)?$/,
+  );
+  if (!match) {
+    throw new Error(`${label} must be a valid timestamp; received ${value}`);
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = match[4] === undefined ? 0 : Number(match[4]);
+  const minute = match[5] === undefined ? 0 : Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  const offsetHour = match[8] === undefined ? 0 : Number(match[8]);
+  const offsetMinute = match[9] === undefined ? 0 : Number(match[9]);
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > benchDaysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    throw new Error(`${label} must be a valid timestamp; received ${value}`);
+  }
+
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a valid timestamp; received ${value}`);
+  }
+  return parsed;
+}
+
 function normalizeBenchRecallAsOf(value: unknown): string | undefined {
   if (value === undefined) {
     return undefined;
@@ -383,11 +426,7 @@ function normalizeBenchRecallAsOf(value: unknown): string | undefined {
     );
   }
   const normalized = value.trim();
-  if (!Number.isFinite(Date.parse(normalized))) {
-    throw new Error(
-      `benchmark recall asOf must be a parseable timestamp; received ${value}`,
-    );
-  }
+  parseStrictBenchTimestamp(normalized, "benchmark recall asOf");
   return normalized;
 }
 
@@ -400,12 +439,7 @@ function normalizeBenchMessageTimestamp(value: unknown): string | undefined {
       `benchmark message timestamp must be a non-empty timestamp string; received ${String(value)}`,
     );
   }
-  const parsed = Date.parse(value.trim());
-  if (!Number.isFinite(parsed)) {
-    throw new Error(
-      `benchmark message timestamp must be a parseable timestamp; received ${value}`,
-    );
-  }
+  const parsed = parseStrictBenchTimestamp(value.trim(), "benchmark message timestamp");
   return new Date(parsed).toISOString();
 }
 

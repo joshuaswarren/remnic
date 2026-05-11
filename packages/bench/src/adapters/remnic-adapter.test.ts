@@ -934,7 +934,17 @@ test("runtime-backed adapter does not use LCM fallback for historical recall", a
           24_000,
           { asOf: "not-a-date" },
         ),
-      /benchmark recall asOf must be a parseable timestamp/,
+      /benchmark recall asOf must be a valid timestamp/,
+    );
+    await assert.rejects(
+      () =>
+        adapter.recall(
+          "beam-historical-session",
+          "What is the future-only benchmark leak marker?",
+          24_000,
+          { asOf: "2026-02-30" },
+        ),
+      /benchmark recall asOf must be a valid timestamp/,
     );
   } finally {
     await adapter.destroy();
@@ -986,7 +996,18 @@ test("runtime-backed adapter preserves source timestamps for historical recall",
             timestamp: "not-a-date",
           },
         ]),
-      /benchmark message timestamp must be a parseable timestamp/,
+      /benchmark message timestamp must be a valid timestamp/,
+    );
+    await assert.rejects(
+      () =>
+        adapter.store("beam-source-time-session", [
+          {
+            role: "user",
+            content: "Overflow timestamp should be rejected.",
+            timestamp: "2026-02-30",
+          },
+        ]),
+      /benchmark message timestamp must be a valid timestamp/,
     );
   } finally {
     await adapter.destroy();

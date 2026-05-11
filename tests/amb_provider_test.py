@@ -125,8 +125,8 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
             provider.ingest([Document(id="d2", content="two", user_id="unit two")])
             docs, raw = provider.retrieve("who owned it?", user_id="unit/one")
 
-            unit_one = resolved_base / "amb-units" / "unit-one"
-            unit_two = resolved_base / "amb-units" / "unit-two"
+            unit_one = resolved_base / "amb-units" / provider._sanitize_unit_id("unit/one")
+            unit_two = resolved_base / "amb-units" / provider._sanitize_unit_id("unit two")
             reset_stores = [
                 store
                 for method, _params, store in provider.requests
@@ -148,6 +148,30 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
             self.assertEqual(retrieve_stores, [unit_one])
             self.assertEqual(docs[0].content, "Marisol owned it.")
             self.assertEqual(raw, {"store": str(unit_one)})
+
+    def test_isolated_unit_store_dirs_are_collision_resistant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            resolved_base = base.expanduser().resolve()
+            provider = self.provider_class()
+            provider.prepare(base, {"team/a", "team a"}, reset=True)
+
+            provider.ingest([Document(id="slash-doc", content="slash", user_id="team/a")])
+            provider.ingest([Document(id="space-doc", content="space", user_id="team a")])
+
+            unit_root = resolved_base / "amb-units"
+            slash = unit_root / provider._sanitize_unit_id("team/a")
+            space = unit_root / provider._sanitize_unit_id("team a")
+            reset_stores = [
+                store
+                for method, _params, store in provider.requests
+                if method == "reset"
+            ]
+
+            self.assertNotEqual(slash, space)
+            self.assertRegex(slash.name, r"^team-a-[a-f0-9]{12}$")
+            self.assertRegex(space.name, r"^team-a-[a-f0-9]{12}$")
+            self.assertEqual(reset_stores, [slash, space])
 
     def test_dot_segment_unit_ids_stay_under_unit_store_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
