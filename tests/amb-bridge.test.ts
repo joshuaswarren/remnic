@@ -277,6 +277,122 @@ test("AMB bridge returns empty recall for unknown scoped users", async () => {
   assert.equal(result.raw_response.user_id, "missing-user");
 });
 
+test("AMB bridge reloads persisted session index for skipped-ingestion recall", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-index-"));
+  const sessionIndexPath = path.join(dir, "amb-session-index.json");
+  const storedSessions = [];
+  const recallCalls = [];
+
+  try {
+    const writer = new RemnicAmbBridge(
+      {
+        async reset() {},
+        async store(sessionId) {
+          storedSessions.push(sessionId);
+        },
+        async recall() {
+          throw new Error("writer bridge should not recall");
+        },
+        async destroy() {},
+      },
+      {
+        drainAfterIngest: false,
+        groupDocumentsByUser: true,
+        resetBeforeIngest: false,
+        recallBudgetChars: 4096,
+        sessionPrefix: "beam",
+        sessionIndexPath,
+      },
+    );
+
+    await writer.ingest([
+      {
+        id: "conv-1_s0_0",
+        user_id: "conv-1",
+        content: "User: Marisol owned it.",
+      },
+      {
+        id: "conv-2_s0_0",
+        user_id: "conv-2",
+        content: "User: Naveen owned it.",
+      },
+    ]);
+
+    assert.deepEqual(storedSessions, ["beam-conv-1", "beam-conv-2"]);
+
+    const reader = new RemnicAmbBridge(
+      {
+        async reset() {},
+        async store() {
+          throw new Error("reader bridge should not ingest");
+        },
+        async recall(sessionId, query) {
+          recallCalls.push({ sessionId, query });
+          return sessionId === "beam-conv-1" ? "Marisol owned it." : "";
+        },
+        async destroy() {},
+      },
+      {
+        drainAfterIngest: false,
+        groupDocumentsByUser: true,
+        resetBeforeIngest: false,
+        recallBudgetChars: 4096,
+        sessionPrefix: "beam",
+        sessionIndexPath,
+      },
+    );
+
+    const result = await reader.retrieve({
+      query: "Who owned it?",
+      k: 10,
+      user_id: "conv-1",
+    });
+
+    assert.deepEqual(
+      recallCalls.map((call) => call.sessionId),
+      ["beam-conv-1"],
+    );
+    assert.equal(result.raw_response.session_count, 1);
+    assert.match(result.documents[0]?.content ?? "", /Marisol/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("AMB bridge can derive grouped session id for legacy skipped-ingestion stores", async () => {
+  const recallCalls = [];
+  const bridge = new RemnicAmbBridge(
+    {
+      async reset() {},
+      async store() {
+        throw new Error("retrieve should not ingest");
+      },
+      async recall(sessionId) {
+        recallCalls.push(sessionId);
+        return "Marisol owned it.";
+      },
+      async destroy() {},
+    },
+    {
+      drainAfterIngest: false,
+      groupDocumentsByUser: true,
+      resetBeforeIngest: false,
+      recallBudgetChars: 4096,
+      sessionPrefix: "beam",
+    },
+  );
+
+  const result = await bridge.retrieve({
+    query: "Who owned it?",
+    k: 10,
+    user_id: "conv-1",
+  });
+
+  assert.deepEqual(recallCalls, ["beam-conv-1"]);
+  assert.equal(result.raw_response.session_count, 1);
+  assert.match(result.documents[0]?.content ?? "", /Marisol/);
+});
+
 test("AMB bridge rejects conflicting config env vars", async () => {
   await assert.rejects(
     () =>
@@ -311,6 +427,31 @@ test("AMB bridge expands tilde config paths", async () => {
       process.env.HOME = oldHome;
     }
     await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("AMB bridge rejects nested remnic config arrays", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-config-"));
+  const file = path.join(dir, "amb-config.json");
+
+  try {
+    await writeFile(file, JSON.stringify({ remnic: [] }));
+    await assert.rejects(
+      () =>
+        loadRemnicAmbConfig({
+          REMNIC_AMB_CONFIG_PATH: file,
+        }),
+      /REMNIC_AMB_CONFIG_PATH remnic value must be a JSON object/,
+    );
+    await assert.rejects(
+      () =>
+        loadRemnicAmbConfig({
+          REMNIC_AMB_CONFIG_JSON: JSON.stringify({ remnic: [] }),
+        }),
+      /REMNIC_AMB_CONFIG_JSON remnic value must be a JSON object/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

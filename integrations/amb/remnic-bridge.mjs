@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,6 +18,7 @@ import { expandTildePath } from "@remnic/core";
 
 const DEFAULT_RECALL_BUDGET_CHARS = 49_152;
 const DEFAULT_DRAIN_TIMEOUT_MS = 8 * 60 * 60 * 1000;
+const AMB_SESSION_INDEX_FILE = "amb-session-index.json";
 
 function parsePositiveInteger(value, label, defaultValue) {
   if (value === undefined || value === "") {
@@ -48,6 +49,56 @@ function parseReplayExtractionMode(value) {
     return value;
   }
   throw new Error('REMNIC_AMB_REPLAY_EXTRACTION_MODE must be "await", "background", or "skip".');
+}
+
+function isJsonObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeStringArray(value, label) {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array of strings.`);
+  }
+
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      throw new Error(`${label} must be an array of strings.`);
+    }
+    const trimmed = entry.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalized.push(trimmed);
+  }
+  return normalized;
+}
+
+function normalizeAmbSessionIndex(value, label) {
+  if (!isJsonObject(value)) {
+    throw new Error(`${label} must contain a JSON object.`);
+  }
+  const allSessions = normalizeStringArray(value.allSessions ?? [], `${label}.allSessions`);
+  const rawSessionsByUser = value.sessionsByUser ?? {};
+  if (!isJsonObject(rawSessionsByUser)) {
+    throw new Error(`${label}.sessionsByUser must be a JSON object.`);
+  }
+
+  const sessionsByUser = new Map();
+  for (const [userId, sessions] of Object.entries(rawSessionsByUser)) {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
+      continue;
+    }
+    sessionsByUser.set(
+      normalizedUserId,
+      normalizeStringArray(sessions, `${label}.sessionsByUser.${userId}`),
+    );
+  }
+
+  return { allSessions, sessionsByUser };
 }
 
 function sanitizeSessionPart(value) {
@@ -330,18 +381,28 @@ export async function loadRemnicAmbConfig(env = process.env) {
   if (configPath) {
     const expandedPath = expandTildePath(configPath);
     const parsed = JSON.parse(await readFile(expandedPath, "utf8"));
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!isJsonObject(parsed)) {
       throw new Error(`REMNIC_AMB_CONFIG_PATH must point to a JSON object: ${configPath}`);
     }
-    return parsed.remnic && typeof parsed.remnic === "object"
-      ? { ...parsed.remnic }
-      : { ...parsed };
+    if (Object.hasOwn(parsed, "remnic")) {
+      if (!isJsonObject(parsed.remnic)) {
+        throw new Error("REMNIC_AMB_CONFIG_PATH remnic value must be a JSON object.");
+      }
+      return { ...parsed.remnic };
+    }
+    return { ...parsed };
   }
 
   if (configJson) {
     const parsed = JSON.parse(configJson);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!isJsonObject(parsed)) {
       throw new Error("REMNIC_AMB_CONFIG_JSON must be a JSON object.");
+    }
+    if (Object.hasOwn(parsed, "remnic")) {
+      if (!isJsonObject(parsed.remnic)) {
+        throw new Error("REMNIC_AMB_CONFIG_JSON remnic value must be a JSON object.");
+      }
+      return { ...parsed.remnic };
     }
     return { ...parsed };
   }
@@ -376,6 +437,7 @@ export class RemnicAmbBridge {
     this.sessionsByUser = new Map();
     this.allSessions = [];
     this.allSessionIds = new Set();
+    this.sessionIndexLoaded = false;
   }
 
   async reset() {
@@ -383,6 +445,74 @@ export class RemnicAmbBridge {
     this.sessionsByUser.clear();
     this.allSessions = [];
     this.allSessionIds.clear();
+    await this.persistSessionIndex();
+  }
+
+  recordSession(sessionId, userId) {
+    if (!this.allSessionIds.has(sessionId)) {
+      this.allSessionIds.add(sessionId);
+      this.allSessions.push(sessionId);
+    }
+    const normalizedUserId = typeof userId === "string" ? userId.trim() : "";
+    if (normalizedUserId) {
+      const sessions = this.sessionsByUser.get(normalizedUserId) ?? [];
+      if (!sessions.includes(sessionId)) {
+        sessions.push(sessionId);
+      }
+      this.sessionsByUser.set(normalizedUserId, sessions);
+    }
+  }
+
+  async loadSessionIndex() {
+    if (this.sessionIndexLoaded || !this.options.sessionIndexPath) {
+      this.sessionIndexLoaded = true;
+      return;
+    }
+
+    let text;
+    try {
+      text = await readFile(this.options.sessionIndexPath, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        this.sessionIndexLoaded = true;
+        return;
+      }
+      throw error;
+    }
+
+    const index = normalizeAmbSessionIndex(
+      JSON.parse(text),
+      `AMB session index ${this.options.sessionIndexPath}`,
+    );
+    this.sessionsByUser = new Map(index.sessionsByUser);
+    this.allSessions = [];
+    this.allSessionIds.clear();
+    for (const sessionId of index.allSessions) {
+      this.recordSession(sessionId, "");
+    }
+    for (const [userId, sessions] of index.sessionsByUser.entries()) {
+      for (const sessionId of sessions) {
+        this.recordSession(sessionId, userId);
+      }
+    }
+    this.sessionIndexLoaded = true;
+  }
+
+  async persistSessionIndex() {
+    if (!this.options.sessionIndexPath) {
+      return;
+    }
+
+    const payload = {
+      version: 1,
+      allSessions: this.allSessions,
+      sessionsByUser: Object.fromEntries(this.sessionsByUser.entries()),
+    };
+    await mkdir(path.dirname(this.options.sessionIndexPath), { recursive: true });
+    const tempPath = `${this.options.sessionIndexPath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+    await rename(tempPath, this.options.sessionIndexPath);
+    this.sessionIndexLoaded = true;
   }
 
   async ingest(documents) {
@@ -405,19 +535,10 @@ export class RemnicAmbBridge {
         { groupDocumentsByUser: this.options.groupDocumentsByUser },
       );
       await this.adapter.store(sessionId, messages);
-      if (!this.allSessionIds.has(sessionId)) {
-        this.allSessionIds.add(sessionId);
-        this.allSessions.push(sessionId);
-      }
-      const userId = document?.user_id ? String(document.user_id) : "";
-      if (userId) {
-        const sessions = this.sessionsByUser.get(userId) ?? [];
-        if (!sessions.includes(sessionId)) {
-          sessions.push(sessionId);
-        }
-        this.sessionsByUser.set(userId, sessions);
-      }
+      this.recordSession(sessionId, document?.user_id ? String(document.user_id) : "");
     }
+
+    await this.persistSessionIndex();
 
     if (this.options.drainAfterIngest) {
       await this.adapter.drain?.();
@@ -425,14 +546,28 @@ export class RemnicAmbBridge {
   }
 
   async retrieve({ query, k, user_id, query_timestamp }) {
+    await this.loadSessionIndex();
     const recallAsOf = normalizeAmbQueryTimestamp(query_timestamp);
     const recallQuery = buildAmbRecallQuery(query, recallAsOf);
     const scopedUserId = user_id === undefined || user_id === null
       ? ""
       : String(user_id).trim();
-    const sessionIds = scopedUserId
+    const indexedSessionIds = scopedUserId
       ? this.sessionsByUser.get(scopedUserId) ?? []
       : this.allSessions;
+    const sessionIds = indexedSessionIds.length === 0
+      && scopedUserId
+      && this.allSessions.length === 0
+      && this.options.groupDocumentsByUser !== false
+        ? [
+            buildAmbStorageSessionId(
+              { user_id: scopedUserId },
+              0,
+              this.options.sessionPrefix,
+              { groupDocumentsByUser: true },
+            ),
+          ]
+        : indexedSessionIds;
     if (!sessionIds || sessionIds.length === 0) {
       return {
         documents: [],
@@ -501,6 +636,9 @@ async function createBridge(env = process.env) {
       DEFAULT_DRAIN_TIMEOUT_MS,
     ),
   });
+  const storeDir = typeof env.REMNIC_AMB_STORE_DIR === "string" && env.REMNIC_AMB_STORE_DIR.trim()
+    ? path.resolve(expandTildePath(env.REMNIC_AMB_STORE_DIR.trim()))
+    : "";
 
   return new RemnicAmbBridge(adapter, {
     drainAfterIngest: parseBoolean(env.REMNIC_AMB_DRAIN_AFTER_INGEST, true),
@@ -512,6 +650,7 @@ async function createBridge(env = process.env) {
       DEFAULT_RECALL_BUDGET_CHARS,
     ),
     sessionPrefix: env.REMNIC_AMB_SESSION_PREFIX || "amb",
+    sessionIndexPath: storeDir ? path.join(storeDir, AMB_SESSION_INDEX_FILE) : undefined,
   });
 }
 
