@@ -337,6 +337,43 @@ test("direct adapter front-loads direct temporal evidence for end-date questions
   }
 });
 
+test("direct adapter adds contradiction guidance when evidence contains both sides", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-contradiction-guidance", [
+      {
+        role: "user",
+        content:
+          "I have never written any Flask routes or handled HTTP requests in this project.",
+      },
+      {
+        role: "assistant",
+        content: "Noted that Flask route and request handling experience was denied.",
+      },
+      {
+        role: "user",
+        content:
+          "I implemented a basic homepage route in Flask that handles GET requests.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-contradiction-guidance",
+      "Have I worked with Flask routes and handled HTTP requests in this project?",
+      24_000,
+    );
+
+    assert.match(recalled, /## Contradiction guidance/);
+    assert.match(recalled, /does not establish which statement is correct/);
+    assert.match(recalled, /never written any Flask routes/);
+    assert.match(recalled, /implemented a basic homepage route/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("direct adapter archives stored messages into LCM once", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {

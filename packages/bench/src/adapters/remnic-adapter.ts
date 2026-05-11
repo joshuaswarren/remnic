@@ -857,6 +857,15 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               remainingSearchBudget = 0;
             }
 
+            const contradictionGuidance = buildContradictionGuidance(
+              query,
+              evidenceItems,
+            );
+            if (contradictionGuidance) {
+              sections.push(contradictionGuidance);
+              usedChars += contradictionGuidance.length;
+            }
+
             const searchEvidence = buildEvidencePack(
               directTemporalEvidence
                 ? evidenceItems.filter((item) => !directTemporalTurnIds.has(item.id))
@@ -1221,6 +1230,90 @@ function extractDirectTemporalSubjectTerms(query: string): string[] {
     !temporalStopWords.has(term) &&
     !/^\d+$/.test(term),
   ))];
+}
+
+function buildContradictionGuidance(
+  query: string,
+  evidenceItems: readonly { content: string }[],
+): string {
+  if (!shouldCheckContradictionGuidance(query) || evidenceItems.length === 0) {
+    return "";
+  }
+
+  const subjectTerms = extractContradictionSubjectTerms(query);
+  if (subjectTerms.length === 0) {
+    return "";
+  }
+
+  let hasRelevantDenial = false;
+  let hasRelevantAffirmation = false;
+  for (const item of evidenceItems) {
+    const text = item.content.toLowerCase();
+    if (!matchesContradictionSubject(text, subjectTerms)) {
+      continue;
+    }
+
+    if (hasDenialCue(text)) {
+      hasRelevantDenial = true;
+    } else if (hasAffirmationCue(text)) {
+      hasRelevantAffirmation = true;
+    }
+
+    if (hasRelevantDenial && hasRelevantAffirmation) {
+      return [
+        "## Contradiction guidance",
+        "The retrieved messages contain both a denial and an affirmative statement relevant to this yes/no question. State that the chat has contradictory information, mention both sides, and explicitly say the provided chat does not establish which statement is correct.",
+      ].join("\n");
+    }
+  }
+
+  return "";
+}
+
+function shouldCheckContradictionGuidance(query: string): boolean {
+  const text = query.toLowerCase();
+  return /^\s*(?:have|has|did|do|does|am|are|was|were|can|could)\b/.test(text) &&
+    /\b(?:i|me|my|user)\b/.test(text);
+}
+
+function extractContradictionSubjectTerms(query: string): string[] {
+  const contradictionStopWords = new Set([
+    ...FOCUSED_SEARCH_STOP_WORDS,
+    "can",
+    "could",
+    "handle",
+    "handled",
+    "has",
+    "have",
+    "integrate",
+    "integrated",
+    "project",
+    "session",
+    "worked",
+    "work",
+  ]);
+  const terms = query.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [];
+  return [...new Set(terms.filter((term) =>
+    !contradictionStopWords.has(term) &&
+    !/^\d+$/.test(term),
+  ))];
+}
+
+function matchesContradictionSubject(
+  text: string,
+  subjectTerms: readonly string[],
+): boolean {
+  const matches = subjectTerms.filter((term) => text.includes(term));
+  return matches.length >= Math.min(2, subjectTerms.length);
+}
+
+function hasDenialCue(text: string): boolean {
+  return /\b(?:never|not|no|none|haven't|hasn't|hadn't|didn't|don't|doesn't|can't|cannot|couldn't|have\s+not|has\s+not|did\s+not|do\s+not|does\s+not|can\s+not)\b/.test(text);
+}
+
+function hasAffirmationCue(text: string): boolean {
+  return /\b(?:i|we|you|user)\b.{0,80}\b(?:built|created|developed|handled|implemented|integrated|used|worked|wrote|written|mentioned)\b/.test(text) ||
+    /\b(?:built|created|developed|handled|implemented|integrated|used|worked|wrote|written|mentioned)\b.{0,80}\b(?:i|we|you|user)\b/.test(text);
 }
 
 function extractFocusedSearchTerms(query: string): string[] {
