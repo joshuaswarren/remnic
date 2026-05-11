@@ -224,6 +224,14 @@ export async function installRemnicProvider(targetRoot) {
       await copyFile(codexLlmSource, codexLlmTemp);
       tempCodexLlmWritten = true;
     }
+    await rename(providerTemp, providerTarget);
+    tempProviderWritten = false;
+    providerTargetWritten = true;
+    if (shouldInstallCodexLlm) {
+      await rename(codexLlmTemp, codexLlmTarget);
+      tempCodexLlmWritten = false;
+      codexLlmTargetWritten = true;
+    }
     await writeFile(registryPath, patchedRegistry);
     registryWritten = true;
     if (shouldInstallCodexLlm && patchedLlmRegistry !== undefined) {
@@ -233,14 +241,6 @@ export async function installRemnicProvider(targetRoot) {
     if (shouldPatchCli && patchedCli !== undefined) {
       await writeFile(cliPath, patchedCli);
       cliWritten = true;
-    }
-    await rename(providerTemp, providerTarget);
-    tempProviderWritten = false;
-    providerTargetWritten = true;
-    if (shouldInstallCodexLlm) {
-      await rename(codexLlmTemp, codexLlmTarget);
-      tempCodexLlmWritten = false;
-      codexLlmTargetWritten = true;
     }
   } catch (error) {
     if (cliWritten && cli !== undefined) {

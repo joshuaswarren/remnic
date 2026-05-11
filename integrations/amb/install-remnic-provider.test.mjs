@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, mkdir, copyFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,6 +14,28 @@ import {
 } from "./install-remnic-provider.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+test("installRemnicProvider exposes provider files before registry patches", () => {
+  const source = readFileSync(
+    path.join(__dirname, "install-remnic-provider.mjs"),
+    "utf8",
+  );
+  const providerRename = source.indexOf("await rename(providerTemp, providerTarget)");
+  const registryWrite = source.indexOf("await writeFile(registryPath, patchedRegistry)");
+  const codexLlmRename = source.indexOf(
+    "await rename(codexLlmTemp, codexLlmTarget)",
+  );
+  const llmRegistryWrite = source.indexOf(
+    "await writeFile(llmRegistryPath, patchedLlmRegistry)",
+  );
+
+  assert.notEqual(providerRename, -1);
+  assert.notEqual(registryWrite, -1);
+  assert.ok(providerRename < registryWrite);
+  assert.notEqual(codexLlmRename, -1);
+  assert.notEqual(llmRegistryWrite, -1);
+  assert.ok(codexLlmRename < llmRegistryWrite);
+});
 
 test("patchAmbMemoryRegistry handles compact single-line registries", () => {
   const compactRegistry =
