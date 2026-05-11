@@ -148,6 +148,30 @@ def run(llm: str):
   assert.match(patched, /os\.environ\["OMB_ANSWER_LLM"\] = llm/);
 });
 
+test("patchAmbCli handles compact upstream run entrypoints", () => {
+  const cli = `import os
+import typer
+
+def _resolve_gemini_key() -> None:
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key: typer.echo("Error: GEMINI_API_KEY environment variable is not set.", err=True); raise typer.Exit(1)
+    os.environ["GOOGLE_API_KEY"] = key
+@app.command()
+def run(llm: str): _resolve_gemini_key(); ds = get_dataset(dataset)
+`;
+
+  const patched = patchAmbCli(cli);
+  const patchedAgain = patchAmbCli(patched);
+
+  assert.equal(patchedAgain, patched);
+  assert.match(patched, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
+  assert.match(patched, /answer_provider != "gemini" and judge_provider != "gemini"/);
+  assert.match(
+    patched,
+    /os\.environ\.__setitem__\("OMB_ANSWER_LLM", llm\) if llm else None; _resolve_gemini_key\(\); ds = get_dataset\(dataset\)/,
+  );
+});
+
 test("RemnicMemoryProvider cleanup does not hang on an unresponsive bridge", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-provider-test-"));
   const packageDir = path.join(tempDir, "memory_bench");

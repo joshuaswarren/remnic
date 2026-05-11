@@ -188,6 +188,59 @@ test("AMB provider installer patches CLI Gemini gate for non-Gemini providers", 
   }
 });
 
+test("AMB provider installer patches compact CLI Gemini gates", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-amb-install-cli-compact-"));
+  await writeAmbRegistry(
+    root,
+    [
+      "from .base import MemoryProvider",
+      "from .bm25 import BM25MemoryProvider",
+      'REGISTRY: dict[str, type[MemoryProvider]] = {"bm25": BM25MemoryProvider}',
+      "",
+    ].join("\n"),
+  );
+  await writeAmbLlmRegistry(
+    root,
+    [
+      "import os",
+      "from .base import LLM, Schema",
+      "from .gemini import GeminiLLM",
+      'REGISTRY: dict[str, type[LLM]] = {"gemini": GeminiLLM}',
+      "",
+    ].join("\n"),
+  );
+  const cliPath = await writeAmbCli(
+    root,
+    [
+      "import os",
+      "import typer",
+      "",
+      "def _resolve_gemini_key() -> None:",
+      '    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")',
+      '    if not key: typer.echo("Error: GEMINI_API_KEY environment variable is not set.", err=True); raise typer.Exit(1)',
+      '    os.environ["GOOGLE_API_KEY"] = key',
+      "@app.command()",
+      "def run(llm: str): _resolve_gemini_key(); ds = get_dataset(dataset)",
+      "",
+    ].join("\n"),
+  );
+
+  try {
+    await execFileAsync(
+      process.execPath,
+      [path.join(repoRoot, "integrations", "amb", "install-remnic-provider.mjs"), root],
+      { cwd: repoRoot },
+    );
+
+    const cli = await readFile(cliPath, "utf8");
+    assert.match(cli, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
+    assert.match(cli, /answer_provider != "gemini" and judge_provider != "gemini"/);
+    assert.match(cli, /os\.environ\.__setitem__\("OMB_ANSWER_LLM", llm\) if llm else None/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("AMB provider installer fails when the registry cannot be patched", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "remnic-amb-install-bad-"));
   await writeAmbRegistry(root, "REGISTRY = {}\n");

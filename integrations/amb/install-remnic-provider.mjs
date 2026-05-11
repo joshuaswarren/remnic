@@ -113,17 +113,6 @@ export function patchAmbLlmRegistry(registry) {
 }
 
 export function patchAmbCli(cli) {
-  if (cli.includes(codexAwareGeminiGateMarker)) {
-    return cli;
-  }
-
-  const oldResolve = `def _resolve_gemini_key() -> None:
-    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not key:
-        typer.echo("Error: GEMINI_API_KEY environment variable is not set.", err=True)
-        raise typer.Exit(1)
-    os.environ["GOOGLE_API_KEY"] = key
-`;
   const newResolve = `def _resolve_gemini_key() -> None:
     # ${codexAwareGeminiGateMarker}
     answer_provider = os.environ.get("OMB_ANSWER_LLM", "groq")
@@ -136,26 +125,46 @@ export function patchAmbCli(cli) {
         raise typer.Exit(1)
     os.environ["GOOGLE_API_KEY"] = key
 `;
-  let patched = cli.replace(oldResolve, newResolve);
-  if (patched === cli) {
-    throw new Error("AMB CLI Gemini key resolver was not found.");
+  const resolvePattern =
+    /^def\s+_resolve_gemini_key\s*\(\s*\)\s*->\s*None\s*:[\s\S]*?(?=^@|^def\s+|^class\s+|$(?![\s\S]))/m;
+  let patched = cli;
+  if (!patched.includes(codexAwareGeminiGateMarker)) {
+    const resolvePatched = patched.replace(resolvePattern, newResolve);
+    if (resolvePatched === patched) {
+      throw new Error("AMB CLI Gemini key resolver was not found.");
+    }
+    patched = resolvePatched;
   }
 
-  const oldCall = `    _resolve_gemini_key()
-
-    ds = get_dataset(dataset)
-`;
-  const newCall = `    if llm:
-        os.environ["OMB_ANSWER_LLM"] = llm
-    _resolve_gemini_key()
-
-    ds = get_dataset(dataset)
-`;
-  const callPatched = patched.replace(oldCall, newCall);
-  if (callPatched === patched) {
-    throw new Error("AMB CLI run entrypoint was not patched.");
+  if (
+    !patched.includes('os.environ["OMB_ANSWER_LLM"] = llm') &&
+    !patched.includes('os.environ.__setitem__("OMB_ANSWER_LLM", llm)')
+  ) {
+    const callPattern =
+      /^([ \t]*)_resolve_gemini_key\(\)\s*\n([ \t]*\n)?([ \t]*ds\s*=\s*get_dataset\(dataset\))/m;
+    const callPatched = patched.replace(
+      callPattern,
+      (_match, indent, blankLine = "", datasetLine) =>
+        `${indent}if llm:\n` +
+        `${indent}    os.environ["OMB_ANSWER_LLM"] = llm\n` +
+        `${indent}_resolve_gemini_key()\n` +
+        `${blankLine}${datasetLine}`,
+    );
+    if (callPatched !== patched) {
+      patched = callPatched;
+    } else {
+      const compactCallPattern =
+        /\b_resolve_gemini_key\(\)(\s*;\s*ds\s*=\s*get_dataset\(dataset\))/;
+      const compactCallPatched = patched.replace(
+        compactCallPattern,
+        'os.environ.__setitem__("OMB_ANSWER_LLM", llm) if llm else None; _resolve_gemini_key()$1',
+      );
+      if (compactCallPatched === patched) {
+        throw new Error("AMB CLI run entrypoint was not patched.");
+      }
+      patched = compactCallPatched;
+    }
   }
-  patched = callPatched;
   return patched;
 }
 
