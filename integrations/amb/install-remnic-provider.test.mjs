@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, mkdir, copyFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, copyFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -14,6 +14,59 @@ import {
 } from "./install-remnic-provider.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+async function createAmbFixture() {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-check-test-"));
+  await mkdir(path.join(tempDir, "src", "memory_bench", "memory"), { recursive: true });
+  await mkdir(path.join(tempDir, "src", "memory_bench", "llm"), { recursive: true });
+  await mkdir(path.join(tempDir, "src", "memory_bench", "modes"), { recursive: true });
+  await writeFile(path.join(tempDir, "pyproject.toml"), "[project]\nname = \"agent-memory-benchmark\"\n");
+  await writeFile(
+    path.join(tempDir, "src", "memory_bench", "memory", "__init__.py"),
+    "from .base import MemoryProvider\nfrom .bm25 import BM25MemoryProvider\nREGISTRY = {\"bm25\": BM25MemoryProvider}\n",
+  );
+  await writeFile(
+    path.join(tempDir, "src", "memory_bench", "llm", "__init__.py"),
+    "import os\nfrom .base import LLM, Schema\nfrom .gemini import GeminiLLM\nREGISTRY = {\"gemini\": GeminiLLM}\n",
+  );
+  await writeFile(
+    path.join(tempDir, "src", "memory_bench", "modes", "__init__.py"),
+    "from .rag import RAGMode\nREGISTRY = {\"rag\": RAGMode}\n",
+  );
+  await writeFile(
+    path.join(tempDir, "src", "memory_bench", "cli.py"),
+    [
+      "import os",
+      "import typer",
+      "def _resolve_gemini_key() -> None:",
+      "    key = os.environ.get(\"GEMINI_API_KEY\") or os.environ.get(\"GOOGLE_API_KEY\")",
+      "    if not key:",
+      "        typer.echo(\"Error\", err=True)",
+      "        raise typer.Exit(1)",
+      "    os.environ[\"GOOGLE_API_KEY\"] = key",
+      "def run(llm: str):",
+      "    _resolve_gemini_key()",
+      "    ds = get_dataset(dataset)",
+      "",
+    ].join("\n"),
+  );
+  return tempDir;
+}
+
+function runAmbPreflight(ambDir, env) {
+  return spawnSync(
+    process.execPath,
+    [path.join(__dirname, "check-remnic-run.mjs"), ambDir],
+    {
+      cwd: path.resolve(__dirname, "../.."),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        ...env,
+      },
+    },
+  );
+}
 
 test("installRemnicProvider exposes provider files before registry patches", () => {
   const source = readFileSync(
@@ -215,6 +268,76 @@ def run(llm: str): _resolve_gemini_key(); ds = get_dataset(dataset)
     patched,
     /_remnic_apply_answer_llm\(llm\); _resolve_gemini_key\(\); ds = get_dataset\(dataset\)/,
   );
+});
+
+test("check-remnic-run accepts the Codex CLI iteration profile", async () => {
+  const ambDir = await createAmbFixture();
+  const storeDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-store-test-"));
+
+  try {
+    const install = spawnSync(
+      process.execPath,
+      [path.join(__dirname, "install-remnic-provider.mjs"), ambDir],
+      { cwd: path.resolve(__dirname, "../.."), encoding: "utf8" },
+    );
+    assert.equal(install.status, 0, install.stderr || install.stdout);
+
+    const result = runAmbPreflight(ambDir, {
+      REMNIC_REPO_PATH: path.resolve(__dirname, "../.."),
+      REMNIC_AMB_STORE_DIR: storeDir,
+      REMNIC_AMB_RUN_PROFILE: "codex-cli",
+      REMNIC_AMB_SESSION_PREFIX: "beam",
+      REMNIC_AMB_REPLAY_EXTRACTION_MODE: "skip",
+      REMNIC_AMB_DRAIN_AFTER_INGEST: "false",
+      OMB_ANSWER_LLM: "codex_cli",
+      OMB_ANSWER_MODEL: "gpt-5.5",
+      OMB_JUDGE_LLM: "codex_cli",
+      OMB_JUDGE_MODEL: "gpt-5.5",
+      OMB_CODEX_REASONING_EFFORT: "xhigh",
+      REMNIC_AMB_INTERNAL_PROVIDER: "codex-cli",
+      REMNIC_AMB_INTERNAL_MODEL: "gpt-5.5",
+      REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT: "xhigh",
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Codex CLI BEAM iteration preflight passed/);
+  } finally {
+    await rm(ambDir, { recursive: true, force: true });
+    await rm(storeDir, { recursive: true, force: true });
+  }
+});
+
+test("check-remnic-run keeps the public BEAM profile strict by default", async () => {
+  const ambDir = await createAmbFixture();
+  const storeDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-store-test-"));
+
+  try {
+    const install = spawnSync(
+      process.execPath,
+      [path.join(__dirname, "install-remnic-provider.mjs"), ambDir],
+      { cwd: path.resolve(__dirname, "../.."), encoding: "utf8" },
+    );
+    assert.equal(install.status, 0, install.stderr || install.stdout);
+
+    const result = runAmbPreflight(ambDir, {
+      REMNIC_REPO_PATH: path.resolve(__dirname, "../.."),
+      REMNIC_AMB_STORE_DIR: storeDir,
+      REMNIC_AMB_SESSION_PREFIX: "beam",
+      REMNIC_AMB_REPLAY_EXTRACTION_MODE: "skip",
+      REMNIC_AMB_DRAIN_AFTER_INGEST: "false",
+      OMB_ANSWER_LLM: "codex_cli",
+      OMB_ANSWER_MODEL: "gpt-5.5",
+      OMB_JUDGE_LLM: "codex_cli",
+      OMB_JUDGE_MODEL: "gpt-5.5",
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /expected gemini/);
+    assert.match(result.stderr, /public-comparable BEAM preflight failed/);
+  } finally {
+    await rm(ambDir, { recursive: true, force: true });
+    await rm(storeDir, { recursive: true, force: true });
+  }
 });
 
 test("RemnicMemoryProvider cleanup does not hang on an unresponsive bridge", async () => {

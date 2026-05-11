@@ -2,8 +2,9 @@
 /**
  * Preflight checks for running Remnic inside the public AMB harness.
  *
- * This intentionally checks the stricter public-BEAM-comparable setup, not
- * merely whether a diagnostic local run can start.
+ * Defaults to the stricter public-BEAM-comparable setup. Set
+ * REMNIC_AMB_RUN_PROFILE=codex-cli for current iteration runs that route
+ * answer, judge, and Remnic internal calls through Codex CLI.
  */
 
 import { spawnSync } from "node:child_process";
@@ -11,10 +12,28 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REQUIRED_ANSWER_LLM = "gemini";
-const REQUIRED_ANSWER_MODEL = "gemini-3.1-pro-preview";
-const REQUIRED_JUDGE_LLM = "gemini";
-const REQUIRED_JUDGE_MODEL = "gemini-2.5-flash-lite";
+const PUBLIC_BEAM_PROFILE = {
+  name: "public-beam",
+  description: "public-comparable BEAM",
+  answerLlm: "gemini",
+  answerModel: "gemini-3.1-pro-preview",
+  judgeLlm: "gemini",
+  judgeModel: "gemini-2.5-flash-lite",
+  requireGeminiKey: true,
+};
+const CODEX_CLI_PROFILE = {
+  name: "codex-cli",
+  description: "Codex CLI BEAM iteration",
+  answerLlm: "codex_cli",
+  answerModel: "gpt-5.5",
+  judgeLlm: "codex_cli",
+  judgeModel: "gpt-5.5",
+  codexReasoningEffort: "xhigh",
+  internalProvider: "codex-cli",
+  internalModel: "gpt-5.5",
+  internalReasoningEffort: "xhigh",
+  requireCodexCli: true,
+};
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -24,7 +43,8 @@ function usage() {
   return [
     "Usage: node integrations/amb/check-remnic-run.mjs <agent-memory-benchmark-checkout>",
     "",
-    "Checks the local setup for a public-comparable BEAM run with Remnic.",
+    "Checks the local setup for a BEAM run with Remnic.",
+    "Set REMNIC_AMB_RUN_PROFILE=codex-cli for Codex CLI iteration runs.",
   ].join("\n");
 }
 
@@ -86,20 +106,86 @@ function envValue(name) {
 
 function requiredEnv(name, expected) {
   const actual = envValue(name);
-  if (actual === expected) {
+  const expectedValues = Array.isArray(expected) ? expected : [expected];
+  if (expectedValues.includes(actual)) {
     return { ok: true, detail: `${name}=${actual}` };
   }
+  const expectedLabel = expectedValues.join(" or ");
   return {
     ok: false,
     detail: actual
-      ? `${name}=${actual}; expected ${expected}`
-      : `${name} is not set; expected ${expected}`,
+      ? `${name}=${actual}; expected ${expectedLabel}`
+      : `${name} is not set; expected ${expectedLabel}`,
   };
 }
 
 function printCheck(status, name, detail) {
   const marker = status ? "PASS" : "FAIL";
   console.log(`[${marker}] ${name}${detail ? ` - ${detail}` : ""}`);
+}
+
+function normalizeRunProfile(value) {
+  const normalized = String(value || "public-beam").trim().toLowerCase();
+  if (["public", "public-beam", "public_comparable", "public-comparable"].includes(normalized)) {
+    return PUBLIC_BEAM_PROFILE;
+  }
+  if (["codex", "codex-cli", "codex_cli"].includes(normalized)) {
+    return CODEX_CLI_PROFILE;
+  }
+  return null;
+}
+
+function expectedEnvOverride(name, fallback) {
+  const value = process.env[`REMNIC_AMB_EXPECTED_${name}`];
+  return value && value.trim() ? value.trim() : fallback;
+}
+
+function expectedRunConfig(profile) {
+  return {
+    ...profile,
+    answerLlm: expectedEnvOverride("ANSWER_LLM", profile.answerLlm),
+    answerModel: expectedEnvOverride("ANSWER_MODEL", profile.answerModel),
+    judgeLlm: expectedEnvOverride("JUDGE_LLM", profile.judgeLlm),
+    judgeModel: expectedEnvOverride("JUDGE_MODEL", profile.judgeModel),
+    codexReasoningEffort: profile.codexReasoningEffort
+      ? expectedEnvOverride("CODEX_REASONING_EFFORT", profile.codexReasoningEffort)
+      : undefined,
+    internalProvider: profile.internalProvider
+      ? expectedEnvOverride("INTERNAL_PROVIDER", profile.internalProvider)
+      : undefined,
+    internalModel: profile.internalModel
+      ? expectedEnvOverride("INTERNAL_MODEL", profile.internalModel)
+      : undefined,
+    internalReasoningEffort: profile.internalReasoningEffort
+      ? expectedEnvOverride("INTERNAL_CODEX_REASONING_EFFORT", profile.internalReasoningEffort)
+      : undefined,
+  };
+}
+
+function codexExecutable() {
+  return envValue("OMB_CODEX_EXECUTABLE") || envValue("REMNIC_BENCH_CODEX_CLI_EXECUTABLE") || "codex";
+}
+
+function printRequiredExports(profile, remnicPath) {
+  console.error(`Required ${profile.description} exports:`);
+  console.error(`export REMNIC_REPO_PATH=${remnicPath}`);
+  console.error(`export REMNIC_AMB_RUN_PROFILE=${profile.name}`);
+  if (profile.requireGeminiKey) {
+    console.error("export GEMINI_API_KEY=<key>  # or GOOGLE_API_KEY=<key>");
+  }
+  console.error(`export OMB_ANSWER_LLM=${profile.answerLlm}`);
+  console.error(`export OMB_ANSWER_MODEL=${profile.answerModel}`);
+  console.error(`export OMB_JUDGE_LLM=${profile.judgeLlm}`);
+  console.error(`export OMB_JUDGE_MODEL=${profile.judgeModel}`);
+  if (profile.codexReasoningEffort) {
+    console.error(`export OMB_CODEX_REASONING_EFFORT=${profile.codexReasoningEffort}`);
+  }
+  if (profile.internalProvider) {
+    console.error(`export REMNIC_AMB_INTERNAL_PROVIDER=${profile.internalProvider}`);
+    console.error(`export REMNIC_AMB_INTERNAL_MODEL=${profile.internalModel}`);
+    console.error(`export REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT=${profile.internalReasoningEffort}`);
+  }
+  console.error("export REMNIC_AMB_SESSION_PREFIX=beam");
 }
 
 const ambCheckout = process.argv[2];
@@ -119,6 +205,16 @@ const bridgePath = path.join(remnicRepoPath, "integrations", "amb", "remnic-brid
 const providerPath = path.join(ambRoot, "src", "memory_bench", "memory", "remnic.py");
 const registryPath = path.join(ambRoot, "src", "memory_bench", "memory", "__init__.py");
 const modeRegistryPath = path.join(ambRoot, "src", "memory_bench", "modes", "__init__.py");
+const profile = normalizeRunProfile(process.env.REMNIC_AMB_RUN_PROFILE);
+const expectedProfile = profile ? expectedRunConfig(profile) : null;
+
+add(
+  "REMNIC_AMB_RUN_PROFILE is supported",
+  expectedProfile !== null,
+  process.env.REMNIC_AMB_RUN_PROFILE
+    ? `REMNIC_AMB_RUN_PROFILE=${process.env.REMNIC_AMB_RUN_PROFILE}`
+    : "default public-beam",
+);
 
 add("uv is available", commandExists("uv"), "required by the public AMB workflow");
 add("pnpm is available", commandExists("pnpm"), "required to launch the Remnic bridge");
@@ -160,21 +256,46 @@ if (existsSync(bridgePath) && commandExists("pnpm")) {
   add("Remnic bridge starts", bridge.ok, bridge.detail);
 }
 
-add(
-  "Gemini/Google key present",
-  !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
-  "required by the official AMB CLI and BEAM judge",
-);
+if (expectedProfile?.requireGeminiKey) {
+  add(
+    "Gemini/Google key present",
+    !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+    "required by the official AMB CLI and BEAM judge",
+  );
+}
 
-for (const [name, expected] of [
-  ["OMB_ANSWER_LLM", REQUIRED_ANSWER_LLM],
-  ["OMB_ANSWER_MODEL", REQUIRED_ANSWER_MODEL],
-  ["OMB_JUDGE_LLM", REQUIRED_JUDGE_LLM],
-  ["OMB_JUDGE_MODEL", REQUIRED_JUDGE_MODEL],
-  ["REMNIC_AMB_SESSION_PREFIX", "beam"],
-]) {
-  const check = requiredEnv(name, expected);
-  add(name, check.ok, check.detail);
+if (expectedProfile?.requireCodexCli) {
+  const executable = codexExecutable();
+  add(
+    "Codex CLI is available",
+    commandExists(executable),
+    `${executable} is required for AMB codex_cli answer/judge runs`,
+  );
+}
+
+if (expectedProfile) {
+  const expectedEnv = [
+    ["OMB_ANSWER_LLM", expectedProfile.answerLlm],
+    ["OMB_ANSWER_MODEL", expectedProfile.answerModel],
+    ["OMB_JUDGE_LLM", expectedProfile.judgeLlm],
+    ["OMB_JUDGE_MODEL", expectedProfile.judgeModel],
+    ["REMNIC_AMB_SESSION_PREFIX", "beam"],
+  ];
+  if (expectedProfile.codexReasoningEffort) {
+    expectedEnv.push(["OMB_CODEX_REASONING_EFFORT", expectedProfile.codexReasoningEffort]);
+  }
+  if (expectedProfile.internalProvider) {
+    expectedEnv.push(
+      ["REMNIC_AMB_INTERNAL_PROVIDER", [expectedProfile.internalProvider, expectedProfile.internalProvider.replace("-", "_")]],
+      ["REMNIC_AMB_INTERNAL_MODEL", expectedProfile.internalModel],
+      ["REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT", expectedProfile.internalReasoningEffort],
+    );
+  }
+
+  for (const [name, expected] of expectedEnv) {
+    const check = requiredEnv(name, expected);
+    add(name, check.ok, check.detail);
+  }
 }
 
 for (const check of checks) {
@@ -184,17 +305,15 @@ for (const check of checks) {
 const failures = checks.filter((check) => !check.ok);
 if (failures.length > 0) {
   console.error("");
-  console.error(`Remnic AMB public-BEAM preflight failed (${failures.length} issue(s)).`);
-  console.error("Required comparable BEAM exports:");
-  console.error(`export REMNIC_REPO_PATH=${displayRepoRoot}`);
-  console.error("export GEMINI_API_KEY=<key>  # or GOOGLE_API_KEY=<key>");
-  console.error(`export OMB_ANSWER_LLM=${REQUIRED_ANSWER_LLM}`);
-  console.error(`export OMB_ANSWER_MODEL=${REQUIRED_ANSWER_MODEL}`);
-  console.error(`export OMB_JUDGE_LLM=${REQUIRED_JUDGE_LLM}`);
-  console.error(`export OMB_JUDGE_MODEL=${REQUIRED_JUDGE_MODEL}`);
-  console.error("export REMNIC_AMB_SESSION_PREFIX=beam");
+  const label = expectedProfile?.description ?? "Remnic BEAM";
+  console.error(`Remnic AMB ${label} preflight failed (${failures.length} issue(s)).`);
+  if (expectedProfile) {
+    printRequiredExports(expectedProfile, displayRepoRoot);
+  } else {
+    console.error("Set REMNIC_AMB_RUN_PROFILE to public-beam or codex-cli.");
+  }
   process.exit(1);
 }
 
 console.log("");
-console.log("Remnic AMB public-BEAM preflight passed.");
+console.log(`Remnic AMB ${expectedProfile.description} preflight passed.`);

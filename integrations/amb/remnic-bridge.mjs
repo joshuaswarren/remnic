@@ -872,6 +872,8 @@ export class RemnicAmbBridge {
     }
     if (this.options.resetBeforeIngest) {
       await this.reset();
+    } else {
+      await this.loadSessionIndex();
     }
 
     let storedCount = 0;

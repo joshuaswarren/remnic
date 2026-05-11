@@ -54,6 +54,7 @@ For a public-comparable BEAM run, match the model settings used by current AMB
 BEAM leaderboard entries:
 
 ```bash
+export REMNIC_AMB_RUN_PROFILE=public-beam
 export GEMINI_API_KEY=<key> # or GOOGLE_API_KEY=<key>
 export OMB_ANSWER_LLM=gemini
 export OMB_ANSWER_MODEL=gemini-3.1-pro-preview
@@ -66,6 +67,7 @@ direct benchmark API keys, the installer also registers an AMB LLM provider name
 `codex_cli`:
 
 ```bash
+export REMNIC_AMB_RUN_PROFILE=codex-cli
 export OMB_ANSWER_LLM=codex_cli
 export OMB_ANSWER_MODEL=gpt-5.5
 export OMB_JUDGE_LLM=codex_cli
@@ -98,6 +100,9 @@ Check the local setup before starting a long run:
 ```bash
 node integrations/amb/check-remnic-run.mjs /tmp/agent-memory-benchmark
 ```
+
+The preflight defaults to `REMNIC_AMB_RUN_PROFILE=public-beam`; set
+`REMNIC_AMB_RUN_PROFILE=codex-cli` for the current Codex CLI iteration setup.
 
 You can also run the same public-comparable BEAM command from GitHub Actions
 with the manual `AMB BEAM Remnic` workflow. Configure either the

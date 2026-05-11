@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -558,6 +558,62 @@ test("AMB bridge reloads persisted session index for skipped-ingestion recall", 
     );
     assert.equal(result.raw_response.session_count, 1);
     assert.match(result.documents[0]?.content ?? "", /Marisol/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("AMB bridge appends to a persisted session index on resumed ingest", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "remnic-amb-index-append-"));
+  const sessionIndexPath = path.join(dir, "amb-session-index.json");
+  const storedSessions = [];
+
+  const createWriter = () =>
+    new RemnicAmbBridge(
+      {
+        async reset() {},
+        async store(sessionId) {
+          storedSessions.push(sessionId);
+        },
+        async recall() {
+          throw new Error("writer bridge should not recall");
+        },
+        async destroy() {},
+      },
+      {
+        drainAfterIngest: false,
+        groupDocumentsByUser: true,
+        resetBeforeIngest: false,
+        recallBudgetChars: 4096,
+        sessionPrefix: "beam",
+        sessionIndexPath,
+      },
+    );
+
+  try {
+    await createWriter().ingest([
+      {
+        id: "conv-1_s0_0",
+        user_id: "conv-1",
+        content: "User: Marisol owned it.",
+      },
+    ]);
+
+    await createWriter().ingest([
+      {
+        id: "conv-2_s0_0",
+        user_id: "conv-2",
+        content: "User: Naveen owned it.",
+      },
+    ]);
+
+    assert.deepEqual(storedSessions, ["beam-conv-1", "beam-conv-2"]);
+    const persisted = JSON.parse(await readFile(sessionIndexPath, "utf8"));
+    assert.deepEqual(persisted.allSessions, ["beam-conv-1", "beam-conv-2"]);
+    assert.deepEqual(persisted.sessionsByUser, {
+      "conv-1": ["beam-conv-1"],
+      "conv-2": ["beam-conv-2"],
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

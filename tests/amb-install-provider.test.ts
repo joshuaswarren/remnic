@@ -182,7 +182,12 @@ test("AMB provider installer patches CLI Gemini gate for non-Gemini providers", 
     const cli = await readFile(cliPath, "utf8");
     assert.match(cli, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
     assert.match(cli, /answer_provider != "gemini" and judge_provider != "gemini"/);
-    assert.match(cli, /os\.environ\["OMB_ANSWER_LLM"\] = llm/);
+    assert.match(cli, /def _remnic_apply_answer_llm\(llm\) -> None:/);
+    assert.match(
+      cli,
+      /if llm and \(llm != "gemini" or not os\.environ\.get\("OMB_ANSWER_LLM"\)\):/,
+    );
+    assert.match(cli, /_remnic_apply_answer_llm\(llm\)\n\s*_resolve_gemini_key\(\)/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -235,7 +240,10 @@ test("AMB provider installer patches compact CLI Gemini gates", async () => {
     const cli = await readFile(cliPath, "utf8");
     assert.match(cli, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
     assert.match(cli, /answer_provider != "gemini" and judge_provider != "gemini"/);
-    assert.match(cli, /os\.environ\.__setitem__\("OMB_ANSWER_LLM", llm\) if llm else None/);
+    assert.match(
+      cli,
+      /_remnic_apply_answer_llm\(llm\); _resolve_gemini_key\(\); ds = get_dataset\(dataset\)/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
