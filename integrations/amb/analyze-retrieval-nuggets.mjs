@@ -162,6 +162,7 @@ function extractNugget(rawRubric) {
 
 function nuggetRows(result, threshold) {
   const context = normalizeText(result.context ?? "");
+  const contextTokens = new Set(tokens(context));
   const rubrics = Array.isArray(result.meta?.rubric) ? result.meta.rubric : [];
   const goldAnswers = Array.isArray(result.gold_answers) ? result.gold_answers : [];
   const rubricNuggets = rubrics.map(extractNugget).filter(Boolean);
@@ -172,8 +173,8 @@ function nuggetRows(result, threshold) {
 
   return nuggets.map((nugget) => {
     const nuggetTokens = tokens(nugget);
-    const matched = nuggetTokens.filter((token) => context.includes(token));
-    const missing = nuggetTokens.filter((token) => !context.includes(token));
+    const matched = nuggetTokens.filter((token) => contextTokens.has(token));
+    const missing = nuggetTokens.filter((token) => !contextTokens.has(token));
     const recall = nuggetTokens.length === 0 ? 0 : matched.length / nuggetTokens.length;
     return {
       nugget,

@@ -181,6 +181,41 @@ test("event order recall honors zero max items without scanning", async () => {
   assert.deepEqual(engine.expandCalls, []);
 });
 
+test("event order recall keeps summary within the section budget", async () => {
+  const sessionId = "event-order-budget";
+  const engine = new FakeEventOrderEngine(sessionId, [
+    {
+      turn_index: 10,
+      role: "user",
+      content:
+        "First I introduced database migration planning, project timeline sequencing, and follow-up testing details.",
+    },
+    {
+      turn_index: 20,
+      role: "user",
+      content:
+        "Later I discussed deployment sequencing, review checkpoints, and how the implementation plan evolved.",
+    },
+  ]);
+
+  const maxChars = 220;
+  const recalled = await buildEventOrderRecallSection({
+    engine,
+    sessionId,
+    query:
+      "Walk me through the order in which project planning developed in order. Mention ONLY and ONLY two items.",
+    maxChars,
+    maxScanWindowTurns: 2,
+  });
+
+  assert.ok(recalled.length > 0);
+  assert.ok(
+    recalled.length <= maxChars,
+    `expected recalled section length ${recalled.length} to fit ${maxChars}`,
+  );
+  assert.match(recalled, /^## Chronological event evidence/);
+});
+
 test("event order recall returns relevant user turns in chronological order", async () => {
   const sessionId = "event-order-core";
   const engine = new FakeEventOrderEngine(sessionId, [

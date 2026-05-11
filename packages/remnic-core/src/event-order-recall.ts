@@ -79,7 +79,10 @@ export async function buildEventOrderRecallSection(
     outline,
     "Use these turns to preserve the order in which the user raised the topics.",
   ].filter(Boolean).join(" ");
-  return evidence.replace(`## ${title}`, `## ${title}\n\n${summary}`);
+  return clipSectionToBudget(
+    evidence.replace(`## ${title}`, `## ${title}\n\n${summary}`),
+    budget,
+  );
 }
 
 async function collectEventOrderItems(
@@ -1645,6 +1648,14 @@ function normalizePositiveInteger(value: number): number {
     return 0;
   }
   return Math.floor(value);
+}
+
+function clipSectionToBudget(section: string, maxChars: number): string {
+  const budget = normalizePositiveInteger(maxChars);
+  if (budget <= 0) return "";
+  if (section.length <= budget) return section;
+  if (budget <= 3) return section.slice(0, budget);
+  return `${section.slice(0, budget - 3).trimEnd()}...`;
 }
 
 const EVENT_CUE_PATTERNS = [

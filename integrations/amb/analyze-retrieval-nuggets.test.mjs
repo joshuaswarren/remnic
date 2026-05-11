@@ -47,6 +47,31 @@ test("nugget analyzer scores exact numeric state rubrics", () => {
   assert.equal(summary.lowest[0].nuggets[0].ok, true);
 });
 
+test("nugget analyzer matches required tokens on token boundaries", () => {
+  const summary = runAnalyzer({
+    dataset: "beam",
+    split: "100k",
+    diagnostic: "retrieval-only",
+    results: [
+      {
+        query_id: "token-boundary",
+        query: "What count and item did I mention?",
+        gold_answers: [],
+        meta: {
+          question_category: "knowledge_update",
+          rubric: ["LLM response should contain: 10 apple"],
+        },
+        context: "The log has 100 pineapple entries.",
+      },
+    ],
+  });
+
+  assert.equal(summary.score, 0);
+  assert.equal(summary.miss, 1);
+  assert.deepEqual(summary.lowest[0].nuggets[0].matched, []);
+  assert.deepEqual(summary.lowest[0].nuggets[0].missing, ["10", "apple"]);
+});
+
 test("nugget analyzer reports public-style partial rows", () => {
   const summary = runAnalyzer({
     dataset: "beam",
