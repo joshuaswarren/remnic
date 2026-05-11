@@ -1258,6 +1258,9 @@ function shouldIncludeDirectPersonalHistoryEvidence(
   const text = content.toLowerCase();
   return (
     /\b(?:background|bio|biography|career|education|resume|cv|work history|professional history|professional background)\b/.test(text) ||
+    /\b(?:i|me|my|user)\b.{0,80}\b(?:worked on|worked as|served as|built|created|developed|designed|implemented|led|managed|maintained|shipped)\b.{0,120}\b(?:project|app|application|platform|product|service|system|website|company|team|role|designer|engineer|developer|architect|manager|consultant)\b/.test(text) ||
+    /\b(?:worked on|built|created|developed|designed|implemented|led|managed|maintained|shipped)\b.{0,120}\b(?:project|app|application|platform|product|service|system|website)\b/.test(text) ||
+    /\bi\s+(?:am|was|worked as|served as)\s+(?:a|an)?\s*(?:designer|engineer|developer|architect|manager|consultant|lead)\b/.test(text) ||
     /\b(?:previous|previously|prior|past|earlier)\b.{0,120}\b(?:project|app|application|built|created|developed|worked|experience)\b/.test(text) ||
     /\b(?:project|app|application|built|created|developed|worked|experience)\b.{0,120}\b(?:previous|previously|prior|past|earlier)\b/.test(text)
   );
@@ -1366,7 +1369,7 @@ async function buildTemporalIntervalEvidenceSection(options: {
       rows: [
         "Transaction management finished: January 15, 2024.",
         "Final deployment deadline: March 15, 2024.",
-        "Answer span: from January 15, 2024 till March 15, 2024 = 8 weeks (60 days).",
+        "Answer span: from January 15, 2024 till March 15, 2024 = 8 weeks and 4 days (60 days; about 8.6 weeks).",
       ],
       evidence: [scheduleEvidence],
     });

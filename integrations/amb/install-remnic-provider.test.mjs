@@ -224,9 +224,51 @@ def run(llm: str):
   assert.match(patched, /def _remnic_apply_answer_llm\(llm\) -> None:/);
   assert.match(
     patched,
-    /if llm and \(llm != "gemini" or not os\.environ\.get\("OMB_ANSWER_LLM"\)\):/,
+    /if llm == "gemini" and os\.environ\.get\("OMB_ANSWER_LLM"\):\n\s+return/,
   );
   assert.match(patched, /_remnic_apply_answer_llm\(llm\)\n\s*_resolve_gemini_key\(\)/);
+});
+
+test("patchAmbCli preserves env-selected answer LLM when llm keeps the upstream default", () => {
+  const cli = `import os
+import typer
+
+def _resolve_gemini_key() -> None:
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        typer.echo("Error: GEMINI_API_KEY environment variable is not set.", err=True)
+        raise typer.Exit(1)
+    os.environ["GOOGLE_API_KEY"] = key
+
+def run(llm: str = "gemini"):
+    _resolve_gemini_key()
+    ds = get_dataset(dataset)
+`;
+
+  const patched = patchAmbCli(cli);
+  const helper = patched.match(
+    /def _remnic_apply_answer_llm\(llm\) -> None:[\s\S]*?(?=\ndef run)/,
+  )?.[0];
+  assert.ok(helper);
+
+  const result = spawnSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import os",
+        helper,
+        'os.environ["OMB_ANSWER_LLM"] = "codex_cli"',
+        '_remnic_apply_answer_llm("gemini")',
+        'assert os.environ["OMB_ANSWER_LLM"] == "codex_cli"',
+        '_remnic_apply_answer_llm("openai")',
+        'assert os.environ["OMB_ANSWER_LLM"] == "openai"',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 
 test("patchAmbCli handles compact upstream run entrypoints", () => {
@@ -382,6 +424,48 @@ test("check-remnic-run accepts the Codex CLI iteration profile", async () => {
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Codex CLI BEAM iteration preflight passed/);
+  } finally {
+    await rm(ambDir, { recursive: true, force: true });
+    await rm(storeDir, { recursive: true, force: true });
+  }
+});
+
+test("check-remnic-run treats Codex internal LLM vars as optional unless configured", async () => {
+  const ambDir = await createAmbFixture();
+  const storeDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-store-test-"));
+
+  try {
+    const install = spawnSync(
+      process.execPath,
+      [path.join(__dirname, "install-remnic-provider.mjs"), ambDir],
+      { cwd: path.resolve(__dirname, "../.."), encoding: "utf8" },
+    );
+    assert.equal(install.status, 0, install.stderr || install.stdout);
+
+    const result = runAmbPreflight(ambDir, {
+      REMNIC_REPO_PATH: path.resolve(__dirname, "../.."),
+      REMNIC_AMB_STORE_DIR: storeDir,
+      REMNIC_AMB_RUN_PROFILE: "codex-cli",
+      REMNIC_AMB_SESSION_PREFIX: "beam",
+      REMNIC_AMB_REPLAY_EXTRACTION_MODE: "skip",
+      REMNIC_AMB_DRAIN_AFTER_INGEST: "false",
+      OMB_ANSWER_LLM: "codex_cli",
+      OMB_ANSWER_MODEL: "gpt-5.5",
+      OMB_JUDGE_LLM: "codex_cli",
+      OMB_JUDGE_MODEL: "gpt-5.5",
+      OMB_CODEX_REASONING_EFFORT: "xhigh",
+      REMNIC_AMB_INTERNAL_PROVIDER: "",
+      REMNIC_AMB_INTERNAL_MODEL: "",
+      REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT: "",
+      REMNIC_AMB_EXPECTED_INTERNAL_PROVIDER: "",
+      REMNIC_AMB_EXPECTED_INTERNAL_MODEL: "",
+      REMNIC_AMB_EXPECTED_INTERNAL_CODEX_REASONING_EFFORT: "",
+      REMNIC_AMB_PRESERVE_RUNTIME_DEFAULTS: "false",
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.doesNotMatch(result.stdout, /REMNIC_AMB_INTERNAL_PROVIDER/);
     assert.match(result.stdout, /Codex CLI BEAM iteration preflight passed/);
   } finally {
     await rm(ambDir, { recursive: true, force: true });

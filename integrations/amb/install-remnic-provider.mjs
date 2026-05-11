@@ -27,8 +27,11 @@ const codexAwareGeminiGateMarker = "REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE";
 const legacyAnswerLlmBeforeResolvePattern =
   /(^|[;:\n])([ \t]*)(?:os\.environ\["OMB_ANSWER_LLM"\]\s*=\s*llm|os\.environ\.__setitem__\(\s*["']OMB_ANSWER_LLM["']\s*,\s*llm\s*\))(?:\s+if\s+llm\s+else\s+None)?(\s*(?:[;\n])\s*_resolve_gemini_key\(\))/g;
 const remnicApplyAnswerLlmHelper = `def _remnic_apply_answer_llm(llm) -> None:
-    if llm and (llm != "gemini" or not os.environ.get("OMB_ANSWER_LLM")):
-        os.environ["OMB_ANSWER_LLM"] = llm
+    if not llm:
+        return
+    if llm == "gemini" and os.environ.get("OMB_ANSWER_LLM"):
+        return
+    os.environ["OMB_ANSWER_LLM"] = llm
 `;
 
 async function readExistingFile(filePath) {

@@ -313,7 +313,8 @@ class RemnicMemoryProvider(MemoryProvider):
                         + "\n"
                     )
                     proc.stdin.flush()
-                    proc.stdout.readline()
+                    stdout = proc.stdout
+                stdout.readline()
             except Exception:
                 return
 

@@ -167,6 +167,55 @@ function normalizeValue(v: string): string {
   return v.trim().toLowerCase();
 }
 
+async function expireChildChunksForSupersededParent(args: {
+  storage: StorageManager;
+  allCandidates: MemoryFile[];
+  parentId: string;
+  newMemoryId: string;
+  supersededAt: string;
+  invalidAt?: string;
+}): Promise<void> {
+  const processedChunkIds = new Set<string>();
+  const chunks = args.allCandidates.filter(
+    (candidate) => candidate.frontmatter.parentId === args.parentId,
+  );
+
+  for (const chunk of chunks) {
+    const chunkKey = chunk.frontmatter.id ?? chunk.path;
+    if (processedChunkIds.has(chunkKey)) continue;
+
+    try {
+      const freshChunk = await args.storage.readMemoryByPath(chunk.path);
+      if (!freshChunk) continue;
+      processedChunkIds.add(chunkKey);
+      const freshStatus = freshChunk.frontmatter.status ?? "active";
+      if (freshStatus !== "active" || freshChunk.frontmatter.supersededBy) continue;
+
+      await args.storage.writeMemoryFrontmatter(
+        freshChunk,
+        {
+          status: "superseded",
+          supersededBy: args.newMemoryId,
+          supersededAt: args.supersededAt,
+          updated: args.supersededAt,
+          ...(args.invalidAt && !freshChunk.frontmatter.invalid_at
+            ? { invalid_at: args.invalidAt }
+            : {}),
+        },
+        {
+          actor: "temporal-supersession",
+          reasonCode: "structured-attribute-update-child-chunk",
+          relatedMemoryIds: [args.newMemoryId, args.parentId],
+        },
+      );
+    } catch (err) {
+      log.warn(
+        `temporal-supersession: failed to expire child chunk ${chunk.frontmatter.id} for parent ${args.parentId}: ${err}`,
+      );
+    }
+  }
+}
+
 export interface TemporalSupersessionResult {
   supersededIds: string[];
   matchedKeys: string[];
@@ -403,6 +452,14 @@ export async function applyTemporalSupersession(args: {
       if (wrote) {
         supersededIds.push(memory.frontmatter.id);
         for (const key of decision.matchedKeys) matchedKeys.add(key);
+        await expireChildChunksForSupersededParent({
+          storage: args.storage,
+          allCandidates,
+          parentId: fresh.frontmatter.id,
+          newMemoryId: args.newMemoryId,
+          supersededAt,
+          invalidAt: invalidAtPatch ?? fresh.frontmatter.invalid_at,
+        });
       }
     } catch (err) {
       log.warn(

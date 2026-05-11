@@ -28,8 +28,10 @@ test("parseFlexibleIsoTimestamp rejects colons-free timezone offsets", () => {
 test("parseFlexibleIsoTimestamp rejects out-of-range timezone offsets only when an offset is present", () => {
   assert.notEqual(parseFlexibleIsoTimestamp("2025-01-01T12:00:00+14:00"), null);
   assert.notEqual(parseFlexibleIsoTimestamp("2025-01-01T12:00:00-12:00"), null);
+  assert.notEqual(parseFlexibleIsoTimestamp("2025-01-01T12:00:00-13:00"), null);
+  assert.notEqual(parseFlexibleIsoTimestamp("2025-01-01T12:00:00-14:00"), null);
   assert.equal(parseFlexibleIsoTimestamp("2025-01-01T12:00:00+14:30"), null);
   assert.equal(parseFlexibleIsoTimestamp("2025-01-01T12:00:00+15:00"), null);
-  assert.equal(parseFlexibleIsoTimestamp("2025-01-01T12:00:00-12:30"), null);
-  assert.equal(parseFlexibleIsoTimestamp("2025-01-01T12:00:00-13:00"), null);
+  assert.equal(parseFlexibleIsoTimestamp("2025-01-01T12:00:00-14:30"), null);
+  assert.equal(parseFlexibleIsoTimestamp("2025-01-01T12:00:00-15:00"), null);
 });

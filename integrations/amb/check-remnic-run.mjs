@@ -149,7 +149,19 @@ function expectedEnvOverride(name, fallback) {
   return value && value.trim() ? value.trim() : fallback;
 }
 
+function internalLlmRoutingRequested() {
+  return [
+    "REMNIC_AMB_INTERNAL_PROVIDER",
+    "REMNIC_AMB_INTERNAL_MODEL",
+    "REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT",
+    "REMNIC_AMB_EXPECTED_INTERNAL_PROVIDER",
+    "REMNIC_AMB_EXPECTED_INTERNAL_MODEL",
+    "REMNIC_AMB_EXPECTED_INTERNAL_CODEX_REASONING_EFFORT",
+  ].some((name) => !!envValue(name));
+}
+
 function expectedRunConfig(profile) {
+  const checkInternalLlm = internalLlmRoutingRequested();
   return {
     ...profile,
     answerLlm: expectedEnvOverride("ANSWER_LLM", profile.answerLlm),
@@ -159,13 +171,13 @@ function expectedRunConfig(profile) {
     codexReasoningEffort: profile.codexReasoningEffort
       ? expectedEnvOverride("CODEX_REASONING_EFFORT", profile.codexReasoningEffort)
       : undefined,
-    internalProvider: profile.internalProvider
+    internalProvider: checkInternalLlm && profile.internalProvider
       ? expectedEnvOverride("INTERNAL_PROVIDER", profile.internalProvider)
       : undefined,
-    internalModel: profile.internalModel
+    internalModel: checkInternalLlm && profile.internalModel
       ? expectedEnvOverride("INTERNAL_MODEL", profile.internalModel)
       : undefined,
-    internalReasoningEffort: profile.internalReasoningEffort
+    internalReasoningEffort: checkInternalLlm && profile.internalReasoningEffort
       ? expectedEnvOverride("INTERNAL_CODEX_REASONING_EFFORT", profile.internalReasoningEffort)
       : undefined,
   };

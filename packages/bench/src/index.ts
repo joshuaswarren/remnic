@@ -52,6 +52,7 @@ export type {
   BenchJudgeResult,
   BenchJudge,
   BenchMemoryAdapter,
+  BenchRecallOptions,
   LlmJudge,
   MemorySystem,
 } from "./adapters/types.js";

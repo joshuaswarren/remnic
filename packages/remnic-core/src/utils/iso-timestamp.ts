@@ -132,7 +132,6 @@ export function parseFlexibleIsoTimestamp(value: string): number | null {
   const hour = match[4] === undefined ? 0 : Number(match[4]);
   const minute = match[5] === undefined ? 0 : Number(match[5]);
   const second = match[6] === undefined ? 0 : Number(match[6]);
-  const offsetSign = match[7];
   const offsetHour = match[8] === undefined ? undefined : Number(match[8]);
   const offsetMinute = match[9] === undefined ? undefined : Number(match[9]);
   const hasTime = match[4] !== undefined;
@@ -154,9 +153,8 @@ export function parseFlexibleIsoTimestamp(value: string): number | null {
   if (
     hasOffset &&
     (offsetMinute > 59 ||
-      (offsetSign === "+"
-        ? offsetHour > 14 || (offsetHour === 14 && offsetMinute > 0)
-        : offsetHour > 12 || (offsetHour === 12 && offsetMinute > 0)))
+      offsetHour > 14 ||
+      (offsetHour === 14 && offsetMinute > 0))
   ) {
     return null;
   }

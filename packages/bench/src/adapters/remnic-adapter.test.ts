@@ -299,6 +299,37 @@ test("direct adapter keeps explicit prior-project evidence for personal history 
   }
 });
 
+test("direct adapter keeps direct career facts for personal history queries", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-personal-history-career", [
+      {
+        role: "user",
+        content: "I worked on the Apollo app as one of my projects, and I was a designer at Acme.",
+      },
+      {
+        role: "assistant",
+        content: "Noted.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-personal-history-career",
+      "Can you tell me about my background and previous projects?",
+      24_000,
+    );
+
+    assert.match(recalled, /## Search evidence/);
+    assert.match(recalled, /I worked on the Apollo app/);
+    assert.match(recalled, /I was a designer at Acme/);
+    assert.doesNotMatch(recalled, /No direct evidence found/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("direct adapter front-loads direct temporal evidence for end-date questions", async () => {
   const adapter = await createRemnicAdapter();
 
@@ -570,7 +601,7 @@ test("direct adapter front-loads temporal interval calculations", async () => {
       24_000,
     );
     assert.match(deploymentSpan, /## Temporal interval evidence/);
-    assert.match(deploymentSpan, /from January 15, 2024 till March 15, 2024 = 8 weeks/);
+    assert.match(deploymentSpan, /from January 15, 2024 till March 15, 2024 = 8 weeks and 4 days \(60 days; about 8\.6 weeks\)/);
 
     const sprintSpan = await adapter.recall(
       "beam-temporal-intervals",

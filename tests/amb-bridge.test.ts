@@ -314,6 +314,27 @@ test("AMB bridge rejects invalid formatted turn marker timestamps", () => {
   );
 });
 
+test("AMB bridge accepts ISO negative offsets through fourteen hours", () => {
+  assert.deepEqual(
+    buildAmbMessages({
+      id: "doc-negative-offset",
+      timestamp: "2026-05-10T12:00:00-13:00",
+      content: "Negative offset source timestamp.",
+    }),
+    [
+      {
+        role: "system",
+        content: "AMB document metadata: document_id=doc-negative-offset; timestamp=2026-05-10T12:00:00-13:00",
+      },
+      {
+        role: "user",
+        content: "Negative offset source timestamp.",
+        timestamp: "2026-05-11T01:00:00.000Z",
+      },
+    ],
+  );
+});
+
 test("AMB bridge falls back to raw content when no transcript markers exist", () => {
   assert.deepEqual(
     buildAmbMessages({
@@ -411,12 +432,16 @@ test("AMB bridge rejects invalid query timestamps", () => {
     buildAmbRecallQuery("What happened?", "2026-05-10T12:00-12:00"),
     /query_timestamp=2026-05-10T12:00-12:00/,
   );
-  assert.throws(
-    () => buildAmbRecallQuery("What happened?", "2026-05-10T12:00-12:30"),
-    /query_timestamp must be a valid ISO 8601 timestamp/,
+  assert.match(
+    buildAmbRecallQuery("What happened?", "2026-05-10T12:00-13:00"),
+    /query_timestamp=2026-05-10T12:00-13:00/,
+  );
+  assert.match(
+    buildAmbRecallQuery("What happened?", "2026-05-10T12:00-14:00"),
+    /query_timestamp=2026-05-10T12:00-14:00/,
   );
   assert.throws(
-    () => buildAmbRecallQuery("What happened?", "2026-05-10T12:00-13:00"),
+    () => buildAmbRecallQuery("What happened?", "2026-05-10T12:00-14:30"),
     /query_timestamp must be a valid ISO 8601 timestamp/,
   );
   assert.throws(
