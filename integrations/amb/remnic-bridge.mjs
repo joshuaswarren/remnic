@@ -403,9 +403,8 @@ export function joinAmbRecallChunks(chunks, budgetChars) {
   return joined;
 }
 
-export function buildAmbRecallQuery(query, queryTimestamp) {
+function formatAmbRecallQuery(query, normalizedTimestamp) {
   const text = String(query ?? "").trim();
-  const normalizedTimestamp = normalizeAmbQueryTimestamp(queryTimestamp);
   if (!normalizedTimestamp) {
     return text;
   }
@@ -417,6 +416,10 @@ export function buildAmbRecallQuery(query, queryTimestamp) {
   }
   const anchor = `AMB query anchors: ${fields.join("; ")}`;
   return text ? `${text}\n\n${anchor}` : anchor;
+}
+
+export function buildAmbRecallQuery(query, queryTimestamp) {
+  return formatAmbRecallQuery(query, normalizeAmbQueryTimestamp(queryTimestamp));
 }
 
 export async function loadRemnicAmbConfig(env = process.env) {
@@ -596,7 +599,7 @@ export class RemnicAmbBridge {
   async retrieve({ query, k, user_id, query_timestamp }) {
     await this.loadSessionIndex();
     const recallAsOf = normalizeAmbQueryTimestamp(query_timestamp);
-    const recallQuery = buildAmbRecallQuery(query, recallAsOf);
+    const recallQuery = formatAmbRecallQuery(query, recallAsOf);
     const scopedUserId = user_id === undefined || user_id === null
       ? ""
       : String(user_id).trim();
