@@ -159,6 +159,21 @@ export function buildAmbSessionId(document, index, prefix = "amb") {
   return `${normalizedPrefix}-${user}-${id}-${index}`;
 }
 
+export function buildAmbStorageSessionId(
+  document,
+  index,
+  prefix = "amb",
+  options = {},
+) {
+  const groupDocumentsByUser = options.groupDocumentsByUser !== false;
+  const userId = document?.user_id ? String(document.user_id).trim() : "";
+  if (!groupDocumentsByUser || !userId) {
+    return buildAmbSessionId(document, index, prefix);
+  }
+
+  return `${sanitizeSessionPart(prefix)}-${sanitizeSessionPart(userId)}`;
+}
+
 export function buildAmbMessages(document) {
   const messages = [];
   const metadata = [];
@@ -297,12 +312,14 @@ class RemnicAmbBridge {
     this.options = options;
     this.sessionsByUser = new Map();
     this.allSessions = [];
+    this.allSessionIds = new Set();
   }
 
   async reset() {
     await this.adapter.reset();
     this.sessionsByUser.clear();
     this.allSessions = [];
+    this.allSessionIds.clear();
   }
 
   async ingest(documents) {
@@ -318,17 +335,23 @@ class RemnicAmbBridge {
       if (messages.length === 0) {
         continue;
       }
-      const sessionId = buildAmbSessionId(
+      const sessionId = buildAmbStorageSessionId(
         document,
-        this.allSessions.length + index,
+        this.allSessions.length,
         this.options.sessionPrefix,
+        { groupDocumentsByUser: this.options.groupDocumentsByUser },
       );
       await this.adapter.store(sessionId, messages);
-      this.allSessions.push(sessionId);
+      if (!this.allSessionIds.has(sessionId)) {
+        this.allSessionIds.add(sessionId);
+        this.allSessions.push(sessionId);
+      }
       const userId = document?.user_id ? String(document.user_id) : "";
       if (userId) {
         const sessions = this.sessionsByUser.get(userId) ?? [];
-        sessions.push(sessionId);
+        if (!sessions.includes(sessionId)) {
+          sessions.push(sessionId);
+        }
         this.sessionsByUser.set(userId, sessions);
       }
     }
@@ -402,6 +425,7 @@ async function createBridge(env = process.env) {
 
   return new RemnicAmbBridge(adapter, {
     drainAfterIngest: parseBoolean(env.REMNIC_AMB_DRAIN_AFTER_INGEST, true),
+    groupDocumentsByUser: parseBoolean(env.REMNIC_AMB_GROUP_DOCUMENTS_BY_USER, true),
     resetBeforeIngest: parseBoolean(env.REMNIC_AMB_RESET_BEFORE_INGEST, false),
     recallBudgetChars: parsePositiveInteger(
       env.REMNIC_AMB_RECALL_BUDGET_CHARS,

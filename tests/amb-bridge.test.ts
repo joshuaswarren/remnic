@@ -6,6 +6,7 @@ import {
   buildAmbMessages,
   buildAmbRecallDocuments,
   buildAmbSessionId,
+  buildAmbStorageSessionId,
   joinAmbRecallChunks,
   loadRemnicAmbConfig,
 } from "../integrations/amb/remnic-bridge.mjs";
@@ -21,6 +22,29 @@ test("AMB bridge can use benchmark-specific session prefixes", () => {
   assert.equal(
     buildAmbSessionId({ id: "doc one", user_id: "conv/42" }, 3, "beam"),
     "beam-conv-42-doc-one-3",
+  );
+});
+
+test("AMB bridge groups chunked documents by AMB user session by default", () => {
+  assert.equal(
+    buildAmbStorageSessionId({ id: "conv-1_s0_0", user_id: "conv-1" }, 0, "beam"),
+    "beam-conv-1",
+  );
+  assert.equal(
+    buildAmbStorageSessionId({ id: "conv-1_s0_1", user_id: "conv-1" }, 1, "beam"),
+    "beam-conv-1",
+  );
+});
+
+test("AMB bridge can keep document-specific sessions when grouping is disabled", () => {
+  assert.equal(
+    buildAmbStorageSessionId(
+      { id: "conv-1_s0_1", user_id: "conv-1" },
+      1,
+      "beam",
+      { groupDocumentsByUser: false },
+    ),
+    "beam-conv-1-conv-1_s0_1-1",
   );
 });
 
