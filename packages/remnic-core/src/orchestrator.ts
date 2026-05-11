@@ -10138,7 +10138,12 @@ export class Orchestrator {
       bySession.set(key, list);
     }
 
-    const replayTasks: Array<Promise<void>> = [];
+    const replaySlices: Array<{
+      bufferKey: string;
+      order: number;
+      targetValidAtMs: number;
+      turns: BufferTurn[];
+    }> = [];
     for (const [key, sessionTurns] of bySession.entries()) {
       if (sessionTurns.length === 0) continue;
       if (options.archiveLcm !== false && this.lcmEngine?.enabled) {
@@ -10154,21 +10159,36 @@ export class Orchestrator {
         );
       }
       for (const sessionSlice of splitTurnsBySourceValidAt(sessionTurns)) {
-        replayTasks.push(
+        replaySlices.push({
+          bufferKey: key,
+          order: replaySlices.length,
+          targetValidAtMs: targetSourceValidAtSortMs(sessionSlice),
+          turns: sessionSlice,
+        });
+      }
+    }
+
+    const replayTasks = replaySlices
+      .sort((a, b) => {
+        if (a.targetValidAtMs < b.targetValidAtMs) return -1;
+        if (a.targetValidAtMs > b.targetValidAtMs) return 1;
+        if (a.order === b.order) return 0;
+        return a.order < b.order ? -1 : 1;
+      })
+      .map(
+        ({ bufferKey, turns: sessionSlice }) =>
           new Promise<void>((resolve, reject) => {
             void this.queueBufferedExtraction(sessionSlice, "trigger_mode", {
               skipDedupeCheck: true,
               clearBufferAfterExtraction: false,
               skipCharThreshold: true,
               skipUserTurnThreshold: true,
-              bufferKey: key,
+              bufferKey,
               extractionDeadlineMs: options.deadlineMs,
               onTaskSettled: (err) => (err ? reject(err) : resolve()),
             }).catch(reject);
           }),
-        );
-      }
-    }
+      );
     if (replayTasks.length > 0) {
       const settled = await Promise.allSettled(replayTasks);
       const firstRejected = settled.find(

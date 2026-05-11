@@ -273,6 +273,72 @@ test("ingestReplayBatch queues source timestamps chronologically without future 
   ]);
 });
 
+test("ingestReplayBatch globally queues source timestamps across sessions", async () => {
+  const { orchestrator } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  const observedTargets: Array<{
+    sessionKey: string | undefined;
+    sourceValidAt: string | undefined;
+    content: string;
+  }> = [];
+  orchestrator.extraction = {
+    extract: async (turns: any[]) => {
+      const firstTarget = turns.find(
+        (turn) => turn.extractionContextOnly !== true,
+      );
+      observedTargets.push({
+        sessionKey: firstTarget?.sessionKey,
+        sourceValidAt: firstTarget?.sourceValidAt,
+        content: firstTarget?.content,
+      });
+      return {
+        facts: [makeFact(`Observed cross-session slice ${observedTargets.length}.`)],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  await orchestrator.ingestReplayBatch(
+    [
+      {
+        source: "openclaw",
+        sessionKey: "beam-cross-session-later",
+        role: "user",
+        content: "Later session source-dated turn.",
+        timestamp: "2025-01-03T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-cross-session-earlier",
+        role: "user",
+        content: "Earlier session source-dated turn.",
+        timestamp: "2025-01-01T00:00:00Z",
+      },
+    ],
+    { archiveLcm: false },
+  );
+
+  assert.deepEqual(observedTargets, [
+    {
+      sessionKey: "beam-cross-session-earlier",
+      sourceValidAt: "2025-01-01T00:00:00Z",
+      content: "Earlier session source-dated turn.",
+    },
+    {
+      sessionKey: "beam-cross-session-later",
+      sourceValidAt: "2025-01-03T00:00:00Z",
+      content: "Later session source-dated turn.",
+    },
+  ]);
+});
+
 test("context-only replay turns do not satisfy the normal user-turn threshold", async () => {
   const { orchestrator } = await makeOrchestrator({
     extractionMinChars: 0,
