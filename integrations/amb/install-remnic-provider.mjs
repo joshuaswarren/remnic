@@ -35,7 +35,8 @@ export function patchAmbMemoryRegistry(registry) {
     }
     const lastImport = imports.at(-1);
     const insertAt = (lastImport?.index ?? 0) + (lastImport?.[0].length ?? 0);
-    patched = `${patched.slice(0, insertAt)}\n${remnicImport}${patched.slice(insertAt)}`;
+    const tail = patched.slice(insertAt).replace(/^\s*;\s*/, "");
+    patched = `${patched.slice(0, insertAt)}\n${remnicImport}\n${tail}`;
   }
 
   if (!hasRemnicRegistryEntry(patched)) {

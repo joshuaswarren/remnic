@@ -11,6 +11,11 @@ test("patchAmbMemoryRegistry handles compact single-line registries", () => {
 
   assert.match(patched, /from \.remnic import RemnicMemoryProvider/);
   assert.match(patched, /["']remnic["']:\s*RemnicMemoryProvider/);
+  assert.match(
+    patched,
+    /from \.remnic import RemnicMemoryProvider\nREGISTRY/,
+    "Remnic import should remain on its own physical line before REGISTRY",
+  );
   assert.ok(
     patched.indexOf("from .remnic import RemnicMemoryProvider") <
       patched.indexOf("REGISTRY"),
