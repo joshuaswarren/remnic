@@ -605,6 +605,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           hasExplicitReferences && sessionId.startsWith("ama-");
         const requireDirectPersonalHistoryEvidence =
           !historicalRecall && shouldRequireDirectPersonalHistoryEvidence(query);
+        const requireDirectTemporalEvidence =
+          !historicalRecall && shouldRequireDirectTemporalEvidence(query);
         const focusedReferenceWindows = preferFocusedExplicitContext
           ? buildFocusedReferenceWindows(
             explicitReferences.map((reference) => reference.number),
@@ -644,7 +646,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           usedChars += trajectoryAnalysisEvidence.length;
         }
 
-        if (useCoreMemoryPipeline && !requireDirectPersonalHistoryEvidence) {
+        if (
+          useCoreMemoryPipeline &&
+          !requireDirectPersonalHistoryEvidence &&
+          !requireDirectTemporalEvidence
+        ) {
           const coreBudget = historicalRecall
             ? Math.max(0, budget - usedChars)
             : Math.max(
@@ -683,6 +689,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         const suppressBroadSummary =
           historicalRecall ||
           requireDirectPersonalHistoryEvidence ||
+          requireDirectTemporalEvidence ||
           (preferFocusedExplicitContext && !!exactReferenceEvidence);
 
         if (query && !historicalRecall) {
@@ -705,7 +712,16 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               content: string;
               score?: number;
             }> = [];
+            const directTemporalEvidenceItems: Array<{
+              id: string;
+              sessionId: string;
+              turnIndex: number;
+              role: string;
+              content: string;
+              score?: number;
+            }> = [];
             const seenTurns = new Set<string>();
+            const directTemporalTurnIds = new Set<string>();
 
             for (const result of searchResults) {
               const windowRadius = preferFocusedExplicitContext
@@ -724,6 +740,26 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
               if (expanded.length === 0) {
                 const id = `${result.session_id}:${result.turn_index}`;
+                if (
+                  !directTemporalTurnIds.has(id) &&
+                  shouldIncludeDirectTemporalEvidence(
+                    result.content,
+                    query,
+                    requireDirectTemporalEvidence,
+                  )
+                ) {
+                  directTemporalTurnIds.add(id);
+                  directTemporalEvidenceItems.push({
+                    id,
+                    sessionId: result.session_id,
+                    turnIndex: result.turn_index,
+                    role: result.role,
+                    content: result.content,
+                    ...(typeof result.score === "number"
+                      ? { score: result.score }
+                      : {}),
+                  });
+                }
                 if (
                   !seenTurns.has(id) &&
                   shouldIncludeFocusedSearchEvidence(
@@ -756,6 +792,27 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 const id = `${result.session_id}:${message.turn_index}`;
                 if (seenTurns.has(id)) continue;
                 if (
+                  !directTemporalTurnIds.has(id) &&
+                  shouldIncludeDirectTemporalEvidence(
+                    message.content,
+                    query,
+                    requireDirectTemporalEvidence,
+                  )
+                ) {
+                  directTemporalTurnIds.add(id);
+                  directTemporalEvidenceItems.push({
+                    id,
+                    sessionId: result.session_id,
+                    turnIndex: message.turn_index,
+                    role: message.role,
+                    content: message.content,
+                    ...(message.turn_index === result.turn_index &&
+                    typeof result.score === "number"
+                      ? { score: result.score }
+                      : {}),
+                  });
+                }
+                if (
                   !shouldIncludeFocusedSearchEvidence(
                     message.content,
                     query,
@@ -784,11 +841,32 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               }
             }
 
-            const searchEvidence = buildEvidencePack(evidenceItems, {
-              title: "Search evidence",
-              maxChars: searchBudget,
+            const directTemporalEvidence = buildEvidencePack(directTemporalEvidenceItems, {
+              title: "Direct temporal evidence",
+              maxChars: Math.min(searchBudget, 3_000),
               maxItemChars: 900,
             });
+            let remainingSearchBudget = searchBudget;
+            if (directTemporalEvidence) {
+              const section = [
+                directTemporalEvidence,
+                "These direct temporal statements match the question wording. Prefer them over indirect schedule-update context unless the question asks for the latest or current value.",
+              ].join("\n\n");
+              sections.push(section);
+              usedChars += section.length;
+              remainingSearchBudget = 0;
+            }
+
+            const searchEvidence = buildEvidencePack(
+              directTemporalEvidence
+                ? evidenceItems.filter((item) => !directTemporalTurnIds.has(item.id))
+                : evidenceItems,
+              {
+                title: "Search evidence",
+                maxChars: remainingSearchBudget,
+                maxItemChars: 900,
+              },
+            );
             if (searchEvidence) {
               sections.push(searchEvidence);
               usedChars += searchEvidence.length;
@@ -1078,6 +1156,71 @@ function shouldIncludeDirectPersonalHistoryEvidence(
     /\b(?:previous|previously|prior|past|earlier)\b.{0,120}\b(?:project|app|application|built|created|developed|worked|experience)\b/.test(text) ||
     /\b(?:project|app|application|built|created|developed|worked|experience)\b.{0,120}\b(?:previous|previously|prior|past|earlier)\b/.test(text)
   );
+}
+
+function shouldRequireDirectTemporalEvidence(query: string): boolean {
+  const text = query.toLowerCase();
+  return /\bwhen\b/.test(text) &&
+    /\b(?:end|ends|ending|deadline|due)\b/.test(text) &&
+    !/\b(?:latest|current|currently|now|updated|new)\b/.test(text);
+}
+
+function shouldIncludeDirectTemporalEvidence(
+  content: string,
+  query: string,
+  required: boolean,
+): boolean {
+  if (!required) {
+    return false;
+  }
+
+  const text = content.toLowerCase();
+  if (!hasTemporalDateExpression(text)) {
+    return false;
+  }
+  if (!/\b(?:end|ends|ending|end date|deadline|due)\b/.test(text)) {
+    return false;
+  }
+
+  const subjectTerms = extractDirectTemporalSubjectTerms(query);
+  if (subjectTerms.length === 0) {
+    return true;
+  }
+  const matchedTerms = subjectTerms.filter((term) => text.includes(term));
+  return matchedTerms.length >= Math.min(2, subjectTerms.length);
+}
+
+function hasTemporalDateExpression(text: string): boolean {
+  return /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,\s*\d{4})?\b/i.test(text) ||
+    /\b\d{4}-\d{2}-\d{2}\b/.test(text) ||
+    /\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/.test(text);
+}
+
+function extractDirectTemporalSubjectTerms(query: string): string[] {
+  const temporalStopWords = new Set([
+    ...FOCUSED_SEARCH_STOP_WORDS,
+    "can",
+    "could",
+    "date",
+    "deadline",
+    "did",
+    "does",
+    "due",
+    "end",
+    "ending",
+    "ends",
+    "latest",
+    "new",
+    "now",
+    "updated",
+    "will",
+    "would",
+  ]);
+  const terms = query.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [];
+  return [...new Set(terms.filter((term) =>
+    !temporalStopWords.has(term) &&
+    !/^\d+$/.test(term),
+  ))];
 }
 
 function extractFocusedSearchTerms(query: string): string[] {

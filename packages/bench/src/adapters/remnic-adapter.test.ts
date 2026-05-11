@@ -299,6 +299,44 @@ test("direct adapter keeps explicit prior-project evidence for personal history 
   }
 });
 
+test("direct adapter front-loads direct temporal evidence for end-date questions", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-temporal-direct", [
+      {
+        role: "user",
+        content:
+          "The first sprint ends on March 29 and focuses on user registration and login.",
+      },
+      {
+        role: "assistant",
+        content: "The sprint plan lists March 29 as the end date.",
+      },
+      {
+        role: "user",
+        content:
+          "The first sprint now targets completion by March 31, giving two extra testing days.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-temporal-direct",
+      "When does my first sprint end?",
+      24_000,
+    );
+
+    assert.match(recalled, /## Direct temporal evidence/);
+    const directSection = recalled.split("## Search evidence")[0] ?? recalled;
+    assert.match(directSection, /first sprint ends on March 29/);
+    assert.doesNotMatch(directSection, /March 31/);
+    assert.doesNotMatch(recalled, /## Session History/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("direct adapter archives stored messages into LCM once", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {
