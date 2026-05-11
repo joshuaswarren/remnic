@@ -62,6 +62,13 @@ Check the local setup before starting a long run:
 node integrations/amb/check-remnic-run.mjs /tmp/agent-memory-benchmark
 ```
 
+You can also run the same public-comparable BEAM command from GitHub Actions
+with the manual `AMB BEAM Remnic` workflow. Configure either the
+`GEMINI_API_KEY` or `GOOGLE_API_KEY` repository secret first. The workflow
+checks out the public AMB repository, installs the Remnic provider, runs the
+same preflight, executes AMB, compares the result against the current public
+BEAM leaderboard, and uploads the raw result JSON plus comparison output.
+
 ## Run
 
 From the AMB checkout:
