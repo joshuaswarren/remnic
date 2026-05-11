@@ -55,6 +55,103 @@ function sanitizeSessionPart(value) {
   return raw.replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, 120) || "unknown";
 }
 
+function normalizeAmbRole(value) {
+  const role = String(value ?? "").trim().toLowerCase();
+  if (role === "assistant" || role === "system") {
+    return role;
+  }
+  return "user";
+}
+
+function buildAmbTurnAnchor(document, marker) {
+  const rawMarker = typeof marker === "string" ? marker.trim() : "";
+  const turnMatch = rawMarker.match(/\bTurn\s+([A-Za-z0-9_.:-]+)\b/i);
+  const cleanedMarker = rawMarker.replace(/^\[/, "").replace(/\]$/, "").trim();
+  if (!turnMatch?.[1] && !cleanedMarker) {
+    return "";
+  }
+
+  const fields = [];
+  if (document?.id) fields.push(`document_id=${document.id}`);
+  if (turnMatch?.[1]) {
+    const turnId = turnMatch[1];
+    fields.push(`turn_id=${turnId}`);
+    fields.push(`chat_id=${turnId}`);
+    fields.push(`source_chat_id=${turnId}`);
+  }
+  if (cleanedMarker) {
+    fields.push(`turn_marker=${cleanedMarker}`);
+  }
+  return fields.length > 0 ? `AMB turn anchors: ${fields.join("; ")}` : "";
+}
+
+function buildStructuredAmbMessages(document) {
+  if (!Array.isArray(document?.messages)) {
+    return [];
+  }
+
+  return document.messages.flatMap((message) => {
+    if (!message || typeof message !== "object") {
+      return [];
+    }
+    const content = typeof message.content === "string" ? message.content.trim() : "";
+    if (!content) {
+      return [];
+    }
+    const turnMarker =
+      message.turn_id ??
+      message.turnId ??
+      message.id;
+    const marker = turnMarker === undefined || turnMarker === null || turnMarker === ""
+      ? message.timestamp ?? ""
+      : `Turn ${turnMarker}`;
+    const anchor = buildAmbTurnAnchor(document, marker);
+    return [
+      {
+        role: normalizeAmbRole(message.role),
+        content: anchor ? `${anchor}\n${content}` : content,
+      },
+    ];
+  });
+}
+
+function parseFormattedAmbContent(document) {
+  const content = typeof document?.content === "string" ? document.content.trim() : "";
+  if (!content) {
+    return [];
+  }
+
+  const markerPattern =
+    /(^|\n{2,})(\[[^\]\n]*\]\s*)?(User|Assistant|System|Unknown):\s*/g;
+  const matches = [...content.matchAll(markerPattern)];
+  if (matches.length === 0 || matches[0]?.index !== 0) {
+    return [];
+  }
+
+  const parsed = [];
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const next = matches[index + 1];
+    if (match.index === undefined) {
+      continue;
+    }
+    const bodyStart = match.index + match[0].length;
+    const bodyEnd = next?.index ?? content.length;
+    const body = content.slice(bodyStart, bodyEnd).trim();
+    if (!body) {
+      continue;
+    }
+    const marker = (match[2] ?? "").trim();
+    const anchor = buildAmbTurnAnchor(document, marker);
+    parsed.push({
+      role: normalizeAmbRole(match[3]),
+      content: anchor ? `${anchor}\n${body}` : body,
+    });
+  }
+
+  return parsed;
+}
+
 export function buildAmbSessionId(document, index, prefix = "amb") {
   const normalizedPrefix = sanitizeSessionPart(prefix);
   const user = sanitizeSessionPart(document?.user_id ?? "global");
@@ -77,10 +174,15 @@ export function buildAmbMessages(document) {
   }
 
   const content = typeof document?.content === "string" ? document.content : "";
-  if (content.trim().length > 0) {
+  const structuredMessages = buildStructuredAmbMessages(document);
+  const parsedMessages =
+    structuredMessages.length > 0 ? structuredMessages : parseFormattedAmbContent(document);
+  if (parsedMessages.length > 0) {
+    messages.push(...parsedMessages);
+  } else if (content.trim().length > 0) {
     messages.push({
       role: "user",
-      content,
+      content: content.trim(),
     });
   }
   return messages;
