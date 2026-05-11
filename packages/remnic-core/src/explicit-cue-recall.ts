@@ -2408,18 +2408,9 @@ function hasAdjacentRuleSetupIntent(normalizedQuery: string): boolean {
 }
 
 function hasPushBlockIntent(normalizedQuery: string): boolean {
-  const tokens = normalizedQuery.split(" ").filter(Boolean);
-  for (let index = 0; index < tokens.length; index += 1) {
-    const token = tokens[index];
-    if (token !== "push" && token !== "pushed" && token !== "pushing") {
-      continue;
-    }
-    const window = tokens.slice(index + 1, index + 8);
-    if (window.includes("block") || window.includes("blocks")) {
-      return true;
-    }
-  }
-  return false;
+  return /\b(?:push|pushed|pushing)\s+(?:the\s+|a\s+|an\s+)?(?:(?:and|baba|ball|door|flag|grass|is|key|keke|lava|me|melt|move|not|object|open|pull|push|rock|rule|shut|sink|skull|stop|target|text|wall|water|win|word|you)\s+)?(?:text\s+)?blocks?\b/.test(
+    normalizedQuery,
+  );
 }
 
 function pushDirectionForAdjacentPosition(position: RelativePosition): AgentMoveDelta["direction"] | undefined {

@@ -1774,6 +1774,27 @@ test("buildTrajectoryAnalysisRecallSection explains adjacent rule-block setup", 
   assert.match(section, /future up action can push WIN up/);
 });
 
+test("buildTrajectoryAnalysisRecallSection does not treat loose push/block proximity as rule setup", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [7, "up", "Active rules:\nbaba is you\n\nObjects on the map:\nrule `win` 1 step to the right and 1 step up\nrule `is` 1 step up"],
+      [8, "right", "Active rules:\nbaba is you\n\nObjects on the map:\nrule `win` 1 step up\nrule `is` 1 step to the left and 1 step up"],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "At step 8, after I pushed past wall to reach far block, what changed in relative position?",
+    maxChars: 6000,
+  });
+
+  assert.match(section, /Relative-position movement cues/);
+  assert.doesNotMatch(section, /Adjacent rule-block setup cues/);
+  assert.doesNotMatch(section, /future up action can push WIN up/);
+});
+
 test("buildTrajectoryAnalysisRecallSection explains temporary rule transformations", async () => {
   const engine = new FakeCueEngine({
     ama: makeTrajectoryMessages([
