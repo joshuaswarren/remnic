@@ -30,6 +30,9 @@ test("direct adapter keeps its recall-friendly defaults without overrides", () =
   assert.equal(config.extractionMinUserTurns, 0);
   assert.equal(config.recallPlannerEnabled, true);
   assert.equal(config.queryExpansionEnabled, false);
+  assert.equal(config.lcmLeafBatchSize, 64);
+  assert.equal(config.lcmRollupFanIn, 8);
+  assert.equal(config.lcmFreshTailTurns, 64);
 });
 
 test("persisted baseline config stays aligned with direct adapter defaults", () => {

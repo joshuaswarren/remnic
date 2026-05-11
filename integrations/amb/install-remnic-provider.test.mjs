@@ -378,6 +378,7 @@ test("check-remnic-run accepts the Codex CLI iteration profile", async () => {
       REMNIC_AMB_INTERNAL_PROVIDER: "codex-cli",
       REMNIC_AMB_INTERNAL_MODEL: "gpt-5.5",
       REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT: "xhigh",
+      REMNIC_AMB_PRESERVE_RUNTIME_DEFAULTS: "false",
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -417,6 +418,7 @@ test("check-remnic-run does not reset the caller AMB store directory", async () 
       REMNIC_AMB_INTERNAL_PROVIDER: "codex-cli",
       REMNIC_AMB_INTERNAL_MODEL: "gpt-5.5",
       REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT: "xhigh",
+      REMNIC_AMB_PRESERVE_RUNTIME_DEFAULTS: "false",
     });
 
     assert.equal(result.status, 0, result.stderr || result.stdout);

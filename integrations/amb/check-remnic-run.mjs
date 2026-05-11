@@ -33,6 +33,7 @@ const CODEX_CLI_PROFILE = {
   internalProvider: "codex-cli",
   internalModel: "gpt-5.5",
   internalReasoningEffort: "xhigh",
+  preserveRuntimeDefaults: "false",
   requireCodexCli: true,
 };
 
@@ -193,6 +194,9 @@ function printRequiredExports(profile, remnicPath) {
     console.error(`export REMNIC_AMB_INTERNAL_MODEL=${profile.internalModel}`);
     console.error(`export REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT=${profile.internalReasoningEffort}`);
   }
+  if (profile.preserveRuntimeDefaults !== undefined) {
+    console.error(`export REMNIC_AMB_PRESERVE_RUNTIME_DEFAULTS=${profile.preserveRuntimeDefaults}`);
+  }
   console.error("export REMNIC_AMB_SESSION_PREFIX=beam");
 }
 
@@ -298,6 +302,12 @@ if (expectedProfile) {
       ["REMNIC_AMB_INTERNAL_MODEL", expectedProfile.internalModel],
       ["REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT", expectedProfile.internalReasoningEffort],
     );
+  }
+  if (expectedProfile.preserveRuntimeDefaults !== undefined) {
+    expectedEnv.push([
+      "REMNIC_AMB_PRESERVE_RUNTIME_DEFAULTS",
+      expectedProfile.preserveRuntimeDefaults,
+    ]);
   }
 
   for (const [name, expected] of expectedEnv) {

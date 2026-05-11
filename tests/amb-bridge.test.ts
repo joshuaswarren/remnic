@@ -473,6 +473,92 @@ test("AMB bridge forwards query timestamps as recall asOf metadata", async () =>
   assert.match(result.documents[0]?.content ?? "", /Marisol/);
 });
 
+test("AMB bridge batches documents that resolve to the same grouped session", async () => {
+  const storeCalls = [];
+  const bridge = new RemnicAmbBridge(
+    {
+      async reset() {},
+      async store(sessionId, messages) {
+        storeCalls.push({ sessionId, messages });
+      },
+      async recall() {
+        throw new Error("recall should not be called");
+      },
+      async destroy() {},
+    },
+    {
+      drainAfterIngest: false,
+      groupDocumentsByUser: true,
+      resetBeforeIngest: false,
+      recallBudgetChars: 4096,
+      sessionPrefix: "beam",
+    },
+  );
+
+  await bridge.ingest([
+    {
+      id: "conv-1_s0_0",
+      user_id: "conv-1",
+      content: "User: Marisol owned the launch decision.",
+    },
+    {
+      id: "conv-1_s0_1",
+      user_id: "conv-1",
+      content: "Assistant: Marisol confirmed it in the follow-up.",
+    },
+  ]);
+
+  assert.equal(storeCalls.length, 1);
+  assert.equal(storeCalls[0]?.sessionId, "beam-conv-1");
+  assert.deepEqual(
+    storeCalls[0]?.messages.map((message) => message.role),
+    ["system", "user", "system", "assistant"],
+  );
+  assert.match(storeCalls[0]?.messages[1]?.content ?? "", /Marisol owned/);
+  assert.match(storeCalls[0]?.messages[3]?.content ?? "", /Marisol confirmed/);
+});
+
+test("AMB bridge keeps document-specific stores when grouping is disabled", async () => {
+  const storeCalls = [];
+  const bridge = new RemnicAmbBridge(
+    {
+      async reset() {},
+      async store(sessionId, messages) {
+        storeCalls.push({ sessionId, messages });
+      },
+      async recall() {
+        throw new Error("recall should not be called");
+      },
+      async destroy() {},
+    },
+    {
+      drainAfterIngest: false,
+      groupDocumentsByUser: false,
+      resetBeforeIngest: false,
+      recallBudgetChars: 4096,
+      sessionPrefix: "beam",
+    },
+  );
+
+  await bridge.ingest([
+    {
+      id: "conv-1_s0_0",
+      user_id: "conv-1",
+      content: "User: First chunk.",
+    },
+    {
+      id: "conv-1_s0_1",
+      user_id: "conv-1",
+      content: "Assistant: Second chunk.",
+    },
+  ]);
+
+  assert.deepEqual(
+    storeCalls.map((call) => call.sessionId),
+    ["beam-conv-1-conv-1_s0_0-0", "beam-conv-1-conv-1_s0_1-1"],
+  );
+});
+
 test("AMB bridge returns empty recall for unknown scoped users", async () => {
   const bridge = new RemnicAmbBridge(
     {

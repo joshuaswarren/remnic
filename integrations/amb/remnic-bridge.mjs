@@ -887,6 +887,9 @@ export class RemnicAmbBridge {
     }
 
     let storedCount = 0;
+    const batchesBySession = new Map();
+    const knownSessionIds = new Set(this.allSessionIds);
+    let nextSessionIndex = this.allSessions.length;
     for (const document of documents) {
       const messages = buildAmbMessages(document);
       if (messages.length === 0) {
@@ -894,13 +897,43 @@ export class RemnicAmbBridge {
       }
       const sessionId = buildAmbStorageSessionId(
         document,
-        this.allSessions.length,
+        nextSessionIndex,
         this.options.sessionPrefix,
         { groupDocumentsByUser: this.options.groupDocumentsByUser },
       );
-      await this.adapter.store(sessionId, messages);
-      this.recordSession(sessionId, document?.user_id ? String(document.user_id) : "");
-      storedCount += 1;
+      if (!knownSessionIds.has(sessionId)) {
+        knownSessionIds.add(sessionId);
+        nextSessionIndex += 1;
+      }
+
+      let batch = batchesBySession.get(sessionId);
+      if (!batch) {
+        batch = {
+          messages: [],
+          userIds: new Set(),
+          documentCount: 0,
+        };
+        batchesBySession.set(sessionId, batch);
+      }
+
+      batch.messages.push(...messages);
+      const userId = document?.user_id ? String(document.user_id).trim() : "";
+      if (userId) {
+        batch.userIds.add(userId);
+      }
+      batch.documentCount += 1;
+    }
+
+    for (const [sessionId, batch] of batchesBySession.entries()) {
+      await this.adapter.store(sessionId, batch.messages);
+      if (batch.userIds.size === 0) {
+        this.recordSession(sessionId, "");
+      } else {
+        for (const userId of batch.userIds) {
+          this.recordSession(sessionId, userId);
+        }
+      }
+      storedCount += batch.documentCount;
     }
     if (storedCount > 0) {
       this.hasIngested = true;
