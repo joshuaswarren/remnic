@@ -113,6 +113,12 @@ function sanitizeSessionPart(value) {
   return `${prefix}-${hash}`;
 }
 
+function sanitizeLegacySessionPart(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "unknown";
+  return raw.replace(/[^a-zA-Z0-9._:-]+/g, "-").slice(0, 120) || "unknown";
+}
+
 function normalizeAmbRole(value) {
   const role = String(value ?? "").trim().toLowerCase();
   if (role === "assistant" || role === "system") {
@@ -323,6 +329,18 @@ export function buildAmbStorageSessionId(
   }
 
   return `${sanitizeSessionPart(prefix)}-${sanitizeSessionPart(userId)}`;
+}
+
+function buildSkippedIngestionFallbackSessionIds(scopedUserId, prefix) {
+  const currentSessionId = buildAmbStorageSessionId(
+    { user_id: scopedUserId },
+    0,
+    prefix,
+    { groupDocumentsByUser: true },
+  );
+  const legacySessionId =
+    `${sanitizeLegacySessionPart(prefix)}-${sanitizeLegacySessionPart(scopedUserId)}`;
+  return [...new Set([currentSessionId, legacySessionId])];
 }
 
 export function buildAmbMessages(document) {
@@ -640,14 +658,10 @@ export class RemnicAmbBridge {
       && scopedUserId
       && !this.hasIngested
       && this.options.groupDocumentsByUser !== false
-        ? [
-            buildAmbStorageSessionId(
-              { user_id: scopedUserId },
-              0,
-              this.options.sessionPrefix,
-              { groupDocumentsByUser: true },
-            ),
-          ]
+        ? buildSkippedIngestionFallbackSessionIds(
+            scopedUserId,
+            this.options.sessionPrefix,
+          )
         : indexedSessionIds;
     if (!sessionIds || sessionIds.length === 0) {
       return {

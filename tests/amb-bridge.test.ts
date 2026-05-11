@@ -462,7 +462,9 @@ test("AMB bridge reloads persisted session index for skipped-ingestion recall", 
 
 test("AMB bridge can derive grouped session id for legacy skipped-ingestion stores", async () => {
   const recallCalls = [];
-  const expectedSession = buildAmbStorageSessionId({ user_id: "conv/1" }, 0, "beam");
+  const currentSession = buildAmbStorageSessionId({ user_id: "conv/1" }, 0, "beam");
+  const legacyPreHashSession = "beam-conv-1";
+  assert.notEqual(currentSession, legacyPreHashSession);
   const bridge = new RemnicAmbBridge(
     {
       async reset() {},
@@ -471,7 +473,7 @@ test("AMB bridge can derive grouped session id for legacy skipped-ingestion stor
       },
       async recall(sessionId) {
         recallCalls.push(sessionId);
-        return "Marisol owned it.";
+        return sessionId === legacyPreHashSession ? "Marisol owned it." : "";
       },
       async destroy() {},
     },
@@ -490,8 +492,8 @@ test("AMB bridge can derive grouped session id for legacy skipped-ingestion stor
     user_id: "conv/1",
   });
 
-  assert.deepEqual(recallCalls, [expectedSession]);
-  assert.equal(result.raw_response.session_count, 1);
+  assert.deepEqual(recallCalls, [currentSession, legacyPreHashSession]);
+  assert.equal(result.raw_response.session_count, 2);
   assert.match(result.documents[0]?.content ?? "", /Marisol/);
 });
 
