@@ -425,7 +425,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
     };
 
     const rebuild = async (): Promise<void> => {
+      const shouldClearCallerOwnedMemoryDir = !state.ownsTempDir;
+      const callerOwnedMemoryDir = state.tempDir;
       await cleanup();
+      if (shouldClearCallerOwnedMemoryDir) {
+        await rm(callerOwnedMemoryDir, { recursive: true, force: true });
+      }
       state = await createBenchOrchestrator(
         mode,
         options.configOverrides,

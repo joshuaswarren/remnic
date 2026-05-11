@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -152,6 +153,63 @@ test("direct adapter can use a caller-owned memory directory", async () => {
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("direct adapter reset clears caller-owned memory directory", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-owned-"));
+  const adapter = await createRemnicAdapter({ memoryDir });
+
+  try {
+    await adapter.store("owned-reset-session", [
+      {
+        role: "user",
+        content: "Remember the caller-owned reset code is violet-19.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const beforeReset = await adapter.recall(
+      "owned-reset-session",
+      "What is the caller-owned reset code?",
+    );
+    assert.match(beforeReset, /violet-19/);
+
+    await adapter.reset?.();
+    assert.equal((await stat(memoryDir)).isDirectory(), true);
+
+    const afterReset = await adapter.recall(
+      "owned-reset-session",
+      "What is the caller-owned reset code?",
+    );
+    assert.doesNotMatch(afterReset, /violet-19/);
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("AMB bridge rejects non-object config JSON", () => {
+  const result = spawnSync(
+    process.execPath,
+    ["packages/bench/scripts/amb-remnic-bridge.mjs"],
+    {
+      cwd: path.resolve(import.meta.dirname, "../../../.."),
+      env: {
+        ...process.env,
+        REMNIC_AMB_CONFIG_JSON: "null",
+      },
+      encoding: "utf8",
+    },
+  );
+
+  assert.notEqual(result.status, 0);
+  const payload = JSON.parse(result.stdout.trim());
+  assert.equal(payload.ok, false);
+  assert.equal(payload.fatal, true);
+  assert.match(
+    payload.error,
+    /REMNIC_AMB_CONFIG_JSON must be valid JSON: must be a JSON object/,
+  );
 });
 
 test("lightweight adapter keeps smoke-run guardrails even when overrides conflict", () => {

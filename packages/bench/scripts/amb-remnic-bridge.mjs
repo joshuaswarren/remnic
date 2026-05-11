@@ -10,7 +10,11 @@ function parseEnvJson(name) {
   const raw = process.env[name];
   if (!raw) return undefined;
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("must be a JSON object");
+    }
+    return parsed;
   } catch (error) {
     throw new Error(`${name} must be valid JSON: ${error.message}`);
   }
