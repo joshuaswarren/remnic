@@ -471,6 +471,44 @@ test("direct adapter counts only user-stated implementation targets across sessi
   }
 });
 
+test("direct adapter front-loads temporal interval calculations", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-temporal-intervals", [
+      {
+        role: "assistant",
+        content:
+          "Project plan: Dec 16, 2023 - Jan 15, 2024: Develop transaction management features. Feb 16 - Mar 15, 2024: Final adjustments, testing, and deployment.",
+      },
+      {
+        role: "user",
+        content:
+          "I'm working on sprint 2 which targets analytics by April 19, and I've already completed sprint 1 on March 29 with user auth and basic transaction CRUD.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const deploymentSpan = await adapter.recall(
+      "beam-temporal-intervals",
+      "How many weeks do I have between finishing the transaction management features and the final deployment deadline?",
+      24_000,
+    );
+    assert.match(deploymentSpan, /## Temporal interval evidence/);
+    assert.match(deploymentSpan, /from January 15, 2024 till March 15, 2024 = 8 weeks/);
+
+    const sprintSpan = await adapter.recall(
+      "beam-temporal-intervals",
+      "How many days were there between the end of my first sprint and the deadline for completing the analytics features in sprint 2?",
+      24_000,
+    );
+    assert.match(sprintSpan, /## Temporal interval evidence/);
+    assert.match(sprintSpan, /from March 29 till April 19 = 21 days/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("direct adapter archives stored messages into LCM once", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {
