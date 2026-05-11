@@ -158,7 +158,6 @@ export async function buildResponseGuidanceRecallSection(
     title,
     maxChars: budget,
     maxItemChars: options.maxItemChars,
-    query: buildGuidanceQuery(options.query, intents),
   });
   if (!evidence) {
     return "";

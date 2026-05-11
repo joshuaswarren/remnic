@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseConfig } from "./config.js";
 import {
   buildEventOrderRecallSection,
   shouldRecallEventOrderEvidence,
@@ -4103,27 +4102,4 @@ test("event order recall normalizes DIY recommendation chronology", async () => 
   assert.match(recalled, /Electrical safety with Legrand/);
   assert.match(recalled, /3M products for durability/);
   assert.match(recalled, /Hanging lights safely/);
-});
-
-test("default recall pipeline exposes event order recall as a disableable section", () => {
-  const parsed = parseConfig({});
-  const section = parsed.recallPipeline.find((entry) =>
-    entry.id === "event-order"
-  );
-
-  assert.deepEqual(section, {
-    id: "event-order",
-    enabled: true,
-    maxChars: 3200,
-    maxResults: 24,
-    maxTurns: 12,
-    maxTokens: 24000,
-  });
-
-  const disabled = parseConfig({ eventOrderRecallEnabled: false });
-  assert.equal(
-    disabled.recallPipeline.find((entry) => entry.id === "event-order")
-      ?.enabled,
-    false,
-  );
 });

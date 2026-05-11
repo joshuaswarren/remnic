@@ -59,7 +59,6 @@ export async function buildEventOrderRecallSection(
     title,
     maxChars: budget,
     maxItemChars: options.maxItemChars,
-    query: buildEventOrderQuery(options.query),
   });
   if (!evidence) {
     return "";

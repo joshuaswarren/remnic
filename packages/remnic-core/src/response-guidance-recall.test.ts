@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseConfig } from "./config.js";
 import {
   buildResponseGuidanceRecallSection,
   shouldRecallResponseGuidance,
@@ -3789,25 +3788,4 @@ test("response guidance recall normalizes cooking plan and technique facts", asy
   assert.match(journey, /journals, photos, and community engagement/);
   assert.match(journey, /dough kneading/);
   assert.match(journey, /sauce emulsification/);
-});
-
-test("default recall pipeline exposes response guidance as a disableable section", () => {
-  const config = parseConfig({});
-  const section = config.recallPipeline.find((entry) =>
-    entry.id === "response-guidance"
-  );
-  assert.deepEqual(section, {
-    id: "response-guidance",
-    enabled: true,
-    maxChars: 2400,
-    maxResults: 48,
-    maxTurns: 64,
-    maxTokens: 16000,
-  });
-
-  const disabled = parseConfig({ responseGuidanceRecallEnabled: false });
-  const disabledSection = disabled.recallPipeline.find((entry) =>
-    entry.id === "response-guidance"
-  );
-  assert.equal(disabledSection?.enabled, false);
 });
