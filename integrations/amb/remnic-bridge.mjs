@@ -203,6 +203,46 @@ export function buildAmbRecallDocuments(recalledText, args = {}) {
   ];
 }
 
+export function ambRecallBudgetForSessionCount(totalBudgetChars, sessionCount) {
+  const totalBudget = Math.max(0, Math.floor(Number(totalBudgetChars) || 0));
+  const sessions = Math.max(0, Math.floor(Number(sessionCount) || 0));
+  if (totalBudget <= 0 || sessions <= 0) {
+    return 0;
+  }
+  return Math.max(256, Math.floor(totalBudget / sessions));
+}
+
+export function joinAmbRecallChunks(chunks, budgetChars) {
+  const budget = Math.max(0, Math.floor(Number(budgetChars) || 0));
+  if (budget <= 0 || !Array.isArray(chunks)) {
+    return "";
+  }
+
+  let joined = "";
+  for (const chunk of chunks) {
+    const text = typeof chunk === "string" ? chunk.trim() : "";
+    if (!text) {
+      continue;
+    }
+
+    const separator = joined.length > 0 ? "\n\n" : "";
+    const remaining = budget - joined.length - separator.length;
+    if (remaining <= 0) {
+      break;
+    }
+
+    if (text.length <= remaining) {
+      joined += `${separator}${text}`;
+      continue;
+    }
+
+    joined += `${separator}${text.slice(0, remaining).trimEnd()}`;
+    break;
+  }
+
+  return joined;
+}
+
 export async function loadRemnicAmbConfig(env = process.env) {
   const configPath = env.REMNIC_AMB_CONFIG_PATH;
   const configJson = env.REMNIC_AMB_CONFIG_JSON;
@@ -308,23 +348,28 @@ class RemnicAmbBridge {
     }
 
     const chunks = [];
+    const perSessionBudget = ambRecallBudgetForSessionCount(
+      this.options.recallBudgetChars,
+      sessionIds.length,
+    );
     for (const sessionId of sessionIds) {
       const recalled = await this.adapter.recall(
         sessionId,
         String(query ?? ""),
-        this.options.recallBudgetChars,
+        perSessionBudget,
       );
       if (recalled && recalled.trim().length > 0) {
         chunks.push(`## Remnic session ${sessionId}\n${recalled.trim()}`);
       }
     }
 
-    const joined = chunks.join("\n\n");
+    const joined = joinAmbRecallChunks(chunks, this.options.recallBudgetChars);
     return {
       documents: buildAmbRecallDocuments(joined, { k, user_id }),
       raw_response: {
         session_count: sessionIds.length,
-        recalled_chars: joined.length,
+        session_budget_chars: perSessionBudget,
+        returned_chars: joined.length,
       },
     };
   }

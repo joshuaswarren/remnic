@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ambRecallBudgetForSessionCount,
   buildAmbMessages,
   buildAmbRecallDocuments,
   buildAmbSessionId,
+  joinAmbRecallChunks,
   loadRemnicAmbConfig,
 } from "../integrations/amb/remnic-bridge.mjs";
 
@@ -119,6 +121,24 @@ test("AMB bridge wraps recalled text as an AMB document", () => {
   assert.match(doc.id, /^remnic-recall-/);
   assert.equal(doc.content, "The launch date is June 3.");
   assert.equal(doc.user_id, "user-1");
+});
+
+test("AMB bridge divides recall budget across sessions", () => {
+  assert.equal(ambRecallBudgetForSessionCount(9000, 3), 3000);
+  assert.equal(ambRecallBudgetForSessionCount(9000, 0), 0);
+  assert.equal(ambRecallBudgetForSessionCount(100, 10), 256);
+});
+
+test("AMB bridge caps combined recall context to the configured budget", () => {
+  const joined = joinAmbRecallChunks([
+    "## Remnic session one\n" + "A".repeat(40),
+    "## Remnic session two\n" + "B".repeat(40),
+  ], 72);
+
+  assert.equal(joined.length <= 72, true);
+  assert.match(joined, /Remnic session one/);
+  assert.match(joined, /A+/);
+  assert.doesNotMatch(joined, /Remnic session two/);
 });
 
 test("AMB bridge rejects conflicting config env vars", async () => {
