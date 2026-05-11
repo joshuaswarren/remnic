@@ -81,6 +81,46 @@ test("AMB comparator finds SOTA for the normalized single-query mode only", () =
   assert.equal(sota.accuracy, 0.74);
 });
 
+test("AMB comparator rejects malformed public accuracy rows", () => {
+  assert.throws(
+    () =>
+      findSplitSota([
+        {
+          dataset: "beam",
+          split: "100k",
+          mode: "rag",
+          accuracy: "not-a-number",
+        },
+      ], "100k", "rag"),
+    /public BEAM row accuracy must be a finite number/,
+  );
+  assert.throws(
+    () =>
+      findSplitSota([
+        {
+          dataset: "beam",
+          split: "100k",
+          mode: "rag",
+          accuracy: null,
+        },
+      ], "100k", "rag"),
+    /public BEAM row accuracy must be a finite number/,
+  );
+});
+
+test("AMB comparator normalizes numeric public accuracy strings", () => {
+  const sota = findSplitSota([
+    {
+      dataset: "beam",
+      split: "100k",
+      mode: "rag",
+      accuracy: "0.74",
+    },
+  ], "100k", "rag");
+
+  assert.equal(sota.accuracy, 0.74);
+});
+
 test("AMB comparator rejects partial query-limit results", () => {
   assert.throws(
     () =>

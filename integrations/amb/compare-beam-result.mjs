@@ -63,6 +63,22 @@ export function normalizeBeamMode(mode) {
   return normalized === "rag" ? PUBLIC_SINGLE_QUERY_MODE : normalized;
 }
 
+function normalizePublicAccuracy(row, split, mode) {
+  const value = row.accuracy;
+  const accuracy =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim() !== ""
+        ? Number(value)
+        : Number.NaN;
+  if (!Number.isFinite(accuracy)) {
+    throw new Error(
+      `public BEAM row accuracy must be a finite number for split ${split} and mode ${mode}`,
+    );
+  }
+  return accuracy;
+}
+
 export function assertPublicComparableBeamResult(result) {
   if (result.dataset !== "beam") {
     throw new Error(`expected dataset=beam, received ${String(result.dataset)}`);
@@ -98,8 +114,12 @@ export function findSplitSota(rows, split, mode = PUBLIC_SINGLE_QUERY_MODE) {
   if (matching.length === 0) {
     throw new Error(`no public BEAM rows found for split ${split} and mode ${normalizedMode}`);
   }
-  return matching.reduce((best, row) =>
-    Number(row.accuracy) > Number(best.accuracy) ? row : best,
+  const scored = matching.map((row) => ({
+    ...row,
+    accuracy: normalizePublicAccuracy(row, split, normalizedMode),
+  }));
+  return scored.reduce((best, row) =>
+    row.accuracy > best.accuracy ? row : best,
   );
 }
 
