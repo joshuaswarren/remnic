@@ -56,15 +56,15 @@ node integrations/amb/check-remnic-run.mjs /tmp/agent-memory-benchmark
 From the AMB checkout:
 
 ```bash
-uv run amb providers
-uv run amb run --dataset beam --split 100k --memory remnic --mode rag --query-limit 20
-uv run amb run --dataset personamem --split 32k --memory remnic --mode rag --query-limit 20
+uv run omb providers
+uv run omb run --dataset beam --split 100k --memory remnic --mode rag --query-limit 20
+uv run omb run --dataset personamem --split 32k --memory remnic --mode rag --query-limit 20
 ```
 
 Full BEAM runs follow the same AMB command shape:
 
 ```bash
-uv run amb run --dataset beam --split 10m --memory remnic --mode rag
+uv run omb run --dataset beam --split 10m --memory remnic --mode rag
 ```
 
 The AMB result is written by AMB itself under:
@@ -76,7 +76,7 @@ outputs/<dataset>/remnic/rag/<split>.json
 Compress and publish with AMB's own workflow:
 
 ```bash
-uv run amb publish-results outputs/beam/remnic/rag/10m.json
+uv run omb publish-results outputs/beam/remnic/rag/10m.json
 ```
 
 Compare a completed Remnic BEAM result against the current public leaderboard:
