@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import threading
 from collections import deque
@@ -40,6 +41,8 @@ class RemnicMemoryProvider(MemoryProvider):
         self._next_id = 1
         self._lock = threading.Lock()
         self._per_unit = False
+        self._unit_ids: set[str] = set()
+        self._base_store_dir: Path | None = None
         self._store_dir: Path | None = None
         self._active_store_dir: Path | None = None
         self._stderr_tail: deque[str] = deque(maxlen=200)
@@ -53,20 +56,24 @@ class RemnicMemoryProvider(MemoryProvider):
 
     def prepare(self, store_dir: Path, unit_ids: set[str] | None = None, reset: bool = True) -> None:
         self._per_unit = unit_ids is not None
+        self._unit_ids = {str(unit_id) for unit_id in unit_ids or set()}
         resolved_store_dir = store_dir.expanduser().resolve()
-        if (
-            self._proc is not None
-            and self._proc.poll() is None
-            and self._active_store_dir != resolved_store_dir
-        ):
-            self._stop_proc(send_cleanup=True)
-        self._store_dir = resolved_store_dir
-        self._ensure_proc()
+        self._base_store_dir = resolved_store_dir
+        if self._per_unit:
+            if reset:
+                shutil.rmtree(self._unit_store_root(), ignore_errors=True)
+            if self._proc is not None and self._proc.poll() is None:
+                self._stop_proc(send_cleanup=True)
+            self._store_dir = None
+            return
+
+        self._activate_store_dir(resolved_store_dir)
         if reset:
             self._request("reset", {})
 
     def ingest(self, documents: list[Document]) -> None:
         if self._per_unit:
+            self._activate_store_dir(self._unit_store_dir(self._unit_id_from_documents(documents)))
             self._request("reset", {})
         payload = {
             "documents": [
@@ -83,6 +90,8 @@ class RemnicMemoryProvider(MemoryProvider):
         user_id: str | None = None,
         query_timestamp: str | None = None,
     ) -> tuple[list[Document], dict | None]:
+        if self._per_unit:
+            self._activate_store_dir(self._unit_store_dir(self._unit_id_from_query(user_id)))
         result = self._request(
             "retrieve",
             {
@@ -102,6 +111,58 @@ class RemnicMemoryProvider(MemoryProvider):
             if str(item.get("content") or "").strip()
         ]
         return documents, result.get("raw_response")
+
+    def _activate_store_dir(self, store_dir: Path) -> None:
+        resolved_store_dir = store_dir.expanduser().resolve()
+        if (
+            self._proc is not None
+            and self._proc.poll() is None
+            and self._active_store_dir != resolved_store_dir
+        ):
+            self._stop_proc(send_cleanup=True)
+        self._store_dir = resolved_store_dir
+        self._ensure_proc()
+
+    def _unit_store_root(self) -> Path:
+        if self._base_store_dir is None:
+            raise RuntimeError("prepare() must be called before per-unit AMB operations.")
+        return self._base_store_dir / "amb-units"
+
+    def _unit_store_dir(self, unit_id: str) -> Path:
+        return self._unit_store_root() / self._sanitize_unit_id(unit_id)
+
+    def _unit_id_from_documents(self, documents: list[Document]) -> str:
+        candidates = {
+            str(doc.user_id).strip()
+            for doc in documents
+            if getattr(doc, "user_id", None) is not None and str(doc.user_id).strip()
+        }
+        return self._select_unit_id(candidates, "ingest documents")
+
+    def _unit_id_from_query(self, user_id: str | None) -> str:
+        candidates = {user_id.strip()} if isinstance(user_id, str) and user_id.strip() else set()
+        return self._select_unit_id(candidates, "retrieve query")
+
+    def _select_unit_id(self, candidates: set[str], label: str) -> str:
+        if self._unit_ids:
+            candidates = {candidate for candidate in candidates if candidate in self._unit_ids}
+        if len(candidates) == 1:
+            return next(iter(candidates))
+        if not candidates and len(self._unit_ids) == 1:
+            return next(iter(self._unit_ids))
+        if not candidates:
+            raise RuntimeError(f"unable to determine AMB unit id for {label}.")
+        raise RuntimeError(
+            f"expected exactly one AMB unit id for {label}; received {sorted(candidates)}"
+        )
+
+    def _sanitize_unit_id(self, unit_id: str) -> str:
+        raw = str(unit_id).strip()
+        safe = "".join(
+            char if char.isalnum() or char in "._:-" else "-"
+            for char in raw
+        )[:120]
+        return safe or "unknown"
 
     def _ensure_proc(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
