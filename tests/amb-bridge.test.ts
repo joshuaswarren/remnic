@@ -261,6 +261,10 @@ test("AMB bridge threads query timestamps into recall anchors", () => {
 });
 
 test("AMB bridge rejects invalid query timestamps", () => {
+  assert.match(
+    buildAmbRecallQuery("What happened?", "2026-05-10"),
+    /query_timestamp=2026-05-10/,
+  );
   assert.throws(
     () => buildAmbRecallQuery("What happened?", "not-a-date"),
     /query_timestamp must be a valid ISO 8601 timestamp/,
@@ -279,6 +283,10 @@ test("AMB bridge rejects invalid query timestamps", () => {
   );
   assert.throws(
     () => buildAmbRecallQuery("What happened?", "2026-05-10T12:00+14:30"),
+    /query_timestamp must be a valid ISO 8601 timestamp/,
+  );
+  assert.throws(
+    () => buildAmbRecallQuery("What happened?", "2026-05-10T12:00:00"),
     /query_timestamp must be a valid ISO 8601 timestamp/,
   );
 });

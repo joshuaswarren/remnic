@@ -134,12 +134,15 @@ export function parseFlexibleIsoTimestamp(value: string): number | null {
   const second = match[6] === undefined ? 0 : Number(match[6]);
   const offsetHour = match[8] === undefined ? 0 : Number(match[8]);
   const offsetMinute = match[9] === undefined ? 0 : Number(match[9]);
+  const hasTime = match[4] !== undefined;
+  const hasTimezone = /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value);
 
   if (
     month < 1 ||
     month > 12 ||
     day < 1 ||
     day > isoDaysInMonth(year, month) ||
+    (hasTime && !hasTimezone) ||
     hour > 23 ||
     minute > 59 ||
     second > 59 ||

@@ -971,6 +971,16 @@ test("runtime-backed adapter rejects historical recall when replay extraction is
           "beam-historical-session",
           "What is the future-only benchmark leak marker?",
           24_000,
+          { asOf: "2026-05-10T12:00:00" },
+        ),
+      /benchmark recall asOf must be a valid timestamp/,
+    );
+    await assert.rejects(
+      () =>
+        adapter.recall(
+          "beam-historical-session",
+          "What is the future-only benchmark leak marker?",
+          24_000,
           { asOf: "2026-05-10T12:00+23:00" },
         ),
       /benchmark recall asOf must be a valid timestamp/,
@@ -1033,6 +1043,17 @@ test("runtime-backed adapter preserves source timestamps for historical recall",
             role: "user",
             content: "Bad timestamp should be rejected.",
             timestamp: "not-a-date",
+          },
+        ]),
+      /benchmark message timestamp must be a valid timestamp/,
+    );
+    await assert.rejects(
+      () =>
+        adapter.store("beam-source-time-session", [
+          {
+            role: "user",
+            content: "Timezone-less timestamp should be rejected.",
+            timestamp: "2026-05-10T12:00:00",
           },
         ]),
       /benchmark message timestamp must be a valid timestamp/,
