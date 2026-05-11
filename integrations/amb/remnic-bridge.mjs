@@ -586,7 +586,6 @@ export function buildAmbMessages(document) {
   if (document?.id) metadata.push(`document_id=${document.id}`);
   if (document?.user_id) metadata.push(`user_id=${document.user_id}`);
   if (document?.timestamp) metadata.push(`timestamp=${document.timestamp}`);
-  if (document?.context) metadata.push(`context=${document.context}`);
   if (metadata.length > 0) {
     messages.push({
       role: "system",

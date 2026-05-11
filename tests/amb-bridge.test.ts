@@ -98,7 +98,7 @@ test("AMB bridge defaults BEAM replay source validity to batch mode", () => {
   );
 });
 
-test("AMB bridge preserves document metadata and parses formatted content", () => {
+test("AMB bridge preserves routing metadata and parses formatted content", () => {
   const messages = buildAmbMessages({
     id: "doc-1",
     user_id: "user-1",
@@ -111,7 +111,7 @@ test("AMB bridge preserves document metadata and parses formatted content", () =
     {
       role: "system",
       content:
-        "AMB document metadata: document_id=doc-1; user_id=user-1; timestamp=2026-05-10T12:00:00Z; context=Conversation user-1",
+        "AMB document metadata: document_id=doc-1; user_id=user-1; timestamp=2026-05-10T12:00:00Z",
     },
     {
       role: "user",
@@ -119,6 +119,24 @@ test("AMB bridge preserves document metadata and parses formatted content", () =
       timestamp: "2026-05-10T12:00:00.000Z",
     },
   ]);
+});
+
+test("AMB bridge does not store document context as conversation evidence", () => {
+  const messages = buildAmbMessages({
+    id: "beam-1",
+    user_id: "1",
+    context: [
+      "Conversation 1 — USER PROFILE:",
+      "Name: Craig Baker",
+      "Profession: Colour Technologist",
+    ].join("\n"),
+    content: "User: The launch date is June 3.",
+  });
+
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0]?.role, "system");
+  assert.equal(messages[0]?.content, "AMB document metadata: document_id=beam-1; user_id=1");
+  assert.doesNotMatch(JSON.stringify(messages), /Craig Baker|Colour Technologist|USER PROFILE/);
 });
 
 test("AMB bridge adds benchmark-visible anchors for BEAM turn ids", () => {

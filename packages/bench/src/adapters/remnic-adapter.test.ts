@@ -231,6 +231,74 @@ test("direct adapter recall expands search hits with adjacent stored results", a
   }
 });
 
+test("direct adapter returns a sufficiency note for personal history queries without direct evidence", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-personal-history-guard", [
+      {
+        role: "user",
+        content:
+          "I'm Craig, a hands-on developer with a practical mindset, eager to build a personal budget tracker using Python and Flask.",
+      },
+      {
+        role: "assistant",
+        content: "Let's plan the current Flask budget tracker project.",
+      },
+      {
+        role: "user",
+        content: "The current project uses Flask and SQLite for transaction tracking.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-personal-history-guard",
+      "Can you tell me about my background and previous development projects?",
+      24_000,
+    );
+
+    assert.match(recalled, /## Remnic recall sufficiency/);
+    assert.match(recalled, /No direct evidence found/);
+    assert.doesNotMatch(recalled, /hands-on developer/);
+    assert.doesNotMatch(recalled, /personal budget tracker/);
+    assert.doesNotMatch(recalled, /Flask and SQLite/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("direct adapter keeps explicit prior-project evidence for personal history queries", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-personal-history-direct", [
+      {
+        role: "user",
+        content:
+          "Previous development project: I built a Django CRM before starting this budget tracker.",
+      },
+      {
+        role: "assistant",
+        content: "Noted as prior project background.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-personal-history-direct",
+      "Can you tell me about my background and previous development projects?",
+      24_000,
+    );
+
+    assert.match(recalled, /## Search evidence/);
+    assert.match(recalled, /Previous development project: I built a Django CRM/);
+    assert.doesNotMatch(recalled, /No direct evidence found/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("direct adapter archives stored messages into LCM once", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {

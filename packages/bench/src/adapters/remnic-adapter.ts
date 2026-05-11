@@ -603,6 +603,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         const hasExplicitReferences = explicitReferences.length > 0;
         const preferFocusedExplicitContext =
           hasExplicitReferences && sessionId.startsWith("ama-");
+        const requireDirectPersonalHistoryEvidence =
+          !historicalRecall && shouldRequireDirectPersonalHistoryEvidence(query);
         const focusedReferenceWindows = preferFocusedExplicitContext
           ? buildFocusedReferenceWindows(
             explicitReferences.map((reference) => reference.number),
@@ -642,7 +644,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           usedChars += trajectoryAnalysisEvidence.length;
         }
 
-        if (useCoreMemoryPipeline) {
+        if (useCoreMemoryPipeline && !requireDirectPersonalHistoryEvidence) {
           const coreBudget = historicalRecall
             ? Math.max(0, budget - usedChars)
             : Math.max(
@@ -679,7 +681,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
 
         const suppressBroadSummary =
-          historicalRecall || (preferFocusedExplicitContext && !!exactReferenceEvidence);
+          historicalRecall ||
+          requireDirectPersonalHistoryEvidence ||
+          (preferFocusedExplicitContext && !!exactReferenceEvidence);
 
         if (query && !historicalRecall) {
           const remainingAfterCore = Math.max(0, budget - usedChars);
@@ -727,6 +731,10 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                     query,
                     preferFocusedExplicitContext,
                     focusedReferenceWindows,
+                  ) &&
+                  shouldIncludeDirectPersonalHistoryEvidence(
+                    result.content,
+                    requireDirectPersonalHistoryEvidence,
                   )
                 ) {
                   seenTurns.add(id);
@@ -753,6 +761,10 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                     query,
                     preferFocusedExplicitContext,
                     focusedReferenceWindows,
+                  ) ||
+                  !shouldIncludeDirectPersonalHistoryEvidence(
+                    message.content,
+                    requireDirectPersonalHistoryEvidence,
                   )
                 ) {
                   continue;
@@ -781,6 +793,18 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               sections.push(searchEvidence);
               usedChars += searchEvidence.length;
             }
+          }
+        }
+
+        if (requireDirectPersonalHistoryEvidence && sections.length === 0) {
+          const stats = await engine.getStats(sessionId);
+          if (stats.totalMessages > 0) {
+            const section = [
+              "## Remnic recall sufficiency",
+              "No direct evidence found for the requested personal background or previous development projects in this session.",
+            ].join("\n");
+            sections.push(section);
+            usedChars += section.length;
           }
         }
 
@@ -1024,6 +1048,35 @@ function shouldIncludeFocusedSearchEvidence(
   const contentLower = content.toLowerCase();
   return extractFocusedSearchTerms(query).some((term) =>
     contentLower.includes(term),
+  );
+}
+
+function shouldRequireDirectPersonalHistoryEvidence(query: string): boolean {
+  const text = query.toLowerCase();
+  if (!/\b(?:my|me|i|user)\b/.test(text)) {
+    return false;
+  }
+  if (/\b(?:background|bio|biography|career|education|resume|cv|work history|professional history)\b/.test(text)) {
+    return true;
+  }
+  return (
+    /\b(?:previous|previously|prior|past|earlier)\b.{0,80}\b(?:development\s+)?projects?\b/.test(text) ||
+    /\b(?:development\s+)?projects?\b.{0,80}\b(?:previous|previously|prior|past|earlier)\b/.test(text)
+  );
+}
+
+function shouldIncludeDirectPersonalHistoryEvidence(
+  content: string,
+  required: boolean,
+): boolean {
+  if (!required) {
+    return true;
+  }
+  const text = content.toLowerCase();
+  return (
+    /\b(?:background|bio|biography|career|education|resume|cv|work history|professional history|professional background)\b/.test(text) ||
+    /\b(?:previous|previously|prior|past|earlier)\b.{0,120}\b(?:project|app|application|built|created|developed|worked|experience)\b/.test(text) ||
+    /\b(?:project|app|application|built|created|developed|worked|experience)\b.{0,120}\b(?:previous|previously|prior|past|earlier)\b/.test(text)
   );
 }
 
