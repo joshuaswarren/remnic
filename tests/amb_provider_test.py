@@ -179,9 +179,15 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
 
         team_hash = hashlib.sha256("team//a".encode("utf-8")).hexdigest()[:12]
         accent_hash = hashlib.sha256("é".encode("utf-8")).hexdigest()[:12]
+        dot_hash = hashlib.sha256(".".encode("utf-8")).hexdigest()[:12]
+        dot_dot_hash = hashlib.sha256("..".encode("utf-8")).hexdigest()[:12]
 
         self.assertEqual(provider._sanitize_unit_id("team//a"), f"team-a-{team_hash}")
         self.assertEqual(provider._sanitize_unit_id("é"), f"unknown-{accent_hash}")
+        self.assertEqual(provider._sanitize_unit_id("."), f"dot-{dot_hash}")
+        self.assertEqual(provider._sanitize_unit_id(".."), f"dot-dot-{dot_dot_hash}")
+        self.assertNotEqual(provider._sanitize_unit_id("."), provider._sanitize_unit_id("dot"))
+        self.assertNotEqual(provider._sanitize_unit_id(".."), provider._sanitize_unit_id("dot-dot"))
 
     def test_dot_segment_unit_ids_stay_under_unit_store_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -194,8 +200,8 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
             provider.ingest([Document(id="parent-doc", content="parent", user_id="..")])
 
             unit_root = resolved_base / "amb-units"
-            dot = unit_root / "dot"
-            dot_dot = unit_root / "dot-dot"
+            dot = unit_root / provider._sanitize_unit_id(".")
+            dot_dot = unit_root / provider._sanitize_unit_id("..")
             reset_stores = [
                 store
                 for method, _params, store in provider.requests

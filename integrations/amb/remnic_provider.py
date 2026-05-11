@@ -170,9 +170,9 @@ class RemnicMemoryProvider(MemoryProvider):
         raw = str(unit_id).strip()
         safe = UNIT_ID_UNSAFE_RE.sub("-", raw)[:120] or "unknown"
         if safe == ".":
-            return "dot"
+            safe = "dot"
         if safe == "..":
-            return "dot-dot"
+            safe = "dot-dot"
         if safe != raw:
             digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
             prefix = safe[:107].rstrip("-") or "unknown"
