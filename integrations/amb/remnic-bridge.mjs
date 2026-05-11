@@ -132,6 +132,53 @@ function extractAmbIsoDate(value) {
   return match?.[1] ?? "";
 }
 
+function daysInMonth(year, month) {
+  const monthDays = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return monthDays[month - 1] ?? 0;
+}
+
+function isLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function parseStrictIsoTimestamp(value, label) {
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:[Zz]|([+-])(\d{2}):?(\d{2}))?)?$/,
+  );
+  if (!match) {
+    throw new Error(`${label} must be a valid ISO 8601 timestamp; received ${value}`);
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = match[4] === undefined ? 0 : Number(match[4]);
+  const minute = match[5] === undefined ? 0 : Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  const offsetHour = match[8] === undefined ? 0 : Number(match[8]);
+  const offsetMinute = match[9] === undefined ? 0 : Number(match[9]);
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth(year, month) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    throw new Error(`${label} must be a valid ISO 8601 timestamp; received ${value}`);
+  }
+
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a valid ISO 8601 timestamp; received ${value}`);
+  }
+  return parsed;
+}
+
 function normalizeAmbQueryTimestamp(value) {
   if (value === undefined || value === null || value === "") {
     return "";
@@ -143,9 +190,7 @@ function normalizeAmbQueryTimestamp(value) {
   if (!normalized) {
     return "";
   }
-  if (!Number.isFinite(Date.parse(normalized))) {
-    throw new Error(`query_timestamp must be a parseable ISO 8601 timestamp; received ${value}`);
-  }
+  parseStrictIsoTimestamp(normalized, "query_timestamp");
   return normalized;
 }
 
@@ -160,10 +205,7 @@ function normalizeAmbSourceTimestamp(value) {
   if (!normalized) {
     return "";
   }
-  const parsed = Date.parse(normalized);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`AMB source timestamp must be a parseable ISO 8601 timestamp; received ${value}`);
-  }
+  const parsed = parseStrictIsoTimestamp(normalized, "AMB source timestamp");
   return new Date(parsed).toISOString();
 }
 

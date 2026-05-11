@@ -175,6 +175,18 @@ test("AMB bridge carries document timestamps into raw message fallback", () => {
   );
 });
 
+test("AMB bridge rejects overflowing document timestamps", () => {
+  assert.throws(
+    () =>
+      buildAmbMessages({
+        id: "doc-overflow-time",
+        timestamp: "2026-02-30",
+        content: "Invalid source timestamp.",
+      }),
+    /AMB source timestamp must be a valid ISO 8601 timestamp/,
+  );
+});
+
 test("AMB bridge falls back to raw content when no transcript markers exist", () => {
   assert.deepEqual(
     buildAmbMessages({
@@ -242,7 +254,15 @@ test("AMB bridge threads query timestamps into recall anchors", () => {
 test("AMB bridge rejects invalid query timestamps", () => {
   assert.throws(
     () => buildAmbRecallQuery("What happened?", "not-a-date"),
-    /query_timestamp must be a parseable ISO 8601 timestamp/,
+    /query_timestamp must be a valid ISO 8601 timestamp/,
+  );
+  assert.throws(
+    () => buildAmbRecallQuery("What happened?", "2026-02-30"),
+    /query_timestamp must be a valid ISO 8601 timestamp/,
+  );
+  assert.throws(
+    () => buildAmbRecallQuery("What happened?", "2026-05-10T25:00:00Z"),
+    /query_timestamp must be a valid ISO 8601 timestamp/,
   );
 });
 
