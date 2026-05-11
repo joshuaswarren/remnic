@@ -645,6 +645,18 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           }
         }
 
+        if (historicalRecall && sections.length === 0) {
+          const stats = await engine.getStats(sessionId);
+          if (stats.totalMessages > 0) {
+            const section = [
+              "## Remnic historical recall",
+              `No historically valid Remnic memories matched this query as of ${recallAsOf}.`,
+            ].join("\n");
+            sections.push(section);
+            usedChars += section.length;
+          }
+        }
+
         const suppressBroadSummary =
           historicalRecall || (preferFocusedExplicitContext && !!exactReferenceEvidence);
 

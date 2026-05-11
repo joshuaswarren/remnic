@@ -1075,6 +1075,42 @@ test("runtime-backed adapter preserves source timestamps for historical recall",
   }
 });
 
+test("runtime-backed adapter returns a time-safe diagnostic for empty historical recall", async () => {
+  const adapter = await createRemnicAdapter({
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 0,
+    },
+  });
+
+  try {
+    await adapter.store("beam-empty-historical-session", [
+      {
+        role: "user",
+        content: "Future-only diagnostic marker is cobalt-99.",
+        timestamp: "2026-05-10T12:00:00Z",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-empty-historical-session",
+      "What is the future-only diagnostic marker?",
+      24_000,
+      { asOf: "2000-01-01T00:00:00.000Z" },
+    );
+
+    assert.match(recalled, /## Remnic historical recall/);
+    assert.match(
+      recalled,
+      /No historically valid Remnic memories matched this query as of 2000-01-01T00:00:00.000Z/,
+    );
+    assert.doesNotMatch(recalled, /cobalt-99/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("runtime-backed adapter preserves transcript order for stored batches", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {
