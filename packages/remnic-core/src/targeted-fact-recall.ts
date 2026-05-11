@@ -29,7 +29,13 @@ export async function buildTargetedFactRecallSection(
   options: TargetedFactRecallOptions,
 ): Promise<string> {
   const budget = normalizePositiveInteger(options.maxChars);
+  const maxResults = normalizePositiveInteger(
+    options.maxSearchResults ?? DEFAULT_MAX_SEARCH_RESULTS,
+  );
   if (!options.engine || budget <= 0 || !shouldRecallTargetedFactEvidence(options.query)) {
+    return "";
+  }
+  if (maxResults <= 0) {
     return "";
   }
 
@@ -38,7 +44,7 @@ export async function buildTargetedFactRecallSection(
   const ranked = rankAndDedupeTargetedFactItems(
     [...searchItems, ...scannedItems],
     options.query,
-  );
+  ).slice(0, maxResults);
 
   const title = options.title ?? "Targeted fact evidence";
   const evidence = buildEvidencePack(ranked, {

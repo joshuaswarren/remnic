@@ -1890,6 +1890,30 @@ test("buildTrajectoryAnalysisRecallSection calls out self-reversing progress noi
   assert.doesNotMatch(section, /Relative-position movement cues/);
 });
 
+test("buildTrajectoryAnalysisRecallSection skips filler before named movement sequences", async () => {
+  const engine = new FakeCueEngine({
+    ama: makeTrajectoryMessages([
+      [19, "right", "Active rules:\nbaba is you\nball is win\n\nObjects on the map:\nrule `win` 7 steps to the right"],
+      [20, "left", "Active rules:\nbaba is you\nball is win\n\nObjects on the map:\nrule `win` 8 steps to the right"],
+      [21, "down", "Active rules:\nbaba is you\nball is win\n\nObjects on the map:\nrule `win` 8 steps to the right and 1 step up"],
+      [22, "up", "Active rules:\nbaba is you\nball is win\n\nObjects on the map:\nrule `win` 8 steps to the right"],
+    ]),
+  });
+
+  const section = await buildTrajectoryAnalysisRecallSection({
+    engine,
+    sessionId: "ama",
+    query:
+      "Between step 19 and step 23, the agent performs a sequence of four movements: the following movements are right, left, down, and up. Which of these actions were relevant for making progress toward the goal of touching a win object, and why?",
+    maxChars: 6000,
+  });
+
+  assert.match(section, /Self-reversing sequence cues/);
+  assert.match(section, /net displacement 0/);
+  assert.match(section, /self-reversing exploratory noise/);
+  assert.doesNotMatch(section, /Relative-position movement cues/);
+});
+
 test("buildTrajectoryAnalysisRecallSection infers failed text pushes reveal boundaries", async () => {
   const observation = [
     "Active rules:",

@@ -163,6 +163,69 @@ test("focused list recall deduplicates probability calculations for count questi
   assert.doesNotMatch(recalled, /general lesson about probability notation/);
 });
 
+test("focused list recall respects zero maxSearchResults after scan collection", async () => {
+  const sessionId = "beam-probability-max-results";
+  const engine = new FakeFocusedListEngine(sessionId, [
+    {
+      turn_index: 1,
+      role: "user",
+      content:
+        "Can you help me calculate P(both heads) = 1/2 x 1/2 = 1/4 so I can confirm it?",
+    },
+  ]);
+
+  const recalled = await buildFocusedListRecallSection({
+    engine,
+    sessionId,
+    query:
+      "In my questions about tossing coins and rolling dice, how many different probability calculations did I try to confirm?",
+    maxChars: 1_000,
+    maxSearchResults: 0,
+    maxScanWindowTurns: 10,
+  });
+
+  assert.equal(recalled, "");
+  assert.deepEqual(engine.expandCalls, []);
+});
+
+test("focused list recall reserves budget for count guidance", async () => {
+  const sessionId = "beam-probability-budget";
+  const engine = new FakeFocusedListEngine(sessionId, [
+    {
+      turn_index: 1,
+      role: "user",
+      content:
+        "Can you help me calculate P(both heads) = 1/2 x 1/2 = 1/4 so I can make sure I get it right?",
+    },
+    {
+      turn_index: 2,
+      role: "user",
+      content:
+        "I am trying to verify if P(rolling a number greater than 4) = 2/6 = 1/3 is correct.",
+    },
+    {
+      turn_index: 3,
+      role: "user",
+      content:
+        "Can you check if P(rolling a 3 or 4) = 1/6 + 1/6 = 1/3 is correct?",
+    },
+  ]);
+  const maxChars = 260;
+
+  const recalled = await buildFocusedListRecallSection({
+    engine,
+    sessionId,
+    query:
+      "In my questions about tossing coins and rolling dice, how many different probability calculations did I try to confirm?",
+    maxChars,
+    maxScanWindowTurns: 10,
+  });
+
+  assert.ok(recalled.length <= maxChars);
+  assert.match(recalled, /## Focused count evidence/);
+  assert.match(recalled, /Deduplicated candidate count:/);
+});
+
 test("focused list recall prefers direct simple coin and die confirmations over broader probability study examples", async () => {
   const sessionId = "beam-probability-strict-core";
   const engine = new FakeFocusedListEngine(sessionId, [

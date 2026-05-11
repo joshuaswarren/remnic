@@ -1325,6 +1325,31 @@ test("targeted fact scan is capped to the recent configured turn window", async 
   ]);
 });
 
+test("targeted fact recall respects zero maxSearchResults after scan collection", async () => {
+  const sessionId = "beam-targeted-max-results";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 1,
+      role: "user",
+      content:
+        "I adjusted my new phone budget ceiling to $750 while prioritizing camera and battery life.",
+    },
+  ]);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "What budget ceiling have I set for purchasing a new phone with a focus on camera and battery life?",
+    maxChars: 2_000,
+    maxSearchResults: 0,
+    maxScanWindowTurns: 10,
+  });
+
+  assert.equal(recalled, "");
+  assert.deepEqual(engine.expandCalls, []);
+});
+
 test("default recall pipeline exposes targeted fact recall as a disableable section", () => {
   const parsed = parseConfig({});
   const targetedFactSection = parsed.recallPipeline.find(

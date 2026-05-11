@@ -142,13 +142,20 @@ export async function buildResponseGuidanceRecallSection(
   options: ResponseGuidanceRecallOptions,
 ): Promise<string> {
   const budget = normalizePositiveInteger(options.maxChars);
+  const maxResults = normalizePositiveInteger(
+    options.maxSearchResults ?? DEFAULT_MAX_SEARCH_RESULTS,
+  );
   const intents = classifyGuidanceIntents(options.query);
   if (!options.engine || budget <= 0 || intents.length === 0) {
     return "";
   }
+  if (maxResults <= 0) {
+    return "";
+  }
 
   const items = await collectGuidanceItems(options, intents);
-  const ranked = rankAndDedupeGuidanceItems(items, options.query, intents);
+  const ranked = rankAndDedupeGuidanceItems(items, options.query, intents)
+    .slice(0, maxResults);
   if (ranked.length === 0) {
     return "";
   }

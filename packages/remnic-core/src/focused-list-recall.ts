@@ -37,32 +37,43 @@ export async function buildFocusedListRecallSection(
   options: FocusedListRecallOptions,
 ): Promise<string> {
   const budget = normalizePositiveInteger(options.maxChars);
+  const maxResults = normalizePositiveInteger(
+    options.maxSearchResults ?? DEFAULT_MAX_SEARCH_RESULTS,
+  );
   const intent = classifyFocusedListIntent(options.query);
   if (!options.engine || budget <= 0 || !intent) {
     return "";
   }
+  if (maxResults <= 0) {
+    return "";
+  }
 
   const items = await collectFocusedListItems(options, intent);
-  const ranked = rankAndDedupeFocusedListItems(items, options.query, intent);
+  const ranked = rankAndDedupeFocusedListItems(items, options.query, intent)
+    .slice(0, maxResults);
   if (ranked.length === 0) {
     return "";
   }
 
   const title = options.title ?? focusedListTitle(intent);
+  const summary = buildFocusedListSummary(ranked, options.query, intent);
+  const summaryInsert = summary ? `\n\n${summary}` : "";
+  const evidenceBudget = summaryInsert
+    ? Math.max(0, budget - summaryInsert.length)
+    : budget;
   const evidence = buildEvidencePack(ranked, {
     title,
-    maxChars: budget,
+    maxChars: evidenceBudget,
     maxItemChars: options.maxItemChars,
     query: buildFocusedListQuery(options.query, intent),
   });
-  const summary = buildFocusedListSummary(ranked, options.query, intent);
   if (!summary) {
     return evidence;
   }
   if (!evidence) {
-    return `## ${title}\n\n${summary}`;
+    return clipTextToBudget(`## ${title}${summaryInsert}`, budget);
   }
-  return evidence.replace(`## ${title}`, `## ${title}\n\n${summary}`);
+  return evidence.replace(`## ${title}`, `## ${title}${summaryInsert}`);
 }
 
 async function collectFocusedListItems(
@@ -1017,6 +1028,16 @@ function normalizePositiveInteger(value: number): number {
     return 0;
   }
   return Math.floor(value);
+}
+
+function clipTextToBudget(text: string, maxChars: number): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  if (maxChars <= 3) {
+    return text.slice(0, Math.max(0, maxChars));
+  }
+  return `${text.slice(0, maxChars - 3).trimEnd()}...`;
 }
 
 const FOCUSED_LIST_STOP_WORDS = new Set([

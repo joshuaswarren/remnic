@@ -1985,10 +1985,28 @@ function collectMoveSequenceTokens(
     if (moves.length > 0 && (token === "and" || token === "then")) {
       continue;
     }
+    if (moves.length === 0 && MOVE_SEQUENCE_PREFIX_TOKENS.has(token)) {
+      continue;
+    }
     break;
   }
   return moves;
 }
+
+const MOVE_SEQUENCE_PREFIX_TOKENS = new Set([
+  "the",
+  "following",
+  "movement",
+  "movements",
+  "action",
+  "actions",
+  "are",
+  "is",
+  "were",
+  "namely",
+  "as",
+  "listed",
+]);
 
 function containsAdjacentReversePair(
   moves: readonly AgentMoveDelta["direction"][],

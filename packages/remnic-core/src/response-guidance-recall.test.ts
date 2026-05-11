@@ -600,6 +600,29 @@ test("response guidance recall recovers durable editing instructions", async () 
   assert.match(recalled, /Scrivener's split-screen mode/);
 });
 
+test("response guidance recall respects zero maxSearchResults after scan collection", async () => {
+  const sessionId = "guidance-max-results";
+  const engine = new FakeGuidanceEngine(sessionId, [
+    {
+      turn_index: 5,
+      role: "user",
+      content:
+        "For editing drafts, I prefer Scrivener split-screen so revisions can compare notes side by side.",
+    },
+  ]);
+
+  const recalled = await buildResponseGuidanceRecallSection({
+    engine,
+    sessionId,
+    query: "How should I approach editting my draft?",
+    maxChars: 1_000,
+    maxSearchResults: 0,
+    maxScanWindowTurns: 10,
+  });
+
+  assert.equal(recalled, "");
+});
+
 test("response guidance recall normalizes AI-assisted editing and daily routine cues", async () => {
   const sessionId = "guidance-editing-routine";
   const engine = new FakeGuidanceEngine(sessionId, [
