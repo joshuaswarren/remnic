@@ -16,7 +16,7 @@ const ISO_OFFSET_TIMESTAMP_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 const FLEXIBLE_ISO_TIMESTAMP_RE =
-  /^(\d{4})-(\d{2})-(\d{2})(?:[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:[Zz]|([+-])(\d{2}):?(\d{2}))?)?$/;
+  /^(\d{4})-(\d{2})-(\d{2})(?:[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:[Zz]|([+-])(\d{2}):(\d{2}))?)?$/;
 
 function isoDaysInMonth(year: number, month: number): number {
   const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
@@ -135,7 +135,7 @@ export function parseFlexibleIsoTimestamp(value: string): number | null {
   const offsetHour = match[8] === undefined ? 0 : Number(match[8]);
   const offsetMinute = match[9] === undefined ? 0 : Number(match[9]);
   const hasTime = match[4] !== undefined;
-  const hasTimezone = /(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(value);
+  const hasTimezone = /(?:[Zz]|[+-]\d{2}:\d{2})$/.test(value);
 
   if (
     month < 1 ||

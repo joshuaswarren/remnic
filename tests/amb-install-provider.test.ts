@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -75,6 +76,44 @@ test("AMB provider installer fails when the registry cannot be patched", async (
       /no provider imports to patch/,
     );
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AMB provider installer does not expose provider file when registry write fails", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-amb-install-readonly-"));
+  const registryPath = await writeAmbRegistry(
+    root,
+    [
+      "from .base import MemoryProvider",
+      "from .bm25 import BM25MemoryProvider",
+      'REGISTRY: dict[str, type[MemoryProvider]] = {"bm25": BM25MemoryProvider}',
+      "",
+    ].join("\n"),
+  );
+  const memoryDir = path.dirname(registryPath);
+  const providerPath = path.join(memoryDir, "remnic.py");
+
+  try {
+    await chmod(registryPath, 0o444);
+    await assert.rejects(
+      () =>
+        execFileAsync(
+          process.execPath,
+          [path.join(repoRoot, "integrations", "amb", "install-remnic-provider.mjs"), root],
+          { cwd: repoRoot },
+        ),
+      /EACCES|permission denied|operation not permitted/i,
+    );
+
+    assert.equal(existsSync(providerPath), false);
+    const memoryEntries = await readdir(memoryDir);
+    assert.equal(
+      memoryEntries.some((entry) => entry.startsWith(".remnic.py.")),
+      false,
+    );
+  } finally {
+    await chmod(registryPath, 0o644).catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }
 });

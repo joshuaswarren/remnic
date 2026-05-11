@@ -3,7 +3,7 @@
  * Idempotently install the Remnic provider into a local AMB checkout.
  */
 
-import { copyFile, readFile, writeFile } from "node:fs/promises";
+import { copyFile, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +56,10 @@ export async function installRemnicProvider(targetRoot) {
   const memoryDir = path.join(targetRoot, "src", "memory_bench", "memory");
   const registryPath = path.join(memoryDir, "__init__.py");
   const providerTarget = path.join(memoryDir, "remnic.py");
+  const providerTemp = path.join(
+    memoryDir,
+    `.remnic.py.${process.pid}.${Date.now()}.tmp`,
+  );
 
   if (!existsSync(registryPath)) {
     throw new Error(`AMB memory registry not found: ${registryPath}`);
@@ -64,8 +68,24 @@ export async function installRemnicProvider(targetRoot) {
   const registry = await readFile(registryPath, "utf8");
   const patchedRegistry = patchAmbMemoryRegistry(registry);
 
-  await copyFile(providerSource, providerTarget);
-  await writeFile(registryPath, patchedRegistry);
+  let tempProviderWritten = false;
+  let registryWritten = false;
+  try {
+    await copyFile(providerSource, providerTemp);
+    tempProviderWritten = true;
+    await writeFile(registryPath, patchedRegistry);
+    registryWritten = true;
+    await rename(providerTemp, providerTarget);
+    tempProviderWritten = false;
+  } catch (error) {
+    if (registryWritten) {
+      await writeFile(registryPath, registry).catch(() => undefined);
+    }
+    if (tempProviderWritten) {
+      await unlink(providerTemp).catch(() => undefined);
+    }
+    throw error;
+  }
   return providerTarget;
 }
 
