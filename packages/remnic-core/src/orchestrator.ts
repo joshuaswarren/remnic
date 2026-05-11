@@ -10107,6 +10107,7 @@ export class Orchestrator {
               skipDedupeCheck: true,
               clearBufferAfterExtraction: false,
               skipCharThreshold: true,
+              skipUserTurnThreshold: true,
               bufferKey: key,
               extractionDeadlineMs: options.deadlineMs,
               onTaskSettled: (err) => (err ? reject(err) : resolve()),
@@ -10238,6 +10239,7 @@ export class Orchestrator {
             skipDedupeCheck: true,
             clearBufferAfterExtraction: false,
             skipCharThreshold: true,
+            skipUserTurnThreshold: true,
             bufferKey: sessionKey,
             extractionDeadlineMs: options.deadlineMs,
             writeNamespaceOverride: this.bulkImportWriteNamespace(),
@@ -10332,6 +10334,7 @@ export class Orchestrator {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
       skipCharThreshold?: boolean;
+      skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       onTaskSettled?: (error?: unknown) => void;
       bufferKey?: string;
@@ -10362,6 +10365,7 @@ export class Orchestrator {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
           skipCharThreshold: options.skipCharThreshold ?? false,
+          skipUserTurnThreshold: options.skipUserTurnThreshold ?? false,
           deadlineMs: options.extractionDeadlineMs,
           bufferKey,
           abortSignal: options.abortSignal,
@@ -10508,6 +10512,7 @@ export class Orchestrator {
     options: {
       clearBufferAfterExtraction?: boolean;
       skipCharThreshold?: boolean;
+      skipUserTurnThreshold?: boolean;
       deadlineMs?: number;
       bufferKey?: string;
       abortSignal?: AbortSignal;
@@ -10525,6 +10530,7 @@ export class Orchestrator {
     const clearBufferAfterExtraction =
       options.clearBufferAfterExtraction ?? true;
     const skipCharThreshold = options.skipCharThreshold ?? false;
+    const skipUserTurnThreshold = options.skipUserTurnThreshold ?? false;
     const deadlineMs =
       typeof options.deadlineMs === "number" &&
       Number.isFinite(options.deadlineMs)
@@ -10579,13 +10585,14 @@ export class Orchestrator {
     throwIfDeadlineExceeded("before_extract");
     throwIfAborted("before_extract");
 
-    const userTurns = normalizedTurns.filter((t) => t.role === "user");
+    const userTurns = targetTurns.filter((t) => t.role === "user");
     const totalChars = targetTurns.reduce(
       (sum, t) => sum + t.content.length,
       0,
     );
     const belowCharThreshold = totalChars < this.config.extractionMinChars;
     const belowUserTurnThreshold =
+      !skipUserTurnThreshold &&
       userTurns.length < this.config.extractionMinUserTurns;
     if ((!skipCharThreshold && belowCharThreshold) || belowUserTurnThreshold) {
       log.debug(

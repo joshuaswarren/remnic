@@ -182,6 +182,75 @@ test("ingestReplayBatch splits mixed source timestamps before persisting valid_a
   assert.equal(secondWritten.frontmatter.valid_at, "2025-01-02T03:04:05.000Z");
 });
 
+test("context-only replay turns do not satisfy the normal user-turn threshold", async () => {
+  const { orchestrator } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  let extractCalls = 0;
+  orchestrator.extraction = {
+    extract: async () => {
+      extractCalls += 1;
+      return {
+        facts: [makeFact("The BEAM fixture records the depot as cedar hall.")],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  const contextOnlyUser = {
+    role: "user",
+    content: "What does the fixture call the depot?",
+    timestamp: "2025-01-01T00:00:00Z",
+    sourceValidAt: "2025-01-01T00:00:00Z",
+    extractionContextOnly: true,
+    sessionKey: "beam-source-validity",
+  };
+  const assistantTarget = {
+    role: "assistant",
+    content: "It calls the depot cedar hall.",
+    timestamp: "2025-01-02T03:04:05Z",
+    sourceValidAt: "2025-01-02T03:04:05Z",
+    sessionKey: "beam-source-validity",
+  };
+
+  await orchestrator.runExtraction(
+    [contextOnlyUser, assistantTarget],
+    {
+      clearBufferAfterExtraction: false,
+      skipCharThreshold: true,
+      bufferKey: "beam-source-validity",
+    },
+  );
+
+  assert.equal(
+    extractCalls,
+    0,
+    "context-only user turns must not satisfy the normal threshold",
+  );
+
+  await orchestrator.runExtraction(
+    [contextOnlyUser, assistantTarget],
+    {
+      clearBufferAfterExtraction: false,
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      bufferKey: "beam-source-validity",
+    },
+  );
+
+  assert.equal(
+    extractCalls,
+    1,
+    "replay/import callers may explicitly bypass the user-turn threshold",
+  );
+});
+
 test("persistExtraction injects the inline citation when the flag is enabled", async () => {
   const { orchestrator, storage } = await makeOrchestrator({
     inlineSourceAttributionEnabled: true,
