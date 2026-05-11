@@ -299,3 +299,48 @@ test("orchestrator honors top-level specialized recall gates with custom pipelin
     false,
   );
 });
+
+test("orchestrator honors top-level specialized recall enables missing from custom pipelines", () => {
+  const cfg = parseConfig({
+    targetedFactRecallEnabled: true,
+    focusedListRecallEnabled: true,
+    responseGuidanceRecallEnabled: true,
+    eventOrderRecallEnabled: true,
+    recallPipeline: [
+      { id: "profile", enabled: true },
+      { id: "memories", enabled: true },
+      { id: "compounding", enabled: true },
+    ],
+  });
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = cfg;
+
+  assert.equal(
+    orchestrator.isTopLevelRecallSectionEnabled(
+      "targeted-facts",
+      cfg.targetedFactRecallEnabled,
+    ),
+    true,
+  );
+  assert.equal(
+    orchestrator.isTopLevelRecallSectionEnabled(
+      "focused-list",
+      cfg.focusedListRecallEnabled,
+    ),
+    true,
+  );
+  assert.equal(
+    orchestrator.isTopLevelRecallSectionEnabled(
+      "response-guidance",
+      cfg.responseGuidanceRecallEnabled,
+    ),
+    true,
+  );
+  assert.equal(
+    orchestrator.isTopLevelRecallSectionEnabled(
+      "event-order",
+      cfg.eventOrderRecallEnabled,
+    ),
+    true,
+  );
+});

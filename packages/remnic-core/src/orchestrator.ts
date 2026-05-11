@@ -5758,7 +5758,7 @@ export class Orchestrator {
     defaultEnabled: boolean = true,
   ): boolean {
     const entry = this.getRecallSectionEntry(sectionId);
-    if (!entry) return false;
+    if (!entry) return topLevelEnabled;
     return topLevelEnabled && this.isRecallSectionEnabled(sectionId, defaultEnabled);
   }
 

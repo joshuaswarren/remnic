@@ -3754,7 +3754,7 @@ function selectObservationTransition(
   ) {
     return shortest;
   }
-  return nextRepeatedTarget ?? shortest;
+  return nextRepeatedTarget;
 }
 
 function observationsHaveSameFullText(
