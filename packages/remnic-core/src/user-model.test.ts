@@ -88,6 +88,14 @@ test("boundary helper identifies scopes that require stricter use decisions", ()
   assert.equal(facetHasBoundary({ scopes: ["work", "repo"] }), false);
 });
 
+test("core root entrypoint exports user-model guard helpers", async () => {
+  const core = await import("./index.js");
+
+  assert.equal(core.isUserModelDimension("preferences"), true);
+  assert.equal(core.isUserContextScope("repo"), true);
+  assert.equal(core.isUserBoundaryScope("private"), true);
+});
+
 test("coverage summary reports present and missing user-model dimensions deterministically", () => {
   const facets: UserModelFacet[] = [
     {
