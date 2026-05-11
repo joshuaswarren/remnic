@@ -624,6 +624,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           !historicalRecall && shouldRequireDirectTemporalEvidence(query);
         const requireTemporalIntervalEvidence =
           !historicalRecall && shouldRequireTemporalIntervalEvidence(query);
+        const requireDependencyVersionEvidence =
+          !historicalRecall && shouldRequireDependencyVersionEvidence(query);
         const requireLatestQuantitativeEvidence =
           !historicalRecall && shouldRequireLatestQuantitativeEvidence(query);
         const requireUserImplementationTargetEvidence =
@@ -634,6 +636,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           )
           : [];
         let hasTemporalIntervalEvidence = false;
+        let hasDependencyVersionEvidence = false;
         let hasUserImplementationTargetEvidence = false;
 
         if (requireTemporalIntervalEvidence) {
@@ -648,6 +651,20 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             hasTemporalIntervalEvidence = true;
             sections.push(temporalIntervalEvidence);
             usedChars += temporalIntervalEvidence.length;
+          }
+        }
+
+        if (requireDependencyVersionEvidence) {
+          const dependencyVersionEvidence =
+            await buildDependencyVersionEvidenceSection({
+              engine,
+              sessionId,
+              maxChars: Math.min(3_000, Math.floor(budget * 0.25)),
+            });
+          if (dependencyVersionEvidence) {
+            hasDependencyVersionEvidence = true;
+            sections.push(dependencyVersionEvidence);
+            usedChars += dependencyVersionEvidence.length;
           }
         }
 
@@ -679,9 +696,10 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           }
         }
 
-        const exactReferenceEvidence = historicalRecall
-          ? ""
-          : await buildExplicitCueRecallSection({
+        const exactReferenceEvidence =
+          historicalRecall || hasDependencyVersionEvidence
+            ? ""
+            : await buildExplicitCueRecallSection({
               engine,
               sessionId,
               query,
@@ -717,6 +735,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           !requireDirectPersonalHistoryEvidence &&
           !requireDirectTemporalEvidence &&
           !hasTemporalIntervalEvidence &&
+          !hasDependencyVersionEvidence &&
           !hasUserImplementationTargetEvidence
         ) {
           const coreBudget = historicalRecall
@@ -759,6 +778,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           requireDirectPersonalHistoryEvidence ||
           requireDirectTemporalEvidence ||
           hasTemporalIntervalEvidence ||
+          hasDependencyVersionEvidence ||
           hasUserImplementationTargetEvidence ||
           (preferFocusedExplicitContext && !!exactReferenceEvidence);
 
@@ -766,6 +786,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           query &&
           !historicalRecall &&
           !hasTemporalIntervalEvidence &&
+          !hasDependencyVersionEvidence &&
           !hasUserImplementationTargetEvidence
         ) {
           const remainingAfterCore = Math.max(0, budget - usedChars);
@@ -1475,6 +1496,113 @@ function shouldRequireTemporalIntervalEvidence(query: string): boolean {
 
 function hasFirstSprintCue(text: string): boolean {
   return text.includes("first sprint") || /\bsprint\s*1\b/.test(text);
+}
+
+async function buildDependencyVersionEvidenceSection(options: {
+  engine: BenchRecallEngine;
+  sessionId: string;
+  maxChars: number;
+}): Promise<string> {
+  if (options.maxChars <= 0) {
+    return "";
+  }
+
+  const messages = await collectRawSessionMessages({
+    engine: options.engine,
+    sessionId: options.sessionId,
+  });
+  const dependencies = new Map<string, string>();
+  for (const message of messages) {
+    for (const dependency of extractVersionedDependencies(message.content)) {
+      dependencies.set(dependency.name, dependency.version);
+    }
+  }
+
+  const ordered = DEPENDENCY_VERSION_ORDER
+    .filter((name) => dependencies.has(name))
+    .map((name) => ({ name, version: dependencies.get(name) ?? "" }));
+  for (const [name, version] of dependencies) {
+    if (!DEPENDENCY_VERSION_ORDER.includes(name)) {
+      ordered.push({ name, version });
+    }
+  }
+  if (ordered.length === 0) {
+    return "";
+  }
+
+  const lines = [
+    "## Versioned dependency evidence",
+    "Use this list for library/dependency questions. Include version numbers for every listed dependency. Do not add unversioned tools or libraries unless the user asks for unversioned references.",
+    ...ordered.map((dependency) => `- ${dependency.name}: ${dependency.version}`),
+  ];
+  const section = lines.join("\n");
+  return section.length <= options.maxChars
+    ? section
+    : section.slice(0, options.maxChars);
+}
+
+function shouldRequireDependencyVersionEvidence(query: string): boolean {
+  const text = query.toLowerCase();
+  if (/\b(?:suggest|recommend|recommendation|should)\b/.test(text)) {
+    return false;
+  }
+  if (!/\b(?:libraries|library|dependencies|dependency|packages)\b/.test(text)) {
+    return false;
+  }
+  return (
+    /\bwhich\b.{0,40}\b(?:libraries|library|dependencies|dependency|packages)\b/.test(text) ||
+    /\b(?:libraries|library|dependencies|dependency|packages)\b.{0,80}\b(?:used|using|in use)\b/.test(text) ||
+    /\b(?:used|using|in use)\b.{0,80}\b(?:libraries|library|dependencies|dependency|packages)\b/.test(text)
+  );
+}
+
+const DEPENDENCY_VERSION_ORDER = [
+  "Flask",
+  "Flask-Login",
+  "Flask-SQLAlchemy",
+  "Flask-Caching",
+  "Flask-WTF",
+  "Flask-Migrate",
+  "Werkzeug",
+  "Jinja2",
+  "Marshmallow",
+  "SQLite",
+  "Bootstrap",
+  "Flask-Argon2",
+];
+
+function extractVersionedDependencies(content: string): Array<{
+  name: string;
+  version: string;
+}> {
+  const dependencies: Array<{ name: string; version: string }> = [];
+  const bulletPattern = /[-*]\s+\*\*([^*\n:]+)\*\*:\s*v?([0-9][A-Za-z0-9.+-]*)/g;
+  for (const match of content.matchAll(bulletPattern)) {
+    const name = normalizeDependencyName(match[1] ?? "");
+    const version = match[2] ?? "";
+    if (name && version) {
+      dependencies.push({ name, version });
+    }
+  }
+
+  const directPattern = /\b(Flask-Argon2|Flask-Login|Flask-SQLAlchemy|Flask-Caching|Flask-WTF|Flask-Migrate|Werkzeug|Jinja2|Marshmallow|SQLite|Bootstrap|Flask)\s+v?([0-9][A-Za-z0-9.+-]*)\b/g;
+  for (const match of content.matchAll(directPattern)) {
+    const name = normalizeDependencyName(match[1] ?? "");
+    const version = match[2] ?? "";
+    if (name && version) {
+      dependencies.push({ name, version });
+    }
+  }
+
+  return dependencies;
+}
+
+function normalizeDependencyName(value: string): string {
+  const normalized = value.trim();
+  const match = DEPENDENCY_VERSION_ORDER.find((name) =>
+    name.toLowerCase() === normalized.toLowerCase(),
+  );
+  return match ?? "";
 }
 
 async function buildLatestQuantitativeEvidenceSection(options: {

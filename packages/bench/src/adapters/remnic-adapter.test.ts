@@ -471,6 +471,81 @@ test("direct adapter counts only user-stated implementation targets across sessi
   }
 });
 
+test("direct adapter lists only dependencies with explicit versions", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-dependency-versions", [
+      {
+        role: "assistant",
+        content:
+          "Initial plan:\n- **Flask**: 2.3.1\n- **Flask-Login**: 0.6.2\n- **Flask-Migrate**: 3.1.0",
+      },
+      {
+        role: "assistant",
+        content:
+          "Dependencies and Versions:\n- **Flask**: 2.3.1\n- **Flask-Login**: 0.6.2\n- **Flask-Migrate**: 4.0.3\n- **SQLite**: 3.39",
+      },
+      {
+        role: "assistant",
+        content:
+          "Other referenced tools include Matplotlib, Gunicorn, React, and PostgreSQL, but no versions were specified.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-dependency-versions",
+      "Which libraries are used in this project?",
+      24_000,
+    );
+
+    assert.match(recalled, /## Versioned dependency evidence/);
+    assert.match(recalled, /Flask: 2\.3\.1/);
+    assert.match(recalled, /Flask-Login: 0\.6\.2/);
+    assert.match(recalled, /Flask-Migrate: 4\.0\.3/);
+    assert.doesNotMatch(recalled, /Flask-Migrate: 3\.1\.0/);
+    assert.match(recalled, /SQLite: 3\.39/);
+    assert.doesNotMatch(recalled, /Matplotlib/);
+    assert.doesNotMatch(recalled, /Gunicorn/);
+    assert.doesNotMatch(recalled, /React/);
+    assert.doesNotMatch(recalled, /PostgreSQL/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("direct adapter leaves library recommendation prompts on general recall", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-dependency-recommendations", [
+      {
+        role: "user",
+        content:
+          "I prefer simple, minimal dependencies to keep the app lightweight and easy to maintain.",
+      },
+      {
+        role: "assistant",
+        content:
+          "Dependencies and Versions:\n- **Flask**: 2.3.1\n- **Flask-Login**: 0.6.2",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-dependency-recommendations",
+      "What libraries or tools would you suggest I use to implement these features?",
+      24_000,
+    );
+
+    assert.doesNotMatch(recalled, /## Versioned dependency evidence/);
+    assert.match(recalled, /simple, minimal dependencies/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("direct adapter front-loads temporal interval calculations", async () => {
   const adapter = await createRemnicAdapter();
 
