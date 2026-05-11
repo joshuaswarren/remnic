@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import sys
 import tempfile
 import types
@@ -172,6 +173,15 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
             self.assertRegex(slash.name, r"^team-a-[a-f0-9]{12}$")
             self.assertRegex(space.name, r"^team-a-[a-f0-9]{12}$")
             self.assertEqual(reset_stores, [slash, space])
+
+    def test_unit_store_sanitizer_matches_bridge_ascii_collapsing(self) -> None:
+        provider = self.provider_class()
+
+        team_hash = hashlib.sha256("team//a".encode("utf-8")).hexdigest()[:12]
+        accent_hash = hashlib.sha256("é".encode("utf-8")).hexdigest()[:12]
+
+        self.assertEqual(provider._sanitize_unit_id("team//a"), f"team-a-{team_hash}")
+        self.assertEqual(provider._sanitize_unit_id("é"), f"unknown-{accent_hash}")
 
     def test_dot_segment_unit_ids_stay_under_unit_store_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

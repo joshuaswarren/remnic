@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -23,6 +24,9 @@ from typing import Any
 
 from ..models import Document
 from .base import MemoryProvider
+
+
+UNIT_ID_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9._:-]+")
 
 
 class RemnicMemoryProvider(MemoryProvider):
@@ -164,10 +168,7 @@ class RemnicMemoryProvider(MemoryProvider):
 
     def _sanitize_unit_id(self, unit_id: str) -> str:
         raw = str(unit_id).strip()
-        safe = "".join(
-            char if char.isalnum() or char in "._:-" else "-"
-            for char in raw
-        )[:120]
+        safe = UNIT_ID_UNSAFE_RE.sub("-", raw)[:120] or "unknown"
         if safe == ".":
             return "dot"
         if safe == "..":
