@@ -724,18 +724,28 @@ function asExtractionTargetTurn(turn: BufferTurn): BufferTurn {
 
 function sourceValidAtContextTurns(
   turns: readonly BufferTurn[],
-  contextStart: number,
-  start: number,
+  targetStart: number,
+  targetEnd: number,
   targetValidAtMs: number | null,
 ): BufferTurn[] {
   if (targetValidAtMs === null) return [];
   return turns
-    .slice(contextStart, start)
-    .filter((turn) => {
+    .flatMap((turn, index) => {
+      if (index >= targetStart && index < targetEnd) return [];
       const contextValidAtMs = sourceValidAtMs(turn);
-      return contextValidAtMs !== null && contextValidAtMs <= targetValidAtMs;
+      if (contextValidAtMs === null || contextValidAtMs > targetValidAtMs) {
+        return [];
+      }
+      return [{ turn, index, validAtMs: contextValidAtMs }];
     })
-    .map(asExtractionContextTurn);
+    .sort((a, b) => {
+      if (a.validAtMs < b.validAtMs) return -1;
+      if (a.validAtMs > b.validAtMs) return 1;
+      if (a.index === b.index) return 0;
+      return a.index < b.index ? -1 : 1;
+    })
+    .slice(-SOURCE_VALID_AT_CONTEXT_TURNS)
+    .map(({ turn }) => asExtractionContextTurn(turn));
 }
 
 function targetSourceValidAtSortMs(turns: readonly BufferTurn[]): number {
@@ -788,12 +798,11 @@ function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][]
       end += 1;
     }
 
-    const contextStart = Math.max(0, start - SOURCE_VALID_AT_CONTEXT_TURNS);
     slices.push([
       ...sourceValidAtContextTurns(
         turns,
-        contextStart,
         start,
+        end,
         targetValidAtMs,
       ),
       ...turns.slice(start, end).map(asExtractionTargetTurn),

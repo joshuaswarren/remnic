@@ -26,6 +26,11 @@ test("ingestReplayBatch enqueues replay slices without clearing shared buffer", 
   );
   assert.match(
     source,
+    /function sourceValidAtContextTurns\([\s\S]*targetStart: number,[\s\S]*targetEnd: number,[\s\S]*contextValidAtMs > targetValidAtMs[\s\S]*\.sort\(\(a, b\) => \{[\s\S]*if \(a\.validAtMs < b\.validAtMs\) return -1;[\s\S]*if \(a\.validAtMs > b\.validAtMs\) return 1;[\s\S]*return a\.index < b\.index \? -1 : 1;[\s\S]*\.slice\(-SOURCE_VALID_AT_CONTEXT_TURNS\)[\s\S]*asExtractionContextTurn/m,
+    "source-dated replay context should be selected by source time, not input adjacency, while excluding future-dated turns",
+  );
+  assert.match(
+    source,
     /const settled = await Promise\.allSettled\(replayTasks\);[\s\S]*firstRejected[\s\S]*throw firstRejected\.reason;/m,
     "replay ingestion should drain all per-session tasks before surfacing a batch failure",
   );
