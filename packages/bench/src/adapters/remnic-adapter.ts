@@ -600,6 +600,14 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
         const recallAsOf = normalizeBenchRecallAsOf(recallOptions.asOf);
         const historicalRecall = recallAsOf !== undefined;
+        if (
+          historicalRecall &&
+          (!useCoreMemoryPipeline || replayExtractionMode === "skip")
+        ) {
+          throw new Error(
+            "benchmark historical recall requires core replay extraction; enable the core memory pipeline and do not use replayExtractionMode=skip",
+          );
+        }
         const sections: string[] = [];
         let usedChars = 0;
         const explicitReferences = historicalRecall

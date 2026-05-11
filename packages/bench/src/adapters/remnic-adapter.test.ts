@@ -893,7 +893,33 @@ test("direct adapter can skip replay extraction while preserving LCM recall", as
   }
 });
 
-test("runtime-backed adapter does not use LCM fallback for historical recall", async () => {
+test("direct adapter rejects historical recall when the core pipeline is disabled", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("bench-historical-disabled-session", [
+      {
+        role: "user",
+        content: "Historical recall should not silently use LCM-only storage.",
+      },
+    ]);
+
+    await assert.rejects(
+      () =>
+        adapter.recall(
+          "bench-historical-disabled-session",
+          "What should not silently use LCM-only storage?",
+          24_000,
+          { asOf: "2000-01-01T00:00:00.000Z" },
+        ),
+      /benchmark historical recall requires core replay extraction/,
+    );
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("runtime-backed adapter rejects historical recall when replay extraction is skipped", async () => {
   const adapter = await createRemnicAdapter({
     replayExtractionMode: "skip",
     configOverrides: {
@@ -918,13 +944,16 @@ test("runtime-backed adapter does not use LCM fallback for historical recall", a
     );
     assert.match(recalled, /cobalt-99/);
 
-    const historicalRecall = await adapter.recall(
-      "beam-historical-session",
-      "What is the future-only benchmark leak marker?",
-      24_000,
-      { asOf: "2000-01-01T00:00:00.000Z" },
+    await assert.rejects(
+      () =>
+        adapter.recall(
+          "beam-historical-session",
+          "What is the future-only benchmark leak marker?",
+          24_000,
+          { asOf: "2000-01-01T00:00:00.000Z" },
+        ),
+      /benchmark historical recall requires core replay extraction/,
     );
-    assert.doesNotMatch(historicalRecall, /cobalt-99/);
 
     await assert.rejects(
       () =>
@@ -1077,6 +1106,16 @@ test("lightweight adapter suppresses real Remnic pipeline even when feature over
     assert.doesNotMatch(recalled, /## Remnic recall pipeline/);
     assert.doesNotMatch(recalled, /Recent Conversation/);
     assert.match(recalled, /smoke-only/);
+    await assert.rejects(
+      () =>
+        adapter.recall(
+          "agent:bench:main",
+          "What is the lightweight mode code?",
+          24_000,
+          { asOf: "2000-01-01T00:00:00.000Z" },
+        ),
+      /benchmark historical recall requires core replay extraction/,
+    );
   } finally {
     await adapter.destroy();
   }
