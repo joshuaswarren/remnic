@@ -55,6 +55,22 @@ class FakeProc:
         return None
 
 
+class FakeStdin:
+    def write(self, _text: str) -> None:
+        return None
+
+    def flush(self) -> None:
+        return None
+
+
+class FakeStdout:
+    def __init__(self, line: str) -> None:
+        self._line = line
+
+    def readline(self) -> str:
+        return self._line
+
+
 class RemnicProviderPerUnitTests(unittest.TestCase):
     def setUp(self) -> None:
         module = load_provider_module()
@@ -181,6 +197,16 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
                     Document(id="a-doc", content="a", user_id="a"),
                     Document(id="b-doc", content="b", user_id="b"),
                 ])
+
+    def test_bridge_response_must_be_json_object(self) -> None:
+        provider = self.provider_class()
+        provider._proc = FakeProc()
+        provider._proc.stdin = FakeStdin()
+        provider._proc.stdout = FakeStdout("null\n")
+
+        base_request = provider.__class__.__mro__[1]._request
+        with self.assertRaisesRegex(RuntimeError, "non-object response"):
+            base_request(provider, "retrieve", {"query": "who owned it?"}, ensure_running=False)
 
 
 if __name__ == "__main__":

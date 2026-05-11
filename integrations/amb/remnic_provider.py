@@ -231,6 +231,8 @@ class RemnicMemoryProvider(MemoryProvider):
             raise RuntimeError(f"Remnic AMB bridge exited without a response. {stderr}")
 
         response = json.loads(line)
+        if not isinstance(response, dict):
+            raise RuntimeError("Remnic AMB bridge returned a non-object response.")
         if not response.get("ok"):
             raise RuntimeError(str(response.get("error") or "unknown Remnic AMB bridge error"))
         result = response.get("result")
