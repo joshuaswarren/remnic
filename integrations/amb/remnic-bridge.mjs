@@ -75,6 +75,28 @@ function extractAmbTimeAnchor(cleanedMarker) {
   return parts.find((part) => !/\bTurn\s+[A-Za-z0-9_.:-]+\b/i.test(part)) ?? "";
 }
 
+function extractAmbIsoDate(value) {
+  const match = String(value ?? "").match(/(?:^|[^\d])(\d{4}-\d{2}-\d{2})(?=$|[^\d])/);
+  return match?.[1] ?? "";
+}
+
+function normalizeAmbQueryTimestamp(value) {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  if (typeof value !== "string") {
+    throw new Error("query_timestamp must be an ISO 8601 timestamp string when provided.");
+  }
+  const normalized = normalizeAmbAnchorValue(value);
+  if (!normalized) {
+    return "";
+  }
+  if (!Number.isFinite(Date.parse(normalized))) {
+    throw new Error(`query_timestamp must be a parseable ISO 8601 timestamp; received ${value}`);
+  }
+  return normalized;
+}
+
 function buildAmbTurnAnchor(document, marker) {
   const rawMarker = typeof marker === "string" ? marker.trim() : "";
   const turnMatch = rawMarker.match(/\bTurn\s+([A-Za-z0-9_.:-]+)\b/i);
@@ -94,9 +116,9 @@ function buildAmbTurnAnchor(document, marker) {
   const timeAnchor = extractAmbTimeAnchor(cleanedMarker);
   if (timeAnchor) {
     fields.push(`time_anchor=${timeAnchor}`);
-    const dateMatch = timeAnchor.match(/(?:^|[^\d])(\d{4}-\d{2}-\d{2})(?=$|[^\d])/);
-    if (dateMatch?.[1]) {
-      fields.push(`date=${dateMatch[1]}`);
+    const date = extractAmbIsoDate(timeAnchor);
+    if (date) {
+      fields.push(`date=${date}`);
     }
   }
   if (cleanedMarker) {
@@ -281,6 +303,22 @@ export function joinAmbRecallChunks(chunks, budgetChars) {
   return joined;
 }
 
+export function buildAmbRecallQuery(query, queryTimestamp) {
+  const text = String(query ?? "").trim();
+  const normalizedTimestamp = normalizeAmbQueryTimestamp(queryTimestamp);
+  if (!normalizedTimestamp) {
+    return text;
+  }
+
+  const fields = [`query_timestamp=${normalizedTimestamp}`];
+  const date = extractAmbIsoDate(normalizedTimestamp);
+  if (date) {
+    fields.push(`query_date=${date}`);
+  }
+  const anchor = `AMB query anchors: ${fields.join("; ")}`;
+  return text ? `${text}\n\n${anchor}` : anchor;
+}
+
 export async function loadRemnicAmbConfig(env = process.env) {
   const configPath = env.REMNIC_AMB_CONFIG_PATH;
   const configJson = env.REMNIC_AMB_CONFIG_JSON;
@@ -329,7 +367,7 @@ async function loadBenchModule(env = process.env) {
   return import("@remnic/bench");
 }
 
-class RemnicAmbBridge {
+export class RemnicAmbBridge {
   constructor(adapter, options) {
     this.adapter = adapter;
     this.options = options;
@@ -384,7 +422,9 @@ class RemnicAmbBridge {
     }
   }
 
-  async retrieve({ query, k, user_id }) {
+  async retrieve({ query, k, user_id, query_timestamp }) {
+    const recallAsOf = normalizeAmbQueryTimestamp(query_timestamp);
+    const recallQuery = buildAmbRecallQuery(query, recallAsOf);
     const sessionIds =
       user_id && this.sessionsByUser.has(String(user_id))
         ? this.sessionsByUser.get(String(user_id))
@@ -401,8 +441,9 @@ class RemnicAmbBridge {
     for (const sessionId of sessionIds) {
       const recalled = await this.adapter.recall(
         sessionId,
-        String(query ?? ""),
+        recallQuery,
         perSessionBudget,
+        recallAsOf ? { asOf: recallAsOf } : undefined,
       );
       if (recalled && recalled.trim().length > 0) {
         chunks.push(`## Remnic session ${sessionId}\n${recalled.trim()}`);
@@ -416,6 +457,7 @@ class RemnicAmbBridge {
         session_count: sessionIds.length,
         session_budget_chars: perSessionBudget,
         returned_chars: joined.length,
+        query_timestamp: recallAsOf || null,
       },
     };
   }

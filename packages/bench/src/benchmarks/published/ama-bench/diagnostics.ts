@@ -1,5 +1,6 @@
 import type {
   BenchMemoryAdapter,
+  BenchRecallOptions,
   BenchResponder,
   Message,
 } from "../../../adapters/types.js";
@@ -137,7 +138,12 @@ export function createAmaBenchDiagnosticAdapter(
         await base.store(sessionId, messages);
       }
     },
-    async recall(sessionId, query, budgetChars) {
+    async recall(
+      sessionId,
+      query,
+      budgetChars,
+      recallOptions?: BenchRecallOptions,
+    ) {
       if (variant.recallMode === "oracle-trajectory") {
         return buildOracleTrajectoryRecall(
           sessions.get(sessionId) ?? [],
@@ -145,7 +151,7 @@ export function createAmaBenchDiagnosticAdapter(
         );
       }
 
-      const recalled = await base.recall(sessionId, query, budgetChars);
+      const recalled = await base.recall(sessionId, query, budgetChars, recallOptions);
       if (variant.recallMode === "explicit-evidence-only") {
         return extractMarkdownSectionsByTitle(recalled, [
           "Explicit Cue Evidence",

@@ -20,6 +20,7 @@ import {
 import type {
   BenchJudge,
   BenchMemoryAdapter,
+  BenchRecallOptions,
   BenchResponder,
   MemoryStats,
   Message,
@@ -477,7 +478,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         await replayExtraction;
       },
 
-      async recall(sessionId: string, query: string, budgetChars?: number): Promise<string> {
+      async recall(
+        sessionId: string,
+        query: string,
+        budgetChars?: number,
+        recallOptions: BenchRecallOptions = {},
+      ): Promise<string> {
         const engine = getEngine();
         const budget = budgetChars ?? DEFAULT_BENCH_RECALL_BUDGET_CHARS;
         if (budget <= 0) {
@@ -540,6 +546,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           const coreRecall = await state.orchestrator.recall(query, sessionId, {
             budgetCharsOverride: coreBudget,
             mode: "full",
+            ...(recallOptions.asOf ? { asOf: recallOptions.asOf } : {}),
           });
           if (coreRecall.trim().length > 0) {
             const section = `## Remnic recall pipeline\n${coreRecall.trim()}`;

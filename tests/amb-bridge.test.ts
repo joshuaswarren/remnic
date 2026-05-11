@@ -5,10 +5,12 @@ import {
   ambRecallBudgetForSessionCount,
   buildAmbMessages,
   buildAmbRecallDocuments,
+  buildAmbRecallQuery,
   buildAmbSessionId,
   buildAmbStorageSessionId,
   joinAmbRecallChunks,
   loadRemnicAmbConfig,
+  RemnicAmbBridge,
 } from "../integrations/amb/remnic-bridge.mjs";
 
 test("AMB bridge builds stable sanitized session ids", () => {
@@ -172,6 +174,67 @@ test("AMB bridge caps combined recall context to the configured budget", () => {
   assert.match(joined, /Remnic session one/);
   assert.match(joined, /A+/);
   assert.doesNotMatch(joined, /Remnic session two/);
+});
+
+test("AMB bridge threads query timestamps into recall anchors", () => {
+  const query = buildAmbRecallQuery(
+    "Who owned the launch decision?",
+    "2026-05-10T12:00:00Z",
+  );
+
+  assert.match(query, /Who owned the launch decision\?/);
+  assert.match(query, /query_timestamp=2026-05-10T12:00:00Z/);
+  assert.match(query, /query_date=2026-05-10/);
+});
+
+test("AMB bridge rejects invalid query timestamps", () => {
+  assert.throws(
+    () => buildAmbRecallQuery("What happened?", "not-a-date"),
+    /query_timestamp must be a parseable ISO 8601 timestamp/,
+  );
+});
+
+test("AMB bridge forwards query timestamps as recall asOf metadata", async () => {
+  const calls = [];
+  const bridge = new RemnicAmbBridge(
+    {
+      async reset() {},
+      async store() {},
+      async recall(sessionId, query, budgetChars, options) {
+        calls.push({ sessionId, query, budgetChars, options });
+        return "The launch decision owner was Marisol.";
+      },
+      async destroy() {},
+    },
+    {
+      drainAfterIngest: false,
+      groupDocumentsByUser: true,
+      resetBeforeIngest: false,
+      recallBudgetChars: 4096,
+      sessionPrefix: "beam",
+    },
+  );
+
+  await bridge.ingest([
+    {
+      id: "conv-1_s0_0",
+      user_id: "conv-1",
+      content: "[2026-05-09T12:00:00Z | Turn 1] User: Marisol owned it.",
+    },
+  ]);
+  const result = await bridge.retrieve({
+    query: "Who owned the launch decision?",
+    k: 10,
+    user_id: "conv-1",
+    query_timestamp: "2026-05-10T12:00:00Z",
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.sessionId, "beam-conv-1");
+  assert.match(calls[0]?.query ?? "", /query_timestamp=2026-05-10T12:00:00Z/);
+  assert.deepEqual(calls[0]?.options, { asOf: "2026-05-10T12:00:00Z" });
+  assert.equal(result.raw_response.query_timestamp, "2026-05-10T12:00:00Z");
+  assert.match(result.documents[0]?.content ?? "", /Marisol/);
 });
 
 test("AMB bridge rejects conflicting config env vars", async () => {

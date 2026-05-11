@@ -1,6 +1,7 @@
 import type {
   BenchJudge,
   BenchMemoryAdapter,
+  BenchRecallOptions,
   BenchResponder,
   MemoryStats,
   Message,
@@ -88,9 +89,10 @@ export function createTimeoutGuardedAdapter(
       sessionId: string,
       query: string,
       budgetChars?: number,
+      recallOptions?: BenchRecallOptions,
     ): Promise<string> {
       return run(`recall session=${sessionId}`, () =>
-        adapter.recall(sessionId, query, budgetChars),
+        adapter.recall(sessionId, query, budgetChars, recallOptions),
       );
     },
     search(

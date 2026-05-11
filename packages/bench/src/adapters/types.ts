@@ -71,7 +71,12 @@ export interface BenchJudge {
 
 export interface BenchMemoryAdapter {
   store(sessionId: string, messages: Message[]): Promise<void>;
-  recall(sessionId: string, query: string, budgetChars?: number): Promise<string>;
+  recall(
+    sessionId: string,
+    query: string,
+    budgetChars?: number,
+    options?: BenchRecallOptions,
+  ): Promise<string>;
   search(query: string, limit: number, sessionId?: string): Promise<SearchResult[]>;
   reset(sessionId?: string): Promise<void>;
   getStats(sessionId?: string): Promise<MemoryStats>;
@@ -80,6 +85,11 @@ export interface BenchMemoryAdapter {
   destroy(): Promise<void>;
   responder?: BenchResponder;
   judge?: BenchJudge;
+}
+
+export interface BenchRecallOptions {
+  /** Optional historical recall timestamp for benchmarks that expose query time. */
+  asOf?: string;
 }
 
 // Legacy aliases preserved while the old eval adapters finish migrating into

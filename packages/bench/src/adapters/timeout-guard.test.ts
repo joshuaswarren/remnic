@@ -45,6 +45,25 @@ test("timeout guard rejects a stuck adapter phase", async () => {
   assert.equal(timedOutPhase, "timeout-test:recall session=s");
 });
 
+test("timeout guard forwards recall options", async () => {
+  const adapter = makeAdapter();
+  let forwardedAsOf = "";
+  adapter.recall = async (_sessionId, _query, _budgetChars, options) => {
+    forwardedAsOf = options?.asOf ?? "";
+    return "ok";
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 100,
+  });
+
+  assert.equal(
+    await guarded.recall("s", "q", 1000, { asOf: "2026-05-10T12:00:00Z" }),
+    "ok",
+  );
+  assert.equal(forwardedAsOf, "2026-05-10T12:00:00Z");
+});
+
 test("timeout guard wraps responder and judge calls", async () => {
   const adapter = makeAdapter();
   adapter.responder = {
