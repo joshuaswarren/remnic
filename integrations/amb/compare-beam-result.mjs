@@ -11,6 +11,8 @@ import { gunzipSync } from "node:zlib";
 const RESULTS_API = "https://agentmemorybenchmark.ai/api/results";
 const EPSILON = 1e-12;
 const PUBLIC_SINGLE_QUERY_MODE = "single-query";
+const REQUIRED_ANSWER_LLM = "gemini:gemini-3.1-pro-preview";
+const REQUIRED_JUDGE_LLM = "gemini:gemini-2.5-flash-lite";
 
 function usage() {
   return [
@@ -68,6 +70,16 @@ export function assertPublicComparableBeamResult(result) {
       `expected mode=rag or mode=single-query for public BEAM single-query comparison, received ${String(result.mode)}`,
     );
   }
+  if (result.answer_llm !== REQUIRED_ANSWER_LLM) {
+    throw new Error(
+      `expected answer_llm=${REQUIRED_ANSWER_LLM}, received ${String(result.answer_llm)}`,
+    );
+  }
+  if (result.judge_llm !== REQUIRED_JUDGE_LLM) {
+    throw new Error(
+      `expected judge_llm=${REQUIRED_JUDGE_LLM}, received ${String(result.judge_llm)}`,
+    );
+  }
   return { split, mode };
 }
 
@@ -84,6 +96,27 @@ export function findSplitSota(rows, split, mode = PUBLIC_SINGLE_QUERY_MODE) {
   );
 }
 
+export function assertFullComparableRun(result, publicSota) {
+  const localTotal = Number(result.total_queries);
+  const publicTotal = Number(publicSota.total_queries);
+  if (!Number.isInteger(localTotal) || localTotal <= 0) {
+    throw new Error(`result.total_queries must be a positive integer, received ${String(result.total_queries)}`);
+  }
+  if (!Number.isInteger(publicTotal) || publicTotal <= 0) {
+    throw new Error(`public SOTA total_queries is not a positive integer for split ${String(result.split)}`);
+  }
+  if (localTotal !== publicTotal) {
+    throw new Error(
+      `expected full split with total_queries=${publicTotal}, received ${localTotal}; partial query-limit runs are not public-comparable`,
+    );
+  }
+  if (Array.isArray(result.results) && result.results.length !== localTotal) {
+    throw new Error(
+      `result.results length ${result.results.length} does not match total_queries=${localTotal}`,
+    );
+  }
+}
+
 export async function compareBeamResult(file) {
   const local = readResult(file);
   const { split, mode } = assertPublicComparableBeamResult(local);
@@ -91,6 +124,7 @@ export async function compareBeamResult(file) {
   const localAccuracy = normalizeAccuracy(local);
   const publicRows = await fetchPublicBeamRows();
   const sota = findSplitSota(publicRows, split, mode);
+  assertFullComparableRun(local, sota);
   const sotaAccuracy = Number(sota.accuracy);
   const delta = localAccuracy - sotaAccuracy;
   const isSota = delta + EPSILON >= 0;
