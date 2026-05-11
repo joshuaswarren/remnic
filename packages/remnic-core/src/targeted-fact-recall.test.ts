@@ -1049,6 +1049,32 @@ test("targeted fact recall extracts plain street addresses", async () => {
   assert.match(recalled, /my place on 1423 Maple Street/);
 });
 
+test("targeted fact recall summarizes the latest address when specificity ties", async () => {
+  const sessionId = "beam-address-latest";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 12,
+      role: "user",
+      content: "I live at 123 Main Street now.",
+    },
+    {
+      turn_index: 48,
+      role: "user",
+      content: "I live at 987 Oak Avenue now.",
+    },
+  ], [12, 48]);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query: "Where do I live?",
+    maxChars: 3_000,
+  });
+
+  assert.match(recalled, /Address evidence: 987 Oak Avenue/);
+  assert.doesNotMatch(recalled, /Address evidence: 123 Main Street/);
+});
+
 test("targeted fact recall computes combined baking purchase totals", async () => {
   const sessionId = "beam-baking-purchases-core";
   const engine = new FakeTargetedFactEngine(sessionId, [
@@ -1380,7 +1406,7 @@ test("targeted fact recall respects zero maxSearchResults after scan collection"
   assert.deepEqual(engine.expandCalls, []);
 });
 
-test("default recall pipeline exposes targeted fact recall as a disableable section", () => {
+test("default recall pipeline exposes targeted fact recall as an explicitly enableable section", () => {
   const parsed = parseConfig({});
   const targetedFactSection = parsed.recallPipeline.find(
     (section) => section.id === "targeted-facts",
@@ -1388,17 +1414,17 @@ test("default recall pipeline exposes targeted fact recall as a disableable sect
 
   assert.deepEqual(targetedFactSection, {
     id: "targeted-facts",
-    enabled: true,
+    enabled: false,
     maxChars: 2400,
     maxResults: 48,
     maxTurns: 8,
     maxTokens: 12000,
   });
 
-  const disabled = parseConfig({ targetedFactRecallEnabled: false });
+  const enabled = parseConfig({ targetedFactRecallEnabled: true });
   assert.equal(
-    disabled.recallPipeline.find((section) => section.id === "targeted-facts")
+    enabled.recallPipeline.find((section) => section.id === "targeted-facts")
       ?.enabled,
-    false,
+    true,
   );
 });

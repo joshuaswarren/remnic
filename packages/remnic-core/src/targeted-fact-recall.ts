@@ -838,12 +838,16 @@ function buildAddressFactSummary(
   const candidates = items
     .flatMap((item) => extractStreetAddresses(item.content).map((address) => ({
       address,
-      turn: typeof item.turnIndex === "number" ? item.turnIndex : Number.MAX_SAFE_INTEGER,
+      turn: typeof item.turnIndex === "number" ? item.turnIndex : null,
       specificity: scoreAddressEvidenceSpecificity(item.content.toLowerCase(), normalizedQuery),
     })))
     .sort((left, right) => {
       if (right.specificity !== left.specificity) return right.specificity - left.specificity;
-      if (left.turn !== right.turn) return left.turn - right.turn;
+      if (left.turn !== null && right.turn !== null && left.turn !== right.turn) {
+        return right.turn - left.turn;
+      }
+      if (left.turn !== null && right.turn === null) return -1;
+      if (left.turn === null && right.turn !== null) return 1;
       return left.address.localeCompare(right.address);
     });
   const selected = candidates[0];

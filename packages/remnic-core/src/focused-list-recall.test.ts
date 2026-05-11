@@ -521,7 +521,7 @@ test("focused list scan is capped to the recent configured turn window", async (
   ]);
 });
 
-test("default recall pipeline exposes focused list recall as a disableable section", () => {
+test("default recall pipeline exposes focused list recall as an explicitly enableable section", () => {
   const parsed = parseConfig({});
   const focusedListSection = parsed.recallPipeline.find(
     (section) => section.id === "focused-list",
@@ -529,17 +529,17 @@ test("default recall pipeline exposes focused list recall as a disableable secti
 
   assert.deepEqual(focusedListSection, {
     id: "focused-list",
-    enabled: true,
+    enabled: false,
     maxChars: 2600,
     maxResults: 40,
     maxTurns: 64,
     maxTokens: 14000,
   });
 
-  const disabled = parseConfig({ focusedListRecallEnabled: false });
+  const enabled = parseConfig({ focusedListRecallEnabled: true });
   assert.equal(
-    disabled.recallPipeline.find((section) => section.id === "focused-list")
+    enabled.recallPipeline.find((section) => section.id === "focused-list")
       ?.enabled,
-    false,
+    true,
   );
 });

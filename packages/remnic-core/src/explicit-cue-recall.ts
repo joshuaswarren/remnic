@@ -5268,6 +5268,8 @@ function sortLexicalCueResults<
   const temporalScheduleIntent = query
     ? hasTemporalScheduleIntent(query.toLowerCase().replace(/[^a-z0-9+#.-]+/g, " ").trim())
     : false;
+  const temporalScheduleContentCues =
+    temporalScheduleIntent && query ? collectContentLexicalCues(query) : [];
   return [...results].sort((left, right) => {
     if (preferLatest) {
       const sessionOrder = left.session_id.localeCompare(right.session_id);
@@ -5282,8 +5284,8 @@ function sortLexicalCueResults<
     }
     if (temporalScheduleIntent) {
       const focusDelta =
-        scoreTemporalScheduleResultFocus(right.content ?? "", query ?? "") -
-        scoreTemporalScheduleResultFocus(left.content ?? "", query ?? "");
+        scoreTemporalScheduleResultFocus(right.content ?? "", temporalScheduleContentCues) -
+        scoreTemporalScheduleResultFocus(left.content ?? "", temporalScheduleContentCues);
       if (focusDelta !== 0) {
         return focusDelta;
       }
@@ -5300,13 +5302,16 @@ function sortLexicalCueResults<
   });
 }
 
-function scoreTemporalScheduleResultFocus(content: string, query: string): number {
+function scoreTemporalScheduleResultFocus(
+  content: string,
+  contentLexicalCues: readonly string[],
+): number {
   if (!content) {
     return 0;
   }
   const normalized = content.toLowerCase();
   let score = 0;
-  for (const cue of collectContentLexicalCues(query)) {
+  for (const cue of contentLexicalCues) {
     if (!normalized.includes(cue)) {
       continue;
     }

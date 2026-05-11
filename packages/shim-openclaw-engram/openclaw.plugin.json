@@ -2340,7 +2340,7 @@
       },
       "targetedFactRecallEnabled": {
         "type": "boolean",
-        "default": true,
+        "default": false,
         "description": "Enable targeted fact evidence recall for direct answer questions."
       },
       "targetedFactRecallMaxChars": {
@@ -2369,7 +2369,7 @@
       },
       "focusedListRecallEnabled": {
         "type": "boolean",
-        "default": true,
+        "default": false,
         "description": "Enable focused list evidence recall for count, relation, and recommendation questions."
       },
       "focusedListRecallMaxChars": {
@@ -2398,7 +2398,7 @@
       },
       "responseGuidanceRecallEnabled": {
         "type": "boolean",
-        "default": true,
+        "default": false,
         "description": "Enable response guidance recall for user answer-shape preferences."
       },
       "responseGuidanceRecallMaxChars": {
@@ -2427,12 +2427,12 @@
       },
       "eventOrderRecallEnabled": {
         "type": "boolean",
-        "default": true,
+        "default": false,
         "description": "Enable event-order evidence recall for chronology questions."
       },
       "eventOrderRecallMaxChars": {
         "type": "number",
-        "default": 3200,
+        "default": 2400,
         "minimum": 0,
         "description": "Character budget for the event-order evidence recall section."
       },
