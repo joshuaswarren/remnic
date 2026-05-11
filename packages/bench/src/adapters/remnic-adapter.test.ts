@@ -376,6 +376,50 @@ test("direct adapter adds contradiction guidance when evidence contains both sid
   }
 });
 
+test("direct adapter front-loads the latest matching numeric evidence", async () => {
+  const adapter = await createRemnicAdapter();
+
+  try {
+    await adapter.store("beam-latest-quantity", [
+      {
+        role: "user",
+        content:
+          "The Git repository release notes say the main branch has 150 commits and 12 branches merged.",
+      },
+      {
+        role: "assistant",
+        content: "The older repository status lists 150 commits.",
+      },
+      {
+        role: "user",
+        content:
+          "The GitHub Actions workflow deploys on push to the main branch and reduces manual deploy errors by 90%.",
+      },
+      {
+        role: "user",
+        content:
+          "Recent growth of commits merged into the main branch has now reached 165.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "beam-latest-quantity",
+      "How many commits have been merged into the main branch of my Git repository?",
+      24_000,
+    );
+
+    const latestSection = recalled.match(
+      /## Latest quantitative evidence[\s\S]*?(?=\n\n##|$)/,
+    )?.[0] ?? "";
+    assert.match(latestSection, /165/);
+    assert.doesNotMatch(latestSection, /150 commits/);
+    assert.doesNotMatch(latestSection, /90%/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("direct adapter archives stored messages into LCM once", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {

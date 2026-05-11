@@ -144,6 +144,21 @@ type BenchOrchestratorState = {
   qmdSandbox: BenchQmdSandbox;
 };
 
+type BenchRecallEngine = {
+  expandContext(
+    sessionId: string,
+    fromTurn: number,
+    toTurn: number,
+    maxTokens: number,
+  ): Promise<Array<{ turn_index: number; role: string; content: string }>>;
+  getStats(sessionId?: string): Promise<{
+    totalMessages: number;
+    totalSummaryNodes: number;
+    maxDepth: number;
+    maxTurnIndex?: number;
+  }>;
+};
+
 const BENCH_TEARDOWN_DEFERRED_READY_WAIT_MS = 500;
 const DEFAULT_BENCH_DRAIN_TIMEOUT_MS = 5 * 60_000;
 const CORE_EXPLICIT_CUE_MAX_CHARS = 18_000;
@@ -607,11 +622,27 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           !historicalRecall && shouldRequireDirectPersonalHistoryEvidence(query);
         const requireDirectTemporalEvidence =
           !historicalRecall && shouldRequireDirectTemporalEvidence(query);
+        const requireLatestQuantitativeEvidence =
+          !historicalRecall && shouldRequireLatestQuantitativeEvidence(query);
         const focusedReferenceWindows = preferFocusedExplicitContext
           ? buildFocusedReferenceWindows(
             explicitReferences.map((reference) => reference.number),
           )
           : [];
+
+        if (requireLatestQuantitativeEvidence) {
+          const latestQuantitativeEvidence =
+            await buildLatestQuantitativeEvidenceSection({
+              engine,
+              sessionId,
+              query,
+              maxChars: Math.min(3_000, Math.floor(budget * 0.25)),
+            });
+          if (latestQuantitativeEvidence) {
+            sections.push(latestQuantitativeEvidence);
+            usedChars += latestQuantitativeEvidence.length;
+          }
+        }
 
         const exactReferenceEvidence = historicalRecall
           ? ""
@@ -1230,6 +1261,152 @@ function extractDirectTemporalSubjectTerms(query: string): string[] {
     !temporalStopWords.has(term) &&
     !/^\d+$/.test(term),
   ))];
+}
+
+async function buildLatestQuantitativeEvidenceSection(options: {
+  engine: BenchRecallEngine;
+  sessionId: string;
+  query: string;
+  maxChars: number;
+}): Promise<string> {
+  const subjectTerms = extractLatestQuantitativeSubjectTerms(options.query);
+  if (subjectTerms.length === 0 || options.maxChars <= 0) {
+    return "";
+  }
+
+  const stats = await options.engine.getStats(options.sessionId);
+  if (
+    stats.totalMessages <= 0 ||
+    typeof stats.maxTurnIndex !== "number" ||
+    stats.maxTurnIndex < 0
+  ) {
+    return "";
+  }
+
+  const windowSize = 12;
+  for (let end = stats.maxTurnIndex; end >= 0; end -= windowSize) {
+    const start = Math.max(0, end - windowSize + 1);
+    const messages = await options.engine.expandContext(
+      options.sessionId,
+      start,
+      end,
+      12_000,
+    );
+    for (const message of [...messages].reverse()) {
+      if (!isLatestQuantitativeEvidence(message.content, subjectTerms)) {
+        continue;
+      }
+
+      const evidence = formatEvidenceItem({
+        sessionId: options.sessionId,
+        turnIndex: message.turn_index,
+        role: message.role,
+        content: message.content,
+      }, options.maxChars);
+      if (!evidence) {
+        return "";
+      }
+
+      return [
+        "## Latest quantitative evidence",
+        evidence,
+        "This is the most recent matching numeric statement found in raw session turns. Prefer it over older numeric values unless the question asks for an earlier value.",
+      ].join("\n");
+    }
+  }
+
+  return "";
+}
+
+function shouldRequireLatestQuantitativeEvidence(query: string): boolean {
+  const text = query.toLowerCase();
+  if (/\bwhen\b/.test(text)) {
+    return false;
+  }
+  return /\b(?:how many|what is|what's|current|latest|average|count|number)\b/.test(text) &&
+    /\b(?:api|average|branch|branches|columns?|commits?|count|dashboard|main|number|repository|response|time|version)\b/.test(text);
+}
+
+function extractLatestQuantitativeSubjectTerms(query: string): string[] {
+  const latestStopWords = new Set([
+    ...FOCUSED_SEARCH_STOP_WORDS,
+    "been",
+    "branch",
+    "current",
+    "git",
+    "how",
+    "latest",
+    "main",
+    "many",
+    "much",
+    "number",
+    "repository",
+    "what",
+  ]);
+  const terms = query.toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) ?? [];
+  return [...new Set(terms.filter((term) =>
+    !latestStopWords.has(term) &&
+    !/^\d+$/.test(term),
+  ))];
+}
+
+function isLatestQuantitativeEvidence(
+  content: string,
+  subjectTerms: readonly string[],
+): boolean {
+  const text = content.toLowerCase();
+  if (!hasQuantitativeExpression(text)) {
+    return false;
+  }
+  if (!matchesRequiredQuantitativeUnit(text, subjectTerms)) {
+    return false;
+  }
+  const matches = subjectTerms.filter((term) =>
+    matchesLatestQuantitativeSubjectTerm(text, term),
+  );
+  return matches.length >= Math.min(2, subjectTerms.length);
+}
+
+function hasQuantitativeExpression(text: string): boolean {
+  return /\b\d+(?:\.\d+)?\s*(?:ms|milliseconds?|commits?|branches?|columns?|hours?|days?|weeks?|attempts?|%)?\b/i.test(text);
+}
+
+function matchesLatestQuantitativeSubjectTerm(text: string, term: string): boolean {
+  const escaped = escapeRegex(term);
+  return new RegExp(`\\b${escaped}s?\\b`, "i").test(text);
+}
+
+function matchesRequiredQuantitativeUnit(
+  text: string,
+  subjectTerms: readonly string[],
+): boolean {
+  const unitTerms = subjectTerms.filter((term) =>
+    /^(?:attempts?|branches?|columns?|commits?|hours?|milliseconds?|ms|response|time|version|weeks?)$/.test(term),
+  );
+  if (unitTerms.length === 0) {
+    return true;
+  }
+  return unitTerms.some((term) => matchesLatestQuantitativeSubjectTerm(text, term));
+}
+
+function formatEvidenceItem(
+  item: { sessionId: string; turnIndex: number; role: string; content: string },
+  maxChars: number,
+): string {
+  const prefix = `[${item.sessionId}, turn ${item.turnIndex}, ${item.role}]: `;
+  const available = Math.max(0, maxChars - prefix.length);
+  if (available <= 0) {
+    return "";
+  }
+  const normalized = item.content.replace(/\s+/g, " ").trim();
+  const content = normalized.length <= available
+    ? normalized
+    : `${normalized.slice(0, Math.max(0, available - 3))}...`;
+  return `${prefix}${content}`;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function buildContradictionGuidance(
