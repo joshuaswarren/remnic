@@ -182,7 +182,7 @@ test("ingestReplayBatch splits mixed source timestamps before persisting valid_a
   assert.equal(secondWritten.frontmatter.valid_at, "2025-01-02T03:04:05.000Z");
 });
 
-test("ingestReplayBatch does not leak future source turns into earlier context", async () => {
+test("ingestReplayBatch queues source timestamps chronologically without future context", async () => {
   const { orchestrator } = await makeOrchestrator({
     extractionMinChars: 0,
     extractionMinUserTurns: 1,
@@ -248,18 +248,6 @@ test("ingestReplayBatch does not leak future source turns into earlier context",
   assert.deepEqual(observedSourceGroups, [
     [
       {
-        sourceValidAt: "2025-01-03T00:00:00Z",
-        contextOnly: false,
-        content: "Later source-dated turn must not become earlier context.",
-      },
-      {
-        sourceValidAt: "2025-01-03T00:00:00Z",
-        contextOnly: false,
-        content: "Later source-dated response must not become earlier context.",
-      },
-    ],
-    [
-      {
         sourceValidAt: "2025-01-01T00:00:00Z",
         contextOnly: false,
         content: "Earlier source-dated turn.",
@@ -268,6 +256,18 @@ test("ingestReplayBatch does not leak future source turns into earlier context",
         sourceValidAt: "2025-01-01T00:00:00Z",
         contextOnly: false,
         content: "Earlier source-dated response.",
+      },
+    ],
+    [
+      {
+        sourceValidAt: "2025-01-03T00:00:00Z",
+        contextOnly: false,
+        content: "Later source-dated turn must not become earlier context.",
+      },
+      {
+        sourceValidAt: "2025-01-03T00:00:00Z",
+        contextOnly: false,
+        content: "Later source-dated response must not become earlier context.",
       },
     ],
   ]);

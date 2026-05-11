@@ -738,6 +738,37 @@ function sourceValidAtContextTurns(
     .map(asExtractionContextTurn);
 }
 
+function targetSourceValidAtSortMs(turns: readonly BufferTurn[]): number {
+  let latestMs: number | null = null;
+  for (const turn of turns) {
+    if (turn.extractionContextOnly === true) continue;
+    const validAtMs = sourceValidAtMs(turn);
+    if (validAtMs === null) continue;
+    if (latestMs === null || validAtMs > latestMs) {
+      latestMs = validAtMs;
+    }
+  }
+  return latestMs ?? Number.POSITIVE_INFINITY;
+}
+
+function sortSourceValidAtSlicesChronologically(
+  slices: BufferTurn[][],
+): BufferTurn[][] {
+  return slices
+    .map((turns, order) => ({
+      turns,
+      order,
+      targetValidAtMs: targetSourceValidAtSortMs(turns),
+    }))
+    .sort((a, b) => {
+      if (a.targetValidAtMs < b.targetValidAtMs) return -1;
+      if (a.targetValidAtMs > b.targetValidAtMs) return 1;
+      if (a.order === b.order) return 0;
+      return a.order < b.order ? -1 : 1;
+    })
+    .map((slice) => slice.turns);
+}
+
 function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][] {
   if (turns.length === 0) return [];
   if (!turns.some((turn) => sourceValidAtMs(turn) !== null)) {
@@ -769,7 +800,7 @@ function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][]
     ]);
     start = end;
   }
-  return slices;
+  return sortSourceValidAtSlicesChronologically(slices);
 }
 
 export function isArtifactMemoryPath(filePath: string): boolean {
