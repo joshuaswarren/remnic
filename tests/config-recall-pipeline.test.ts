@@ -271,28 +271,28 @@ test("orchestrator honors top-level specialized recall gates with custom pipelin
   orchestrator.config = cfg;
 
   assert.equal(
-    orchestrator.isTopLevelRecallSectionEnabled(
+    orchestrator.isSpecializedRecallSectionEnabled(
       "targeted-facts",
       cfg.targetedFactRecallEnabled,
     ),
     false,
   );
   assert.equal(
-    orchestrator.isTopLevelRecallSectionEnabled(
+    orchestrator.isSpecializedRecallSectionEnabled(
       "focused-list",
       cfg.focusedListRecallEnabled,
     ),
     false,
   );
   assert.equal(
-    orchestrator.isTopLevelRecallSectionEnabled(
+    orchestrator.isSpecializedRecallSectionEnabled(
       "response-guidance",
       cfg.responseGuidanceRecallEnabled,
     ),
     false,
   );
   assert.equal(
-    orchestrator.isTopLevelRecallSectionEnabled(
+    orchestrator.isSpecializedRecallSectionEnabled(
       "event-order",
       cfg.eventOrderRecallEnabled,
     ),
@@ -316,28 +316,28 @@ test("orchestrator honors top-level specialized recall enables missing from cust
   orchestrator.config = cfg;
 
   assert.equal(
-    orchestrator.isTopLevelRecallSectionEnabled(
+    orchestrator.isSpecializedRecallSectionEnabled(
       "targeted-facts",
       cfg.targetedFactRecallEnabled,
     ),
     true,
   );
   assert.equal(
-    orchestrator.isTopLevelRecallSectionEnabled(
+    orchestrator.isSpecializedRecallSectionEnabled(
       "focused-list",
       cfg.focusedListRecallEnabled,
     ),
     true,
   );
   assert.equal(
-    orchestrator.isTopLevelRecallSectionEnabled(
+    orchestrator.isSpecializedRecallSectionEnabled(
       "response-guidance",
       cfg.responseGuidanceRecallEnabled,
     ),
     true,
   );
   assert.equal(
-    orchestrator.isTopLevelRecallSectionEnabled(
+    orchestrator.isSpecializedRecallSectionEnabled(
       "event-order",
       cfg.eventOrderRecallEnabled,
     ),

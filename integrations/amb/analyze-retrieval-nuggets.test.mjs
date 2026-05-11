@@ -102,3 +102,31 @@ test("nugget analyzer ignores empty public-style rubric entries", () => {
   assert.equal(summary.lowest[0].nuggets.length, 1);
   assert.equal(summary.lowest[0].nuggets[0].nugget, "Turkish and Greek cuisines");
 });
+
+test("nugget analyzer falls back to gold answers when all rubrics are blank", () => {
+  const summary = runAnalyzer({
+    dataset: "beam",
+    split: "100k",
+    diagnostic: "retrieval-only",
+    results: [
+      {
+        query_id: "blank-rubrics",
+        query: "Summarize the cooking journey",
+        gold_answers: ["fermentation schedule"],
+        meta: {
+          question_category: "summarization",
+          rubric: [
+            "LLM response should contain: ",
+            "LLM response should state: ",
+          ],
+        },
+        context: "The notes mention Turkish and Greek cuisines.",
+      },
+    ],
+  });
+
+  assert.equal(summary.score, 0);
+  assert.equal(summary.miss, 1);
+  assert.equal(summary.lowest[0].nuggets.length, 1);
+  assert.equal(summary.lowest[0].nuggets[0].nugget, "fermentation schedule");
+});

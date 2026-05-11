@@ -5752,14 +5752,13 @@ export class Orchestrator {
     return entry.enabled !== false;
   }
 
-  private isTopLevelRecallSectionEnabled(
+  private isSpecializedRecallSectionEnabled(
     sectionId: string,
     topLevelEnabled: boolean,
-    defaultEnabled: boolean = true,
   ): boolean {
     const entry = this.getRecallSectionEntry(sectionId);
     if (!entry) return topLevelEnabled;
-    return topLevelEnabled && this.isRecallSectionEnabled(sectionId, defaultEnabled);
+    return entry.enabled === true || (topLevelEnabled && entry.enabled !== false);
   }
 
   private getRecallSectionMaxChars(
@@ -8462,7 +8461,7 @@ export class Orchestrator {
       this.getRecallSectionMaxChars("targeted-facts") ??
       this.config.targetedFactRecallMaxChars;
     if (
-      this.isTopLevelRecallSectionEnabled(
+      this.isSpecializedRecallSectionEnabled(
         "targeted-facts",
         this.config.targetedFactRecallEnabled,
       ) &&
@@ -8507,7 +8506,7 @@ export class Orchestrator {
       this.getRecallSectionMaxChars("focused-list") ??
       this.config.focusedListRecallMaxChars;
     if (
-      this.isTopLevelRecallSectionEnabled(
+      this.isSpecializedRecallSectionEnabled(
         "focused-list",
         this.config.focusedListRecallEnabled,
       ) &&
@@ -8552,7 +8551,7 @@ export class Orchestrator {
       this.getRecallSectionMaxChars("response-guidance") ??
       this.config.responseGuidanceRecallMaxChars;
     if (
-      this.isTopLevelRecallSectionEnabled(
+      this.isSpecializedRecallSectionEnabled(
         "response-guidance",
         this.config.responseGuidanceRecallEnabled,
       ) &&
@@ -8595,7 +8594,7 @@ export class Orchestrator {
       this.getRecallSectionMaxChars("event-order") ??
       this.config.eventOrderRecallMaxChars;
     if (
-      this.isTopLevelRecallSectionEnabled(
+      this.isSpecializedRecallSectionEnabled(
         "event-order",
         this.config.eventOrderRecallEnabled,
       ) &&

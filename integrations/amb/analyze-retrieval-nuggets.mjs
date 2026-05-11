@@ -164,9 +164,11 @@ function nuggetRows(result, threshold) {
   const context = normalizeText(result.context ?? "");
   const rubrics = Array.isArray(result.meta?.rubric) ? result.meta.rubric : [];
   const goldAnswers = Array.isArray(result.gold_answers) ? result.gold_answers : [];
-  const nuggets = rubrics.length > 0
-    ? rubrics.map(extractNugget).filter(Boolean)
-    : goldAnswers.map((answer) => String(answer ?? "").trim()).filter(Boolean);
+  const rubricNuggets = rubrics.map(extractNugget).filter(Boolean);
+  const goldAnswerNuggets = goldAnswers
+    .map((answer) => String(answer ?? "").trim())
+    .filter(Boolean);
+  const nuggets = rubricNuggets.length > 0 ? rubricNuggets : goldAnswerNuggets;
 
   return nuggets.map((nugget) => {
     const nuggetTokens = tokens(nugget);
