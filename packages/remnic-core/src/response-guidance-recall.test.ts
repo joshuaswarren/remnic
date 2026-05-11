@@ -603,6 +603,45 @@ test("response guidance recall honors zero max results without search or scan", 
   assert.deepEqual(engine.expandCalls, []);
 });
 
+test("response guidance recall applies scan-window caps to search expansion", async () => {
+  const engine = new FakeGuidanceEngine("guidance-search-window", [
+    {
+      turn_index: 9,
+      role: "user",
+      content: "Earlier unrelated process note.",
+    },
+    {
+      turn_index: 10,
+      role: "user",
+      content:
+        "For draft revision, please use Scrivener's split-screen mode for side-by-side comparison.",
+    },
+    {
+      turn_index: 11,
+      role: "assistant",
+      content: "Later unrelated process note.",
+    },
+  ], [10]);
+
+  const recalled = await buildResponseGuidanceRecallSection({
+    engine,
+    query: "How should I approach editing my draft?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 1,
+    maxScanWindowTokens: 123,
+  });
+
+  assert.match(recalled, /Scrivener's split-screen mode/);
+  assert.deepEqual(engine.expandCalls, [
+    {
+      sessionId: "guidance-search-window",
+      fromTurn: 10,
+      toTurn: 10,
+      maxTokens: 123,
+    },
+  ]);
+});
+
 test("response guidance recall recovers durable editing instructions", async () => {
   const sessionId = "guidance-editing";
   const engine = new FakeGuidanceEngine(sessionId, [
