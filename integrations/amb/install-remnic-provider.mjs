@@ -26,6 +26,10 @@ const providerImportPattern =
 const codexAwareGeminiGateMarker = "REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE";
 const legacyAnswerLlmBeforeResolvePattern =
   /(^|[;:\n])([ \t]*)(?:os\.environ\["OMB_ANSWER_LLM"\]\s*=\s*llm|os\.environ\.__setitem__\(\s*["']OMB_ANSWER_LLM["']\s*,\s*llm\s*\))(?:\s+if\s+llm\s+else\s+None)?(\s*(?:[;\n])\s*_resolve_gemini_key\(\))/g;
+const remnicApplyAnswerLlmHelper = `def _remnic_apply_answer_llm(llm) -> None:
+    if llm and (llm != "gemini" or not os.environ.get("OMB_ANSWER_LLM")):
+        os.environ["OMB_ANSWER_LLM"] = llm
+`;
 
 async function readExistingFile(filePath) {
   try {
@@ -122,6 +126,20 @@ function rewriteLegacyAnswerLlmPatch(cli) {
   );
 }
 
+function ensureApplyAnswerLlmHelper(cli, resolvePattern) {
+  if (/def\s+_remnic_apply_answer_llm\s*\(/.test(cli)) {
+    return cli;
+  }
+
+  const match = resolvePattern.exec(cli);
+  if (!match || match.index === undefined) {
+    throw new Error("AMB CLI Gemini key resolver was not found.");
+  }
+  const insertAt = match.index + match[0].length;
+  const head = cli.slice(0, insertAt).replace(/\s*$/, "");
+  return `${head}\n\n${remnicApplyAnswerLlmHelper}${cli.slice(insertAt)}`;
+}
+
 export function patchAmbCli(cli) {
   const newResolve = `def _resolve_gemini_key() -> None:
     # ${codexAwareGeminiGateMarker}
@@ -135,9 +153,7 @@ export function patchAmbCli(cli) {
         raise typer.Exit(1)
     os.environ["GOOGLE_API_KEY"] = key
 
-def _remnic_apply_answer_llm(llm) -> None:
-    if llm and (llm != "gemini" or not os.environ.get("OMB_ANSWER_LLM")):
-        os.environ["OMB_ANSWER_LLM"] = llm
+${remnicApplyAnswerLlmHelper}
 `;
   const resolvePattern =
     /(^|[;\n])([ \t]*)def\s+_resolve_gemini_key\s*\(\s*\)\s*->\s*None\s*:[\s\S]*?(?=(?:^|[;\n])\s*(?:@|def\s+|class\s+)|$(?![\s\S]))/m;
@@ -152,6 +168,7 @@ def _remnic_apply_answer_llm(llm) -> None:
     }
     patched = resolvePatched;
   }
+  patched = ensureApplyAnswerLlmHelper(patched, resolvePattern);
 
   const hasAnswerLlmPatch =
     /(^|[;:\n])\s*_remnic_apply_answer_llm\(llm\)\s*(?:[;\n])/.test(patched);

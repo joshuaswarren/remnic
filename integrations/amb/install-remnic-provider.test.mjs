@@ -303,6 +303,37 @@ def run(llm: str): os.environ.__setitem__("OMB_ANSWER_LLM", llm) if llm else Non
   assert.doesNotMatch(patched, /__setitem__\("OMB_ANSWER_LLM",\s*llm\).*_resolve_gemini_key/);
 });
 
+test("patchAmbCli repairs marker-only resolver upgrades missing the answer helper", () => {
+  const cli = `import os
+import typer
+
+def _resolve_gemini_key() -> None:
+    # REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE
+    answer_provider = os.environ.get("OMB_ANSWER_LLM", "groq")
+    judge_provider = os.environ.get("OMB_JUDGE_LLM", "gemini")
+    if answer_provider != "gemini" and judge_provider != "gemini":
+        return
+    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        typer.echo("Error: GEMINI_API_KEY or GOOGLE_API_KEY environment variable is not set.", err=True)
+        raise typer.Exit(1)
+    os.environ["GOOGLE_API_KEY"] = key
+
+@app.command()
+def run(llm: str):
+    _remnic_apply_answer_llm(llm)
+    _resolve_gemini_key()
+    ds = get_dataset(dataset)
+`;
+
+  const patched = patchAmbCli(cli);
+  const patchedAgain = patchAmbCli(patched);
+
+  assert.equal(patchedAgain, patched);
+  assert.match(patched, /def _remnic_apply_answer_llm\(llm\) -> None:/);
+  assert.match(patched, /def _remnic_apply_answer_llm\(llm\) -> None:[\s\S]*@app\.command\(\)/);
+});
+
 test("patchAmbCli handles resolvers preceded on the same physical line", () => {
   const cli = `import os; import typer; def _resolve_gemini_key() -> None: key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"); os.environ["GOOGLE_API_KEY"] = key
 @app.command()
