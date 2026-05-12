@@ -1277,13 +1277,44 @@ test("targeted fact recall summarizes game caching and authentication tool count
     maxChars: 5_000,
   });
 
-  assert.match(recalled, /Computed game caching\/authentication tool count: Six technologies\/tools: Redis 6\.2, Phaser 3\.55, Node\.js, Express\.js, JWT, and Docker/);
+  assert.match(recalled, /Computed game caching\/authentication tool count: 6 technologies\/tools found in recalled evidence: Redis 6\.2, Phaser 3\.55, Node\.js, Express\.js, JWT, and Docker/);
   assert.match(recalled, /Redis 6\.2/);
   assert.match(recalled, /Phaser 3\.55/);
   assert.match(recalled, /Node\.js/);
   assert.match(recalled, /Express\.js/);
   assert.match(recalled, /JWT/);
   assert.match(recalled, /Docker/i);
+});
+
+test("targeted fact recall counts only game and auth tools present in evidence", async () => {
+  const sessionId = "beam-game-auth-tools-partial-core";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 12,
+      role: "user",
+      content:
+        "I'm using Redis 6.2 with Phaser 3.55 for game caching and rendering.",
+    },
+    {
+      turn_index: 18,
+      role: "user",
+      content:
+        "For the authentication implementation I mentioned JWT refresh tokens.",
+    },
+  ], [12, 18]);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How many different technologies or tools have I mentioned using across my game caching and authentication implementations?",
+    maxChars: 5_000,
+  });
+
+  assert.match(recalled, /Computed game caching\/authentication tool count: 3 technologies\/tools found in recalled evidence: Redis 6\.2, Phaser 3\.55, and JWT/);
+  assert.doesNotMatch(recalled, /Node\.js/);
+  assert.doesNotMatch(recalled, /Express\.js/);
+  assert.doesNotMatch(recalled, /Docker/);
 });
 
 test("targeted fact recall summarizes geometry type counts", async () => {

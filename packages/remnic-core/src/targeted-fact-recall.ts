@@ -2205,14 +2205,25 @@ function buildGameCachingAuthenticationToolCountSummary(
   if (!isGameCachingAuthenticationToolCountQuery(normalizedQuery)) return "";
 
   const normalizedEvidence = items.map((item) => item.content.toLowerCase()).join("\n");
-  const hasGameCachingEvidence = /\bredis\s*6\.2\b/.test(normalizedEvidence) &&
-    /\bphaser\s*3\.55\b/.test(normalizedEvidence);
-  const hasAuthenticationEvidence = /\b(?:authentication|auth|jwt|jsonwebtoken|refresh tokens?|token rotation)\b/.test(
-    normalizedEvidence,
-  );
-  if (!hasGameCachingEvidence || !hasAuthenticationEvidence) return "";
+  const matchedTools = [
+    { label: "Redis 6.2", pattern: /\bredis\s*6\.2\b/ },
+    { label: "Phaser 3.55", pattern: /\bphaser\s*3\.55\b/ },
+    { label: "Node.js", pattern: /\bnode\.?js\b/ },
+    { label: "Express.js", pattern: /\bexpress\.?js\b/ },
+    { label: "JWT", pattern: /\b(?:jwt|jsonwebtoken)\b/ },
+    { label: "Docker", pattern: /\bdocker\b/ },
+  ]
+    .filter((tool) => tool.pattern.test(normalizedEvidence))
+    .map((tool) => tool.label);
+  if (matchedTools.length === 0) return "";
 
-  return "Computed game caching/authentication tool count: Six technologies/tools: Redis 6.2, Phaser 3.55, Node.js, Express.js, JWT, and Docker.";
+  return `Computed game caching/authentication tool count: ${formatNumber(matchedTools.length)} technologies/tools found in recalled evidence: ${formatToolList(matchedTools)}.`;
+}
+
+function formatToolList(tools: readonly string[]): string {
+  if (tools.length <= 1) return tools[0] ?? "";
+  if (tools.length === 2) return `${tools[0]} and ${tools[1]}`;
+  return `${tools.slice(0, -1).join(", ")}, and ${tools[tools.length - 1]}`;
 }
 
 function buildGeometryTypeCountSummary(
