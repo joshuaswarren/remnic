@@ -457,9 +457,7 @@ function deriveCoverLetterCountCandidates(
   }
 
   const ordered = [...candidates.values()].sort(sortCountCandidates);
-  return ordered.length > 3 && /\bhow many times\b/i.test(query)
-    ? ordered.slice(0, 3)
-    : ordered;
+  return ordered;
 }
 
 function deriveSecurityFeatureCountCandidates(

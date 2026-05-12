@@ -206,6 +206,44 @@ test("focused list summary insertion treats dollar-sign headings literally", asy
   assert.equal(recalled.match(/## Focused \$& title/g)?.length, 1);
 });
 
+test("focused list recall counts all cover-letter revisions for how-many-times questions", async () => {
+  const sessionId = "beam-cover-letter-count";
+  const engine = new FakeFocusedListEngine(sessionId, [
+    {
+      turn_index: 2,
+      role: "user",
+      content: "I submitted a cover letter for the Eastbank analyst role.",
+    },
+    {
+      turn_index: 4,
+      role: "user",
+      content: "I revised the cover letter after feedback from Taylor.",
+    },
+    {
+      turn_index: 6,
+      role: "user",
+      content: "I submitted another cover letter draft for the Northwind coordinator role.",
+    },
+    {
+      turn_index: 8,
+      role: "user",
+      content: "I revised the cover letter again after the recruiter suggested a clearer opening.",
+    },
+  ], [2]);
+
+  const recalled = await buildFocusedListRecallSection({
+    engine,
+    sessionId,
+    query: "How many times did I submit or revise my cover letter before the interview?",
+    maxChars: 5_000,
+    maxScanWindowTurns: 12,
+  });
+
+  assert.match(recalled, /Deduplicated candidate count: 4 \(four\)/);
+  assert.match(recalled, /1\. I submitted a cover letter for the Eastbank analyst role/);
+  assert.match(recalled, /4\. I revised the cover letter again after the recruiter suggested a clearer opening/);
+});
+
 test("focused list recall preserves exact search hits omitted by expansion truncation", async () => {
   const sessionId = "beam-probability-truncated-hit";
   const engine = new FakeFocusedListEngine(sessionId, [
