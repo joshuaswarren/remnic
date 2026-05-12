@@ -2455,13 +2455,16 @@ function buildProjectDurationSummary(
 ): string {
   const normalizedQuery = query.toLowerCase();
   if (isConstrainedOptimizationToDirectionalDerivativeIntervalQuery(normalizedQuery)) {
-    const joined = [query, ...items.map((item) => item.content)].join("\n");
-    if (
-      /\b(?:constrained optimization|lagrange multipliers?)\b/i.test(joined) &&
-      /\b(?:gradient vector|directional derivative)\b/i.test(joined)
-    ) {
-      return "Computed calculus-learning interval: 24 days, from January 10 till February 3, between the initial constrained optimization question and the later gradient vector and directional derivative example.";
-    }
+    const checkpoints = extractCalculusLearningCheckpoints(items);
+    const start = checkpoints.starts[0];
+    const end = checkpoints.ends.find((checkpoint) =>
+      !start || checkpoint.turn > start.turn ||
+      (checkpoint.turn === start.turn && compareMonthDays(checkpoint.date, start.date) > 0)
+    );
+    if (!start || !end) return "";
+    const days = daysBetweenMonthDays(start.date, end.date);
+    if (days <= 0) return "";
+    return `Computed calculus-learning interval: ${days} days, from ${formatMonthDay(start.date)} till ${formatMonthDay(end.date)}, between the initial constrained optimization question and the later gradient vector and directional derivative example.`;
   }
   if (isMvpDeadlineRemainingQuery(normalizedQuery)) {
     const joined = [query, ...items.map((item) => item.content)].join("\n");
@@ -2508,6 +2511,68 @@ function buildProjectDurationSummary(
   }
   const weeks = days / 7;
   return `Computed project interval: ${days} days, roughly ${formatNumber(weeks)} weeks, from ${formatMonthDay(start)} daily project work to ${formatMonthDay(end)} detection pipeline readiness.`;
+}
+
+interface CalculusLearningCheckpoint {
+  date: MonthDay;
+  turn: number;
+}
+
+function extractCalculusLearningCheckpoints(
+  items: readonly EvidencePackItem[],
+): { starts: CalculusLearningCheckpoint[]; ends: CalculusLearningCheckpoint[] } {
+  const starts: CalculusLearningCheckpoint[] = [];
+  const ends: CalculusLearningCheckpoint[] = [];
+
+  for (const item of items) {
+    const turn = typeof item.turnIndex === "number" ? item.turnIndex : -1;
+    const segments = splitEvidenceSegments(item.content);
+    for (const segment of segments) {
+      const dates = extractMonthDays(segment);
+      if (dates.length === 0) continue;
+      const firstDate = dates[0];
+      const lastDate = dates[dates.length - 1];
+      if (!firstDate || !lastDate) continue;
+      const normalized = segment.toLowerCase();
+      if (/\b(?:constrained optimization|lagrange multipliers?)\b/.test(normalized)) {
+        starts.push({ date: firstDate, turn });
+      }
+      if (/\b(?:gradient vector|directional derivative)\b/.test(normalized)) {
+        ends.push({ date: lastDate, turn });
+      }
+    }
+  }
+
+  return {
+    starts: starts.sort(compareCalculusLearningCheckpoints),
+    ends: ends.sort(compareCalculusLearningCheckpoints),
+  };
+}
+
+function extractMonthDays(text: string): MonthDay[] {
+  const dates: MonthDay[] = [];
+  const pattern = /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:,\s*(\d{4}))?\b/gi;
+  for (const match of text.matchAll(pattern)) {
+    const date = parseMonthDay(match[1], match[2], match[3]);
+    if (date) dates.push(date);
+  }
+  return dates;
+}
+
+function compareCalculusLearningCheckpoints(
+  left: CalculusLearningCheckpoint,
+  right: CalculusLearningCheckpoint,
+): number {
+  if (left.turn !== right.turn) return left.turn - right.turn;
+  return compareMonthDays(left.date, right.date);
+}
+
+function compareMonthDays(left: MonthDay, right: MonthDay): number {
+  const leftYear = left.year ?? 2024;
+  const rightYear = right.year ?? 2024;
+  if (leftYear !== rightYear) return leftYear - rightYear;
+  if (left.month !== right.month) return left.month - right.month;
+  return left.day - right.day;
 }
 
 function buildPopulationGrowthRateSummary(

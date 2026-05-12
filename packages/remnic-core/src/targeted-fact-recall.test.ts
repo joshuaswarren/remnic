@@ -682,6 +682,67 @@ test("targeted fact recall computes constrained-optimization to directional-deri
   assert.match(recalled, /gradient vector and directional derivative/);
 });
 
+test("targeted fact recall computes calculus intervals from actual evidence dates", async () => {
+  const sessionId = "beam-calculus-interval-different-dates";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 7,
+      role: "user",
+      content:
+        "On March 4, I first asked for help solving a constrained optimization problem with Lagrange multipliers.",
+    },
+    {
+      turn_index: 19,
+      role: "user",
+      content:
+        "On March 17, I fully understood the relationship between the gradient vector and directional derivative with the example.",
+    },
+  ], [7, 19]);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How many days passed between when I first asked for help solving the constrained optimization problem and when I fully understood the relationship between the gradient vector and directional derivative with the example?",
+    maxChars: 4_000,
+  });
+
+  assert.match(recalled, /13 days/);
+  assert.match(recalled, /from March 4 till March 17/);
+  assert.doesNotMatch(recalled, /24 days/);
+});
+
+test("targeted fact recall does not fabricate calculus intervals without dated evidence", async () => {
+  const sessionId = "beam-calculus-interval-undated";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 7,
+      role: "user",
+      content:
+        "I first asked for help solving a constrained optimization problem with Lagrange multipliers.",
+    },
+    {
+      turn_index: 19,
+      role: "user",
+      content:
+        "I later understood the relationship between the gradient vector and directional derivative with the example.",
+    },
+  ], [7, 19]);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How many days passed between when I first asked for help solving the constrained optimization problem and when I fully understood the relationship between the gradient vector and directional derivative with the example?",
+    maxChars: 4_000,
+  });
+
+  assert.doesNotMatch(recalled, /Computed calculus-learning interval/);
+  assert.doesNotMatch(recalled, /24 days/);
+  assert.match(recalled, /constrained optimization/);
+  assert.match(recalled, /gradient vector and directional derivative/);
+});
+
 test("targeted fact recall extracts population-model growth rates", async () => {
   const sessionId = "beam-population-growth-rate-core";
   const engine = new FakeTargetedFactEngine(sessionId, [
