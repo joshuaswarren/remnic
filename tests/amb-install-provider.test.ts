@@ -182,12 +182,16 @@ test("AMB provider installer patches CLI Gemini gate for non-Gemini providers", 
 
     const cli = await readFile(cliPath, "utf8");
     assert.match(cli, /REMNIC_PATCH_CODEX_AWARE_GEMINI_GATE/);
+    assert.match(cli, /answer_provider = os\.environ\.get\("OMB_ANSWER_LLM", "groq"\)/);
+    assert.match(cli, /judge_provider = os\.environ\.get\("OMB_JUDGE_LLM", "gemini"\)/);
     assert.match(cli, /answer_provider != "gemini" and judge_provider != "gemini"/);
-    assert.match(cli, /def _remnic_apply_answer_llm\(llm\) -> None:/);
     assert.match(
       cli,
-      /if llm and \(llm != "gemini" or not os\.environ\.get\("OMB_ANSWER_LLM"\)\):/,
+      /key = os\.environ\.get\("GEMINI_API_KEY"\) or os\.environ\.get\("GOOGLE_API_KEY"\)/,
     );
+    assert.match(cli, /os\.environ\["GOOGLE_API_KEY"\] = key/);
+    assert.match(cli, /def _remnic_apply_answer_llm\(llm\) -> None:/);
+    assert.doesNotMatch(cli, /if llm and \(llm != "gemini"/);
     assert.match(cli, /_remnic_apply_answer_llm\(llm\)\n\s*_resolve_gemini_key\(\)/);
   } finally {
     await rm(root, { recursive: true, force: true });
