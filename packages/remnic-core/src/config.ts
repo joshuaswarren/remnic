@@ -3405,6 +3405,9 @@ function parseRecallSectionEntry(raw: unknown): RecallSectionConfig {
     timeoutMs: clampNonNegativeNumber(entry.timeoutMs),
     maxPatterns: clampNonNegativeNumber(entry.maxPatterns),
     maxRubrics: clampNonNegativeNumber(entry.maxRubrics),
+    ...(entry.forceGeneric === undefined
+      ? {}
+      : { forceGeneric: coerceBool(entry.forceGeneric) === true }),
   };
 }
 

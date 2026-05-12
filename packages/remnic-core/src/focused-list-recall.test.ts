@@ -170,6 +170,42 @@ test("focused list recall deduplicates probability calculations for count questi
   assert.doesNotMatch(recalled, /general lesson about probability notation/);
 });
 
+test("focused list summary insertion treats dollar-sign headings literally", async () => {
+  const sessionId = "beam-focused-dollar-heading";
+  const engine = new FakeFocusedListEngine(sessionId, [
+    {
+      turn_index: 4,
+      role: "user",
+      content:
+        "For authentication, I want password hashing using generate_password_hash and check_password_hash.",
+    },
+    {
+      turn_index: 10,
+      role: "user",
+      content:
+        "I am also trying to implement role-based access control with admin and user roles.",
+    },
+    {
+      turn_index: 18,
+      role: "user",
+      content:
+        "For security, I want account lockout after repeated failed login attempts.",
+    },
+  ], [4]);
+
+  const recalled = await buildFocusedListRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How many different user roles and security features am I trying to implement across my sessions?",
+    maxChars: 5_000,
+    title: "Focused $& title",
+  });
+
+  assert.match(recalled, /^## Focused \$& title\n\nDeduplicated candidate count:/);
+  assert.equal(recalled.match(/## Focused \$& title/g)?.length, 1);
+});
+
 test("focused list recall preserves exact search hits omitted by expansion truncation", async () => {
   const sessionId = "beam-probability-truncated-hit";
   const engine = new FakeFocusedListEngine(sessionId, [

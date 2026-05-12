@@ -1234,6 +1234,36 @@ test("targeted fact recall captures Redis TTL updates for cache configuration qu
   );
 });
 
+test("targeted fact summary insertion treats dollar-sign headings literally", async () => {
+  const sessionId = "beam-targeted-dollar-heading";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 344,
+      role: "assistant",
+      content:
+        "An initial Redis cache TTL of 3600 seconds can help when caching diffusion features for API response times.",
+    },
+    {
+      turn_index: 466,
+      role: "user",
+      content:
+        "We extended the Redis cache TTL to 7200 seconds to optimize API response times for cached diffusion features.",
+    },
+  ], [466, 344]);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "What is the time-to-live (TTL) setting for caching diffusion features in Redis to optimize API response times?",
+    maxChars: 4_000,
+    title: "Targeted $& title",
+  });
+
+  assert.match(recalled, /^## Targeted \$& title\n\nTargeted cache TTL fact:/);
+  assert.equal(recalled.match(/## Targeted \$& title/g)?.length, 1);
+});
+
 test("targeted fact recall summarizes game caching and authentication tool counts", async () => {
   const sessionId = "beam-game-auth-tools-core";
   const engine = new FakeTargetedFactEngine(sessionId, [

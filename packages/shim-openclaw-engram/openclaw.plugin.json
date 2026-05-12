@@ -4471,6 +4471,9 @@
             },
             "maxPatterns": {
               "type": "number"
+            },
+            "forceGeneric": {
+              "type": "boolean"
             }
           },
           "required": [

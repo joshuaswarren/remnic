@@ -226,7 +226,7 @@ test("explicit response-guidance pipeline section recalls generic instructions f
     injectQuestions: false,
     lcmEnabled: true,
     recallPipeline: [
-      { id: "response-guidance", enabled: true, maxChars: 1_500, maxResults: 4, maxTurns: 8, maxTokens: 2_000 },
+      { id: "response-guidance", enabled: true, forceGeneric: true, maxChars: 1_500, maxResults: 4, maxTurns: 8, maxTokens: 2_000 },
       { id: "profile", enabled: false },
       { id: "memories", enabled: false },
     ],
@@ -273,4 +273,49 @@ test("explicit response-guidance pipeline section recalls generic instructions f
 
   assert.match(context, /## Response guidance evidence/);
   assert.match(context, /Always answer espresso-code questions with short bullet points/);
+});
+
+test("top-level response-guidance enable remains query-gated for unclassified queries", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-recall-pipeline-"));
+  const sessionId = "user:test:top-level-response-guidance";
+  let searchCalls = 0;
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    sharedContextEnabled: false,
+    knowledgeIndexEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    injectQuestions: false,
+    lcmEnabled: true,
+    responseGuidanceRecallEnabled: true,
+  });
+  const orchestrator = new Orchestrator(cfg);
+
+  (orchestrator as any).lcmEngine = {
+    enabled: true,
+    searchContextFull: async () => {
+      searchCalls += 1;
+      return [];
+    },
+    expandContext: async () => [],
+    getStats: async (requestedSessionId?: string) =>
+      requestedSessionId === sessionId
+        ? { totalMessages: 1, maxTurnIndex: 4 }
+        : { totalMessages: 0, maxTurnIndex: -1 },
+    searchStructuredParts: async () => [],
+    formatStructuredRecall: () => "",
+    assembleRecall: async () => "",
+  };
+
+  const context = await (orchestrator as any).recallInternal(
+    "What do you remember about the espresso code?",
+    sessionId,
+  );
+
+  assert.doesNotMatch(context, /## Response guidance evidence/);
+  assert.equal(searchCalls, 0);
 });

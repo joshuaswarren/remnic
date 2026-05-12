@@ -170,6 +170,17 @@ test("parseConfig accepts custom recall pipeline entries", () => {
   assert.equal(cfg.recallPipeline[2]?.enabled, false);
 });
 
+test("parseConfig accepts explicit forceGeneric recall pipeline entries", () => {
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    recallPipeline: [
+      { id: "response-guidance", enabled: true, forceGeneric: "true" },
+    ],
+  });
+
+  assert.equal(cfg.recallPipeline[0]?.forceGeneric, true);
+});
+
 test("parseConfig coerces string false for default specialized recall sections", () => {
   const cfg = parseConfig({
     targetedFactRecallEnabled: "false",

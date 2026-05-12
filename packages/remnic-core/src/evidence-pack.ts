@@ -103,6 +103,18 @@ export function buildEvidencePack(
   return lines.length === 1 ? "" : lines.join("\n\n");
 }
 
+export function insertAfterEvidenceHeading(
+  evidence: string,
+  title: string,
+  insert: string,
+): string {
+  const heading = `## ${title}`;
+  if (!evidence.startsWith(heading)) {
+    return evidence;
+  }
+  return `${heading}${insert}${evidence.slice(heading.length)}`;
+}
+
 function normalizePositiveInteger(value: number): number {
   if (!Number.isFinite(value) || value <= 0) {
     return 0;

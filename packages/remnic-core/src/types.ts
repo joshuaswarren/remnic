@@ -147,6 +147,7 @@ export interface RecallSectionConfig {
   timeoutMs?: number;
   maxPatterns?: number;
   maxRubrics?: number;
+  forceGeneric?: boolean;
 }
 
 export interface RecallPipelineConfig {

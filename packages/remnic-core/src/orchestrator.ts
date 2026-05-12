@@ -8553,7 +8553,7 @@ export class Orchestrator {
     const responseGuidanceEntry = this.getRecallSectionEntry("response-guidance");
     const responseGuidanceMatchesQuery = shouldRecallResponseGuidance(retrievalQuery);
     const responseGuidanceForcedByPipeline =
-      responseGuidanceEntry?.enabled === true && !responseGuidanceMatchesQuery;
+      responseGuidanceEntry?.forceGeneric === true && !responseGuidanceMatchesQuery;
     if (
       this.isSpecializedRecallSectionEnabled(
         "response-guidance",

@@ -1,4 +1,8 @@
-import { buildEvidencePack, type EvidencePackItem } from "./evidence-pack.js";
+import {
+  buildEvidencePack,
+  insertAfterEvidenceHeading,
+  type EvidencePackItem,
+} from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
 
 export interface TargetedFactRecallOptions {
@@ -64,7 +68,7 @@ export async function buildTargetedFactRecallSection(
   if (!evidence) {
     return clipTextToBudget(`## ${title}${summaryInsert}`, budget);
   }
-  return evidence.replace(`## ${title}`, `## ${title}${summaryInsert}`);
+  return insertAfterEvidenceHeading(evidence, title, summaryInsert);
 }
 
 async function collectTargetedFactSearchItems(
