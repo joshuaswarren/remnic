@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,12 +27,22 @@ function makeAmbCheckout() {
   return root;
 }
 
-function runRunner(args) {
+function makeFakePnpmBin(root) {
+  const binDir = path.join(root, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const pnpmPath = path.join(binDir, "pnpm");
+  writeFileSync(pnpmPath, "#!/usr/bin/env bash\nexit 0\n");
+  chmodSync(pnpmPath, 0o755);
+  return binDir;
+}
+
+function runRunner(args, env = {}) {
   try {
     const stdout = execFileSync("bash", [runner, ...args], {
       encoding: "utf8",
       env: {
         ...process.env,
+        ...env,
         GEMINI_API_KEY: "",
         GOOGLE_API_KEY: "",
       },
@@ -66,6 +76,42 @@ test("official judged runs fail before registering Remnic when Gemini credential
     assert.equal(result.stdout, "");
     assert.equal(readFileSync(initPath, "utf8"), initialRegistry);
     assert.equal(existsSync(path.join(root, "src", "memory_bench", "memory", "remnic.py")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("registers Remnic in compact AMB registry layouts", () => {
+  const root = makeAmbCheckout();
+  const initPath = path.join(root, "src", "memory_bench", "memory", "__init__.py");
+  const fakePnpmBin = makeFakePnpmBin(root);
+  writeFileSync(
+    initPath,
+    [
+      "from .base import MemoryProvider",
+      "from .bm25 import BM25MemoryProvider; from .supermemory import SupermemoryMemoryProvider",
+      'REGISTRY: dict[str, type[MemoryProvider]] = {"bm25": BM25MemoryProvider, "supermemory": SupermemoryMemoryProvider}',
+      "",
+    ].join("\n"),
+  );
+  try {
+    const result = runRunner(
+      [
+        "--amb-dir", root,
+        "--skip-run",
+      ],
+      {
+        PATH: `${fakePnpmBin}${path.delimiter}${process.env.PATH ?? ""}`,
+      },
+    );
+
+    assert.equal(result.code, 0);
+    const registry = readFileSync(initPath, "utf8");
+    assert.match(registry, /from \.remnic import RemnicMemoryProvider/);
+    assert.match(registry, /["']remnic["']:\s*RemnicMemoryProvider/);
+    assert.equal(registry.match(/from \.remnic import RemnicMemoryProvider/g)?.length, 1);
+    assert.equal(registry.match(/["']remnic["']:\s*RemnicMemoryProvider/g)?.length, 1);
+    assert.equal(existsSync(path.join(root, "src", "memory_bench", "memory", "remnic.py")), true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

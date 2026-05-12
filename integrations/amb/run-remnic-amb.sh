@@ -142,20 +142,26 @@ fi
 cp "${script_dir}/remnic_provider.py" "${amb_dir}/src/memory_bench/memory/remnic.py"
 python - "${amb_dir}/src/memory_bench/memory/__init__.py" <<'PY'
 from pathlib import Path
+import re
 import sys
 
 path = Path(sys.argv[1])
 text = path.read_text()
-if "from .remnic import RemnicMemoryProvider" not in text:
-    marker = "from .supermemory import SupermemoryMemoryProvider\n"
-    if marker not in text:
+remnic_import = "from .remnic import RemnicMemoryProvider"
+remnic_entry = '"remnic": RemnicMemoryProvider,'
+
+if remnic_import not in text:
+    imports = list(re.finditer(r"^from\s+\.[A-Za-z_][A-Za-z0-9_.]*\s+import\s+.+$", text, re.MULTILINE))
+    if not imports:
         raise SystemExit("Could not find AMB memory import insertion point")
-    text = text.replace(marker, marker + "from .remnic import RemnicMemoryProvider\n")
-if '"remnic": RemnicMemoryProvider,' not in text:
-    marker = '    "supermemory": SupermemoryMemoryProvider,\n'
-    if marker not in text:
+    insertion_point = next((match for match in imports if "SupermemoryMemoryProvider" in match.group(0)), imports[-1])
+    text = f"{text[:insertion_point.end()]}\n{remnic_import}{text[insertion_point.end():]}"
+
+if not re.search(r'["\']remnic["\']\s*:\s*RemnicMemoryProvider\b', text):
+    registry_start = re.search(r"\b(?:MEMORY_)?REGISTRY\s*(?::\s*[^=]+)?=\s*\{", text)
+    if not registry_start:
         raise SystemExit("Could not find AMB memory registry insertion point")
-    text = text.replace(marker, marker + '    "remnic": RemnicMemoryProvider,\n')
+    text = f"{text[:registry_start.end()]}\n    {remnic_entry}{text[registry_start.end():]}"
 path.write_text(text)
 PY
 
