@@ -20,6 +20,7 @@ class FakeTargetedFactEngine {
     private readonly messages: Array<{ turn_index: number; role: string; content: string }>,
     private readonly searchTurnIndexes: number[] = [],
     private readonly losslessMessageWindowLimit = Number.POSITIVE_INFINITY,
+    private readonly expandedContentLimit = Number.POSITIVE_INFINITY,
   ) {}
 
   async searchContextFull(): Promise<
@@ -60,11 +61,11 @@ class FakeTargetedFactEngine {
       (message) => message.turn_index >= fromTurn && message.turn_index <= toTurn,
     );
     if (windowMessages.length <= this.losslessMessageWindowLimit) {
-      return windowMessages;
+      return this.clipExpandedMessages(windowMessages);
     }
     const first = windowMessages[0];
     const last = windowMessages[windowMessages.length - 1];
-    return first && last ? [first, last] : windowMessages;
+    return this.clipExpandedMessages(first && last ? [first, last] : windowMessages);
   }
 
   async getStats(sessionId?: string): Promise<{
@@ -82,6 +83,15 @@ class FakeTargetedFactEngine {
       maxDepth: -1,
       maxTurnIndex: Math.max(...this.messages.map((message) => message.turn_index)),
     };
+  }
+
+  private clipExpandedMessages(
+    messages: Array<{ turn_index: number; role: string; content: string }>,
+  ): Array<{ turn_index: number; role: string; content: string }> {
+    return messages.map((message) => ({
+      ...message,
+      content: message.content.slice(0, this.expandedContentLimit),
+    }));
   }
 }
 
@@ -1545,6 +1555,33 @@ test("targeted fact recall preserves exact search hits omitted by expansion trun
   assert.match(recalled, /\$3,000/);
   assert.doesNotMatch(recalled, /Older emergency fund context/);
   assert.doesNotMatch(recalled, /Later emergency fund context/);
+});
+
+test("targeted fact recall preserves exact search hits included with truncated content", async () => {
+  const sessionId = "targeted-search-included-truncated-hit";
+  const fullContent =
+    "I reached 60% of my emergency fund goal after a long note that finally says I had saved $3,000.";
+  const truncatedContent = "I reached 60% of my emergency fund goal after";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 11,
+      role: "user",
+      content: fullContent,
+    },
+  ], [11], Number.POSITIVE_INFINITY, truncatedContent.length);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How much money had I saved when I reached 60% of my emergency fund goal?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 1,
+    maxScanWindowTokens: 321,
+  });
+
+  assert.match(recalled, /\$3,000/);
+  assert.match(recalled, /3000 dollars/);
 });
 
 test("targeted fact recall respects zero maxSearchResults after scan collection", async () => {

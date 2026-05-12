@@ -102,6 +102,14 @@ async function collectTargetedFactSearchItems(
       result.turn_index + searchWindowAfter,
       searchWindowTokens,
     );
+    const searchHit: EvidencePackItem = {
+      id: `${result.session_id}:${result.turn_index}`,
+      sessionId: result.session_id,
+      turnIndex: result.turn_index,
+      role: result.role,
+      content: result.content,
+      ...(typeof result.score === "number" ? { score: result.score } : {}),
+    };
     const candidates: EvidencePackItem[] = expanded.map((message) => ({
       id: `${result.session_id}:${message.turn_index}`,
       sessionId: result.session_id,
@@ -113,15 +121,13 @@ async function collectTargetedFactSearchItems(
         ? { score: result.score }
         : {}),
     }));
-    if (!candidates.some((candidate) => candidate.turnIndex === result.turn_index)) {
-      candidates.unshift({
-        id: `${result.session_id}:${result.turn_index}`,
-        sessionId: result.session_id,
-        turnIndex: result.turn_index,
-        role: result.role,
-        content: result.content,
-        ...(typeof result.score === "number" ? { score: result.score } : {}),
-      });
+    const hitIndex = candidates.findIndex((candidate) =>
+      candidate.turnIndex === result.turn_index
+    );
+    if (hitIndex >= 0) {
+      candidates[hitIndex] = searchHit;
+    } else {
+      candidates.unshift(searchHit);
     }
 
     for (const candidate of candidates) {

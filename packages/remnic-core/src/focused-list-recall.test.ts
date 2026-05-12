@@ -20,6 +20,7 @@ class FakeFocusedListEngine {
     private readonly messages: Array<{ turn_index: number; role: string; content: string }>,
     private readonly searchTurnIndexes: number[] = [],
     private readonly losslessMessageWindowLimit = Number.POSITIVE_INFINITY,
+    private readonly expandedContentLimit = Number.POSITIVE_INFINITY,
   ) {}
 
   async searchContextFull(
@@ -63,11 +64,11 @@ class FakeFocusedListEngine {
       (message) => message.turn_index >= fromTurn && message.turn_index <= toTurn,
     );
     if (windowMessages.length <= this.losslessMessageWindowLimit) {
-      return windowMessages;
+      return this.clipExpandedMessages(windowMessages);
     }
     const first = windowMessages[0];
     const last = windowMessages[windowMessages.length - 1];
-    return first && last ? [first, last] : windowMessages;
+    return this.clipExpandedMessages(first && last ? [first, last] : windowMessages);
   }
 
   async getStats(sessionId?: string): Promise<{
@@ -81,6 +82,15 @@ class FakeFocusedListEngine {
       totalMessages: this.messages.length,
       maxTurnIndex: Math.max(...this.messages.map((message) => message.turn_index)),
     };
+  }
+
+  private clipExpandedMessages(
+    messages: Array<{ turn_index: number; role: string; content: string }>,
+  ): Array<{ turn_index: number; role: string; content: string }> {
+    return messages.map((message) => ({
+      ...message,
+      content: message.content.slice(0, this.expandedContentLimit),
+    }));
   }
 }
 
@@ -275,6 +285,32 @@ test("focused list recall preserves exact search hits omitted by expansion trunc
 
   assert.match(recalled, /P\(both heads\) = 1\/2 x 1\/2 = 1\/4/);
   assert.doesNotMatch(recalled, /general lesson about probability notation/);
+});
+
+test("focused list recall preserves exact search hits included with truncated content", async () => {
+  const sessionId = "beam-probability-included-truncated-hit";
+  const fullContent =
+    "Can you help me calculate P(both heads) so I can make sure I get it right with a coin toss? Later I wrote P(both heads) = 1/2 x 1/2 = 1/4.";
+  const truncatedContent =
+    "Can you help me calculate P(both heads) so I can make sure I get it right with a coin toss?";
+  const engine = new FakeFocusedListEngine(sessionId, [
+    {
+      turn_index: 2,
+      role: "user",
+      content: fullContent,
+    },
+  ], [2], Number.POSITIVE_INFINITY, truncatedContent.length);
+
+  const recalled = await buildFocusedListRecallSection({
+    engine,
+    sessionId,
+    query:
+      "In my questions about tossing coins and rolling dice, how many different probability calculations did I try to confirm?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 1,
+  });
+
+  assert.match(recalled, /P\(both heads\) = 1\/2 x 1\/2 = 1\/4/);
 });
 
 test("focused list recall respects zero maxSearchResults after scan collection", async () => {
