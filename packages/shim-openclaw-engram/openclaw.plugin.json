@@ -2344,25 +2344,25 @@
         "description": "Enable targeted fact evidence recall for direct answer questions."
       },
       "targetedFactRecallMaxChars": {
-        "type": "number",
+        "type": "integer",
         "default": 2400,
         "minimum": 0,
         "description": "Character budget for the targeted fact evidence recall section."
       },
       "targetedFactRecallMaxResults": {
-        "type": "number",
+        "type": "integer",
         "default": 48,
         "minimum": 0,
         "description": "Maximum recalled items for targeted fact evidence."
       },
       "targetedFactRecallScanWindowTurns": {
-        "type": "number",
+        "type": "integer",
         "default": 8,
         "minimum": 1,
         "description": "Recent-turn scan window for targeted fact evidence."
       },
       "targetedFactRecallScanWindowTokens": {
-        "type": "number",
+        "type": "integer",
         "default": 12000,
         "minimum": 1,
         "description": "Recent-token scan window for targeted fact evidence."
@@ -2373,25 +2373,25 @@
         "description": "Enable focused list evidence recall for count, relation, and recommendation questions."
       },
       "focusedListRecallMaxChars": {
-        "type": "number",
+        "type": "integer",
         "default": 2600,
         "minimum": 0,
         "description": "Character budget for the focused list evidence recall section."
       },
       "focusedListRecallMaxResults": {
-        "type": "number",
+        "type": "integer",
         "default": 40,
         "minimum": 0,
         "description": "Maximum recalled items for focused list evidence."
       },
       "focusedListRecallScanWindowTurns": {
-        "type": "number",
+        "type": "integer",
         "default": 64,
         "minimum": 1,
         "description": "Recent-turn scan window for focused list evidence."
       },
       "focusedListRecallScanWindowTokens": {
-        "type": "number",
+        "type": "integer",
         "default": 14000,
         "minimum": 1,
         "description": "Recent-token scan window for focused list evidence."
@@ -2402,25 +2402,25 @@
         "description": "Enable response guidance recall for user answer-shape preferences."
       },
       "responseGuidanceRecallMaxChars": {
-        "type": "number",
+        "type": "integer",
         "default": 2400,
         "minimum": 0,
         "description": "Character budget for the response guidance recall section."
       },
       "responseGuidanceRecallMaxResults": {
-        "type": "number",
+        "type": "integer",
         "default": 48,
         "minimum": 0,
         "description": "Maximum recalled items for response guidance."
       },
       "responseGuidanceRecallScanWindowTurns": {
-        "type": "number",
+        "type": "integer",
         "default": 64,
         "minimum": 1,
         "description": "Recent-turn scan window for response guidance."
       },
       "responseGuidanceRecallScanWindowTokens": {
-        "type": "number",
+        "type": "integer",
         "default": 16000,
         "minimum": 1,
         "description": "Recent-token scan window for response guidance."
@@ -2431,25 +2431,25 @@
         "description": "Enable event-order evidence recall for chronology questions."
       },
       "eventOrderRecallMaxChars": {
-        "type": "number",
+        "type": "integer",
         "default": 2400,
         "minimum": 0,
         "description": "Character budget for the event-order evidence recall section."
       },
       "eventOrderRecallMaxResults": {
-        "type": "number",
+        "type": "integer",
         "default": 24,
         "minimum": 0,
         "description": "Maximum recalled items for event-order evidence."
       },
       "eventOrderRecallScanWindowTurns": {
-        "type": "number",
+        "type": "integer",
         "default": 12,
         "minimum": 1,
         "description": "Recent-turn scan window for event-order evidence."
       },
       "eventOrderRecallScanWindowTokens": {
-        "type": "number",
+        "type": "integer",
         "default": 24000,
         "minimum": 1,
         "description": "Recent-token scan window for event-order evidence."

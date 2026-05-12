@@ -689,6 +689,31 @@ test("response guidance recall respects zero maxSearchResults after scan collect
   assert.equal(recalled, "");
 });
 
+test("response guidance recall keeps cue summaries inside the section budget", async () => {
+  const sessionId = "guidance-budget";
+  const engine = new FakeGuidanceEngine(sessionId, [
+    {
+      turn_index: 5,
+      role: "user",
+      content:
+        "For draft revision, please use Scrivener's split-screen mode for simultaneous note-taking and side-by-side comparison, then do tone calibration manually before peer review.",
+    },
+  ], [5]);
+
+  const recalled = await buildResponseGuidanceRecallSection({
+    engine,
+    sessionId,
+    query: "How should I approach editing my draft?",
+    maxChars: 260,
+    maxItemChars: 500,
+  });
+
+  assert.ok(recalled.length <= 260, `expected section <= 260 chars, got ${recalled.length}`);
+  assert.match(recalled, /## Response guidance evidence/);
+  assert.match(recalled, /Normalized response guidance:/);
+  assert.match(recalled, /Scrivener|split-screen|side-by-side/);
+});
+
 test("response guidance recall normalizes AI-assisted editing and daily routine cues", async () => {
   const sessionId = "guidance-editing-routine";
   const engine = new FakeGuidanceEngine(sessionId, [

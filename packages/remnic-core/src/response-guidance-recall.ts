@@ -11,6 +11,7 @@ export interface ResponseGuidanceRecallOptions {
   maxScanWindowTurns?: number;
   maxScanWindowTokens?: number;
   title?: string;
+  forceGeneric?: boolean;
 }
 
 interface RankedGuidanceItem extends EvidencePackItem {
@@ -147,7 +148,13 @@ export async function buildResponseGuidanceRecallSection(
     options.maxSearchResults ?? DEFAULT_MAX_SEARCH_RESULTS,
   );
   const intents = classifyGuidanceIntents(options.query);
-  if (!options.engine || budget <= 0 || maxResults <= 0 || intents.length === 0) {
+  const forceGeneric = options.forceGeneric === true;
+  if (
+    !options.engine ||
+    budget <= 0 ||
+    maxResults <= 0 ||
+    (!forceGeneric && intents.length === 0)
+  ) {
     return "";
   }
   const items = await collectGuidanceItems(options, intents);
@@ -158,19 +165,37 @@ export async function buildResponseGuidanceRecallSection(
   }
 
   const title = options.title ?? "Response guidance evidence";
+  const titleLine = `## ${title}`;
+  const cues = buildGuidanceCueSummary(ranked, intents, options.query);
+  const cueInsertion = budgetGuidanceCueInsertion(cues, budget);
   const evidence = buildEvidencePack(ranked, {
     title,
-    maxChars: budget,
+    maxChars: Math.max(0, budget - cueInsertion.length),
     maxItemChars: options.maxItemChars,
   });
   if (!evidence) {
     return "";
   }
 
-  const cues = buildGuidanceCueSummary(ranked, intents, options.query);
-  return cues
-    ? evidence.replace(`## ${title}`, `## ${title}\n\n${cues}`)
+  return cueInsertion
+    ? evidence.replace(titleLine, `${titleLine}${cueInsertion}`)
     : evidence;
+}
+
+function budgetGuidanceCueInsertion(cues: string, budget: number): string {
+  if (!cues) return "";
+  const prefix = "\n\n";
+  if (budget <= prefix.length) return "";
+  const maxCueChars = Math.max(0, Math.floor(budget * 0.35));
+  const clipped = clipGuidanceText(cues, Math.min(maxCueChars, budget - prefix.length));
+  return clipped ? `${prefix}${clipped}` : "";
+}
+
+function clipGuidanceText(text: string, maxChars: number): string {
+  if (maxChars <= 0) return "";
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 3) return text.slice(0, maxChars);
+  return `${text.slice(0, maxChars - 3).trimEnd()}...`;
 }
 
 async function collectGuidanceItems(
@@ -228,7 +253,7 @@ async function collectGuidanceItems(
 
     for (const candidate of candidates) {
       if (seen.has(candidate.id)) continue;
-      if (!isGuidanceEvidence(candidate.content, options.query, intents)) continue;
+      if (!isGuidanceEvidence(candidate.content, options.query, intents, options.forceGeneric === true)) continue;
       seen.add(candidate.id);
       items.push(candidate);
     }
@@ -283,7 +308,7 @@ async function collectGuidanceScanItems(
       windowTokens,
     );
     for (const message of messages) {
-      if (!isGuidanceEvidence(message.content, options.query, intents)) continue;
+    if (!isGuidanceEvidence(message.content, options.query, intents, options.forceGeneric === true)) continue;
       items.push({
         id: `${options.sessionId}:${message.turn_index}`,
         sessionId: options.sessionId,
@@ -588,7 +613,7 @@ function classifyGuidanceIntents(query: string): GuidanceIntent[] {
   }
   if (
     /\b(?:timeline|financial steps|savings plan|monthly costs?|prepare for buying|buying my home)\b/.test(normalized) &&
-    /\b(?:home|buying|savings|monthly|costs?|timeline|financial)\b/.test(normalized)
+    /\b(?:home|buying|savings|monthly|costs?|financial)\b/.test(normalized)
   ) {
     intents.push("home_buying_financial_steps");
   }
@@ -661,7 +686,7 @@ function classifyGuidanceIntents(query: string): GuidanceIntent[] {
   }
   if (
     /\b(?:thorough summary|complete summary|summary|preparing and selling my home|home selling|selling my home)\b/.test(normalized) &&
-    /\b(?:home|selling|sale|selim|staging|listing|process)\b/.test(normalized)
+    /\b(?:home|selling|sale|selim|staging|listing)\b/.test(normalized)
   ) {
     intents.push("selling_home_summary");
   }
@@ -708,8 +733,8 @@ function classifyGuidanceIntents(query: string): GuidanceIntent[] {
     intents.push("diy_paint_supply_spend");
   }
   if (
-    /\b(?:saved?|save|hiring|professionals?|plumber|painter|diy)\b/.test(normalized) &&
-    /\b(?:painting|plumbing|faucet|hire|over hiring|money|saved?|professionals?)\b/.test(normalized)
+    /\b(?:saved?|save|hiring|plumber|painter|diy)\b/.test(normalized) &&
+    /\b(?:painting|plumbing|faucet|hire|over hiring|money|saved?)\b/.test(normalized)
   ) {
     intents.push("diy_professional_savings");
   }
@@ -1360,10 +1385,12 @@ function isGuidanceEvidence(
   content: string,
   query: string,
   intents: readonly GuidanceIntent[],
+  forceGeneric = false,
 ): boolean {
   const normalized = content.toLowerCase();
   if (hasInstructionOrPreferenceCue(normalized)) {
-    return hasGuidanceIntentCue(normalized, intents) ||
+    return forceGeneric ||
+      hasGuidanceIntentCue(normalized, intents) ||
       countGuidanceTermOverlap(normalized, query) >= 1;
   }
 
@@ -4325,7 +4352,7 @@ function isPotentialContradictionResolutionQuery(normalized: string): boolean {
   ) {
     return true;
   }
-  return /\b(?:usually|before|tested|worked with|spent time|spent|read(?:ing)?\s+articles?|articles?|feel|felt|timeline|grammar|accuracy|excel|contact form|api)\b/.test(
+  return /\b(?:usually|before|tested|worked with|spent time|spent|read(?:ing)?\s+articles?|articles?|feel|felt|grammar|accuracy|excel|contact form|api)\b/.test(
     normalized,
   ) || /\bimplement(?:ed|ing)?\b/.test(normalized) &&
     /\b(?:retry logic|http errors?|http\s+\d{3}|errors?)\b/.test(normalized);

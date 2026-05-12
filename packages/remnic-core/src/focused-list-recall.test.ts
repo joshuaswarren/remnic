@@ -19,6 +19,7 @@ class FakeFocusedListEngine {
     private readonly sessionId: string,
     private readonly messages: Array<{ turn_index: number; role: string; content: string }>,
     private readonly searchTurnIndexes: number[] = [],
+    private readonly losslessMessageWindowLimit = Number.POSITIVE_INFINITY,
   ) {}
 
   async searchContextFull(
@@ -58,9 +59,15 @@ class FakeFocusedListEngine {
   ): Promise<Array<{ turn_index: number; role: string; content: string }>> {
     this.expandCalls.push({ sessionId, fromTurn, toTurn, maxTokens });
     if (sessionId !== this.sessionId) return [];
-    return this.messages.filter(
+    const windowMessages = this.messages.filter(
       (message) => message.turn_index >= fromTurn && message.turn_index <= toTurn,
     );
+    if (windowMessages.length <= this.losslessMessageWindowLimit) {
+      return windowMessages;
+    }
+    const first = windowMessages[0];
+    const last = windowMessages[windowMessages.length - 1];
+    return first && last ? [first, last] : windowMessages;
   }
 
   async getStats(sessionId?: string): Promise<{
@@ -160,6 +167,39 @@ test("focused list recall deduplicates probability calculations for count questi
   assert.match(recalled, /P\(both heads\) = 1\/2 x 1\/2 = 1\/4/);
   assert.match(recalled, /P\(rolling a number greater than 4\) = 2\/6 = 1\/3/);
   assert.match(recalled, /P\(rolling a 3 or 4\) = 1\/6 \+ 1\/6 = 1\/3/);
+  assert.doesNotMatch(recalled, /general lesson about probability notation/);
+});
+
+test("focused list recall preserves exact search hits omitted by expansion truncation", async () => {
+  const sessionId = "beam-probability-truncated-hit";
+  const engine = new FakeFocusedListEngine(sessionId, [
+    {
+      turn_index: 1,
+      role: "user",
+      content: "I want a general lesson about probability notation and card draws.",
+    },
+    {
+      turn_index: 2,
+      role: "user",
+      content: "Can you help me calculate P(both heads) = 1/2 x 1/2 = 1/4 so I can make sure I get it right?",
+    },
+    {
+      turn_index: 3,
+      role: "user",
+      content: "Let's switch to a different unrelated topic for now.",
+    },
+  ], [2], 2);
+
+  const recalled = await buildFocusedListRecallSection({
+    engine,
+    sessionId,
+    query:
+      "In my questions about tossing coins and rolling dice, how many different probability calculations did I try to confirm?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 3,
+  });
+
+  assert.match(recalled, /P\(both heads\) = 1\/2 x 1\/2 = 1\/4/);
   assert.doesNotMatch(recalled, /general lesson about probability notation/);
 });
 

@@ -98,31 +98,37 @@ async function collectTargetedFactSearchItems(
       result.turn_index + searchWindowAfter,
       searchWindowTokens,
     );
-    const candidates = expanded.length > 0
-      ? expanded.map((message) => ({
-          id: `${result.session_id}:${message.turn_index}`,
-          sessionId: result.session_id,
-          turnIndex: message.turn_index,
-          role: message.role,
-          content: message.content,
-          ...(message.turn_index === result.turn_index &&
-          typeof result.score === "number"
-            ? { score: result.score }
-            : {}),
-        }))
-      : [{
-          id: `${result.session_id}:${result.turn_index}`,
-          sessionId: result.session_id,
-          turnIndex: result.turn_index,
-          role: result.role,
-          content: result.content,
-          ...(typeof result.score === "number" ? { score: result.score } : {}),
-        }];
+    const candidates: EvidencePackItem[] = expanded.map((message) => ({
+      id: `${result.session_id}:${message.turn_index}`,
+      sessionId: result.session_id,
+      turnIndex: message.turn_index,
+      role: message.role,
+      content: message.content,
+      ...(message.turn_index === result.turn_index &&
+      typeof result.score === "number"
+        ? { score: result.score }
+        : {}),
+    }));
+    if (!candidates.some((candidate) => candidate.turnIndex === result.turn_index)) {
+      candidates.unshift({
+        id: `${result.session_id}:${result.turn_index}`,
+        sessionId: result.session_id,
+        turnIndex: result.turn_index,
+        role: result.role,
+        content: result.content,
+        ...(typeof result.score === "number" ? { score: result.score } : {}),
+      });
+    }
 
     for (const candidate of candidates) {
-      if (seen.has(candidate.id)) continue;
+      const candidateId = candidate.id ?? (
+        candidate.sessionId && typeof candidate.turnIndex === "number"
+          ? `${candidate.sessionId}:${candidate.turnIndex}`
+          : undefined
+      );
+      if (candidateId && seen.has(candidateId)) continue;
       if (!isTargetedFactEvidence(candidate.content, options.query)) continue;
-      seen.add(candidate.id);
+      if (candidateId) seen.add(candidateId);
       items.push(candidate);
     }
   }
@@ -1627,11 +1633,7 @@ function buildEmergencyFundDurationSummary(
 
   const checkpoints = items
     .flatMap((item) => extractEmergencyFundCheckpoints(item.content))
-    .sort((left, right) => {
-      if (left.date.month !== right.date.month) return left.date.month - right.date.month;
-      if (left.date.day !== right.date.day) return left.date.day - right.date.day;
-      return left.amount - right.amount;
-    });
+    .sort((left, right) => compareEmergencyFundCheckpoints(left, right));
   if (checkpoints.length < 2) {
     return "";
   }
@@ -1659,6 +1661,7 @@ function buildEmergencyFundDurationSummary(
 interface MonthDay {
   month: number;
   day: number;
+  year?: number;
 }
 
 interface EmergencyFundCheckpoint {
@@ -1673,10 +1676,10 @@ function extractEmergencyFundCheckpoints(content: string): EmergencyFundCheckpoi
   }
   const checkpoints: EmergencyFundCheckpoint[] = [];
   const reachedAmountByDate =
-    /\breached\s+\$?\s?(\d[\d,]*(?:\.\d+)?)[^.?\n]{0,180}?\b(?:by|on)\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})/gi;
+    /\breached\s+\$?\s?(\d[\d,]*(?:\.\d+)?)[^.?\n]{0,180}?\b(?:by|on)\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:,\s*(\d{4}))?/gi;
   for (const match of content.matchAll(reachedAmountByDate)) {
     const amount = parseNumericAmount(match[1]);
-    const date = parseMonthDay(match[2], match[3]);
+    const date = parseMonthDay(match[2], match[3], match[4]);
     if (amount === undefined || !date) continue;
     checkpoints.push({
       amount,
@@ -1686,10 +1689,10 @@ function extractEmergencyFundCheckpoints(content: string): EmergencyFundCheckpoi
   }
 
   const reachedGoalByDate =
-    /\breached(?:\s+my)?\s+emergency fund goal(?:\s+of)?\s+\$?\s?(\d[\d,]*(?:\.\d+)?)[^.?\n]{0,120}?\b(?:by|on)\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})/gi;
+    /\breached(?:\s+my)?\s+emergency fund goal(?:\s+of)?\s+\$?\s?(\d[\d,]*(?:\.\d+)?)[^.?\n]{0,120}?\b(?:by|on)\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:,\s*(\d{4}))?/gi;
   for (const match of content.matchAll(reachedGoalByDate)) {
     const amount = parseNumericAmount(match[1]);
-    const date = parseMonthDay(match[2], match[3]);
+    const date = parseMonthDay(match[2], match[3], match[4]);
     if (amount === undefined || !date) continue;
     checkpoints.push({
       amount,
@@ -1707,7 +1710,7 @@ function dedupeCheckpoints(
   const seen = new Set<string>();
   const deduped: EmergencyFundCheckpoint[] = [];
   for (const checkpoint of checkpoints) {
-    const key = `${checkpoint.amount}:${checkpoint.date.month}:${checkpoint.date.day}:${checkpoint.isFullGoal}`;
+    const key = `${checkpoint.amount}:${checkpoint.date.year ?? ""}:${checkpoint.date.month}:${checkpoint.date.day}:${checkpoint.isFullGoal}`;
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(checkpoint);
@@ -1724,6 +1727,7 @@ function parseNumericAmount(value: string | undefined): number | undefined {
 function parseMonthDay(
   monthName: string | undefined,
   dayValue: string | undefined,
+  yearValue?: string,
 ): MonthDay | undefined {
   if (!monthName || !dayValue) return undefined;
   const month = MONTH_INDEX_BY_NAME[monthName.toLowerCase()];
@@ -1731,21 +1735,39 @@ function parseMonthDay(
   if (!month || !Number.isInteger(day) || day < 1 || day > 31) {
     return undefined;
   }
-  return { month, day };
+  const year = yearValue === undefined ? undefined : Number(yearValue);
+  if (year !== undefined && (!Number.isInteger(year) || year < 0)) {
+    return undefined;
+  }
+  return year === undefined ? { month, day } : { month, day, year };
 }
 
 function daysBetweenMonthDays(start: MonthDay, end: MonthDay): number {
-  const startTime = Date.UTC(2024, start.month - 1, start.day);
-  let endTime = Date.UTC(2024, end.month - 1, end.day);
-  if (endTime < startTime) {
-    endTime = Date.UTC(2025, end.month - 1, end.day);
+  const startYear = start.year ?? 2024;
+  const endYear = end.year ?? startYear;
+  const startTime = Date.UTC(startYear, start.month - 1, start.day);
+  let endTime = Date.UTC(endYear, end.month - 1, end.day);
+  if (end.year === undefined && endTime < startTime) {
+    endTime = Date.UTC(startYear + 1, end.month - 1, end.day);
   }
   return Math.round((endTime - startTime) / 86_400_000);
 }
 
 function formatMonthDay(date: MonthDay): string {
   const month = MONTH_NAME_BY_INDEX[date.month] ?? "Unknown";
-  return `${month} ${date.day}`;
+  return date.year === undefined ? `${month} ${date.day}` : `${month} ${date.day}, ${date.year}`;
+}
+
+function compareEmergencyFundCheckpoints(
+  left: EmergencyFundCheckpoint,
+  right: EmergencyFundCheckpoint,
+): number {
+  const leftYear = left.date.year ?? 2024;
+  const rightYear = right.date.year ?? 2024;
+  if (leftYear !== rightYear) return leftYear - rightYear;
+  if (left.date.month !== right.date.month) return left.date.month - right.date.month;
+  if (left.date.day !== right.date.day) return left.date.day - right.date.day;
+  return left.amount - right.amount;
 }
 
 function buildWordCountDeltaSummary(

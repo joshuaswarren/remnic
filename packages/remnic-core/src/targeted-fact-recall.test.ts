@@ -308,6 +308,37 @@ test("targeted fact recall computes emergency-fund duration between dated milest
   assert.match(recalled, /emergency fund goal of \$2,000 on August 30/);
 });
 
+test("targeted fact recall preserves years when computing dated emergency-fund intervals", async () => {
+  const sessionId = "beam-finance-duration-years";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 12,
+      role: "user",
+      content:
+        "I reached $1,200 in my emergency fund by January 1, 2023, which was the first checkpoint.",
+    },
+    {
+      turn_index: 40,
+      role: "user",
+      content:
+        "I reached my emergency fund goal of $2,000 on January 1, 2024 after a full year of saving.",
+    },
+  ], [12]);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How long after saving $1,200 did it take me to reach my full emergency fund goal?",
+    maxChars: 4_000,
+  });
+
+  assert.match(
+    recalled,
+    /Computed temporal interval: 365 days from January 1, 2023 till January 1, 2024/,
+  );
+});
+
 test("targeted fact recall computes writing metric deltas", async () => {
   const sessionId = "beam-writing-metric-core";
   const engine = new FakeTargetedFactEngine(sessionId, [
@@ -1416,6 +1447,41 @@ test("targeted fact search expansion honors configured scan caps", async () => {
     { sessionId, fromTurn: 11, toTurn: 11, maxTokens: 321 },
     { sessionId, fromTurn: 12, toTurn: 12, maxTokens: 321 },
   ]);
+  assert.doesNotMatch(recalled, /Older emergency fund context/);
+  assert.doesNotMatch(recalled, /Later emergency fund context/);
+});
+
+test("targeted fact recall preserves exact search hits omitted by expansion truncation", async () => {
+  const sessionId = "targeted-search-truncated-hit";
+  const engine = new FakeTargetedFactEngine(sessionId, [
+    {
+      turn_index: 10,
+      role: "assistant",
+      content: "Older emergency fund context should not satisfy the exact question.",
+    },
+    {
+      turn_index: 11,
+      role: "user",
+      content: "I reached 60% of my emergency fund goal after saving $3,000.",
+    },
+    {
+      turn_index: 12,
+      role: "assistant",
+      content: "Later emergency fund context should not replace the search hit.",
+    },
+  ], [11], 2);
+
+  const recalled = await buildTargetedFactRecallSection({
+    engine,
+    sessionId,
+    query:
+      "How much money had I saved when I reached 60% of my emergency fund goal?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 3,
+    maxScanWindowTokens: 321,
+  });
+
+  assert.match(recalled, /\$3,000/);
   assert.doesNotMatch(recalled, /Older emergency fund context/);
   assert.doesNotMatch(recalled, /Later emergency fund context/);
 });

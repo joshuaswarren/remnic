@@ -108,31 +108,37 @@ async function collectFocusedListItems(
       result.turn_index + searchWindowAfter,
       searchWindowTokens,
     );
-    const candidates = expanded.length > 0
-      ? expanded.map((message) => ({
-          id: `${result.session_id}:${message.turn_index}`,
-          sessionId: result.session_id,
-          turnIndex: message.turn_index,
-          role: message.role,
-          content: message.content,
-          ...(message.turn_index === result.turn_index &&
-          typeof result.score === "number"
-            ? { score: result.score }
-            : {}),
-        }))
-      : [{
-          id: `${result.session_id}:${result.turn_index}`,
-          sessionId: result.session_id,
-          turnIndex: result.turn_index,
-          role: result.role,
-          content: result.content,
-          ...(typeof result.score === "number" ? { score: result.score } : {}),
-        }];
+    const candidates: EvidencePackItem[] = expanded.map((message) => ({
+      id: `${result.session_id}:${message.turn_index}`,
+      sessionId: result.session_id,
+      turnIndex: message.turn_index,
+      role: message.role,
+      content: message.content,
+      ...(message.turn_index === result.turn_index &&
+      typeof result.score === "number"
+        ? { score: result.score }
+        : {}),
+    }));
+    if (!candidates.some((candidate) => candidate.turnIndex === result.turn_index)) {
+      candidates.unshift({
+        id: `${result.session_id}:${result.turn_index}`,
+        sessionId: result.session_id,
+        turnIndex: result.turn_index,
+        role: result.role,
+        content: result.content,
+        ...(typeof result.score === "number" ? { score: result.score } : {}),
+      });
+    }
 
     for (const candidate of candidates) {
-      if (seen.has(candidate.id)) continue;
+      const candidateId = candidate.id ?? (
+        candidate.sessionId && typeof candidate.turnIndex === "number"
+          ? `${candidate.sessionId}:${candidate.turnIndex}`
+          : undefined
+      );
+      if (candidateId && seen.has(candidateId)) continue;
       if (!isFocusedListEvidence(candidate, options.query, intent)) continue;
-      seen.add(candidate.id);
+      if (candidateId) seen.add(candidateId);
       items.push(candidate);
     }
   }

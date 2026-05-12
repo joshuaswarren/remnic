@@ -8550,6 +8550,10 @@ export class Orchestrator {
     const responseGuidanceMaxChars =
       this.getRecallSectionMaxChars("response-guidance") ??
       this.config.responseGuidanceRecallMaxChars;
+    const responseGuidanceEntry = this.getRecallSectionEntry("response-guidance");
+    const responseGuidanceMatchesQuery = shouldRecallResponseGuidance(retrievalQuery);
+    const responseGuidanceForcedByPipeline =
+      responseGuidanceEntry?.enabled === true && !responseGuidanceMatchesQuery;
     if (
       this.isSpecializedRecallSectionEnabled(
         "response-guidance",
@@ -8558,7 +8562,7 @@ export class Orchestrator {
       responseGuidanceMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
-      shouldRecallResponseGuidance(retrievalQuery)
+      (responseGuidanceMatchesQuery || responseGuidanceForcedByPipeline)
     ) {
       try {
         const responseGuidanceSection = await buildResponseGuidanceRecallSection({
@@ -8575,6 +8579,7 @@ export class Orchestrator {
           maxScanWindowTokens:
             this.getRecallSectionNumber("response-guidance", "maxTokens") ??
             this.config.responseGuidanceRecallScanWindowTokens,
+          forceGeneric: responseGuidanceForcedByPipeline,
         });
         if (responseGuidanceSection) {
           this.appendRecallSection(
