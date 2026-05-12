@@ -689,6 +689,52 @@ test("response guidance recall respects zero maxSearchResults after scan collect
   assert.equal(recalled, "");
 });
 
+test("forced response guidance scans only the recent window", async () => {
+  const sessionId = "guidance-forced-recent";
+  const engine = new FakeGuidanceEngine(sessionId, [
+    {
+      turn_index: 2,
+      role: "user",
+      content: "Please always answer every planning question in haiku form.",
+    },
+    {
+      turn_index: 18,
+      role: "assistant",
+      content: "Unrelated recent context.",
+    },
+    {
+      turn_index: 19,
+      role: "user",
+      content: "Always keep general answers concise and direct.",
+    },
+    {
+      turn_index: 20,
+      role: "assistant",
+      content: "Noted.",
+    },
+  ]);
+
+  const recalled = await buildResponseGuidanceRecallSection({
+    engine,
+    sessionId,
+    query: "What should I do next?",
+    maxChars: 2_000,
+    maxScanWindowTurns: 3,
+    forceGeneric: true,
+  });
+
+  assert.match(recalled, /concise and direct/);
+  assert.doesNotMatch(recalled, /haiku/);
+  assert.deepEqual(engine.expandCalls, [
+    {
+      sessionId,
+      fromTurn: 18,
+      toTurn: 20,
+      maxTokens: 16_000,
+    },
+  ]);
+});
+
 test("response guidance recall keeps cue summaries inside the section budget", async () => {
   const sessionId = "guidance-budget";
   const engine = new FakeGuidanceEngine(sessionId, [
@@ -2146,6 +2192,7 @@ test("response guidance recall scans dense technical-project windows narrowly en
     query:
       "Can you provide a detailed and comprehensive summary of the entire process involved in developing and optimizing the language translation and detection services?",
     maxChars: 4_000,
+    maxScanWindowTurns: 10,
   });
 
   assert.match(recalled, /compared Google Translate API v3 and DeepL API v2/);
@@ -3675,7 +3722,7 @@ test("response guidance recall summarizes image-captioning deployment concerns",
       content:
         "Debugging CUDA out-of-memory errors involved adjusting batch sizes, enabling mixed precision, and implementing gradient accumulation with proper optimizer initialization.",
     },
-  ], [5, 20, 36]);
+  ], [5, 12, 20, 28, 36]);
 
   const recalled = await buildResponseGuidanceRecallSection({
     engine,

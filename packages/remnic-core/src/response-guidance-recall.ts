@@ -298,25 +298,24 @@ async function collectGuidanceScanItems(
     normalizePositiveInteger(options.maxScanWindowTokens ?? DEFAULT_SCAN_WINDOW_TOKENS),
   );
   const items: EvidencePackItem[] = [];
+  const fromTurn = Math.max(0, maxTurn - windowTurns + 1);
+  const toTurn = maxTurn;
 
-  for (let fromTurn = 0; fromTurn <= maxTurn; fromTurn += windowTurns) {
-    const toTurn = Math.min(maxTurn, fromTurn + windowTurns - 1);
-    const messages = await engine.expandContext(
-      options.sessionId,
-      fromTurn,
-      toTurn,
-      windowTokens,
-    );
-    for (const message of messages) {
+  const messages = await engine.expandContext(
+    options.sessionId,
+    fromTurn,
+    toTurn,
+    windowTokens,
+  );
+  for (const message of messages) {
     if (!isGuidanceEvidence(message.content, options.query, intents, options.forceGeneric === true)) continue;
-      items.push({
-        id: `${options.sessionId}:${message.turn_index}`,
-        sessionId: options.sessionId,
-        turnIndex: message.turn_index,
-        role: message.role,
-        content: message.content,
-      });
-    }
+    items.push({
+      id: `${options.sessionId}:${message.turn_index}`,
+      sessionId: options.sessionId,
+      turnIndex: message.turn_index,
+      role: message.role,
+      content: message.content,
+    });
   }
 
   return items;
