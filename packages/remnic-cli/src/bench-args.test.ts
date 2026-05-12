@@ -62,8 +62,25 @@ test("parseBenchArgs rejects unknown published --name", () => {
         "--model",
         "m",
       ]),
-    /--name must be one of longmemeval, locomo/,
+    /--name must be one of longmemeval, locomo, beam/,
   );
+});
+
+test("parseBenchArgs accepts BEAM as a published benchmark", () => {
+  const parsed = parseBenchArgs([
+    "published",
+    "--name",
+    "beam",
+    "--dataset",
+    "/tmp/bench-datasets/beam",
+    "--model",
+    "gpt-5.5",
+  ]);
+
+  assert.equal(parsed.action, "published");
+  assert.equal(parsed.publishedName, "beam");
+  assert.equal(parsed.datasetDir, "/tmp/bench-datasets/beam");
+  assert.equal(parsed.systemModel, "gpt-5.5");
 });
 
 test("parseBenchArgs rejects non-integer --limit", () => {
@@ -136,6 +153,21 @@ test("parseBenchArgs rejects published --trial-limit for non-LoCoMo benchmarks",
         "published",
         "--name",
         "longmemeval",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--trial-limit",
+        "1",
+      ]),
+    /--trial-limit is currently supported only for LoCoMo/,
+  );
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "beam",
         "--dataset",
         "/tmp",
         "--model",
@@ -531,6 +563,99 @@ test("parseBenchArgs --dry-run sets publishedDryRun = true", () => {
     "--dry-run",
   ]);
   assert.equal(parsed.publishedDryRun, true);
+});
+
+test("parseBenchArgs accepts BEAM diagnostic --task-filter", () => {
+  const parsed = parseBenchArgs([
+    "published",
+    "--name",
+    "beam",
+    "--dataset",
+    "/tmp",
+    "--model",
+    "m",
+    "--task-filter",
+    "instruction_following",
+  ]);
+  assert.equal(parsed.publishedTaskFilter, "instruction_following");
+  assert.deepEqual(parsed.benchmarks, []);
+});
+
+test("parseBenchArgs accepts --task-filter for bench run beam", () => {
+  const parsed = parseBenchArgs([
+    "run",
+    "beam",
+    "--task-filter",
+    "instruction_following",
+  ]);
+
+  assert.equal(parsed.publishedTaskFilter, "instruction_following");
+  assert.deepEqual(parsed.benchmarks, ["beam"]);
+});
+
+test("parseBenchArgs rejects --task-filter for non-BEAM benchmarks", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "locomo",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--task-filter",
+        "instruction_following",
+      ]),
+    /--task-filter is currently supported only for BEAM/,
+  );
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "longmemeval",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--task-filter",
+        "instruction_following",
+      ]),
+    /--task-filter is currently supported only for BEAM/,
+  );
+});
+
+test("parseBenchArgs rejects --task-filter when BEAM is not the only selected benchmark", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "beam",
+        "locomo",
+        "--task-filter",
+        "instruction_following",
+      ]),
+    /--task-filter is currently supported only for BEAM/,
+  );
+});
+
+test("parseBenchArgs rejects empty --task-filter", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "beam",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--task-filter",
+        " ",
+      ]),
+    /--task-filter must not be empty/,
+  );
 });
 
 test("parseBenchArgs --limit 0 preserved (CLAUDE.md rule 27 slice-negative-zero)", () => {

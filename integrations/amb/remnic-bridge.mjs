@@ -769,10 +769,18 @@ async function loadBenchModule(env = process.env) {
   }
 
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const sourceIndex = path.resolve(here, "../../packages/bench/src/index.ts");
-  if (existsSync(sourceIndex)) {
+  const sourceAdapter = path.resolve(here, "../../packages/bench/src/adapters/remnic-adapter.ts");
+  const sourceRuntimeProfiles = path.resolve(here, "../../packages/bench/src/runtime-profiles.ts");
+  if (existsSync(sourceAdapter) && existsSync(sourceRuntimeProfiles)) {
     try {
-      return await import(pathToFileURL(sourceIndex).href);
+      const [adapter, runtimeProfiles] = await Promise.all([
+        import(pathToFileURL(sourceAdapter).href),
+        import(pathToFileURL(sourceRuntimeProfiles).href),
+      ]);
+      return {
+        createRemnicAdapter: adapter.createRemnicAdapter,
+        resolveBenchRuntimeProfile: runtimeProfiles.resolveBenchRuntimeProfile,
+      };
     } catch (error) {
       if (env.REMNIC_AMB_IMPORT === "source") {
         throw error;

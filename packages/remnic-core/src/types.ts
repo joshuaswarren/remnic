@@ -1558,6 +1558,26 @@ export interface PluginConfig {
   explicitCueRecallMaxChars: number;
   /** Maximum query-visible cues expanded per recall. */
   explicitCueRecallMaxReferences: number;
+  /** Enable chronological event-order evidence recall. */
+  eventOrderRecallEnabled: boolean;
+  /** Character budget for chronological event-order evidence. */
+  eventOrderRecallMaxChars: number;
+  /** Maximum chronological event items injected per recall. */
+  eventOrderRecallMaxResults: number;
+  /** Number of turns scanned per chronological event expansion window. */
+  eventOrderRecallScanWindowTurns: number;
+  /** Token budget per chronological event expansion window. */
+  eventOrderRecallScanWindowTokens: number;
+  /** Enable response-guidance evidence recall. */
+  responseGuidanceRecallEnabled: boolean;
+  /** Character budget for response-guidance evidence. */
+  responseGuidanceRecallMaxChars: number;
+  /** Maximum response-guidance items injected per recall. */
+  responseGuidanceRecallMaxResults: number;
+  /** Number of turns scanned per response-guidance expansion window. */
+  responseGuidanceRecallScanWindowTurns: number;
+  /** Token budget per response-guidance expansion window. */
+  responseGuidanceRecallScanWindowTokens: number;
   // Lossless Context Management (LCM)
   lcmEnabled: boolean;
   lcmLeafBatchSize: number;

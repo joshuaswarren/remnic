@@ -68,6 +68,27 @@ function parseBoundedIntegerMs(
   return Math.min(max, Math.max(min, Math.floor(coerced)));
 }
 
+function parseIntegerAtLeast(
+  value: unknown,
+  fallback: number,
+  min: number,
+  keyName: string,
+): number {
+  if (value === undefined || value === null) return fallback;
+  const coerced = coerceNumber(value);
+  if (
+    coerced === undefined ||
+    !Number.isFinite(coerced) ||
+    !Number.isInteger(coerced) ||
+    coerced < min
+  ) {
+    throw new Error(
+      `${keyName} must be an integer greater than or equal to ${min}; got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
+}
+
 // Coerce common string/number representations of a boolean to a real boolean.
 // Returns `undefined` when the value cannot be interpreted, so callers can
 // fall back to their own default. Guards against the "string `false` is
@@ -2756,6 +2777,26 @@ export function parseConfig(raw: unknown): PluginConfig {
       coerceNumber(cfg.explicitCueRecallMaxReferences) !== undefined
         ? Math.max(0, Math.floor(coerceNumber(cfg.explicitCueRecallMaxReferences)!))
         : 24,
+    eventOrderRecallEnabled:
+      coerceBool(cfg.eventOrderRecallEnabled) === true,
+    eventOrderRecallMaxChars:
+      parseIntegerAtLeast(cfg.eventOrderRecallMaxChars, 2400, 0, "eventOrderRecallMaxChars"),
+    eventOrderRecallMaxResults:
+      parseIntegerAtLeast(cfg.eventOrderRecallMaxResults, 24, 0, "eventOrderRecallMaxResults"),
+    eventOrderRecallScanWindowTurns:
+      parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTurns, 12, 1, "eventOrderRecallScanWindowTurns"),
+    eventOrderRecallScanWindowTokens:
+      parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTokens, 24_000, 1, "eventOrderRecallScanWindowTokens"),
+    responseGuidanceRecallEnabled:
+      coerceBool(cfg.responseGuidanceRecallEnabled) === true,
+    responseGuidanceRecallMaxChars:
+      parseIntegerAtLeast(cfg.responseGuidanceRecallMaxChars, 2400, 0, "responseGuidanceRecallMaxChars"),
+    responseGuidanceRecallMaxResults:
+      parseIntegerAtLeast(cfg.responseGuidanceRecallMaxResults, 48, 0, "responseGuidanceRecallMaxResults"),
+    responseGuidanceRecallScanWindowTurns:
+      parseIntegerAtLeast(cfg.responseGuidanceRecallScanWindowTurns, 64, 1, "responseGuidanceRecallScanWindowTurns"),
+    responseGuidanceRecallScanWindowTokens:
+      parseIntegerAtLeast(cfg.responseGuidanceRecallScanWindowTokens, 16_000, 1, "responseGuidanceRecallScanWindowTokens"),
     // Lossless Context Management (LCM)
     lcmEnabled: cfg.lcmEnabled === true,
     lcmLeafBatchSize:
@@ -3371,6 +3412,22 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
         coerceNumber(cfg.explicitCueRecallMaxReferences) !== undefined
           ? Math.max(0, Math.floor(coerceNumber(cfg.explicitCueRecallMaxReferences)!))
           : 24,
+    },
+    {
+      id: "event-order",
+      enabled: coerceBool(cfg.eventOrderRecallEnabled) === true,
+      maxChars: parseIntegerAtLeast(cfg.eventOrderRecallMaxChars, 2400, 0, "eventOrderRecallMaxChars"),
+      maxResults: parseIntegerAtLeast(cfg.eventOrderRecallMaxResults, 24, 0, "eventOrderRecallMaxResults"),
+      maxTurns: parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTurns, 12, 1, "eventOrderRecallScanWindowTurns"),
+      maxTokens: parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTokens, 24_000, 1, "eventOrderRecallScanWindowTokens"),
+    },
+    {
+      id: "response-guidance",
+      enabled: coerceBool(cfg.responseGuidanceRecallEnabled) === true,
+      maxChars: parseIntegerAtLeast(cfg.responseGuidanceRecallMaxChars, 2400, 0, "responseGuidanceRecallMaxChars"),
+      maxResults: parseIntegerAtLeast(cfg.responseGuidanceRecallMaxResults, 48, 0, "responseGuidanceRecallMaxResults"),
+      maxTurns: parseIntegerAtLeast(cfg.responseGuidanceRecallScanWindowTurns, 64, 1, "responseGuidanceRecallScanWindowTurns"),
+      maxTokens: parseIntegerAtLeast(cfg.responseGuidanceRecallScanWindowTokens, 16_000, 1, "responseGuidanceRecallScanWindowTokens"),
     },
     {
       id: "profile",

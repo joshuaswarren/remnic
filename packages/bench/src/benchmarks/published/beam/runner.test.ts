@@ -1,10 +1,93 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { beamDefinition, runBeamBenchmark } from "./runner.ts";
+import {
+  beamDefinition,
+  loadBeamDatasetPreview,
+  runBeamBenchmark,
+} from "./runner.ts";
+
+test("BEAM dataset preview validates dataset files without model calls", async () => {
+  const datasetDir = await mkdtemp(path.join(tmpdir(), "remnic-beam-preview-"));
+  await writeFile(
+    path.join(datasetDir, "beam_100k.json"),
+    JSON.stringify([
+      {
+        conversation_id: "preview",
+        chat: [[{ role: "user", content: "Remember the sprint ends March 29." }]],
+        probing_questions: {
+          date_recall: [
+            {
+              question: "When does the sprint end?",
+              answer: "March 29",
+            },
+          ],
+          instruction_following: [
+            {
+              question: "How should implementation help be formatted?",
+              answer: "Use syntax-highlighted code blocks.",
+            },
+          ],
+        },
+      },
+    ]),
+  );
+
+  const preview = await loadBeamDatasetPreview({
+    mode: "full",
+    datasetDir,
+  });
+
+  assert.equal(preview.source, "dataset");
+  assert.deepEqual(preview.files, ["beam_100k.json"]);
+  assert.equal(preview.items, 1);
+  assert.equal(preview.tasks, 2);
+  assert.deepEqual(preview.errors, []);
+});
+
+test("BEAM dataset preview detects parquet dataset files", async () => {
+  const datasetDir = await mkdtemp(path.join(tmpdir(), "remnic-beam-parquet-"));
+  await writeFile(path.join(datasetDir, "beam_100k.parquet"), "");
+
+  const preview = await loadBeamDatasetPreview({
+    mode: "full",
+    datasetDir,
+    limit: 1,
+  });
+
+  assert.equal(preview.source, "missing");
+  assert.deepEqual(preview.files, ["beam_100k.parquet"]);
+  assert.equal(preview.errors.length, 1);
+  assert.ok((preview.errors[0] ?? "").length > 0);
+});
+
+test("BEAM parquet loader reads bounded row batches instead of whole shards", async () => {
+  const source = await readFile(new URL("./runner.ts", import.meta.url), "utf8");
+
+  assert.match(source, /const PARQUET_ROW_BATCH_SIZE = 256;/);
+  assert.match(source, /rowStart \+= PARQUET_ROW_BATCH_SIZE/);
+  assert.match(source, /metadata,/);
+  assert.match(source, /useOffsetIndex: true,/);
+  assert.doesNotMatch(
+    source,
+    /const rows = await parquetReadObjects\(\{\s*file,\s*rowStart: 0,\s*rowEnd,/s,
+  );
+});
+
+test("BEAM dataset preview reports missing full datasets", async () => {
+  const preview = await loadBeamDatasetPreview({
+    mode: "full",
+    datasetDir: path.join(tmpdir(), "missing-remnic-beam-dataset"),
+  });
+
+  assert.equal(preview.source, "missing");
+  assert.equal(preview.items, 0);
+  assert.equal(preview.tasks, 0);
+  assert.equal(preview.errors.length, 1);
+});
 
 test("BEAM quick mode uses answer formats for concise facts and remembered instructions", async () => {
   const prompts: string[] = [];
@@ -100,6 +183,58 @@ test("BEAM quick mode uses answer formats for concise facts and remembered instr
     )?.scores.rubric_coverage,
     1,
   );
+});
+
+test("BEAM task filter runs only matching diagnostic tasks", async () => {
+  const result = await runBeamBenchmark({
+    benchmark: beamDefinition,
+    mode: "quick",
+    benchmarkOptions: { taskFilter: "instruction_following" },
+    system: {
+      async reset() {},
+      async store() {},
+      async recall(_sessionId, question) {
+        return [
+          "Whenever I ask about implementation, format the answer with syntax-highlighted code blocks.",
+          `Question: ${question}`,
+        ].join("\n");
+      },
+      async search() {
+        return [{ id: "hit", text: "hit" }];
+      },
+      async destroy() {},
+      async getStats() {
+        return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+      },
+      responder: {
+        async respond() {
+          return {
+            text: "Always format implementation help with syntax-highlighted code blocks.",
+            tokens: { input: 1, output: 1 },
+            latencyMs: 1,
+            model: "beam-test-responder",
+          };
+        },
+      },
+      judge: {
+        async score() {
+          return 1;
+        },
+        async scoreWithMetrics() {
+          return {
+            score: 1,
+            tokens: { input: 0, output: 0 },
+            latencyMs: 0,
+            model: "beam-test-judge",
+          };
+        },
+      },
+    },
+  });
+
+  assert.equal(result.results.tasks.length, 1);
+  assert.match(result.results.tasks[0]?.taskId ?? "", /instruction_following/);
+  assert.equal(result.config.benchmarkOptions?.taskFilter, "instruction_following");
 });
 
 test("BEAM refines unknown and hedged answers from source-chat evidence", async () => {

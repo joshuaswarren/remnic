@@ -357,6 +357,12 @@ export const BENCHMARK_CATALOG: BenchCatalogEntry[] = [
     category: "conversational",
     summary: "Long-conversation memory benchmark for persistent dialogue context.",
   },
+  {
+    id: "beam",
+    title: "BEAM",
+    category: "retrieval",
+    summary: "Beyond a Million Tokens benchmark for long-term memory abilities.",
+  },
 ];
 
 const BENCHMARK_IDS = new Set(BENCHMARK_CATALOG.map((entry) => entry.id));
@@ -579,6 +585,17 @@ type PackageBenchModule = {
     items: unknown[];
     errors: string[];
   }>;
+  loadBeamDatasetPreview?: (options: {
+    mode: "full" | "quick";
+    datasetDir?: string;
+    limit?: number;
+  }) => Promise<{
+    source: "dataset" | "smoke" | "missing";
+    files: string[];
+    items: number;
+    tasks: number;
+    errors: string[];
+  }>;
 };
 
 interface TrainingExportOptions {
@@ -721,7 +738,7 @@ export function getBenchUsageText(): string {
 Commands:
   list                     List published benchmark packs
   run [benchmark...]       Run one or more benchmark packs
-  published --name <longmemeval|locomo> --dataset <path> --model <id>
+  published --name <longmemeval|locomo|beam> --dataset <path> --model <id>
                            Run a published benchmark with leaderboard-friendly flags
                            (see issue #566 slice 4). Accepts --limit, --seed,
                            --trial-limit, --out, --dry-run, --provider, --base-url.
@@ -802,6 +819,7 @@ Options:
   --baselines-dir <path>   Override the named baseline directory
   --threshold <value>      Regression threshold for compare (default: 0.05)
   --trial-limit <n>        Cap scored LoCoMo QA trials for staged published runs
+  --task-filter <pattern>  BEAM diagnostic filter; match task id, ability, or question text
   --detail                 Include per-task details for bench results
   --format <json|csv|html> Output format for bench export
   --output <path>          Write bench export output to a file
@@ -1176,6 +1194,11 @@ const DOWNLOADED_DATASET_MARKERS: Record<string, { anyOf?: string[]; ext?: strin
       "500k.json",
       "1m.json",
       "10m.json",
+      "data/100K-00000-of-00001.parquet",
+      "data/500K-00000-of-00001.parquet",
+      "data/1M-00000-of-00001.parquet",
+      "data/10M-00000-of-00002.parquet",
+      "data/10M-00001-of-00002.parquet",
     ],
   },
   personamem: {
@@ -2127,13 +2150,13 @@ async function publishBenchPackageResults(parsed: ParsedBenchArgs): Promise<void
 }
 
 /**
- * `remnic bench published --name <longmemeval|locomo> --dataset <path>
+ * `remnic bench published --name <longmemeval|locomo|beam> --dataset <path>
  *    --model <id> --limit <n> --trial-limit <n> --seed <n> --out <dir> [--dry-run]
  *    [--provider openai|anthropic|ollama|litellm] [--base-url <url>]`
  *
  * Issue #566 PR 4/7. Thin wrapper that routes the user's flags into the
  * existing `runBenchViaPackage` machinery. The wrapper is deliberately
- * narrow: it only accepts the two published benchmark IDs, enforces the
+ * narrow: it only accepts the supported published benchmark IDs, enforces the
  * `--name` + `--dataset` invariants at the boundary, and — in `--dry-run`
  * — loads the dataset and prints a preview without calling any LLM.
  *
@@ -2145,7 +2168,7 @@ async function publishBenchPackageResults(parsed: ParsedBenchArgs): Promise<void
 async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
   if (!parsed.publishedName) {
     console.error(
-      "ERROR: `bench published` requires --name longmemeval|locomo.",
+      "ERROR: `bench published` requires --name longmemeval|locomo|beam.",
     );
     process.exit(1);
   }
@@ -2224,6 +2247,22 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
       itemCount = loadResult.items.length;
       console.log(
         `[dry-run] locomo: source=${loadResult.source} filename=${loadResult.filename ?? "<smoke>"} items=${itemCount} errors=${loadResult.errors.length}`,
+      );
+    } else if (benchmarkId === "beam" && benchModule.loadBeamDatasetPreview) {
+      const preview = await benchModule.loadBeamDatasetPreview({
+        mode,
+        datasetDir: parsed.datasetDir,
+        limit: effectiveLimit,
+      });
+      loadResult = {
+        source: preview.source,
+        filename: preview.files.join(",") || undefined,
+        items: [],
+        errors: preview.errors,
+      };
+      itemCount = preview.items;
+      console.log(
+        `[dry-run] beam: source=${preview.source} files=${preview.files.length} items=${preview.items} tasks=${preview.tasks} errors=${preview.errors.length}`,
       );
     } else {
       console.error(
@@ -2428,6 +2467,8 @@ async function runBenchViaPackage(
             : {}),
           replayExtractionMode: "skip",
         }
+      : benchmarkId === "beam" && parsed.publishedTaskFilter !== undefined
+        ? { taskFilter: parsed.publishedTaskFilter }
       : undefined;
 
   try {

@@ -187,7 +187,10 @@ class RemnicMemoryProvider(MemoryProvider):
 
         cmd = self._bridge_command()
         env = os.environ.copy()
-        cwd = env.get("REMNIC_REPO_PATH")
+        cwd = self._repo_root()
+        if cwd:
+            env.setdefault("REMNIC_REPO_PATH", cwd)
+            env.setdefault("REMNIC_REPO_ROOT", cwd)
         if self._store_dir is not None:
             env["REMNIC_AMB_STORE_DIR"] = str(self._store_dir)
         self._stderr_tail.clear()
@@ -209,14 +212,18 @@ class RemnicMemoryProvider(MemoryProvider):
         if explicit:
             return shlex.split(explicit)
 
-        repo = os.environ.get("REMNIC_REPO_PATH")
+        repo = self._repo_root()
         if not repo:
             raise RuntimeError(
-                "REMNIC_REPO_PATH is required unless REMNIC_AMB_BRIDGE_CMD is set. "
+                "REMNIC_REPO_PATH or REMNIC_REPO_ROOT is required unless "
+                "REMNIC_AMB_BRIDGE_CMD is set. "
                 "Point it at a Remnic checkout."
             )
         bridge = Path(repo) / "integrations" / "amb" / "remnic-bridge.mjs"
         return ["pnpm", "exec", "tsx", str(bridge)]
+
+    def _repo_root(self) -> str | None:
+        return os.environ.get("REMNIC_REPO_PATH") or os.environ.get("REMNIC_REPO_ROOT")
 
     def _request(
         self,

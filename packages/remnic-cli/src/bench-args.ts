@@ -86,7 +86,7 @@ export interface ParsedBenchArgs {
   amaBenchCrossJudgeBaseUrl?: string;
   amaBenchCrossJudgeApiKey?: string;
   amaBenchCrossJudgeCodexReasoningEffort?: BenchCodexReasoningEffort;
-  /** `bench published` — specific benchmark to run (longmemeval|locomo). */
+  /** `bench published` — specific benchmark to run (longmemeval|locomo|beam). */
   publishedName?: PublishedBenchmarkName;
   /** `bench published` — seed forwarded into the harness context. */
   publishedSeed?: number;
@@ -94,6 +94,8 @@ export interface ParsedBenchArgs {
   publishedLimit?: number;
   /** `bench published` — scored trial cap forwarded into benchmark-specific options. */
   publishedTrialLimit?: number;
+  /** `bench published` — benchmark-specific task/ability filter for diagnostic runs. */
+  publishedTaskFilter?: string;
   /** `bench published` — published artifact output directory. */
   publishedOut?: string;
   /** `bench published` — dry-run: validate + load but do NOT call the model. */
@@ -104,9 +106,9 @@ export interface ParsedBenchArgs {
   retryFailed?: boolean;
 }
 
-export type PublishedBenchmarkName = "longmemeval" | "locomo";
+export type PublishedBenchmarkName = "longmemeval" | "locomo" | "beam";
 export const PUBLISHED_BENCHMARK_NAMES: readonly PublishedBenchmarkName[] =
-  Object.freeze(["longmemeval", "locomo"]);
+  Object.freeze(["longmemeval", "locomo", "beam"]);
 
 function isBenchRuntimeProfile(value: string): value is BenchRuntimeProfile {
   return (
@@ -233,6 +235,7 @@ export function collectBenchmarks(argv: string[]): string[] {
       arg === "--model" ||
       arg === "--limit" ||
       arg === "--trial-limit" ||
+      arg === "--task-filter" ||
       arg === "--seed" ||
       arg === "--out" ||
       arg === "--provider" ||
@@ -591,6 +594,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const publishedModelRaw = readBenchOptionValue(args, "--model");
   const publishedLimitRaw = readBenchOptionValue(args, "--limit");
   const publishedTrialLimitRaw = readBenchOptionValue(args, "--trial-limit");
+  const publishedTaskFilterRaw = readBenchOptionValue(args, "--task-filter");
   const publishedSeedRaw = readBenchOptionValue(args, "--seed");
   const publishedOutRaw = readBenchOptionValue(args, "--out");
   const publishedProviderRaw = readBenchOptionValue(args, "--provider");
@@ -644,6 +648,27 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     );
   if (publishedTrialLimit !== undefined && !trialLimitTargetsLoCoMo) {
     throw new Error("ERROR: --trial-limit is currently supported only for LoCoMo.");
+  }
+
+  let publishedTaskFilter: string | undefined;
+  if (publishedTaskFilterRaw !== undefined) {
+    const taskFilterTargetsBeam =
+      publishedName === "beam" ||
+      (
+        publishedName === undefined &&
+        action !== "published" &&
+        !args.includes("--all") &&
+        benchmarks.length === 1 &&
+        benchmarks[0] === "beam"
+      );
+    if (!taskFilterTargetsBeam) {
+      throw new Error("ERROR: --task-filter is currently supported only for BEAM.");
+    }
+    const trimmed = publishedTaskFilterRaw.trim();
+    if (trimmed.length === 0) {
+      throw new Error("ERROR: --task-filter must not be empty.");
+    }
+    publishedTaskFilter = trimmed;
   }
 
   let publishedSeed: number | undefined;
@@ -837,6 +862,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     publishedSeed,
     publishedLimit,
     publishedTrialLimit,
+    publishedTaskFilter,
     publishedOut: publishedOutRaw
       ? path.resolve(expandTilde(publishedOutRaw))
       : undefined,

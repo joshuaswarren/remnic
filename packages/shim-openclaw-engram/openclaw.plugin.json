@@ -2338,6 +2338,64 @@
         "minimum": 0,
         "description": "Maximum query-visible cues expanded by explicit cue recall."
       },
+      "eventOrderRecallEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable chronological event-order evidence recall."
+      },
+      "eventOrderRecallMaxChars": {
+        "type": "integer",
+        "default": 2400,
+        "minimum": 0,
+        "description": "Character budget for the chronological event-order evidence recall section."
+      },
+      "eventOrderRecallMaxResults": {
+        "type": "integer",
+        "default": 24,
+        "minimum": 0,
+        "description": "Maximum chronological event-order evidence items injected per recall."
+      },
+      "eventOrderRecallScanWindowTurns": {
+        "type": "integer",
+        "default": 12,
+        "minimum": 1,
+        "description": "Number of turns scanned per chronological event-order expansion window."
+      },
+      "eventOrderRecallScanWindowTokens": {
+        "type": "integer",
+        "default": 24000,
+        "minimum": 1,
+        "description": "Token budget per chronological event-order expansion window."
+      },
+      "responseGuidanceRecallEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable response-guidance evidence recall."
+      },
+      "responseGuidanceRecallMaxChars": {
+        "type": "integer",
+        "default": 2400,
+        "minimum": 0,
+        "description": "Character budget for the response-guidance evidence recall section."
+      },
+      "responseGuidanceRecallMaxResults": {
+        "type": "integer",
+        "default": 48,
+        "minimum": 0,
+        "description": "Maximum response-guidance evidence items injected per recall."
+      },
+      "responseGuidanceRecallScanWindowTurns": {
+        "type": "integer",
+        "default": 64,
+        "minimum": 1,
+        "description": "Number of turns scanned per response-guidance expansion window."
+      },
+      "responseGuidanceRecallScanWindowTokens": {
+        "type": "integer",
+        "default": 16000,
+        "minimum": 1,
+        "description": "Token budget per response-guidance expansion window."
+      },
       "queryExpansionEnabled": {
         "type": "boolean",
         "default": false,

@@ -32,6 +32,7 @@ import { DEFAULT_BENCH_RECALL_BUDGET_CHARS } from "../recall-budget.js";
 
 export interface RemnicAdapterOptions {
   configOverrides?: Record<string, unknown>;
+  memoryDir?: string;
   preserveRuntimeDefaults?: boolean;
   responder?: BenchResponder;
   judge?: BenchJudge;
@@ -259,13 +260,12 @@ async function createBenchOrchestrator(
   mode: BenchAdapterMode,
   overrides?: Record<string, unknown>,
   preserveRuntimeDefaults = false,
-  sandboxDir?: string,
+  configuredMemoryDir?: string,
 ): Promise<BenchOrchestratorState> {
-  const configuredSandboxDir =
-    typeof sandboxDir === "string" && sandboxDir.trim().length > 0
-      ? path.resolve(expandTildePath(sandboxDir.trim()))
-      : undefined;
-  const tempDir = configuredSandboxDir ?? await mkdtemp(path.join(tmpdir(), `remnic-bench-${mode}-`));
+  const tempDir = configuredMemoryDir
+    ? path.resolve(expandTildePath(configuredMemoryDir))
+    : await mkdtemp(path.join(tmpdir(), `remnic-bench-${mode}-`));
+  const ownsTempDir = !configuredMemoryDir;
   await mkdir(tempDir, { recursive: true });
   await mkdir(path.join(tempDir, "state"), { recursive: true });
   const qmdSandbox = await createBenchQmdSandbox(tempDir, overrides);
@@ -292,12 +292,7 @@ async function createBenchOrchestrator(
     throw new Error("Remnic benchmark adapter requires LCM to be enabled.");
   }
 
-  return {
-    tempDir,
-    ownsTempDir: configuredSandboxDir === undefined,
-    orchestrator,
-    qmdSandbox,
-  };
+  return { tempDir, ownsTempDir, orchestrator, qmdSandbox };
 }
 
 async function createBenchQmdSandbox(
@@ -437,6 +432,20 @@ function normalizeBenchMessageTimestamp(value: unknown): string | undefined {
   return new Date(parsed).toISOString();
 }
 
+function normalizeConfiguredBenchDir(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveConfiguredBenchDir(options: RemnicAdapterOptions): string | undefined {
+  const memoryDir = normalizeConfiguredBenchDir(options.memoryDir);
+  const sandboxDir = normalizeConfiguredBenchDir(options.sandboxDir);
+  return sandboxDir ?? memoryDir;
+}
+
 async function removeBenchQmdSandbox(sandbox: BenchQmdSandbox): Promise<void> {
   if (!sandbox.indexName.startsWith("remnic-bench-")) {
     return;
@@ -457,11 +466,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       options.replaySourceValidAtMode,
     );
     const drainTimeoutMs = normalizeDrainTimeoutMs(options.drainTimeoutMs);
+    const configuredBenchDir = resolveConfiguredBenchDir(options);
     let state = await createBenchOrchestrator(
       mode,
       options.configOverrides,
       options.preserveRuntimeDefaults === true,
-      options.sandboxDir,
+      configuredBenchDir,
     );
     const sessionTurnCounters = new Map<string, number>();
 
@@ -473,9 +483,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       return engine;
     };
 
-    const cleanup = async (
-      optionsForCleanup: { removePersistentDir?: boolean } = {},
-    ): Promise<void> => {
+    const cleanup = async (): Promise<void> => {
       const orchestrator = state.orchestrator as unknown as OrchestratorTeardownView;
 
       orchestrator.abortDeferredInit();
@@ -493,25 +501,29 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       ]);
       await orchestrator.qmd.dispose?.();
       orchestrator.lcmEngine?.close();
-      const shouldRemoveSandbox = state.ownsTempDir || optionsForCleanup.removePersistentDir === true;
-      if (shouldRemoveSandbox) {
-        try {
-          await removeBenchQmdSandbox(state.qmdSandbox);
-        } catch {
-          // QMD sandbox cleanup is best-effort; the benchmark temp dir must
-          // still be removed even if a sqlite/config artifact is busy.
-        }
+      try {
+        await removeBenchQmdSandbox(state.qmdSandbox);
+      } catch {
+        // QMD sandbox cleanup is best-effort; the benchmark temp dir must
+        // still be removed even if a sqlite/config artifact is busy.
+      }
+      if (state.ownsTempDir) {
         await rm(state.tempDir, { recursive: true, force: true });
       }
     };
 
     const rebuild = async (): Promise<void> => {
-      await cleanup({ removePersistentDir: true });
+      const shouldClearCallerOwnedMemoryDir = !state.ownsTempDir;
+      const callerOwnedMemoryDir = state.tempDir;
+      await cleanup();
+      if (shouldClearCallerOwnedMemoryDir) {
+        await rm(callerOwnedMemoryDir, { recursive: true, force: true });
+      }
       state = await createBenchOrchestrator(
         mode,
         options.configOverrides,
         options.preserveRuntimeDefaults === true,
-        options.sandboxDir,
+        configuredBenchDir,
       );
       sessionTurnCounters.clear();
     };
