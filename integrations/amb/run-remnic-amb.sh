@@ -9,7 +9,7 @@ Usage:
 Options:
   --amb-dir DIR       Required. Agent Memory Benchmark checkout.
   --split SPLIT       BEAM split: 100k, 500k, 1m, or 10m. Default: 100k.
-  --mode MODE         AMB response mode: rag or agentic-rag. Default: rag.
+  --mode MODE         AMB response mode: rag. Default: rag.
   --query-limit N     Optional AMB --query-limit for smoke runs.
   --name NAME         AMB run name. Default: remnic.
   --output-dir DIR    AMB output directory. Default: outputs.
@@ -127,9 +127,9 @@ if [[ -z "${mode}" ]]; then
 fi
 
 case "${mode}" in
-  rag|agentic-rag) ;;
+  rag) ;;
   *)
-    echo "Unsupported AMB mode for Remnic: ${mode}. Use rag or agentic-rag." >&2
+    echo "Unsupported AMB mode for Remnic: ${mode}. Use rag." >&2
     exit 2
     ;;
 esac
