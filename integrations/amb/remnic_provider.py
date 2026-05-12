@@ -223,7 +223,10 @@ class RemnicMemoryProvider(MemoryProvider):
         return ["pnpm", "exec", "tsx", str(bridge)]
 
     def _repo_root(self) -> str | None:
-        return os.environ.get("REMNIC_REPO_PATH") or os.environ.get("REMNIC_REPO_ROOT")
+        repo_root = os.environ.get("REMNIC_REPO_PATH") or os.environ.get("REMNIC_REPO_ROOT")
+        if not repo_root:
+            return None
+        return str(Path(repo_root).expanduser().resolve())
 
     def _request(
         self,

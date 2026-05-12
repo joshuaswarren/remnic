@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import hashlib
+import os
 import sys
 import tempfile
 import types
@@ -9,6 +10,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 
 @dataclass
@@ -257,6 +259,22 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
         base_request = provider.__class__.__mro__[1]._request
         with self.assertRaisesRegex(RuntimeError, "non-object response"):
             base_request(provider, "retrieve", {"query": "who owned it?"}, ensure_running=False)
+
+    def test_repo_root_expands_shell_style_env_paths(self) -> None:
+        module = load_provider_module()
+        provider = module.RemnicMemoryProvider()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            repo = home / "remnic"
+            repo.mkdir()
+
+            with patch.dict(
+                os.environ,
+                {"HOME": str(home), "REMNIC_REPO_PATH": "~/remnic"},
+                clear=False,
+            ):
+                self.assertEqual(provider._repo_root(), str(repo.resolve()))
 
 
 if __name__ == "__main__":
