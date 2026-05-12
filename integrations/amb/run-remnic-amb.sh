@@ -9,7 +9,7 @@ Usage:
 Options:
   --amb-dir DIR       Required. Agent Memory Benchmark checkout.
   --split SPLIT       BEAM split: 100k, 500k, 1m, or 10m. Default: 100k.
-  --mode MODE         AMB response mode. Default: rag.
+  --mode MODE         AMB response mode: rag or agentic-rag. Default: rag.
   --query-limit N     Optional AMB --query-limit for smoke runs.
   --name NAME         AMB run name. Default: remnic.
   --output-dir DIR    AMB output directory. Default: outputs.
@@ -125,6 +125,14 @@ if [[ -z "${mode}" ]]; then
   echo "--mode must not be empty" >&2
   exit 2
 fi
+
+case "${mode}" in
+  rag|agentic-rag) ;;
+  *)
+    echo "Unsupported AMB mode for Remnic: ${mode}. Use rag or agentic-rag." >&2
+    exit 2
+    ;;
+esac
 
 if [[ "${skip_run}" -ne 1 && "${retrieve_only}" -ne 1 && -z "${GEMINI_API_KEY:-}" && -z "${GOOGLE_API_KEY:-}" ]]; then
   echo "GEMINI_API_KEY or GOOGLE_API_KEY is required for AMB answer/judge calls." >&2

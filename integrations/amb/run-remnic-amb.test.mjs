@@ -70,3 +70,24 @@ test("official judged runs fail before registering Remnic when Gemini credential
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("unsupported AMB modes fail before registering Remnic", () => {
+  const root = makeAmbCheckout();
+  const initPath = path.join(root, "src", "memory_bench", "memory", "__init__.py");
+  const initialRegistry = readFileSync(initPath, "utf8");
+  try {
+    const result = runRunner([
+      "--amb-dir", root,
+      "--mode", "agent",
+      "--skip-run",
+    ]);
+
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /Unsupported AMB mode for Remnic: agent/);
+    assert.equal(result.stdout, "");
+    assert.equal(readFileSync(initPath, "utf8"), initialRegistry);
+    assert.equal(existsSync(path.join(root, "src", "memory_bench", "memory", "remnic.py")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

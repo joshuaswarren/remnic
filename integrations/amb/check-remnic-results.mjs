@@ -238,6 +238,9 @@ function main() {
   }
 
   const manifest = readJson(manifestPath);
+  if (!Array.isArray(manifest)) {
+    throw new Error(`AMB results manifest must be a JSON array: ${manifestPath}`);
+  }
   const outputRoot = resolveOutputRoot(ambDir, args.outputDir);
   const best = publicBestBySplit(manifest);
   let allPresent = true;

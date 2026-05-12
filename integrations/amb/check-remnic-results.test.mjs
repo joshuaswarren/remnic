@@ -298,3 +298,25 @@ test("mode discovery treats a non-directory run path as missing", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("rejects a non-array public results manifest", () => {
+  const root = makeAmbFixture();
+  try {
+    writeJson(path.join(root, "results-manifest.json"), {
+      dataset: "beam",
+      split: "100k",
+      accuracy: 0.7,
+    });
+
+    const result = runChecker([
+      "--amb-dir", root,
+      "--run-name", "remnic",
+      "--splits", "100k",
+    ]);
+
+    assert.equal(result.code, 2);
+    assert.equal(result.output, null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
