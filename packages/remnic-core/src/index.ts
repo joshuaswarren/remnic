@@ -65,6 +65,16 @@ export {
   type ExplicitTurnReference,
   type TrajectoryAnalysisRecallOptions,
 } from "./explicit-cue-recall.js";
+export {
+  buildEventOrderRecallSection,
+  shouldRecallEventOrderEvidence,
+  type EventOrderRecallOptions,
+} from "./event-order-recall.js";
+export {
+  buildResponseGuidanceRecallSection,
+  shouldRecallResponseGuidance,
+  type ResponseGuidanceRecallOptions,
+} from "./response-guidance-recall.js";
 
 // ---------------------------------------------------------------------------
 // Storage

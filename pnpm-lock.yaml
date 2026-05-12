@@ -79,6 +79,9 @@ importers:
       '@remnic/core':
         specifier: workspace:^
         version: link:../remnic-core
+      hyparquet:
+        specifier: ^1.25.7
+        version: 1.25.7
       yaml:
         specifier: ^2.4.2
         version: 2.8.3
@@ -1308,6 +1311,9 @@ packages:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
     engines: {node: '>=8'}
 
+  hyparquet@1.25.7:
+    resolution: {integrity: sha512-F+FoqZ1mQZK+nHaNMIOjKo6o8pH34L29oZ9oMNIQHdvMonaq+Inh5blMWlvNFvC1LUyyGkJjTrv1WEMTAEHAKQ==}
+
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
 
@@ -2472,6 +2478,8 @@ snapshots:
   graceful-fs@4.2.11: {}
 
   has-flag@4.0.0: {}
+
+  hyparquet@1.25.7: {}
 
   ieee754@1.2.1: {}
 
