@@ -514,6 +514,34 @@ test("buildExplicitCueRecallSection scans exact security cues when FTS misses", 
   assert.match(section, /failed login attempts/);
 });
 
+test("buildExplicitCueRecallSection skips full transcript cue scans when content lexical cues are disabled", async () => {
+  let statsCalls = 0;
+  const engine: ExplicitCueRecallEngine = {
+    async expandContext() {
+      throw new Error("full transcript scan should be gated");
+    },
+    async getStats() {
+      statsCalls += 1;
+      return { totalMessages: 3, maxTurnIndex: 2 };
+    },
+    async searchContextFull() {
+      return [];
+    },
+  };
+
+  const section = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: "beam",
+    query:
+      "How many different user roles and security features am I trying to implement across my sessions?",
+    maxChars: 4000,
+    includeContentLexicalCues: false,
+  });
+
+  assert.equal(section, "");
+  assert.equal(statsCalls, 0);
+});
+
 test("buildExplicitCueRecallSection scans exact project-summary and contradiction cues when FTS misses", async () => {
   const engine = new NoSearchCueEngine({
     beam: [

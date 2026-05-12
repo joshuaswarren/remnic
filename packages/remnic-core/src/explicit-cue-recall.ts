@@ -333,22 +333,24 @@ export async function buildExplicitCueRecallSection(
     seenTurns,
   });
 
-  await collectNamedMeetingFactEvidence({
-    engine,
-    sessionId: options.sessionId,
-    query,
-    maxReferences,
-    evidenceItems,
-    seenTurns,
-  });
+  if (options.includeContentLexicalCues) {
+    await collectNamedMeetingFactEvidence({
+      engine,
+      sessionId: options.sessionId,
+      query,
+      maxReferences,
+      evidenceItems,
+      seenTurns,
+    });
 
-  await collectFocusedTranscriptCueEvidence({
-    engine,
-    sessionId: options.sessionId,
-    query,
-    evidenceItems,
-    seenTurns,
-  });
+    await collectFocusedTranscriptCueEvidence({
+      engine,
+      sessionId: options.sessionId,
+      query,
+      evidenceItems,
+      seenTurns,
+    });
+  }
 
   await collectLexicalCueEvidence({
     engine,
