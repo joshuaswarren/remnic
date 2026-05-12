@@ -392,7 +392,7 @@ test("targeted fact recall computes editing challenge intervals", async () => {
     maxChars: 4_000,
   });
 
-  assert.match(recalled, /Computed editing-challenge interval: 38 days from April 2 till May 10/);
+  assert.match(recalled, /Computed editing-challenge interval: 53 days from April 2 till May 25/);
   assert.match(recalled, /30-day editing challenge starting April 2/);
   assert.match(recalled, /15-day clarity editing challenge from May 10 to May 25/);
 });

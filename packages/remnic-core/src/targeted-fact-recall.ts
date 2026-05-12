@@ -1812,7 +1812,7 @@ function buildEditingChallengeDurationSummary(
     /\b15-day clarity editing challenge\s+from\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})\s+to\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})/i,
   );
   const start = parseMonthDay(startMatch?.[1], startMatch?.[2]);
-  const end = parseMonthDay(endMatch?.[1], endMatch?.[2]);
+  const end = parseMonthDay(endMatch?.[3], endMatch?.[4]);
   if (!start || !end) {
     return "";
   }
