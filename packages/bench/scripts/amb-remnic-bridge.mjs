@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import readline from "node:readline";
-import { createRemnicAdapter } from "../dist/index.js";
 
 const DEFAULT_RECALL_BUDGET_CHARS = 36_000;
 const DEFAULT_MAX_DOCUMENT_CONTEXT_CHARS = 12_000;
@@ -106,6 +105,14 @@ function writeJson(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
+async function loadCreateRemnicAdapter() {
+  const module = await import("../dist/index.js");
+  if (typeof module.createRemnicAdapter !== "function") {
+    throw new Error("Remnic bench adapter build does not export createRemnicAdapter");
+  }
+  return module.createRemnicAdapter;
+}
+
 async function main() {
   const recallBudgetChars = parsePositiveInteger(
     process.env.REMNIC_AMB_RECALL_BUDGET_CHARS,
@@ -117,6 +124,7 @@ async function main() {
   );
   const configOverrides = parseEnvJson("REMNIC_AMB_CONFIG_JSON");
   const sessionPrefix = normalizeSessionPrefix(process.env.REMNIC_AMB_SESSION_PREFIX);
+  const createRemnicAdapter = await loadCreateRemnicAdapter();
   const adapter = await createRemnicAdapter({
     ...(configOverrides ? { configOverrides } : {}),
     ...(process.env.REMNIC_AMB_MEMORY_DIR
