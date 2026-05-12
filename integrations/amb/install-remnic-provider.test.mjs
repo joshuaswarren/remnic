@@ -431,6 +431,52 @@ test("check-remnic-run accepts the Codex CLI iteration profile", async () => {
   }
 });
 
+test("check-remnic-run rejects Codex profile without AMB LLM registration", async () => {
+  const ambDir = await createAmbFixture();
+  const storeDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-store-test-"));
+  const llmDir = path.join(ambDir, "src", "memory_bench", "llm");
+
+  try {
+    const install = spawnSync(
+      process.execPath,
+      [path.join(__dirname, "install-remnic-provider.mjs"), ambDir],
+      { cwd: path.resolve(__dirname, "../.."), encoding: "utf8" },
+    );
+    assert.equal(install.status, 0, install.stderr || install.stdout);
+    await writeFile(
+      path.join(llmDir, "__init__.py"),
+      "import os\nfrom .base import LLM, Schema\nfrom .gemini import GeminiLLM\nREGISTRY = {\"gemini\": GeminiLLM}\n",
+    );
+    await rm(path.join(llmDir, "codex_cli.py"), { force: true });
+
+    const result = runAmbPreflight(ambDir, {
+      REMNIC_REPO_PATH: path.resolve(__dirname, "../.."),
+      REMNIC_AMB_STORE_DIR: storeDir,
+      REMNIC_AMB_RUN_PROFILE: "codex-cli",
+      REMNIC_AMB_SESSION_PREFIX: "beam",
+      REMNIC_AMB_REPLAY_EXTRACTION_MODE: "skip",
+      REMNIC_AMB_DRAIN_AFTER_INGEST: "false",
+      OMB_ANSWER_LLM: "codex_cli",
+      OMB_ANSWER_MODEL: "gpt-5.5",
+      OMB_JUDGE_LLM: "codex_cli",
+      OMB_JUDGE_MODEL: "gpt-5.5",
+      OMB_CODEX_REASONING_EFFORT: "xhigh",
+      REMNIC_AMB_INTERNAL_PROVIDER: "codex-cli",
+      REMNIC_AMB_INTERNAL_MODEL: "gpt-5.5",
+      REMNIC_AMB_INTERNAL_CODEX_REASONING_EFFORT: "xhigh",
+      REMNIC_AMB_PRESERVE_RUNTIME_DEFAULTS: "false",
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /\[FAIL\] Codex CLI LLM provider installed/);
+    assert.match(result.stdout, /\[FAIL\] Codex CLI registered in AMB LLM registry/);
+    assert.match(result.stderr, /Codex CLI BEAM iteration preflight failed/);
+  } finally {
+    await rm(ambDir, { recursive: true, force: true });
+    await rm(storeDir, { recursive: true, force: true });
+  }
+});
+
 test("check-remnic-run treats Codex internal LLM vars as optional unless configured", async () => {
   const ambDir = await createAmbFixture();
   const storeDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-store-test-"));

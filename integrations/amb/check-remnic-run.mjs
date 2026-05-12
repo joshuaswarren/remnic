@@ -160,6 +160,10 @@ function internalLlmRoutingRequested() {
   ].some((name) => !!envValue(name));
 }
 
+function hasCodexCliLlmRegistryEntry(registry) {
+  return /["']codex_cli["']\s*:\s*CodexCliLLM/.test(registry);
+}
+
 function expectedRunConfig(profile) {
   const checkInternalLlm = internalLlmRoutingRequested();
   return {
@@ -228,6 +232,8 @@ const remnicRepoPath = path.resolve(process.env.REMNIC_REPO_PATH || repoRoot);
 const bridgePath = path.join(remnicRepoPath, "integrations", "amb", "remnic-bridge.mjs");
 const providerPath = path.join(ambRoot, "src", "memory_bench", "memory", "remnic.py");
 const registryPath = path.join(ambRoot, "src", "memory_bench", "memory", "__init__.py");
+const codexLlmPath = path.join(ambRoot, "src", "memory_bench", "llm", "codex_cli.py");
+const llmRegistryPath = path.join(ambRoot, "src", "memory_bench", "llm", "__init__.py");
 const modeRegistryPath = path.join(ambRoot, "src", "memory_bench", "modes", "__init__.py");
 const profile = normalizeRunProfile(process.env.REMNIC_AMB_RUN_PROFILE);
 const expectedProfile = profile ? expectedRunConfig(profile) : null;
@@ -295,6 +301,16 @@ if (expectedProfile?.requireCodexCli) {
     commandExists(executable),
     `${executable} is required for AMB codex_cli answer/judge runs`,
   );
+  add("AMB LLM registry exists", existsSync(llmRegistryPath), llmRegistryPath);
+  add("Codex CLI LLM provider installed", existsSync(codexLlmPath), codexLlmPath);
+  if (existsSync(llmRegistryPath)) {
+    const registry = readFileSync(llmRegistryPath, "utf8");
+    add(
+      "Codex CLI registered in AMB LLM registry",
+      registry.includes("CodexCliLLM") && hasCodexCliLlmRegistryEntry(registry),
+      llmRegistryPath,
+    );
+  }
 }
 
 if (expectedProfile) {
