@@ -1062,25 +1062,27 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
 });
 
 test("AMB runner rejects cache-reuse passthrough flags for SOTA verification", async () => {
-  const result = spawnSync("bash", [
-    path.resolve("scripts", "bench", "run-amb-remnic.sh"),
-    "--amb",
-    path.join(os.tmpdir(), "missing-amb-checkout"),
-    "--verify-sota",
-    "--min-queries",
-    "100",
-    "--",
-    "--skip-answer",
-  ], {
-    encoding: "utf8",
-  });
+  for (const flag of ["--skip-answer", "--skip-ingestion", "--query-id", "--category=travel", "--doc-limit"]) {
+    const result = spawnSync("bash", [
+      path.resolve("scripts", "bench", "run-amb-remnic.sh"),
+      "--amb",
+      path.join(os.tmpdir(), "missing-amb-checkout"),
+      "--verify-sota",
+      "--min-queries",
+      "100",
+      "--",
+      flag,
+    ], {
+      encoding: "utf8",
+    });
 
-  assert.equal(result.status, 2);
-  assert.match(
-    result.stderr,
-    /--verify-sota cannot be combined with cache-reuse passthrough flag: --skip-answer/,
-  );
-  assert.doesNotMatch(result.stderr, /Agent Memory Benchmark checkout/);
+    assert.equal(result.status, 2, `${flag}: ${result.stderr}`);
+    assert.match(
+      result.stderr,
+      new RegExp(`--verify-sota cannot be combined with cache-reuse passthrough flag: ${flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+    );
+    assert.doesNotMatch(result.stderr, /Agent Memory Benchmark checkout/);
+  }
 });
 
 test("AMB runner rejects query-limited SOTA verification", async () => {
