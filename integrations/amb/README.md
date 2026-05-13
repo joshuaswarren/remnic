@@ -87,7 +87,7 @@ scripts/bench/run-amb-remnic.sh \
   --amb ../agent-memory-benchmark \
   --dataset personamem \
   --split 128k \
-  --min-queries 100 \
+  --min-queries 2727 \
   --verify-sota
 ```
 

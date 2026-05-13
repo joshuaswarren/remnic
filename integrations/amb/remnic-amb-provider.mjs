@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,7 +11,7 @@ const CODEX_MODEL = "gpt-5.5";
 const CODEX_REASONING_EFFORT = "xhigh";
 const CODEX_SERVICE_TIER = "fast";
 const repoRoot = process.env.REMNIC_REPO
-  ? path.resolve(process.env.REMNIC_REPO)
+  ? path.resolve(expandTildePath(process.env.REMNIC_REPO))
   : path.resolve(__dirname, "../..");
 
 const core = await import(path.join(repoRoot, "packages/remnic-core/dist/index.js"));
@@ -2169,6 +2169,17 @@ function formatExecError(error) {
 
 function compact(value) {
   return String(value).trim().replace(/\s+/g, " ").slice(0, 500);
+}
+
+function expandTildePath(value) {
+  const trimmed = value.trim();
+  if (trimmed === "~") {
+    return homedir();
+  }
+  if (trimmed.startsWith("~/")) {
+    return path.join(homedir(), trimmed.slice(2));
+  }
+  return trimmed;
 }
 
 async function readStdin() {

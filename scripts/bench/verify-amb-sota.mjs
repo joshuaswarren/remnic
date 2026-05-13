@@ -181,11 +181,19 @@ function requiredValue(argv, index, flag) {
 
 async function readJson(path, label) {
   try {
-    return JSON.parse(await readFile(path, "utf8"));
+    const parsed = JSON.parse(await readFile(path, "utf8"));
+    if (!isPlainObject(parsed)) {
+      fail(`${label} from ${path} must be a JSON object`, 2);
+    }
+    return parsed;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     fail(`failed to read ${label} from ${path}: ${message}`, 2);
   }
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function fetchJson(url) {
