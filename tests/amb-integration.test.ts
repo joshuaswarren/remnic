@@ -558,6 +558,74 @@ test("AMB runner validates required checkout argument", async () => {
   assert.match(result.stderr, /--amb is required/);
 });
 
+test("AMB runner install-only does not require Codex CLI", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-install-only-"));
+  const ambRoot = path.join(tmpDir, "amb");
+  const binDir = path.join(tmpDir, "bin");
+  const fakeRemnicRoot = path.join(tmpDir, "remnic");
+  const fakeInstallPath = path.join(fakeRemnicRoot, "integrations", "amb", "install.py");
+  const providersMarker = path.join(tmpDir, "providers.txt");
+  const fakeUvPath = path.join(binDir, "uv");
+  const fakeOmbPath = path.join(ambRoot, ".venv", "bin", "omb");
+
+  await mkdir(path.join(ambRoot, "src", "memory_bench", "memory"), { recursive: true });
+  await mkdir(path.dirname(fakeInstallPath), { recursive: true });
+  await mkdir(path.join(fakeRemnicRoot, "packages", "remnic-core", "dist"), {
+    recursive: true,
+  });
+  await mkdir(binDir, { recursive: true });
+  await mkdir(path.dirname(fakeOmbPath), { recursive: true });
+
+  await writeFile(path.join(ambRoot, "pyproject.toml"), "[project]\nname = 'fake-amb'\n");
+  await writeFile(path.join(fakeRemnicRoot, "packages", "remnic-core", "dist", "index.js"), "");
+  await writeFile(
+    fakeInstallPath,
+    [
+      "import argparse",
+      "",
+      "parser = argparse.ArgumentParser()",
+      "parser.add_argument('--amb', required=True)",
+      "parser.parse_args()",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(fakeUvPath, "#!/usr/bin/env sh\nexit 0\n");
+  await writeFile(
+    fakeOmbPath,
+    [
+      "#!/usr/bin/env sh",
+      "if [ \"$1\" = \"providers\" ]; then",
+      "  printf providers > \"$PROVIDERS_MARKER\"",
+      "  exit 0",
+      "fi",
+      "exit 99",
+      "",
+    ].join("\n"),
+  );
+  await chmod(fakeUvPath, 0o755);
+  await chmod(fakeOmbPath, 0o755);
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts", "bench", "run-amb-remnic.sh"),
+    "--amb",
+    ambRoot,
+    "--install-only",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      PROVIDERS_MARKER: providersMarker,
+      REMNIC_AMB_CODEX_BIN: path.join(tmpDir, "missing-codex"),
+      REMNIC_REPO: fakeRemnicRoot,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(await readFile(providersMarker, "utf8"), "providers");
+  assert.doesNotMatch(result.stderr, /Codex CLI is required/);
+});
+
 test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB run args", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-runner-"));
   const ambRoot = path.join(tmpDir, "amb");

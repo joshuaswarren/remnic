@@ -212,10 +212,6 @@ if [[ -n "$REMNIC_NODE" ]]; then
   export REMNIC_AMB_NODE="$REMNIC_NODE"
 fi
 CODEX_BIN="${REMNIC_AMB_CODEX_BIN:-codex}"
-if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
-  echo "error: Codex CLI is required for AMB generation/judging: $CODEX_BIN" >&2
-  exit 2
-fi
 export REMNIC_AMB_CODEX_BIN="$CODEX_BIN"
 export OMB_ANSWER_LLM="codex"
 export OMB_JUDGE_LLM="codex"
@@ -280,6 +276,11 @@ AMB_BIN="${AMB_DIR}/.venv/bin/${AMB_CLI}"
 
 if [[ "$INSTALL_ONLY" -eq 1 ]]; then
   exit 0
+fi
+
+if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+  echo "error: Codex CLI is required for AMB generation/judging: $CODEX_BIN" >&2
+  exit 2
 fi
 
 split_flag="--split"
