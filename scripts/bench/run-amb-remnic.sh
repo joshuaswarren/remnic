@@ -122,7 +122,15 @@ resolve_executable() {
 
 sota_cache_reuse_arg() {
   case "$1" in
-    --skip-answer | --skip-answer=* | --skip-retrieval | --skip-retrieval=* | --skip-ingested | --skip-ingested=* | --skip-ingestion | --skip-ingestion=* | --only-failed | --only-failed=* | --query-id | --query-id=* | --category | --category=* | --doc-limit | --doc-limit=*)
+    --category | --category=* | \
+    --doc-limit | --doc-limit=* | \
+    --only-failed | --only-failed=* | \
+    --query-id | --query-id=* | \
+    --retrieve-only | --retrieve-only=* | \
+    --skip-answer | --skip-answer=* | \
+    --skip-ingested | --skip-ingested=* | \
+    --skip-ingestion | --skip-ingestion=* | \
+    --skip-retrieval | --skip-retrieval=*)
       return 0
       ;;
     *)
