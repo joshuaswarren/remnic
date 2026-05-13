@@ -1070,8 +1070,11 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
   assert.deepEqual(observedRunArgs.slice(-2), ["--skip-ingestion", "--only-failed"]);
 });
 
-test("AMB runner rejects unsafe passthrough flags for SOTA verification", async () => {
+test("AMB runner rejects passthrough arguments for SOTA verification", async () => {
   for (const flag of [
+    "--help",
+    "-h",
+    "--show-raw",
     "--skip-answer",
     "--skip-ingestion",
     "--skip-retrieval",
@@ -1140,7 +1143,7 @@ test("AMB runner rejects unsafe passthrough flags for SOTA verification", async 
     assert.equal(result.status, 2, `${flag}: ${result.stderr}`);
     assert.match(
       result.stderr,
-      new RegExp(`--verify-sota cannot be combined with unsafe passthrough flag: ${flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+      new RegExp(`--verify-sota cannot be combined with AMB passthrough argument: ${flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
     );
     assert.doesNotMatch(result.stderr, /Agent Memory Benchmark checkout/);
   }

@@ -38,7 +38,7 @@ Options:
   --verify-sota           Verify the produced AMB result beats current external best.
   --min-queries <n>       Full split query count required for --verify-sota.
   --install-only          Install/register provider and list providers, but do not run.
-  --                      Pass remaining arguments through to "omb run".
+  --                      Pass remaining arguments through to "omb run" (not allowed with --verify-sota).
   -h, --help              Show this help.
 
 Environment:
@@ -116,43 +116,6 @@ resolve_executable() {
       ;;
     *)
       printf '%s\n' "$expanded"
-      ;;
-  esac
-}
-
-sota_forbidden_passthrough_arg() {
-  case "$1" in
-    --category | --category=* | \
-    -c | -c=* | -c?* | \
-    --dataset | --dataset=* | \
-    --description | --description=* | \
-    -d | -d=* | -d?* | \
-    --doc-limit | --doc-limit=* | \
-    --domain | --domain=* | \
-    --llm | --llm=* | \
-    --memory | --memory=* | \
-    -m | -m=* | -m?* | \
-    --mode | --mode=* | \
-    --name | --name=* | \
-    -n | -n=* | -n?* | \
-    --only-failed | --only-failed=* | \
-    --oracle | --oracle=* | \
-    --output-dir | --output-dir=* | \
-    -o | -o=* | -o?* | \
-    --query-id | --query-id=* | \
-    --query-limit | --query-limit=* | \
-    -q | -q=* | -q?* | \
-    --retrieve-only | --retrieve-only=* | \
-    --skip-answer | --skip-answer=* | \
-    --skip-ingested | --skip-ingested=* | \
-    --skip-ingestion | --skip-ingestion=* | \
-    --skip-retrieval | --skip-retrieval=* | \
-    --split | --split=* | \
-    -s | -s=* | -s?*)
-      return 0
-      ;;
-    *)
-      return 1
       ;;
   esac
 }
@@ -321,13 +284,9 @@ if [[ "$VERIFY_SOTA" -eq 1 && -n "$QUERY_LIMIT" ]]; then
   echo "error: --verify-sota cannot be combined with --query-limit; verified SOTA runs must regenerate the full split" >&2
   exit 2
 fi
-if [[ "$VERIFY_SOTA" -eq 1 ]]; then
-  for arg in "${AMB_EXTRA_ARGS[@]}"; do
-    if sota_forbidden_passthrough_arg "$arg"; then
-      echo "error: --verify-sota cannot be combined with unsafe passthrough flag: $arg" >&2
-      exit 2
-    fi
-  done
+if [[ "$VERIFY_SOTA" -eq 1 && "${#AMB_EXTRA_ARGS[@]}" -gt 0 ]]; then
+  echo "error: --verify-sota cannot be combined with AMB passthrough argument: ${AMB_EXTRA_ARGS[0]}" >&2
+  exit 2
 fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
