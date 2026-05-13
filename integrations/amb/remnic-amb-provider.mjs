@@ -295,7 +295,10 @@ async function directAnswer(orchestrator, payload) {
   const context = retrieved.documents
     .map((document, index) => `## Memory ${index + 1}\n${document.content}`)
     .join("\n\n");
-  const earlyTaskSpecificAnswer = earlyTaskSpecificMcqAnswer({ query, evidence: context });
+  const memoryEvidence = evidenceOnlyContext(context);
+  const earlyTaskSpecificAnswer = memoryEvidence.trim().length > 0
+    ? earlyTaskSpecificMcqAnswer({ query, evidence: memoryEvidence })
+    : null;
   if (earlyTaskSpecificAnswer) {
     return {
       answer: earlyTaskSpecificAnswer.answer,

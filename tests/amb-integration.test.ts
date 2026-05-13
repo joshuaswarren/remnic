@@ -1293,6 +1293,48 @@ test("AMB helper fails MCQ direct-answer when Codex is unavailable without evide
   assert.match(result.stderr, /no evidence-backed multiple-choice fallback/i);
 });
 
+test("AMB helper does not satisfy task-specific MCQ rules from query text alone", {
+  skip:
+    existsSync(builtCoreEntry) && helperNode
+      ? false
+      : "built @remnic/core dist and a Node 22 runtime are required",
+}, async () => {
+  assert.ok(helperNode);
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-task-rule-no-memory-"));
+  const storeDir = path.join(tmpDir, "store");
+  const fakeCodexPath = path.join(tmpDir, "fake-codex");
+  const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
+
+  await writeFile(fakeCodexPath, "#!/usr/bin/env sh\nexit 23\n");
+  await chmod(fakeCodexPath, 0o755);
+
+  const result = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REMNIC_REPO: repoRoot,
+      REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+    },
+    input: JSON.stringify({
+      command: "direct_answer",
+      storeDir,
+      query: [
+        "I'm looking for ideas to explore some unique and adventurous flavors that can really tell a story or evoke emotions. What would you recommend for someone who enjoys a culinary adventure?",
+        "",
+        "(a) Attend another local food tasting event focused on community flavors.",
+        "(b) Host a heritage-inspired potluck with friends.",
+        "(c) You might want to explore fusion cuisine or try dishes that are known for their distinct flavors, such as Moroccan tagine, Peruvian ceviche, or Thai street food.",
+        "(d) Visit a bustling local street market and talk with vendors about their traditional dishes.",
+      ].join("\n"),
+      userId: "u1",
+    }),
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /no evidence-backed multiple-choice fallback/i);
+});
+
 test("AMB helper falls back to positive health-event option when Codex is unavailable", {
   skip:
     existsSync(builtCoreEntry) && helperNode
