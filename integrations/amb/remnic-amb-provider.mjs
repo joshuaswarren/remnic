@@ -132,8 +132,9 @@ async function ingest(orchestrator, documents) {
         role: message.role,
         content: message.content,
         timestamp: new Date(safeBaseTimestampMs + index).toISOString(),
+        ...(message.sourceValidAt ? { sourceValidAt: message.sourceValidAt } : {}),
         sessionKey: sessionId,
-    }));
+      }));
     if (replayTurns.length > 0) {
       const extractionDeadlineDurationMs = positiveIntegerEnv(
         "REMNIC_AMB_EXTRACTION_DEADLINE_MS",
@@ -167,16 +168,21 @@ async function retrieve(orchestrator, payload) {
   const explicitBudgetShare = useExplicitCueRecall ? 0.35 : 0;
   const searchBudgetShare = useExplicitCueRecall ? 0.30 : 0.55;
   const coreBudgetShare = useExplicitCueRecall ? 0.35 : 0.45;
-  const coreBudget = Math.max(
-    0,
-    Math.floor(budget * coreBudgetShare),
-  );
+  const explicitBudget = useExplicitCueRecall
+    ? Math.min(8000, Math.floor(budget * explicitBudgetShare))
+    : 0;
+  const nonExplicitShareTotal = searchBudgetShare + coreBudgetShare;
+  const remainingBudget = Math.max(0, budget - explicitBudget);
+  const searchBudget = useExplicitCueRecall
+    ? Math.floor(remainingBudget * (searchBudgetShare / nonExplicitShareTotal))
+    : Math.floor(budget * searchBudgetShare);
+  const coreBudget = Math.max(0, budget - explicitBudget - searchBudget);
   const explicit = useExplicitCueRecall
     ? await buildExplicitCueRecallSection({
         engine: orchestrator.lcmEngine,
         sessionId,
         query,
-        maxChars: Math.min(8000, Math.floor(budget * explicitBudgetShare)),
+        maxChars: explicitBudget,
         maxItemChars: MAX_ITEM_CHARS,
         maxReferences: 24,
         includeBenchmarkAnchorCues: true,
@@ -223,7 +229,7 @@ async function retrieve(orchestrator, payload) {
   const includedEvidenceIds = new Set();
   const packedSearch = buildEvidencePack(evidence, {
     title: "Search evidence",
-    maxChars: Math.max(0, Math.floor(budget * searchBudgetShare)),
+    maxChars: Math.max(0, searchBudget),
     maxItemChars: MAX_ITEM_CHARS,
   });
   if (packedSearch) {
@@ -369,7 +375,7 @@ function buildAnswerContext({ query, context }) {
   }
   const compactContext = compactMcqEvidenceContext(answerContext);
   const optionSummary = buildOptionEvidenceSummary({ query, context: compactContext });
-  const taskGuidance = buildMcqTaskGuidance({ query, context: answerContext });
+  const taskGuidance = buildMcqTaskGuidance();
   const sections = [taskGuidance, optionSummary, compactContext || "(no retrieved memories)"]
     .filter((section) => section && section.trim().length > 0);
   if (sections.length === 0) {
@@ -780,11 +786,6 @@ async function answerFromContext({ query, context, allowUnavailableFallback = fa
     if (!allowUnavailableFallback) {
       throw error;
     }
-    if (multipleChoice && !fallbackAnswer) {
-      throw new Error(
-        `Codex direct_answer failed and no evidence-backed multiple-choice fallback was available: ${formatExecError(error)}`,
-      );
-    }
     return {
       answer: multipleChoice ? fallbackAnswer : "information not available",
       error: formatExecError(error),
@@ -794,9 +795,6 @@ async function answerFromContext({ query, context, allowUnavailableFallback = fa
   if (typeof content !== "string" || content.trim().length === 0) {
     if (!allowUnavailableFallback) {
       throw new Error("Codex direct_answer returned an empty answer.");
-    }
-    if (multipleChoice && !fallbackAnswer) {
-      throw new Error("Codex direct_answer returned an empty answer and no evidence-backed multiple-choice fallback was available.");
     }
     return {
       answer: multipleChoice ? fallbackAnswer : "information not available",
@@ -808,11 +806,6 @@ async function answerFromContext({ query, context, allowUnavailableFallback = fa
     if (!choice) {
       if (!allowUnavailableFallback) {
         throw new Error(`Codex direct_answer returned an invalid multiple-choice answer: ${content}`);
-      }
-      if (!fallbackAnswer) {
-        throw new Error(
-          `Codex direct_answer returned an invalid multiple-choice answer and no evidence-backed fallback was available: ${content}`,
-        );
       }
       return {
         answer: fallbackAnswer,
@@ -1076,9 +1069,10 @@ async function runProcess(command, args, { cwd, timeout, input }) {
 }
 
 function messagesForDocument(document) {
+  const documentSourceValidAt = timestampForRecord(document);
   const messages = Array.isArray(document?.messages) ? document.messages : [];
   const normalized = messages
-    .map(normalizeMessageForStorage)
+    .map((message) => normalizeMessageForStorage(message, documentSourceValidAt))
     .filter((message) => message.content.length > 0);
   if (normalized.length > 0) {
     return normalized;
@@ -1096,19 +1090,26 @@ function messagesForDocument(document) {
   return [{
     role: "user",
     content: metadata ? `${metadata}\n\n${content}` : content,
+    ...(documentSourceValidAt ? { sourceValidAt: documentSourceValidAt } : {}),
   }];
 }
 
-function normalizeMessageForStorage(message) {
+function normalizeMessageForStorage(message, fallbackSourceValidAt) {
   const role = normalizeRole(message?.role);
   const content = String(message?.content ?? "").trim();
+  const sourceValidAt = timestampForRecord(message) ?? fallbackSourceValidAt;
   if (role === "system") {
     return {
       role: "user",
       content: content ? `AMB system context:\n${content}` : "",
+      ...(sourceValidAt ? { sourceValidAt } : {}),
     };
   }
-  return { role, content };
+  return {
+    role,
+    content,
+    ...(sourceValidAt ? { sourceValidAt } : {}),
+  };
 }
 
 function normalizeRole(role) {
@@ -1116,6 +1117,16 @@ function normalizeRole(role) {
     return role;
   }
   return "user";
+}
+
+function timestampForRecord(record) {
+  return normalizedTimestamp(
+    record?.timestamp ??
+      record?.created_at ??
+      record?.createdAt ??
+      record?.time ??
+      record?.date,
+  );
 }
 
 function sessionIdForUser(userId) {

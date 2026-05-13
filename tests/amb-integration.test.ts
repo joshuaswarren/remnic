@@ -1179,6 +1179,85 @@ test("AMB helper expands tilde in REMNIC_REPO", {
   assert.deepEqual(payload.documents, []);
 });
 
+test("AMB helper passes AMB timestamps to replay sourceValidAt", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-source-valid-at-"));
+  const fakeRemnicRoot = path.join(tmpDir, "remnic");
+  const fakeCorePath = path.join(fakeRemnicRoot, "packages", "remnic-core", "dist", "index.js");
+  const replayTurnsPath = path.join(tmpDir, "replay-turns.json");
+  const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
+
+  await mkdir(path.dirname(fakeCorePath), { recursive: true });
+  await writeFile(path.join(fakeRemnicRoot, "package.json"), JSON.stringify({ type: "module" }));
+  await writeFile(
+    fakeCorePath,
+    [
+      "import { writeFileSync } from 'node:fs';",
+      "export function parseConfig(config) { return config; }",
+      "export function buildEvidencePack() { return ''; }",
+      "export async function buildExplicitCueRecallSection() { return ''; }",
+      "export function collectExplicitTurnReferences() { return []; }",
+      "let observedTurns = [];",
+      "export class Orchestrator {",
+      "  constructor(config) {",
+      "    this.config = config;",
+      "    this.lcmEngine = { waitForObserveQueueIdle: async () => {}, close() {} };",
+      "  }",
+      "  async initialize() {}",
+      "  async ingestReplayBatch(turns) {",
+      "    observedTurns = observedTurns.concat(turns);",
+      "    writeFileSync(process.env.REPLAY_TURNS_PATH, JSON.stringify(observedTurns));",
+      "  }",
+      "}",
+      "",
+    ].join("\n"),
+  );
+
+  const result = spawnSync(process.execPath, [helperPath], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REMNIC_REPO: fakeRemnicRoot,
+      REPLAY_TURNS_PATH: replayTurnsPath,
+    },
+    input: JSON.stringify({
+      command: "ingest",
+      storeDir: path.join(tmpDir, "store"),
+      documents: [
+        {
+          id: "structured",
+          user_id: "u1",
+          timestamp: "2025-01-01T00:00:00Z",
+          messages: [
+            {
+              role: "user",
+              content: "I used to prefer tea.",
+              timestamp: "2025-01-02T03:04:05Z",
+            },
+            {
+              role: "assistant",
+              content: "Noted.",
+            },
+          ],
+        },
+        {
+          id: "content-only",
+          user_id: "u1",
+          content: "Now I prefer coffee.",
+          timestamp: "2025-02-03T00:00:00Z",
+        },
+      ],
+    }),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const turns = JSON.parse(await readFile(replayTurnsPath, "utf8"));
+  assert.deepEqual(turns.map((turn: { sourceValidAt?: string }) => turn.sourceValidAt), [
+    "2025-01-02T03:04:05.000Z",
+    "2025-01-01T00:00:00.000Z",
+    "2025-02-03T00:00:00.000Z",
+  ]);
+});
+
 test("AMB helper records direct-answer Codex configuration errors without crashing", {
   skip:
     existsSync(builtCoreEntry) && helperNode
@@ -1472,7 +1551,7 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
   assert.equal(payload.answer, "b");
 });
 
-test("AMB helper rejects unsupported MCQ fallback despite adjacent memories", {
+test("AMB helper records unsupported MCQ fallback errors despite adjacent memories", {
   skip:
     existsSync(builtCoreEntry) && helperNode
       ? false
@@ -1487,6 +1566,7 @@ test("AMB helper rejects unsupported MCQ fallback despite adjacent memories", {
     ...process.env,
     REMNIC_REPO: repoRoot,
     REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+    REMNIC_AMB_CODEX_TIMEOUT_MS: "12abc",
     REMNIC_AMB_EXTRACTION_DEADLINE_MS: "300000",
   };
 
@@ -1532,9 +1612,11 @@ test("AMB helper rejects unsupported MCQ fallback despite adjacent memories", {
     }),
   });
 
-  assert.notEqual(result.status, 0);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /no evidence-backed multiple-choice fallback/i);
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.answer, "");
+  assert.match(payload.raw_response.answerError, /REMNIC_AMB_CODEX_TIMEOUT_MS must be a positive integer/);
 });
 
 test("AMB helper returns empty MCQ direct-answer before Codex when no evidence is retrieved", {
