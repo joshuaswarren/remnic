@@ -440,7 +440,11 @@ def patch_mode_llm_imports(amb_root: Path) -> None:
 
     if rag_path.exists():
         text = rag_path.read_text()
-        text = text.replace("from ..llm.gemini import GeminiLLM\n", "")
+        text = text.replace(
+            "from ..llm.gemini import GeminiLLM\n",
+            "from ..llm import get_answer_llm\nfrom ..llm.base import LLM\n",
+        )
+        text = replace_gemini_llm_references(text, "get_answer_llm")
         rag_path.write_text(text)
 
     if agentic_path.exists():
@@ -463,8 +467,30 @@ def patch_judge_llm_import(amb_root: Path) -> None:
     if not judge_path.exists():
         return
     text = judge_path.read_text()
-    text = text.replace("from .llm.gemini import GeminiLLM\n", "")
+    text = text.replace("from .llm.gemini import GeminiLLM\n", "from .llm import get_judge_llm\n")
+    text = ensure_judge_llm_type_import(text)
+    text = replace_gemini_llm_references(text, "get_judge_llm")
     judge_path.write_text(text)
+
+
+def replace_gemini_llm_references(text: str, factory_name: str) -> str:
+    return (
+        text.replace("GeminiLLM()", f"{factory_name}()")
+        .replace("GeminiLLM | None", "LLM | None")
+        .replace("GeminiLLM", "LLM")
+    )
+
+
+def ensure_judge_llm_type_import(text: str) -> str:
+    if "LLM" not in text:
+        return text
+    if "from .llm.base import LLM" in text:
+        return text
+    if "from .llm.base import LLM, " in text:
+        return text
+    if "from .llm.base import " in text:
+        return re.sub(r"from \.llm\.base import (?!LLM\b)", "from .llm.base import LLM, ", text, count=1)
+    return "from .llm.base import LLM\n" + text
 
 
 def patch_runner_incremental_batch_save(amb_root: Path) -> None:

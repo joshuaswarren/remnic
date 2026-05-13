@@ -170,7 +170,7 @@ _TOOL_SCHEMA = {
             "description": "Final answer when action is 'final'.",
         },
     },
-    "required": ["action", "tool_name", "tool_args", "final_answer"],
+    "required": ["action"],
     "additionalProperties": False,
 }
 
