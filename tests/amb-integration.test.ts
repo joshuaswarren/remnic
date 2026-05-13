@@ -545,6 +545,8 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
   const datasetDir = path.join(ambRoot, "src", "memory_bench", "dataset");
   const llmDir = path.join(ambRoot, "src", "memory_bench", "llm");
   const runnerPath = path.join(ambRoot, "src", "memory_bench", "runner.py");
+  const fakeRemnicRoot = path.join(tmpDir, "remnic");
+  const fakeInstallPath = path.join(fakeRemnicRoot, "integrations", "amb", "install.py");
   const observedEnvPath = path.join(tmpDir, "uv-env.json");
   const observedRunArgsPath = path.join(tmpDir, "run-args.json");
   const fakeCodexPath = path.join(binDir, "codex");
@@ -554,7 +556,23 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
   await mkdir(datasetDir, { recursive: true });
   await mkdir(llmDir, { recursive: true });
   await mkdir(binDir, { recursive: true });
+  await mkdir(path.dirname(fakeInstallPath), { recursive: true });
+  await mkdir(path.join(fakeRemnicRoot, "packages", "remnic-core", "dist"), {
+    recursive: true,
+  });
   await writeFile(path.join(ambRoot, "pyproject.toml"), "[project]\nname = 'fake-amb'\n");
+  await writeFile(path.join(fakeRemnicRoot, "packages", "remnic-core", "dist", "index.js"), "");
+  await writeFile(
+    fakeInstallPath,
+    [
+      "import argparse",
+      "",
+      "parser = argparse.ArgumentParser()",
+      "parser.add_argument('--amb', required=True)",
+      "parser.parse_args()",
+      "",
+    ].join("\n"),
+  );
   await writeFile(
     runnerPath,
     [
@@ -668,6 +686,7 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
       ...process.env,
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+      REMNIC_REPO: fakeRemnicRoot,
       GEMINI_API_KEY: "should-not-leak",
       GOOGLE_API_KEY: "should-not-leak",
       OBSERVED_ENV_PATH: observedEnvPath,
