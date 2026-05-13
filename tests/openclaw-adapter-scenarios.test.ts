@@ -37,6 +37,7 @@ async function withScenarioRegistration(
   const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-openclaw-scenario-"));
   const saved = saveAndResetOpenClawRegistrationGlobals();
   const previousMigration = disableRegisterMigrationForCaptureTest();
+  let orchestrator: Record<string, any> | null = null;
   try {
     const { default: plugin } = await import("../src/index.js");
     const capture = captureOpenClawRegistrationApi({
@@ -52,13 +53,15 @@ async function withScenarioRegistration(
     });
 
     (plugin as { register(api: unknown): void }).register(capture.api);
-    const orchestrator = (globalThis as Record<string, any>)[ORCHESTRATOR_KEY];
+    orchestrator = (globalThis as Record<string, any>)[ORCHESTRATOR_KEY] ?? null;
     if (options.registrationMode !== "setup-only") {
       assert.ok(orchestrator, "registration should expose the Remnic orchestrator");
     }
 
     await fn({ capture, orchestrator: orchestrator ?? {}, memoryDir });
   } finally {
+    await orchestrator?.lcmEngine?.waitForObserveQueueIdle?.();
+    orchestrator?.lcmEngine?.close?.();
     restoreRegisterMigrationForCaptureTest(previousMigration);
     restoreOpenClawRegistrationGlobals(saved);
     fs.rmSync(memoryDir, { force: true, recursive: true, maxRetries: 5, retryDelay: 50 });

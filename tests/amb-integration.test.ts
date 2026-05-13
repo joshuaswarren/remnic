@@ -1075,6 +1075,41 @@ test("AMB helper returns no documents when recall has no evidence", {
   assert.match(result.raw_response.retrievalContext, /Query timestamp: 2026-05-13T00:00:00\.000Z/);
 });
 
+test("AMB helper expands tilde in REMNIC_REPO", {
+  skip:
+    existsSync(builtCoreEntry) && helperNode
+      ? false
+      : "built @remnic/core dist and a Node 22 runtime are required",
+}, async (t) => {
+  assert.ok(helperNode);
+  const homeRelativeRepo = path.relative(os.homedir(), repoRoot);
+  if (homeRelativeRepo.startsWith("..") || path.isAbsolute(homeRelativeRepo)) {
+    t.skip("repository is not under the home directory");
+    return;
+  }
+
+  const storeDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-helper-tilde-"));
+  const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
+  const result = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REMNIC_REPO: path.join("~", homeRelativeRepo),
+    },
+    input: JSON.stringify({
+      command: "retrieve",
+      storeDir,
+      query: "What has the user mentioned?",
+      userId: "u1",
+    }),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.documents, []);
+});
+
 test("AMB helper records direct-answer Codex configuration errors without crashing", {
   skip:
     existsSync(builtCoreEntry) && helperNode
@@ -3350,6 +3385,7 @@ test("AMB helper uses art festival passionate-creators rule for creative express
 test("AMB SOTA verifier compares Remnic result against external best", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-sota-"));
   const externalPath = path.join(tmpDir, "external_results.json");
+  const nullResultPath = path.join(tmpDir, "null-result.json");
   const losingPath = path.join(tmpDir, "losing-result.json");
   const winningPath = path.join(tmpDir, "winning-result.json");
   const manifestPath = path.join(tmpDir, "winning-manifest.json");
@@ -3369,6 +3405,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       },
     }),
   );
+  await writeFile(nullResultPath, "null");
   await writeFile(
     losingPath,
     JSON.stringify({
@@ -3407,6 +3444,20 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   });
   assert.equal(noFloor.status, 2);
   assert.match(noFloor.stderr, /--min-queries is required/);
+
+  const nullResult = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    nullResultPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(nullResult.status, 2);
+  assert.match(nullResult.stderr, /AMB result must be a JSON object/);
 
   const losing = spawnSync(process.execPath, [
     verifier,

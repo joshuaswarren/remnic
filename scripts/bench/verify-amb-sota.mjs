@@ -181,11 +181,7 @@ function requiredValue(argv, index, flag) {
 
 async function readJson(path, label) {
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8"));
-    if (!isPlainObject(parsed)) {
-      fail(`${label} from ${path} must be a JSON object`, 2);
-    }
-    return parsed;
+    return jsonObject(JSON.parse(await readFile(path, "utf8")), label);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     fail(`failed to read ${label} from ${path}: ${message}`, 2);
@@ -201,7 +197,14 @@ async function fetchJson(url) {
   if (!response.ok) {
     fail(`failed to fetch external results: HTTP ${response.status} ${response.statusText}`, 2);
   }
-  return response.json();
+  return jsonObject(await response.json(), "external results");
+}
+
+function jsonObject(value, label) {
+  if (!isPlainObject(value)) {
+    fail(`${label} must be a JSON object`, 2);
+  }
+  return value;
 }
 
 async function writeManifest(pathname, { verdict, result, resultPath, externalSource, command, ambDir }) {
