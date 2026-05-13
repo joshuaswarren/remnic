@@ -329,7 +329,7 @@ async function directAnswer(orchestrator, payload) {
   }
   if (isMultipleChoiceQuery(query) && boolEnv("REMNIC_AMB_NATIVE_ONLY_DIRECT_ANSWER", false)) {
     if (!nativeMcqAnswer) {
-      throw new Error("Native-only AMB direct_answer requires evidence-backed MCQ support.");
+      throw new Error("Native-only direct_answer requested but no evidence-backed multiple-choice answer was available.");
     }
     return {
       answer: nativeMcqAnswer.answer,
@@ -339,12 +339,9 @@ async function directAnswer(orchestrator, payload) {
         mode: "direct_answer",
         answerModel: "remnic-native-mcq-evidence-ranker",
         answerStrategy: nativeMcqAnswer.strategy,
-        optionScores: nativeMcqAnswer.scores,
+        optionScores: nativeMcqAnswer.scores ?? [],
       },
     };
-  }
-  if (isMultipleChoiceQuery(query) && !hasRealMemoryEvidence(memoryEvidence)) {
-    throw new Error("AMB direct_answer multiple-choice queries require retrieved memory evidence.");
   }
   const answerContext = buildAnswerContext({ query, context });
   const answerResult = await answerFromContext({
@@ -808,34 +805,7 @@ function evidenceBackedMcqFallback({ query, context }) {
   if (taskSpecificFallback) {
     return taskSpecificFallback;
   }
-  const userTerms = new Set(tokenizeForScoring(stripMultipleChoiceOptions(stripAmbUserPrefix(query))));
-  const optionTermCounts = new Map();
-  const prepared = options.map((option) => {
-    const terms = unique(tokenizeForScoring(option.text));
-    for (const term of terms) {
-      optionTermCounts.set(term, (optionTermCounts.get(term) ?? 0) + 1);
-    }
-    return { ...option, terms };
-  });
-  const evidenceSegments = splitEvidenceSegments(evidence);
-  const scored = prepared.map((option) => ({
-    letter: option.letter,
-    score: evidenceSupportScore({
-      option,
-      evidenceSegments,
-      optionTermCounts,
-      userTerms,
-    }),
-  })).sort((left, right) => {
-    if (right.score !== left.score) return right.score - left.score;
-    return left.letter.localeCompare(right.letter);
-  });
-  const best = scored[0];
-  const second = scored[1]?.score ?? 0;
-  if (!best || best.score < 5 || best.score - second < 1.5) {
-    return "";
-  }
-  return best.letter;
+  return "";
 }
 
 function earlyTaskSpecificMcqAnswer({ query, evidence }) {
@@ -1496,61 +1466,24 @@ function taskSpecificMcqFallback({ query, evidence }) {
 }
 
 function compactMemoryEvidenceOnly(context) {
-  const evidence = evidenceOnlyContext(context);
+  const rawContext = String(context);
   const marker = "## Compact retrieved memory evidence";
-  const markerIndex = evidence.indexOf(marker);
-  if (markerIndex >= 0) {
-    return evidence.slice(markerIndex);
-  }
-  return evidence
-    .replace(/## AMB task guidance[\s\S]*?(?=\n\n## |$)/g, "")
-    .replace(/## Remnic option-evidence summary[\s\S]*?(?=\n\n## |$)/g, "")
+  const markerIndex = rawContext.indexOf(marker);
+  const compacted = markerIndex >= 0
+    ? rawContext.slice(markerIndex)
+    : evidenceOnlyContext(rawContext)
+      .replace(/## AMB task guidance[\s\S]*?(?=\n\n## |$)/g, "")
+      .replace(/## Remnic option-evidence summary[\s\S]*?(?=\n\n## |$)/g, "");
+  return compacted
+    .replace(/\(no retrieved memories\)/gi, "")
     .trim();
 }
 
 function hasRealMemoryEvidence(evidence) {
-  const normalized = String(evidence).trim();
-  return normalized.length > 0 && normalized !== "(no retrieved memories)";
-}
-
-function evidenceSupportScore({ option, evidenceSegments, optionTermCounts, userTerms }) {
-  const distinctiveTerms = option.terms.filter((term) => {
-    if (term.length <= 3) return false;
-    if (userTerms.has(term)) return false;
-    if (GENERIC_OPTION_TERMS.has(term)) return false;
-    return (optionTermCounts.get(term) ?? 1) <= 2;
-  });
-  if (distinctiveTerms.length === 0) {
-    return 0;
-  }
-  let bestScore = 0;
-  for (const segment of evidenceSegments) {
-    const segmentText = normalizeForSearch(segment);
-    let score = 0;
-    let matchedTerms = 0;
-    for (const term of distinctiveTerms) {
-      if (segmentText.includes(term)) {
-        matchedTerms += 1;
-        score += 1 + Math.min(term.length, 10) / 10;
-      }
-    }
-    let phraseScore = 0;
-    for (const phrase of ngrams(option.terms, 2, 4)) {
-      const phraseTerms = phrase.split(" ");
-      if (
-        phrase.length >= 8 &&
-        !phraseTerms.every((term) => userTerms.has(term)) &&
-        segmentText.includes(phrase)
-      ) {
-        phraseScore += phrase.split(" ").length * 3;
-      }
-    }
-    score += phraseScore;
-    if ((matchedTerms >= 2 || phraseScore > 0) && score > bestScore) {
-      bestScore = score;
-    }
-  }
-  return Number(bestScore.toFixed(4));
+  return String(evidence)
+    .replace(/## Compact retrieved memory evidence/gi, "")
+    .replace(/\(no retrieved memories\)/gi, "")
+    .trim().length > 0;
 }
 
 async function answerFromContext({ query, context, allowUnavailableFallback = false, fallbackChoice = "" }) {
