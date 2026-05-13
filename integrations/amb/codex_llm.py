@@ -207,7 +207,7 @@ def _positive_int_env(name: str, fallback: int) -> int:
     raw = os.environ.get(name)
     if raw is None or raw == "":
         return fallback
-    if not raw.isdigit() or raw.startswith("0"):
+    if not raw.isdecimal() or int(raw) < 1:
         raise ValueError(f"{name} must be a positive integer")
     return int(raw)
 

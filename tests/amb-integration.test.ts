@@ -427,6 +427,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
 
   const smokeScript = [
     "from pathlib import Path",
+    "import os",
     "from memory_bench.dataset import REGISTRY as DATASET_REGISTRY",
     "from memory_bench.memory import REGISTRY",
     "from memory_bench.llm import REGISTRY as LLM_REGISTRY",
@@ -475,6 +476,15 @@ test("AMB installer registers Remnic provider and bridge commands", {
     ")",
     "assert seen['args'] == {'query': 'launch', 'limit': 2}",
     "assert tool_answer == 'done'",
+    "os.environ['REMNIC_AMB_CODEX_TIMEOUT_SECONDS'] = '\\u00b2'",
+    "try:",
+    "    LLM_REGISTRY['codex']()",
+    "except ValueError as exc:",
+    "    assert 'positive integer' in str(exc)",
+    "else:",
+    "    raise AssertionError('unicode digit timeout should be rejected')",
+    "finally:",
+    "    os.environ.pop('REMNIC_AMB_CODEX_TIMEOUT_SECONDS', None)",
     "provider = REGISTRY['remnic']()",
     "assert provider.concurrency == 3",
     "provider.prepare(Path('store'), unit_ids={'u1', 'u2'}, reset=True)",
