@@ -124,13 +124,15 @@ sota_cache_reuse_arg() {
   case "$1" in
     --category | --category=* | \
     --doc-limit | --doc-limit=* | \
+    --query-limit | --query-limit=* | \
     --only-failed | --only-failed=* | \
     --query-id | --query-id=* | \
     --retrieve-only | --retrieve-only=* | \
     --skip-answer | --skip-answer=* | \
     --skip-ingested | --skip-ingested=* | \
     --skip-ingestion | --skip-ingestion=* | \
-    --skip-retrieval | --skip-retrieval=*)
+    --skip-retrieval | --skip-retrieval=* | \
+    -c | -q)
       return 0
       ;;
     *)
