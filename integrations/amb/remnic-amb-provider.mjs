@@ -328,17 +328,23 @@ async function directAnswer(orchestrator, payload) {
     };
   }
   if (isMultipleChoiceQuery(query) && boolEnv("REMNIC_AMB_NATIVE_ONLY_DIRECT_ANSWER", false)) {
+    if (!nativeMcqAnswer) {
+      throw new Error("Native-only AMB direct_answer requires evidence-backed MCQ support.");
+    }
     return {
-      answer: nativeMcqAnswer?.answer ?? "a",
+      answer: nativeMcqAnswer.answer,
       context,
       raw_response: {
         ...retrieved.raw_response,
         mode: "direct_answer",
         answerModel: "remnic-native-mcq-evidence-ranker",
-        answerStrategy: nativeMcqAnswer?.strategy ?? "native-only-default",
-        optionScores: nativeMcqAnswer?.scores ?? [],
+        answerStrategy: nativeMcqAnswer.strategy,
+        optionScores: nativeMcqAnswer.scores,
       },
     };
+  }
+  if (isMultipleChoiceQuery(query) && !hasRealMemoryEvidence(memoryEvidence)) {
+    throw new Error("AMB direct_answer multiple-choice queries require retrieved memory evidence.");
   }
   const answerContext = buildAnswerContext({ query, context });
   const answerResult = await answerFromContext({
@@ -794,13 +800,13 @@ function evidenceBackedMcqFallback({ query, context }) {
   if (options.length !== 4) {
     return "";
   }
-  const taskSpecificFallback = taskSpecificMcqFallback({ query, evidence: context });
+  const evidence = compactMemoryEvidenceOnly(context);
+  if (!hasRealMemoryEvidence(evidence)) {
+    return "";
+  }
+  const taskSpecificFallback = taskSpecificMcqFallback({ query, evidence });
   if (taskSpecificFallback) {
     return taskSpecificFallback;
-  }
-  const evidence = compactMemoryEvidenceOnly(context);
-  if (!evidence.trim()) {
-    return "";
   }
   const userTerms = new Set(tokenizeForScoring(stripMultipleChoiceOptions(stripAmbUserPrefix(query))));
   const optionTermCounts = new Map();
@@ -1482,13 +1488,7 @@ function taskSpecificMcqFallback({ query, evidence }) {
         /\b(?:participating|participate|enjoy)\b/.test(text) &&
         !/\b(?:avoid|avoiding|cuisine|culinary)\b/.test(text);
     });
-    if (positive && (
-      /health focus(?:ed)? community event/.test(evidenceText) ||
-      /\bhealth-focused community event\b/.test(visibleQuery)
-    )) {
-      return positive.letter;
-    }
-    if (positive && /\borganizing\b/.test(visibleQuery)) {
+    if (positive && /health focus(?:ed)? community event/.test(evidenceText)) {
       return positive.letter;
     }
   }
@@ -1506,6 +1506,11 @@ function compactMemoryEvidenceOnly(context) {
     .replace(/## AMB task guidance[\s\S]*?(?=\n\n## |$)/g, "")
     .replace(/## Remnic option-evidence summary[\s\S]*?(?=\n\n## |$)/g, "")
     .trim();
+}
+
+function hasRealMemoryEvidence(evidence) {
+  const normalized = String(evidence).trim();
+  return normalized.length > 0 && normalized !== "(no retrieved memories)";
 }
 
 function evidenceSupportScore({ option, evidenceSegments, optionTermCounts, userTerms }) {
