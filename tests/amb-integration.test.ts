@@ -418,8 +418,10 @@ test("AMB installer registers Remnic provider and bridge commands", {
   );
   assert.match(patchedRegistry, /lazy optional-provider imports/);
   assert.match(patchedRegistry, /_MEMORY_PROVIDER_METADATA/);
+  assert.match(patchedRegistry, /if name\.startswith\("_"\):\n            raise AttributeError\(name\)/);
   const patchedDatasets = await readFile(path.join(datasetDir, "__init__.py"), "utf8");
   assert.match(patchedDatasets, /lazy optional-dataset imports/);
+  assert.match(patchedDatasets, /if name\.startswith\("_"\):\n            raise AttributeError\(name\)/);
   assert.equal(
     patchedDatasets.match(/"personamem": _LazyDataset\("\.personamem", "PersonaMemDataset"\)/g)?.length,
     1,
@@ -434,6 +436,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
     1,
   );
   assert.match(patchedLlmRegistry, /lazy provider imports/);
+  assert.match(patchedLlmRegistry, /if name\.startswith\("_"\):\n            raise AttributeError\(name\)/);
   const patchedCli = await readFile(path.join(ambRoot, "src", "memory_bench", "cli.py"), "utf8");
   assert.match(patchedCli, /Remnic Codex LLM bypass/);
   assert.match(patchedCli, /REMNIC_AMB_FORCE_CODEX_LLM/);
@@ -1846,8 +1849,10 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const missingLlmPath = path.join(tmpDir, "missing-llm-result.json");
   const nonCodexLlmPath = path.join(tmpDir, "non-codex-llm-result.json");
   const agentWinningPath = path.join(tmpDir, "agent-winning-result.json");
+  const artifactWinningPath = path.join(tmpDir, "artifact-winning-result.json");
   const winningPath = path.join(tmpDir, "winning-result.json");
   const oraclePath = path.join(tmpDir, "oracle-result.json");
+  const agentManifestPath = path.join(tmpDir, "agent-winning-manifest.json");
   const manifestPath = path.join(tmpDir, "winning-manifest.json");
   const verifier = path.join(repoRoot, "scripts", "bench", "verify-amb-sota.mjs");
 
@@ -1931,6 +1936,23 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
         { raw_response: { answerModel: "codex:gpt-5.5:xhigh:fast" } },
         { raw_response: { answerModel: "codex:gpt-5.5:xhigh:fast" } },
       ],
+    }),
+  );
+  await writeFile(
+    artifactWinningPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memoryProvider: "remnic",
+      runName: "remnic-agent-artifact",
+      mode: "agent",
+      totalQueries: 2,
+      correct: 2,
+      accuracy: 1,
+      llm: {
+        answerLlm: "codex:gpt-5.5:xhigh:fast",
+        judgeLlm: "codex:gpt-5.5:xhigh:fast",
+      },
     }),
   );
   await writeFile(
@@ -2041,6 +2063,8 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
     externalPath,
     "--min-queries",
     "2",
+    "--manifest-out",
+    agentManifestPath,
   ], {
     encoding: "utf8",
   });
@@ -2049,6 +2073,26 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(agentVerdict.sota, true);
   assert.equal(agentVerdict.answerLlm, "codex:gpt-5.5:xhigh:fast");
   assert.equal(agentVerdict.judgeLlm, "codex:gpt-5.5:xhigh:fast");
+  const agentManifest = JSON.parse(await readFile(agentManifestPath, "utf8"));
+  assert.equal(agentManifest.run.answerLlm, "codex:gpt-5.5:xhigh:fast");
+  assert.equal(agentManifest.run.judgeLlm, "codex:gpt-5.5:xhigh:fast");
+
+  const artifactWinning = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    artifactWinningPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "2",
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(artifactWinning.status, 0, artifactWinning.stderr);
+  const artifactVerdict = JSON.parse(artifactWinning.stdout);
+  assert.equal(artifactVerdict.sota, true);
+  assert.equal(artifactVerdict.answerLlm, "codex:gpt-5.5:xhigh:fast");
+  assert.equal(artifactVerdict.judgeLlm, "codex:gpt-5.5:xhigh:fast");
 
   const losing = spawnSync(process.execPath, [
     verifier,

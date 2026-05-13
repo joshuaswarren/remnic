@@ -287,6 +287,8 @@ class _LazyDataset:
         return self._resolved
 
     def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
         return getattr(self._resolve(), name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Dataset:
@@ -346,6 +348,8 @@ class _LazyLLM:
         return self._resolved
 
     def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
         return getattr(self._resolve(), name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> LLM:

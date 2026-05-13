@@ -34,12 +34,22 @@ async function main() {
   const dataset = nonEmptyString(result.dataset, "result.dataset");
   const split = nonEmptyString(result.split, "result.split");
   const accuracy = finiteNumber(result.accuracy, "result.accuracy");
-  const memoryProviderField = result.memory_provider === undefined
-    ? "result.memory"
-    : "result.memory_provider";
-  const memoryProvider = nonEmptyString(result.memory_provider ?? result.memory, memoryProviderField);
-  const runName = typeof result.run_name === "string" ? result.run_name : "";
-  const totalQueries = finiteNumber(result.total_queries, "result.total_queries");
+  const memoryProviderResult = fieldValue(result, [
+    ["memory_provider", "result.memory_provider"],
+    ["memory", "result.memory"],
+    ["memoryProvider", "result.memoryProvider"],
+  ]);
+  const memoryProvider = nonEmptyString(memoryProviderResult.value, memoryProviderResult.name);
+  const runNameValue = fieldValue(result, [
+    ["run_name", "result.run_name"],
+    ["runName", "result.runName"],
+  ]);
+  const runName = typeof runNameValue.value === "string" ? runNameValue.value : "";
+  const totalQueriesResult = fieldValue(result, [
+    ["total_queries", "result.total_queries"],
+    ["totalQueries", "result.totalQueries"],
+  ]);
+  const totalQueries = finiteNumber(totalQueriesResult.value, totalQueriesResult.name);
   if (totalQueries <= 0) {
     fail("result.total_queries must be greater than zero", 2);
   }
@@ -58,12 +68,12 @@ async function main() {
   }
   if (!isRemnicMemoryProvider(memoryProvider)) {
     fail(
-      `${memoryProviderField} must be "remnic" for SOTA verification; got ${JSON.stringify(memoryProvider)} (run_name=${JSON.stringify(runName)})`,
+      `${memoryProviderResult.name} must be "remnic" for SOTA verification; got ${JSON.stringify(memoryProvider)} (run_name=${JSON.stringify(runName)})`,
       2,
     );
   }
   const answerLlm = codexAnswerLlmId(result, totalQueries);
-  const judgeLlm = requiredCodexLlmId(result.judge_llm, "result.judge_llm");
+  const judgeLlm = requiredCodexLlmId(requiredLlmField(result, "judge"), "result.judge_llm");
 
   const entries = external?.[dataset]?.[split];
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -245,8 +255,8 @@ async function writeManifest(pathname, { verdict, result, resultPath, externalSo
       correct: result.correct ?? null,
       accuracy: result.accuracy,
       ingestedDocs: result.ingested_docs ?? null,
-      answerLlm: result.answer_llm ?? null,
-      judgeLlm: result.judge_llm ?? null,
+      answerLlm: verdict.answerLlm,
+      judgeLlm: verdict.judgeLlm,
       description: result.description ?? null,
     },
     verdict,
@@ -283,6 +293,42 @@ function isRemnicMemoryProvider(value) {
   return value.trim().toLowerCase() === "remnic";
 }
 
+function fieldValue(record, fields) {
+  for (const [key, name] of fields) {
+    if (record[key] !== undefined && record[key] !== null) {
+      return { value: record[key], name };
+    }
+  }
+  return { value: undefined, name: fields[0]?.[1] ?? "result field" };
+}
+
+function llmField(result, role) {
+  const snakeName = `${role}_llm`;
+  const camelName = `${role}Llm`;
+  const direct = fieldValue(result, [
+    [snakeName, `result.${snakeName}`],
+    [camelName, `result.${camelName}`],
+  ]);
+  if (direct.value !== undefined && direct.value !== null) {
+    return direct;
+  }
+  if (isPlainObject(result.llm)) {
+    return fieldValue(result.llm, [
+      [snakeName, `result.llm.${snakeName}`],
+      [camelName, `result.llm.${camelName}`],
+    ]);
+  }
+  return { value: undefined, name: `result.${snakeName}` };
+}
+
+function requiredLlmField(result, role) {
+  const field = llmField(result, role);
+  if (field.value === undefined || field.value === null) {
+    fail(`${field.name} must be "${EXPECTED_CODEX_LLM_ID}" for SOTA verification; got absent`, 2);
+  }
+  return field.value;
+}
+
 function requiredCodexLlmId(value, name) {
   if (value === undefined || value === null) {
     fail(`${name} must be "${EXPECTED_CODEX_LLM_ID}" for SOTA verification; got absent`, 2);
@@ -304,8 +350,9 @@ function requiredCodexLlmId(value, name) {
 }
 
 function codexAnswerLlmId(result, totalQueries) {
-  if (result.answer_llm !== undefined && result.answer_llm !== null) {
-    return requiredCodexLlmId(result.answer_llm, "result.answer_llm");
+  const answerField = llmField(result, "answer");
+  if (answerField.value !== undefined && answerField.value !== null) {
+    return requiredCodexLlmId(answerField.value, answerField.name);
   }
   const mode = typeof result.mode === "string" ? result.mode.trim().toLowerCase() : "";
   if (mode === "agent" && hasAgentCodexAnswerProvenance(result.results, totalQueries)) {
