@@ -3478,6 +3478,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const nullResultPath = path.join(tmpDir, "null-result.json");
   const losingPath = path.join(tmpDir, "losing-result.json");
   const winningPath = path.join(tmpDir, "winning-result.json");
+  const oraclePath = path.join(tmpDir, "oracle-result.json");
   const manifestPath = path.join(tmpDir, "winning-manifest.json");
   const verifier = path.join(repoRoot, "scripts", "bench", "verify-amb-sota.mjs");
 
@@ -3522,6 +3523,19 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       judge_llm: "codex:gpt-5.5:xhigh:fast",
     }),
   );
+  await writeFile(
+    oraclePath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "remnic",
+      run_name: "remnic",
+      oracle: true,
+      total_queries: 100,
+      correct: 100,
+      accuracy: 1,
+    }),
+  );
 
   const noFloor = spawnSync(process.execPath, [
     verifier,
@@ -3562,6 +3576,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   });
   assert.equal(losing.status, 1);
   assert.equal(JSON.parse(losing.stdout).sota, false);
+
+  const oracle = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    oraclePath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(oracle.status, 2);
+  assert.match(oracle.stderr, /oracle-aided AMB runs cannot be verified for SOTA/);
+  assert.equal(oracle.stdout, "");
 
   const winning = spawnSync(process.execPath, [
     verifier,

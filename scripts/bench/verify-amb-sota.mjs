@@ -22,6 +22,9 @@ async function main() {
   }
 
   const result = await readJson(args.result, "AMB result");
+  if (result.oracle === true) {
+    fail("oracle-aided AMB runs cannot be verified for SOTA", 2);
+  }
   const external = args.external
     ? await readJson(args.external, "external results")
     : await fetchJson(DEFAULT_EXTERNAL_RESULTS_URL);
