@@ -771,8 +771,17 @@ function isMultipleChoiceQuery(query) {
 }
 
 function normalizeChoice(value) {
-  const match = String(value).trim().match(/^\(?\s*([a-d])\s*\)?/i);
-  return match ? match[1].toLowerCase() : "";
+  const text = String(value).trim();
+  const bare = text.match(/^(?:([a-d])|([a-d])[.)]|\(\s*([a-d])\s*\))\s*$/i);
+  if (bare) {
+    return (bare[1] ?? bare[2] ?? bare[3]).toLowerCase();
+  }
+  const leadingMarker = text.match(/^\(\s*([a-d])\s*\)(?:\s+\S[\s\S]*)?$/i);
+  if (leadingMarker) {
+    return leadingMarker[1].toLowerCase();
+  }
+  const explicitMarker = text.match(/^(?:answer|choice|option|final answer)\s*(?::|-|is)?\s*\(?\s*([a-d])\s*\)?(?:\s|$|[.)])/i);
+  return explicitMarker ? explicitMarker[1].toLowerCase() : "";
 }
 
 async function collectSearchResults(engine, queries, limit, sessionId) {

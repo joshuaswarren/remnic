@@ -1668,7 +1668,7 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
       "assert 'return only the option letter' in prompt",
       "assert '(a) Costume party' in prompt and '(b) Social games like charades' in prompt",
       "output = pathlib.Path(args[args.index('--output-last-message') + 1])",
-      "output.write_text(json.dumps({'answer': '(b) Charades'}))",
+      "output.write_text(json.dumps({'answer': 'Answer: (b)'}))",
       "",
     ].join("\n"),
   );
@@ -1717,6 +1717,83 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
   assert.equal(payload.ok, true);
   assert.equal(payload.answer, "b");
   assert.equal(payload.raw_response.answerModel, "codex:gpt-5.5:xhigh:fast");
+});
+
+test("AMB helper rejects explanatory MCQ direct answers without an option marker", {
+  skip:
+    existsSync(builtCoreEntry) && helperNode
+      ? false
+      : "built @remnic/core dist and a Node 22 runtime are required",
+}, async () => {
+  assert.ok(helperNode);
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-codex-mcq-invalid-"));
+  const storeDir = path.join(tmpDir, "store");
+  const fakeCodexPath = path.join(tmpDir, "fake-codex");
+  const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
+  const env = {
+    ...process.env,
+    REMNIC_REPO: repoRoot,
+    REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+    REMNIC_AMB_EXTRACTION_DEADLINE_MS: "300000",
+  };
+
+  await writeFile(
+    fakeCodexPath,
+    [
+      "#!/usr/bin/env python3",
+      "import json, pathlib, sys",
+      "args = sys.argv[1:]",
+      "output = pathlib.Path(args[args.index('--output-last-message') + 1])",
+      "output.write_text(json.dumps({'answer': 'Based on the memories, charades is best.'}))",
+      "",
+    ].join("\n"),
+  );
+  await chmod(fakeCodexPath, 0o755);
+
+  const ingest = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env,
+    input: JSON.stringify({
+      command: "ingest",
+      storeDir,
+      documents: [
+        {
+          id: "social-night",
+          content: Array.from({ length: 12 }, () =>
+            "Social games like charades brought laughter, helped everyone bond, and made the fun-filled game night memorable.",
+          ).join(" "),
+          user_id: "u1",
+          timestamp: "2026-05-12T00:00:00Z",
+        },
+      ],
+    }),
+  });
+  assert.equal(ingest.status, 0, ingest.stderr);
+
+  const result = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env,
+    input: JSON.stringify({
+      command: "direct_answer",
+      storeDir,
+      query: [
+        "What are some engaging activities you would suggest for a fun-filled game night with friends?",
+        "",
+        "(a) Costume party",
+        "(b) Social games like charades",
+        "(c) Settlers of Catan",
+        "(d) Trivia challenge",
+      ].join("\n"),
+      userId: "u1",
+    }),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.answer, "");
+  assert.equal(payload.raw_response.answerModel, "codex:gpt-5.5:xhigh:fast");
+  assert.match(payload.raw_response.answerError, /invalid multiple-choice answer/);
 });
 
 test("AMB helper records unsupported MCQ fallback errors despite adjacent memories", {
