@@ -255,7 +255,7 @@ fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REMNIC_REPO_DEFAULT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
-AMB_DIR="$(cd -- "$AMB_DIR" && pwd)"
+AMB_DIR="$(resolve_existing_dir "--amb" "$AMB_DIR")"
 
 if [[ ! -f "${AMB_DIR}/pyproject.toml" || ! -d "${AMB_DIR}/src/memory_bench/memory" ]]; then
   echo "error: --amb must point to an Agent Memory Benchmark checkout" >&2

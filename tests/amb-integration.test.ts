@@ -715,13 +715,13 @@ test("AMB runner install-only does not require Codex CLI", async () => {
 
   const result = spawnSync("bash", [
     path.resolve("scripts", "bench", "run-amb-remnic.sh"),
-    "--amb",
-    ambRoot,
+    "--amb=~/amb",
     "--install-only",
   ], {
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: tmpDir,
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       PROVIDERS_MARKER: providersMarker,
       REMNIC_AMB_CODEX_BIN: path.join(tmpDir, "missing-codex"),
