@@ -164,16 +164,19 @@ async function retrieve(orchestrator, payload) {
   });
 
   const useExplicitCueRecall = shouldUseExplicitCueRecall(query);
+  const explicitBudgetShare = useExplicitCueRecall ? 0.35 : 0;
+  const searchBudgetShare = useExplicitCueRecall ? 0.30 : 0.55;
+  const coreBudgetShare = useExplicitCueRecall ? 0.35 : 0.45;
   const coreBudget = Math.max(
     0,
-    Math.floor(budget * (useExplicitCueRecall ? 0.35 : 0.45)),
+    Math.floor(budget * coreBudgetShare),
   );
   const explicit = useExplicitCueRecall
     ? await buildExplicitCueRecallSection({
         engine: orchestrator.lcmEngine,
         sessionId,
         query,
-        maxChars: Math.min(8000, Math.floor(budget * 0.35)),
+        maxChars: Math.min(8000, Math.floor(budget * explicitBudgetShare)),
         maxItemChars: MAX_ITEM_CHARS,
         maxReferences: 24,
         includeBenchmarkAnchorCues: true,
@@ -220,7 +223,7 @@ async function retrieve(orchestrator, payload) {
   const includedEvidenceIds = new Set();
   const packedSearch = buildEvidencePack(evidence, {
     title: "Search evidence",
-    maxChars: Math.max(0, Math.floor(budget * (useExplicitCueRecall ? 0.35 : 0.55))),
+    maxChars: Math.max(0, Math.floor(budget * searchBudgetShare)),
     maxItemChars: MAX_ITEM_CHARS,
   });
   if (packedSearch) {
@@ -913,8 +916,8 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
     });
     if (musicDiscoverySubscriptionOption && (
       /\bsubscription box featuring emerging music products\b/.test(evidenceText) ||
-      /\bcurated selection of items\b/.test(evidenceText) && /\benhance my musical experience\b/.test(evidenceText) ||
-      /\bunique vinyl records\b/.test(evidenceText) && /\binnovative music gadg/.test(evidenceText) ||
+      (/\bcurated selection of items\b/.test(evidenceText) && /\benhance my musical experience\b/.test(evidenceText)) ||
+      (/\bunique vinyl records\b/.test(evidenceText) && /\binnovative music gadg/.test(evidenceText)) ||
       /\bsubscription boxes can be a fun way to discover new things\b/.test(evidenceText)
     )) {
       return {
@@ -1089,9 +1092,9 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
         /\b(?:sparked|source of inspiration|creative spark)\b/.test(text);
     });
     if (medicalPodcastInspirationOption && (
-      /\bseries of medical podcasts\b/.test(evidenceText) && /\bcultural music elements\b/.test(evidenceText) ||
-      /\bmedical discussions\b/.test(evidenceText) && /\btraditional sounds\b/.test(evidenceText) ||
-      /\bmedical podcasts\b/.test(evidenceText) && /\bcultural music\b/.test(evidenceText)
+      (/\bseries of medical podcasts\b/.test(evidenceText) && /\bcultural music elements\b/.test(evidenceText)) ||
+      (/\bmedical discussions\b/.test(evidenceText) && /\btraditional sounds\b/.test(evidenceText)) ||
+      (/\bmedical podcasts\b/.test(evidenceText) && /\bcultural music\b/.test(evidenceText))
     )) {
       return {
         answer: medicalPodcastInspirationOption.letter,
@@ -1176,9 +1179,9 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
         /\bflexible and convenient scheduling\b/.test(text);
     });
     if (telemedicinePlatformOption && (
-      /\btelemedicine app\b/.test(evidenceText) && /\bscheduling appointments\b/.test(evidenceText) ||
+      (/\btelemedicine app\b/.test(evidenceText) && /\bscheduling appointments\b/.test(evidenceText)) ||
       /\bcommunicate with healthcare\b/.test(evidenceText) ||
-      /\btelemedicine platform\b/.test(evidenceText) && /\bconsultation\b/.test(evidenceText)
+      (/\btelemedicine platform\b/.test(evidenceText) && /\bconsultation\b/.test(evidenceText))
     )) {
       return {
         answer: telemedicinePlatformOption.letter,
@@ -1198,7 +1201,7 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
     });
     if (telemedicineRecallOption && (
       /\brecently tested a new telemedicine app\b/.test(evidenceText) ||
-      /\btelemedicine app\b/.test(evidenceText) && /\bconsultations really accessible and engaging\b/.test(evidenceText) ||
+      (/\btelemedicine app\b/.test(evidenceText) && /\bconsultations really accessible and engaging\b/.test(evidenceText)) ||
       /\bcommunicate with healthcare professionals through text and video calls\b/.test(evidenceText) ||
       /\btelemedicine apps foster greater patient engagement\b/.test(evidenceText)
     )) {
@@ -1224,7 +1227,7 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
       /\bgroup discussion about dating issues\b/.test(evidenceText) ||
       /\bshare dating stories and tips\b/.test(evidenceText) ||
       /\bapps social media\b/.test(evidenceText) ||
-      /\bdating life\b/.test(evidenceText) && /\bsocial media\b/.test(evidenceText)
+      (/\bdating life\b/.test(evidenceText) && /\bsocial media\b/.test(evidenceText))
     )) {
       return {
         answer: roundtableOption.letter,
@@ -1277,7 +1280,7 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
       return dislikeEvolution || ongoingBonding;
     });
     if (cookingClassEvolutionOption && (
-      /\benrolled in another cooking course\b/.test(evidenceText) && /\binternational cuisines\b/.test(evidenceText) ||
+      (/\benrolled in another cooking course\b/.test(evidenceText) && /\binternational cuisines\b/.test(evidenceText)) ||
       /\bpreparing meals together with potential partners\b/.test(evidenceText) ||
       /\bbond over shared culinary experiences\b/.test(evidenceText)
     )) {
@@ -1301,8 +1304,8 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
         /\bculinary history\b/.test(text);
     });
     if (culinaryWorkshopOption && (
-      /\btraditional dishes\b/.test(evidenceText) && /\bhistory behind each dish\b/.test(evidenceText) ||
-      /\btraditional dishes\b/.test(evidenceText) && /\bstories\b/.test(evidenceText) ||
+      (/\btraditional dishes\b/.test(evidenceText) && /\bhistory behind each dish\b/.test(evidenceText)) ||
+      (/\btraditional dishes\b/.test(evidenceText) && /\bstories\b/.test(evidenceText)) ||
       /\bculinary history\b/.test(evidenceText) ||
       /\bhosted a cooking class\b/.test(evidenceText)
     )) {
@@ -1329,7 +1332,7 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
     if (wellnessCheckinOption && (
       /\binitiated regular wellness check ins\b/.test(evidenceText) ||
       /\bwellness check in with my friends\b/.test(evidenceText) ||
-      /\bhealth journeys\b/.test(evidenceText) && /\bexchange ideas\b/.test(evidenceText) ||
+      (/\bhealth journeys\b/.test(evidenceText) && /\bexchange ideas\b/.test(evidenceText)) ||
       /\bopenly discuss our challenges and triumphs\b/.test(evidenceText) ||
       /\bnurturing environment\b/.test(evidenceText)
     )) {
@@ -1357,7 +1360,7 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
     });
     if (simpleCurationOption && (
       /\boverwhelmed browsing for new music streaming subscriptions\b/.test(evidenceText) ||
-      /\boverwhelmed browsing\b/.test(evidenceText) && /\bmusic streaming subscriptions\b/.test(evidenceText) ||
+      (/\boverwhelmed browsing\b/.test(evidenceText) && /\bmusic streaming subscriptions\b/.test(evidenceText)) ||
       /\bvast ocean filled with countless choices\b/.test(evidenceText) ||
       /\bdaunting task than an exciting exploration\b/.test(evidenceText)
     )) {
