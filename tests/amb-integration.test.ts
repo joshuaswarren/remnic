@@ -389,7 +389,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
   assert.doesNotMatch(patchedJudge, /llm\.gemini|GeminiLLM/);
   assert.match(patchedModesInit, /getattr\(cls\.__init__, "__code__", None\)/);
   assert.match(patchedAgenticMode, /get_answer_llm/);
-  assert.match(patchedAgenticMode, /RAGMode\(llm=self\._llm\)/);
+  assert.match(patchedAgenticMode, /RAGMode\(llm=self\._llm, k=k\)/);
   assert.match(patchedRunner, /Remnic patch: save batch results incrementally/);
   assert.match(patchedRunner, /self\._save\(partial\)/);
 
@@ -699,7 +699,7 @@ test("AMB helper retrieves packed evidence without duplicate context documents",
   assert.equal(result.ok, true);
   assert.equal(result.raw_response.provider, "remnic");
   assert.equal(result.raw_response.queryTimestamp, "2026-05-13T00:00:00.000Z");
-  assert.equal(result.raw_response.stats.totalMessages, 1);
+  assert.equal(result.raw_response.stats.totalMessages, 2);
   assert.equal(result.raw_response.returnedDocuments, 1);
   assert.equal(result.raw_response.memories.length, 1);
   assert.match(result.raw_response.memories[0].content, /May 20/);
@@ -707,6 +707,8 @@ test("AMB helper retrieves packed evidence without duplicate context documents",
   assert.equal(result.documents.length, 1);
   assert.match(result.documents[0].content, /Query timestamp: 2026-05-13T00:00:00\.000Z/);
   assert.match(result.documents[0].content, /Session scope: amb:u1/);
+  assert.match(result.documents[0].content, /AMB system context/);
+  assert.match(result.documents[0].content, /Current user persona: Name: Kanoa Manu/);
   assert.match(result.documents[0].content, /May 20/);
 });
 

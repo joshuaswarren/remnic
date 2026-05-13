@@ -1944,10 +1944,7 @@ async function runProcess(command, args, { cwd, timeout, input }) {
 function messagesForDocument(document) {
   const messages = Array.isArray(document?.messages) ? document.messages : [];
   const normalized = messages
-    .map((message) => ({
-      role: normalizeRole(message?.role),
-      content: String(message?.content ?? "").trim(),
-    }))
+    .map(normalizeMessageForStorage)
     .filter((message) => message.content.length > 0);
   if (normalized.length > 0) {
     return normalized;
@@ -1966,6 +1963,18 @@ function messagesForDocument(document) {
     role: "user",
     content: metadata ? `${metadata}\n\n${content}` : content,
   }];
+}
+
+function normalizeMessageForStorage(message) {
+  const role = normalizeRole(message?.role);
+  const content = String(message?.content ?? "").trim();
+  if (role === "system") {
+    return {
+      role: "user",
+      content: content ? `AMB system context:\n${content}` : "",
+    };
+  }
+  return { role, content };
 }
 
 function normalizeRole(role) {
