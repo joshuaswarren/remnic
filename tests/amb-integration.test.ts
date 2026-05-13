@@ -856,13 +856,15 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
   const fakeInstallPath = path.join(fakeRemnicRoot, "integrations", "amb", "install.py");
   const observedEnvPath = path.join(tmpDir, "uv-env.json");
   const observedRunArgsPath = path.join(tmpDir, "run-args.json");
-  const fakeCodexPath = path.join(binDir, "codex");
+  const fakeHome = path.join(tmpDir, "home");
+  const fakeCodexPath = path.join(fakeHome, "bin", "codex");
   const fakeUvPath = path.join(binDir, "uv");
 
   await mkdir(memoryDir, { recursive: true });
   await mkdir(datasetDir, { recursive: true });
   await mkdir(llmDir, { recursive: true });
   await mkdir(binDir, { recursive: true });
+  await mkdir(path.dirname(fakeCodexPath), { recursive: true });
   await mkdir(path.dirname(fakeInstallPath), { recursive: true });
   await mkdir(path.join(fakeRemnicRoot, "packages", "remnic-core", "dist"), {
     recursive: true,
@@ -992,8 +994,9 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: fakeHome,
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-      REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+      REMNIC_AMB_CODEX_BIN: "~/bin/codex",
       REMNIC_REPO: ".",
       GEMINI_API_KEY: "should-not-leak",
       GOOGLE_API_KEY: "should-not-leak",
@@ -1721,6 +1724,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const externalPath = path.join(tmpDir, "external_results.json");
   const nullResultPath = path.join(tmpDir, "null-result.json");
   const losingPath = path.join(tmpDir, "losing-result.json");
+  const spoofedProviderPath = path.join(tmpDir, "spoofed-provider-result.json");
   const winningPath = path.join(tmpDir, "winning-result.json");
   const oraclePath = path.join(tmpDir, "oracle-result.json");
   const manifestPath = path.join(tmpDir, "winning-manifest.json");
@@ -1750,6 +1754,17 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       run_name: "remnic",
       total_queries: 100,
       accuracy: 0.52,
+    }),
+  );
+  await writeFile(
+    spoofedProviderPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "bm25",
+      run_name: "remnic-smoke",
+      total_queries: 100,
+      accuracy: 1,
     }),
   );
   await writeFile(
@@ -1806,6 +1821,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   });
   assert.equal(nullResult.status, 2);
   assert.match(nullResult.stderr, /AMB result must be a JSON object/);
+
+  const spoofedProvider = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    spoofedProviderPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(spoofedProvider.status, 2);
+  assert.match(spoofedProvider.stderr, /result\.memory_provider must be "remnic"/);
+  assert.equal(spoofedProvider.stdout, "");
 
   const losing = spawnSync(process.execPath, [
     verifier,

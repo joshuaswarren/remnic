@@ -33,10 +33,10 @@ async function main() {
   const dataset = nonEmptyString(result.dataset, "result.dataset");
   const split = nonEmptyString(result.split, "result.split");
   const accuracy = finiteNumber(result.accuracy, "result.accuracy");
-  const memoryProvider = nonEmptyString(
-    result.memory_provider ?? result.memory,
-    "result.memory_provider",
-  );
+  const memoryProviderField = result.memory_provider === undefined
+    ? "result.memory"
+    : "result.memory_provider";
+  const memoryProvider = nonEmptyString(result.memory_provider ?? result.memory, memoryProviderField);
   const runName = typeof result.run_name === "string" ? result.run_name : "";
   const totalQueries = finiteNumber(result.total_queries, "result.total_queries");
   if (totalQueries <= 0) {
@@ -55,9 +55,9 @@ async function main() {
       1,
     );
   }
-  if (!/remnic/i.test(`${memoryProvider} ${runName}`)) {
+  if (!isRemnicMemoryProvider(memoryProvider)) {
     fail(
-      `result does not appear to be a Remnic run: memory_provider=${memoryProvider}, run_name=${runName}`,
+      `${memoryProviderField} must be "remnic" for SOTA verification; got ${JSON.stringify(memoryProvider)} (run_name=${JSON.stringify(runName)})`,
       2,
     );
   }
@@ -271,6 +271,10 @@ function nonEmptyString(value, name) {
     fail(`${name} must be a non-empty string`, 2);
   }
   return value;
+}
+
+function isRemnicMemoryProvider(value) {
+  return value.trim().toLowerCase() === "remnic";
 }
 
 function finiteNumber(value, name) {

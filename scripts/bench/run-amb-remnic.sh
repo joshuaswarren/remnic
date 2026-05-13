@@ -72,7 +72,7 @@ expand_tilde_path() {
       printf '%s\n' "$HOME"
       ;;
     "~/"*)
-      printf '%s/%s\n' "$HOME" "${value#~/}"
+      printf '%s/%s\n' "$HOME" "${value:2}"
       ;;
     *)
       printf '%s\n' "$value"
@@ -272,7 +272,7 @@ REMNIC_REPO="$(resolve_existing_dir REMNIC_REPO "${REMNIC_REPO:-$REMNIC_REPO_DEF
 if [[ -n "$REMNIC_NODE" ]]; then
   export REMNIC_AMB_NODE="$REMNIC_NODE"
 fi
-CODEX_BIN="${REMNIC_AMB_CODEX_BIN:-codex}"
+CODEX_BIN="$(expand_tilde_path "${REMNIC_AMB_CODEX_BIN:-codex}")"
 export REMNIC_AMB_CODEX_BIN="$CODEX_BIN"
 export OMB_ANSWER_LLM="codex"
 export OMB_JUDGE_LLM="codex"
