@@ -221,11 +221,6 @@ export REMNIC_AMB_FORCE_CODEX_LLM="1"
 unset GEMINI_API_KEY
 unset GOOGLE_API_KEY
 
-if [[ ! -f "${REMNIC_REPO}/packages/remnic-core/dist/index.js" ]]; then
-  echo "error: @remnic/core is not built. Run: pnpm --filter @remnic/core build" >&2
-  exit 2
-fi
-
 python3 "${REMNIC_REPO}/integrations/amb/install.py" --amb "$AMB_DIR"
 
 if [[ -z "$AMB_CLI" ]]; then
@@ -276,6 +271,11 @@ AMB_BIN="${AMB_DIR}/.venv/bin/${AMB_CLI}"
 
 if [[ "$INSTALL_ONLY" -eq 1 ]]; then
   exit 0
+fi
+
+if [[ ! -f "${REMNIC_REPO}/packages/remnic-core/dist/index.js" ]]; then
+  echo "error: @remnic/core is not built. Run: pnpm --filter @remnic/core build" >&2
+  exit 2
 fi
 
 if ! command -v "$CODEX_BIN" >/dev/null 2>&1; then

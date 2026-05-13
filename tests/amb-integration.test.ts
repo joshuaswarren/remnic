@@ -570,14 +570,10 @@ test("AMB runner install-only does not require Codex CLI", async () => {
 
   await mkdir(path.join(ambRoot, "src", "memory_bench", "memory"), { recursive: true });
   await mkdir(path.dirname(fakeInstallPath), { recursive: true });
-  await mkdir(path.join(fakeRemnicRoot, "packages", "remnic-core", "dist"), {
-    recursive: true,
-  });
   await mkdir(binDir, { recursive: true });
   await mkdir(path.dirname(fakeOmbPath), { recursive: true });
 
   await writeFile(path.join(ambRoot, "pyproject.toml"), "[project]\nname = 'fake-amb'\n");
-  await writeFile(path.join(fakeRemnicRoot, "packages", "remnic-core", "dist", "index.js"), "");
   await writeFile(
     fakeInstallPath,
     [
@@ -624,6 +620,7 @@ test("AMB runner install-only does not require Codex CLI", async () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(await readFile(providersMarker, "utf8"), "providers");
   assert.doesNotMatch(result.stderr, /Codex CLI is required/);
+  assert.doesNotMatch(result.stderr, /@remnic\/core is not built/);
 });
 
 test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB run args", async () => {
