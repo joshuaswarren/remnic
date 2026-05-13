@@ -234,8 +234,11 @@ class _LazyMemoryProvider:
         return self._resolved
 
     def __getattr__(self, name: str) -> Any:
-        if name in self._metadata:
-            return self._metadata[name]
+        if name.startswith("_"):
+            raise AttributeError(name)
+        metadata = self.__dict__.get("_metadata", {{}})
+        if name in metadata:
+            return metadata[name]
         return getattr(self._resolve(), name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> MemoryProvider:

@@ -92,6 +92,23 @@ resolve_existing_dir() {
   (cd -- "$expanded" && pwd)
 }
 
+resolve_executable() {
+  local value="$1"
+  local expanded
+  expanded="$(expand_tilde_path "$value")"
+  case "$expanded" in
+    /*)
+      printf '%s\n' "$expanded"
+      ;;
+    */* | ./* | ../*)
+      printf '%s/%s\n' "$(pwd -P)" "$expanded"
+      ;;
+    *)
+      printf '%s\n' "$expanded"
+      ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --)
@@ -272,7 +289,7 @@ REMNIC_REPO="$(resolve_existing_dir REMNIC_REPO "${REMNIC_REPO:-$REMNIC_REPO_DEF
 if [[ -n "$REMNIC_NODE" ]]; then
   export REMNIC_AMB_NODE="$REMNIC_NODE"
 fi
-CODEX_BIN="$(expand_tilde_path "${REMNIC_AMB_CODEX_BIN:-codex}")"
+CODEX_BIN="$(resolve_executable "${REMNIC_AMB_CODEX_BIN:-codex}")"
 export REMNIC_AMB_CODEX_BIN="$CODEX_BIN"
 export OMB_ANSWER_LLM="codex"
 export OMB_JUDGE_LLM="codex"

@@ -916,7 +916,7 @@ async function runCodexJson(prompt, schema) {
   const outputPath = path.join(tmpRoot, "last-message.json");
   try {
     await writeFile(schemaPath, JSON.stringify(schema), "utf8");
-    const codexBin = expandTildePath(process.env.REMNIC_AMB_CODEX_BIN ?? "codex");
+    const codexBin = resolveExecutable(process.env.REMNIC_AMB_CODEX_BIN ?? "codex");
     const timeout = positiveIntegerEnv("REMNIC_AMB_CODEX_TIMEOUT_MS", 300000);
     const args = [
       "exec",
@@ -1314,6 +1314,17 @@ function expandTildePath(value) {
     return path.join(homedir(), trimmed.slice(2));
   }
   return trimmed;
+}
+
+function resolveExecutable(value) {
+  const expanded = expandTildePath(value);
+  if (path.isAbsolute(expanded)) {
+    return expanded;
+  }
+  if (expanded.includes("/") || expanded.includes("\\")) {
+    return path.resolve(expanded);
+  }
+  return expanded;
 }
 
 async function readStdin() {

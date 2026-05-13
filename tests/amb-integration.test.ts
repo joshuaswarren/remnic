@@ -483,6 +483,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
     "assert REGISTRY['bm25'].link == ''",
     "assert REGISTRY['bm25'].logo == ''",
     "assert REGISTRY['bm25'].variant == 'default'",
+    "assert not hasattr(REGISTRY['remnic'], '_missing_private_attr')",
     "assert REGISTRY['mem0'].provider == 'Mem0'",
     "assert REGISTRY['mem0'].name == 'mem0'",
     "assert DATASET_REGISTRY['personamem'].published is True",
@@ -1381,10 +1382,11 @@ test("AMB helper answers direct-answer through Codex CLI", {
   assert.ok(helperNode);
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-codex-direct-"));
   const storeDir = path.join(tmpDir, "store");
-  const fakeCodexPath = path.join(tmpDir, "fake-codex");
+  const fakeCodexPath = path.join(tmpDir, "bin", "fake-codex");
   const fakeCodexArgsPath = path.join(tmpDir, "fake-codex-args.json");
   const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
 
+  await mkdir(path.dirname(fakeCodexPath), { recursive: true });
   await writeFile(
     fakeCodexPath,
     [
@@ -1411,9 +1413,10 @@ test("AMB helper answers direct-answer through Codex CLI", {
       ...process.env,
       HOME: tmpDir,
       REMNIC_REPO: repoRoot,
-      REMNIC_AMB_CODEX_BIN: "~/fake-codex",
+      REMNIC_AMB_CODEX_BIN: "bin/fake-codex",
       FAKE_CODEX_ARGS: fakeCodexArgsPath,
     },
+    cwd: tmpDir,
     input: JSON.stringify({
       command: "direct_answer",
       storeDir,
