@@ -343,6 +343,18 @@ async function directAnswer(orchestrator, payload) {
       },
     };
   }
+  if (isMultipleChoiceQuery(query) && memoryEvidence.trim().length === 0) {
+    return {
+      answer: "",
+      context: "",
+      raw_response: {
+        ...retrieved.raw_response,
+        mode: "direct_answer",
+        answerModel: "remnic-no-evidence-mcq-guard",
+        answerError: "no retrieved memory evidence for multiple-choice direct_answer",
+      },
+    };
+  }
   const answerContext = buildAnswerContext({ query, context });
   const answerResult = await answerFromContext({
     query,
@@ -851,7 +863,7 @@ function earlyTaskSpecificMcqAnswer({ query, evidence }) {
     });
     if (underrepresentedCultureOption && (
       /\btraditional pacific islander dishes\b/.test(evidenceText) ||
-      /\bpacific islander\b/.test(evidenceText) && /\btraditional\b/.test(evidenceText)
+      (/\bpacific islander\b/.test(evidenceText) && /\btraditional\b/.test(evidenceText))
     )) {
       return {
         answer: underrepresentedCultureOption.letter,
@@ -1655,7 +1667,7 @@ function buildSearchQueries(query) {
   );
   if (
     /\bhealthcare professionals?\b/.test(lower) ||
-    /\bconsult(?:ation|ations|ing)?\b/.test(lower) && /\bhealth(?:care)?\b/.test(lower)
+    (/\bconsult(?:ation|ations|ing)?\b/.test(lower) && /\bhealth(?:care)?\b/.test(lower))
   ) {
     add("advanced telemedicine platforms text video call consultations flexible scheduling healthcare professionals");
     add("new telemedicine app consultations accessible engaging text video calls scheduling appointments healthcare professionals");

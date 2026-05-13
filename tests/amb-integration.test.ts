@@ -387,6 +387,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
     1,
   );
   assert.match(patchedRegistry, /lazy optional-provider imports/);
+  assert.match(patchedRegistry, /_MEMORY_PROVIDER_METADATA/);
   const patchedDatasets = await readFile(path.join(datasetDir, "__init__.py"), "utf8");
   assert.match(patchedDatasets, /lazy optional-dataset imports/);
   assert.equal(
@@ -438,11 +439,13 @@ test("AMB installer registers Remnic provider and bridge commands", {
     "assert list(LLM_REGISTRY).count('codex') == 1",
     "assert REGISTRY['bm25'].provider == 'BM25'",
     "assert REGISTRY['bm25'].name == 'bm25'",
-    "assert REGISTRY['bm25'].description == 'BM25 fixture'",
+    "assert REGISTRY['bm25'].description == 'BM25 memory provider.'",
     "assert REGISTRY['bm25'].kind == 'local'",
-    "assert REGISTRY['bm25'].link == 'https://example.com/bm25'",
+    "assert REGISTRY['bm25'].link == ''",
     "assert REGISTRY['bm25'].logo == ''",
     "assert REGISTRY['bm25'].variant == 'default'",
+    "assert REGISTRY['mem0'].provider == 'Mem0'",
+    "assert REGISTRY['mem0'].name == 'mem0'",
     "assert DATASET_REGISTRY['personamem'].published is True",
     "assert DATASET_REGISTRY['personamem'].description == 'PersonaMem fixture'",
     "assert DATASET_REGISTRY['personamem'].task_type == 'qa'",
@@ -1337,6 +1340,12 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
   const storeDir = path.join(tmpDir, "store");
   const fakeCodexPath = path.join(tmpDir, "fake-codex");
   const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
+  const env = {
+    ...process.env,
+    REMNIC_REPO: repoRoot,
+    REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+    REMNIC_AMB_EXTRACTION_DEADLINE_MS: "300000",
+  };
 
   await writeFile(
     fakeCodexPath,
@@ -1354,13 +1363,27 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
   );
   await chmod(fakeCodexPath, 0o755);
 
+  const ingest = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env,
+    input: JSON.stringify({
+      command: "ingest",
+      storeDir,
+      documents: [
+        {
+          id: "social-night",
+          content: "The user wanted a low-key game night with friends and asked for a casual social suggestion.",
+          user_id: "u1",
+          timestamp: "2026-05-12T00:00:00Z",
+        },
+      ],
+    }),
+  });
+  assert.equal(ingest.status, 0, ingest.stderr);
+
   const result = spawnSync(helperNode, [helperPath], {
     encoding: "utf8",
-    env: {
-      ...process.env,
-      REMNIC_REPO: repoRoot,
-      REMNIC_AMB_CODEX_BIN: fakeCodexPath,
-    },
+    env,
     input: JSON.stringify({
       command: "direct_answer",
       storeDir,
@@ -1447,7 +1470,7 @@ test("AMB helper rejects unsupported MCQ fallback despite adjacent memories", {
   assert.match(result.stderr, /no evidence-backed multiple-choice fallback/i);
 });
 
-test("AMB helper fails MCQ direct-answer when Codex is unavailable without evidence support", {
+test("AMB helper returns empty MCQ direct-answer before Codex when no evidence is retrieved", {
   skip:
     existsSync(builtCoreEntry) && helperNode
       ? false
@@ -1484,9 +1507,13 @@ test("AMB helper fails MCQ direct-answer when Codex is unavailable without evide
     }),
   });
 
-  assert.notEqual(result.status, 0);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /no evidence-backed multiple-choice fallback/i);
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.answer, "");
+  assert.equal(payload.context, "");
+  assert.equal(payload.raw_response.answerModel, "remnic-no-evidence-mcq-guard");
+  assert.match(payload.raw_response.answerError, /no retrieved memory evidence/i);
 });
 
 test("AMB helper fails native-only MCQ direct-answer without evidence support", {
@@ -1570,9 +1597,13 @@ test("AMB helper does not satisfy task-specific MCQ rules from query text alone"
     }),
   });
 
-  assert.notEqual(result.status, 0);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /no evidence-backed multiple-choice fallback/i);
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.answer, "");
+  assert.equal(payload.context, "");
+  assert.equal(payload.raw_response.answerModel, "remnic-no-evidence-mcq-guard");
+  assert.match(payload.raw_response.answerError, /no retrieved memory evidence/i);
 });
 
 test("AMB helper does not satisfy health-event MCQ rule from query text alone", {
@@ -1612,9 +1643,13 @@ test("AMB helper does not satisfy health-event MCQ rule from query text alone", 
     }),
   });
 
-  assert.notEqual(result.status, 0);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /no evidence-backed multiple-choice fallback/i);
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.answer, "");
+  assert.equal(payload.context, "");
+  assert.equal(payload.raw_response.answerModel, "remnic-no-evidence-mcq-guard");
+  assert.match(payload.raw_response.answerError, /no retrieved memory evidence/i);
 });
 
 test("AMB helper falls back to positive health-event option when Codex is unavailable", {

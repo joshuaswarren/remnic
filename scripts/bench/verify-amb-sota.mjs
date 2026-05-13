@@ -179,12 +179,12 @@ function requiredValue(argv, index, flag) {
   return value;
 }
 
-async function readJson(path, label) {
+async function readJson(filePath, label) {
   try {
-    return jsonObject(JSON.parse(await readFile(path, "utf8")), label);
+    return jsonObject(JSON.parse(await readFile(filePath, "utf8")), label);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    fail(`failed to read ${label} from ${path}: ${message}`, 2);
+    fail(`failed to read ${label} from ${filePath}: ${message}`, 2);
   }
 }
 
