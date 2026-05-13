@@ -155,16 +155,13 @@ async function retrieve(orchestrator, payload) {
   const budget = Number.isFinite(DEFAULT_RECALL_BUDGET_CHARS) && DEFAULT_RECALL_BUDGET_CHARS > 0
     ? DEFAULT_RECALL_BUDGET_CHARS
     : 24000;
-  const sections = [];
+  const evidenceSections = [];
   const retrievalContext = buildRetrievalContext({
     query,
     queryTimestamp: payload.queryTimestamp,
     userId: payload.userId,
     sessionId,
   });
-  if (retrievalContext) {
-    sections.push(retrievalContext);
-  }
 
   const useExplicitCueRecall = shouldUseExplicitCueRecall(query);
   const coreBudget = Math.max(
@@ -184,7 +181,7 @@ async function retrieve(orchestrator, payload) {
       })
     : "";
   if (explicit) {
-    sections.push(explicit);
+    evidenceSections.push(explicit);
   }
 
   const searchResults = rankSearchResultsForQuery(
@@ -232,7 +229,7 @@ async function retrieve(orchestrator, payload) {
         includedEvidenceIds.add(item.id);
       }
     }
-    sections.push(packedSearch);
+    evidenceSections.push(packedSearch);
   }
 
   const coreRecall = await orchestrator.recall(recallQuery, sessionId, {
@@ -240,9 +237,12 @@ async function retrieve(orchestrator, payload) {
     mode: "full",
   });
   if (coreRecall.trim()) {
-    sections.push(`## Remnic recall pipeline\n${coreRecall.trim()}`);
+    evidenceSections.push(`## Remnic recall pipeline\n${coreRecall.trim()}`);
   }
 
+  const sections = evidenceSections.length > 0 && retrievalContext
+    ? [retrievalContext, ...evidenceSections]
+    : evidenceSections;
   const joined = sections.join("\n\n").slice(0, budget);
   const documents = [];
   if (joined.trim()) {
@@ -278,6 +278,7 @@ async function retrieve(orchestrator, payload) {
       provider: "remnic",
       sessionId,
       queryTimestamp: normalizedTimestamp(payload.queryTimestamp),
+      retrievalContext,
       searchHits: searchResults.length,
       returnedDocuments: documents.length,
       memories: rawMemories,

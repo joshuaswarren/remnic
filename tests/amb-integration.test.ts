@@ -662,6 +662,124 @@ test("AMB runner install-only does not require Codex CLI", async () => {
   assert.doesNotMatch(result.stderr, /@remnic\/core is not built/);
 });
 
+test("AMB runner verifies SOTA results from absolute output directories", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-absolute-output-"));
+  const ambRoot = path.join(tmpDir, "amb");
+  const binDir = path.join(tmpDir, "bin");
+  const fakeRemnicRoot = path.join(tmpDir, "remnic");
+  const fakeInstallPath = path.join(fakeRemnicRoot, "integrations", "amb", "install.py");
+  const fakeVerifierPath = path.join(fakeRemnicRoot, "scripts", "bench", "verify-amb-sota.mjs");
+  const fakeCodexPath = path.join(binDir, "codex");
+  const fakeUvPath = path.join(binDir, "uv");
+  const fakeOmbPath = path.join(ambRoot, ".venv", "bin", "omb");
+  const absoluteOutputDir = path.join(tmpDir, "absolute-results");
+  const verifierArgsPath = path.join(tmpDir, "verifier-args.json");
+
+  await mkdir(path.join(ambRoot, "src", "memory_bench", "memory"), { recursive: true });
+  await mkdir(path.dirname(fakeInstallPath), { recursive: true });
+  await mkdir(path.dirname(fakeVerifierPath), { recursive: true });
+  await mkdir(path.join(fakeRemnicRoot, "packages", "remnic-core", "dist"), {
+    recursive: true,
+  });
+  await mkdir(path.dirname(fakeOmbPath), { recursive: true });
+  await mkdir(binDir, { recursive: true });
+
+  await writeFile(path.join(ambRoot, "pyproject.toml"), "[project]\nname = 'fake-amb'\n");
+  await writeFile(path.join(fakeRemnicRoot, "packages", "remnic-core", "dist", "index.js"), "");
+  await writeFile(
+    fakeInstallPath,
+    [
+      "import argparse",
+      "",
+      "parser = argparse.ArgumentParser()",
+      "parser.add_argument('--amb', required=True)",
+      "parser.parse_args()",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    fakeVerifierPath,
+    [
+      "import { existsSync, writeFileSync } from 'node:fs';",
+      "",
+      "const args = process.argv.slice(2);",
+      "writeFileSync(process.env.VERIFIER_ARGS_PATH, JSON.stringify(args));",
+      "const resultPath = args[args.indexOf('--result') + 1];",
+      "if (!existsSync(resultPath)) {",
+      "  throw new Error(`missing result at ${resultPath}`);",
+      "}",
+      "process.stdout.write(JSON.stringify({ sota: true }) + '\\n');",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(fakeCodexPath, "#!/usr/bin/env sh\nexit 0\n");
+  await writeFile(fakeUvPath, "#!/usr/bin/env sh\nexit 0\n");
+  await writeFile(
+    fakeOmbPath,
+    [
+      "#!/usr/bin/env python3",
+      "import json, os, pathlib, sys",
+      "args = sys.argv[1:]",
+      "if args == ['providers']:",
+      "    raise SystemExit(0)",
+      "if args == ['run', '--help']:",
+      "    print('--split')",
+      "    raise SystemExit(0)",
+      "if args and args[0] == 'run':",
+      "    output_dir = pathlib.Path(args[args.index('--output-dir') + 1])",
+      "    dataset = args[args.index('--dataset') + 1]",
+      "    name = args[args.index('--name') + 1]",
+      "    mode = args[args.index('--mode') + 1]",
+      "    split = args[args.index('--split') + 1]",
+      "    result_path = output_dir / dataset / name / mode / f'{split}.json'",
+      "    result_path.parent.mkdir(parents=True, exist_ok=True)",
+      "    result_path.write_text(json.dumps({",
+      "        'dataset': dataset,",
+      "        'split': split,",
+      "        'memory_provider': 'remnic',",
+      "        'run_name': name,",
+      "        'mode': mode,",
+      "        'total_queries': 100,",
+      "        'correct': 100,",
+      "        'accuracy': 1.0,",
+      "    }))",
+      "    raise SystemExit(0)",
+      "raise AssertionError(sys.argv)",
+      "",
+    ].join("\n"),
+  );
+  await chmod(fakeCodexPath, 0o755);
+  await chmod(fakeUvPath, 0o755);
+  await chmod(fakeOmbPath, 0o755);
+
+  const result = spawnSync("bash", [
+    path.resolve("scripts", "bench", "run-amb-remnic.sh"),
+    "--amb",
+    ambRoot,
+    "--output-dir",
+    absoluteOutputDir,
+    "--verify-sota",
+    "--min-queries",
+    "100",
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
+      REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+      REMNIC_REPO: fakeRemnicRoot,
+      VERIFIER_ARGS_PATH: verifierArgsPath,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const verifierArgs = JSON.parse(await readFile(verifierArgsPath, "utf8"));
+  assert.equal(
+    verifierArgs[verifierArgs.indexOf("--result") + 1],
+    path.join(absoluteOutputDir, "personamem", "remnic", "rag", "128k.json"),
+  );
+});
+
 test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB run args", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-runner-"));
   const ambRoot = path.join(tmpDir, "amb");
@@ -912,6 +1030,49 @@ test("AMB helper retrieves packed evidence without duplicate context documents",
   assert.match(result.documents[0].content, /AMB system context/);
   assert.match(result.documents[0].content, /Current user persona: Name: Kanoa Manu/);
   assert.match(result.documents[0].content, /May 20/);
+});
+
+test("AMB helper returns no documents when recall has no evidence", {
+  skip:
+    existsSync(builtCoreEntry) && helperNode
+      ? false
+      : "built @remnic/core dist and a Node 22 runtime are required",
+}, async () => {
+  assert.ok(helperNode);
+  const storeDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-helper-empty-"));
+  const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
+
+  const retrieved = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REMNIC_REPO: repoRoot,
+    },
+    input: JSON.stringify({
+      command: "retrieve",
+      storeDir,
+      query: [
+        "Which activity best matches the user's preference?",
+        "",
+        "(a) Board games",
+        "(b) Charades",
+        "(c) Trivia",
+        "(d) Costume party",
+      ].join("\n"),
+      k: 3,
+      userId: "u1",
+      queryTimestamp: "2026-05-13T00:00:00Z",
+    }),
+  });
+
+  assert.equal(retrieved.status, 0, retrieved.stderr);
+  const result = JSON.parse(retrieved.stdout);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.documents, []);
+  assert.equal(result.raw_response.returnedDocuments, 0);
+  assert.equal(result.raw_response.searchHits, 0);
+  assert.deepEqual(result.raw_response.memories, []);
+  assert.match(result.raw_response.retrievalContext, /Query timestamp: 2026-05-13T00:00:00\.000Z/);
 });
 
 test("AMB helper records direct-answer Codex configuration errors without crashing", {

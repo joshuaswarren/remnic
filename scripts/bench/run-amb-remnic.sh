@@ -348,7 +348,11 @@ fi
 )
 
 if [[ "$VERIFY_SOTA" -eq 1 ]]; then
-  result_path="${AMB_DIR}/${OUTPUT_DIR}/${DATASET}/${RUN_NAME}/${MODE}/${SPLIT}.json"
+  if [[ "$OUTPUT_DIR" = /* ]]; then
+    result_path="${OUTPUT_DIR}/${DATASET}/${RUN_NAME}/${MODE}/${SPLIT}.json"
+  else
+    result_path="${AMB_DIR}/${OUTPUT_DIR}/${DATASET}/${RUN_NAME}/${MODE}/${SPLIT}.json"
+  fi
   if [[ ! -f "$result_path" ]]; then
     echo "error: expected AMB result not found: $result_path" >&2
     exit 1
