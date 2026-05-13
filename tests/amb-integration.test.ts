@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
@@ -419,8 +419,11 @@ test("AMB installer registers Remnic provider and bridge commands", {
   assert.doesNotMatch(patchedJudge, /llm\.gemini|GeminiLLM/);
   assert.match(patchedModesInit, /getattr\(cls\.__init__, "__code__", None\)/);
   assert.match(patchedAgenticMode, /get_answer_llm/);
-  assert.match(patchedAgenticMode, /RAGMode\(llm=self\._llm, k=k\)/);
+  assert.match(patchedAgenticMode, /RAGMode\(llm=self\._llm\)/);
+  assert.doesNotMatch(patchedAgenticMode, /RAGMode\(llm=self\._llm, k=k\)/);
   assert.match(patchedRunner, /Remnic patch: save batch results incrementally/);
+  assert.match(patchedRunner, /save_lock = asyncio\.Lock\(\)/);
+  assert.match(patchedRunner, /async with save_lock/);
   assert.match(patchedRunner, /correct_count = sum\(1 for r in completed if r\.correct\)/);
   assert.match(patchedRunner, /accuracy=correct_count \/ len\(completed\)/);
   assert.doesNotMatch(patchedRunner, /accuracy=0\.0/);
@@ -911,7 +914,7 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
       "bin_dir = pathlib.Path('.venv/bin')",
       "bin_dir.mkdir(parents=True, exist_ok=True)",
       "omb = bin_dir / 'omb'",
-      "omb.write_text(\"\"\"#!/usr/bin/env python3\\nimport json, os, pathlib, sys\\nargs = sys.argv[1:]\\nif args == ['providers']:\\n    pathlib.Path(os.environ['OBSERVED_ENV_PATH']).write_text(json.dumps({\\n        'OMB_ANSWER_LLM': os.environ.get('OMB_ANSWER_LLM'),\\n        'OMB_JUDGE_LLM': os.environ.get('OMB_JUDGE_LLM'),\\n        'OMB_ANSWER_MODEL': os.environ.get('OMB_ANSWER_MODEL'),\\n        'OMB_JUDGE_MODEL': os.environ.get('OMB_JUDGE_MODEL'),\\n        'REMNIC_AMB_FORCE_CODEX_LLM': os.environ.get('REMNIC_AMB_FORCE_CODEX_LLM'),\\n        'REMNIC_AMB_CODEX_BIN': os.environ.get('REMNIC_AMB_CODEX_BIN'),\\n        'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY'),\\n        'GOOGLE_API_KEY': os.environ.get('GOOGLE_API_KEY'),\\n    }))\\n    raise SystemExit(0)\\nif args == ['run', '--help']:\\n    print('--split')\\n    raise SystemExit(0)\\nif args and args[0] == 'run':\\n    pathlib.Path(os.environ['OBSERVED_RUN_ARGS_PATH']).write_text(json.dumps(args))\\n    raise SystemExit(0)\\nraise AssertionError(sys.argv)\\n\"\"\")",
+      "omb.write_text(\"\"\"#!/usr/bin/env python3\\nimport json, os, pathlib, sys\\nargs = sys.argv[1:]\\nif args == ['providers']:\\n    pathlib.Path(os.environ['OBSERVED_ENV_PATH']).write_text(json.dumps({\\n        'OMB_ANSWER_LLM': os.environ.get('OMB_ANSWER_LLM'),\\n        'OMB_JUDGE_LLM': os.environ.get('OMB_JUDGE_LLM'),\\n        'OMB_ANSWER_MODEL': os.environ.get('OMB_ANSWER_MODEL'),\\n        'OMB_JUDGE_MODEL': os.environ.get('OMB_JUDGE_MODEL'),\\n        'REMNIC_AMB_FORCE_CODEX_LLM': os.environ.get('REMNIC_AMB_FORCE_CODEX_LLM'),\\n        'REMNIC_AMB_CODEX_BIN': os.environ.get('REMNIC_AMB_CODEX_BIN'),\\n        'REMNIC_REPO': os.environ.get('REMNIC_REPO'),\\n        'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY'),\\n        'GOOGLE_API_KEY': os.environ.get('GOOGLE_API_KEY'),\\n    }))\\n    raise SystemExit(0)\\nif args == ['run', '--help']:\\n    print('--split')\\n    raise SystemExit(0)\\nif args and args[0] == 'run':\\n    pathlib.Path(os.environ['OBSERVED_RUN_ARGS_PATH']).write_text(json.dumps(args))\\n    raise SystemExit(0)\\nraise AssertionError(sys.argv)\\n\"\"\")",
       "omb.chmod(0o755)",
       "",
     ].join("\n"),
@@ -927,12 +930,13 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
     "--skip-ingestion",
     "--only-failed",
   ], {
+    cwd: fakeRemnicRoot,
     encoding: "utf8",
     env: {
       ...process.env,
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       REMNIC_AMB_CODEX_BIN: fakeCodexPath,
-      REMNIC_REPO: fakeRemnicRoot,
+      REMNIC_REPO: ".",
       GEMINI_API_KEY: "should-not-leak",
       GOOGLE_API_KEY: "should-not-leak",
       OBSERVED_ENV_PATH: observedEnvPath,
@@ -948,6 +952,7 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
   assert.equal(observed.OMB_JUDGE_MODEL, "gpt-5.5");
   assert.equal(observed.REMNIC_AMB_FORCE_CODEX_LLM, "1");
   assert.equal(observed.REMNIC_AMB_CODEX_BIN, fakeCodexPath);
+  assert.equal(observed.REMNIC_REPO, realpathSync(fakeRemnicRoot));
   assert.equal(observed.GEMINI_API_KEY, null);
   assert.equal(observed.GOOGLE_API_KEY, null);
 

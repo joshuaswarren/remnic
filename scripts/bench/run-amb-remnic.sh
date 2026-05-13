@@ -65,6 +65,33 @@ require_value() {
   fi
 }
 
+expand_tilde_path() {
+  local value="$1"
+  case "$value" in
+    "~")
+      printf '%s\n' "$HOME"
+      ;;
+    "~/"*)
+      printf '%s/%s\n' "$HOME" "${value#~/}"
+      ;;
+    *)
+      printf '%s\n' "$value"
+      ;;
+  esac
+}
+
+resolve_existing_dir() {
+  local label="$1"
+  local value="$2"
+  local expanded
+  expanded="$(expand_tilde_path "$value")"
+  if [[ ! -d "$expanded" ]]; then
+    echo "error: ${label} must point to an existing directory: ${value}" >&2
+    exit 2
+  fi
+  (cd -- "$expanded" && pwd)
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --)
@@ -240,7 +267,8 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 
-export REMNIC_REPO="${REMNIC_REPO:-$REMNIC_REPO_DEFAULT}"
+export REMNIC_REPO
+REMNIC_REPO="$(resolve_existing_dir REMNIC_REPO "${REMNIC_REPO:-$REMNIC_REPO_DEFAULT}")"
 if [[ -n "$REMNIC_NODE" ]]; then
   export REMNIC_AMB_NODE="$REMNIC_NODE"
 fi

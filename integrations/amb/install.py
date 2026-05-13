@@ -453,7 +453,7 @@ def patch_mode_llm_imports(amb_root: Path) -> None:
             "    def __init__(self, llm: LLM | None = None, k: int = 10):\n"
             "        from ..llm import get_answer_llm\n"
             "        self._llm = llm or get_answer_llm()\n"
-            "        self._rag = RAGMode(llm=self._llm, k=k)\n",
+            "        self._rag = RAGMode(llm=self._llm)\n",
         )
         agentic_path.write_text(text)
 
@@ -487,28 +487,31 @@ def patch_runner_incremental_batch_save(amb_root: Path) -> None:
 
     def replacement(match: re.Match[str]) -> str:
         indent = match.group("indent")
-        return f"""{indent}async def bounded(i, q):
+        return f"""{indent}save_lock = asyncio.Lock()
+
+{indent}async def bounded(i, q):
 {indent}    async with sem:
 {indent}        results[i] = await _process_one(q)
 {indent}        progress.advance(task_id)
-{indent}        completed = [r for r in results if r]
-{indent}        if completed:
-{indent}            correct_count = sum(1 for r in completed if r.correct)
-{indent}            partial = EvalSummary(
-{indent}                dataset=dataset.name, split=split, category=category,
-{indent}                memory_provider=memory.name, run_name=effective_name,
-{indent}                mode=mode.name, oracle=oracle,
-{indent}                total_queries=len(completed),
-{indent}                correct=correct_count,
-{indent}                accuracy=correct_count / len(completed),
-{indent}                ingestion_time_ms=round(ingestion_ms, 1),
-{indent}                ingested_docs=ingested_docs_count,
-{indent}                description=description, answer_llm=mode.llm_id,
-{indent}                judge_llm=self._get_judge(dataset)._llm.model_id, results=completed,
-{indent}            )
-{indent}            # Remnic patch: save batch results incrementally so long
-{indent}            # Codex-backed runs survive transient query failures.
-{indent}            self._save(partial)
+{indent}        async with save_lock:
+{indent}            completed = [r for r in results if r]
+{indent}            if completed:
+{indent}                correct_count = sum(1 for r in completed if r.correct)
+{indent}                partial = EvalSummary(
+{indent}                    dataset=dataset.name, split=split, category=category,
+{indent}                    memory_provider=memory.name, run_name=effective_name,
+{indent}                    mode=mode.name, oracle=oracle,
+{indent}                    total_queries=len(completed),
+{indent}                    correct=correct_count,
+{indent}                    accuracy=correct_count / len(completed),
+{indent}                    ingestion_time_ms=round(ingestion_ms, 1),
+{indent}                    ingested_docs=ingested_docs_count,
+{indent}                    description=description, answer_llm=mode.llm_id,
+{indent}                    judge_llm=self._get_judge(dataset)._llm.model_id, results=completed,
+{indent}                )
+{indent}                # Remnic patch: save batch results incrementally so long
+{indent}                # Codex-backed runs survive transient query failures.
+{indent}                self._save(partial)
 
 {indent}await asyncio.gather(*[bounded(i, q) for i, q in enumerate(queries)])
 {indent}return results
