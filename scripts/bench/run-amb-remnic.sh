@@ -123,32 +123,32 @@ resolve_executable() {
 sota_forbidden_passthrough_arg() {
   case "$1" in
     --category | --category=* | \
-    -c | -c=* | \
+    -c | -c=* | -c?* | \
     --dataset | --dataset=* | \
     --description | --description=* | \
-    -d | -d=* | \
+    -d | -d=* | -d?* | \
     --doc-limit | --doc-limit=* | \
     --domain | --domain=* | \
     --llm | --llm=* | \
     --memory | --memory=* | \
-    -m | -m=* | \
+    -m | -m=* | -m?* | \
     --mode | --mode=* | \
     --name | --name=* | \
-    -n | -n=* | \
+    -n | -n=* | -n?* | \
     --only-failed | --only-failed=* | \
     --oracle | --oracle=* | \
     --output-dir | --output-dir=* | \
-    -o | -o=* | \
+    -o | -o=* | -o?* | \
     --query-id | --query-id=* | \
     --query-limit | --query-limit=* | \
-    -q | -q=* | \
+    -q | -q=* | -q?* | \
     --retrieve-only | --retrieve-only=* | \
     --skip-answer | --skip-answer=* | \
     --skip-ingested | --skip-ingested=* | \
     --skip-ingestion | --skip-ingestion=* | \
     --skip-retrieval | --skip-retrieval=* | \
     --split | --split=* | \
-    -s | -s=*)
+    -s | -s=* | -s?*)
       return 0
       ;;
     *)

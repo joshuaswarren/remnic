@@ -38,7 +38,7 @@ class RemnicMemoryProvider(MemoryProvider):
         self.concurrency = _positive_int_env("REMNIC_AMB_CONCURRENCY", self.concurrency)
         self._store_dir: Path | None = None
         self._unit_ids: set[str] = set()
-        self._node = _expand_tilde(os.environ.get("REMNIC_AMB_NODE", "node"))
+        self._node = _resolve_executable(os.environ.get("REMNIC_AMB_NODE", "node"))
         self._helper_timeout_seconds = _positive_int_env(
             "REMNIC_AMB_HELPER_TIMEOUT_SECONDS",
             3600,
@@ -191,6 +191,15 @@ def _resolve_repo() -> Path:
 
 def _expand_tilde(value: str) -> str:
     return str(Path(value).expanduser()) if value.startswith("~") else value
+
+
+def _resolve_executable(value: str) -> str:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return str(path)
+    if "/" in value or (os.altsep and os.altsep in value):
+        return str(path.resolve())
+    return value
 
 
 def _resolve_helper(repo: Path) -> Path:
