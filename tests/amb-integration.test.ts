@@ -1807,6 +1807,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const nullResultPath = path.join(tmpDir, "null-result.json");
   const losingPath = path.join(tmpDir, "losing-result.json");
   const spoofedProviderPath = path.join(tmpDir, "spoofed-provider-result.json");
+  const nonCodexLlmPath = path.join(tmpDir, "non-codex-llm-result.json");
   const winningPath = path.join(tmpDir, "winning-result.json");
   const oraclePath = path.join(tmpDir, "oracle-result.json");
   const manifestPath = path.join(tmpDir, "winning-manifest.json");
@@ -1847,6 +1848,19 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       run_name: "remnic-smoke",
       total_queries: 100,
       accuracy: 1,
+    }),
+  );
+  await writeFile(
+    nonCodexLlmPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "remnic",
+      run_name: "remnic",
+      total_queries: 100,
+      accuracy: 1,
+      answer_llm: "openai:gpt-4o",
+      judge_llm: "codex:gpt-5.5:xhigh:fast",
     }),
   );
   await writeFile(
@@ -1918,6 +1932,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(spoofedProvider.status, 2);
   assert.match(spoofedProvider.stderr, /result\.memory_provider must be "remnic"/);
   assert.equal(spoofedProvider.stdout, "");
+
+  const nonCodexLlm = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    nonCodexLlmPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(nonCodexLlm.status, 2);
+  assert.match(nonCodexLlm.stderr, /result\.answer_llm must be "codex:gpt-5\.5:xhigh:fast"/);
+  assert.equal(nonCodexLlm.stdout, "");
 
   const losing = spawnSync(process.execPath, [
     verifier,

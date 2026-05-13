@@ -11,6 +11,7 @@ const DEFAULT_EXTERNAL_RESULTS_URL =
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const remnicRepoRoot = path.resolve(__dirname, "../..");
+const EXPECTED_CODEX_LLM_ID = "codex:gpt-5.5:xhigh:fast";
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -61,6 +62,8 @@ async function main() {
       2,
     );
   }
+  const answerLlm = codexLlmIdOrAbsent(result.answer_llm, "result.answer_llm");
+  const judgeLlm = codexLlmIdOrAbsent(result.judge_llm, "result.judge_llm");
 
   const entries = external?.[dataset]?.[split];
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -80,6 +83,9 @@ async function main() {
     split,
     memoryProvider,
     runName,
+    answerLlm,
+    judgeLlm,
+    expectedLlm: EXPECTED_CODEX_LLM_ID,
     totalQueries,
     accuracy,
     targetAccuracy: target,
@@ -275,6 +281,26 @@ function nonEmptyString(value, name) {
 
 function isRemnicMemoryProvider(value) {
   return value.trim().toLowerCase() === "remnic";
+}
+
+function codexLlmIdOrAbsent(value, name) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    fail(`${name} must be a string when present`, 2);
+  }
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    fail(`${name} must be a non-empty string when present`, 2);
+  }
+  if (normalized !== EXPECTED_CODEX_LLM_ID) {
+    fail(
+      `${name} must be "${EXPECTED_CODEX_LLM_ID}" for SOTA verification; got ${JSON.stringify(value)}`,
+      2,
+    );
+  }
+  return normalized;
 }
 
 function finiteNumber(value, name) {
