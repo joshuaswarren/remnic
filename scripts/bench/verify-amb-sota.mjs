@@ -62,8 +62,8 @@ async function main() {
       2,
     );
   }
-  const answerLlm = codexLlmIdOrAbsent(result.answer_llm, "result.answer_llm");
-  const judgeLlm = codexLlmIdOrAbsent(result.judge_llm, "result.judge_llm");
+  const answerLlm = codexAnswerLlmId(result, totalQueries);
+  const judgeLlm = requiredCodexLlmId(result.judge_llm, "result.judge_llm");
 
   const entries = external?.[dataset]?.[split];
   if (!Array.isArray(entries) || entries.length === 0) {
@@ -283,16 +283,16 @@ function isRemnicMemoryProvider(value) {
   return value.trim().toLowerCase() === "remnic";
 }
 
-function codexLlmIdOrAbsent(value, name) {
+function requiredCodexLlmId(value, name) {
   if (value === undefined || value === null) {
-    return null;
+    fail(`${name} must be "${EXPECTED_CODEX_LLM_ID}" for SOTA verification; got absent`, 2);
   }
   if (typeof value !== "string") {
-    fail(`${name} must be a string when present`, 2);
+    fail(`${name} must be a string`, 2);
   }
   const normalized = value.trim();
   if (normalized.length === 0) {
-    fail(`${name} must be a non-empty string when present`, 2);
+    fail(`${name} must be a non-empty string`, 2);
   }
   if (normalized !== EXPECTED_CODEX_LLM_ID) {
     fail(
@@ -301,6 +301,33 @@ function codexLlmIdOrAbsent(value, name) {
     );
   }
   return normalized;
+}
+
+function codexAnswerLlmId(result, totalQueries) {
+  if (result.answer_llm !== undefined && result.answer_llm !== null) {
+    return requiredCodexLlmId(result.answer_llm, "result.answer_llm");
+  }
+  const mode = typeof result.mode === "string" ? result.mode.trim().toLowerCase() : "";
+  if (mode === "agent" && hasAgentCodexAnswerProvenance(result.results, totalQueries)) {
+    return EXPECTED_CODEX_LLM_ID;
+  }
+  fail(
+    `result.answer_llm must be "${EXPECTED_CODEX_LLM_ID}" for SOTA verification, or agent-mode results must include ${EXPECTED_CODEX_LLM_ID} in every result.raw_response.answerModel`,
+    2,
+  );
+}
+
+function hasAgentCodexAnswerProvenance(results, totalQueries) {
+  if (!Array.isArray(results) || results.length !== totalQueries) {
+    return false;
+  }
+  return results.every((entry) => {
+    const rawResponse = isPlainObject(entry)
+      ? entry.raw_response ?? entry.rawResponse
+      : null;
+    return isPlainObject(rawResponse) &&
+      rawResponse.answerModel === EXPECTED_CODEX_LLM_ID;
+  });
 }
 
 function finiteNumber(value, name) {

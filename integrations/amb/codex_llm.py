@@ -24,7 +24,7 @@ class CodexLLM(LLM):
         if model != _MODEL:
             raise ValueError(f"CodexLLM is locked to {_MODEL}; got {model!r}")
         self._model = model
-        self._codex_bin = _expand_tilde(os.environ.get("REMNIC_AMB_CODEX_BIN", "codex"))
+        self._codex_bin = _resolve_executable(os.environ.get("REMNIC_AMB_CODEX_BIN", "codex"))
         self._timeout_seconds = _positive_int_env(
             "REMNIC_AMB_CODEX_TIMEOUT_SECONDS",
             _DEFAULT_TIMEOUT_SECONDS,
@@ -212,8 +212,13 @@ def _positive_int_env(name: str, fallback: int) -> int:
     return int(raw)
 
 
-def _expand_tilde(value: str) -> str:
-    return str(Path(value).expanduser()) if value.startswith("~") else value
+def _resolve_executable(value: str) -> str:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return str(path)
+    if "/" in value or (os.altsep and os.altsep in value):
+        return str(path.resolve())
+    return value
 
 
 def _compact(value: str, limit: int = 500) -> str:

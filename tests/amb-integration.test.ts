@@ -492,6 +492,15 @@ test("AMB installer registers Remnic provider and bridge commands", {
     "        os.environ.pop('REMNIC_AMB_CODEX_BIN', None)",
     "    else:",
     "        os.environ['REMNIC_AMB_CODEX_BIN'] = old_codex_bin",
+    "old_codex_bin = os.environ.get('REMNIC_AMB_CODEX_BIN')",
+    "os.environ['REMNIC_AMB_CODEX_BIN'] = 'bin/fake-codex'",
+    "try:",
+    "    assert LLM_REGISTRY['codex']()._codex_bin == str(Path.cwd() / 'bin' / 'fake-codex')",
+    "finally:",
+    "    if old_codex_bin is None:",
+    "        os.environ.pop('REMNIC_AMB_CODEX_BIN', None)",
+    "    else:",
+    "        os.environ['REMNIC_AMB_CODEX_BIN'] = old_codex_bin",
     "seen = {}",
     "def lookup(query, limit=1):",
     "    seen['args'] = {'query': query, 'limit': limit}",
@@ -1811,7 +1820,9 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const nullResultPath = path.join(tmpDir, "null-result.json");
   const losingPath = path.join(tmpDir, "losing-result.json");
   const spoofedProviderPath = path.join(tmpDir, "spoofed-provider-result.json");
+  const missingLlmPath = path.join(tmpDir, "missing-llm-result.json");
   const nonCodexLlmPath = path.join(tmpDir, "non-codex-llm-result.json");
+  const agentWinningPath = path.join(tmpDir, "agent-winning-result.json");
   const winningPath = path.join(tmpDir, "winning-result.json");
   const oraclePath = path.join(tmpDir, "oracle-result.json");
   const manifestPath = path.join(tmpDir, "winning-manifest.json");
@@ -1841,6 +1852,8 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       run_name: "remnic",
       total_queries: 100,
       accuracy: 0.52,
+      answer_llm: "codex:gpt-5.5:xhigh:fast",
+      judge_llm: "codex:gpt-5.5:xhigh:fast",
     }),
   );
   await writeFile(
@@ -1850,6 +1863,18 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       split: "128k",
       memory_provider: "bm25",
       run_name: "remnic-smoke",
+      total_queries: 100,
+      accuracy: 1,
+    }),
+  );
+  await writeFile(
+    missingLlmPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "remnic",
+      run_name: "remnic",
+      mode: "rag",
       total_queries: 100,
       accuracy: 1,
     }),
@@ -1865,6 +1890,24 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       accuracy: 1,
       answer_llm: "openai:gpt-4o",
       judge_llm: "codex:gpt-5.5:xhigh:fast",
+    }),
+  );
+  await writeFile(
+    agentWinningPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "remnic",
+      run_name: "remnic-agent",
+      mode: "agent",
+      total_queries: 2,
+      correct: 2,
+      accuracy: 1,
+      judge_llm: "codex:gpt-5.5:xhigh:fast",
+      results: [
+        { raw_response: { answerModel: "codex:gpt-5.5:xhigh:fast" } },
+        { raw_response: { answerModel: "codex:gpt-5.5:xhigh:fast" } },
+      ],
     }),
   );
   await writeFile(
@@ -1937,6 +1980,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.match(spoofedProvider.stderr, /result\.memory_provider must be "remnic"/);
   assert.equal(spoofedProvider.stdout, "");
 
+  const missingLlm = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    missingLlmPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(missingLlm.status, 2);
+  assert.match(missingLlm.stderr, /result\.answer_llm must be "codex:gpt-5\.5:xhigh:fast"/);
+  assert.equal(missingLlm.stdout, "");
+
   const nonCodexLlm = spawnSync(process.execPath, [
     verifier,
     "--result",
@@ -1951,6 +2009,23 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(nonCodexLlm.status, 2);
   assert.match(nonCodexLlm.stderr, /result\.answer_llm must be "codex:gpt-5\.5:xhigh:fast"/);
   assert.equal(nonCodexLlm.stdout, "");
+
+  const agentWinning = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    agentWinningPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "2",
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(agentWinning.status, 0, agentWinning.stderr);
+  const agentVerdict = JSON.parse(agentWinning.stdout);
+  assert.equal(agentVerdict.sota, true);
+  assert.equal(agentVerdict.answerLlm, "codex:gpt-5.5:xhigh:fast");
+  assert.equal(agentVerdict.judgeLlm, "codex:gpt-5.5:xhigh:fast");
 
   const losing = spawnSync(process.execPath, [
     verifier,
