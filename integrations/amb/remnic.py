@@ -173,7 +173,10 @@ def _resolve_repo() -> Path:
         if _looks_like_remnic_repo(candidate):
             return candidate
 
-    return Path(__file__).resolve().parents[4]
+    raise RuntimeError(
+        "Could not locate the Remnic checkout. Set REMNIC_REPO to the Remnic "
+        "repository that contains packages/remnic-core/dist/index.js."
+    )
 
 
 def _resolve_helper(repo: Path) -> Path:

@@ -348,13 +348,15 @@ def patch_runner_incremental_batch_save(amb_root: Path) -> None:
 {indent}        progress.advance(task_id)
 {indent}        completed = [r for r in results if r]
 {indent}        if completed:
+{indent}            correct_count = sum(1 for r in completed if r.correct)
 {indent}            partial = EvalSummary(
 {indent}                dataset=dataset.name, split=split, category=category,
 {indent}                memory_provider=memory.name, run_name=effective_name,
 {indent}                mode=mode.name, oracle=oracle,
 {indent}                total_queries=len(completed),
-{indent}                correct=sum(1 for r in completed if r.correct),
-{indent}                accuracy=0.0, ingestion_time_ms=round(ingestion_ms, 1),
+{indent}                correct=correct_count,
+{indent}                accuracy=correct_count / len(completed),
+{indent}                ingestion_time_ms=round(ingestion_ms, 1),
 {indent}                ingested_docs=ingested_docs_count,
 {indent}                description=description, answer_llm=mode.llm_id,
 {indent}                judge_llm=self._get_judge(dataset)._llm.model_id, results=completed,

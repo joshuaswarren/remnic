@@ -420,6 +420,9 @@ test("AMB installer registers Remnic provider and bridge commands", {
   assert.match(patchedAgenticMode, /get_answer_llm/);
   assert.match(patchedAgenticMode, /RAGMode\(llm=self\._llm, k=k\)/);
   assert.match(patchedRunner, /Remnic patch: save batch results incrementally/);
+  assert.match(patchedRunner, /correct_count = sum\(1 for r in completed if r\.correct\)/);
+  assert.match(patchedRunner, /accuracy=correct_count \/ len\(completed\)/);
+  assert.doesNotMatch(patchedRunner, /accuracy=0\.0/);
   assert.match(patchedRunner, /self\._save\(partial\)/);
 
   const smokeScript = [
@@ -524,6 +527,24 @@ test("AMB installer registers Remnic provider and bridge commands", {
   const fakeCodexArgs = JSON.parse(await readFile(fakeCodexArgsPath, "utf8"));
   assert.ok(fakeCodexArgs.includes("--ephemeral"));
   assert.ok(fakeCodexArgs.includes("--ignore-rules"));
+
+  const missingRepoEnv = {
+    ...process.env,
+    PYTHONPATH: path.join(ambRoot, "src"),
+  };
+  delete missingRepoEnv.REMNIC_REPO;
+  delete missingRepoEnv.REMNIC_AMB_HELPER;
+  const missingRepo = spawnSync("python3", [
+    "-c",
+    "from memory_bench.memory import REGISTRY\nREGISTRY['remnic']()",
+  ], {
+    cwd: ambRoot,
+    encoding: "utf8",
+    env: missingRepoEnv,
+  });
+  assert.notEqual(missingRepo.status, 0);
+  assert.match(missingRepo.stderr, /Could not locate the Remnic checkout/);
+  assert.match(missingRepo.stderr, /REMNIC_REPO/);
 });
 
 test("AMB runner validates required checkout argument", async () => {
