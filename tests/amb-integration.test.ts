@@ -34,6 +34,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
   const runnerPath = path.join(ambRoot, "src", "memory_bench", "runner.py");
   const fakeRemnicRoot = path.join(tmpDir, "remnic");
   const helperPath = path.join(fakeRemnicRoot, "integrations", "amb", "fake-helper.mjs");
+  const slowHelperPath = path.join(fakeRemnicRoot, "integrations", "amb", "slow-helper.mjs");
   const fakeCodexPath = path.join(tmpDir, "fake-codex");
   const fakeCodexArgsPath = path.join(tmpDir, "fake-codex-args.json");
 
@@ -336,6 +337,13 @@ test("AMB installer registers Remnic provider and bridge commands", {
     ].join("\n"),
   );
   await writeFile(
+    slowHelperPath,
+    [
+      "setTimeout(() => {}, 5000);",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
     fakeCodexPath,
     [
       "#!/usr/bin/env python3",
@@ -466,6 +474,15 @@ test("AMB installer registers Remnic provider and bridge commands", {
     "    ),",
     ")",
     "assert generated['answer'] == 'May 20'",
+    "old_codex_bin = os.environ.get('REMNIC_AMB_CODEX_BIN')",
+    "os.environ['REMNIC_AMB_CODEX_BIN'] = '~/fake-codex'",
+    "try:",
+    "    assert LLM_REGISTRY['codex']()._codex_bin == str(Path.home() / 'fake-codex')",
+    "finally:",
+    "    if old_codex_bin is None:",
+    "        os.environ.pop('REMNIC_AMB_CODEX_BIN', None)",
+    "    else:",
+    "        os.environ['REMNIC_AMB_CODEX_BIN'] = old_codex_bin",
     "seen = {}",
     "def lookup(query, limit=1):",
     "    seen['args'] = {'query': query, 'limit': limit}",
@@ -491,6 +508,15 @@ test("AMB installer registers Remnic provider and bridge commands", {
     "    raise AssertionError('unicode digit timeout should be rejected')",
     "finally:",
     "    os.environ.pop('REMNIC_AMB_CODEX_TIMEOUT_SECONDS', None)",
+    "old_node = os.environ.get('REMNIC_AMB_NODE')",
+    "os.environ['REMNIC_AMB_NODE'] = '~/fake-node'",
+    "try:",
+    "    assert REGISTRY['remnic']()._node == str(Path.home() / 'fake-node')",
+    "finally:",
+    "    if old_node is None:",
+    "        os.environ.pop('REMNIC_AMB_NODE', None)",
+    "    else:",
+    "        os.environ['REMNIC_AMB_NODE'] = old_node",
     "provider = REGISTRY['remnic']()",
     "assert provider.concurrency == 3",
     "provider.prepare(Path('store'), unit_ids={'u1', 'u2'}, reset=True)",
@@ -522,6 +548,28 @@ test("AMB installer registers Remnic provider and bridge commands", {
     "assert context == 'launch review is May 20'",
     "assert direct_raw['mode'] == 'direct_answer'",
     "assert direct_raw['storeDir'] == raw['storeDir']",
+    "old_helper = os.environ.get('REMNIC_AMB_HELPER')",
+    "old_helper_timeout = os.environ.get('REMNIC_AMB_HELPER_TIMEOUT_SECONDS')",
+    "os.environ['REMNIC_AMB_HELPER'] = os.environ['SLOW_HELPER']",
+    "os.environ['REMNIC_AMB_HELPER_TIMEOUT_SECONDS'] = '1'",
+    "try:",
+    "    slow_provider = REGISTRY['remnic']()",
+    "    slow_provider.prepare(Path('slow-store'), reset=True)",
+    "    try:",
+    "        slow_provider.retrieve('Will the helper timeout?', user_id='u1')",
+    "    except RuntimeError as exc:",
+    "        assert 'timed out after 1 seconds' in str(exc)",
+    "    else:",
+    "        raise AssertionError('helper timeout should fail')",
+    "finally:",
+    "    if old_helper is None:",
+    "        os.environ.pop('REMNIC_AMB_HELPER', None)",
+    "    else:",
+    "        os.environ['REMNIC_AMB_HELPER'] = old_helper",
+    "    if old_helper_timeout is None:",
+    "        os.environ.pop('REMNIC_AMB_HELPER_TIMEOUT_SECONDS', None)",
+    "    else:",
+    "        os.environ['REMNIC_AMB_HELPER_TIMEOUT_SECONDS'] = old_helper_timeout",
     "",
   ].join("\n");
 
@@ -534,6 +582,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
       REMNIC_AMB_NODE: process.execPath,
       REMNIC_AMB_CODEX_BIN: fakeCodexPath,
       REMNIC_AMB_CONCURRENCY: "3",
+      SLOW_HELPER: slowHelperPath,
       FAKE_CODEX_ARGS: fakeCodexArgsPath,
       FAKE_CODEX_TOOL_COUNTER: path.join(tmpDir, "fake-codex-tool-counter.txt"),
     },
@@ -1240,8 +1289,9 @@ test("AMB helper answers direct-answer through Codex CLI", {
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: tmpDir,
       REMNIC_REPO: repoRoot,
-      REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+      REMNIC_AMB_CODEX_BIN: "~/fake-codex",
       FAKE_CODEX_ARGS: fakeCodexArgsPath,
     },
     input: JSON.stringify({

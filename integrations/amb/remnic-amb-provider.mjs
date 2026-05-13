@@ -1810,7 +1810,7 @@ async function runCodexJson(prompt, schema) {
   const outputPath = path.join(tmpRoot, "last-message.json");
   try {
     await writeFile(schemaPath, JSON.stringify(schema), "utf8");
-    const codexBin = process.env.REMNIC_AMB_CODEX_BIN ?? "codex";
+    const codexBin = expandTildePath(process.env.REMNIC_AMB_CODEX_BIN ?? "codex");
     const timeout = positiveIntegerEnv("REMNIC_AMB_CODEX_TIMEOUT_MS", 300000);
     const args = [
       "exec",

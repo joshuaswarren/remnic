@@ -24,7 +24,7 @@ class CodexLLM(LLM):
         if model != _MODEL:
             raise ValueError(f"CodexLLM is locked to {_MODEL}; got {model!r}")
         self._model = model
-        self._codex_bin = os.environ.get("REMNIC_AMB_CODEX_BIN", "codex")
+        self._codex_bin = _expand_tilde(os.environ.get("REMNIC_AMB_CODEX_BIN", "codex"))
         self._timeout_seconds = _positive_int_env(
             "REMNIC_AMB_CODEX_TIMEOUT_SECONDS",
             _DEFAULT_TIMEOUT_SECONDS,
@@ -210,6 +210,10 @@ def _positive_int_env(name: str, fallback: int) -> int:
     if not raw.isdecimal() or int(raw) < 1:
         raise ValueError(f"{name} must be a positive integer")
     return int(raw)
+
+
+def _expand_tilde(value: str) -> str:
+    return str(Path(value).expanduser()) if value.startswith("~") else value
 
 
 def _compact(value: str, limit: int = 500) -> str:

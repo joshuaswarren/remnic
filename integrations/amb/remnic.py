@@ -38,7 +38,11 @@ class RemnicMemoryProvider(MemoryProvider):
         self.concurrency = _positive_int_env("REMNIC_AMB_CONCURRENCY", self.concurrency)
         self._store_dir: Path | None = None
         self._unit_ids: set[str] = set()
-        self._node = os.environ.get("REMNIC_AMB_NODE", "node")
+        self._node = _expand_tilde(os.environ.get("REMNIC_AMB_NODE", "node"))
+        self._helper_timeout_seconds = _positive_int_env(
+            "REMNIC_AMB_HELPER_TIMEOUT_SECONDS",
+            3600,
+        )
         self._repo = _resolve_repo()
         self._helper = _resolve_helper(self._repo)
 
@@ -134,14 +138,20 @@ class RemnicMemoryProvider(MemoryProvider):
         command = [self._node, str(self._helper)]
         env = os.environ.copy()
         env["REMNIC_REPO"] = str(self._repo)
-        completed = subprocess.run(
-            command,
-            input=json.dumps(payload),
-            text=True,
-            capture_output=True,
-            env=env,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                input=json.dumps(payload),
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+                timeout=self._helper_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"Remnic AMB helper timed out after {self._helper_timeout_seconds} seconds"
+            ) from exc
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip()
             raise RuntimeError(f"Remnic AMB helper failed: {message}")
@@ -177,6 +187,10 @@ def _resolve_repo() -> Path:
         "Could not locate the Remnic checkout. Set REMNIC_REPO to the Remnic "
         "repository that contains packages/remnic-core/dist/index.js."
     )
+
+
+def _expand_tilde(value: str) -> str:
+    return str(Path(value).expanduser()) if value.startswith("~") else value
 
 
 def _resolve_helper(repo: Path) -> Path:
