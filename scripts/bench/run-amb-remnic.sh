@@ -36,7 +36,7 @@ Options:
   --amb-cli <name>        AMB CLI command name. Auto-detects amb or omb.
   --remnic-node <path>    Node binary for Remnic helper. Also honors REMNIC_AMB_NODE.
   --verify-sota           Verify the produced AMB result beats current external best.
-  --min-queries <n>       Minimum evaluated queries for --verify-sota.
+  --min-queries <n>       Full split query count required for --verify-sota.
   --install-only          Install/register provider and list providers, but do not run.
   --                      Pass remaining arguments through to "omb run".
   -h, --help              Show this help.
@@ -56,6 +56,15 @@ Examples:
 EOF
 }
 
+require_value() {
+  local flag="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    echo "error: ${flag} requires a value" >&2
+    exit 2
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --)
@@ -64,75 +73,93 @@ while [[ $# -gt 0 ]]; do
       break
       ;;
     --amb)
+      require_value "$1" "${2:-}"
       AMB_DIR="${2:-}"
       shift 2
       ;;
     --amb=*)
       AMB_DIR="${1#--amb=}"
+      require_value "--amb" "$AMB_DIR"
       shift
       ;;
     --dataset)
+      require_value "$1" "${2:-}"
       DATASET="${2:-}"
       shift 2
       ;;
     --dataset=*)
       DATASET="${1#--dataset=}"
+      require_value "--dataset" "$DATASET"
       shift
       ;;
     --split | --domain)
+      require_value "$1" "${2:-}"
       SPLIT="${2:-}"
       shift 2
       ;;
     --split=* | --domain=*)
       SPLIT="${1#*=}"
+      require_value "${1%%=*}" "$SPLIT"
       shift
       ;;
     --mode)
+      require_value "$1" "${2:-}"
       MODE="${2:-}"
       shift 2
       ;;
     --mode=*)
       MODE="${1#--mode=}"
+      require_value "--mode" "$MODE"
       shift
       ;;
     --query-limit)
+      require_value "$1" "${2:-}"
       QUERY_LIMIT="${2:-}"
       shift 2
       ;;
     --query-limit=*)
       QUERY_LIMIT="${1#--query-limit=}"
+      require_value "--query-limit" "$QUERY_LIMIT"
       shift
       ;;
     --output-dir)
+      require_value "$1" "${2:-}"
       OUTPUT_DIR="${2:-}"
       shift 2
       ;;
     --output-dir=*)
       OUTPUT_DIR="${1#--output-dir=}"
+      require_value "--output-dir" "$OUTPUT_DIR"
       shift
       ;;
     --name)
+      require_value "$1" "${2:-}"
       RUN_NAME="${2:-}"
       shift 2
       ;;
     --name=*)
       RUN_NAME="${1#--name=}"
+      require_value "--name" "$RUN_NAME"
       shift
       ;;
     --remnic-node)
+      require_value "$1" "${2:-}"
       REMNIC_NODE="${2:-}"
       shift 2
       ;;
     --remnic-node=*)
       REMNIC_NODE="${1#--remnic-node=}"
+      require_value "--remnic-node" "$REMNIC_NODE"
       shift
       ;;
     --amb-cli)
+      require_value "$1" "${2:-}"
       AMB_CLI="${2:-}"
       shift 2
       ;;
     --amb-cli=*)
       AMB_CLI="${1#--amb-cli=}"
+      require_value "--amb-cli" "$AMB_CLI"
       shift
       ;;
     --verify-sota)
@@ -140,11 +167,13 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --min-queries)
+      require_value "$1" "${2:-}"
       MIN_QUERIES="${2:-}"
       shift 2
       ;;
     --min-queries=*)
       MIN_QUERIES="${1#--min-queries=}"
+      require_value "--min-queries" "$MIN_QUERIES"
       shift
       ;;
     --install-only)
@@ -190,6 +219,10 @@ if [[ -n "$QUERY_LIMIT" && ! "$QUERY_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ -n "$MIN_QUERIES" && ! "$MIN_QUERIES" =~ ^[1-9][0-9]*$ ]]; then
   echo "error: --min-queries must be a positive integer" >&2
+  exit 2
+fi
+if [[ "$VERIFY_SOTA" -eq 1 && -z "$MIN_QUERIES" ]]; then
+  echo "error: --verify-sota requires --min-queries with the full split query count" >&2
   exit 2
 fi
 

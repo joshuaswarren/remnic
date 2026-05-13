@@ -39,7 +39,13 @@ async function main() {
   if (totalQueries <= 0) {
     fail("result.total_queries must be greater than zero", 2);
   }
-  const minimumQueries = args.minQueries ?? totalQueries;
+  if (args.minQueries === undefined) {
+    fail(
+      "--min-queries is required for SOTA verification; pass the full split query count so partial runs cannot be marked SOTA",
+      2,
+    );
+  }
+  const minimumQueries = args.minQueries;
   if (totalQueries < minimumQueries) {
     fail(
       `result has ${totalQueries} queries, below required --min-queries ${minimumQueries}`,
@@ -285,7 +291,7 @@ Options:
   --manifest-out <file>      Write a reproducibility manifest JSON.
   --command <string>         Command used to produce the AMB result.
   --amb-dir <dir>            AMB checkout used for the run.
-  --min-queries <n>          Require at least this many evaluated queries.
+  --min-queries <n>          Required full split query count.
   --epsilon <n>              Require accuracy to exceed current best by n.
   -h, --help                 Show this help.
 \n`);

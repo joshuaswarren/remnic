@@ -568,6 +568,35 @@ test("AMB runner validates required checkout argument", async () => {
   assert.match(result.stderr, /--amb is required/);
 });
 
+test("AMB runner rejects missing option values before consuming flags", async () => {
+  const result = spawnSync("bash", [
+    path.resolve("scripts", "bench", "run-amb-remnic.sh"),
+    "--name",
+    "--verify-sota",
+  ], {
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--name requires a value/);
+  assert.doesNotMatch(result.stderr, /--amb is required/);
+});
+
+test("AMB runner requires explicit SOTA coverage floor", async () => {
+  const result = spawnSync("bash", [
+    path.resolve("scripts", "bench", "run-amb-remnic.sh"),
+    "--amb",
+    path.join(os.tmpdir(), "missing-amb-checkout"),
+    "--verify-sota",
+  ], {
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--verify-sota requires --min-queries/);
+  assert.doesNotMatch(result.stderr, /Agent Memory Benchmark checkout/);
+});
+
 test("AMB runner install-only does not require Codex CLI", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-install-only-"));
   const ambRoot = path.join(tmpDir, "amb");
@@ -3037,6 +3066,18 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       judge_llm: "codex:gpt-5.5:xhigh:fast",
     }),
   );
+
+  const noFloor = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    winningPath,
+    "--external-results",
+    externalPath,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(noFloor.status, 2);
+  assert.match(noFloor.stderr, /--min-queries is required/);
 
   const losing = spawnSync(process.execPath, [
     verifier,
