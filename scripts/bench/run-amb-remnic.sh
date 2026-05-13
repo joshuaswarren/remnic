@@ -101,7 +101,18 @@ resolve_executable() {
       printf '%s\n' "$expanded"
       ;;
     */* | ./* | ../*)
-      printf '%s/%s\n' "$(pwd -P)" "$expanded"
+      local dir
+      local base
+      dir="$(dirname -- "$expanded")"
+      base="$(basename -- "$expanded")"
+      if [[ -d "$dir" ]]; then
+        (cd -- "$dir" && printf '%s/%s\n' "$(pwd -P)" "$base")
+      else
+        while [[ "$expanded" == ./* ]]; do
+          expanded="${expanded#./}"
+        done
+        printf '%s/%s\n' "$(pwd -P)" "$expanded"
+      fi
       ;;
     *)
       printf '%s\n' "$expanded"
@@ -278,6 +289,10 @@ if [[ -n "$MIN_QUERIES" && ! "$MIN_QUERIES" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ "$VERIFY_SOTA" -eq 1 && -z "$MIN_QUERIES" ]]; then
   echo "error: --verify-sota requires --min-queries with the full split query count" >&2
+  exit 2
+fi
+if [[ "$VERIFY_SOTA" -eq 1 && -n "$QUERY_LIMIT" ]]; then
+  echo "error: --verify-sota cannot be combined with --query-limit; verified SOTA runs must regenerate the full split" >&2
   exit 2
 fi
 if [[ "$VERIFY_SOTA" -eq 1 ]]; then

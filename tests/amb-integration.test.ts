@@ -1030,7 +1030,7 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
       HOME: fakeHome,
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       REMNIC_AMB_CODEX_BIN: "~/bin/codex",
-      REMNIC_AMB_NODE: "relative-node/bin/node",
+      REMNIC_AMB_NODE: "./relative-node/bin/node",
       REMNIC_REPO: ".",
       GEMINI_API_KEY: "should-not-leak",
       GOOGLE_API_KEY: "should-not-leak",
@@ -1079,6 +1079,28 @@ test("AMB runner rejects cache-reuse passthrough flags for SOTA verification", a
   assert.match(
     result.stderr,
     /--verify-sota cannot be combined with cache-reuse passthrough flag: --skip-answer/,
+  );
+  assert.doesNotMatch(result.stderr, /Agent Memory Benchmark checkout/);
+});
+
+test("AMB runner rejects query-limited SOTA verification", async () => {
+  const result = spawnSync("bash", [
+    path.resolve("scripts", "bench", "run-amb-remnic.sh"),
+    "--amb",
+    path.join(os.tmpdir(), "missing-amb-checkout"),
+    "--verify-sota",
+    "--min-queries",
+    "100",
+    "--query-limit",
+    "20",
+  ], {
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(
+    result.stderr,
+    /--verify-sota cannot be combined with --query-limit/,
   );
   assert.doesNotMatch(result.stderr, /Agent Memory Benchmark checkout/);
 });
