@@ -58,6 +58,23 @@ test("AMB installer registers Remnic provider and bridge commands", {
       "    def _save(self, summary):",
       "        pass",
       "",
+      "    async def _process_one_attempt(self, answer_result, q, dataset):",
+      "        return QueryResult(",
+      "            query_id=q.id,",
+      "            query=q.query,",
+      "            answer=answer_result.answer,",
+      "            reasoning=answer_result.reasoning,",
+      "            context=answer_result.context,",
+      "            context_tokens=0,",
+      "            retrieve_time_ms=answer_result.retrieve_time_ms,",
+      "            gold_answers=q.gold_answers,",
+      "            correct=True,",
+      "            judge_reason='ok',",
+      "            meta=q.meta,",
+      "            raw_response=None,  # skip storing to conserve disk space",
+      "            category_axes=dataset.get_result_categories(q.meta),",
+      "        )",
+      "",
       "    async def _run_all(self, progress, task_id):",
       "        results = [None] * len(queries)",
       "",
@@ -442,6 +459,9 @@ test("AMB installer registers Remnic provider and bridge commands", {
   assert.match(patchedRunner, /correct_count = sum\(1 for r in completed if r\.correct\)/);
   assert.match(patchedRunner, /accuracy=correct_count \/ len\(completed\)/);
   assert.doesNotMatch(patchedRunner, /accuracy=0\.0/);
+  assert.match(patchedRunner, /Remnic patch: preserve AnswerResult raw_response/);
+  assert.match(patchedRunner, /raw_response=getattr\(answer_result, "raw_response", None\)/);
+  assert.doesNotMatch(patchedRunner, /raw_response=None,\s+# skip storing to conserve disk space/);
   assert.match(patchedRunner, /self\._save\(partial\)/);
 
   const smokeScript = [

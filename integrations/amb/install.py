@@ -498,7 +498,10 @@ def patch_runner_incremental_batch_save(amb_root: Path) -> None:
     if not runner_path.exists():
         raise SystemExit(f"AMB runner not found: {runner_path}")
     text = runner_path.read_text()
-    if "Remnic patch: save batch results incrementally" in text:
+    patched = patch_runner_answer_raw_response(text)
+    if "Remnic patch: save batch results incrementally" in patched:
+        if patched != text:
+            runner_path.write_text(patched)
         return
 
     pattern = re.compile(
@@ -543,10 +546,31 @@ def patch_runner_incremental_batch_save(amb_root: Path) -> None:
 {indent}return results
 """
 
-    patched, replacements = pattern.subn(replacement, text, count=1)
+    patched, replacements = pattern.subn(replacement, patched, count=1)
     if replacements != 1:
         raise SystemExit("Could not find AMB batch runner block to patch")
     runner_path.write_text(patched)
+
+
+def patch_runner_answer_raw_response(text: str) -> str:
+    if "Remnic patch: preserve AnswerResult raw_response" in text:
+        return text
+    pattern = re.compile(
+        r"(?P<indent>[ \t]+)raw_response=None,\s+# skip storing to conserve disk space\n",
+    )
+
+    def replacement(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        return (
+            f"{indent}# Remnic patch: preserve AnswerResult raw_response so\n"
+            f"{indent}# agent-mode Codex direct-answer provenance survives in result JSON.\n"
+            f'{indent}raw_response=getattr(answer_result, "raw_response", None),\n'
+        )
+
+    patched, replacements = pattern.subn(replacement, text, count=1)
+    if replacements != 1:
+        raise SystemExit("Could not find AMB QueryResult raw_response assignment to patch")
+    return patched
 
 
 def main() -> None:
