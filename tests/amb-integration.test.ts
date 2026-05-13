@@ -1062,7 +1062,20 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
 });
 
 test("AMB runner rejects cache-reuse passthrough flags for SOTA verification", async () => {
-  for (const flag of ["--skip-answer", "--skip-ingestion", "--retrieve-only", "--query-id", "--query-limit", "--category=travel", "--doc-limit", "-c", "-q"]) {
+  for (const flag of [
+    "--skip-answer",
+    "--skip-ingestion",
+    "--retrieve-only",
+    "--query-id",
+    "--category=travel",
+    "-c",
+    "-c=travel",
+    "--doc-limit",
+    "--query-limit",
+    "--query-limit=20",
+    "-q",
+    "-q=20",
+  ]) {
     const result = spawnSync("bash", [
       path.resolve("scripts", "bench", "run-amb-remnic.sh"),
       "--amb",
