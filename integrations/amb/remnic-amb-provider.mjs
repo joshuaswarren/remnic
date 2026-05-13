@@ -118,10 +118,8 @@ async function ingest(orchestrator, documents) {
   for (const document of documents) {
     const sessionId = sessionIdForUser(document?.user_id);
     const messages = messagesForDocument(document);
-    const timestamp = typeof document?.timestamp === "string"
-      ? document.timestamp
-      : new Date().toISOString();
-    const baseTimestampMs = Date.parse(timestamp);
+    const documentTimestamp = normalizedTimestamp(document?.timestamp) ?? new Date().toISOString();
+    const baseTimestampMs = Date.parse(documentTimestamp);
     const safeBaseTimestampMs = Number.isFinite(baseTimestampMs)
       ? baseTimestampMs
       : Date.now();
