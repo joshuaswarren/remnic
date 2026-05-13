@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 
 import { FallbackLlmClient } from "./fallback-llm.js";
+import { __codexCliFallbackTestHooks } from "./codex-cli-fallback.js";
 import { clearModelsJsonCache, __setModelsJsonForTest } from "./models-json.js";
-import { clearSecretCache } from "./resolve-provider-secret.js";
+import {
+  __setGatewayRuntimeAuthForModelForTest,
+  __setGatewayResolverForTest,
+  clearSecretCache,
+} from "./resolve-provider-secret.js";
 
 test("fallback llm prefers the active gateway provider config over models.json", { concurrency: false }, async () => {
   __setModelsJsonForTest({
@@ -63,6 +69,158 @@ test("fallback llm prefers the active gateway provider config over models.json",
   } finally {
     globalThis.fetch = originalFetch;
     clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm passes the OpenClaw workspace to runtime auth", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = "/tmp/remnic-openclaw-home";
+  let capturedWorkspaceDir: string | undefined;
+  __setGatewayRuntimeAuthForModelForTest(async ({ workspaceDir }) => {
+    capturedWorkspaceDir = workspaceDir;
+    return {
+      apiKey: "runtime-key",
+      baseUrl: "https://runtime.example/v1",
+      source: "test-runtime",
+      mode: "oauth",
+    };
+  });
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "openai/gpt-5.5",
+        },
+      },
+    },
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://raw.example/v1",
+          api: "openai-completions",
+          apiKey: "secretref-managed",
+          models: [],
+        },
+      },
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  let capturedAuth = "";
+  globalThis.fetch = (async (url, init) => {
+    capturedUrl = String(url);
+    capturedAuth = String((init?.headers as Record<string, string> | undefined)?.Authorization ?? "");
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "ok" } }],
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16 },
+    );
+
+    assert.equal(response?.content, "ok");
+    assert.equal(capturedUrl, "https://runtime.example/v1/chat/completions");
+    assert.equal(capturedAuth, "Bearer runtime-key");
+    assert.equal(
+      capturedWorkspaceDir,
+      path.join("/tmp/remnic-openclaw-home", ".openclaw", "workspace"),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    clearSecretCache();
+  }
+});
+
+test("fallback llm prefers a configured workspace for runtime auth", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = "/tmp/remnic-configured-home";
+  let capturedWorkspaceDir: string | undefined;
+  __setGatewayRuntimeAuthForModelForTest(async ({ workspaceDir }) => {
+    capturedWorkspaceDir = workspaceDir;
+    return {
+      apiKey: "runtime-key",
+      baseUrl: "https://runtime.example/v1",
+      source: "test-runtime",
+      mode: "oauth",
+    };
+  });
+
+  const llm = new FallbackLlmClient(
+    {
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-5.5",
+          },
+        },
+      },
+      models: {
+        providers: {
+          openai: {
+            baseUrl: "https://raw.example/v1",
+            api: "openai-completions",
+            apiKey: "secretref-managed",
+            models: [],
+          },
+        },
+      },
+    },
+    { workspaceDir: "~/custom-openclaw-workspace" },
+  );
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        choices: [{ message: { content: "ok" } }],
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    )) as typeof fetch;
+
+  try {
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16 },
+    );
+
+    assert.equal(response?.content, "ok");
+    assert.equal(
+      capturedWorkspaceDir,
+      path.join("/tmp/remnic-configured-home", "custom-openclaw-workspace"),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
     clearSecretCache();
   }
 });
@@ -239,9 +397,222 @@ test("fallback llm prefers requested canonical models.json provider before legac
   }
 });
 
+test("fallback llm invokes registered codex-cli fallback runner", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const captured: {
+    modelId?: string;
+    messages?: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+    apiKey?: string | Record<string, unknown>;
+    executable?: unknown;
+    reasoningEffort?: unknown;
+    timeoutMs?: number;
+  } = {};
+  const restoreRunner = __codexCliFallbackTestHooks.setRunCodexCliForTest(
+    async (request) => {
+      captured.modelId = request.modelId;
+      captured.messages = request.messages;
+      captured.apiKey = request.config.apiKey;
+      captured.executable = request.config.executable;
+      captured.reasoningEffort = request.config.reasoningEffort;
+      captured.timeoutMs = request.config.retryOptions?.timeoutMs as number | undefined;
+      return {
+        content: "final codex answer",
+        usage: {
+          inputTokens: 40,
+          outputTokens: 4,
+          totalTokens: 44,
+        },
+      };
+    },
+  );
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "codex-cli/gpt-custom",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "codex-cli": {
+          baseUrl: "",
+          api: "codex-cli",
+          apiKey: "codex-test-key",
+          executable: "codex-test-bin",
+          reasoningEffort: "high",
+          retryOptions: { timeoutMs: 1234 },
+          models: [],
+        },
+      },
+    },
+  });
+
+  try {
+    const response = await llm.chatCompletion(
+      [
+        { role: "system", content: "Return concise JSON." },
+        { role: "user", content: "Say OK" },
+      ],
+      { temperature: 0, maxTokens: 16, timeoutMs: 5000 },
+    );
+
+    assert.equal(response?.content, "final codex answer");
+    assert.equal(response?.modelUsed, "codex-cli/gpt-custom");
+    assert.equal(response?.usage?.totalTokens, 44);
+    assert.equal(captured.modelId, "gpt-custom");
+    assert.deepEqual(captured.messages, [
+      { role: "system", content: "Return concise JSON." },
+      { role: "user", content: "Say OK" },
+    ]);
+    assert.equal(captured.apiKey, "codex-test-key");
+    assert.equal(captured.executable, "codex-test-bin");
+    assert.equal(captured.reasoningEffort, "high");
+    assert.equal(captured.timeoutMs, 1234);
+  } finally {
+    restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm aborts codex-cli fallback requests when timeout wins", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  let capturedSignal: AbortSignal | undefined;
+  let sawAbort = false;
+  const restoreRunner = __codexCliFallbackTestHooks.setRunCodexCliForTest(
+    async (request) => {
+      capturedSignal = request.options.signal;
+      return await new Promise<never>((_resolve, reject) => {
+        const onAbort = (): void => {
+          sawAbort = true;
+          reject(request.options.signal?.reason ?? new Error("aborted"));
+        };
+        if (request.options.signal?.aborted) {
+          onAbort();
+          return;
+        }
+        request.options.signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    },
+  );
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "codex-cli/gpt-custom",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "codex-cli": {
+          baseUrl: "",
+          api: "codex-cli",
+          apiKey: "codex-test-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  try {
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16, timeoutMs: 10 },
+    );
+
+    assert.equal(response, null);
+    assert.equal(capturedSignal?.aborted, true);
+    assert.equal(sawAbort, true);
+  } finally {
+    restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm can call Ollama native chat and suppress thinking", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "ollama-internal/gemma4:31b-cloud",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "ollama-internal": {
+          baseUrl: "https://ollama.example/api",
+          api: "ollama-chat",
+          apiKey: "ollama-key",
+          disableThinking: true,
+          models: [],
+        },
+      },
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  let capturedUrl = "";
+  let capturedAuth = "";
+  let capturedBody = "";
+  globalThis.fetch = (async (url, init) => {
+    capturedUrl = String(url);
+    capturedAuth = String((init?.headers as Record<string, string> | undefined)?.Authorization ?? "");
+    capturedBody = String(init?.body ?? "");
+    return new Response(
+      JSON.stringify({
+        message: { content: "ok from ollama" },
+        prompt_eval_count: 7,
+        eval_count: 3,
+      }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }) as typeof fetch;
+
+  try {
+    const response = await llm.chatCompletion(
+      [{ role: "user", content: "Say OK" }],
+      { temperature: 0, maxTokens: 16 },
+    );
+
+    assert.equal(response?.content, "ok from ollama");
+    assert.equal(response?.usage?.totalTokens, 10);
+    assert.equal(capturedUrl, "https://ollama.example/api/chat");
+    assert.equal(capturedAuth, "Bearer ollama-key");
+    const parsedBody = JSON.parse(capturedBody) as {
+      model?: string;
+      think?: boolean;
+      options?: { num_predict?: number };
+    };
+    assert.equal(parsedBody.model, "gemma4:31b-cloud");
+    assert.equal(parsedBody.think, false);
+    assert.equal(parsedBody.options?.num_predict, 16);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
 test("fallback llm has built-in anthropic defaults when the gateway provider catalog is unavailable", { concurrency: false }, async () => {
   clearModelsJsonCache();
   clearSecretCache();
+  disableGatewaySecretResolverForTest();
 
   const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = "anthropic-test-key";
@@ -308,6 +679,7 @@ test("fallback llm prefers configured alias providers before built-in defaults",
     },
   });
   clearSecretCache();
+  disableGatewaySecretResolverForTest();
 
   const llm = new FallbackLlmClient({
     agents: {
@@ -373,6 +745,7 @@ test("fallback llm resolves claude-cli refs through the anthropic built-in fallb
     },
   });
   clearSecretCache();
+  disableGatewaySecretResolverForTest();
 
   const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = "anthropic-test-key";
@@ -624,3 +997,7 @@ test("fallback llm normalizes anthropic-compatible base URLs that omit /v1", { c
     clearSecretCache();
   }
 });
+
+function disableGatewaySecretResolverForTest(): void {
+  __setGatewayResolverForTest(async () => null);
+}

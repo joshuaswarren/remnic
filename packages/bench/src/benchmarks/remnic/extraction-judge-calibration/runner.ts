@@ -107,9 +107,9 @@ export async function runExtractionJudgeCalibrationBenchmark(
     const confusion = buildConfusion(tasks);
     const aggregates = {
       ...aggregateTaskScores(tasks.map((task) => task.scores)),
-      sensitivity: constantAggregate(ratio(confusion.truePositive, confusion.truePositive + confusion.falseNegative)),
-      specificity: constantAggregate(ratio(confusion.trueNegative, confusion.trueNegative + confusion.falsePositive)),
-      durable_precision: constantAggregate(ratio(confusion.truePositive, confusion.truePositive + confusion.falsePositive)),
+      sensitivity: constantAggregate(ratioOrNeutral(confusion.truePositive, confusion.truePositive + confusion.falseNegative)),
+      specificity: constantAggregate(ratioOrNeutral(confusion.trueNegative, confusion.trueNegative + confusion.falsePositive)),
+      durable_precision: constantAggregate(ratioOrNeutral(confusion.truePositive, confusion.truePositive + confusion.falsePositive)),
     };
 
     const remnicVersion = await getRemnicVersion();
@@ -258,8 +258,8 @@ function buildConfusion(tasks: TaskResult[]) {
   return { truePositive, trueNegative, falsePositive, falseNegative };
 }
 
-function ratio(numerator: number, denominator: number): number {
-  return denominator === 0 ? 0 : numerator / denominator;
+function ratioOrNeutral(numerator: number, denominator: number): number {
+  return denominator === 0 ? 1 : numerator / denominator;
 }
 
 function constantAggregate(value: number): MetricAggregate {

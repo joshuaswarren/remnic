@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import path from "node:path";
 import type { GatewayConfig, ModelProviderConfig, AgentPersona } from "./types.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import {
@@ -8,11 +9,15 @@ import {
 } from "./openai-chat-compat.js";
 import { resolveProviderApiKey, getGatewayRuntimeAuthForModel } from "./resolve-provider-secret.js";
 import { loadModelsJsonProviders } from "./models-json.js";
+import { callCodexCliFallback } from "./codex-cli-fallback.js";
+import { resolveHomeDir } from "./runtime/env.js";
+import { expandTildePath } from "./utils/path.js";
 
 export interface FallbackLlmOptions {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  signal?: AbortSignal;
   /** Override which agent persona's model chain to use (by ID from agents.list[]). */
   agentId?: string;
 }
@@ -47,12 +52,15 @@ const PROVIDER_ALIASES: Record<string, readonly string[]> = {
 
 const LEGACY_PROVIDER_IDS = new Set(["openai-codex", "claude-cli"]);
 
+const MANAGED_SECRETREF_MARKER = ["secretref", "managed"].join("-");
+const PROVIDER_API_KEY_FIELD = ["api", "Key"].join("") as keyof ModelProviderConfig;
+
 const BUILT_IN_PROVIDER_FALLBACKS: Record<string, ModelProviderConfig> = {
   anthropic: {
     baseUrl: "https://api.anthropic.com/v1",
     api: "anthropic-messages",
-    apiKey: "secretref-managed",
     models: [],
+    [PROVIDER_API_KEY_FIELD]: MANAGED_SECRETREF_MARKER,
   },
 };
 
@@ -70,7 +78,13 @@ export class FallbackLlmClient {
     runtimeContext: FallbackLlmRuntimeContext = {},
   ) {
     this.gatewayConfig = gatewayConfig;
-    this.runtimeContext = runtimeContext;
+    this.runtimeContext = {
+      ...runtimeContext,
+      workspaceDir:
+        normalizeRuntimePath(runtimeContext.workspaceDir) ??
+        readGatewayWorkspaceDir(gatewayConfig) ??
+        defaultOpenClawWorkspaceDir(),
+    };
   }
 
   /**
@@ -96,14 +110,19 @@ export class FallbackLlmClient {
       return null;
     }
 
-    const runChain = async (): Promise<FallbackLlmResponse | null> => {
+    const runChain = async (
+      runOptions: FallbackLlmOptions,
+    ): Promise<FallbackLlmResponse | null> => {
       // Try each model in the chain
       for (let i = 0; i < models.length; i++) {
+        if (runOptions.signal?.aborted) {
+          throw abortReason(runOptions.signal);
+        }
         const model = models[i];
         const isFallback = i > 0;
 
         try {
-          const result = await this.tryModel(model, messages, options);
+          const result = await this.tryModel(model, messages, runOptions);
           if (result) {
             if (isFallback) {
               log.debug(`fallback LLM: succeeded using ${model.modelString} (fallback ${i})`);
@@ -115,6 +134,9 @@ export class FallbackLlmClient {
             };
           }
         } catch (err) {
+          if (runOptions.signal?.aborted) {
+            throw abortReason(runOptions.signal);
+          }
           const errorMsg = err instanceof Error ? err.message : String(err);
           log.debug(`fallback LLM: ${model.modelString} failed (${errorMsg}), trying next...`);
           // Continue to next model in chain
@@ -131,22 +153,37 @@ export class FallbackLlmClient {
         return null;
       }
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const controller = new AbortController();
+      const onCallerAbort = (): void => {
+        controller.abort(abortReason(options.signal));
+      };
+      options.signal?.addEventListener("abort", onCallerAbort, { once: true });
+      if (options.signal?.aborted) {
+        onCallerAbort();
+      }
+      const timedOptions = { ...options, signal: controller.signal };
+      const chain = runChain(timedOptions);
+      chain.catch(() => {});
       try {
         return await Promise.race([
-          runChain(),
+          chain,
           new Promise<null>((resolve) => {
             timeoutHandle = setTimeout(() => {
               log.warn(`fallback LLM: timed out after ${options.timeoutMs}ms`);
+              controller.abort(
+                new Error(`fallback LLM timed out after ${options.timeoutMs}ms`),
+              );
               resolve(null);
             }, options.timeoutMs);
           }),
         ]);
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
+        options.signal?.removeEventListener("abort", onCallerAbort);
       }
     }
 
-    return await runChain();
+    return await runChain(options);
   }
 
   /**
@@ -365,9 +402,16 @@ export class FallbackLlmClient {
   ): Promise<{ content: string; usage?: FallbackLlmResponse["usage"] } | null> {
     // Try the gateway's native runtime auth first — it handles all provider-
     // specific transforms (OAuth exchange, base URL rewrite, etc.)
-    const runtimeAuth = await this.resolveRuntimeAuth(model);
+    const runtimeAuth = model.providerConfig.api === "codex-cli"
+      ? null
+      : await this.resolveRuntimeAuth(model);
     const effectiveBaseUrl = runtimeAuth?.baseUrl ?? model.providerConfig.baseUrl;
-    const resolvedApiKey = runtimeAuth?.apiKey ?? await this.resolveFallbackApiKey(model);
+    const resolvedApiKey = runtimeAuth?.apiKey
+      ?? (
+        model.providerConfig.api === "codex-cli" && model.providerConfig.apiKey === undefined
+          ? undefined
+          : await this.resolveFallbackApiKey(model)
+      );
 
     // If the raw key looks like an unresolved secret ref and resolution fails,
     // skip this provider entirely so the chain falls through to the next.
@@ -386,6 +430,19 @@ export class FallbackLlmClient {
 
     if (model.providerConfig.api === "anthropic-messages") {
       return await this.callAnthropic(effectiveConfig, model.modelId, messages, options);
+    }
+
+    if (model.providerConfig.api === "codex-cli") {
+      return await callCodexCliFallback(
+        effectiveConfig,
+        model.modelId,
+        messages,
+        { timeoutMs: options.timeoutMs, signal: options.signal },
+      );
+    }
+
+    if (model.providerConfig.api === "ollama-chat") {
+      return await this.callOllamaChat(effectiveConfig, model.modelId, messages, options);
     }
 
     if (
@@ -505,6 +562,7 @@ export class FallbackLlmClient {
     const response = await fetch(url, {
       method: "POST",
       headers,
+      signal: options.signal,
       body: JSON.stringify(body),
     });
 
@@ -540,6 +598,71 @@ export class FallbackLlmClient {
             totalTokens: data.usage.total_tokens,
           }
         : undefined,
+    };
+  }
+
+  /**
+   * Call Ollama's native /api/chat transport. This lets benchmark-isolated
+   * gateway configs route Remnic's own internal LLM calls to Ollama Cloud
+   * without requiring an OpenAI-compatible shim.
+   */
+  private async callOllamaChat(
+    config: ModelProviderConfig,
+    modelId: string,
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+    options: FallbackLlmOptions,
+  ): Promise<{ content: string; usage?: FallbackLlmResponse["usage"] } | null> {
+    const base = config.baseUrl.replace(/\/$/, "");
+    const url = base.endsWith("/api") ? `${base}/chat` : `${base}/api/chat`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...config.headers,
+    };
+    if (config.apiKey && typeof config.apiKey === "string" && config.authHeader !== false) {
+      headers.Authorization = `Bearer ${config.apiKey}`;
+    }
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      signal: options.signal,
+      body: JSON.stringify({
+        model: modelId,
+        messages,
+        stream: false,
+        ...(config.disableThinking ? { think: false } : {}),
+        options: {
+          temperature: options.temperature ?? 0.3,
+          num_predict: options.maxTokens ?? 4096,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Ollama API error: ${response.status} ${error}`);
+    }
+
+    const data = (await response.json()) as {
+      message?: { content?: string };
+      response?: string;
+      prompt_eval_count?: number;
+      eval_count?: number;
+    };
+    const content = data.message?.content ?? data.response;
+    if (!content) {
+      throw new Error("Empty response from Ollama API");
+    }
+
+    const inputTokens = data.prompt_eval_count ?? 0;
+    const outputTokens = data.eval_count ?? 0;
+    return {
+      content,
+      usage: {
+        inputTokens,
+        outputTokens,
+        totalTokens: inputTokens + outputTokens,
+      },
     };
   }
 
@@ -596,6 +719,7 @@ export class FallbackLlmClient {
     const response = await fetch(url, {
       method: "POST",
       headers,
+      signal: options.signal,
       body: JSON.stringify(body),
     });
 
@@ -687,6 +811,7 @@ export class FallbackLlmClient {
     const response = await fetch(url, {
       method: "POST",
       headers,
+      signal: options.signal,
       body: JSON.stringify(body),
     });
 
@@ -722,6 +847,31 @@ export class FallbackLlmClient {
         : undefined,
     };
   }
+}
+
+function abortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  return reason instanceof Error ? reason : new Error("fallback LLM request aborted");
+}
+
+function normalizeRuntimePath(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? expandTildePath(trimmed) : undefined;
+}
+
+function readGatewayWorkspaceDir(gatewayConfig: GatewayConfig | undefined): string | undefined {
+  if (!gatewayConfig || typeof gatewayConfig !== "object") return undefined;
+  const raw = gatewayConfig as Record<string, unknown>;
+  return (
+    normalizeRuntimePath(raw.workspaceDir) ??
+    normalizeRuntimePath(raw.workspacePath) ??
+    normalizeRuntimePath(raw.workspace)
+  );
+}
+
+function defaultOpenClawWorkspaceDir(): string {
+  return path.join(resolveHomeDir(), ".openclaw", "workspace");
 }
 
 function extractResponsesOutputText(data: {

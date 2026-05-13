@@ -102,6 +102,7 @@ class LocalLlmProvider implements LlmProvider {
         {
           method: "POST",
           headers: this.headers(opts.headers),
+          signal: opts.signal,
           body: JSON.stringify({
             model: this.config.model,
             messages: [

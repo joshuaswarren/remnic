@@ -20,7 +20,7 @@ function baseConfig(overrides: Partial<ActiveRecallConfig> = {}): ActiveRecallCo
     allowedChatTypes: ["direct", "group", "channel"],
     queryMode: "recent",
     promptStyle: "balanced",
-    promptOverride: null,
+    customInstruction: null,
     promptAppend: null,
     maxSummaryChars: 64,
     recentUserTurns: 2,

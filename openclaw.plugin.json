@@ -1,9 +1,9 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "1.0.22",
+  "version": "1.0.34",
   "kind": "memory",
-  "description": "Local semantic memory for OpenClaw. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
+  "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
     "providers": [
       {
@@ -41,6 +41,26 @@
       ]
     }
   ],
+  "securityDisclosure": {
+    "conversationAccess": "As a memory-slot plugin, Remnic hooks can observe conversation turns, tool-use metadata, LLM output metadata, and local memory files so they can be indexed, summarized, recalled, and exposed through memory tools.",
+    "modelProviderCredentials": {
+      "recommendedMode": "Use modelSource=gateway to route LLM-backed memory work through OpenClaw gateway agents instead of a Remnic-owned API key.",
+      "dynamicCredentialSources": [
+        "OpenClaw runtime auth resolver for configured model providers",
+        "~/.openclaw/agents/main/agent/models.json provider entries",
+        "provider-specific environment variables such as <PROVIDER>_API_KEY and <PROVIDER>_TOKEN"
+      ],
+      "providerModeData": [
+        "conversation excerpts",
+        "memory excerpts",
+        "summaries",
+        "embedding inputs",
+        "active-recall query inputs",
+        "benchmark and evaluation inputs"
+      ],
+      "externalProviderGuidance": "Do not set openaiApiKey or provider environment variables for Remnic if all LLM-backed memory operations should stay on the OpenClaw gateway path. When plugin/provider mode is configured, selected conversation and memory excerpts may be sent to the configured provider for extraction, consolidation, summarization, embeddings, active recall, or benchmark judging."
+    }
+  },
   "supports": {
     "memorySlot": true,
     "dreamingSlot": true,
@@ -111,7 +131,7 @@
       },
       "openaiBaseUrl": {
         "type": "string",
-        "description": "Override the OpenAI API base URL for OpenAI-compatible providers (Scryr, Together, OpenRouter, etc.)"
+        "description": "Set the OpenAI API base URL for OpenAI-compatible providers (Scryr, Together, OpenRouter, etc.)"
       },
       "model": {
         "type": "string",
@@ -194,7 +214,7 @@
       "maxMemoryTokens": {
         "type": "number",
         "default": 2000,
-        "description": "Max tokens injected per turn"
+        "description": "Max memory-context tokens per turn"
       },
       "memoryOsPreset": {
         "type": "string",
@@ -205,7 +225,7 @@
           "research-max",
           "local-llm-heavy"
         ],
-        "description": "Optional named preset that seeds Engram's advanced config surface before explicit per-setting overrides are applied. `research` is accepted as a backward-compatible alias for `research-max`."
+        "description": "Optional named preset that seeds Engram's advanced config surface before explicit per-setting settings are applied. `research` is accepted as a backward-compatible alias for `research-max`."
       },
       "qmdEnabled": {
         "type": "boolean",
@@ -297,7 +317,7 @@
       },
       "entitySchemas": {
         "type": "object",
-        "description": "Optional per-entity-type structured section schema overrides.",
+        "description": "Optional per-entity-type structured section schema customizations.",
         "additionalProperties": {
           "type": "object",
           "additionalProperties": false,
@@ -638,7 +658,7 @@
             "minimum": 1,
             "maximum": 10,
             "default": 2,
-            "description": "Maximum procedure memories to inject on task-initiation recall."
+            "description": "Maximum procedure memories to add on task-initiation recall."
           },
           "proceduralMiningCronAutoRegister": {
             "type": "boolean",
@@ -726,7 +746,7 @@
       "recallTranscriptsEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Write JSONL recall audit transcripts for runtime-surface injections."
+        "description": "Write JSONL recall audit transcripts for runtime recall-context assembly."
       },
       "recallTranscriptRetentionDays": {
         "type": "integer",
@@ -743,7 +763,7 @@
       "activeRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable the OpenClaw active-recall prompt surface."
+        "description": "Enable the OpenClaw active-recall context surface."
       },
       "activeRecallAgents": {
         "type": "array",
@@ -790,15 +810,15 @@
           "preference-only"
         ],
         "default": "balanced",
-        "description": "Prompt assembly style for the active-recall surface."
+        "description": "Context assembly style for the active-recall surface."
       },
-      "activeRecallPromptOverride": {
+      "activeRecallCustomInstruction": {
         "type": "string",
-        "description": "Optional full prompt override for the active-recall surface."
+        "description": "Optional custom guidance for the active-recall builder."
       },
       "activeRecallPromptAppend": {
         "type": "string",
-        "description": "Optional prompt suffix appended to the active-recall system prompt."
+        "description": "Optional additional guidance for the active-recall builder."
       },
       "activeRecallMaxSummaryChars": {
         "type": "integer",
@@ -864,7 +884,7 @@
       },
       "activeRecallModel": {
         "type": "string",
-        "description": "Optional model override for active recall."
+        "description": "Optional model selection for active recall."
       },
       "activeRecallModelFallbackPolicy": {
         "type": "string",
@@ -1180,7 +1200,7 @@
       "memoryExtensionsEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Whether third-party memory extensions are discovered and injected into consolidation prompts."
+        "description": "Whether third-party memory extensions are discovered and included in consolidation instructions."
       },
       "memoryExtensionsRoot": {
         "type": "string",
@@ -1264,12 +1284,12 @@
           "full"
         ],
         "default": "recovery_only",
-        "description": "Controls when identity continuity context is injected into recall assembly"
+        "description": "Controls when identity continuity context is added to recall assembly"
       },
       "identityMaxInjectChars": {
         "type": "number",
         "default": 1200,
-        "description": "Maximum characters allowed for identity continuity context injection"
+        "description": "Maximum characters allowed for identity continuity context"
       },
       "continuityIncidentLoggingEnabled": {
         "type": "boolean",
@@ -1334,7 +1354,7 @@
       "injectQuestions": {
         "type": "boolean",
         "default": false,
-        "description": "Inject the most relevant open question into the system prompt"
+        "description": "Include the most relevant open question in generated memory context"
       },
       "commitmentDecayDays": {
         "type": "number",
@@ -1470,12 +1490,12 @@
           "maxResults": {
             "type": "number",
             "default": 4,
-            "description": "Maximum native knowledge chunks to inject into recall."
+            "description": "Maximum native knowledge chunks to add to recall."
           },
           "maxChars": {
             "type": "number",
             "default": 2400,
-            "description": "Maximum total characters to inject from native knowledge recall."
+            "description": "Maximum total characters to add from native knowledge recall."
           },
           "stateDir": {
             "type": "string",
@@ -1749,7 +1769,7 @@
       "recordEmptyRecallImpressions": {
         "type": "boolean",
         "default": false,
-        "description": "Record recall impressions with empty memoryIds when no memory context is injected."
+        "description": "Record recall impressions with empty memoryIds when no memory context is added."
       },
       "recallPlannerEnabled": {
         "type": "boolean",
@@ -1824,7 +1844,7 @@
       "verbatimArtifactsMaxRecall": {
         "type": "number",
         "default": 5,
-        "description": "Maximum artifact anchors injected per recall."
+        "description": "Maximum artifact anchors added per recall."
       },
       "verbatimArtifactCategories": {
         "type": "array",
@@ -1890,7 +1910,7 @@
       "boxRecallDays": {
         "type": "number",
         "default": 3,
-        "description": "Number of recent days of boxes to inject during recall."
+        "description": "Number of recent days of boxes to add during recall."
       },
       "episodeNoteModeEnabled": {
         "type": "boolean",
@@ -1955,7 +1975,7 @@
       "tagRecallMaxMatches": {
         "type": "number",
         "default": 10,
-        "description": "Maximum number of tag-matched memories injected per recall."
+        "description": "Maximum number of tag-matched memories added per recall."
       },
       "multiGraphMemoryEnabled": {
         "type": "boolean",
@@ -1985,7 +2005,7 @@
       "graphRecallShadowEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Run graph recall in shadow mode — evaluate but do not inject results."
+        "description": "Run graph recall in shadow mode - evaluate but do not add results."
       },
       "graphRecallSnapshotEnabled": {
         "type": "boolean",
@@ -2099,12 +2119,12 @@
       "graphRecallEntityHintMax": {
         "type": "number",
         "default": 3,
-        "description": "Maximum number of entity hints injected per graph recall result."
+        "description": "Maximum number of entity hints added per graph recall result."
       },
       "graphRecallEntityHintMaxChars": {
         "type": "number",
         "default": 200,
-        "description": "Maximum characters per entity hint injected during graph recall."
+        "description": "Maximum characters per entity hint added during graph recall."
       },
       "graphRecallSnapshotDir": {
         "type": "string",
@@ -2133,7 +2153,7 @@
       "graphAssistShadowEvalEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "In full mode, compute graph assist for comparison telemetry and snapshots but keep injected recall output baseline-identical."
+        "description": "In full mode, compute graph assist for comparison telemetry and snapshots but keep recall output baseline-identical."
       },
       "graphAssistMinSeedResults": {
         "type": "number",
@@ -2211,12 +2231,12 @@
       "recallConfidenceGateEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Synapse-inspired confidence gate: skip memory injection when top recall score is below threshold"
+        "description": "Synapse-inspired confidence gate: skip memory context when top recall score is below threshold"
       },
       "recallConfidenceGateThreshold": {
         "type": "number",
         "default": 0.12,
-        "description": "Minimum top recall score to inject memories (0-1). Below this, memories are rejected as too uncertain"
+        "description": "Minimum top recall score to include memories (0-1). Below this, memories are rejected as too uncertain"
       },
       "causalRuleExtractionEnabled": {
         "type": "boolean",
@@ -2317,6 +2337,122 @@
         "default": 24,
         "minimum": 0,
         "description": "Maximum query-visible cues expanded by explicit cue recall."
+      },
+      "targetedFactRecallEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable targeted fact evidence recall for direct answer questions."
+      },
+      "targetedFactRecallMaxChars": {
+        "type": "integer",
+        "default": 2400,
+        "minimum": 0,
+        "description": "Character budget for the targeted fact evidence recall section."
+      },
+      "targetedFactRecallMaxResults": {
+        "type": "integer",
+        "default": 48,
+        "minimum": 0,
+        "description": "Maximum recalled items for targeted fact evidence."
+      },
+      "targetedFactRecallScanWindowTurns": {
+        "type": "integer",
+        "default": 8,
+        "minimum": 1,
+        "description": "Recent-turn scan window for targeted fact evidence."
+      },
+      "targetedFactRecallScanWindowTokens": {
+        "type": "integer",
+        "default": 12000,
+        "minimum": 1,
+        "description": "Recent-token scan window for targeted fact evidence."
+      },
+      "focusedListRecallEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable focused list evidence recall for count, relation, and recommendation questions."
+      },
+      "focusedListRecallMaxChars": {
+        "type": "integer",
+        "default": 2600,
+        "minimum": 0,
+        "description": "Character budget for the focused list evidence recall section."
+      },
+      "focusedListRecallMaxResults": {
+        "type": "integer",
+        "default": 40,
+        "minimum": 0,
+        "description": "Maximum recalled items for focused list evidence."
+      },
+      "focusedListRecallScanWindowTurns": {
+        "type": "integer",
+        "default": 64,
+        "minimum": 1,
+        "description": "Recent-turn scan window for focused list evidence."
+      },
+      "focusedListRecallScanWindowTokens": {
+        "type": "integer",
+        "default": 14000,
+        "minimum": 1,
+        "description": "Recent-token scan window for focused list evidence."
+      },
+      "responseGuidanceRecallEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable response guidance recall for user answer-shape preferences."
+      },
+      "responseGuidanceRecallMaxChars": {
+        "type": "integer",
+        "default": 2400,
+        "minimum": 0,
+        "description": "Character budget for the response guidance recall section."
+      },
+      "responseGuidanceRecallMaxResults": {
+        "type": "integer",
+        "default": 48,
+        "minimum": 0,
+        "description": "Maximum recalled items for response guidance."
+      },
+      "responseGuidanceRecallScanWindowTurns": {
+        "type": "integer",
+        "default": 64,
+        "minimum": 1,
+        "description": "Recent-turn scan window for response guidance."
+      },
+      "responseGuidanceRecallScanWindowTokens": {
+        "type": "integer",
+        "default": 16000,
+        "minimum": 1,
+        "description": "Recent-token scan window for response guidance."
+      },
+      "eventOrderRecallEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable event-order evidence recall for chronology questions."
+      },
+      "eventOrderRecallMaxChars": {
+        "type": "integer",
+        "default": 2400,
+        "minimum": 0,
+        "description": "Character budget for the event-order evidence recall section."
+      },
+      "eventOrderRecallMaxResults": {
+        "type": "integer",
+        "default": 24,
+        "minimum": 0,
+        "description": "Maximum recalled items for event-order evidence."
+      },
+      "eventOrderRecallScanWindowTurns": {
+        "type": "integer",
+        "default": 12,
+        "minimum": 1,
+        "description": "Recent-turn scan window for event-order evidence."
+      },
+      "eventOrderRecallScanWindowTokens": {
+        "type": "integer",
+        "default": 24000,
+        "minimum": 1,
+        "description": "Recent-token scan window for event-order evidence."
       },
       "queryExpansionEnabled": {
         "type": "boolean",
@@ -2822,12 +2958,12 @@
       "maxTranscriptTurns": {
         "type": "number",
         "default": 50,
-        "description": "Maximum transcript turns to inject"
+        "description": "Maximum transcript turns to include"
       },
       "maxTranscriptTokens": {
         "type": "number",
         "default": 1000,
-        "description": "Maximum tokens for transcript injection"
+        "description": "Maximum tokens for transcript context"
       },
       "checkpointEnabled": {
         "type": "boolean",
@@ -2842,7 +2978,7 @@
       "compactionResetEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Trigger session reset after compaction with BOOT.md injection (requires OC fork with api.resetSession)"
+        "description": "Trigger session reset after compaction with BOOT.md recovery context (requires OC fork with api.resetSession)"
       },
       "hourlySummariesEnabled": {
         "type": "boolean",
@@ -2862,7 +2998,7 @@
       "maxSummaryCount": {
         "type": "number",
         "default": 6,
-        "description": "Maximum number of summaries to inject"
+        "description": "Maximum number of summaries to include"
       },
       "summaryModel": {
         "type": "string",
@@ -2870,12 +3006,12 @@
       },
       "modelSource": {
         "type": "string",
-      "enum": [
-        "plugin",
-        "gateway"
-      ],
-      "default": "gateway",
-      "description": "LLM source: 'gateway' delegates to a gateway agent's model chain (agents.list[]); 'plugin' uses Engram's own openai/localLlm config."
+        "enum": [
+          "plugin",
+          "gateway"
+        ],
+        "default": "gateway",
+        "description": "LLM source: 'gateway' delegates to a gateway agent's model chain (agents.list[]); 'plugin' uses Engram's own openai/localLlm config."
       },
       "gatewayAgentId": {
         "type": "string",
@@ -2953,7 +3089,7 @@
       "traceRecallContent": {
         "type": "boolean",
         "default": false,
-        "description": "If true, include the full recalled memory text in RecallTraceEvent.recalledContent emitted to __openclawEngramTrace subscribers (e.g. Langfuse). Disabled by default — only enable when you want external trace collectors to capture injected memory context."
+        "description": "If true, include the full recalled memory text in RecallTraceEvent.recalledContent emitted to __openclawEngramTrace subscribers (e.g. Langfuse). Disabled by default - only enable when you want external trace collectors to capture memory context."
       },
       "profilingEnabled": {
         "type": "boolean",
@@ -2996,6 +3132,11 @@
         ],
         "default": "low",
         "description": "Minimum locally-scored importance level required to persist an extracted fact. Facts below this level are dropped before write and counted toward the importance_gated metric. Default \"low\" drops only trivial turn-level chatter (greetings, single-word replies); raise to \"normal\" or higher for a stricter gate."
+      },
+      "extractionTelemetryPrefilterEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Skip semantic durable-memory extraction for mechanical action/state telemetry transcripts that contain no durable-memory cue. Raw transcript storage and recall still run. Disable this if you intentionally want fact extraction from action logs."
       },
       "extractionScopeClassificationEnabled": {
         "type": "boolean",
@@ -3170,7 +3311,7 @@
       "localLlmDisableThinking": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), request chain-of-thought / thinking-mode suppression on the main local LLM (issue #548). The `chat_template_kwargs: { enable_thinking: false }` field is only injected when the detected backend is known to support it (LM Studio, vLLM); strict OpenAI-compat backends fail open to avoid the 400-cooldown path. Structured-output tasks like extraction and consolidation gain nothing from reasoning tokens and thinking-capable models (Qwen 3.5, Gemma 4, DeepSeek) often blow the 60s timeout before emitting content. Set to false to restore thinking for narrative tasks. The fast-tier client always disables thinking and is not affected by this flag."
+        "description": "When true (default), request chain-of-thought / thinking-mode suppression on the main local LLM (issue #548). The `chat_template_kwargs: { enable_thinking: false }` field is sent only when the detected backend is known to support it (LM Studio, vLLM); strict OpenAI-compat backends fail open to avoid the 400-cooldown path. Structured-output tasks like extraction and consolidation gain nothing from reasoning tokens and thinking-capable models (Qwen 3.5, Gemma 4, DeepSeek) often blow the 60s timeout before emitting content. Set to false to restore thinking for narrative tasks. The fast-tier client always disables thinking and is not affected by this flag."
       },
       "hourlySummaryCronAutoRegister": {
         "type": "boolean",
@@ -3284,12 +3425,12 @@
       "conversationRecallTopK": {
         "type": "number",
         "default": 3,
-        "description": "Top-K conversation chunks to inject."
+        "description": "Top-K conversation chunks to include."
       },
       "conversationRecallMaxChars": {
         "type": "number",
         "default": 2500,
-        "description": "Max characters of semantic conversation recall to inject."
+        "description": "Max characters of semantic conversation recall to include."
       },
       "conversationRecallTimeoutMs": {
         "type": "number",
@@ -3338,7 +3479,7 @@
       "objectiveStateRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Inject prompt-relevant objective-state snapshots into recall context."
+        "description": "Add recall-relevant objective-state snapshots to recall context."
       },
       "objectiveStateStoreDir": {
         "type": "string",
@@ -3356,7 +3497,7 @@
       "causalTrajectoryRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Inject prompt-relevant causal trajectories into recall context."
+        "description": "Add recall-relevant causal trajectories to recall context."
       },
       "trustZonesEnabled": {
         "type": "boolean",
@@ -3375,7 +3516,7 @@
       "trustZoneRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Inject prompt-relevant working and trusted trust-zone records into recall context."
+        "description": "Add recall-relevant working and trusted trust-zone records to recall context."
       },
       "memoryPoisoningDefenseEnabled": {
         "type": "boolean",
@@ -3390,7 +3531,7 @@
       "harmonicRetrievalEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable harmonic retrieval blending over abstraction nodes and cue anchors, including recall-section injection and harmonic-search diagnostics."
+        "description": "Enable harmonic retrieval blending over abstraction nodes and cue anchors, including recall-section assembly and harmonic-search diagnostics."
       },
       "abstractionAnchorsEnabled": {
         "type": "boolean",
@@ -3404,7 +3545,7 @@
       "verifiedRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Inject prompt-relevant memory boxes only when their cited source memories verify as non-archived episodes."
+        "description": "Add recall-relevant memory boxes only when their cited source memories verify as non-archived episodes."
       },
       "semanticRulePromotionEnabled": {
         "type": "boolean",
@@ -3461,7 +3602,7 @@
       "operatorAwareConsolidationEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Opt in to operator-aware consolidation prompts so the LLM returns structured {operator, output} JSON and SPLIT/MERGE/UPDATE is recorded on derived_via. When disabled (default), derived_via still populates via the cluster-shape heuristic."
+        "description": "Opt in to operator-aware consolidation instructions so the LLM returns structured {operator, output} JSON and SPLIT/MERGE/UPDATE is recorded on derived_via. When disabled (default), derived_via still populates via the cluster-shape heuristic."
       },
       "peerProfileReasonerEnabled": {
         "type": "boolean",
@@ -3488,13 +3629,13 @@
       "peerProfileRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, inject the active peer's profile fields into the recall context as a '## Peer Profile' section (issue #679 PR 3/5). Requires the session's peer ID to be registered before recall. Default off (opt-in)."
+        "description": "When true, add the active peer's profile fields to the recall context as a '## Peer Profile' section (issue #679 PR 3/5). Requires the session's peer ID to be registered before recall. Default off (opt-in)."
       },
       "peerProfileRecallMaxFields": {
         "type": "number",
         "default": 5,
         "minimum": 0,
-        "description": "Maximum number of peer profile fields to inject per recall call. Only the most-recently-updated N fields are included. Set to 0 to disable field injection even when peerProfileRecallEnabled is true."
+        "description": "Maximum number of peer profile fields to add per recall call. Only the most-recently-updated N fields are included. Set to 0 to disable field inclusion even when peerProfileRecallEnabled is true."
       },
       "creationMemoryEnabled": {
         "type": "boolean",
@@ -3542,7 +3683,7 @@
       "workProductRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Inject prompt-relevant work-product ledger entries into recall context and expose artifact-recovery search tooling."
+        "description": "Add recall-relevant work-product ledger entries to recall context and expose artifact-recovery search tooling."
       },
       "workProductLedgerDir": {
         "type": "string",
@@ -3782,7 +3923,7 @@
       "sharedContextEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable shared-context injection + tools (v4.0). Default off."
+        "description": "Enable shared-context assembly and tools (v4.0). Default off."
       },
       "sharedContextDir": {
         "type": "string",
@@ -3791,7 +3932,7 @@
       "sharedContextMaxInjectChars": {
         "type": "number",
         "default": 4000,
-        "description": "Max characters of shared-context to inject into each prompt."
+        "description": "Max characters of shared-context to include in each recall context."
       },
       "crossSignalsSemanticEnabled": {
         "type": "boolean",
@@ -4064,17 +4205,17 @@
       "calibrationEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable recall calibration rules injection (v9.0, default off)."
+        "description": "Enable recall calibration rules (v9.0, default off)."
       },
       "calibrationMaxRulesPerRecall": {
         "type": "number",
         "default": 10,
-        "description": "Maximum number of calibration rules to inject per recall pass."
+        "description": "Maximum number of calibration rules to include per recall pass."
       },
       "calibrationMaxChars": {
         "type": "number",
         "default": 1200,
-        "description": "Maximum characters of calibration content to inject per recall pass."
+        "description": "Maximum characters of calibration content to include per recall pass."
       },
       "lancedbEnabled": {
         "type": "boolean",
@@ -4239,7 +4380,7 @@
       },
       "recallBudgetChars": {
         "type": "number",
-        "description": "Hard character cap for total recall injection. Defaults to maxMemoryTokens * 4."
+        "description": "Hard character cap for total recall context. Defaults to maxMemoryTokens * 4."
       },
       "recallOuterTimeoutMs": {
         "type": "number",
@@ -4259,7 +4400,7 @@
       "recallMmrEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Apply Maximal Marginal Relevance to the final recall selection per-section so one redundant cluster cannot dominate the injected context."
+        "description": "Apply Maximal Marginal Relevance to the final recall selection per-section so one redundant cluster cannot dominate the included context."
       },
       "recallMmrLambda": {
         "type": "number",
@@ -4330,6 +4471,9 @@
             },
             "maxPatterns": {
               "type": "number"
+            },
+            "forceGeneric": {
+              "type": "boolean"
             }
           },
           "required": [
@@ -4387,6 +4531,11 @@
         "default": 512,
         "description": "Max tokens for deterministic (non-LLM) summaries"
       },
+      "lcmTelemetryPrefilterEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Use deterministic LCM compression for mechanical action/state telemetry without durable-memory cues."
+      },
       "lcmArchiveRetentionDays": {
         "type": "number",
         "default": 90,
@@ -4400,7 +4549,7 @@
       "messagePartsRecallMaxResults": {
         "type": "number",
         "default": 6,
-        "description": "Maximum structured message-part matches to inject into recall when messagePartsEnabled is true."
+        "description": "Maximum structured message-part matches to include in recall when messagePartsEnabled is true."
       },
       "ircEnabled": {
         "type": "boolean",
@@ -4410,7 +4559,7 @@
       "ircMaxPreferences": {
         "type": "number",
         "default": 20,
-        "description": "Maximum number of preferences to include in IRC rule injection."
+        "description": "Maximum number of preferences to include in IRC rules."
       },
       "ircIncludeCorrections": {
         "type": "boolean",
@@ -4465,7 +4614,7 @@
       "cmcRetrievalEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable CMC retrieval injection at recall time (default off)."
+        "description": "Enable CMC retrieval at recall time (default off)."
       },
       "cmcRetrievalMaxDepth": {
         "type": "number",
@@ -4475,7 +4624,7 @@
       "cmcRetrievalMaxChars": {
         "type": "number",
         "default": 800,
-        "description": "Maximum characters of CMC content injected per recall pass."
+        "description": "Maximum characters of CMC content included per recall pass."
       },
       "cmcRetrievalCounterfactualBoost": {
         "type": "number",
@@ -4751,13 +4900,13 @@
       "help": "Enable identity continuity workflows (anchor, incidents, audits)"
     },
     "identityInjectionMode": {
-      "label": "Identity Injection Mode",
+      "label": "Identity Context Mode",
       "advanced": true,
       "placeholder": "recovery_only",
-      "help": "When to inject identity continuity context: recovery_only, minimal, or full"
+      "help": "When to add identity continuity context: recovery_only, minimal, or full"
     },
     "identityMaxInjectChars": {
-      "label": "Identity Max Inject Chars",
+      "label": "Identity Max Context Chars",
       "advanced": true,
       "placeholder": "1200"
     },
@@ -4788,7 +4937,7 @@
     },
     "injectQuestions": {
       "label": "Inject Questions",
-      "help": "Include the most relevant open question in the system prompt"
+      "help": "Include the most relevant open question in generated memory context"
     },
     "commitmentDecayDays": {
       "label": "Commitment Decay (days)",
@@ -5034,7 +5183,7 @@
     },
     "compactionResetEnabled": {
       "label": "Compaction Reset",
-      "help": "Reset session after compaction and inject BOOT.md for recovery",
+      "help": "Reset session after compaction and add BOOT.md recovery context",
       "advanced": true
     },
     "hourlySummariesEnabled": {
@@ -5196,7 +5345,7 @@
     "objectiveStateRecallEnabled": {
       "label": "Objective-State Recall",
       "advanced": true,
-      "help": "Inject prompt-relevant objective-state snapshots into recall context."
+      "help": "Add recall-relevant objective-state snapshots to recall context."
     },
     "objectiveStateStoreDir": {
       "label": "Objective-State Store Directory",
@@ -5217,7 +5366,7 @@
     "causalTrajectoryRecallEnabled": {
       "label": "Causal Trajectory Recall",
       "advanced": true,
-      "help": "Inject prompt-relevant causal trajectories into recall context."
+      "help": "Add recall-relevant causal trajectories to recall context."
     },
     "trustZonesEnabled": {
       "label": "Trust Zones",
@@ -5237,7 +5386,7 @@
     "trustZoneRecallEnabled": {
       "label": "Trust-Zone Recall",
       "advanced": true,
-      "help": "Inject prompt-relevant working and trusted trust-zone records into recall context."
+      "help": "Add recall-relevant working and trusted trust-zone records to recall context."
     },
     "memoryPoisoningDefenseEnabled": {
       "label": "Memory Poisoning Defense",
@@ -5251,7 +5400,7 @@
     },
     "harmonicRetrievalEnabled": {
       "label": "Harmonic Retrieval",
-      "help": "Enable harmonic retrieval blending over abstraction nodes and cue anchors, including recall-section injection and harmonic-search diagnostics."
+      "help": "Enable harmonic retrieval blending over abstraction nodes and cue anchors, including recall-section assembly and harmonic-search diagnostics."
     },
     "abstractionAnchorsEnabled": {
       "label": "Abstraction Anchors",
@@ -5266,7 +5415,7 @@
     },
     "verifiedRecallEnabled": {
       "label": "Verified Recall",
-      "help": "Inject prompt-relevant memory boxes only when their cited source memories verify as non-archived episodes."
+      "help": "Add recall-relevant memory boxes only when their cited source memories verify as non-archived episodes."
     },
     "semanticRulePromotionEnabled": {
       "label": "Semantic Rule Promotion",
@@ -5314,9 +5463,9 @@
       "help": "Max memories to consolidate per run to limit LLM cost."
     },
     "operatorAwareConsolidationEnabled": {
-      "label": "Operator-Aware Consolidation Prompt",
+      "label": "Operator-Aware Consolidation",
       "advanced": true,
-      "help": "Opt in to operator-aware consolidation prompts (default off). When enabled, the LLM returns structured {operator, output} JSON and we record SPLIT/MERGE/UPDATE on derived_via. When disabled (default), derived_via still populates via the cluster-shape heuristic."
+      "help": "Opt in to operator-aware consolidation instructions (default off). When enabled, the LLM returns structured {operator, output} JSON and we record SPLIT/MERGE/UPDATE on derived_via. When disabled (default), derived_via still populates via the cluster-shape heuristic."
     },
     "peerProfileReasonerEnabled": {
       "label": "Peer Profile Reasoner",
@@ -5339,14 +5488,14 @@
       "help": "Hard cap on the total number of profile fields the reasoner will apply across all peers in a single run. Set to 0 to disable applying any fields."
     },
     "peerProfileRecallEnabled": {
-      "label": "Peer Profile Recall Injection",
+      "label": "Peer Profile Recall",
       "advanced": true,
-      "help": "When enabled, injects the active peer's profile fields into recall context as a '## Peer Profile' section. Requires the session peer ID to be registered. Default off."
+      "help": "When enabled, adds the active peer's profile fields to recall context as a '## Peer Profile' section. Requires the session peer ID to be registered. Default off."
     },
     "peerProfileRecallMaxFields": {
       "label": "Peer Profile Recall Max Fields",
       "advanced": true,
-      "help": "Maximum number of peer profile fields to inject per recall. Only the most-recently-updated N fields are included. Set to 0 to disable injection."
+      "help": "Maximum number of peer profile fields to add per recall. Only the most-recently-updated N fields are included. Set to 0 to disable this feature."
     },
     "creationMemoryEnabled": {
       "label": "Creation Memory",
@@ -5398,7 +5547,7 @@
     "workProductRecallEnabled": {
       "label": "Work-Product Recall",
       "advanced": true,
-      "help": "Inject prompt-relevant work-product ledger entries into recall context and expose artifact-recovery search tooling."
+      "help": "Add recall-relevant work-product ledger entries to recall context and expose artifact-recovery search tooling."
     },
     "workProductLedgerDir": {
       "label": "Work-Product Ledger Directory",
@@ -5664,5 +5813,21 @@
       "advanced": true,
       "help": "Promote stored reasoning_trace memories to the top of recall results when the incoming query reads like a problem-solving ask. Default off; enable after benchmarking (issue #564)."
     }
+  },
+  "commandAliases": [
+    {
+      "name": "remnic",
+      "kind": "runtime-slash",
+      "cliCommand": "remnic"
+    }
+  ],
+  "activation": {
+    "onCommands": [
+      "remnic"
+    ],
+    "onCapabilities": [
+      "tool",
+      "hook"
+    ]
   }
 }

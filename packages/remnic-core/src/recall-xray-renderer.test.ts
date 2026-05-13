@@ -345,6 +345,86 @@ test("renderXray formats scores deterministically to 4 decimals", () => {
   assert.ok(out.includes("final=0.1235 vector=0.0000"));
 });
 
+test("renderXrayText surfaces provenance and safety context", () => {
+  const snap: RecallXraySnapshot = {
+    ...minimalSnapshot(),
+    results: [
+      {
+        memoryId: "mem-provenance",
+        path: "facts/provenance.md",
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.88 },
+        admittedBy: [],
+        provenance: {
+          source: "conversation",
+          created: "2026-04-20T00:00:00.000Z",
+          namespace: "default",
+          scope: "namespace:default",
+          userContextScopes: ["repo", "private"],
+          retrievalReason: "served-by=hybrid",
+          confidence: 0.9,
+          stale: true,
+          corrected: true,
+          correctionState: "disputed",
+          safeToUse: false,
+          safety: "requires-review",
+          safetyReasons: ["stale=true", "verification=disputed"],
+        },
+      },
+    ],
+  };
+
+  const out = renderXrayText(snap);
+  assert.ok(
+    out.includes(
+      "provenance: source=conversation created=2026-04-20T00:00:00.000Z scope=namespace:default confidence=0.90 stale=true corrected=disputed safe=false",
+    ),
+  );
+  assert.ok(out.includes("retrieval-reason: served-by=hybrid"));
+  assert.ok(out.includes("context-scopes: repo, private"));
+  assert.ok(out.includes("safety: requires-review (stale=true, verification=disputed)"));
+});
+
+test("renderXrayMarkdown surfaces provenance and safety context", () => {
+  const snap: RecallXraySnapshot = {
+    ...minimalSnapshot(),
+    results: [
+      {
+        memoryId: "mem-provenance",
+        path: "facts/provenance.md",
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.88 },
+        admittedBy: [],
+        provenance: {
+          source: "conversation",
+          created: "2026-04-20T00:00:00.000Z",
+          namespace: "default",
+          scope: "namespace:default",
+          userContextScopes: ["repo"],
+          retrievalReason: "served-by=hybrid",
+          confidence: 0.9,
+          stale: false,
+          corrected: false,
+          correctionState: "none",
+          safeToUse: true,
+          safety: "safe",
+          safetyReasons: [],
+        },
+      },
+    ],
+  };
+
+  const out = renderXrayMarkdown(snap);
+  assert.ok(
+    out.includes(
+      "**Provenance:** source=conversation created=2026-04-20T00:00:00.000Z scope=namespace:default confidence=0.90 stale=false corrected=false safe=true",
+    ),
+  );
+  assert.ok(out.includes("**Retrieval reason:** `served-by=hybrid`"));
+  assert.ok(out.includes("**Context scopes:** `repo`"));
+  assert.ok(!out.includes("**Safety:**"));
+});
+
 test("renderXray formats non-finite capturedAt as (unknown)", () => {
   const snap: RecallXraySnapshot = {
     ...minimalSnapshot(),

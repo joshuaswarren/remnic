@@ -308,6 +308,54 @@ test("buildXraySnapshot rejects results with an unknown servedBy tier", () => {
   );
 });
 
+test("buildXraySnapshot normalizes per-result provenance", () => {
+  const result: RecallXrayResult = {
+    memoryId: "mem-provenance",
+    path: "/notes/provenance.md",
+    servedBy: "hybrid",
+    admittedBy: [],
+    scoreDecomposition: { final: 0.7 },
+    provenance: {
+      source: "conversation",
+      created: "2026-04-20T00:00:00.000Z",
+      namespace: "default",
+      scope: "namespace:default",
+      userContextScopes: ["repo", "private"],
+      retrievalReason: "served-by=hybrid",
+      confidence: 2,
+      stale: true,
+      corrected: false,
+      correctionState: "superseded",
+      safeToUse: false,
+      safety: "requires-review",
+      safetyReasons: ["stale=true", ""],
+    },
+  };
+
+  const snapshot = buildXraySnapshot({
+    query: "q",
+    results: [result],
+    now: fixedNow,
+    snapshotIdGenerator: idGen(),
+  });
+
+  assert.deepEqual(snapshot.results[0]?.provenance, {
+    source: "conversation",
+    created: "2026-04-20T00:00:00.000Z",
+    namespace: "default",
+    scope: "namespace:default",
+    userContextScopes: ["repo", "private"],
+    retrievalReason: "served-by=hybrid",
+    confidence: 1,
+    stale: true,
+    corrected: true,
+    correctionState: "superseded",
+    safeToUse: false,
+    safety: "requires-review",
+    safetyReasons: ["stale=true"],
+  });
+});
+
 // ─── Budget accounting ────────────────────────────────────────────────────
 
 test("buildXraySnapshot clamps negative / non-finite budgets to zero", () => {

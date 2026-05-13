@@ -31,6 +31,8 @@ function makeMockService(briefingFn?: () => Promise<unknown>): EngramAccessServi
     reviewQueueList: () => Promise.resolve({ items: [] }),
     observe: () => Promise.resolve({ ok: true }),
     lcmSearch: () => Promise.resolve({ results: [] }),
+    lcmCompactionFlush: () => Promise.resolve({ enabled: true, flushed: true }),
+    lcmCompactionRecord: () => Promise.resolve({ enabled: true, recorded: true }),
     memoryGovernanceRun: () => Promise.resolve({ ok: true }),
     identityAnchorGet: () => Promise.resolve(null),
     identityAnchorUpdate: () => Promise.resolve({ ok: true }),
@@ -335,6 +337,74 @@ test("MCP profiling report dispatches sanitized args to the access service", asy
 
   assert.deepEqual(received, { format: "json", limit: 3 });
   assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+});
+
+test("MCP LCM compaction flush dispatches sanitized args to the access service", async () => {
+  let received: Record<string, unknown> | undefined;
+  const service = {
+    ...makeMockService(),
+    lcmCompactionFlush: async (args: Record<string, unknown>) => {
+      received = args;
+      return { enabled: true, flushed: true };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest(
+    makeToolRequest("remnic.lcm_compaction_flush", {
+      sessionKey: "pi:session",
+      namespace: "work",
+    }),
+  );
+
+  assert.deepEqual(received, {
+    sessionKey: "pi:session",
+    namespace: "work",
+    authenticatedPrincipal: undefined,
+  });
+  assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+});
+
+test("MCP tools/list exposes LCM compaction tools under remnic aliases", async () => {
+  const server = new EngramMcpServer(makeMockService());
+
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/list",
+    params: {},
+  });
+  const listed = ((response as Record<string, unknown>).result as { tools: Array<{ name: string }> }).tools.map(
+    (tool) => tool.name,
+  );
+
+  assert.ok(listed.includes("remnic.lcm_compaction_flush"));
+  assert.ok(listed.includes("engram.lcm_compaction_flush"));
+  assert.ok(listed.includes("remnic.lcm_compaction_record"));
+  assert.ok(listed.includes("engram.lcm_compaction_record"));
+});
+
+test("MCP LCM compaction record rejects invalid token counts before dispatch", async () => {
+  let called = false;
+  const service = {
+    ...makeMockService(),
+    lcmCompactionRecord: async () => {
+      called = true;
+      return { enabled: true, recorded: true };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest(
+    makeToolRequest("engram.lcm_compaction_record", {
+      sessionKey: "pi:session",
+      tokensBefore: -1,
+      tokensAfter: 800,
+    }),
+  );
+
+  assert.equal(called, false);
+  assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, true);
 });
 
 test("MCP profiling report rejects invalid argument types before dispatch", async () => {

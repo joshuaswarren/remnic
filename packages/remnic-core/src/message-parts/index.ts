@@ -27,6 +27,7 @@ export type MessagePartSourceFormat =
   | "openai"
   | "anthropic"
   | "openclaw"
+  | "pi"
   | "lossless-claw"
   | "remnic";
 
@@ -53,6 +54,7 @@ export interface LcmMessagePartRow extends LcmMessagePartInput {
 export interface ParseMessagePartsOptions {
   sourceFormat?: MessagePartSourceFormat;
   renderedContent?: string;
+  allowRenderedFallback?: boolean;
 }
 
 const SECRET_KEY_RE = /(api[_-]?key|authorization|bearer|credential|password|secret|token)/i;
@@ -81,6 +83,8 @@ export function parseMessageParts(
       return withRenderedFallback(parseAnthropicMessageParts(input, options), options);
     case "openclaw":
       return withRenderedFallback(parseOpenClawMessageParts(input, options), options);
+    case "pi":
+      return withRenderedFallback(parsePiMessageParts(input, options), options);
     case "lossless-claw":
     case "remnic":
       return withRenderedFallback(normalizeExplicitParts(input), options);
@@ -146,8 +150,12 @@ export function parseOpenAiMessageParts(
     }
     if (type === "function_call") {
       const toolName = asNonEmptyString(item.name ?? item.tool_name);
+      const callId = asNonEmptyString(item.call_id ?? item.callId);
+      const itemId = asNonEmptyString(item.id);
       const payload = {
-        id: item.id ?? item.call_id,
+        id: callId ?? itemId,
+        ...(callId ? { call_id: callId } : {}),
+        ...(itemId && itemId !== callId ? { response_item_id: itemId } : {}),
         name: toolName,
         arguments: parseMaybeJson(item.arguments),
       };
@@ -156,7 +164,14 @@ export function parseOpenAiMessageParts(
     }
     if (type === "function_call_output") {
       const output = asNonEmptyString(item.output) ?? JSON.stringify(sanitizePayload(item.output ?? item));
-      parts.push(makePart("tool_result", { id: item.id ?? item.call_id, output }, {
+      const callId = asNonEmptyString(item.call_id ?? item.callId);
+      const itemId = asNonEmptyString(item.id);
+      parts.push(makePart("tool_result", {
+        id: callId ?? itemId,
+        ...(callId ? { call_id: callId } : {}),
+        ...(itemId && itemId !== callId ? { response_item_id: itemId } : {}),
+        output,
+      }, {
         filePath: firstFilePath(output),
       }));
       continue;
@@ -199,7 +214,12 @@ export function parseAnthropicMessageParts(
     if (type === "tool_result") {
       const content = block.content;
       const rendered = renderUnknownContent(content);
-      parts.push(makePart("tool_result", { id: block.tool_use_id, content: sanitizePayload(content) }, {
+      parts.push(makePart("tool_result", {
+        id: block.tool_use_id,
+        content: sanitizePayload(content),
+        ...(typeof block.is_error === "boolean" ? { is_error: block.is_error } : {}),
+        ...(typeof block.isError === "boolean" ? { isError: block.isError } : {}),
+      }, {
         filePath: firstFilePath(rendered),
       }));
       continue;
@@ -252,8 +272,109 @@ export function parseOpenClawMessageParts(
     ]);
   }
 
-  const rendered = options.renderedContent ?? asNonEmptyString(obj.content);
+  const rendered = options.allowRenderedFallback === false
+    ? null
+    : options.renderedContent ?? asNonEmptyString(obj.content);
   return rendered ? withOrdinals(partsFromRenderedText(rendered)) : [];
+}
+
+export function parsePiMessageParts(
+  input: unknown,
+  options: ParseMessagePartsOptions = {},
+): LcmMessagePartInput[] {
+  const explicit = normalizeExplicitParts(input);
+  if (explicit.length > 0) return explicit;
+  if (!isRecord(input)) return renderedFallbackParts(options);
+
+  if (input.role === "bashExecution") {
+    const command = asNonEmptyString(input.command);
+    const output = asNonEmptyString(input.output);
+    const rendered = [command ? `Ran ${command}` : null, output].filter(Boolean).join("\n");
+    return withOrdinals([
+      makePart("tool_result", {
+        role: "bashExecution",
+        command,
+        output,
+        exitCode: input.exitCode ?? input.exit_code,
+      }, {
+        toolName: "bashExecution",
+        filePath: firstFilePathFromObject(input) ?? firstFilePath(rendered),
+      }),
+    ]);
+  }
+
+  const topLevelType = asNonEmptyString(input.type ?? input.kind ?? input.role);
+  if (topLevelType === "toolResult" || topLevelType === "tool_result") {
+    const toolName = asNonEmptyString(input.name ?? input.toolName ?? input.tool_name);
+    const output = input.output ?? input.result ?? input.content;
+    const rendered = renderUnknownContent(output ?? input);
+    return withOrdinals([
+      makePart("tool_result", {
+        id: input.id ?? input.toolCallId ?? input.tool_call_id,
+        name: toolName,
+        output: sanitizePayload(output),
+        ...(typeof input.isError === "boolean" ? { isError: input.isError } : {}),
+        ...(typeof input.is_error === "boolean" ? { is_error: input.is_error } : {}),
+      }, {
+        toolName,
+        filePath: firstFilePathFromObject(input) ?? firstFilePath(rendered),
+      }),
+    ]);
+  }
+
+  const content = input.content;
+  const blocks = Array.isArray(content) ? content.filter(isRecord) : [];
+  const parts: LcmMessagePartInput[] = [];
+
+  if (typeof content === "string") {
+    parts.push(makePart("text", { text: content }, { filePath: firstFilePath(content) }));
+  }
+
+  blocks.forEach((block, ordinal) => {
+    const type = asNonEmptyString(block.type ?? block.kind);
+    if (type === "text") {
+      const text = asNonEmptyString(block.text ?? block.content);
+      if (text) parts.push({ ...makePart("text", { type, text }, { filePath: firstFilePath(text) }), ordinal });
+      return;
+    }
+    if (type === "toolCall" || type === "tool_call") {
+      const toolName = asNonEmptyString(block.name ?? block.toolName ?? block.tool_name);
+      const payload = {
+        id: block.id,
+        name: toolName,
+        arguments: sanitizePayload(block.arguments ?? block.args ?? block.input ?? block.params),
+      };
+      parts.push({ ...classifyToolPart(toolName, payload), ordinal });
+      return;
+    }
+    if (type === "toolResult" || type === "tool_result") {
+      const rendered = renderUnknownContent(block.output ?? block.result ?? block.content ?? block);
+      parts.push({
+        ...makePart("tool_result", {
+          id: block.id ?? block.toolCallId ?? block.tool_call_id,
+          name: asNonEmptyString(block.name ?? block.toolName ?? block.tool_name),
+          output: sanitizePayload(block.output ?? block.result ?? block.content),
+          ...(typeof block.isError === "boolean" ? { isError: block.isError } : {}),
+          ...(typeof block.is_error === "boolean" ? { is_error: block.is_error } : {}),
+        }, {
+          toolName: asNonEmptyString(block.name ?? block.toolName ?? block.tool_name),
+          filePath: firstFilePathFromObject(block) ?? firstFilePath(rendered),
+        }),
+        ordinal,
+      });
+    }
+  });
+
+  const toolName = asNonEmptyString(input.toolName ?? input.tool_name ?? input.name);
+  if (parts.length === 0 && toolName) {
+    parts.push(classifyToolPart(toolName, {
+      name: toolName,
+      arguments: sanitizePayload(input.arguments ?? input.args ?? input.input ?? input.params),
+      output: sanitizePayload(input.output ?? input.result),
+    }));
+  }
+
+  return withRenderedFallback(withOrdinals(parts), options);
 }
 
 export function partsFromRenderedText(text: string): LcmMessagePartInput[] {
@@ -275,12 +396,14 @@ function inferSourceFormat(input: unknown): MessagePartSourceFormat | undefined 
   if (input && typeof input === "object") {
     const obj = input as Record<string, unknown>;
     const explicit = asNonEmptyString(obj.sourceFormat ?? obj.source_format);
-    if (explicit === "openai" || explicit === "anthropic" || explicit === "openclaw" || explicit === "lossless-claw" || explicit === "remnic") {
+    if (explicit === "openai" || explicit === "anthropic" || explicit === "openclaw" || explicit === "pi" || explicit === "lossless-claw" || explicit === "remnic") {
       return explicit;
     }
     if (Array.isArray(obj.output)) return "openai";
     if (isOpenAiResponseItem(obj)) return "openai";
     if (Array.isArray(obj.content) && obj.content.some(isOpenAiContentBlock)) return "openai";
+    if (isAnthropicMessageObject(obj)) return "anthropic";
+    if (isPiMessageObject(obj)) return "pi";
     if (Array.isArray(obj.content)) return "anthropic";
   }
   if (Array.isArray(input)) {
@@ -291,6 +414,32 @@ function inferSourceFormat(input: unknown): MessagePartSourceFormat | undefined 
       : "anthropic";
   }
   return undefined;
+}
+
+function isPiMessageObject(obj: Record<string, unknown>): boolean {
+  if (obj.role === "bashExecution") return true;
+  if (obj.role === "toolResult" || obj.role === "tool_result") return true;
+  const type = asNonEmptyString(obj.type ?? obj.kind);
+  if (type === "toolCall" || type === "tool_call" || type === "toolResult" || type === "tool_result") return true;
+  if (!Array.isArray(obj.content)) return false;
+  return obj.content.some((block) => {
+    if (!isRecord(block)) return false;
+    const blockType = asNonEmptyString(block.type ?? block.kind);
+    return blockType === "toolCall" || blockType === "tool_call" || blockType === "toolResult" || blockType === "tool_result";
+  });
+}
+
+function isAnthropicMessageObject(obj: Record<string, unknown>): boolean {
+  if (isAnthropicContentBlock(obj)) return true;
+  if (!Array.isArray(obj.content)) return false;
+  return obj.content.some(isAnthropicContentBlock);
+}
+
+function isAnthropicContentBlock(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const type = asNonEmptyString(value.type ?? value.kind);
+  if (type === "tool_use" || type === "thinking" || type === "redacted_thinking") return true;
+  return type === "tool_result" && value.tool_use_id !== undefined;
 }
 
 function isOpenAiResponseItem(obj: Record<string, unknown>): boolean {
@@ -377,6 +526,9 @@ function withRenderedFallback(
 }
 
 function renderedFallbackParts(options: ParseMessagePartsOptions): LcmMessagePartInput[] {
+  if (options.allowRenderedFallback === false) {
+    return [];
+  }
   const rendered = asNonEmptyString(options.renderedContent);
   return rendered ? partsFromRenderedText(rendered) : [];
 }

@@ -18,6 +18,7 @@ export type {
   BenchmarkStatus,
   BenchmarkCategory,
   BenchRuntimeProfile,
+  BenchReasoningEffort,
   BuiltInProvider,
   ProviderConfig,
   TaskTokenUsage,
@@ -51,6 +52,7 @@ export type {
   BenchJudgeResult,
   BenchJudge,
   BenchMemoryAdapter,
+  BenchRecallOptions,
   LlmJudge,
   MemorySystem,
 } from "./adapters/types.js";
@@ -93,8 +95,22 @@ export {
 export type {
   SyntheticEmailIngestionAdapterOptions,
 } from "./ingestion-adapters/synthetic-email-adapter.js";
+export {
+  MEMORY_EVAL_DIMENSIONS,
+  MEMORY_EVAL_PUBLIC_LINE,
+  getMemoryEvalDimension,
+  listMemoryEvalBenchmarkIds,
+  listMemoryEvalDimensions,
+} from "./memory-evals.js";
+export type {
+  MemoryEvalCategory,
+  MemoryEvalDimension,
+  MemoryEvalDimensionId,
+  MemoryEvalMetric,
+} from "./memory-evals.js";
 export type {
   AnthropicProviderConfig,
+  CodexCliProviderConfig,
   CompletionOpts,
   CompletionResult,
   DiscoveredModel,
@@ -142,6 +158,7 @@ export type {
   WriteBenchmarkArtifactResult,
 } from "./published-artifact.js";
 export { createAnthropicProvider } from "./providers/anthropic.js";
+export { createCodexCliProvider } from "./providers/codex-cli.js";
 export { getRemnicVersion } from "./reporter.js";
 export {
   createProvider,
@@ -155,6 +172,29 @@ export {
   serializeJsonl,
   writeLeaderboardArtifactsForResult,
 } from "./leaderboard-export.js";
+export {
+  AMA_BENCH_DIAGNOSTIC_VARIANTS,
+  buildAmaBenchDiagnosticMatrixArtifact,
+  buildAmaBenchDiagnosticVariantSummary,
+  buildOracleTrajectoryRecall,
+  createAmaBenchDiagnosticAdapter,
+  extractMarkdownSectionsByTitle,
+  isAmaBenchUnknownLikeAnswer,
+  selectAmaBenchDiagnosticVariants,
+} from "./benchmarks/published/ama-bench/diagnostics.js";
+export type {
+  AmaBenchDiagnosticAdapterOptions,
+  AmaBenchDiagnosticAnswererMode,
+  AmaBenchDiagnosticBreakdown,
+  AmaBenchDiagnosticMatrixArtifact,
+  AmaBenchDiagnosticRecallMode,
+  AmaBenchDiagnosticRunContext,
+  AmaBenchDiagnosticTaskEvidence,
+  AmaBenchDiagnosticTaskRow,
+  AmaBenchDiagnosticVariant,
+  AmaBenchDiagnosticVariantSummary,
+  SanitizedDiagnosticProvider,
+} from "./benchmarks/published/ama-bench/diagnostics.js";
 export type {
   LeaderboardArtifactWrite,
 } from "./leaderboard-export.js";
@@ -242,6 +282,12 @@ export {
   loadLoCoMo10,
   loadLongMemEvalS,
 } from "./benchmarks/published/dataset-loader.js";
+export {
+  loadBeamDatasetPreview,
+} from "./benchmarks/published/beam/runner.js";
+export type {
+  BeamDatasetPreview,
+} from "./benchmarks/published/beam/runner.js";
 export type {
   DatasetSource,
   LoadedDataset,

@@ -6,6 +6,7 @@ import {
   parseMessageParts,
   parseOpenClawMessageParts,
   parseOpenAiMessageParts,
+  parsePiMessageParts,
 } from "./index.js";
 
 describe("message-parts parsers", () => {
@@ -102,6 +103,68 @@ describe("message-parts parsers", () => {
     assert.equal(parts[0]!.filePath, "src/openclaw.ts");
   });
 
+  it("extracts Pi tool-call content blocks as structured file writes", () => {
+    const parts = parsePiMessageParts({
+      role: "assistant",
+      content: [
+        { type: "text", text: "Updated packages/plugin-pi/src/index.ts" },
+        { type: "toolCall", name: "edit", arguments: { path: "packages/plugin-pi/src/index.ts" } },
+      ],
+    });
+
+    assert.equal(parts.length, 2);
+    assert.equal(parts[0]!.kind, "text");
+    assert.equal(parts[0]!.filePath, "packages/plugin-pi/src/index.ts");
+    assert.equal(parts[1]!.kind, "file_write");
+    assert.equal(parts[1]!.toolName, "edit");
+    assert.equal(parts[1]!.filePath, "packages/plugin-pi/src/index.ts");
+  });
+
+  it("infers Pi source format for Pi-shaped raw content", () => {
+    const parts = parseMessageParts({
+      role: "assistant",
+      content: [
+        { type: "toolCall", name: "read", arguments: { path: "src/config.ts" } },
+      ],
+    });
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "file_read");
+    assert.equal(parts[0]!.filePath, "src/config.ts");
+  });
+
+  it("preserves top-level Pi tool results with string content", () => {
+    const parts = parseMessageParts({
+      role: "toolResult",
+      toolName: "read",
+      toolCallId: "call_1",
+      isError: true,
+      content: "Read failed for src/config.ts",
+    });
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "tool_result");
+    assert.equal(parts[0]!.toolName, "read");
+    assert.equal(parts[0]!.filePath, "src/config.ts");
+    assert.deepEqual(parts[0]!.payload, {
+      id: "call_1",
+      name: "read",
+      output: "Read failed for src/config.ts",
+      isError: true,
+    });
+  });
+
+  it("uses rendered fallback inside the Pi parser when structured parsing finds no parts", () => {
+    const parts = parsePiMessageParts(
+      { role: "assistant", content: [{ type: "unknown", value: "ignored" }] },
+      { renderedContent: "Updated packages/plugin-pi/src/index.ts" },
+    );
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "file_read");
+    assert.equal(parts[0]!.filePath, "packages/plugin-pi/src/index.ts");
+  });
+
   it("extracts Anthropic tool_use blocks as structured file writes", () => {
     const parts = parseAnthropicMessageParts({
       content: [
@@ -120,6 +183,41 @@ describe("message-parts parsers", () => {
     assert.equal(parts[1]!.filePath, "packages/core/src/config.ts");
   });
 
+  it("preserves Anthropic tool_result error flags", () => {
+    const parts = parseAnthropicMessageParts({
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_failed",
+          is_error: true,
+          content: [{ type: "text", text: "exit code 1" }],
+        },
+      ],
+    });
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "tool_result");
+    assert.equal(parts[0]!.payload.id, "toolu_failed");
+    assert.equal(parts[0]!.payload.is_error, true);
+  });
+
+  it("infers Anthropic tool_result blocks before Pi source format", () => {
+    const parts = parseMessageParts({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_inferred",
+          content: [{ type: "text", text: "exit code 1" }],
+        },
+      ],
+    });
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "tool_result");
+    assert.equal(parts[0]!.payload.id, "toolu_inferred");
+  });
+
   it("normalizes explicit Remnic parts and redacts secrets", () => {
     const parts = parseMessageParts({
       parts: [
@@ -136,5 +234,26 @@ describe("message-parts parsers", () => {
       authorization: "[redacted]",
       url: "https://example.test",
     });
+  });
+
+  it("can disable rendered text fallback for structured-only callers", () => {
+    const parts = parseMessageParts(
+      {
+        role: "assistant",
+        content: [
+          "Suggested patch:",
+          "*** Begin Patch",
+          "*** Update File: src/suggested.ts",
+          "+not executed",
+          "*** End Patch",
+        ].join("\n"),
+      },
+      {
+        sourceFormat: "openclaw",
+        allowRenderedFallback: false,
+      },
+    );
+
+    assert.deepEqual(parts, []);
   });
 });

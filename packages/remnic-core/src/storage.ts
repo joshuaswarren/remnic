@@ -97,6 +97,7 @@ import {
   serializeContinuityIncident,
   upsertContinuityLoopInMarkdown,
 } from "./identity-continuity.js";
+import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 // stripCitation import removed: legacy rebuild fallback was replaced by a
 // skip-with-warning strategy (Finding 1 — Uhol).  See ensureFactHashIndexAuthoritative.
 
@@ -172,6 +173,22 @@ function assertMemoryWorthCounter(field: "mw_success" | "mw_fail", value: number
   if (value < 0) {
     throw new Error(`${field} must be >= 0, got ${value}`);
   }
+}
+
+function normalizeMemoryWriteTimestamp(
+  field: string,
+  value: string | undefined,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`${field} must be an ISO timestamp string, got ${String(value)}`);
+  }
+  const trimmed = value.trim();
+  const parsed = parseFlexibleIsoTimestamp(trimmed);
+  if (parsed === null) {
+    throw new Error(`${field} must be a valid ISO timestamp, got ${JSON.stringify(value)}`);
+  }
+  return new Date(parsed).toISOString();
 }
 
 function isErrnoCode(error: unknown, code: string): boolean {
@@ -2771,6 +2788,7 @@ export class StorageManager {
       sourceTurnId?: string;
       memoryKind?: MemoryFrontmatter["memoryKind"];
       expiresAt?: string;
+      validAt?: string;
       structuredAttributes?: Record<string, string>;
       /**
        * When provided, this string is used as the source for the fact-content
@@ -2802,6 +2820,7 @@ export class StorageManager {
     const id = `${category}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const conf = options.confidence ?? 0.8;
     const tier = confidenceTier(conf);
+    const validAt = normalizeMemoryWriteTimestamp("validAt", options.validAt);
 
     // Auto-set TTL for speculative memories
     let expiresAt: string | undefined;
@@ -2834,6 +2853,7 @@ export class StorageManager {
       sourceMemoryId: options.sourceMemoryId,
       sourceTurnId: options.sourceTurnId,
       memoryKind: options.memoryKind,
+      valid_at: validAt,
       structuredAttributes: options.structuredAttributes,
     };
     if (options.status !== undefined) {
@@ -6302,6 +6322,7 @@ export class StorageManager {
       intentActionType?: string;
       intentEntityTypes?: string[];
       memoryKind?: MemoryFrontmatter["memoryKind"];
+      validAt?: string;
     } = {},
   ): Promise<string> {
     await this.ensureDirectories();
@@ -6310,6 +6331,7 @@ export class StorageManager {
     const id = `${parentId}-chunk-${chunkIndex}`;
     const conf = options.confidence ?? 0.8;
     const tier = confidenceTier(conf);
+    const validAt = normalizeMemoryWriteTimestamp("validAt", options.validAt);
 
     const fm: MemoryFrontmatter = {
       id,
@@ -6329,6 +6351,7 @@ export class StorageManager {
       intentActionType: options.intentActionType,
       intentEntityTypes: options.intentEntityTypes,
       memoryKind: options.memoryKind,
+      valid_at: validAt,
     };
 
     const sanitized = sanitizeMemoryContent(content);

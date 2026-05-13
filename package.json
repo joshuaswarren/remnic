@@ -1,6 +1,6 @@
 {
   "name": "remnic-workspace",
-  "version": "9.3.312",
+  "version": "9.3.388",
   "private": true,
   "type": "module",
   "description": "Workspace root for the Remnic monorepo.",
@@ -83,12 +83,18 @@
   "scripts": {
     "sync:openclaw-plugin": "node scripts/sync-openclaw-plugin.mjs",
     "check:openclaw-plugin-sync": "node scripts/check-openclaw-plugin-sync.mjs",
+    "check:openclaw-sdk-surface": "node scripts/check-openclaw-sdk-surface.mjs",
+    "check:openclaw-sdk-surface:required": "node scripts/check-openclaw-sdk-surface.mjs --require",
     "build": "pnpm run check:openclaw-plugin-sync && tsup && node scripts/copy-admin-console.mjs",
     "dev": "tsup --watch",
     "check-types": "tsc --noEmit",
     "check-config-contract": "tsx scripts/validate-config-contract.ts",
     "test": "tsx --test 'tests/**/*.test.ts' 'packages/remnic-core/src/**/*.test.ts' 'packages/bench/src/**/*.test.ts' 'packages/export-weclone/src/**/*.test.ts' 'packages/import-weclone/src/**/*.test.ts'",
+    "test:openclaw-scenarios": "pnpm exec tsx --test tests/openclaw-adapter-scenarios.test.ts",
+    "test:openclaw-privacy": "pnpm exec tsx --test tests/openclaw-hook-privacy.test.ts",
     "test:entity-hardening": "tsx --test tests/intent.test.ts tests/recall-no-recall-short-circuit.test.ts tests/orchestrator-path-filter.test.ts tests/artifact-cache.test.ts tests/memory-cache.test.ts tests/entity-retrieval.test.ts tests/entity-synthesis-storage.test.ts tests/entity-synthesis-orchestrator.test.ts tests/config-recall-pipeline.test.ts tests/entity-contamination.test.ts",
+    "plugin:inspect": "pnpm --filter @remnic/plugin-openclaw run plugin:inspect",
+    "plugin:inspect:runtime": "pnpm --filter @remnic/plugin-openclaw run plugin:inspect:runtime",
     "scan:openclaw-plugin": "node scripts/openclaw-plugin-security-scan.mjs packages/plugin-openclaw",
     "verify:openclaw-clawpack": "node scripts/verify-openclaw-clawpack.mjs",
     "bench:list": "node scripts/run-bench-cli.mjs list",
@@ -109,6 +115,7 @@
     "prepack": "npm run build"
   },
   "devDependencies": {
+    "@openclaw/plugin-inspector": "0.3.10",
     "@remnic/bench": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
     "tsup": "^8.5.1",

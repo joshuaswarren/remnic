@@ -24,7 +24,7 @@ test("parseConfig defaults the new OpenClaw runtime-surface settings", () => {
   assert.deepEqual(cfg.activeRecallAllowedChatTypes, ["direct", "group", "channel"]);
   assert.equal(cfg.activeRecallQueryMode, "recent");
   assert.equal(cfg.activeRecallPromptStyle, "balanced");
-  assert.equal(cfg.activeRecallPromptOverride, null);
+  assert.equal(cfg.activeRecallCustomInstruction, null);
   assert.equal(cfg.activeRecallPromptAppend, null);
   assert.equal(cfg.activeRecallMaxSummaryChars, 220);
   assert.equal(cfg.activeRecallRecentUserTurns, 2);
@@ -91,7 +91,7 @@ test("parseConfig preserves explicit disables, rejects invalid dreaming minima, 
     activeRecallAllowedChatTypes: ["group", "invalid", "direct"],
     activeRecallQueryMode: "full",
     activeRecallPromptStyle: "precision-heavy",
-    activeRecallPromptOverride: "  always cite memories  ",
+    activeRecallCustomInstruction: "  always cite memories  ",
     activeRecallPromptAppend: "  append this  ",
     activeRecallMaxSummaryChars: 10,
     activeRecallRecentUserTurns: 99,
@@ -155,7 +155,7 @@ test("parseConfig preserves explicit disables, rejects invalid dreaming minima, 
   assert.deepEqual(cfg.activeRecallAllowedChatTypes, ["group", "direct"]);
   assert.equal(cfg.activeRecallQueryMode, "full");
   assert.equal(cfg.activeRecallPromptStyle, "precision-heavy");
-  assert.equal(cfg.activeRecallPromptOverride, "always cite memories");
+  assert.equal(cfg.activeRecallCustomInstruction, "always cite memories");
   assert.equal(cfg.activeRecallPromptAppend, "append this");
   assert.equal(cfg.activeRecallMaxSummaryChars, 40);
   assert.equal(cfg.activeRecallRecentUserTurns, 4);
@@ -198,6 +198,15 @@ test("parseConfig preserves explicit disables, rejects invalid dreaming minima, 
     compactionFlushMode: "heuristic",
     fingerprintDedup: false,
   });
+});
+
+test("parseConfig preserves legacy active-recall custom instruction config", () => {
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    activeRecallPromptOverride: "  legacy guidance  ",
+  });
+
+  assert.equal(cfg.activeRecallCustomInstruction, "legacy guidance");
 });
 
 test("parseConfig keeps explicit small positive cache ttls and rejects negative dream disables", () => {

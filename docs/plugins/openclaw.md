@@ -22,9 +22,10 @@ openclaw plugins install clawhub:@remnic/plugin-openclaw
 
 OpenClaw 2026.5.2+ resolves bare plugin package names through ClawHub first and
 then falls back to npm. Remnic is published on ClawHub as
-`@remnic/plugin-openclaw`, so the explicit `clawhub:` prefix keeps fresh installs
-deterministic. For npm-only fallback or rollback versions, use the explicit
-`npm:` source prefix, such as `npm:@remnic/plugin-openclaw@<version>`.
+`@remnic/plugin-openclaw` under the `joshuaswarren` account, so the explicit
+`clawhub:` prefix keeps fresh installs deterministic. For npm-only fallback or
+rollback versions, use the explicit `npm:` source prefix, such as
+`npm:@remnic/plugin-openclaw@<version>`.
 
 Or use the Remnic installer:
 
@@ -47,6 +48,9 @@ for config-key behavior, backup behavior, and local patch preservation notes.
 Publish ClawHub releases from the built npm/ClawPack tarball, not from the raw
 GitHub source folder. Source-folder publishing does not run the package build,
 so ClawHub can scan an incomplete three-file artifact with no `dist/index.js`.
+The ClawHub listing is `@remnic/plugin-openclaw` and is owned by the
+`joshuaswarren` account. Publish it with the authenticated owner account and do
+not pass `--owner` unless deliberately transferring ownership.
 
 ```bash
 pnpm --filter @remnic/plugin-openclaw build
@@ -74,7 +78,10 @@ Minimal configuration:
     "slots": { "memory": "openclaw-remnic" },
     "entries": {
       "openclaw-remnic": {
-        "package": "@remnic/plugin-openclaw"
+        "package": "@remnic/plugin-openclaw",
+        "hooks": {
+          "allowConversationAccess": true
+        }
       }
     }
   }

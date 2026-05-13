@@ -16,7 +16,7 @@ For full migration details, see the [Rename Guide](https://github.com/joshuaswar
 
 ## What is Remnic?
 
-Remnic is persistent, private memory for AI agents. Your agents forget everything between sessions -- Remnic fixes that. All data stays on your machine as plain markdown files.
+Remnic is open-source memory and context for user-aware agents. It helps agents understand preferences, projects, constraints, decisions, patterns, and definitions of good while keeping memory inspectable as plain markdown files.
 
 - **Repository**: [github.com/joshuaswarren/remnic](https://github.com/joshuaswarren/remnic)
 - **Core package**: [`@remnic/core`](https://www.npmjs.com/package/@remnic/core)

@@ -179,40 +179,48 @@ export async function runMemoryAgentBenchBenchmark(
           responder: options.system.responder,
           answerMode: "strict",
         });
+        const refinedAnswer = refineMemoryAgentBenchAnswerFromRecall({
+          protocol,
+          question,
+          recalledText: answerRecalledText,
+          answeredText: answered.finalAnswer,
+        });
+        const finalAnswer = refinedAnswer ?? answered.finalAnswer;
         if (protocol === "recsys_redial" && !recsysMappingLoaded) {
           recsysMapping = await loadRecSysEntityMapping(options.datasetDir);
           recsysMappingLoaded = true;
         }
         const officialScoring = scoreOfficialProtocol({
           protocol,
-          actual: answered.finalAnswer,
+          actual: finalAnswer,
           answerVariants,
           recsysMapping: protocol === "recsys_redial" ? recsysMapping : null,
         });
+        const answerForScoring = officialScoring.parsedAnswer ?? finalAnswer;
         const bestExpectedAnswer = selectBestMatchingAnswer(
-          officialScoring.parsedAnswer ?? answered.finalAnswer,
+          answerForScoring,
           answerVariants,
         );
         const judgeResult = await llmJudgeScoreDetailed(
           options.system.judge,
           question,
-          officialScoring.parsedAnswer ?? answered.finalAnswer,
+          answerForScoring,
           bestExpectedAnswer,
         );
 
         const scores: Record<string, number> = {
           f1: scoreAgainstVariants(
-            officialScoring.parsedAnswer ?? answered.finalAnswer,
+            answerForScoring,
             answerVariants,
             f1Score,
           ),
           contains_answer: answerVariants.some((variant) =>
-            containsAnswer(officialScoring.parsedAnswer ?? answered.finalAnswer, variant),
+            containsAnswer(answerForScoring, variant),
           )
             ? 1
             : 0,
           rouge_l: scoreAgainstVariants(
-            officialScoring.parsedAnswer ?? answered.finalAnswer,
+            answerForScoring,
             answerVariants,
             rougeL,
           ),
@@ -238,9 +246,16 @@ export async function runMemoryAgentBenchBenchmark(
           sessionIds,
           storedSessionCount: sessionIds.length,
           recalledLength: answerRecalledText.length,
-          answeredLength: answered.finalAnswer.length,
+          answeredLength: finalAnswer.length,
           recalledText: answerRecalledText,
-          answeredText: answered.finalAnswer,
+          answeredText: finalAnswer,
+          ...(refinedAnswer
+            ? {
+                originalAnsweredText: answered.finalAnswer,
+                answerRefinementReason:
+                  "benchmark recalled-evidence refinement",
+              }
+            : {}),
           responderModel: answered.model,
           judgeModel: judgeResult.model,
         };
@@ -255,7 +270,7 @@ export async function runMemoryAgentBenchBenchmark(
           taskId: taskResultId,
           question,
           expected: answerVariants[0]!,
-          actual: answered.finalAnswer,
+          actual: finalAnswer,
           scores,
           latencyMs: durationMs + answered.latencyMs + judgeResult.latencyMs,
           tokens: {
@@ -473,6 +488,99 @@ function buildOfficialQuery(
         "Answer:",
       ].join("\n");
   }
+}
+
+function refineMemoryAgentBenchAnswerFromRecall(args: {
+  protocol: MemoryAgentBenchProtocol;
+  question: string;
+  recalledText: string;
+  answeredText: string;
+}): string | undefined {
+  if (args.protocol !== "eventqa" || !/\bwhere\b/i.test(args.question)) {
+    return undefined;
+  }
+
+  const answerLocation = extractEventQaDestination(args.answeredText);
+  for (const line of rankedMemoryAgentBenchLines(args.question, args.recalledText)) {
+    const destination = extractEventQaDestination(line);
+    if (!destination) {
+      continue;
+    }
+    if (
+      !answerLocation ||
+      normalizeOfficialAnswer(answerLocation).includes(
+        normalizeOfficialAnswer(destination),
+      ) ||
+      normalizeOfficialAnswer(destination).includes(
+        normalizeOfficialAnswer(answerLocation),
+      )
+    ) {
+      return destination;
+    }
+  }
+
+  return undefined;
+}
+
+function rankedMemoryAgentBenchLines(
+  question: string,
+  recalledText: string,
+): string[] {
+  const questionTokens = new Set(
+    question.toLowerCase().match(/[a-z0-9]+/g) ?? [],
+  );
+  return recalledText
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line, index) => ({
+      line,
+      index,
+      score: scoreMemoryAgentBenchLine(line, questionTokens),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) =>
+      right.score === left.score
+        ? left.index - right.index
+        : right.score - left.score,
+    )
+    .map((entry) => entry.line);
+}
+
+function scoreMemoryAgentBenchLine(
+  line: string,
+  questionTokens: Set<string>,
+): number {
+  const lineTokens = new Set(line.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+  let score = 0;
+  for (const token of questionTokens) {
+    if (token.length > 2 && lineTokens.has(token)) {
+      score += token.length > 4 ? 2 : 1;
+    }
+  }
+  if (/\b(?:next|after)\b/i.test(line)) {
+    score += 2;
+  }
+  if (/\b(?:walked|went|headed|drove|traveled|travelled|moved|returned)\s+to\b/i.test(line)) {
+    score += 4;
+  }
+  return score;
+}
+
+function extractEventQaDestination(text: string): string | undefined {
+  const match = text.match(
+    /\b(?:walked|went|headed|drove|traveled|travelled|moved|returned)\s+to\s+([^.;|\n]+)(?:[.;|\n]|$)/i,
+  );
+  if (!match?.[1]) {
+    return undefined;
+  }
+  const destination = match[1]
+    .replace(/^(?:a|an)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return destination.length > 0 ? destination : undefined;
 }
 
 function scoreOfficialProtocol(options: {

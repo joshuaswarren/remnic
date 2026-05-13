@@ -147,6 +147,7 @@ export interface RecallSectionConfig {
   timeoutMs?: number;
   maxPatterns?: number;
   maxRubrics?: number;
+  forceGeneric?: boolean;
 }
 
 export interface RecallPipelineConfig {
@@ -804,7 +805,7 @@ export interface PluginConfig {
   activeRecallAllowedChatTypes: ActiveRecallChatType[];
   activeRecallQueryMode: ActiveRecallQueryMode;
   activeRecallPromptStyle: ActiveRecallPromptStyle;
-  activeRecallPromptOverride: string | null;
+  activeRecallCustomInstruction: string | null;
   activeRecallPromptAppend: string | null;
   activeRecallMaxSummaryChars: number;
   activeRecallRecentUserTurns: number;
@@ -1095,7 +1096,7 @@ export interface PluginConfig {
   localLmsCliPath?: string;
   /** Optional bin directory prepended to PATH for LMS CLI execution. */
   localLmsBinDir?: string;
-  /** Hard timeout for local LLM requests (ms). */
+  /** Hard timeout for local LLM and gateway fallback requests (ms). */
   localLlmTimeoutMs: number;
   /** Max context window for local LLM (override auto-detection). Set lower if your LLM server defaults to smaller contexts. */
   localLlmMaxContext?: number;
@@ -1123,6 +1124,19 @@ export interface PluginConfig {
   extractionDedupeWindowMs: number;
   extractionMinChars: number;
   extractionMinUserTurns: number;
+  /**
+   * When true, skip semantic memory extraction for mechanical action/state
+   * telemetry transcripts that have no durable-memory cue. Raw transcript
+   * storage/recall still runs; this only prevents expensive low-value fact
+   * extraction over state logs. Default true.
+   */
+  extractionTelemetryPrefilterEnabled: boolean;
+  /**
+   * When true, LCM uses deterministic compression instead of semantic LLM
+   * summarization for mechanical action/state telemetry transcripts with no
+   * durable-memory cue. Raw transcript storage/recall still runs. Default true.
+   */
+  lcmTelemetryPrefilterEnabled: boolean;
   extractionMaxTurnChars: number;
   extractionMaxFactsPerRun: number;
   extractionMaxEntitiesPerRun: number;
@@ -1140,7 +1154,7 @@ export interface PluginConfig {
    * Inline source attribution (issue #369).
    * When enabled, extracted facts carry a compact provenance tag (agent,
    * session, timestamp) inlined into the fact text — not just in YAML
-   * frontmatter — so the citation survives prompt injection, copy/paste,
+   * frontmatter — so the citation survives hostile memory text, copy/paste,
    * and LLM quoting. Off by default to preserve backwards compatibility
    * with existing downstream consumers that expect raw fact text.
    */
@@ -1545,6 +1559,46 @@ export interface PluginConfig {
   explicitCueRecallMaxChars: number;
   /** Maximum query-visible cues expanded per recall. */
   explicitCueRecallMaxReferences: number;
+  /** Enable targeted fact evidence recall for direct answer questions. */
+  targetedFactRecallEnabled: boolean;
+  /** Character budget for the targeted fact evidence section. */
+  targetedFactRecallMaxChars: number;
+  /** Maximum recalled items for targeted fact evidence. */
+  targetedFactRecallMaxResults: number;
+  /** Recent-turn scan window for targeted fact evidence. */
+  targetedFactRecallScanWindowTurns: number;
+  /** Recent-token scan window for targeted fact evidence. */
+  targetedFactRecallScanWindowTokens: number;
+  /** Enable focused list evidence recall for count, relation, and recommendation questions. */
+  focusedListRecallEnabled: boolean;
+  /** Character budget for the focused list evidence section. */
+  focusedListRecallMaxChars: number;
+  /** Maximum recalled items for focused list evidence. */
+  focusedListRecallMaxResults: number;
+  /** Recent-turn scan window for focused list evidence. */
+  focusedListRecallScanWindowTurns: number;
+  /** Recent-token scan window for focused list evidence. */
+  focusedListRecallScanWindowTokens: number;
+  /** Enable response guidance recall for user answer-shape preferences. */
+  responseGuidanceRecallEnabled: boolean;
+  /** Character budget for the response guidance recall section. */
+  responseGuidanceRecallMaxChars: number;
+  /** Maximum recalled items for response guidance. */
+  responseGuidanceRecallMaxResults: number;
+  /** Recent-turn scan window for response guidance. */
+  responseGuidanceRecallScanWindowTurns: number;
+  /** Recent-token scan window for response guidance. */
+  responseGuidanceRecallScanWindowTokens: number;
+  /** Enable event-order evidence recall for chronology questions. */
+  eventOrderRecallEnabled: boolean;
+  /** Character budget for the event-order evidence section. */
+  eventOrderRecallMaxChars: number;
+  /** Maximum recalled items for event-order evidence. */
+  eventOrderRecallMaxResults: number;
+  /** Recent-turn scan window for event-order evidence. */
+  eventOrderRecallScanWindowTurns: number;
+  /** Recent-token scan window for event-order evidence. */
+  eventOrderRecallScanWindowTokens: number;
   // Lossless Context Management (LCM)
   lcmEnabled: boolean;
   lcmLeafBatchSize: number;
@@ -1945,11 +1999,13 @@ export interface BufferTurn {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
+  sourceValidAt?: string;
   sessionKey?: string;
   logicalSessionKey?: string;
   providerThreadId?: string | null;
   turnFingerprint?: string;
   persistProcessedFingerprint?: boolean;
+  extractionContextOnly?: boolean;
   parts?: import("./message-parts/index.js").LcmMessagePartInput[];
   rawContent?: unknown;
   sourceFormat?: import("./message-parts/index.js").MessagePartSourceFormat;
@@ -2857,7 +2913,7 @@ export interface RecallTraceEvent {
   durationMs: number;
   timings?: Record<string, string>;
   /**
-   * The full recalled memory context injected into the system prompt.
+   * The full recalled memory context added to the runtime context.
    * Only populated when `traceRecallContent` config option is `true`.
    * Omitted by default to avoid sending potentially sensitive memory content
    * to external trace collectors unless explicitly opted in.
@@ -2872,7 +2928,13 @@ export type LlmTraceCallback = (event: EngramTraceEvent) => void;
 // Gateway Configuration Types (for fallback AI)
 // ============================================================================
 
-export type ModelApi = "openai-completions" | "anthropic-messages" | "google-generative" | string;
+export type ModelApi =
+  | "openai-completions"
+  | "anthropic-messages"
+  | "google-generative"
+  | "codex-cli"
+  | string;
+export type CodexCliReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export type ModelProviderAuthMode = "bearer" | "header" | "query";
 
@@ -2893,6 +2955,14 @@ export interface ModelProviderConfig {
   api?: ModelApi;
   headers?: Record<string, string>;
   authHeader?: boolean;
+  disableThinking?: boolean;
+  executable?: string;
+  reasoningEffort?: CodexCliReasoningEffort;
+  codexCliExecutable?: string;
+  codexCliReasoningEffort?: CodexCliReasoningEffort;
+  retryOptions?: {
+    timeoutMs?: number;
+  };
   models: ModelDefinitionConfig[];
 }
 

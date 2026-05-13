@@ -3,6 +3,11 @@
 // field-level detail so consumers get clear feedback on malformed requests.
 
 import { z } from "zod";
+import {
+  ACTION_CONFIDENCE_CONTEXT_READINESS,
+  ACTION_CONFIDENCE_RISK_CATEGORIES,
+  ACTION_CONFIDENCE_RULE_KINDS,
+} from "./action-confidence.js";
 import { isValidCapsuleSince } from "./transfer/capsule-export.js";
 import { CAPSULE_ID_PATTERN } from "./transfer/types.js";
 
@@ -138,7 +143,7 @@ const messageSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string().min(1, "message content must be non-empty"),
   sourceFormat: z
-    .enum(["openai", "anthropic", "openclaw", "lossless-claw", "remnic"])
+    .enum(["openai", "anthropic", "openclaw", "pi", "lossless-claw", "remnic"])
     .nullable()
     .optional(),
   rawContent: z.unknown().nullable().optional(),
@@ -271,6 +276,18 @@ export const lcmSearchRequestSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
 });
 
+export const lcmCompactionFlushRequestSchema = z.object({
+  sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
+  namespace: namespaceSchema,
+});
+
+export const lcmCompactionRecordRequestSchema = z.object({
+  sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
+  namespace: namespaceSchema,
+  tokensBefore: z.number().int().min(0, "tokensBefore must be a non-negative integer"),
+  tokensAfter: z.number().int().min(0, "tokensAfter must be a non-negative integer"),
+});
+
 // ---------------------------------------------------------------------------
 // Day summary
 // ---------------------------------------------------------------------------
@@ -347,6 +364,51 @@ export const capsuleListRequestSchema = z
   });
 
 // ---------------------------------------------------------------------------
+// Action confidence
+// ---------------------------------------------------------------------------
+
+const nullableOptional = <T extends z.ZodTypeAny>(schema: T) =>
+  schema.optional().nullable().transform((value) => value ?? undefined);
+
+const actionConfidenceRuleSchema = z
+  .object({
+    kind: z.enum(ACTION_CONFIDENCE_RULE_KINDS),
+    description: nullableOptional(z.string().trim().min(1).max(2000)),
+    matched: nullableOptional(z.boolean()),
+  })
+  .strict();
+
+const actionConfidenceMemorySchema = z
+  .object({
+    source: nullableOptional(z.string().trim().min(1).max(256)),
+    created: nullableOptional(z.string().trim().min(1).max(128)),
+    updated: nullableOptional(z.string().trim().min(1).max(128)),
+    scope: nullableOptional(z.string().trim().min(1).max(512)),
+    userContextScopes: nullableOptional(z.array(z.string().trim().min(1).max(128)).max(50)),
+    retrievalReason: nullableOptional(z.string().trim().min(1).max(2000)),
+    confidence: nullableOptional(z.number().min(0).max(1)),
+    stale: nullableOptional(z.boolean()),
+    corrected: nullableOptional(z.boolean()),
+    correctionState: nullableOptional(z.enum(["none", "correction", "superseded", "disputed", "forgotten"])),
+    safeToUse: nullableOptional(z.boolean()),
+    safety: nullableOptional(z.enum(["safe", "requires-review", "blocked"])),
+    safetyReasons: nullableOptional(z.array(z.string().trim().min(1).max(1000)).max(50)),
+  })
+  .strict();
+
+export const actionConfidenceRequestSchema = z
+  .object({
+    intendedAction: nullableOptional(z.string().trim().min(1).max(1000)),
+    confidence: nullableOptional(z.number().min(0).max(1)),
+    risk: nullableOptional(z.enum(ACTION_CONFIDENCE_RISK_CATEGORIES)),
+    contextReadiness: nullableOptional(z.enum(ACTION_CONFIDENCE_CONTEXT_READINESS)),
+    currentContextScopes: nullableOptional(z.array(z.string().trim().min(1).max(128)).max(50)),
+    userRules: nullableOptional(z.array(actionConfidenceRuleSchema).max(100)),
+    retrievedMemories: nullableOptional(z.array(actionConfidenceMemorySchema).max(200)),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
 // Inferred types
 // ---------------------------------------------------------------------------
 
@@ -360,10 +422,13 @@ export type ReviewDispositionRequest = z.infer<typeof reviewDispositionRequestSc
 export type TrustZonePromoteRequest = z.infer<typeof trustZonePromoteRequestSchema>;
 export type TrustZoneDemoSeedRequest = z.infer<typeof trustZoneDemoSeedRequestSchema>;
 export type LcmSearchRequest = z.infer<typeof lcmSearchRequestSchema>;
+export type LcmCompactionFlushRequest = z.infer<typeof lcmCompactionFlushRequestSchema>;
+export type LcmCompactionRecordRequest = z.infer<typeof lcmCompactionRecordRequestSchema>;
 export type DaySummaryRequest = z.infer<typeof daySummaryRequestSchema>;
 export type CapsuleExportRequest = z.infer<typeof capsuleExportRequestSchema>;
 export type CapsuleImportRequest = z.infer<typeof capsuleImportRequestSchema>;
 export type CapsuleListRequest = z.infer<typeof capsuleListRequestSchema>;
+export type ActionConfidenceRequest = z.infer<typeof actionConfidenceRequestSchema>;
 
 // ---------------------------------------------------------------------------
 // Validation helper
@@ -380,10 +445,13 @@ export type SchemaName =
   | "trustZonePromote"
   | "trustZoneDemoSeed"
   | "lcmSearch"
+  | "lcmCompactionFlush"
+  | "lcmCompactionRecord"
   | "daySummary"
   | "capsuleExport"
   | "capsuleImport"
-  | "capsuleList";
+  | "capsuleList"
+  | "actionConfidence";
 
 export type SchemaTypeFor<N extends SchemaName> =
   N extends "recall" ? RecallRequest
@@ -396,10 +464,13 @@ export type SchemaTypeFor<N extends SchemaName> =
   : N extends "trustZonePromote" ? TrustZonePromoteRequest
   : N extends "trustZoneDemoSeed" ? TrustZoneDemoSeedRequest
   : N extends "lcmSearch" ? LcmSearchRequest
+  : N extends "lcmCompactionFlush" ? LcmCompactionFlushRequest
+  : N extends "lcmCompactionRecord" ? LcmCompactionRecordRequest
   : N extends "daySummary" ? DaySummaryRequest
   : N extends "capsuleExport" ? CapsuleExportRequest
   : N extends "capsuleImport" ? CapsuleImportRequest
   : N extends "capsuleList" ? CapsuleListRequest
+  : N extends "actionConfidence" ? ActionConfidenceRequest
   : never;
 
 const schemas: Record<SchemaName, z.ZodTypeAny> = {
@@ -413,10 +484,13 @@ const schemas: Record<SchemaName, z.ZodTypeAny> = {
   trustZonePromote: trustZonePromoteRequestSchema,
   trustZoneDemoSeed: trustZoneDemoSeedRequestSchema,
   lcmSearch: lcmSearchRequestSchema,
+  lcmCompactionFlush: lcmCompactionFlushRequestSchema,
+  lcmCompactionRecord: lcmCompactionRecordRequestSchema,
   daySummary: daySummaryRequestSchema,
   capsuleExport: capsuleExportRequestSchema,
   capsuleImport: capsuleImportRequestSchema,
   capsuleList: capsuleListRequestSchema,
+  actionConfidence: actionConfidenceRequestSchema,
 };
 
 /**

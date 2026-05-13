@@ -37,7 +37,7 @@ test("schema tier fixture models real schema degradation in the dirty corpus", (
 });
 
 test("schema tier fixture includes personalization, temporal, and abstention coverage", () => {
-  assert.equal(SCHEMA_TIER_FIXTURE.personalizationCases.length, 3);
+  assert.equal(SCHEMA_TIER_FIXTURE.personalizationCases.length, 5);
   assert.equal(SCHEMA_TIER_FIXTURE.temporalCases.length, 2);
   assert.equal(SCHEMA_TIER_FIXTURE.abstentionCases.length, 3);
 
@@ -55,6 +55,10 @@ test("schema tier fixture includes personalization, temporal, and abstention cov
   assert.equal(
     SCHEMA_TIER_FIXTURE.abstentionCases[1]?.reason,
     "cross_tenant",
+  );
+  assert.equal(
+    SCHEMA_TIER_FIXTURE.personalizationCases.find((item) => item.id === "taylor-commerce-checkout-boundary")?.expectedPageIds[0],
+    "taylor-commerce-boundaries",
   );
 });
 
@@ -84,9 +88,9 @@ test("schema tier fixture builders return deep-cloned retrieval cases", () => {
 });
 
 test("schema tier smoke fixture preserves shared semantics while trimming the corpus", () => {
-  assert.equal(SCHEMA_TIER_SMOKE_FIXTURE.clean.pages.length, 4);
-  assert.equal(SCHEMA_TIER_SMOKE_FIXTURE.dirty.pages.length, 4);
-  assert.equal(SCHEMA_TIER_SMOKE_FIXTURE.personalizationCases.length, 2);
+  assert.equal(SCHEMA_TIER_SMOKE_FIXTURE.clean.pages.length, 6);
+  assert.equal(SCHEMA_TIER_SMOKE_FIXTURE.dirty.pages.length, 6);
+  assert.equal(SCHEMA_TIER_SMOKE_FIXTURE.personalizationCases.length, 3);
   assert.equal(SCHEMA_TIER_SMOKE_FIXTURE.temporalCases.length, 1);
   assert.equal(SCHEMA_TIER_SMOKE_FIXTURE.abstentionCases.length, 1);
 });

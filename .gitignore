@@ -1,6 +1,8 @@
 # Build output
 dist/
 *.map
+__pycache__/
+*.pyc
 
 # Dependencies
 node_modules/
@@ -43,6 +45,9 @@ bench-datasets/
 # Published-benchmark artifacts (gitignored during development; promoted
 # per-release by the leaderboard pipeline — see issue #566 slice 6).
 docs/benchmarks/results/
+
+# OpenClaw plugin-inspector run artifacts
+packages/plugin-openclaw/reports/
 
 # Published-benchmark datasets (LongMemEval, LoCoMo). Download via
 # `scripts/bench/fetch-datasets.sh --help`. Never commit raw dataset files.

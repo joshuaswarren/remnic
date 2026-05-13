@@ -1,0 +1,47 @@
+{
+  "description": "Conservative OpenClaw plugin SDK surface allow-list for Remnic adapter review. Refresh with `npm run check:openclaw-sdk-surface -- --write` after intentionally upgrading OpenClaw.",
+  "registrars": [
+    "registerCli",
+    "registerCliBackend",
+    "registerCommand",
+    "registerCompactionProvider",
+    "registerMemoryCapability",
+    "registerMemoryCorpusSupplement",
+    "registerMemoryEmbeddingProvider",
+    "registerMemoryFlushPlan",
+    "registerMemoryPromptSection",
+    "registerMemoryPromptSupplement",
+    "registerMemoryRuntime",
+    "registerService",
+    "registerTool",
+    "registerToolMetadata"
+  ],
+  "hooks": [
+    "after_compaction",
+    "after_tool_call",
+    "agent_end",
+    "agent_turn_prepare",
+    "before_agent_finalize",
+    "before_agent_reply",
+    "before_agent_run",
+    "before_agent_start",
+    "before_compaction",
+    "before_dispatch",
+    "before_install",
+    "before_message_write",
+    "before_model_resolve",
+    "before_prompt_build",
+    "before_reset",
+    "before_tool_call",
+    "gateway_start",
+    "gateway_stop",
+    "llm_input",
+    "llm_output",
+    "session_end",
+    "session_start"
+  ],
+  "manifestContracts": [
+    "memoryEmbeddingProviders",
+    "tools"
+  ]
+}

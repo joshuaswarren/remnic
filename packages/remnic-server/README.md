@@ -1,8 +1,8 @@
 # @remnic/server
 
-Standalone Remnic memory server -- HTTP and MCP interfaces without requiring OpenClaw.
+Standalone Remnic memory and context server -- HTTP and MCP interfaces without requiring OpenClaw.
 
-Part of [Remnic](https://github.com/joshuaswarren/remnic), the universal memory layer for AI agents.
+Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory and context for user-aware agents.
 
 ## Install
 

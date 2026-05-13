@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import {
   buildResumeBundleFromState,
   getResumeBundleStatus,
@@ -438,6 +438,73 @@ test("buildResumeBundleFromState assembles transcript, objective-state, work-pro
   assert.deepEqual(bundle.nextActions, ["Open the PR once builder verification passes."]);
   assert.equal(bundle.riskFlags?.some((flag) => /Verification failed in the resume-bundle builder tests\./.test(flag)), true);
   assert.equal(bundle.riskFlags?.some((flag) => /checkpoint/i.test(flag)), true);
+});
+
+test("buildResumeBundleFromState finds raw session snapshots in namespaced objective-state override stores", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-resume-bundle-ns-"));
+  const objectiveStateStoreDir = await mkdtemp(path.join(os.tmpdir(), "engram-resume-bundle-ns-override-"));
+  const namespace = "team-a";
+  const namespaceDir = path.join(memoryDir, "namespaces", namespace);
+  const namespaceObjectiveStateStoreDir = path.join(objectiveStateStoreDir, "namespaces", namespace);
+  const sessionKey = "agent:main";
+  await mkdir(namespaceDir, { recursive: true });
+
+  try {
+    await recordObjectiveStateSnapshot({
+      memoryDir: namespaceDir,
+      objectiveStateStoreDir: namespaceObjectiveStateStoreDir,
+      snapshot: {
+        schemaVersion: 1,
+        snapshotId: "snap-team-raw-session",
+        recordedAt: "2026-03-08T04:11:00.000Z",
+        sessionKey,
+        source: "tool_result",
+        kind: "process",
+        changeKind: "executed",
+        scope: "npm test",
+        summary: "Team namespace verification passed.",
+        command: "npm test",
+        outcome: "success",
+        tags: ["verification"],
+      },
+    });
+    await recordObjectiveStateSnapshot({
+      memoryDir: namespaceDir,
+      objectiveStateStoreDir: namespaceObjectiveStateStoreDir,
+      snapshot: {
+        schemaVersion: 1,
+        snapshotId: "snap-team-prefixed-session",
+        recordedAt: "2026-03-08T04:12:00.000Z",
+        sessionKey: `${namespace}:${sessionKey}`,
+        source: "tool_result",
+        kind: "process",
+        changeKind: "failed",
+        scope: "npm run stale",
+        summary: "Legacy prefixed session key should not match raw session lookups.",
+        command: "npm run stale",
+        outcome: "failure",
+      },
+    });
+
+    const bundle = await buildResumeBundleFromState({
+      memoryDir: namespaceDir,
+      objectiveStateStoreDir: namespaceObjectiveStateStoreDir,
+      sessionKey,
+      bundleId: "resume-ns-raw-session",
+      recordedAt: "2026-03-08T04:13:00.000Z",
+      scope: "namespaced objective-state",
+      objectiveStateMemoryEnabled: true,
+    });
+
+    assert.deepEqual(bundle.objectiveStateSnapshotRefs, ["snap-team-raw-session"]);
+    assert.equal(
+      bundle.objectiveStateSnapshotRefs?.includes("snap-team-prefixed-session"),
+      false,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(objectiveStateStoreDir, { recursive: true, force: true });
+  }
 });
 
 test("buildResumeBundleFromState filters commitments to open entries before applying the recency cap", async () => {

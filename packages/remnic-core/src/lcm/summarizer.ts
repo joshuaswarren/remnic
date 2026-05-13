@@ -2,6 +2,7 @@ import { log } from "../logger.js";
 import type { LcmArchive, LcmMessage } from "./archive.js";
 import { LcmDag } from "./dag.js";
 import { estimateTokens } from "./archive.js";
+import { looksLikeMechanicalTelemetryTranscript } from "../telemetry-transcript.js";
 
 /** Generate a ULID-like ID (timestamp + random). */
 function generateNodeId(): string {
@@ -21,6 +22,7 @@ export interface LcmSummarizerConfig {
   rollupFanIn: number;
   maxDepth: number;
   deterministicMaxTokens: number;
+  telemetryPrefilterEnabled: boolean;
 }
 
 export class LcmSummarizer {
@@ -151,6 +153,19 @@ export class LcmSummarizer {
     text: string,
     targetTokens: number,
   ): Promise<{ text: string; escalation: number }> {
+    if (
+      this.config.telemetryPrefilterEnabled &&
+      looksLikeMechanicalTelemetryTranscript(text)
+    ) {
+      return {
+        text: deterministicTruncate(
+          text,
+          Math.min(targetTokens, this.config.deterministicMaxTokens),
+        ),
+        escalation: 2,
+      };
+    }
+
     // Level 0: Normal LLM summary
     try {
       const result = await this.summarizeFn(text, targetTokens, false);

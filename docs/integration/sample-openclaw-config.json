@@ -22,11 +22,11 @@
             "port": 4318,
             "authToken": "your-secret-token-here"
           }
+        },
+        "hooks": {
+          "allowConversationAccess": true
         }
       }
-    },
-    "slots": {
-      "memory": "openclaw-remnic"
     }
   }
 }

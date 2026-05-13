@@ -272,7 +272,9 @@ export async function listRemnicPublicArtifacts(params: {
   // overlapping scans or symlinks.
   const deduped = new Map<string, RemnicPublicArtifact>();
   for (const artifact of artifacts) {
-    const key = `${artifact.workspaceDir}\0${artifact.relativePath}\0${artifact.kind}`;
+    const key = [artifact.workspaceDir, artifact.relativePath, artifact.kind].join(
+      String.fromCharCode(0),
+    );
     deduped.set(key, artifact);
   }
 

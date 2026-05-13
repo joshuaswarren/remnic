@@ -135,6 +135,15 @@ test("CLI openclaw install defaults Remnic to gateway model source", async () =>
   );
 });
 
+test("CLI openclaw install grants required conversation hook access", async () => {
+  const src = await readCli();
+  assert.ok(
+    src.includes("buildRemnicOpenclawHooksPolicy") &&
+      src.includes("allowConversationAccess: true"),
+    "OpenClaw 2026.5 requires non-bundled plugins using agent_end/llm_output hooks to set hooks.allowConversationAccess",
+  );
+});
+
 test("CLI query does not wait for deferred QMD startup maintenance", async () => {
   const src = await readCli();
   const queryStart = src.indexOf("async function cmdQuery");

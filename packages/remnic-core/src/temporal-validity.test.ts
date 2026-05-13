@@ -92,6 +92,46 @@ test("storage: valid_at / invalid_at round-trip exactly when set", async () => {
   }
 });
 
+test("storage: writeMemory persists explicit validAt as valid_at", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const id = await storage.writeMemory(
+      "fact",
+      "project X launched from the source transcript",
+      {
+        entityRef: TEST_ENTITY,
+        source: "test",
+        confidence: 0.9,
+        tags: [],
+        validAt: "2025-03-04T05:06:07Z",
+      },
+    );
+
+    const fm = await readFrontmatterById(storage, id);
+    assert.equal(fm?.valid_at, "2025-03-04T05:06:07.000Z");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("storage: writeMemory rejects invalid validAt values", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    await assert.rejects(
+      () =>
+        storage.writeMemory("fact", "invalid source timestamp", {
+          source: "test",
+          confidence: 0.9,
+          tags: [],
+          validAt: "2025-02-31T00:00:00Z",
+        }),
+      /validAt must be a valid ISO timestamp/,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("storage: legacy memories without valid_at parse as undefined (no backfill)", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
@@ -160,12 +200,17 @@ test("supersession: new fact propagates valid_at to old fact's invalid_at", asyn
       },
     );
 
-    // Patch an explicit valid_at onto the new fact so we can verify it's
-    // copied verbatim onto the old fact's invalid_at.
+    // Patch source-validity timestamps onto both facts so supersession orders
+    // by authored/source time rather than by test wall-clock write time.
     storage.invalidateAllMemoriesCacheForDir();
     const all = await storage.readAllMemories();
+    const oldFile = all.find((m) => m.frontmatter.id === oldId);
     const newFile = all.find((m) => m.frontmatter.id === newId);
+    assert.ok(oldFile);
     assert.ok(newFile);
+    await storage.writeMemoryFrontmatter(oldFile, {
+      valid_at: "2026-04-25T11:00:00.000Z",
+    });
     const newValidAt = "2026-04-25T12:00:00.000Z";
     await storage.writeMemoryFrontmatter(newFile, { valid_at: newValidAt });
 
@@ -186,6 +231,59 @@ test("supersession: new fact propagates valid_at to old fact's invalid_at", asyn
       newValidAt,
       "old fact's invalid_at must equal new fact's valid_at",
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("supersession: older source-valid replay fact does not supersede newer source-valid fact written first", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const newerValidAt = "2025-01-02T00:00:00.000Z";
+    const olderValidAt = "2025-01-01T00:00:00.000Z";
+
+    const newerId = await storage.writeMemory(
+      "fact",
+      "project X moved to NYC",
+      {
+        entityRef: TEST_ENTITY,
+        structuredAttributes: { city: "NYC" },
+        source: "test",
+        confidence: 0.9,
+        tags: [],
+        validAt: newerValidAt,
+      },
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    const olderId = await storage.writeMemory(
+      "fact",
+      "project X was previously based in Austin",
+      {
+        entityRef: TEST_ENTITY,
+        structuredAttributes: { city: "Austin" },
+        source: "test",
+        confidence: 0.9,
+        tags: [],
+        validAt: olderValidAt,
+      },
+    );
+
+    const result = await applyTemporalSupersession({
+      storage,
+      newMemoryId: olderId,
+      entityRef: TEST_ENTITY,
+      structuredAttributes: { city: "Austin" },
+      createdAt: new Date().toISOString(),
+      enabled: true,
+    });
+    assert.deepEqual(result.supersededIds, []);
+
+    const newerFm = await readFrontmatterById(storage, newerId);
+    const olderFm = await readFrontmatterById(storage, olderId);
+    assert.equal(newerFm?.status ?? "active", "active");
+    assert.equal(newerFm?.supersededBy, undefined);
+    assert.equal(newerFm?.invalid_at, undefined);
+    assert.equal(olderFm?.status ?? "active", "active");
   } finally {
     await cleanup();
   }

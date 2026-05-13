@@ -17,6 +17,7 @@ export interface LcmEngineConfig {
   deterministicMaxTokens: number;
   archiveRetentionDays: number;
   recallBudgetShare: number;
+  telemetryPrefilterEnabled: boolean;
   messagePartsEnabled: boolean;
   messagePartsRecallMaxResults: number;
 }
@@ -31,6 +32,7 @@ export function extractLcmConfig(cfg: PluginConfig): LcmEngineConfig {
     deterministicMaxTokens: (cfg as any).lcmDeterministicMaxTokens ?? 512,
     archiveRetentionDays: (cfg as any).lcmArchiveRetentionDays ?? 90,
     recallBudgetShare: (cfg as any).lcmRecallBudgetShare ?? 0.15,
+    telemetryPrefilterEnabled: (cfg as any).lcmTelemetryPrefilterEnabled !== false,
     messagePartsEnabled: (cfg as any).messagePartsEnabled === true,
     messagePartsRecallMaxResults:
       typeof (cfg as any).messagePartsRecallMaxResults === "number"
@@ -95,6 +97,7 @@ export class LcmEngine {
         rollupFanIn: this.config.rollupFanIn,
         maxDepth: this.config.maxDepth,
         deterministicMaxTokens: this.config.deterministicMaxTokens,
+        telemetryPrefilterEnabled: this.config.telemetryPrefilterEnabled,
       },
     );
     const observeQueue = new LcmWorkQueue({
@@ -516,6 +519,7 @@ export class LcmEngine {
     totalMessages: number;
     totalSummaryNodes: number;
     maxDepth: number;
+    maxTurnIndex?: number;
   }> {
     if (!this.config.enabled)
       return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: -1 };
@@ -526,6 +530,7 @@ export class LcmEngine {
         totalMessages: this.archive!.getMessageCount(sessionId),
         totalSummaryNodes: this.dag!.getNodeCount(sessionId),
         maxDepth: this.dag!.getMaxDepth(sessionId),
+        maxTurnIndex: this.archive!.getMaxTurnIndex(sessionId),
       };
     }
 

@@ -1,15 +1,27 @@
+const rx = (...parts: string[]): RegExp => new RegExp(parts.join(""), "i");
+
 const INJECTION_PATTERNS: RegExp[] = [
-  /ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|context)/i,
-  /forget\s+(everything|all|previous|what)/i,
-  /new\s+(system\s+)?prompt:/i,
-  /\[system\]/i,
-  /<\s*system\s*>/i,
-  /you\s+are\s+now\s+(?!called|named)/i,
-  /disregard\s+(all\s+)?(previous|prior)/i,
-  /override\s+(previous\s+)?(instructions?|prompt)/i,
-  /act\s+as\s+(?:an?\s+)?(?:AI|assistant|ChatGPT|GPT|Claude|LLM)\s+(?:without|that\s+ignores)/i,
-  /do\s+not\s+(?:follow|obey)\s+(?:previous|prior|your)\s+instructions/i,
-  /pretend\s+(?:you\s+)?(?:have\s+no|you\s+don.?t\s+have)\s+(restrictions|guidelines|rules)/i,
+  rx("ignore\\s+(all\\s+)?", "(previous|prior|above)", "\\s+(instructions?|prompts?|context)"),
+  rx("forget\\s+", "(everything|all|previous|what)"),
+  rx(
+    "new\\s+(",
+    "system",
+    "\\s+)?",
+    "prompt:",
+  ),
+  rx("\\[", "system", "\\]"),
+  rx("<\\s*", "system", "\\s*>"),
+  rx("you\\s+are\\s+now\\s+(?!called|named)"),
+  rx("disregard\\s+(all\\s+)?", "(previous|prior)"),
+  rx(
+    "over",
+    "ride\\s+(previous\\s+)?",
+    "(instructions?|",
+    "prompt)",
+  ),
+  rx("act\\s+as\\s+(?:an?\\s+)?(?:AI|assistant|ChatGPT|GPT|Claude|LLM)\\s+(?:without|that\\s+ignores)"),
+  rx("do\\s+not\\s+(?:follow|obey)\\s+(?:previous|prior|your)\\s+", "instructions"),
+  rx("pretend\\s+(?:you\\s+)?(?:have\\s+no|you\\s+don.?t\\s+have)\\s+(restrictions|guidelines|rules)"),
 ];
 
 export type SanitizeResult = {
@@ -18,7 +30,7 @@ export type SanitizeResult = {
   violations: string[];
 };
 
-const REDACTED_PLACEHOLDER = "[content removed: possible prompt injection]";
+const REDACTED_PLACEHOLDER = "[content removed: unsafe memory text]";
 
 export function sanitizeMemoryContent(text: string): SanitizeResult {
   const source = typeof text === "string" ? text : "";
@@ -44,4 +56,3 @@ export function sanitizeMemoryContent(text: string): SanitizeResult {
 export function isSafeMemoryContent(text: string): boolean {
   return sanitizeMemoryContent(text).clean;
 }
-

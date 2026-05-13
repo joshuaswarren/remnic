@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "plugin": {
+    "id": "openclaw-remnic",
+    "priority": "high",
+    "seams": [
+      "dynamic-tool",
+      "gateway-service",
+      "hook",
+      "manifest-contract",
+      "memory-capability",
+      "sdk-surface"
+    ],
+    "sourceRoot": "../../src",
+    "expect": {
+      "hooks": [
+        "before_prompt_build",
+        "before_agent_start",
+        "agent_end",
+        "before_compaction",
+        "after_compaction",
+        "before_reset",
+        "session_start",
+        "session_end",
+        "before_tool_call",
+        "after_tool_call",
+        "llm_output",
+        "subagent_spawning",
+        "subagent_ended",
+        "commands.list"
+      ],
+      "registrations": [
+        "registerTool",
+        "registerService",
+        "registerMemoryPromptSection"
+      ],
+      "manifestContracts": [
+        "tools"
+      ]
+    }
+  },
+  "capture": {
+    "mockSdk": true
+  }
+}

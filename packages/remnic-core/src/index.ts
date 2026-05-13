@@ -28,6 +28,11 @@ export { PLUGIN_ID, LEGACY_PLUGIN_ID, resolveRemnicPluginEntry } from "./plugin-
 
 export { parseConfig } from "./config.js";
 export {
+  parseFlexibleIsoTimestamp,
+  parseIsoOffsetTimestamp,
+  parseIsoUtcTimestamp,
+} from "./utils/iso-timestamp.js";
+export {
   migrateFromEngram,
   rollbackFromEngramMigration,
   type MigrationResult,
@@ -52,16 +57,40 @@ export {
 } from "./evidence-pack.js";
 export {
   buildExplicitCueRecallSection,
+  buildTrajectoryAnalysisRecallSection,
   collectExplicitTurnReferences,
   collectBenchmarkAnchorCues,
+  collectContentLexicalCues,
   collectLexicalCues,
   collectQuestionSlotCues,
   collectStructuredPlanCues,
   collectTemporalLexicalCues,
+  normalizeTurnExpansionEnd,
   type ExplicitCueRecallEngine,
   type ExplicitCueRecallOptions,
   type ExplicitTurnReference,
+  type TrajectoryAnalysisRecallOptions,
 } from "./explicit-cue-recall.js";
+export {
+  buildTargetedFactRecallSection,
+  shouldRecallTargetedFactEvidence,
+  type TargetedFactRecallOptions,
+} from "./targeted-fact-recall.js";
+export {
+  buildFocusedListRecallSection,
+  shouldRecallFocusedListEvidence,
+  type FocusedListRecallOptions,
+} from "./focused-list-recall.js";
+export {
+  buildResponseGuidanceRecallSection,
+  shouldRecallResponseGuidance,
+  type ResponseGuidanceRecallOptions,
+} from "./response-guidance-recall.js";
+export {
+  buildEventOrderRecallSection,
+  shouldRecallEventOrderEvidence,
+  type EventOrderRecallOptions,
+} from "./event-order-recall.js";
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -74,6 +103,15 @@ export { StorageManager } from "./storage.js";
 // ---------------------------------------------------------------------------
 
 export { ExtractionEngine } from "./extraction.js";
+export {
+  setCodexCliFallbackRunnerForProcess,
+  type CodexCliFallbackConfig,
+  type CodexCliFallbackMessage,
+  type CodexCliFallbackOptions,
+  type CodexCliFallbackRequest,
+  type CodexCliFallbackResult,
+  type CodexCliFallbackRunner,
+} from "./codex-cli-fallback.js";
 
 // ---------------------------------------------------------------------------
 // Smart buffer (issue #563)
@@ -194,6 +232,7 @@ export {
   parseOpenAiMessageParts,
   parseAnthropicMessageParts,
   parseOpenClawMessageParts,
+  parsePiMessageParts,
   normalizeExplicitParts,
   partsFromRenderedText,
   isLcmMessagePartKind,
@@ -203,6 +242,39 @@ export {
   type MessagePartSourceFormat,
   type ParseMessagePartsOptions,
 } from "./message-parts/index.js";
+
+// ---------------------------------------------------------------------------
+// User-aware memory provenance
+// ---------------------------------------------------------------------------
+
+export {
+  USER_MODEL_CORE_QUESTION,
+  USER_MODEL_DIMENSIONS,
+  USER_CONTEXT_SCOPES,
+  USER_BOUNDARY_SCOPES,
+  isUserModelDimension,
+  normalizeUserModelDimension,
+  isUserContextScope,
+  normalizeUserContextScope,
+  isUserBoundaryScope,
+  facetHasBoundary,
+  summarizeUserModelCoverage,
+  type UserModelDimension,
+  type UserContextScope,
+  type UserBoundaryScope,
+  type UserModelFacet,
+  type UserModelCoverage,
+} from "./user-model.js";
+
+export {
+  buildRetrievedMemoryProvenance,
+  normalizeRetrievedMemoryProvenance,
+  summarizeRetrievedMemoryProvenance,
+  type RetrievedMemoryProvenance,
+  type BuildRetrievedMemoryProvenanceOptions,
+  type RetrievedMemoryCorrectionState,
+  type RetrievedMemorySafety,
+} from "./memory-provenance.js";
 
 // ---------------------------------------------------------------------------
 // Inline source attribution (issue #369)
@@ -295,6 +367,20 @@ export type {
   RecallFilterTrace,
 } from "./recall-xray.js";
 
+// ChatGPT Apps-compatible memory inspector demo.
+export {
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_CANONICAL_TOOL,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
+  buildChatGptMemoryInspectorActionRequest,
+  buildChatGptMemoryInspectorResult,
+  type RemnicChatGptMemoryInspectorInput,
+  type RemnicChatGptMemoryCard,
+  type RemnicChatGptMemoryInspectorResult,
+} from "./mcp-memory-inspector-app.js";
+
 // Coding-agent subsystem (issue #569)
 export {
   resolveGitContext,
@@ -366,6 +452,30 @@ export {
   type ActiveMemorySearchOutput,
   type ActiveMemorySearchResult,
 } from "./active-memory-bridge.js";
+
+// ---------------------------------------------------------------------------
+// Action confidence
+// ---------------------------------------------------------------------------
+
+export {
+  ACTION_CONFIDENCE_CONTEXT_READINESS,
+  ACTION_CONFIDENCE_DECISIONS,
+  ACTION_CONFIDENCE_RISK_CATEGORIES,
+  ACTION_CONFIDENCE_RULE_KINDS,
+  buildActionConfidenceInputFromOptions,
+  evaluateActionConfidence,
+  renderActionConfidenceText,
+  type ActionConfidenceContextReadiness,
+  type ActionConfidenceDecision,
+  type ActionConfidenceFactor,
+  type ActionConfidenceInput,
+  type ActionConfidenceMemoryInput,
+  type ActionConfidenceOptionInput,
+  type ActionConfidenceResult,
+  type ActionConfidenceRiskCategory,
+  type ActionConfidenceRule,
+  type ActionConfidenceRuleKind,
+} from "./action-confidence.js";
 
 // ---------------------------------------------------------------------------
 // Daily Context Briefing (#370)
@@ -584,6 +694,7 @@ export {
   installConnector,
   removeConnector,
   doctorConnector,
+  getConnectorToken,
   loadRegistry,
   saveRegistry,
   generateMarketplaceManifest,

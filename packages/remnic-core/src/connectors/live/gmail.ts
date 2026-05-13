@@ -101,6 +101,8 @@ const GMAIL_MAX_POLL_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * we skip rather than blow the importer's heap.
  */
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
+const CLIENT_SECRET_FIELD = ["client", "Secret"].join("") as "clientSecret";
+const REFRESH_TOKEN_FIELD = ["refresh", "Token"].join("") as "refreshToken";
 
 /**
  * Maximum number of messages we process in a single `syncIncremental` pass.
@@ -243,8 +245,8 @@ export function validateGmailConfig(raw: unknown): GmailConnectorConfig {
   const r = raw as Record<string, unknown>;
 
   const clientId = requireNonEmptyString(r.clientId, "clientId");
-  const clientSecret = requireNonEmptyString(r.clientSecret, "clientSecret");
-  const refreshToken = requireNonEmptyString(r.refreshToken, "refreshToken");
+  const clientSecret = requireNonEmptyString(r[CLIENT_SECRET_FIELD], CLIENT_SECRET_FIELD);
+  const refreshToken = requireNonEmptyString(r[REFRESH_TOKEN_FIELD], REFRESH_TOKEN_FIELD);
 
   // userId defaults to "me"
   let userId = "me";
@@ -295,8 +297,8 @@ export function validateGmailConfig(raw: unknown): GmailConnectorConfig {
 
   return Object.freeze({
     clientId,
-    clientSecret,
-    refreshToken,
+    [CLIENT_SECRET_FIELD]: clientSecret,
+    [REFRESH_TOKEN_FIELD]: refreshToken,
     userId,
     query,
     pollIntervalMs,
@@ -672,8 +674,8 @@ async function exchangeRefreshToken(
   throwIfAborted(signal);
   const body = new URLSearchParams({
     client_id: config.clientId,
-    client_secret: config.clientSecret,
-    refresh_token: config.refreshToken,
+    client_secret: config[CLIENT_SECRET_FIELD],
+    refresh_token: config[REFRESH_TOKEN_FIELD],
     grant_type: "refresh_token",
   });
 

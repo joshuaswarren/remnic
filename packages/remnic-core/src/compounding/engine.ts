@@ -492,6 +492,7 @@ export class CompoundingEngine {
           causalTrajectoryStoreDir: this.config.causalTrajectoryStoreDir,
           gatewayConfig: this.config.gatewayConfig,
           gatewayAgentId: this.config.modelSource === "gateway" ? (this.config.gatewayAgentId || undefined) : undefined,
+          workspaceDir: this.config.workspaceDir,
           pluginConfig: this.config,
           config: {
             minRecurrence: this.config.cmcConsolidationMinRecurrence,
@@ -533,6 +534,7 @@ export class CompoundingEngine {
           memoryDir: this.config.memoryDir,
           gatewayConfig: this.config.gatewayConfig,
           gatewayAgentId: this.config.modelSource === "gateway" ? (this.config.gatewayAgentId || undefined) : undefined,
+          workspaceDir: this.config.workspaceDir,
         });
         log.debug(`[calibration] weekly synthesis produced ${calRules.length} calibration rule(s)`);
       } catch (error) {

@@ -17,7 +17,7 @@
  * manifest files.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 
 import { log } from "../logger.js";
@@ -265,14 +265,14 @@ export async function writeMarketplaceManifest(
     );
   }
 
-  mkdirSync(outputDir, { recursive: true });
+  fs.mkdirSync(outputDir, { recursive: true });
 
   const destPath = path.join(outputDir, MARKETPLACE_MANIFEST_FILENAME);
   const tmpPath = `${destPath}.tmp.${process.pid}`;
   const content = JSON.stringify(manifest, null, 2) + "\n";
 
-  writeFileSync(tmpPath, content);
-  renameSync(tmpPath, destPath);
+  fs.writeFileSync(tmpPath, content);
+  fs.renameSync(tmpPath, destPath);
 }
 
 // ── Install ───────────────────────────────────────────────────────────────
@@ -370,13 +370,13 @@ function resolveLocal(
 ): MarketplaceManifest {
   const manifestPath = path.join(dirPath, MARKETPLACE_MANIFEST_FILENAME);
 
-  if (!existsSync(manifestPath)) {
+  if (!fs.existsSync(manifestPath)) {
     throw new Error(`marketplace.json not found at ${manifestPath}`);
   }
 
   logger.debug?.(`reading local marketplace manifest: ${manifestPath}`);
 
-  const raw = readFileSync(manifestPath, "utf-8");
+  const raw = fs.readFileSync(manifestPath, "utf-8");
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -485,8 +485,8 @@ function readPackageVersion(): string | undefined {
   for (const candidate of candidates) {
     const pkgPath = path.join(candidate, "package.json");
     try {
-      if (!existsSync(pkgPath)) continue;
-      const raw = readFileSync(pkgPath, "utf-8");
+      if (!fs.existsSync(pkgPath)) continue;
+      const raw = fs.readFileSync(pkgPath, "utf-8");
       const parsed = JSON.parse(raw);
       if (typeof parsed === "object" && parsed !== null && typeof parsed.version === "string") {
         return parsed.version;

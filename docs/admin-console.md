@@ -11,9 +11,13 @@ itself is a static `index.html` + `app.js` shell shipped under
 - **Memory Browser** — paginated list of `/engram/v1/memories` with
   query / status / category / sort filters.
 - **Memory Detail** — content + timeline for a selected memory, with
-  raw-path copy.
+  raw-path copy. Memory detail is the operator home for "why did you
+  remember this?", "forget this", "correct this", and "scope this"
+  actions as those controls graduate from API/CLI surfaces.
 - **Recall Debugger** — runs `/engram/v1/recall` and
-  `/engram/v1/recall/explain` for a session key.
+  `/engram/v1/recall/explain` for a session key. Pair it with Recall
+  X-ray when auditing per-result provenance, stale/correction state,
+  and whether a memory is safe to use in the current context.
 - **Quality Dashboard** — counts + latest governance run from
   `/engram/v1/quality`.
 - **Trust Zones** — browse and (optionally) promote trust-zone

@@ -98,7 +98,7 @@ import type {
   RecallPlanMode,
 } from "./types.js";
 import { DEFAULT_RECALL_DISCLOSURE, isRecallDisclosure } from "./types.js";
-import { estimateRecallTokens } from "./recall-xray.js";
+import { estimateRecallTokens, type RecallXraySnapshot } from "./recall-xray.js";
 import type {
   LcmMessagePartInput,
   MessagePartSourceFormat,
@@ -119,6 +119,8 @@ import {
   type MemoryOutcomeKind,
   type RecordMemoryOutcomeResult,
 } from "./memory-worth-outcomes.js";
+import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
+import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import {
   importCapsule as importCapsuleFn,
   type ImportCapsuleOptions,
@@ -133,6 +135,11 @@ import {
   defaultCapsulesDir,
   type CapsuleListEntry,
 } from "./capsule-cli.js";
+import {
+  evaluateActionConfidence,
+  type ActionConfidenceInput,
+  type ActionConfidenceResult,
+} from "./action-confidence.js";
 import { formatProfileTraceAscii } from "./profiling.js";
 
 export class EngramAccessInputError extends Error {}
@@ -206,6 +213,7 @@ export interface EngramAccessRecallRequest {
   query: string;
   sessionKey?: string;
   namespace?: string;
+  authenticatedPrincipal?: string;
   topK?: number;
   mode?: RecallPlanMode | "auto";
   includeDebug?: boolean;
@@ -593,6 +601,9 @@ export interface EngramAccessCapsuleListResponse {
   capsules: CapsuleListEntry[];
 }
 
+export type EngramAccessActionConfidenceRequest = ActionConfidenceInput;
+export type EngramAccessActionConfidenceResponse = ActionConfidenceResult;
+
 async function buildProjectedGovernanceProposedActions(
   storage: Awaited<ReturnType<Orchestrator["getStorage"]>>,
   projected: NonNullable<Awaited<ReturnType<Awaited<ReturnType<Orchestrator["getStorage"]>>["getProjectedGovernanceRecord"]>>>,
@@ -726,6 +737,36 @@ export interface EngramAccessLcmStatusResponse {
   enabled: boolean;
   archiveAvailable: boolean;
   stats?: { totalTurns?: number };
+}
+
+export interface EngramAccessLcmCompactionFlushRequest {
+  sessionKey: string;
+  namespace?: string;
+  authenticatedPrincipal?: string;
+}
+
+export interface EngramAccessLcmCompactionFlushResponse {
+  enabled: boolean;
+  flushed: boolean;
+  sessionKey: string;
+  namespace: string;
+  reason?: string;
+}
+
+export interface EngramAccessLcmCompactionRecordRequest {
+  sessionKey: string;
+  namespace?: string;
+  tokensBefore: number;
+  tokensAfter: number;
+  authenticatedPrincipal?: string;
+}
+
+export interface EngramAccessLcmCompactionRecordResponse {
+  enabled: boolean;
+  recorded: boolean;
+  sessionKey: string;
+  namespace: string;
+  reason?: string;
 }
 
 type EngramAccessIdempotencyStatus = "miss" | "replay" | "conflict";
@@ -946,18 +987,22 @@ export class EngramAccessService {
     throw new EngramAccessInputError(`unsupported recall mode: ${mode}`);
   }
 
-  private resolveRecallNamespace(namespace: string | undefined, sessionKey: string | undefined): string | undefined {
+  private resolveRecallNamespace(
+    namespace: string | undefined,
+    sessionKey: string | undefined,
+    authenticatedPrincipal?: string,
+  ): string | undefined {
     const requested = namespace?.trim();
     if (!requested) return undefined;
     const resolved = this.resolveNamespace(requested);
-    const principal = resolvePrincipal(sessionKey, this.orchestrator.config);
+    const principal = this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal);
     if (!canReadNamespace(principal, resolved, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace override is not readable: ${resolved}`);
     }
     return resolved;
   }
 
-  private resolveWritePrincipal(sessionKey: string | undefined, authenticatedPrincipal?: string): string {
+  private resolveRequestPrincipal(sessionKey: string | undefined, authenticatedPrincipal?: string): string {
     const trusted = authenticatedPrincipal?.trim();
     if (trusted) return trusted;
     return resolvePrincipal(sessionKey, this.orchestrator.config);
@@ -969,11 +1014,33 @@ export class EngramAccessService {
     authenticatedPrincipal?: string,
   ): string {
     const resolved = this.resolveNamespace(namespace);
-    const principal = this.resolveWritePrincipal(sessionKey, authenticatedPrincipal);
+    const principal = this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal);
     if (!canWriteNamespace(principal, resolved, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not writable: ${resolved}`);
     }
     return resolved;
+  }
+
+  private async objectiveStateStoreLocationForNamespace(namespace: string): Promise<{
+    memoryDir: string;
+    objectiveStateStoreDir?: string;
+  }> {
+    if (!this.orchestrator.config.namespacesEnabled) {
+      return {
+        memoryDir: this.orchestrator.config.memoryDir,
+        objectiveStateStoreDir: this.orchestrator.config.objectiveStateStoreDir,
+      };
+    }
+    const storage = await this.orchestrator.getStorage(namespace);
+    return {
+      memoryDir: storage.dir,
+      objectiveStateStoreDir: objectiveStateStoreOverrideForNamespace({
+        memoryDir: this.orchestrator.config.memoryDir,
+        configuredStoreDir: this.orchestrator.config.objectiveStateStoreDir,
+        namespacesEnabled: this.orchestrator.config.namespacesEnabled,
+        namespace,
+      }),
+    };
   }
 
   private resolveReadableNamespace(namespace: string | undefined, principal?: string): string {
@@ -1020,6 +1087,84 @@ export class EngramAccessService {
         graph,
       }
       : undefined;
+  }
+
+  private async buildRecallResponseFromXraySnapshot(options: {
+    query: string;
+    sessionKey?: string;
+    snapshot: RecallXraySnapshot;
+    disclosure: RecallDisclosure;
+    startedAt: number;
+    requestedMode?: RecallPlanMode | "auto";
+    normalizedMode?: RecallPlanMode;
+  }): Promise<EngramAccessRecallResponse> {
+    const memoryIds = options.snapshot.results.map((result) => result.memoryId);
+    const resultPaths = options.snapshot.results.map((result) => result.path);
+    const namespace = options.snapshot.namespace
+      ? this.resolveNamespace(options.snapshot.namespace)
+      : this.orchestrator.config.defaultNamespace;
+    const sourcesUsed = Array.from(
+      new Set(options.snapshot.results.map((result) => result.servedBy)),
+    );
+    const snapshotForSerialization: LastRecallSnapshot = {
+      sessionKey: options.sessionKey ?? "",
+      recordedAt: new Date(options.snapshot.capturedAt).toISOString(),
+      queryHash: createHash("sha256").update(options.query).digest("hex"),
+      queryLen: options.query.length,
+      memoryIds,
+      namespace,
+      traceId: options.snapshot.traceId,
+      plannerMode: options.normalizedMode,
+      requestedMode:
+        options.requestedMode && options.requestedMode !== "auto"
+          ? options.requestedMode
+          : undefined,
+      sourcesUsed,
+      budgetsApplied: {
+        appliedTopK: memoryIds.length,
+        recallBudgetChars: options.snapshot.budget.chars,
+        maxMemoryTokens: this.orchestrator.config.maxMemoryTokens,
+        finalContextChars: options.snapshot.budget.used,
+      },
+      latencyMs: Date.now() - options.startedAt,
+      resultPaths,
+    };
+    const results = await this.serializeRecallResults(
+      snapshotForSerialization,
+      options.disclosure,
+      {
+        query: options.query,
+        ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
+      },
+    );
+    const context = results
+      .map((result) => {
+        const content =
+          typeof result.content === "string" && result.content.length > 0
+            ? result.content
+            : "";
+        return content || result.preview;
+      })
+      .filter((text) => text.length > 0)
+      .join("\n\n");
+
+    return {
+      query: options.query,
+      ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
+      namespace,
+      context,
+      count: memoryIds.length,
+      memoryIds,
+      results,
+      recordedAt: snapshotForSerialization.recordedAt,
+      traceId: options.snapshot.traceId,
+      plannerMode: options.normalizedMode,
+      fallbackUsed: sourcesUsed.some((source) => source !== "hybrid"),
+      sourcesUsed,
+      disclosure: options.disclosure,
+      budgetsApplied: snapshotForSerialization.budgetsApplied,
+      latencyMs: snapshotForSerialization.latencyMs,
+    };
   }
 
   private async serializeRecallResults(
@@ -1246,6 +1391,12 @@ export class EngramAccessService {
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
     };
+  }
+
+  async actionConfidence(
+    request: EngramAccessActionConfidenceRequest = {},
+  ): Promise<EngramAccessActionConfidenceResponse> {
+    return evaluateActionConfidence(request);
   }
 
   async daySummary(
@@ -1496,12 +1647,17 @@ export class EngramAccessService {
         projectTag: request.projectTag,
       });
     }
-    const namespaceOverride = this.resolveRecallNamespace(request.namespace, request.sessionKey);
+    const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
+    const namespaceOverride = this.resolveRecallNamespace(
+      request.namespace,
+      request.sessionKey,
+      authenticatedPrincipal,
+    );
     const namespace = namespaceOverride ?? this.orchestrator.config.defaultNamespace;
     // Normalize mode early so that no_recall / invalid modes skip budget
     // accounting (Codex P1: budget recorded before mode validation).
     const mode = this.normalizeRecallMode(request.mode);
-    const principal = resolvePrincipal(request.sessionKey, this.orchestrator.config);
+    const principal = this.resolveRequestPrincipal(request.sessionKey, authenticatedPrincipal);
     const principalNamespace = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
     // Skip budget checks for modes that never perform a cross-namespace read.
     const modeSkipsBudget = mode === "no_recall";
@@ -1604,6 +1760,7 @@ export class EngramAccessService {
       namespace: namespaceOverride,
       topK,
       mode,
+      ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
     };
@@ -1741,10 +1898,7 @@ export class EngramAccessService {
     let auditAnomalies: AccessAuditResult["anomalies"] | undefined;
     if (this.auditAdapter) {
       try {
-        const resolvedAgentId = resolvePrincipal(
-          request.sessionKey,
-          this.orchestrator.config,
-        );
+        const resolvedAgentId = principal;
         const auditEntry = {
           ts: new Date().toISOString(),
           sessionKey: request.sessionKey ?? "",
@@ -1907,9 +2061,24 @@ export class EngramAccessService {
     tags?: string[];
     /** Match mode for `tags`. See `EngramAccessRecallRequest.tagMatch`. */
     tagMatch?: "any" | "all";
+    /** Recall planner mode override. Mirrors `EngramAccessRecallRequest.mode`. */
+    mode?: RecallPlanMode | "auto";
+    /**
+     * User-aware context scopes active for this recall. Forwarded into
+     * provenance construction so boundary scopes are evaluated against
+     * the caller's real context instead of an empty-context default.
+     */
+    currentContextScopes?: readonly unknown[];
+    /**
+     * Internal inspector affordance: include a recall-shaped response
+     * derived from the same X-ray snapshot. Left off by default so the
+     * regular X-ray API/CLI/MCP surfaces keep their existing payload shape.
+     */
+    includeRecall?: boolean;
   }): Promise<{
     snapshotFound: boolean;
-    snapshot?: import("./recall-xray.js").RecallXraySnapshot;
+    snapshot?: RecallXraySnapshot;
+    recall?: EngramAccessRecallResponse;
   }> {
     const query = typeof request.query === "string" ? request.query : "";
     if (query.trim().length === 0) {
@@ -1981,6 +2150,8 @@ export class EngramAccessService {
       }
       budgetOverride = parsed;
     }
+    const mode = this.normalizeRecallMode(request.mode);
+    const disclosure = request.disclosure ?? DEFAULT_RECALL_DISCLOSURE;
 
     // Serialize x-ray invocations behind a per-service mutex so the
     // per-process `getLastXraySnapshot()` slot cannot be clobbered by
@@ -1996,18 +2167,26 @@ export class EngramAccessService {
       release = resolve;
     });
     await previousQueue;
+    const recallStartedAt = Date.now();
+
+    const recallSessionKey = request.sessionKey?.trim() || undefined;
+    let xrayResponse: {
+      snapshotFound: boolean;
+      snapshot?: RecallXraySnapshot;
+    } = { snapshotFound: false };
 
     try {
       // Clear any prior snapshot so a capture failure surfaces as
       // `{snapshotFound: false}` rather than returning stale data
       // from an earlier call on the same orchestrator.
       this.orchestrator.clearLastXraySnapshot();
-      await this.orchestrator.recall(query, request.sessionKey?.trim() || undefined, {
+      await this.orchestrator.recall(query, recallSessionKey, {
         xrayCapture: true,
         ...(requestedNamespace ? { namespace: requestedNamespace } : {}),
         ...(budgetOverride !== undefined
           ? { budgetCharsOverride: budgetOverride }
           : {}),
+        ...(mode !== undefined ? { mode } : {}),
         // When the caller supplies an authenticated principal, forward
         // it via the dedicated override channel so orchestrator-side
         // ACL decisions use the SAME principal the access-surface
@@ -2021,189 +2200,222 @@ export class EngramAccessService {
         ...(authenticatedPrincipal
           ? { principalOverride: authenticatedPrincipal }
           : {}),
+        ...(request.currentContextScopes !== undefined
+          ? { currentContextScopes: request.currentContextScopes }
+          : {}),
       });
 
       const rawSnapshot = this.orchestrator.getLastXraySnapshot();
-      if (!rawSnapshot) return { snapshotFound: false };
       // Re-check namespace after capture: the recall may have served
       // from a different namespace than the caller requested.  Drop
       // the snapshot rather than leak cross-tenant data (CLAUDE.md
       // rules 42 + 47).  The comparison is strict so a snapshot whose
       // namespace is `undefined` cannot bypass the scope the caller
       // asked for.
-      if (requestedNamespace && rawSnapshot.namespace !== requestedNamespace) {
-        return { snapshotFound: false };
-      }
-      // Tag filter (issue #689). Mirrors `recall()` semantics — applied
-      // post-capture by reading each result's frontmatter tags and
-      // dropping non-matching results. Filter activity surfaces as a
-      // `tag-filter` entry in `snapshot.filters` so X-ray consumers can
-      // see the "considered → admitted" delta.
-      let snapshot = rawSnapshot;
-      const xrayFilterTags = normalizeTags(request.tags);
-      let xrayTagMatch: TagMatchMode | undefined;
-      try {
-        xrayTagMatch = parseTagMatch(request.tagMatch);
-      } catch (err) {
-        throw new EngramAccessInputError(
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-      if (xrayFilterTags && xrayFilterTags.length > 0) {
-        const namespace = snapshot.namespace
-          ? this.resolveNamespace(snapshot.namespace)
-          : this.orchestrator.config.defaultNamespace;
-        const tagsByIndex = await Promise.all(
-          snapshot.results.map(async (result) => {
-            try {
-              const storage = await this.orchestrator.getStorage(namespace);
-              const memory = await storage.readMemoryByPath(result.path);
-              const t = memory?.frontmatter?.tags;
-              // Normalize identically to the recall path
-              // (`normalizeProjectionTags`): trim and drop empty strings
-              // so X-ray tag matching stays consistent with the recall
-              // surface. Without this, a frontmatter tag like " draft "
-              // would match in recall but not in X-ray (cursor review).
-              return Array.isArray(t) ? normalizeProjectionTags(t) : [];
-            } catch {
-              return [];
-            }
-          }),
-        );
-        const tagged = snapshot.results.map((result, index) => ({
-          result,
-          tags: tagsByIndex[index] ?? [],
-        }));
-        const { results: admittedTagged, trace } = applyTagFilter(tagged, {
-          tags: xrayFilterTags,
-          tagMatch: xrayTagMatch,
-        });
-        const admittedResults = admittedTagged.map((entry) => entry.result);
-        const filters = trace ? [...snapshot.filters, trace] : snapshot.filters;
-        snapshot = { ...snapshot, results: admittedResults, filters };
-      }
-      // Decorate per-result disclosure + token estimate when the caller
-      // wired a depth knob (issue #677 PR 3/4 — codex review on #699
-      // flagged that the renderer's per-disclosure summary stays empty
-      // until callers populate these fields).  Estimate tokens from
-      // the actual rendered payload at the requested depth so the
-      // summary reflects real spend; chunk uses the preview, section
-      // and raw use full content.  Best-effort only — a missing
-      // memory or read failure is silently dropped (CLAUDE.md rule 13).
-      if (request.disclosure !== undefined) {
-        // Disclosure already validated up front; pin to the narrowed
-        // type here.  Re-validation inside the queue would be dead code.
-        const disclosure: RecallDisclosure = request.disclosure;
-        const namespace = snapshot.namespace
-          ? this.resolveNamespace(snapshot.namespace)
-          : this.orchestrator.config.defaultNamespace;
-        // Pre-fetch raw excerpts ONCE so the first raw-disclosure
-        // result's token estimate includes the LCM-side excerpt spend
-        // that `shapeMemorySummary` actually attaches in the recall
-        // response.  Without this, raw recalls systematically
-        // undercounted spend on the first result (Cursor Medium review
-        // on PR #699).  Excerpts are scoped to the same session +
-        // namespace as the recall.
-        // Trim sessionKey to match what `orchestrator.recall(...)`
-        // already does (`request.sessionKey?.trim() || undefined`),
-        // otherwise a whitespace-padded key drives recall under one
-        // identity but probes LCM under a different prefix and
-        // misses stored excerpts (Cursor Low review on PR #699).
-        const trimmedSessionKey = request.sessionKey?.trim() || undefined;
-        const rawExcerpts =
-          disclosure === "raw"
-            ? await this.fetchRawExcerpts(disclosure, {
-                query,
-                ...(trimmedSessionKey ? { sessionKey: trimmedSessionKey } : {}),
-                namespace,
-              })
-            : null;
-        const rawExcerptText =
-          rawExcerpts && rawExcerpts.length > 0
-            ? rawExcerpts.map((e) => e.content).join("\n")
-            : "";
-        // Pre-load every memory in parallel so we can:
-        //   (a) re-attribute raw excerpts to the *first readable* result
-        //       rather than always to index 0 (Cursor Low review on PR
-        //       #699: a missing/unreadable result[0] orphaned the excerpt
-        //       budget); and
-        //   (b) include the metadata fields `shapeMemorySummary` actually
-        //       emits at every depth (id, path, category, status, created,
-        //       updated, tags, entityRef) in the token estimate, so the
-        //       summary reflects real spend rather than only payload-body
-        //       spend (Cursor Low review on PR #699).
-        const memoryByIndex = await Promise.all(
-          snapshot.results.map(async (result) => {
-            try {
-              const storage = await this.orchestrator.getStorage(namespace);
-              return await storage.readMemoryByPath(result.path);
-            } catch {
-              return null;
-            }
-          }),
-        );
-        const firstReadableIndex = memoryByIndex.findIndex((m) => m !== null);
-        const baseDir =
-          (await this.orchestrator.getStorage(namespace)).dir;
-        const decorated = snapshot.results.map((result, index) => {
-          const memory = memoryByIndex[index];
-          if (!memory) {
-            // Unreadable result: attach the disclosure tag anyway so
-            // the per-disclosure summary classifies it correctly,
-            // but skip the token estimate since we don't have the
-            // content to measure.  Without the disclosure tag the
-            // result silently flows into the `unspecified` bucket
-            // even though the caller explicitly requested a depth
-            // (Cursor Low review on PR #699).
-            return { ...result, disclosure };
-          }
-          // Build a representative shaped summary so the estimate
-          // counts every field `shapeMemorySummary` actually emits.
-          // The serialized JSON form is a close-enough proxy for the
-          // wire payload size.
-          const shaped = shapeMemorySummary(
-            memory,
-            baseDir,
-            disclosure,
-            disclosure === "raw" &&
-            index === firstReadableIndex &&
-            rawExcerpts &&
-            rawExcerpts.length > 0
-              ? rawExcerpts
-              : undefined,
+      const namespaceMismatch =
+        requestedNamespace !== undefined &&
+        rawSnapshot?.namespace !== requestedNamespace;
+      if (!rawSnapshot) {
+        xrayResponse = { snapshotFound: false };
+      } else if (namespaceMismatch) {
+        xrayResponse = { snapshotFound: false };
+      } else {
+        // Tag filter (issue #689). Mirrors `recall()` semantics — applied
+        // post-capture by reading each result's frontmatter tags and
+        // dropping non-matching results. Filter activity surfaces as a
+        // `tag-filter` entry in `snapshot.filters` so X-ray consumers can
+        // see the "considered → admitted" delta.
+        let snapshot = rawSnapshot;
+        const xrayFilterTags = normalizeTags(request.tags);
+        let xrayTagMatch: TagMatchMode | undefined;
+        try {
+          xrayTagMatch = parseTagMatch(request.tagMatch);
+        } catch (err) {
+          throw new EngramAccessInputError(
+            err instanceof Error ? err.message : String(err),
           );
-          return {
-            ...result,
-            disclosure,
-            estimatedTokens: estimateRecallTokens(JSON.stringify(shaped)),
+        }
+        if (xrayFilterTags && xrayFilterTags.length > 0) {
+          const namespace = snapshot.namespace
+            ? this.resolveNamespace(snapshot.namespace)
+            : this.orchestrator.config.defaultNamespace;
+          const tagsByIndex = await Promise.all(
+            snapshot.results.map(async (result) => {
+              try {
+                const storage = await this.orchestrator.getStorage(namespace);
+                const memory = await storage.readMemoryByPath(result.path);
+                const t = memory?.frontmatter?.tags;
+                // Normalize identically to the recall path
+                // (`normalizeProjectionTags`): trim and drop empty strings
+                // so X-ray tag matching stays consistent with the recall
+                // surface. Without this, a frontmatter tag like " draft "
+                // would match in recall but not in X-ray (cursor review).
+                return Array.isArray(t) ? normalizeProjectionTags(t) : [];
+              } catch {
+                return [];
+              }
+            }),
+          );
+          const tagged = snapshot.results.map((result, index) => ({
+            result,
+            tags: tagsByIndex[index] ?? [],
+          }));
+          const { results: admittedTagged, trace } = applyTagFilter(tagged, {
+            tags: xrayFilterTags,
+            tagMatch: xrayTagMatch,
+          });
+          const admittedResults = admittedTagged.map((entry) => entry.result);
+          const filters = trace ? [...snapshot.filters, trace] : snapshot.filters;
+          snapshot = { ...snapshot, results: admittedResults, filters };
+        }
+        // Decorate per-result disclosure + token estimate when the caller
+        // wired a depth knob (issue #677 PR 3/4 — codex review on #699
+        // flagged that the renderer's per-disclosure summary stays empty
+        // until callers populate these fields).  Estimate tokens from
+        // the actual rendered payload at the requested depth so the
+        // summary reflects real spend; chunk uses the preview, section
+        // and raw use full content.  Best-effort only — a missing
+        // memory or read failure is silently dropped (CLAUDE.md rule 13).
+        if (request.disclosure !== undefined) {
+          // Disclosure already validated up front; pin to the narrowed
+          // type here.  Re-validation inside the queue would be dead code.
+          const disclosure: RecallDisclosure = request.disclosure;
+          const namespace = snapshot.namespace
+            ? this.resolveNamespace(snapshot.namespace)
+            : this.orchestrator.config.defaultNamespace;
+          // Pre-fetch raw excerpts ONCE so the first raw-disclosure
+          // result's token estimate includes the LCM-side excerpt spend
+          // that `shapeMemorySummary` actually attaches in the recall
+          // response.  Without this, raw recalls systematically
+          // undercounted spend on the first result (Cursor Medium review
+          // on PR #699).  Excerpts are scoped to the same session +
+          // namespace as the recall.
+          // Trim sessionKey to match what `orchestrator.recall(...)`
+          // already does (`request.sessionKey?.trim() || undefined`),
+          // otherwise a whitespace-padded key drives recall under one
+          // identity but probes LCM under a different prefix and
+          // misses stored excerpts (Cursor Low review on PR #699).
+          const trimmedSessionKey = request.sessionKey?.trim() || undefined;
+          const rawExcerpts =
+            disclosure === "raw"
+              ? await this.fetchRawExcerpts(disclosure, {
+                  query,
+                  ...(trimmedSessionKey ? { sessionKey: trimmedSessionKey } : {}),
+                  namespace,
+                })
+              : null;
+          const rawExcerptText =
+            rawExcerpts && rawExcerpts.length > 0
+              ? rawExcerpts.map((e) => e.content).join("\n")
+              : "";
+          // Pre-load every memory in parallel so we can:
+          //   (a) re-attribute raw excerpts to the *first readable* result
+          //       rather than always to index 0 (Cursor Low review on PR
+          //       #699: a missing/unreadable result[0] orphaned the excerpt
+          //       budget); and
+          //   (b) include the metadata fields `shapeMemorySummary` actually
+          //       emits at every depth (id, path, category, status, created,
+          //       updated, tags, entityRef) in the token estimate, so the
+          //       summary reflects real spend rather than only payload-body
+          //       spend (Cursor Low review on PR #699).
+          const memoryByIndex = await Promise.all(
+            snapshot.results.map(async (result) => {
+              try {
+                const storage = await this.orchestrator.getStorage(namespace);
+                return await storage.readMemoryByPath(result.path);
+              } catch {
+                return null;
+              }
+            }),
+          );
+          const firstReadableIndex = memoryByIndex.findIndex((m) => m !== null);
+          const baseDir =
+            (await this.orchestrator.getStorage(namespace)).dir;
+          const decorated = snapshot.results.map((result, index) => {
+            const memory = memoryByIndex[index];
+            if (!memory) {
+              // Unreadable result: attach the disclosure tag anyway so
+              // the per-disclosure summary classifies it correctly,
+              // but skip the token estimate since we don't have the
+              // content to measure.  Without the disclosure tag the
+              // result silently flows into the `unspecified` bucket
+              // even though the caller explicitly requested a depth
+              // (Cursor Low review on PR #699).
+              return { ...result, disclosure };
+            }
+            // Build a representative shaped summary so the estimate
+            // counts every field `shapeMemorySummary` actually emits.
+            // The serialized JSON form is a close-enough proxy for the
+            // wire payload size.
+            const shaped = shapeMemorySummary(
+              memory,
+              baseDir,
+              disclosure,
+              disclosure === "raw" &&
+              index === firstReadableIndex &&
+              rawExcerpts &&
+              rawExcerpts.length > 0
+                ? rawExcerpts
+                : undefined,
+            );
+            return {
+              ...result,
+              disclosure,
+              estimatedTokens: estimateRecallTokens(JSON.stringify(shaped)),
+            };
+          });
+          // Edge case: every result was unreadable but rawExcerpts
+          // still has content — credit that spend to result[0] rather
+          // than dropping it on the floor.  Without this, the raw row
+          // in the per-disclosure summary under-reports spend whenever
+          // every memory file is missing/unreadable.
+          if (
+            disclosure === "raw" &&
+            firstReadableIndex === -1 &&
+            rawExcerptText.length > 0 &&
+            decorated.length > 0
+          ) {
+            decorated[0] = {
+              ...decorated[0]!,
+              disclosure,
+              estimatedTokens: estimateRecallTokens(rawExcerptText),
+            };
+          }
+          const decoratedSnapshot = { ...snapshot, results: decorated };
+          xrayResponse = {
+            snapshotFound: true,
+            snapshot: decoratedSnapshot,
           };
-        });
-        // Edge case: every result was unreadable but rawExcerpts
-        // still has content — credit that spend to result[0] rather
-        // than dropping it on the floor.  Without this, the raw row
-        // in the per-disclosure summary under-reports spend whenever
-        // every memory file is missing/unreadable.
-        if (
-          disclosure === "raw" &&
-          firstReadableIndex === -1 &&
-          rawExcerptText.length > 0 &&
-          decorated.length > 0
-        ) {
-          decorated[0] = {
-            ...decorated[0]!,
-            disclosure,
-            estimatedTokens: estimateRecallTokens(rawExcerptText),
+        } else {
+          xrayResponse = {
+            snapshotFound: true,
+            snapshot,
           };
         }
-        return {
-          snapshotFound: true,
-          snapshot: { ...snapshot, results: decorated },
-        };
       }
-      return { snapshotFound: true, snapshot };
     } finally {
       release();
     }
+
+    if (
+      request.includeRecall === true &&
+      xrayResponse.snapshotFound === true &&
+      xrayResponse.snapshot
+    ) {
+      return {
+        ...xrayResponse,
+        recall: await this.buildRecallResponseFromXraySnapshot({
+          query,
+          sessionKey: recallSessionKey,
+          snapshot: xrayResponse.snapshot,
+          disclosure,
+          startedAt: recallStartedAt,
+          requestedMode: request.mode,
+          normalizedMode: mode,
+        }),
+      };
+    }
+    return xrayResponse;
   }
   // Sequence lock for `recallXray` — see comment inside the method.
   // Lives on the instance so every x-ray call on the same service
@@ -3337,11 +3549,37 @@ export class EngramAccessService {
     // Validate namespace authorization BEFORE attaching coding context so
     // a failed auth check doesn't leave orphaned context on the session
     // (Codex review P2).
+    const hasExplicitNamespace =
+      typeof request.namespace === "string" &&
+      request.namespace.trim().length > 0;
+    const principal = this.resolveRequestPrincipal(
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
     const namespace = this.resolveWritableNamespace(
       request.namespace,
       request.sessionKey,
       request.authenticatedPrincipal,
     );
+    const shouldWriteObjectiveState =
+      this.orchestrator.config.objectiveStateMemoryEnabled === true &&
+      this.orchestrator.config.objectiveStateSnapshotWritesEnabled === true;
+    const objectiveStateBaseNamespace = hasExplicitNamespace
+      ? namespace
+      : defaultNamespaceForPrincipal(principal, this.orchestrator.config);
+    if (
+      shouldWriteObjectiveState &&
+      !hasExplicitNamespace &&
+      !canWriteNamespace(
+        principal,
+        objectiveStateBaseNamespace,
+        this.orchestrator.config,
+      )
+    ) {
+      throw new EngramAccessInputError(
+        `namespace is not writable: ${objectiveStateBaseNamespace}`,
+      );
+    }
 
     // Auto-resolve coding context from cwd/projectTag so observe writes
     // route to the correct project namespace (rule 42: same namespace layer
@@ -3351,11 +3589,39 @@ export class EngramAccessService {
       projectTag: request.projectTag,
     });
 
+    const objectiveStateNamespace = hasExplicitNamespace
+      ? namespace
+      : this.orchestrator.applyCodingNamespaceOverlay(
+          request.sessionKey,
+          objectiveStateBaseNamespace,
+        );
+
     // Prefix sessionKey with namespace for LCM archival so turns are namespace-scoped.
     // This ensures multi-tenant isolation in the LCM archive.
     const lcmSessionKey = namespace !== this.orchestrator.config.defaultNamespace
       ? `${namespace}:${request.sessionKey}`
       : request.sessionKey;
+
+    if (shouldWriteObjectiveState) {
+      try {
+        const objectiveStateLocation =
+          await this.objectiveStateStoreLocationForNamespace(
+            objectiveStateNamespace,
+          );
+        await recordObjectiveStateSnapshotsFromObservedMessages({
+          memoryDir: objectiveStateLocation.memoryDir,
+          objectiveStateStoreDir: objectiveStateLocation.objectiveStateStoreDir,
+          objectiveStateMemoryEnabled: this.orchestrator.config.objectiveStateMemoryEnabled,
+          objectiveStateSnapshotWritesEnabled:
+            this.orchestrator.config.objectiveStateSnapshotWritesEnabled,
+          sessionKey: request.sessionKey,
+          recordedAt: new Date().toISOString(),
+          messages: request.messages,
+        });
+      } catch (err) {
+        log.error(`access-observe objective-state snapshot write failed: ${err}`);
+      }
+    }
 
     // lcmArchived in the response means "LCM archival was queued" (not
     // "completed"), matching extractionQueued semantics.  Both run async.
@@ -3425,7 +3691,7 @@ export class EngramAccessService {
       throw new EngramAccessInputError("query is required and must be a non-empty string");
     }
 
-    const principal = this.resolveWritePrincipal(request.sessionKey, request.authenticatedPrincipal);
+    const principal = this.resolveRequestPrincipal(request.sessionKey, request.authenticatedPrincipal);
     const namespace = this.resolveReadableNamespace(request.namespace, principal);
 
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
@@ -3460,6 +3726,86 @@ export class EngramAccessService {
       results,
       count: results.length,
       lcmEnabled: true,
+    };
+  }
+
+  async lcmCompactionFlush(
+    request: EngramAccessLcmCompactionFlushRequest,
+  ): Promise<EngramAccessLcmCompactionFlushResponse> {
+    if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
+      throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
+    }
+
+    const namespace = this.resolveWritableNamespace(
+      request.namespace,
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
+    if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
+      return {
+        enabled: false,
+        flushed: false,
+        sessionKey: request.sessionKey,
+        namespace,
+        reason: "LCM is disabled",
+      };
+    }
+
+    const lcmSessionKey = namespace !== this.orchestrator.config.defaultNamespace
+      ? `${namespace}:${request.sessionKey}`
+      : request.sessionKey;
+    await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
+    await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey);
+    return {
+      enabled: true,
+      flushed: true,
+      sessionKey: request.sessionKey,
+      namespace,
+    };
+  }
+
+  async lcmCompactionRecord(
+    request: EngramAccessLcmCompactionRecordRequest,
+  ): Promise<EngramAccessLcmCompactionRecordResponse> {
+    if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
+      throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
+    }
+    if (!Number.isInteger(request.tokensBefore) || request.tokensBefore < 0) {
+      throw new EngramAccessInputError("tokensBefore must be a non-negative integer");
+    }
+    if (!Number.isInteger(request.tokensAfter) || request.tokensAfter < 0) {
+      throw new EngramAccessInputError("tokensAfter must be a non-negative integer");
+    }
+
+    const namespace = this.resolveWritableNamespace(
+      request.namespace,
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
+    if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
+      return {
+        enabled: false,
+        recorded: false,
+        sessionKey: request.sessionKey,
+        namespace,
+        reason: "LCM is disabled",
+      };
+    }
+
+    const lcmSessionKey = namespace !== this.orchestrator.config.defaultNamespace
+      ? `${namespace}:${request.sessionKey}`
+      : request.sessionKey;
+    await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
+    await this.orchestrator.lcmEngine.recordCompaction(
+      lcmSessionKey,
+      request.tokensBefore,
+      request.tokensAfter,
+    );
+    return {
+      enabled: true,
+      recorded: true,
+      sessionKey: request.sessionKey,
+      namespace,
     };
   }
 

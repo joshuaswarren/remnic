@@ -113,6 +113,7 @@ function createPluginConfig(memoryDir: string): PluginConfig {
     lcmFreshTailTurns: 16,
     lcmMaxDepth: 5,
     lcmDeterministicMaxTokens: 128,
+    lcmTelemetryPrefilterEnabled: true,
     lcmArchiveRetentionDays: 90,
     lcmRecallBudgetShare: 0.15,
     messagePartsEnabled: true,
@@ -129,6 +130,83 @@ function deferred<T = void>() {
   });
   return { promise, resolve, reject };
 }
+
+test("LCM deterministically compresses mechanical telemetry without calling the summarizer", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-lcm-telemetry-prefilter-"),
+  );
+  let summarizeCalls = 0;
+
+  try {
+    const engine = new LcmEngine(
+      {
+        ...createPluginConfig(memoryDir),
+        lcmLeafBatchSize: 8,
+      } as PluginConfig,
+      async () => {
+        summarizeCalls += 1;
+        throw new Error("summarizer should not run for mechanical telemetry");
+      },
+    );
+
+    await engine.observeMessages("session-telemetry", [
+      { role: "user", content: "[Action 1]: right" },
+      { role: "assistant", content: "[Observation 1]: baba moved right" },
+      { role: "user", content: "[Action 2]: up" },
+      { role: "assistant", content: "[Observation 2]: wall blocks the path" },
+      { role: "user", content: "[Action 3]: left" },
+      { role: "assistant", content: "[Observation 3]: baba moved left" },
+      { role: "user", content: "[Action 4]: wait" },
+      { role: "assistant", content: "[Observation 4]: state unchanged" },
+    ]);
+    await engine.waitForSessionObserveIdle("session-telemetry");
+
+    assert.equal(summarizeCalls, 0);
+    const summary = await engine.describeContext("session-telemetry", 0, 0);
+    assert.match(summary?.summary ?? "", /\[Action 1\]/);
+    assert.equal(summary?.depth, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("LCM keeps semantic summarization when telemetry contains durable cues", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-lcm-telemetry-durable-cue-"),
+  );
+  let summarizeCalls = 0;
+
+  try {
+    const engine = new LcmEngine(
+      {
+        ...createPluginConfig(memoryDir),
+        lcmLeafBatchSize: 8,
+      } as PluginConfig,
+      async () => {
+        summarizeCalls += 1;
+        return "semantic durable summary";
+      },
+    );
+
+    await engine.observeMessages("session-telemetry", [
+      { role: "user", content: "[Action 1]: right" },
+      { role: "assistant", content: "[Observation 1]: remember this route preference" },
+      { role: "user", content: "[Action 2]: up" },
+      { role: "assistant", content: "[Observation 2]: wall blocks the path" },
+      { role: "user", content: "[Action 3]: left" },
+      { role: "assistant", content: "[Observation 3]: baba moved left" },
+      { role: "user", content: "[Action 4]: wait" },
+      { role: "assistant", content: "[Observation 4]: state unchanged" },
+    ]);
+    await engine.waitForSessionObserveIdle("session-telemetry");
+
+    assert.equal(summarizeCalls, 1);
+    const summary = await engine.describeContext("session-telemetry", 0, 0);
+    assert.equal(summary?.summary, "semantic durable summary");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("observeMessages resolves before summarize finishes and background worker persists results", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-engine-"));

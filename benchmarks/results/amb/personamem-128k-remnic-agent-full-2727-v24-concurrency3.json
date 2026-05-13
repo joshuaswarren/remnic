@@ -17,7 +17,7 @@
   "targetSource": "PersonaMem Paper (arXiv:2504.14225)",
   "sota": true,
   "rawResult": {
-    "path": "/tmp/remnic-amb-clean-1778558363/agent-memory-benchmark/outputs-remnic-agent-official/personamem/remnic-agent-full-2727-v24-concurrency3/agent/128k.json",
+    "path": "outputs-remnic-agent-official/personamem/remnic-agent-full-2727-v24-concurrency3/agent/128k.json",
     "bytes": 44320103,
     "sha256": "8352847add7ce15e85d522c490b920fdcf540d4901cc2058da5622829b87ab44"
   },
@@ -33,10 +33,10 @@
       "targetMemory records the public AMB baseline being beaten, not a model used in this Remnic run."
     ]
   },
-  "command": "REMNIC_AMB_NODE=/opt/homebrew/opt/node@22/bin/node REMNIC_AMB_CODEX_BIN=/opt/homebrew/bin/codex REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb /tmp/remnic-amb-clean-1778558363/agent-memory-benchmark --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3",
+  "command": "REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb <agent-memory-benchmark-checkout> --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3",
   "verification": {
-    "command": "node scripts/bench/verify-amb-sota.mjs --result /tmp/remnic-amb-clean-1778558363/agent-memory-benchmark/outputs-remnic-agent-official/personamem/remnic-agent-full-2727-v24-concurrency3/agent/128k.json --min-queries 2727 --manifest-out /tmp/remnic-amb-clean-1778558363/remnic-agent-full-2727-v24-concurrency3-sota-manifest.json --command \"REMNIC_AMB_NODE=/opt/homebrew/opt/node@22/bin/node REMNIC_AMB_CODEX_BIN=/opt/homebrew/bin/codex REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb /tmp/remnic-amb-clean-1778558363/agent-memory-benchmark --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3\" --amb-dir /tmp/remnic-amb-clean-1778558363/agent-memory-benchmark",
+    "command": "node scripts/bench/verify-amb-sota.mjs --result <agent-memory-benchmark-checkout>/outputs-remnic-agent-official/personamem/remnic-agent-full-2727-v24-concurrency3/agent/128k.json --min-queries 2727 --manifest-out benchmarks/results/amb/remnic-agent-full-2727-v24-concurrency3-sota-manifest.json --command \"REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb <agent-memory-benchmark-checkout> --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3\" --amb-dir <agent-memory-benchmark-checkout>",
     "sota": true,
-    "generatedManifest": "/tmp/remnic-amb-clean-1778558363/remnic-agent-full-2727-v24-concurrency3-sota-manifest.json"
+    "generatedManifest": "benchmarks/results/amb/remnic-agent-full-2727-v24-concurrency3-sota-manifest.json"
   }
 }

@@ -60,22 +60,69 @@ function findScannerModule(openclawPackageDir) {
 }
 
 function selectScannerFunction(moduleExports) {
+  const exportedFunctions = Object.entries(moduleExports)
+    .filter(([, value]) => typeof value === "function");
+  const byExportName = (name) => exportedFunctions.find(([exportName]) => exportName === name)?.[1];
+  const byFunctionName = (name) => exportedFunctions.find(([, value]) => value.name === name)?.[1];
+
   if (typeof moduleExports.scanDirectoryWithSummary === "function") {
     return moduleExports.scanDirectoryWithSummary;
   }
+
+  const namedSummaryScanner = byFunctionName("scanDirectoryWithSummary");
+  if (namedSummaryScanner) return namedSummaryScanner;
 
   if (typeof moduleExports.scanDirectory === "function") {
     return moduleExports.scanDirectory;
   }
 
-  if (typeof moduleExports.t === "function") return moduleExports.t;
+  const namedDirectoryScanner = byFunctionName("scanDirectory");
+  if (namedDirectoryScanner) return namedDirectoryScanner;
 
-  const exportedFunctions = Object.values(moduleExports).filter((value) => typeof value === "function");
-  if (exportedFunctions.length === 1) return exportedFunctions[0];
+  const legacyMinifiedScanner = byExportName("t");
+  if (
+    legacyMinifiedScanner &&
+    legacyMinifiedScanner.name !== "clearSkillScanCacheForTest" &&
+    legacyMinifiedScanner.length > 0
+  ) {
+    return legacyMinifiedScanner;
+  }
+
+  if (exportedFunctions.length === 1) return exportedFunctions[0][1];
 
   throw new Error(
     `Unable to identify OpenClaw scanner export; found exports: ${Object.keys(moduleExports).join(", ")}`,
   );
+}
+
+function normalizeScanSummary(rawSummary, scannerName) {
+  const countSeverity = (findings, severity) =>
+    findings.filter((finding) => finding?.severity === severity).length;
+
+  if (Array.isArray(rawSummary)) {
+    return {
+      scannedFiles: "unknown",
+      critical: countSeverity(rawSummary, "critical"),
+      warn: countSeverity(rawSummary, "warn"),
+      findings: rawSummary,
+    };
+  }
+
+  if (!rawSummary || typeof rawSummary !== "object") {
+    throw new Error(
+      `OpenClaw scanner ${scannerName || "unknown"} returned ${rawSummary === null ? "null" : typeof rawSummary}; expected a scan summary.`,
+    );
+  }
+
+  const findings = Array.isArray(rawSummary.findings) ? rawSummary.findings : [];
+  return {
+    scannedFiles: rawSummary.scannedFiles ?? "unknown",
+    critical: typeof rawSummary.critical === "number"
+      ? rawSummary.critical
+      : countSeverity(findings, "critical"),
+    warn: typeof rawSummary.warn === "number" ? rawSummary.warn : countSeverity(findings, "warn"),
+    findings,
+  };
 }
 
 function formatFinding(finding) {
@@ -97,8 +144,8 @@ const openclawPackageJson = JSON.parse(fs.readFileSync(path.join(openclawPackage
 const scannerModule = findScannerModule(openclawPackageDir);
 const scannerExports = await import(pathToFileURL(scannerModule).href);
 const scan = selectScannerFunction(scannerExports);
-const summary = await scan(packageDir);
-const findings = Array.isArray(summary.findings) ? summary.findings : [];
+const summary = normalizeScanSummary(await scan(packageDir), scan.name);
+const findings = summary.findings;
 
 console.log(`OpenClaw ${openclawPackageJson.version} scanner: ${scannerModule}`);
 for (const finding of findings) console.log(formatFinding(finding));

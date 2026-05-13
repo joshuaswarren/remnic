@@ -348,3 +348,11 @@ export function __setGatewayResolverForTest(resolver: ResolveApiKeyFn | null): v
   _resolverLoaded = resolver !== null;
   _resolverNextRetryAt = 0;
 }
+
+export function __setGatewayRuntimeAuthForModelForTest(
+  resolver: GetRuntimeAuthForModelFn | null,
+): void {
+  _getRuntimeAuthForModel = resolver;
+  _resolverLoaded = resolver !== null || _resolveApiKeyForProvider !== null;
+  _resolverNextRetryAt = 0;
+}

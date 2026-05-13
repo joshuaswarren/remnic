@@ -39,6 +39,12 @@ function buildResult(): BenchmarkResult {
         baseUrl: "https://ollama.com/api",
         apiKey: "judge-secret-key",
       },
+      internalProvider: {
+        provider: "ollama",
+        model: "gemma4:31b-cloud",
+        baseUrl: "https://ollama.com/api",
+        apiKey: "internal-secret-key",
+      },
       adapterMode: "direct",
       remnicConfig: {
         nested: {
@@ -78,6 +84,7 @@ test("redactBenchmarkResultSecrets redacts provider and nested secret fields", (
 
   assert.equal(redacted.config.systemProvider?.apiKey, "[REDACTED]");
   assert.equal(redacted.config.judgeProvider?.apiKey, "[REDACTED]");
+  assert.equal(redacted.config.internalProvider?.apiKey, "[REDACTED]");
   assert.equal(
     (redacted.config.remnicConfig.nested as { authToken?: string }).authToken,
     "[REDACTED]",
@@ -127,7 +134,7 @@ test("writeBenchmarkResult does not persist secret values", async () => {
 
     assert.doesNotMatch(
       raw,
-      /system-secret-key|judge-secret-key|nested-token|bearer-token|private-key|session-token|auth-header|plain-token/,
+      /system-secret-key|judge-secret-key|internal-secret-key|nested-token|bearer-token|private-key|session-token|auth-header|plain-token/,
     );
     assert.match(raw, /"apiKey": "\[REDACTED\]"/);
     assert.match(raw, /"provider": "ollama"/);

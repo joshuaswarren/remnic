@@ -29,6 +29,7 @@ import { randomUUID } from "node:crypto";
 import type { Message } from "../../adapters/types.js";
 import {
   answerBenchmarkQuestion,
+  type BenchmarkAnswerResult,
   type BenchmarkAnswerFormat,
 } from "../../answering.js";
 import { benchmarkRecallBudgetForSessionCount } from "../../recall-budget.js";
@@ -100,6 +101,24 @@ export interface HarnessTrial {
     question: string;
     recalledText: string;
   }) => string;
+  /**
+   * Optional deterministic fallback used when the configured responder transport
+   * fails after recall succeeded. It may only derive an answer from recalledText.
+   */
+  answerFallback?: (args: {
+    question: string;
+    recalledText: string;
+    error: unknown;
+  }) => string | undefined;
+  /**
+   * Optional deterministic refinement used after the configured responder
+   * returns. It may only derive an answer from recalledText and the question.
+   */
+  answerRefinement?: (args: {
+    question: string;
+    recalledText: string;
+    answeredText: string;
+  }) => string | undefined;
   /**
    * Optional extra per-task metrics computed by the caller up-front
    * (not a function of recall state). Merged into the final
@@ -289,13 +308,17 @@ async function executeTrial(
         })
       : rawRecalledText;
   });
-  const answered = await answerBenchmarkQuestion({
-    question: trial.question,
-    recalledText,
-    responder: ctx.options.system.responder,
-    answerMode: "strict",
-    answerFormat: trial.answerFormat,
-  });
+  let answered: HarnessAnswerResult =
+    await answerBenchmarkQuestion({
+      question: trial.question,
+      recalledText,
+      responder: ctx.options.system.responder,
+      answerMode: "strict",
+      answerFormat: trial.answerFormat,
+    }).catch((error: unknown) =>
+      answerWithTrialFallback(trial, recalledText, error),
+    );
+  answered = refineTrialAnswer(trial, recalledText, answered);
 
   // Post-answer hook runs before the judge so dataset-specific signals
   // (e.g. LongMemEval `search_hits`) are observed from the same
@@ -378,6 +401,15 @@ async function executeTrial(
     ...(trial.answerFormat ? { answerFormat: trial.answerFormat } : {}),
     responderModel: answered.model,
     judgeModel: judgeResult.model,
+    ...(answered.fallbackReason
+      ? { answerFallbackReason: answered.fallbackReason }
+      : {}),
+    ...(answered.refinementReason
+      ? {
+          answerRefinementReason: answered.refinementReason,
+          originalAnsweredText: answered.originalAnswer,
+        }
+      : {}),
   };
   const details: Record<string, unknown> = { ...baseDetails };
   if (trial.extraDetails) {
@@ -399,6 +431,60 @@ async function executeTrial(
       output: answered.tokens.output + judgeResult.tokens.output,
     },
     details,
+  };
+}
+
+type HarnessAnswerResult = BenchmarkAnswerResult & {
+  fallbackReason?: string;
+  refinementReason?: string;
+  originalAnswer?: string;
+};
+
+function answerWithTrialFallback(
+  trial: HarnessTrial,
+  recalledText: string,
+  error: unknown,
+): HarnessAnswerResult {
+  const fallback = trial.answerFallback?.({
+    question: trial.question,
+    recalledText,
+    error,
+  });
+  if (fallback === undefined) {
+    throw error;
+  }
+  return {
+    finalAnswer: fallback,
+    recalledText,
+    answeredText: fallback,
+    latencyMs: 0,
+    tokens: { input: 0, output: 0 },
+    model: "deterministic-fallback",
+    fallbackReason: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function refineTrialAnswer(
+  trial: HarnessTrial,
+  recalledText: string,
+  answered: HarnessAnswerResult,
+): HarnessAnswerResult {
+  const refined = trial.answerRefinement?.({
+    question: trial.question,
+    recalledText,
+    answeredText: answered.finalAnswer,
+  });
+  const trimmed = refined?.trim();
+  if (!trimmed || trimmed === answered.finalAnswer.trim()) {
+    return answered;
+  }
+
+  return {
+    ...answered,
+    finalAnswer: trimmed,
+    answeredText: trimmed,
+    originalAnswer: answered.finalAnswer,
+    refinementReason: "benchmark recalled-evidence refinement",
   };
 }
 
@@ -436,6 +522,9 @@ async function buildBenchmarkResult(
       judgeProvider: ctx.options.judgeProvider ?? null,
       adapterMode: ctx.options.adapterMode ?? "direct",
       remnicConfig: ctx.options.remnicConfig ?? {},
+      ...(ctx.options.benchmarkOptions
+        ? { benchmarkOptions: ctx.options.benchmarkOptions }
+        : {}),
     },
     cost: {
       totalTokens: totalInputTokens + totalOutputTokens,

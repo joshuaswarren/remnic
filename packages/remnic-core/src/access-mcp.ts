@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { EngramAccessInputError, type EngramAccessService, type EngramAccessRecallResponse } from "./access-service.js";
 import {
   validateRequest,
+  type ActionConfidenceRequest,
   type CapsuleExportRequest,
   type CapsuleImportRequest,
   type CapsuleListRequest,
@@ -15,6 +16,15 @@ import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { buildCitationGuidance, type CitationMetadata } from "./citations.js";
 import { expandTildePath } from "./utils/path.js";
+import {
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
+  REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+  buildChatGptMemoryInspectorActionRequest,
+  buildChatGptMemoryInspectorResult,
+  type RemnicChatGptMemoryInspectorInput,
+} from "./mcp-memory-inspector-app.js";
 
 type JsonRpcId = string | number | null;
 
@@ -27,8 +37,21 @@ type JsonRpcRequest = {
 
 type McpTool = {
   name: string;
+  title?: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+};
+
+type McpResource = {
+  uri: string;
+  name: string;
+  title?: string;
+  description?: string;
+  mimeType: string;
+  _meta?: Record<string, unknown>;
 };
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -52,6 +75,15 @@ function withToolAliases(tool: McpTool): McpTool[] {
   const canonicalTool = canonicalName === tool.name ? tool : { ...tool, name: canonicalName };
   if (canonicalName === tool.name) return [canonicalTool];
   return [canonicalTool, tool];
+}
+
+function resolveChatGptInspectorRecallSessionKey(
+  explicitSessionKey: string | undefined,
+  authenticatedPrincipal: string | undefined,
+): string | undefined {
+  if (explicitSessionKey) return explicitSessionKey;
+  if (!authenticatedPrincipal) return undefined;
+  return `remnic:chatgpt-memory-inspector:${randomUUID()}`;
 }
 
 const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
@@ -113,6 +145,8 @@ export class EngramMcpServer {
   private buffer = Buffer.alloc(0);
   private flushTask: Promise<void> | null = null;
   private readonly tools: McpTool[];
+  private readonly resources: McpResource[];
+  private readonly resourceTextByUri: Map<string, string>;
   private readonly authenticatedPrincipal?: string;
   /**
    * MCP client info keyed by server-assigned session ID. On each `initialize`
@@ -144,6 +178,33 @@ export class EngramMcpServer {
       options.principal?.trim() ||
       readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() ||
       undefined;
+    this.resources = [
+      {
+        uri: REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+        name: "remnic-memory-inspector",
+        title: "Remnic Memory Inspector",
+        description:
+          "Apps-compatible widget for inspecting retrieved Remnic memories, provenance, safety, and correction/scoping affordances.",
+        mimeType: REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
+        _meta: {
+          ui: {
+            csp: {
+              connectDomains: [],
+              resourceDomains: [],
+            },
+            prefersBorder: true,
+          },
+          "openai/widgetDescription":
+            "Inspect retrieved Remnic memories, provenance, safety, and correction/scoping affordances.",
+        },
+      },
+    ];
+    this.resourceTextByUri = new Map([
+      [
+        REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+        REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
+      ],
+    ]);
     this.tools = [
       {
         name: "engram.recall",
@@ -293,6 +354,161 @@ export class EngramMcpServer {
           },
           required: ["query"],
           additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.action_confidence",
+        description:
+          "Advisory ask/draft/act/refuse/escalate decision helper for interruption budgeting. Read-only; never mutates memory.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            intendedAction: { type: "string" },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            risk: {
+              type: "string",
+              enum: ["low", "medium", "high", "irreversible", "restricted"],
+            },
+            contextReadiness: {
+              type: "string",
+              enum: ["none", "partial", "sufficient"],
+            },
+            currentContextScopes: {
+              type: "array",
+              items: { type: "string" },
+            },
+            userRules: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  kind: {
+                    type: "string",
+                    enum: [
+                      "ask-before",
+                      "do-not-use-outside-this-context",
+                      "never",
+                      "requires-escalation",
+                    ],
+                  },
+                  description: { type: "string" },
+                  matched: { type: "boolean" },
+                },
+                required: ["kind"],
+                additionalProperties: false,
+              },
+            },
+            retrievedMemories: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  source: { type: "string" },
+                  created: { type: "string" },
+                  updated: { type: "string" },
+                  scope: { type: "string" },
+                  userContextScopes: {
+                    type: "array",
+                    items: { type: "string" },
+                  },
+                  retrievalReason: { type: "string" },
+                  confidence: { type: "number", minimum: 0, maximum: 1 },
+                  stale: { type: "boolean" },
+                  corrected: { type: "boolean" },
+                  correctionState: {
+                    type: "string",
+                    enum: ["none", "correction", "superseded", "disputed", "forgotten"],
+                  },
+                  safeToUse: { type: "boolean" },
+                  safety: {
+                    type: "string",
+                    enum: ["safe", "requires-review", "blocked"],
+                  },
+                  safetyReasons: {
+                    type: "array",
+                    items: { type: "string" },
+                  },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        name: REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
+        title: "Show Remnic Memory Inspector",
+        description:
+          "Use this when the user wants a ChatGPT Apps-compatible UI for inspecting Remnic recall, provenance, safety, and correction/forget/scoping affordances. Read-only; correction and forget actions are proposed as follow-up prompts.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Memory question to inspect.",
+            },
+            sessionKey: {
+              type: "string",
+              description: "Optional Remnic session key for scoped recall.",
+            },
+            namespace: {
+              type: "string",
+              description: "Optional Remnic namespace to inspect.",
+            },
+            currentContextScopes: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional current user-context scopes, such as repo, work, personal, client, or private.",
+            },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
+        outputSchema: {
+          type: "object",
+          properties: {
+            app: { type: "object" },
+            query: { type: "string" },
+            sessionKey: { type: "string" },
+            namespace: { type: "string" },
+            safeRecallPreview: { type: "string" },
+            memoryCount: { type: "number" },
+            memoryIds: { type: "array", items: { type: "string" } },
+            memories: { type: "array", items: { type: "object" } },
+            actionConfidence: { type: "object" },
+            affordances: { type: "array", items: { type: "object" } },
+            guidance: { type: "object" },
+          },
+          required: [
+            "app",
+            "query",
+            "namespace",
+            "safeRecallPreview",
+            "memoryCount",
+            "memoryIds",
+            "memories",
+            "actionConfidence",
+            "affordances",
+            "guidance",
+          ],
+          additionalProperties: false,
+        },
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+        _meta: {
+          ui: {
+            resourceUri: REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+            visibility: ["model", "app"],
+          },
+          "openai/outputTemplate": REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+          "openai/toolInvocation/invoking": "Inspecting Remnic memory...",
+          "openai/toolInvocation/invoked": "Remnic memory inspector ready.",
         },
       },
       {
@@ -543,7 +759,7 @@ export class EngramMcpServer {
                   content: { type: "string" },
                   sourceFormat: {
                     type: "string",
-                    enum: ["openai", "anthropic", "openclaw", "lossless-claw", "remnic"],
+                    enum: ["openai", "anthropic", "openclaw", "pi", "lossless-claw", "remnic"],
                   },
                   rawContent: {
                     description: "Optional native provider content blocks for structured message-part capture.",
@@ -609,6 +825,36 @@ export class EngramMcpServer {
             limit: { type: "number", description: "Max results to return" },
           },
           required: ["query"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.lcm_compaction_flush",
+        description:
+          "Flush pending LCM observe work and incremental summaries before a host compacts session context.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionKey: { type: "string", description: "Conversation session identifier" },
+            namespace: { type: "string" },
+          },
+          required: ["sessionKey"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.lcm_compaction_record",
+        description:
+          "Record a host compaction event with before/after token counts in the LCM archive.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sessionKey: { type: "string", description: "Conversation session identifier" },
+            namespace: { type: "string" },
+            tokensBefore: { type: "integer", minimum: 0 },
+            tokensAfter: { type: "integer", minimum: 0 },
+          },
+          required: ["sessionKey", "tokensBefore", "tokensAfter"],
           additionalProperties: false,
         },
       },
@@ -1458,6 +1704,7 @@ export class EngramMcpServer {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {
             tools: {},
+            resources: {},
           },
           serverInfo: {
             name: "remnic",
@@ -1472,6 +1719,64 @@ export class EngramMcpServer {
         id,
         result: {
           tools: this.tools,
+        },
+      };
+    }
+    if (method === "resources/list") {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          resources: this.resources,
+        },
+      };
+    }
+    if (method === "resources/templates/list") {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          resourceTemplates: [],
+        },
+      };
+    }
+    if (method === "resources/read") {
+      const params = request.params ?? {};
+      const uri = typeof params.uri === "string" ? params.uri : "";
+      const resource = this.resources.find((entry) => entry.uri === uri);
+      if (!resource) {
+        return {
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: -32602,
+            message: `Unknown resource URI: ${uri}`,
+          },
+        };
+      }
+      const text = this.resourceTextByUri.get(resource.uri);
+      if (text === undefined) {
+        return {
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: -32603,
+            message: `Resource content unavailable: ${resource.uri}`,
+          },
+        };
+      }
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          contents: [
+            {
+              uri: resource.uri,
+              mimeType: resource.mimeType,
+              text,
+              _meta: resource._meta,
+            },
+          ],
         },
       };
     }
@@ -1720,6 +2025,7 @@ export class EngramMcpServer {
         const response = await this.service.recall({
           query: typeof args.query === "string" ? args.query : "",
           sessionKey: typeof args.sessionKey === "string" ? args.sessionKey : undefined,
+          authenticatedPrincipal: effectivePrincipal,
           namespace: typeof args.namespace === "string" ? args.namespace : undefined,
           topK: typeof args.topK === "number" && Number.isFinite(args.topK) ? args.topK : undefined,
           mode: typeof args.mode === "string" ? args.mode as RecallPlanMode | "auto" : undefined,
@@ -1898,6 +2204,98 @@ export class EngramMcpServer {
             : {}),
         });
       }
+      case "engram.action_confidence": {
+        const body: ActionConfidenceRequest = parseMcpRequest("actionConfidence", args);
+        return this.service.actionConfidence(body);
+      }
+      case REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL: {
+        if (typeof args.query !== "string" || args.query.trim().length === 0) {
+          throw new EngramAccessInputError(
+            "chatgpt_memory_inspector requires a non-empty query string",
+          );
+        }
+        if (
+          "sessionKey" in args &&
+          args.sessionKey !== undefined &&
+          args.sessionKey !== null &&
+          typeof args.sessionKey !== "string"
+        ) {
+          throw new EngramAccessInputError("sessionKey must be a string");
+        }
+        if (
+          "namespace" in args &&
+          args.namespace !== undefined &&
+          args.namespace !== null &&
+          typeof args.namespace !== "string"
+        ) {
+          throw new EngramAccessInputError("namespace must be a string");
+        }
+        let currentContextScopes: string[] | undefined;
+        if (args.currentContextScopes !== undefined && args.currentContextScopes !== null) {
+          if (
+            !Array.isArray(args.currentContextScopes) ||
+            !args.currentContextScopes.every((scope) => typeof scope === "string")
+          ) {
+            throw new EngramAccessInputError(
+              "currentContextScopes must be an array of strings",
+            );
+          }
+          currentContextScopes = args.currentContextScopes;
+        }
+
+        const input: RemnicChatGptMemoryInspectorInput = {
+          query: args.query.trim(),
+        };
+        if (typeof args.sessionKey === "string" && args.sessionKey.trim().length > 0) {
+          input.sessionKey = args.sessionKey;
+        }
+        if (typeof args.namespace === "string" && args.namespace.trim().length > 0) {
+          input.namespace = args.namespace;
+        }
+        if (currentContextScopes !== undefined) {
+          input.currentContextScopes = currentContextScopes;
+        }
+        const recallSessionKey = resolveChatGptInspectorRecallSessionKey(
+          input.sessionKey,
+          effectivePrincipal,
+        );
+        const xrayResponse = await this.service.recallXray({
+          query: input.query,
+          sessionKey: recallSessionKey,
+          namespace: input.namespace,
+          currentContextScopes: input.currentContextScopes,
+          authenticatedPrincipal: effectivePrincipal,
+          mode: "full",
+          disclosure: "chunk",
+          includeRecall: true,
+        });
+        const xray = xrayResponse.snapshotFound === true
+          ? xrayResponse.snapshot ?? null
+          : null;
+        const recall = xrayResponse.recall ?? {
+          query: input.query,
+          namespace: input.namespace ?? xray?.namespace ?? "global",
+          context: "",
+          count: 0,
+          memoryIds: [],
+          results: [],
+          fallbackUsed: false,
+          sourcesUsed: [],
+          disclosure: "chunk",
+        };
+        const actionRequest = buildChatGptMemoryInspectorActionRequest(
+          input,
+          recall,
+          xray,
+        );
+        const actionConfidence = await this.service.actionConfidence(actionRequest);
+        return buildChatGptMemoryInspectorResult(
+          input,
+          recall,
+          xray,
+          actionConfidence,
+        );
+      }
       case "engram.day_summary":
         return this.service.daySummary({
           memories: typeof args.memories === "string" ? args.memories : "",
@@ -2052,6 +2450,24 @@ export class EngramMcpServer {
           limit: typeof args.limit === "number" && Number.isFinite(args.limit) ? args.limit : undefined,
           authenticatedPrincipal: effectivePrincipal,
         });
+      case "engram.lcm_compaction_flush": {
+        const body = parseMcpRequest("lcmCompactionFlush", args);
+        return this.service.lcmCompactionFlush({
+          sessionKey: body.sessionKey,
+          namespace: body.namespace,
+          authenticatedPrincipal: effectivePrincipal,
+        });
+      }
+      case "engram.lcm_compaction_record": {
+        const body = parseMcpRequest("lcmCompactionRecord", args);
+        return this.service.lcmCompactionRecord({
+          sessionKey: body.sessionKey,
+          namespace: body.namespace,
+          tokensBefore: body.tokensBefore,
+          tokensAfter: body.tokensAfter,
+          authenticatedPrincipal: effectivePrincipal,
+        });
+      }
       // ── Continuity / Identity tools ───────────────────────────────────
       case "engram.continuity_audit_generate":
         return this.service.continuityAuditGenerate({

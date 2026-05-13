@@ -1,22 +1,48 @@
 # Remnic
-
-**Persistent, private memory for AI agents.** Your agents forget everything between sessions — Remnic fixes that.
-
-**The trace is noise. The primitive is the product.** Remnic's job is the pipeline that distills hours of agent conversation into compressed, searchable, durable memory primitives. ([How it works →](docs/trace-to-primitive.md))
-
-Remnic gives AI agents long-term memory that survives across conversations. Decisions, preferences, project context, personal details, past mistakes — everything your agent learns persists and resurfaces exactly when it's needed. All data stays on your machine as plain markdown files. No cloud services, no subscriptions, no sharing your data with third parties.
-
 [![npm version](https://img.shields.io/npm/v/@remnic/cli)](https://www.npmjs.com/package/@remnic/cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink)](https://github.com/sponsors/joshuaswarren)
 
-> **Engram is now Remnic.** Canonical packages live under the `@remnic/*` scope:
-> [`@remnic/core`](https://www.npmjs.com/package/@remnic/core),
-> [`@remnic/server`](https://www.npmjs.com/package/@remnic/server),
-> [`@remnic/cli`](https://www.npmjs.com/package/@remnic/cli).
-> OpenClaw installs should use [`@remnic/plugin-openclaw`](https://www.npmjs.com/package/@remnic/plugin-openclaw).
-> The legacy `engram` CLI name remains available as a forwarder during the rename window.
-> Hermes users: [`remnic-hermes`](https://pypi.org/project/remnic-hermes/) v1.0.2 on PyPI.
+Open-source memory and context for user-aware agents.
+
+Remnic is for agents that need to understand the people they work with over time.
+
+Remnic helps AI agents understand the people they work with: their preferences, projects, constraints, decisions, patterns, and definition of good. The goal is simple: agents that remember responsibly, retrieve the right context, and ask fewer unnecessary questions.
+
+Remnic is not just a memory store. It is an exploration of the systems layer around user-aware agents: scoped memory, provenance, retrieval quality, correction, boundaries, and evals.
+
+## Why this matters
+
+Most agents do not fail because they lack another prompt. They fail because they do not understand the user, the project, the boundaries, or what “good” means in context.
+
+Remnic explores the systems layer needed for user-aware agents:
+
+- what to remember
+- where that memory applies
+- why it was retrieved
+- when it should expire
+- how users correct it
+- when the agent should ask instead of act
+- how to evaluate whether memory improved the outcome
+
+**The trace is noise. The primitive is the product.** Remnic's job is the pipeline that distills hours of agent conversation into compressed, searchable, durable memory primitives. ([How it works →](docs/trace-to-primitive.md))
+
+Creator and maintainer of Remnic: [Joshua Warren](https://github.com/joshuaswarren).
+
+## OpenAI / Codex / MCP
+
+Remnic exposes memory and context through HTTP and MCP surfaces and includes integrations for agentic development workflows such as Codex CLI, Claude Code, Replit, and other MCP clients.
+
+The long-term goal is to make memory inspectable, scoped, correctable, and measurable across agent workflows.
+
+## Engram -> Remnic
+ **Engram is now Remnic.** Canonical packages live under the `@remnic/*` scope:
+ [`@remnic/core`](https://www.npmjs.com/package/@remnic/core),
+ [`@remnic/server`](https://www.npmjs.com/package/@remnic/server),
+ [`@remnic/cli`](https://www.npmjs.com/package/@remnic/cli).
+ OpenClaw installs should use [`@remnic/plugin-openclaw`](https://www.npmjs.com/package/@remnic/plugin-openclaw).
+ The legacy `engram` CLI name remains available as a forwarder during the rename window.
+ Hermes users: [`remnic-hermes`](https://pypi.org/project/remnic-hermes/) v1.0.2 on PyPI.
 
 ## Support Remnic
 
@@ -36,9 +62,11 @@ OpenClaw's built-in memory works for simple cases, but it doesn't scale. It lack
 
 ## The Solution
 
-Remnic is an open-source, local-first memory system that replaces OpenClaw's default memory with something much more capable — while keeping everything on your machine. It watches your agent conversations, extracts durable knowledge, and injects the right memories back at the start of every session. Route extraction through the OpenClaw gateway model chain, OpenAI, or a **local LLM** (Ollama, LM Studio, etc.) — your choice.
+Remnic is an open-source memory and context layer for user-aware agents. It watches agent conversations, extracts durable knowledge, and injects the right context back when it is needed. Route extraction through the OpenClaw gateway model chain, OpenAI, or a **local LLM** (Ollama, LM Studio, etc.) -- your choice.
 
-Remnic is the **universal memory layer for AI agents**. It works natively with **[OpenClaw](https://github.com/openclaw/openclaw)**, **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, **[Codex CLI](https://github.com/openai/codex)**, **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**, and any **MCP-compatible client** (Replit, Cursor, etc.). When you tell any agent a preference, every agent knows it — they share one memory store.
+Remnic helps agents understand the people they work with: preferences, projects, constraints, decisions, patterns, and definitions of good. It works natively with **[OpenClaw](https://github.com/openclaw/openclaw)**, **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, **[Codex CLI](https://github.com/openai/codex)**, **[Pi Coding Agent](https://pi.dev)**, **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**, and any **MCP-compatible client** (Replit, Cursor, etc.). When you tell any agent a preference, every agent can use the same governed memory store.
+
+Local-first storage is a trust feature. All data can stay on your machine as plain markdown files: no cloud dependency, no subscription, and no third-party memory service required.
 
 Architecture rule: standalone Remnic is first-class. `@remnic/core`, `@remnic/server`, and `@remnic/cli` own the memory engine and must stay host-agnostic. OpenClaw, Hermes, Codex, Claude Code, and future integrations are thin adapters over that shared core, and adapter work should always follow the host's current upstream SDK and documentation instead of recreating host-native behavior inside Remnic.
 
@@ -158,6 +186,7 @@ Once the Remnic daemon is running, connect any supported agent:
 ```bash
 remnic connectors install claude-code   # Claude Code (hooks + MCP)
 remnic connectors install codex-cli     # Codex CLI (hooks + MCP + memory extension)
+remnic connectors install pi            # Pi Coding Agent (extension + MCP + compaction)
 remnic connectors install replit        # Replit (MCP only)
 pip install --upgrade remnic-hermes     # Hermes Agent (Python MemoryProvider)
 remnic connectors install hermes        # Writes Hermes config + token
@@ -169,6 +198,12 @@ consolidation sub-agent auto-discovers Remnic. Opt out with
 `--config installExtension=false` if you prefer to manage Codex extensions
 yourself.
 
+For Pi Coding Agent, installation writes an auto-discovered extension under
+`~/.pi/agent/extensions/remnic/`. The extension recalls context before turns,
+observes Pi messages and tool activity into Remnic/LCM, exposes Remnic MCP
+tools as Pi tools, and coordinates `session_before_compact` with Remnic LCM
+flush/checkpoint recording. See [docs/integration/pi.md](docs/integration/pi.md).
+
 Each connector generates a unique auth token, installs the appropriate plugin/hooks, and verifies the connection. All agents share the same memory store — tell one agent your preference, and every agent remembers it.
 
 Hermes uses Remnic as a Hermes **MemoryProvider**, not a `context_engine`. Automatic recall runs in `pre_llm_call`, observations run after each turn, and the provider now registers the full Remnic parity tool surface (`remnic_lcm_search`, recall explain/X-ray, memory CRUD, continuity, identity, governance, work-board, shared-context, compounding, day-summary, briefing, checkpoint, and profiling tools) plus legacy `engram_*` aliases. Lossless Context Management is delivered through the daemon recall envelope when `lcmEnabled` is on; no Hermes `context_engine` registration is required. See [docs/plugins/hermes.md](docs/plugins/hermes.md) for the full reference.
@@ -178,6 +213,7 @@ Hermes uses Remnic as a Hermes **MemoryProvider**, not a `context_engine`. Autom
 | **OpenClaw** | Memory slot plugin | Every session | Every response |
 | **Claude Code** | Native hooks + MCP | Every prompt | Every tool use |
 | **Codex CLI** | Native hooks + MCP | Every prompt | Every tool use |
+| **Pi Coding Agent** | Native extension + MCP | Every turn | Every turn |
 | **Hermes** | Python MemoryProvider | Every LLM call | Every turn |
 | **Replit** | MCP only | On demand | On demand |
 
@@ -193,6 +229,9 @@ After installation, add the Remnic bridge plugin to your `openclaw.json`:
     "entries": {
       "openclaw-remnic": {
         "enabled": true,
+        "hooks": {
+          "allowConversationAccess": true
+        },
         "config": {
           // Recommended for OpenClaw: use the gateway model chain.
           "modelSource": "gateway",
@@ -300,7 +339,7 @@ remnic status              # Daemon status and local endpoint summary
 ## Bring your memory
 
 Remnic can import existing memory from the platforms you already use.
-Four optional importer packages ship alongside the CLI — install only the
+Five optional importer packages ship alongside the CLI — install only the
 ones you need:
 
 ```bash
@@ -320,6 +359,11 @@ remnic import --adapter gemini --file "~/Takeout/Gemini/My Activity.json"
 npm install -g @remnic/import-mem0
 export MEM0_API_KEY=...
 remnic import --adapter mem0 --rate-limit 2
+
+# Supermemory (JSON export)
+npm install -g @remnic/import-supermemory
+remnic import --adapter supermemory --file ./supermemory-memories.json --dry-run
+remnic import --adapter supermemory --file ./supermemory-memories.json
 ```
 
 Each importer is an **optional runtime companion** — the base CLI
@@ -554,9 +598,11 @@ Remnic is organized as a monorepo with a core engine, standalone server/CLI, and
 | `@remnic/import-claude` | [![npm](https://img.shields.io/npm/v/@remnic/import-claude)](https://www.npmjs.com/package/@remnic/import-claude) | Claude project docs and prompt-template importer — optional `remnic import --adapter claude` surface |
 | `@remnic/import-gemini` | [![npm](https://img.shields.io/npm/v/@remnic/import-gemini)](https://www.npmjs.com/package/@remnic/import-gemini) | Google Takeout Gemini Apps Activity importer — optional `remnic import --adapter gemini` surface |
 | `@remnic/import-mem0` | [![npm](https://img.shields.io/npm/v/@remnic/import-mem0)](https://www.npmjs.com/package/@remnic/import-mem0) | mem0 REST and JSON importer — optional `remnic import --adapter mem0` surface |
+| `@remnic/import-supermemory` | [![npm](https://img.shields.io/npm/v/@remnic/import-supermemory)](https://www.npmjs.com/package/@remnic/import-supermemory) | Supermemory JSON importer — optional `remnic import --adapter supermemory` surface |
 | `@remnic/plugin-openclaw` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-openclaw)](https://www.npmjs.com/package/@remnic/plugin-openclaw) | OpenClaw adapter — thin bridge (embedded or delegate mode) |
 | `@remnic/plugin-claude-code` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-claude-code)](https://www.npmjs.com/package/@remnic/plugin-claude-code) | Native Claude Code plugin — hooks, skills, MCP |
 | `@remnic/plugin-codex` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-codex)](https://www.npmjs.com/package/@remnic/plugin-codex) | Native Codex CLI plugin — hooks, skills, MCP |
+| `@remnic/plugin-pi` | [![npm](https://img.shields.io/npm/v/@remnic/plugin-pi)](https://www.npmjs.com/package/@remnic/plugin-pi) | Native Pi Coding Agent extension — recall, observe, MCP tools, and compaction coordination |
 | `@remnic/replit` | [![npm](https://img.shields.io/npm/v/@remnic/replit)](https://www.npmjs.com/package/@remnic/replit) | Replit Agent MCP connector — setup snippet + token helper |
 | `remnic-hermes` | [![PyPI](https://img.shields.io/pypi/v/remnic-hermes)](https://pypi.org/project/remnic-hermes/) | Python MemoryProvider for Hermes Agent |
 
@@ -572,7 +618,7 @@ All memory lives on your filesystem as plain markdown files. No cloud dependency
 
 ### A real upgrade from default OpenClaw memory
 
-OpenClaw's built-in memory is basic — it works for getting started, but lacks semantic search, entity tracking, lifecycle management, governance, and multi-agent isolation. Remnic is a drop-in replacement that brings all of those capabilities while keeping the same local-first philosophy.
+OpenClaw's built-in memory is basic — it works for getting started, but lacks semantic search, entity tracking, lifecycle management, governance, and multi-agent isolation. Remnic is a drop-in replacement that brings all of those capabilities while keeping the same inspectable local trust model.
 
 ### Smart recall, not keyword search
 
@@ -603,6 +649,7 @@ Use a preset to jump to a recommended level: `conservative`, `balanced`, `resear
 
 - **[OpenClaw](https://github.com/openclaw/openclaw)** — Native plugin with automatic extraction and recall injection
 - **[Codex CLI](https://github.com/openai/codex)** — MCP-over-HTTP with session-start hooks for automatic recall
+- **[Pi Coding Agent](https://pi.dev)** — Native extension with turn recall, observation, MCP tools, and LCM-aware compaction
 - **Any MCP client** — stdio or HTTP transport, 8 tools available
 - **Scripts & automation** — Authenticated REST API for custom integrations
 - **Local LLMs** — Run extraction and reranking with local models (Ollama, LM Studio, etc.)
@@ -839,6 +886,8 @@ Available via both stdio and HTTP transports:
 | `engram.review_queue_list` | View the governance review queue |
 | `engram.observe` | Feed conversation messages into memory pipeline (LCM + extraction) |
 | `engram.lcm_search` | Full-text search over LCM-archived conversations |
+| `engram.lcm_compaction_flush` | Flush pending LCM work before host context compaction |
+| `engram.lcm_compaction_record` | Record host context compaction token deltas |
 | `engram_context_search` | Full-text search across all archived conversation history (LCM) |
 | `engram_context_describe` | Get a compressed summary of a turn range (LCM) |
 | `engram_context_expand` | Retrieve raw lossless messages for a turn range (LCM) |
@@ -916,6 +965,7 @@ openclaw engram access mcp-serve   # Start OpenClaw-hosted stdio MCP server
 
 # Trust-zone demos
 openclaw engram trust-zone-demo-seed --dry-run       # Preview the opt-in buyer demo dataset
+openclaw engram trust-zone-demo-seed --scenario agentic-commerce-v1 --dry-run
 openclaw engram trust-zone-demo-seed                 # Explicitly seed the demo dataset
 openclaw engram trust-zone-promote --record-id <id> --target-zone working --reason "Operator review"
 ```
@@ -928,13 +978,23 @@ Trust zones now ship with a dedicated admin-console view plus an explicit demo s
 - **Explicit only** — demo records appear only after you run `openclaw engram trust-zone-demo-seed` or trigger the matching admin-console action.
 - **Buyer-friendly story** — the trust-zone view surfaces provenance strength, promotion readiness, corroboration requirements, and operator promotion actions in one place.
 
-The seeded scenario is `enterprise-buyer-v1`, which creates a small, opinionated dataset covering:
+The default scenario is `enterprise-buyer-v1`, which creates a small, opinionated dataset covering:
 
 - quarantine records that are ready for review
 - working records that are blocked on missing provenance
 - working records that still need corroboration
 - working records with independent corroboration support
 - a trusted operator policy record
+
+The commerce scenario is `agentic-commerce-v1`. It models buyer-aware recommendations using synthetic catalog data plus:
+
+- brand, size, fit, budget, gift, and shipping preferences
+- excluded products and never-suggest rules
+- ask-before-checkout boundaries
+- a blocked unverified upsell claim
+- retrieval eval coverage for commerce personalization and checkout boundaries
+
+See [Agentic Commerce Demo](docs/agentic-commerce-demo.md) for the end-to-end walkthrough.
 
 See the [full CLI reference](docs/api.md#cli-commands) for all commands.
 
@@ -1034,7 +1094,7 @@ OpenClaw plugin settings live in `openclaw.json` under `plugins.entries.openclaw
 - [Recall X-ray](docs/xray.md) — `remnic xray` CLI, HTTP endpoint, MCP tool for per-result retrieval attribution (issue #570)
 - [Connectors](docs/connectors.md) — `remnic connectors list/status/run` CLI reference, OAuth setup, config keys, env vars, and troubleshooting for Google Drive and Notion (issue #683 PR 6/N)
 - [Live connectors framework](docs/live-connectors.md) — Connector framework contract, registry, state store API, and how to write a connector
-- [Memory importers](docs/importers.md) — Bring memory from ChatGPT, Claude, Gemini, and mem0 (issue #568)
+- [Memory importers](docs/importers.md) — Bring memory from ChatGPT, Claude, Gemini, mem0, and Supermemory (issue #568)
 - [Memory Extraction Threat Model](docs/security/memory-extraction-threat-model.md) — ADAM attack analysis, attacker tiers, and mitigation wiring (issue #565)
 - [ADAM Baseline 2026-04](docs/security/adam-baseline-2026-04.md) — Reproducible ASR measurements per attacker tier
 

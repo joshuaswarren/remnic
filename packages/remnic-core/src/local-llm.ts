@@ -1,6 +1,6 @@
 import { log } from "./logger.js";
 import type { PluginConfig } from "./types.js";
-import { existsSync, readFileSync } from "node:fs";
+import fs from "node:fs";
 import os from "node:os";
 import type { ModelRegistry } from "./model-registry.js";
 import { launchProcessSync } from "./runtime/child-process.js";
@@ -13,6 +13,94 @@ function trimTrailingSlashes(s: string): string {
   return s.substring(0, end);
 }
 
+function stripTrailingV1Path(s: string): string {
+  return s.endsWith("/v1") ? s.slice(0, -3) : s;
+}
+
+function explicitPortFromUrl(s: string): number | null {
+  try {
+    const parsed = new URL(s);
+    if (!parsed.port) return null;
+    const port = Number(parsed.port);
+    return Number.isInteger(port) ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isLlamaCppPropsResponse(value: unknown): boolean {
+  return (
+    isObjectRecord(value) &&
+    isObjectRecord(value.default_generation_settings) &&
+    typeof value.total_slots === "number" &&
+    (
+      typeof value.model_path === "string" ||
+      typeof value.chat_template === "string" ||
+      typeof value.build_info === "string"
+    )
+  );
+}
+
+function isLlamaCppModelsResponse(value: unknown): boolean {
+  if (!isObjectRecord(value) || !Array.isArray(value.data)) {
+    return false;
+  }
+  return value.data.some((entry) => {
+    if (!isObjectRecord(entry)) return false;
+    if (entry.owned_by === "llamacpp") return true;
+    if (typeof entry.id === "string" && entry.id.endsWith(".gguf")) return true;
+    const meta = entry.meta;
+    return (
+      isObjectRecord(meta) &&
+      ("n_ctx_train" in meta || "n_params" in meta || "vocab_type" in meta)
+    );
+  });
+}
+
+function isLmStudioApiV1ModelsResponse(value: unknown): boolean {
+  if (!isObjectRecord(value) || !Array.isArray(value.models)) {
+    return false;
+  }
+  return value.models.some((entry) => {
+    if (!isObjectRecord(entry)) return false;
+    return (
+      typeof entry.key === "string" &&
+      typeof entry.display_name === "string" &&
+      (
+        typeof entry.format === "string" ||
+        typeof entry.max_context_length === "number" ||
+        Array.isArray(entry.loaded_instances)
+      )
+    );
+  });
+}
+
+function isLmStudioApiV0ModelsResponse(value: unknown): boolean {
+  if (!isObjectRecord(value) || !Array.isArray(value.data)) {
+    return false;
+  }
+  return value.data.some((entry) => {
+    if (!isObjectRecord(entry)) return false;
+    return (
+      typeof entry.id === "string" &&
+      typeof entry.publisher === "string" &&
+      (
+        typeof entry.compatibility_type === "string" ||
+        typeof entry.max_context_length === "number" ||
+        typeof entry.state === "string"
+      )
+    );
+  });
+}
+
+function isLmStudioNativeModelsResponse(value: unknown): boolean {
+  return isLmStudioApiV1ModelsResponse(value) || isLmStudioApiV0ModelsResponse(value);
+}
+
 /**
  * Local LLM client for OpenAI-compatible endpoints (LM Studio, Ollama, MLX, etc.)
  *
@@ -20,12 +108,12 @@ function trimTrailingSlashes(s: string): string {
  * Provides privacy-preserving, cost-effective LLM operations with
  * graceful fallback to cloud providers when local LLM is unavailable.
  */
-export type LocalLlmType = "lmstudio" | "ollama" | "mlx" | "vllm" | "generic";
+export type LocalLlmType = "lmstudio" | "ollama" | "mlx" | "vllm" | "llamacpp" | "generic";
 
 /**
  * Backends known to honor `chat_template_kwargs: { enable_thinking: false }`
- * on OpenAI-compatible `/v1/chat/completions`.  LM Studio and vLLM both
- * forward this field to the jinja chat template, where thinking-capable
+ * on OpenAI-compatible `/v1/chat/completions`.  LM Studio, vLLM, and
+ * llama.cpp forward this field to the jinja chat template, where thinking-capable
  * models (Qwen 3.5, Gemma 4, DeepSeek) suppress reasoning tokens.
  *
  * Strict OpenAI-compatible backends (standard OpenAI, Azure OpenAI, some
@@ -37,6 +125,21 @@ export type LocalLlmType = "lmstudio" | "ollama" | "mlx" | "vllm" | "generic";
 const THINKING_COMPATIBLE_BACKENDS: ReadonlySet<LocalLlmType> = new Set([
   "lmstudio",
   "vllm",
+  "llamacpp",
+]);
+
+const THINKING_SUPPRESSED_OPERATIONS: ReadonlySet<string> = new Set([
+  "extraction",
+  "extraction-judge",
+  "contradiction-judge",
+  "contradiction_verification",
+  "link_suggestion",
+  "memory_summarization",
+  "proactive_extraction",
+  "lcm-summarize",
+  "day_summary",
+  "hourly_summary",
+  "hourly_summary_extended",
 ]);
 
 interface LocalServerConfig {
@@ -56,35 +159,48 @@ const LOCAL_SERVERS: LocalServerConfig[] = [
     detectFn: (resp) => typeof resp === "string" && resp.includes("Ollama"),
   },
   {
+    type: "llamacpp",
+    defaultPort: 8080,
+    healthEndpoint: "/health",
+    modelsEndpoint: "/v1/models",
+    detectFn: (resp) => isObjectRecord(resp) && resp.status === "ok",
+  },
+  {
     type: "mlx",
     defaultPort: 8080,
     healthEndpoint: "/v1/models",
     modelsEndpoint: "/v1/models",
-    detectFn: (resp) =>
-      typeof resp === "object" &&
-      resp !== null &&
-      "data" in resp &&
-      Array.isArray((resp as { data: unknown[] }).data),
+    detectFn: (resp) => isObjectRecord(resp) && Array.isArray(resp.data),
   },
   {
     type: "lmstudio",
     defaultPort: 1234,
     healthEndpoint: "/v1/models",
     modelsEndpoint: "/v1/models",
-    detectFn: (resp) =>
-      typeof resp === "object" &&
-      resp !== null &&
-      "data" in resp &&
-      Array.isArray((resp as { data: unknown[] }).data),
+    detectFn: (resp) => isObjectRecord(resp) && Array.isArray(resp.data),
   },
   {
     type: "vllm",
     defaultPort: 8000,
     healthEndpoint: "/health",
     modelsEndpoint: "/v1/models",
-    detectFn: (resp) => resp === "" || (typeof resp === "object" && resp !== null),
+    detectFn: (resp) => resp === "" || (isObjectRecord(resp) && !("status" in resp)),
   },
 ];
+
+function orderedLocalServers(configuredBaseUrl: string): LocalServerConfig[] {
+  const configuredPort = explicitPortFromUrl(configuredBaseUrl);
+  if (configuredPort === null) return LOCAL_SERVERS;
+  const matching = LOCAL_SERVERS.filter(
+    (serverConfig) => serverConfig.defaultPort === configuredPort,
+  );
+  if (matching.length === 0) return LOCAL_SERVERS;
+  const matchingTypes = new Set(matching.map((serverConfig) => serverConfig.type));
+  return [
+    ...matching,
+    ...LOCAL_SERVERS.filter((serverConfig) => !matchingTypes.has(serverConfig.type)),
+  ];
+}
 
 export interface LocalModelInfo {
   id: string;
@@ -100,6 +216,7 @@ interface LocalLlmChatCompletionOptions {
   responseFormat?: { type: string };
   timeoutMs?: number;
   operation?: string;
+  forceDisableThinking?: boolean;
   priority?: LocalLlmRequestPriority;
 }
 
@@ -157,8 +274,10 @@ export class LocalLlmClient {
    * (LM Studio, vLLM; see `THINKING_COMPATIBLE_BACKENDS`).  Strict
    * OpenAI-compat backends reject unknown fields with 400; on those the
    * client fails open (thinking runs normally).  This is the safe
-   * default for Remnic extraction / consolidation: measurable latency
-   * win on thinking-capable backends, zero risk on others.  Issue #548.
+   * default for Remnic extraction-style operations: measurable latency
+   * win on thinking-capable backends, zero risk on others. Consolidation
+   * operations keep thinking enabled unless explicitly added to
+   * `THINKING_SUPPRESSED_OPERATIONS`. Issues #548 and #979.
    */
   set disableThinking(value: boolean) {
     this._disableThinking = value;
@@ -303,6 +422,22 @@ export class LocalLlmClient {
     }
   }
 
+  private async probeLmStudioNativeModels(
+    probeBaseUrl: string,
+  ): Promise<{ matched: boolean; unauthorized: boolean }> {
+    let unauthorized = false;
+    for (const endpoint of ["/api/v1/models", "/api/v0/models"]) {
+      const probe = await this.fetchWithTimeout(`${probeBaseUrl}${endpoint}`);
+      if (probe.ok && isLmStudioNativeModelsResponse(probe.data)) {
+        return { matched: true, unauthorized };
+      }
+      if (probe.status === 401 || probe.status === 403) {
+        unauthorized = true;
+      }
+    }
+    return { matched: false, unauthorized };
+  }
+
   /**
    * Check if local LLM is available
    * Uses 127.0.0.1 instead of localhost to avoid DNS issues (consistent with tactician)
@@ -323,23 +458,66 @@ export class LocalLlmClient {
       return this.isAvailable;
     }
 
-    // Normalize URL - replace localhost with 127.0.0.1, remove trailing slashes
-    const baseUrl = trimTrailingSlashes(
+    // Normalize URL - replace localhost with 127.0.0.1, remove trailing slashes.
+    // Probe server-native endpoints from the server root even when users configure
+    // the OpenAI-compatible `/v1` base URL for chat completions.
+    const configuredBaseUrl = trimTrailingSlashes(
       this.config.localLlmUrl.replace("localhost", "127.0.0.1"),
     );
+    const probeBaseUrl = stripTrailingV1Path(configuredBaseUrl);
     let sawUnauthorizedProbe = false;
 
     // Try to detect which server type is running
-    for (const serverConfig of LOCAL_SERVERS) {
-      const healthUrl = `${baseUrl}${serverConfig.healthEndpoint}`;
+    for (const serverConfig of orderedLocalServers(configuredBaseUrl)) {
+      const healthUrl = `${probeBaseUrl}${serverConfig.healthEndpoint}`;
       log.debug(`checking ${serverConfig.type} at ${healthUrl}`);
 
       const result = await this.fetchWithTimeout(healthUrl);
       if (result.ok && serverConfig.detectFn(result.data)) {
+        if (serverConfig.type === "mlx") {
+          const lmStudioProbe = await this.probeLmStudioNativeModels(probeBaseUrl);
+          if (lmStudioProbe.unauthorized) {
+            sawUnauthorizedProbe = true;
+          }
+          if (lmStudioProbe.matched) {
+            this.isAvailable = true;
+            this.detectedType = "lmstudio";
+            this.lastHealthCheck = now;
+            log.info(`detected lmstudio at ${configuredBaseUrl}`);
+            return true;
+          }
+        }
+        if (serverConfig.type === "llamacpp") {
+          let sawLlamaCppSignal = false;
+          const propsProbe = await this.fetchWithTimeout(`${probeBaseUrl}/props`);
+          if (propsProbe.ok && isLlamaCppPropsResponse(propsProbe.data)) {
+            sawLlamaCppSignal = true;
+          }
+          if (propsProbe.status === 401 || propsProbe.status === 403) {
+            sawUnauthorizedProbe = true;
+          }
+
+          const modelsUrl = `${probeBaseUrl}${serverConfig.modelsEndpoint}`;
+          const modelsProbe = await this.fetchWithTimeout(modelsUrl);
+          if (modelsProbe.ok && isLlamaCppModelsResponse(modelsProbe.data)) {
+            sawLlamaCppSignal = true;
+          }
+          if (modelsProbe.status === 401 || modelsProbe.status === 403) {
+            sawUnauthorizedProbe = true;
+            continue;
+          }
+
+          const authConfigured =
+            Boolean(this.config.localLlmApiKey) &&
+            this.config.localLlmAuthHeader !== false;
+          if (!sawLlamaCppSignal || (authConfigured && !modelsProbe.ok)) {
+            continue;
+          }
+        }
         this.isAvailable = true;
         this.detectedType = serverConfig.type;
         this.lastHealthCheck = now;
-        log.info(`detected ${serverConfig.type} at ${baseUrl}`);
+        log.info(`detected ${serverConfig.type} at ${configuredBaseUrl}`);
         return true;
       }
       if (result.status === 401 || result.status === 403) {
@@ -349,13 +527,13 @@ export class LocalLlmClient {
 
     // Generic check if specific detection failed
     try {
-      const modelsUrl = `${baseUrl}/v1/models`;
+      const modelsUrl = `${probeBaseUrl}/v1/models`;
       const result = await this.fetchWithTimeout(modelsUrl);
       if (result.ok) {
         this.isAvailable = true;
         this.detectedType = "generic";
         this.lastHealthCheck = now;
-        log.info(`detected generic OpenAI-compatible server at ${baseUrl}`);
+        log.info(`detected generic OpenAI-compatible server at ${configuredBaseUrl}`);
         return true;
       }
       if (result.status === 401 || result.status === 403) {
@@ -370,10 +548,10 @@ export class LocalLlmClient {
     this.lastHealthCheck = now;
     if (sawUnauthorizedProbe) {
       log.warn(
-        `local LLM availability probe was unauthorized at ${baseUrl}; verify localLlmApiKey and localLlmAuthHeader settings`,
+        `local LLM availability probe was unauthorized at ${configuredBaseUrl}; verify localLlmApiKey and localLlmAuthHeader settings`,
       );
     }
-    log.debug("local LLM not available at", baseUrl);
+    log.debug("local LLM not available at", configuredBaseUrl);
     return false;
   }
 
@@ -387,12 +565,12 @@ export class LocalLlmClient {
       const homeDir = this.resolveHomeDir();
       const settingsPath = `${homeDir}/.cache/lm-studio/settings.json`;
 
-      if (!existsSync(settingsPath)) {
+      if (!fs.existsSync(settingsPath)) {
         log.debug(`LM Studio settings: file not found at ${settingsPath}`);
         return null;
       }
 
-      const content = readFileSync(settingsPath, "utf-8");
+      const content = fs.readFileSync(settingsPath, "utf-8");
       const settings = JSON.parse(content) as {
         defaultContextLength?: {
           type?: string;
@@ -431,7 +609,7 @@ export class LocalLlmClient {
         "/opt/homebrew/bin/lms",
       ];
 
-      const lmsPath = lmsPaths.find((p) => p.length > 0 && existsSync(p));
+      const lmsPath = lmsPaths.find((p) => p.length > 0 && fs.existsSync(p));
       if (!lmsPath) {
         log.debug(`LMS CLI: not found in standard locations (checked: ${lmsPaths.join(", ")})`);
         return null;
@@ -791,11 +969,15 @@ export class LocalLlmClient {
         requestBody.response_format = options.responseFormat;
       }
 
-      // Suppress thinking/reasoning for thinking-capable models
-      // (Qwen 3.5, Gemma 4, DeepSeek).  These models default to
-      // thinking-on via their chat template; sending
-      // `chat_template_kwargs: { enable_thinking: false }` tells the
-      // template to skip reasoning tokens.
+      // Suppress thinking/reasoning for operations that benefit from terse,
+      // structured output. Thinking-capable models (Qwen 3.5, Gemma 4,
+      // DeepSeek) default to thinking-on via their chat template; sending
+      // `chat_template_kwargs: { enable_thinking: false }` tells the template
+      // to skip reasoning tokens. Consolidation operations on the main client
+      // intentionally keep thinking enabled so entity resolution and
+      // deduplication can use the model's reasoning path. Fast-tier callers can
+      // still force suppression per request to preserve their low-latency
+      // contract.
       //
       // Gate the injection on detected backend support (issue #548,
       // Codex P1 on PR #550): `chat_template_kwargs` is an LM Studio /
@@ -804,8 +986,12 @@ export class LocalLlmClient {
       // unknown fields with 400, which trips the 400-cooldown path and
       // can effectively disable local extraction.  Fail open when the
       // backend hasn't been positively identified as thinking-capable.
+      const shouldSuppressThinking =
+        options.forceDisableThinking === true ||
+        (this._disableThinking &&
+          THINKING_SUPPRESSED_OPERATIONS.has(operation));
       if (
-        this._disableThinking &&
+        shouldSuppressThinking &&
         this.detectedType !== null &&
         THINKING_COMPATIBLE_BACKENDS.has(this.detectedType)
       ) {

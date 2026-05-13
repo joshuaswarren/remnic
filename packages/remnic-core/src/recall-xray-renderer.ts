@@ -24,6 +24,7 @@ import type {
 } from "./recall-xray.js";
 import { summarizeDisclosureTokens } from "./recall-xray.js";
 import { renderTierExplainTextLines } from "./recall-explain-renderer.js";
+import { summarizeRetrievedMemoryProvenance } from "./memory-provenance.js";
 
 export type RecallXrayFormat = "json" | "text" | "markdown";
 
@@ -152,6 +153,27 @@ function renderResultTextLines(
   lines.push(`[${rank}] ${result.memoryId} — ${servedByLabel(result.servedBy)}`);
   if (result.path) lines.push(`    path: ${result.path}`);
   lines.push(`    score: ${renderScoreDecomposition(result)}`);
+  if (result.provenance) {
+    lines.push(
+      `    provenance: ${summarizeRetrievedMemoryProvenance(result.provenance)}`,
+    );
+    lines.push(`    retrieval-reason: ${result.provenance.retrievalReason}`);
+    if (result.provenance.userContextScopes.length > 0) {
+      lines.push(
+        `    context-scopes: ${result.provenance.userContextScopes.join(", ")}`,
+      );
+    }
+    if (
+      result.provenance.safety !== "safe" ||
+      result.provenance.safetyReasons.length > 0
+    ) {
+      const reasonSuffix =
+        result.provenance.safetyReasons.length > 0
+          ? ` (${result.provenance.safetyReasons.join(", ")})`
+          : "";
+      lines.push(`    safety: ${result.provenance.safety}${reasonSuffix}`);
+    }
+  }
   if (result.admittedBy.length > 0) {
     lines.push(`    admitted-by: ${result.admittedBy.join(", ")}`);
   }
@@ -325,6 +347,33 @@ function renderResultMarkdownLines(
     lines.push("");
   }
   lines.push(`- **Score:** ${renderScoreDecomposition(result)}`);
+  if (result.provenance) {
+    lines.push(
+      `- **Provenance:** ${mdEscape(summarizeRetrievedMemoryProvenance(result.provenance))}`,
+    );
+    lines.push(
+      `- **Retrieval reason:** ${mdInlineCode(result.provenance.retrievalReason)}`,
+    );
+    if (result.provenance.userContextScopes.length > 0) {
+      lines.push(
+        `- **Context scopes:** ${result.provenance.userContextScopes
+          .map(mdInlineCode)
+          .join(", ")}`,
+      );
+    }
+    if (
+      result.provenance.safety !== "safe" ||
+      result.provenance.safetyReasons.length > 0
+    ) {
+      const reasonSuffix =
+        result.provenance.safetyReasons.length > 0
+          ? ` (${result.provenance.safetyReasons.map(mdInlineCode).join(", ")})`
+          : "";
+      lines.push(
+        `- **Safety:** ${mdInlineCode(result.provenance.safety)}${reasonSuffix}`,
+      );
+    }
+  }
   if (result.admittedBy.length > 0) {
     lines.push(
       `- **Admitted by:** ${result.admittedBy.map(mdInlineCode).join(", ")}`,

@@ -260,6 +260,7 @@ export async function deriveCausalPromotionCandidates(options: {
   config: ConsolidationConfig;
   gatewayConfig?: GatewayConfig;
   gatewayAgentId?: string;
+  workspaceDir?: string;
   pluginConfig?: PluginConfig;
 }): Promise<CausalPatternCandidate[]> {
   try {
@@ -281,7 +282,9 @@ export async function deriveCausalPromotionCandidates(options: {
     }
 
     // If no LLM available, fall back to empty (no deterministic fallback)
-    const llm = new FallbackLlmClient(options.gatewayConfig);
+    const llm = new FallbackLlmClient(options.gatewayConfig, {
+      workspaceDir: options.pluginConfig?.workspaceDir ?? options.workspaceDir,
+    });
     if (!llm.isAvailable(options.gatewayAgentId)) {
       log.debug("[cmc] no LLM available for consolidation — skipping");
       return [];
@@ -308,6 +311,7 @@ export async function synthesizeCausalPreferencesViaLlm(options: {
   causalTrajectoryStoreDir?: string;
   gatewayConfig?: GatewayConfig;
   gatewayAgentId?: string;
+  workspaceDir?: string;
   minTrajectories?: number;
 }): Promise<string | null> {
   try {
@@ -318,7 +322,9 @@ export async function synthesizeCausalPreferencesViaLlm(options: {
     const chainIndex = await readChainIndex(chainsDir);
     const context = formatCausalContext(trajectories, chainIndex);
 
-    const llm = new FallbackLlmClient(options.gatewayConfig);
+    const llm = new FallbackLlmClient(options.gatewayConfig, {
+      workspaceDir: options.workspaceDir,
+    });
     if (!llm.isAvailable(options.gatewayAgentId)) return null;
 
     const result = await consolidateWithLlm(context, llm, options.gatewayAgentId);

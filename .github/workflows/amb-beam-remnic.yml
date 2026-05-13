@@ -1,0 +1,126 @@
+name: AMB BEAM Remnic
+
+on:
+  workflow_dispatch:
+    inputs:
+      split:
+        description: BEAM split to evaluate.
+        required: true
+        default: 10m
+        type: choice
+        options:
+          - 100k
+          - 10m
+      query_limit:
+        description: Optional query limit for smoke runs. Leave empty for the full split.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  beam:
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/codex/beam-amb-remnic-eval'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      AMB_DIR: /tmp/agent-memory-benchmark
+      REMNIC_REPO_PATH: ${{ github.workspace }}
+      REMNIC_AMB_SESSION_PREFIX: beam
+      REMNIC_AMB_RECALL_BUDGET_CHARS: "49152"
+      REMNIC_AMB_DRAIN_TIMEOUT_MS: "28800000"
+      UV_CACHE_DIR: /tmp/uv-cache
+      OMB_ANSWER_LLM: gemini
+      OMB_ANSWER_MODEL: gemini-3.1-pro-preview
+      OMB_JUDGE_LLM: gemini
+      OMB_JUDGE_MODEL: gemini-2.5-flash-lite
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      BEAM_SPLIT: ${{ inputs.split }}
+      BEAM_QUERY_LIMIT: ${{ inputs.query_limit }}
+    steps:
+      - name: Checkout Remnic
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: pnpm
+
+      - name: Install Remnic dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Checkout public AMB
+        run: git clone https://github.com/vectorize-io/agent-memory-benchmark.git "$AMB_DIR"
+
+      - name: Require official judge credentials
+        run: |
+          if [ -z "${GEMINI_API_KEY}${GOOGLE_API_KEY}" ]; then
+            echo "::error::Set a GEMINI_API_KEY or GOOGLE_API_KEY repository secret before running this workflow."
+            exit 1
+          fi
+
+      - name: Install Remnic AMB provider
+        run: node integrations/amb/install-remnic-provider.mjs "$AMB_DIR"
+
+      - name: Check public-comparable setup
+        run: node integrations/amb/check-remnic-run.mjs "$AMB_DIR"
+
+      - name: Run AMB BEAM
+        working-directory: ${{ env.AMB_DIR }}
+        run: |
+          case "$BEAM_SPLIT" in
+            100k|10m) ;;
+            *)
+              echo "::error::Unsupported BEAM split: $BEAM_SPLIT"
+              exit 1
+              ;;
+          esac
+
+          args=(run --dataset beam --split "$BEAM_SPLIT" --memory remnic --mode rag)
+          if [ -n "$BEAM_QUERY_LIMIT" ]; then
+            if ! [[ "$BEAM_QUERY_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::query_limit must be a positive integer when provided."
+              exit 1
+            fi
+            args+=(--query-limit "$BEAM_QUERY_LIMIT")
+          fi
+          uv run omb "${args[@]}"
+
+      - name: Compare against public BEAM leaderboard
+        if: env.BEAM_QUERY_LIMIT == ''
+        run: |
+          result="$AMB_DIR/outputs/beam/remnic/rag/$BEAM_SPLIT.json"
+          node integrations/amb/compare-beam-result.mjs "$result" | tee "$RUNNER_TEMP/remnic-beam-comparison.txt"
+
+      - name: Note smoke run comparison skip
+        if: env.BEAM_QUERY_LIMIT != ''
+        run: |
+          {
+            echo "Skipped public leaderboard comparison."
+            echo "Reason: query_limit=$BEAM_QUERY_LIMIT produces a partial smoke result, not a public-comparable full BEAM split."
+          } | tee "$RUNNER_TEMP/remnic-beam-comparison.txt"
+
+      - name: Upload AMB BEAM artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remnic-beam-${{ inputs.split }}
+          if-no-files-found: ignore
+          path: |
+            ${{ env.AMB_DIR }}/outputs/beam/remnic/rag/${{ inputs.split }}.json
+            ${{ runner.temp }}/remnic-beam-comparison.txt

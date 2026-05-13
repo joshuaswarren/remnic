@@ -22,6 +22,8 @@ Packages:
   @remnic/plugin-openclaw OpenClaw adapter (embedded or delegate mode).
   @remnic/plugin-codex    Codex CLI adapter (hooks + MCP + memory extension).
   @remnic/hermes-provider TypeScript HTTP client for remote Remnic instances.
+  @remnic/import-supermemory Optional Supermemory JSON importer for
+                          `remnic import --adapter supermemory`.
   remnic-hermes           Python PyPI package, MemoryProvider for Hermes Agent.
 
 OpenClaw adapter note:

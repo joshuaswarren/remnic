@@ -1,8 +1,8 @@
 # @remnic/plugin-openclaw
 
-OpenClaw plugin for Remnic memory. Thin adapter that connects the OpenClaw gateway to [`@remnic/core`](https://www.npmjs.com/package/@remnic/core).
+OpenClaw plugin for Remnic memory and context. The package bundles the OpenClaw adapter plus the Remnic core runtime so it can run without a separate Remnic service; the adapter registers OpenClaw hooks/tools and delegates memory behavior to [`@remnic/core`](https://www.npmjs.com/package/@remnic/core).
 
-Part of [Remnic](https://github.com/joshuaswarren/remnic), the universal memory layer for AI agents.
+Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory and context for user-aware agents.
 
 ## Install
 
@@ -12,7 +12,7 @@ openclaw plugins install clawhub:@remnic/plugin-openclaw
 
 Or ask your OpenClaw agent:
 
-> Install the @remnic/plugin-openclaw plugin and configure it as my memory system.
+> Install the @remnic/plugin-openclaw ClawHub plugin and configure it as my memory system.
 
 ## Configure
 
@@ -25,7 +25,10 @@ Add the plugin to your `openclaw.json`:
     "slots": { "memory": "openclaw-remnic" },
     "entries": {
       "openclaw-remnic": {
-        "package": "@remnic/plugin-openclaw"
+        "package": "@remnic/plugin-openclaw",
+        "hooks": {
+          "allowConversationAccess": true
+        }
       }
     }
   }
@@ -79,7 +82,7 @@ runs from real runtime and OpenClaw chain runs.
 This plugin hooks into the OpenClaw gateway lifecycle:
 
 - **`gateway_start`** -- initializes the Remnic memory engine
-- **`before_agent_start`** / **`before_prompt_build`** -- injects relevant memories into the agent's context
+- **`before_agent_start`** / **`before_prompt_build`** -- adds relevant memories to the agent context through OpenClaw's memory context builders
 - **`agent_end`** -- buffers the conversation turn for extraction
 - **`before_compaction`** / **`after_compaction`** -- saves checkpoints and triggers session reset on context compaction
 - **`before_reset`** -- bounded flush of the in-flight buffer before OpenClaw discards a session
@@ -91,7 +94,99 @@ This plugin hooks into the OpenClaw gateway lifecycle:
 - **Tools** -- registers `memory_search`, `memory_get`, `memory_stats`, and other agent tools
 - **Commands** -- provides CLI commands for memory management
 
-All memory processing uses [`@remnic/core`](https://www.npmjs.com/package/@remnic/core). Memory files stay on your local filesystem as plain markdown files. When the plugin is configured to use OpenAI or an OpenAI-compatible endpoint, conversation and memory excerpts may be sent to that configured model provider for extraction, consolidation, summarization, and embeddings. Use `modelSource: "gateway"` or local LLM settings when those operations should stay on your own OpenClaw/local model path.
+All memory processing uses [`@remnic/core`](https://www.npmjs.com/package/@remnic/core). Memory files stay on your local filesystem as plain markdown files. When the plugin is configured to use OpenAI, an OpenAI-compatible endpoint, or provider credentials resolved from OpenClaw runtime auth, conversation and memory excerpts may be sent to that configured model provider for extraction, consolidation, summarization, embeddings, active recall, or benchmark judging. Use `modelSource: "gateway"` and route the gateway agent to local or otherwise approved models when those operations should stay on your own OpenClaw/local model path.
+
+Credential and model-provider behavior is explicit:
+
+- `modelSource: "gateway"` is the recommended OpenClaw mode and uses OpenClaw gateway agents instead of a Remnic-owned API key.
+- Plugin/provider modes may read configured model credentials from the OpenClaw auth resolver, OpenClaw's materialized provider config at `~/.openclaw/agents/main/agent/models.json`, or provider-specific environment variables such as `<PROVIDER>_API_KEY` and `<PROVIDER>_TOKEN`.
+- Do not set `openaiApiKey` or provider environment variables for Remnic if you want all LLM-backed memory work routed through the gateway.
+
+The npm package also declares this surface in `package.json` under
+`openclaw.environment` so ClawHub and other registries can show the optional
+provider env vars, config path, and external-model routing behavior before
+installation.
+
+## Privacy Boundary
+
+OpenClaw hook runtime metadata such as authorization headers, API keys, provider
+credential objects, and bearer tokens is operational metadata. Remnic does not
+persist those fields to transcripts, extraction buffers, recall audit entries,
+logs, or memory content.
+
+User-authored message text is different: Remnic is a memory plugin, so message
+content can be stored, extracted, summarized, embedded, or recalled according to
+the configured memory policy. Do not paste secrets into chat when you do not
+want them treated as conversation content.
+
+## Plugin Inspection
+
+Run the OpenClaw plugin inspector with:
+
+```bash
+npm run plugin:inspect
+npm run plugin:inspect:runtime
+```
+
+The inspector gate covers the static OpenClaw adapter manifest, hook, tool, and
+service surfaces. Some registrations are intentionally casted or dynamically
+guarded in the adapter, including `registerMemoryCapability`, `registerCli`,
+and `registerCommand`; keep runtime capture coverage for those surfaces in a
+separate adapter test slice.
+
+Run the deterministic OpenClaw adapter scenario suite with:
+
+```bash
+npm run test:openclaw-scenarios
+```
+
+The suite covers the registered memory tools and lifecycle hooks without live
+OpenClaw, LLM credentials, or network calls.
+
+Run the OpenClaw hook privacy suite with:
+
+```bash
+npm run test:openclaw-privacy
+```
+
+The suite guards against runtime auth metadata leaking into persisted memory,
+transcript, recall-audit, or debug-log surfaces.
+
+## SDK Surface Drift Check
+
+The adapter keeps a conservative OpenClaw SDK surface snapshot at
+`openclaw-sdk-surface.expected.json`. Run
+`npm run check:openclaw-sdk-surface` after changing OpenClaw dependencies or
+with `-- --package-root <path>` to check a local OpenClaw checkout. When an
+upstream SDK change is intentional, review the adapter impact first, then
+refresh the snapshot with `npm run check:openclaw-sdk-surface -- --write`.
+CI jobs that provision OpenClaw should use
+`npm run check:openclaw-sdk-surface:required` or pass
+`-- --require --package-root <path>` so a missing SDK fails instead of skipping.
+
+Last compatibility sweep: May 13, 2026. The SDK surface check passed against
+`openclaw@2026.5.3`, `openclaw@2026.5.3-1`, `openclaw@2026.5.4-beta.1`,
+`openclaw@2026.5.4-beta.2`, `openclaw@2026.5.4-beta.3`,
+`openclaw@2026.5.4`, `openclaw@2026.5.5`, `openclaw@2026.5.6`, and
+`openclaw@2026.5.12-beta.4`.
+Keep the peer range broad unless an upstream release removes a runtime surface
+Remnic actively uses.
+
+OpenClaw 2026.5.12 package-entry discovery prefers explicit built runtime
+entries for installed packages. The published Remnic adapter declares
+`openclaw.runtimeExtensions: ["./dist/index.js"]` alongside the existing
+extension entry, and its package install metadata advertises
+`openclaw.install.clawhubSpec: "clawhub:@remnic/plugin-openclaw"`,
+`openclaw.install.npmSpec: "@remnic/plugin-openclaw"`, and
+`openclaw.install.defaultChoice: "clawhub"`. That keeps OpenClaw setup,
+repair, and update flows ClawHub-first while preserving npm as the fallback
+install surface and `>=2026.4.8` as the minimum supported host range.
+
+Native memory registrars are tracked separately in
+[`docs/plugins/openclaw-native-memory-registrars.md`](../../docs/plugins/openclaw-native-memory-registrars.md).
+That spike explains why Remnic currently uses `registerMemoryCapability()` as
+the primary integration point instead of OpenClaw embedding, corpus supplement,
+or compaction-provider registrars.
 
 ## Slot Selection
 
@@ -116,14 +211,14 @@ loads passively depending on `slotBehavior`:
 }
 ```
 
-Passive mode keeps the tool/service surface available but skips prompt
-injection and extraction hooks so two memory plugins do not race each other.
+Passive mode keeps the tool/service surface available but skips context-building
+and extraction hooks so two memory plugins do not race each other.
 
 ## Supported OpenClaw Memory Features
 
 Remnic supports the following OpenClaw memory integration points:
 
-### Memory Prompt Injection
+### Memory Context Sections
 
 | Feature | Status | Since |
 |---------|--------|-------|
@@ -131,6 +226,15 @@ Remnic supports the following OpenClaw memory integration points:
 | `before_prompt_build` hook (new SDK) | Supported | 2026.3.22 |
 | `registerMemoryPromptSection()` (structured builder) | Supported | 2026.3.22 |
 | `registerMemoryCapability()` (unified capability) | Supported | 2026.4.5 |
+| `registerMemoryRuntime()` (split runtime surface) | Supported | 2026.4.x |
+| `registerMemoryFlushPlan()` (split flush-plan surface) | Supported | 2026.4.x |
+| `registerMemoryCorpusSupplement()` (read-only corpus supplement) | Supported | 2026.4.x |
+
+On current OpenClaw SDKs, Remnic registers both the unified memory capability
+and the compatible split surfaces. That lets OpenClaw consume Remnic through
+the active memory runtime, the explicit flush-plan resolver, and additive
+corpus search/read APIs without changing Remnic's ownership of storage,
+retrieval, extraction, and QMD behavior.
 
 ### Public Artifacts (memory-wiki bridge)
 
@@ -149,6 +253,10 @@ When `registerMemoryCapability` is available, Remnic registers a `publicArtifact
 Private runtime state (state/, questions/, transcripts/, archive/, buffers) is never exposed.
 
 With this feature, `openclaw wiki status` reports Remnic artifacts, and `memory-wiki` bridge mode can discover and ingest them.
+
+The corpus supplement exposes read-only search/get access to Remnic memories as
+the `remnic` corpus under a service-scoped supplement ID. It does not expose
+private plugin state, transcript buffers, auth metadata, or artifact paths.
 
 ### Session Lifecycle
 
@@ -179,7 +287,7 @@ Reset handling is configurable:
 }
 ```
 
-The reset path clears per-session prompt caches and workspace override state.
+The reset path clears per-session context caches and workspace preference state.
 If `flushOnResetEnabled` is true, Remnic also attempts a bounded extraction
 flush before the reset completes.
 
@@ -215,7 +323,7 @@ OpenClaw's dreaming feature (background memory consolidation) is handled by Open
 
 The plugin manifest now accepts the OpenClaw `dreaming` config block directly
 so newer runtimes do not reject the config at validation time, and the OpenClaw
-adapter now injects recent diary entries as `## Recent Dreams (Remnic)` when
+adapter now adds recent diary entries as `## Recent Dreams (Remnic)` when
 the journal contains entries. The adapter also imports `DREAMS.md` entries into
 Remnic storage as `memoryKind: "dream"` with stable provenance so file-watch
 replays stay idempotent:
@@ -249,7 +357,7 @@ back to `DREAMS.md` through the shared writer using the OpenAI Responses API.
 
 The shared `@remnic/core` surface parsers also understand `HEARTBEAT.md`. The
 OpenClaw adapter imports those entries as `memoryKind: "procedural"`, gates
-normal recall during heartbeat-triggered runs, injects the active heartbeat plus
+normal recall during heartbeat-triggered runs, adds the active heartbeat plus
 `## Previous Runs`, and skips episodic buffering for heartbeat turns by default.
 Detection can use explicit runtime metadata, a documented heuristic fallback, or
 `auto` to prefer runtime metadata and fall back when needed. All of that logic

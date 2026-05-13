@@ -11,7 +11,7 @@ import { createHash, randomBytes } from "node:crypto";
  * traces land in the same project and are grouped by session thread.
  */
 
-import { readFileSync } from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 
 import type { LoggerBackend } from "./logger.js";
@@ -88,7 +88,7 @@ function readOpikOpenclawConfig(log?: LoggerBackend): Partial<OpikExporterConfig
       readEnvVar("OPENCLAW_ENGRAM_CONFIG_PATH") ||
       readEnvVar("OPENCLAW_CONFIG_PATH") ||
       path.join(resolveHomeDir(), ".openclaw", "openclaw.json");
-    const raw = JSON.parse(readFileSync(configPath, "utf-8"));
+    const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
     const entry = raw?.plugins?.entries?.["opik-openclaw"];
     if (!entry?.enabled || !entry?.config) return {};
     const c = entry.config as Record<string, unknown>;

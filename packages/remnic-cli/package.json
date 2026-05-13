@@ -1,6 +1,6 @@
 {
   "name": "@remnic/cli",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "CLI for Remnic memory — init, query, doctor, daemon management",
   "type": "module",
   "main": "dist/index.js",
@@ -26,12 +26,14 @@
   "scripts": {
     "prebuild": "node ../../scripts/ensure-cli-bench-build-deps.mjs",
     "build": "tsup --config tsup.config.ts && node scripts/copy-bench-assets.mjs",
+    "precheck-types": "node ../../scripts/ensure-cli-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "test": "tsx --test src/import-dispatch.test.ts src/import-bundle-detect.test.ts src/optional-importer.test.ts src/bench-args.test.ts src/xray.test.ts",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@remnic/core": "workspace:^",
+    "@remnic/plugin-pi": "workspace:^",
     "yaml": "^2.4.2"
   },
   "peerDependencies": {
@@ -42,7 +44,8 @@
     "@remnic/import-claude": "^0.1.0",
     "@remnic/import-gemini": "^0.1.0",
     "@remnic/import-lossless-claw": "^0.1.1",
-    "@remnic/import-mem0": "^0.1.0"
+    "@remnic/import-mem0": "^0.1.0",
+    "@remnic/import-supermemory": "^0.1.1"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": { "optional": true },
@@ -52,7 +55,8 @@
     "@remnic/import-claude": { "optional": true },
     "@remnic/import-gemini": { "optional": true },
     "@remnic/import-lossless-claw": { "optional": true },
-    "@remnic/import-mem0": { "optional": true }
+    "@remnic/import-mem0": { "optional": true },
+    "@remnic/import-supermemory": { "optional": true }
   },
   "devDependencies": {
     "@remnic/bench": "workspace:*",
@@ -63,6 +67,7 @@
     "@remnic/import-gemini": "workspace:*",
     "@remnic/import-lossless-claw": "workspace:*",
     "@remnic/import-mem0": "workspace:*",
+    "@remnic/import-supermemory": "workspace:*",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },

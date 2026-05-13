@@ -22,6 +22,7 @@ STALE=$(grep -ri "engram" \
   --include="*.ts" --include="*.tsx" --include="*.js" --include="*.mjs" --include="*.cjs" \
   --include="*.json" --include="*.md" --include="*.sh" --include="*.py" \
   --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
   --exclude="CHANGELOG.md" --exclude="RENAME.md" --exclude="package-lock.json" \
   --exclude="pnpm-lock.yaml" \
   -l . 2>/dev/null \
@@ -73,7 +74,10 @@ fi
 echo "[check] Duplicated utility functions across packages..."
 
 for helper in "toolJsonResult" "parseConfig" "formatMemory"; do
-  FILES=$(grep -rn "$helper" --include="*.ts" -l . 2>/dev/null \
+  FILES=$(grep -rn "$helper" --include="*.ts" \
+    --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+    --exclude-dir=.claude --exclude-dir=.worktrees \
+    -l . 2>/dev/null \
     | grep -v node_modules \
     | grep -v ".test." \
     | grep -v dist \
@@ -89,7 +93,10 @@ done
 # ---- 4. Test quality: vacuous empty-array assertions ----
 echo "[check] Vacuous empty-array test assertions..."
 
-VACUOUS=$(grep -rn "toEqual(\[\])" --include="*.test.ts" . 2>/dev/null \
+VACUOUS=$(grep -rn "toEqual(\[\])" --include="*.test.ts" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
+  . 2>/dev/null \
   | grep -v node_modules \
   | grep -v "// intentional" \
   || true)
@@ -118,7 +125,10 @@ fi
 echo "[check] Test teardown completeness..."
 
 # Check if any test file creates orchestrator instances but doesn't call resetGlobals
-ORCH_TEST=$(grep -rl "Orchestrator\|orchestrator" --include="*.test.ts" . 2>/dev/null \
+ORCH_TEST=$(grep -rl "Orchestrator\|orchestrator" --include="*.test.ts" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
+  . 2>/dev/null \
   | grep -v node_modules \
   || true)
 
@@ -136,6 +146,8 @@ echo "[check] Tilde path expansion consistency..."
 # Look for .replace(/^~/ or similar ad-hoc tilde expansion that isn't expandTilde
 TILDE_HACK=$(grep -rn '\.replace(/\^~/' \
   --include="*.ts" --include="*.js" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
   . 2>/dev/null \
   | grep -v node_modules \
   | grep -v dist \
@@ -152,7 +164,10 @@ fi
 echo "[check] Sort comparator stability..."
 
 # Look for comparators that return 1 for both directions (missing return 0)
-BAD_SORT=$(grep -rn 'return 1' --include="*.ts" . 2>/dev/null \
+BAD_SORT=$(grep -rn 'return 1' --include="*.ts" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
+  . 2>/dev/null \
   | grep -v node_modules \
   | grep -v dist \
   | grep -v ".test." \
@@ -175,6 +190,8 @@ echo "[check] JSON.parse result validation..."
 # Look for JSON.parse without subsequent type check
 PARSE_NO_CHECK=$(grep -rn 'JSON.parse(' \
   --include="*.ts" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
   . 2>/dev/null \
   | grep -v node_modules \
   | grep -v dist \
@@ -201,6 +218,8 @@ echo "[check] Config resolution deduplication..."
 
 SLOT_RESOLVE=$(grep -rn "slots.*memory\|slots\.memory\|LEGACY_PLUGIN_ID\|resolveRemnicPluginEntry" \
   --include="*.ts" --include="*.cjs" --include="*.mjs" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
   . 2>/dev/null \
   | grep -v node_modules \
   | grep -v dist \
@@ -239,6 +258,8 @@ echo "[check] slice(-expr) without zero/negative guard..."
 
 SLICE_NEG=$(grep -rn 'slice(-' \
   --include="*.ts" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
   . 2>/dev/null \
   | grep -v node_modules \
   | grep -v dist \
@@ -282,6 +303,8 @@ echo "[check] Explicit flush paths missing skipDedupeCheck..."
 
 FLUSH_NO_SKIP=$(grep -rn 'flushSession\|forceFlush\|queueBufferedExtraction' \
   --include="*.ts" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
   . 2>/dev/null \
   | grep -v node_modules \
   | grep -v dist \
@@ -343,6 +366,8 @@ echo "[check] Test mock signature fidelity..."
 # ignores its arguments in test files near interface implementations.
 MOCK_NO_ARGS=$(grep -rn 'fn(()\s*=>\s*{' \
   --include="*.test.ts" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
   . 2>/dev/null \
   | grep -v node_modules \
   | grep -v dist \
@@ -524,6 +549,8 @@ echo "[check] Config schema minimums vs documented zero-disable..."
 
 SCHEMA_MINIMUM_ONE=$(grep -rn '"minimum":\s*1' \
   --include="*.json" \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist \
+  --exclude-dir=.claude --exclude-dir=.worktrees \
   . 2>/dev/null \
   | grep -v node_modules \
   | grep -v dist \

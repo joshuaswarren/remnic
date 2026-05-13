@@ -21,13 +21,20 @@ export type AmaBenchJudgeProtocol = "default" | "recommended";
  * the `localLlm*` plugin config on the Remnic core side so that
  * `remnic bench published --provider local-llm` actually exercises
  * the same transport path as the running plugin. Issue #566 slice 5.
+ *
+ * `codex-cli` shells out to `codex exec` as an isolated benchmark-only
+ * responder/judge target. It is intentionally not routed through Remnic
+ * memory or OpenClaw gateway state.
  */
 export type BuiltInProvider =
   | "openai"
   | "anthropic"
   | "ollama"
   | "litellm"
-  | "local-llm";
+  | "local-llm"
+  | "codex-cli";
+
+export type BenchReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export interface ProviderConfig {
   provider: BuiltInProvider;
@@ -36,6 +43,9 @@ export interface ProviderConfig {
   apiKey?: string;
   retryOptions?: { maxAttempts?: number; baseBackoffMs?: number; timeoutMs?: number; max429WaitMs?: number };
   disableThinking?: boolean;
+  reasoningEffort?: BenchReasoningEffort;
+  responderContextBudgetChars?: number;
+  responderPromptBudgetChars?: number;
 }
 
 export interface TaskTokenUsage {
@@ -150,6 +160,7 @@ export interface BenchmarkResult {
     runtimeProfile?: BenchRuntimeProfile | null;
     systemProvider: ProviderConfig | null;
     judgeProvider: ProviderConfig | null;
+    internalProvider?: ProviderConfig | null;
     adapterMode: string;
     remnicConfig: Record<string, unknown>;
     benchmarkOptions?: Record<string, unknown>;
@@ -211,17 +222,19 @@ export interface RunBenchmarkOptions {
   ingestionAdapter?: import("./ingestion-types.js").IngestionBenchAdapter;
   systemProvider?: ProviderConfig | null;
   judgeProvider?: ProviderConfig | null;
+  internalProvider?: ProviderConfig | null;
   remnicConfig?: Record<string, unknown>;
+  benchmarkOptions?: Record<string, unknown>;
   amaBenchJudgeProtocol?: AmaBenchJudgeProtocol;
   amaBenchCrossJudge?: import("./adapters/types.js").BenchJudge;
   amaBenchCrossJudgeProvider?: ProviderConfig | null;
+  /** Called after each task completes for progress logging and partial result tracking. */
+  onTaskComplete?: (task: TaskResult, completedCount: number, totalCount?: number) => void;
 }
 
 export interface ResolvedRunBenchmarkOptions extends RunBenchmarkOptions {
   mode: BenchmarkMode;
   benchmark: BenchmarkDefinition;
-  /** Called after each task completes for progress logging and partial result tracking. */
-  onTaskComplete?: (task: TaskResult, completedCount: number, totalCount?: number) => void;
 }
 
 // Legacy latency-benchmark surface retained for CLI compatibility while the

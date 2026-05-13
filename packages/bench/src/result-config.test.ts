@@ -71,3 +71,21 @@ test("finalizeBenchmarkResultConfig normalizes omitted runtime profile to null",
 
   assert.equal(finalized.config.runtimeProfile, null);
 });
+
+test("finalizeBenchmarkResultConfig records internal provider when missing", () => {
+  const result = buildResult();
+
+  const finalized = finalizeBenchmarkResultConfig(result, {
+    internalProvider: {
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      reasoningEffort: "xhigh",
+    },
+  });
+
+  assert.deepEqual(finalized.config.internalProvider, {
+    provider: "codex-cli",
+    model: "gpt-5.5",
+    reasoningEffort: "xhigh",
+  });
+});

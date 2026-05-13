@@ -323,6 +323,76 @@ test("applyTemporalSupersession: city update retires old fact, leaves unrelated 
   }
 });
 
+test("applyTemporalSupersession: retires child chunks with superseded parent", async () => {
+  const { storage, cleanup } = await makeStorage("engram-temporal-chunk-expiry-");
+  try {
+    const oldValidAt = "2026-01-01T00:00:00.000Z";
+    const newValidAt = "2026-02-01T00:00:00.000Z";
+    const oldParent = await storage.writeMemory(
+      "fact",
+      "project X is based in Austin. ".repeat(40),
+      {
+        entityRef: TEST_ENTITY,
+        structuredAttributes: { city: "Austin" },
+        source: "test",
+        confidence: 0.9,
+        tags: ["chunked"],
+        validAt: oldValidAt,
+      },
+    );
+    await storage.writeChunk(
+      oldParent,
+      0,
+      1,
+      "fact",
+      "project X is based in Austin.",
+      {
+        entityRef: TEST_ENTITY,
+        source: "chunking",
+        confidence: 0.9,
+        tags: ["chunked"],
+        validAt: oldValidAt,
+      },
+    );
+
+    const newParent = await storage.writeMemory(
+      "fact",
+      "project X relocated to NYC",
+      {
+        entityRef: TEST_ENTITY,
+        structuredAttributes: { city: "NYC" },
+        source: "test",
+        confidence: 0.9,
+        tags: [],
+        validAt: newValidAt,
+      },
+    );
+
+    const result = await applyTemporalSupersession({
+      storage,
+      newMemoryId: newParent,
+      entityRef: TEST_ENTITY,
+      structuredAttributes: { city: "NYC" },
+      createdAt: newValidAt,
+      enabled: true,
+    });
+
+    assert.deepEqual(result.supersededIds, [oldParent]);
+
+    const oldParentFm = await readFrontmatterById(storage, oldParent);
+    assert.equal(oldParentFm?.status, "superseded");
+    assert.equal(oldParentFm?.supersededBy, newParent);
+    assert.equal(oldParentFm?.invalid_at, newValidAt);
+
+    const oldChunkFm = await readFrontmatterById(storage, `${oldParent}-chunk-0`);
+    assert.equal(oldChunkFm?.status, "superseded");
+    assert.equal(oldChunkFm?.supersededBy, newParent);
+    assert.equal(oldChunkFm?.invalid_at, newValidAt);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("applyTemporalSupersession: no structured attributes is a no-op", async () => {
   const { storage, cleanup } = await makeStorage();
   try {

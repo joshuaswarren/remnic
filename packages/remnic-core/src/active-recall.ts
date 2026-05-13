@@ -28,7 +28,7 @@ export interface ActiveRecallConfig {
   allowedChatTypes: ActiveRecallChatType[];
   queryMode: ActiveRecallQueryMode;
   promptStyle: ActiveRecallPromptStyle;
-  promptOverride: string | null;
+  customInstruction: string | null;
   promptAppend: string | null;
   maxSummaryChars: number;
   recentUserTurns: number;
@@ -131,7 +131,7 @@ function buildCacheKey(input: ActiveRecallInput, config: ActiveRecallConfig, que
     agentId: input.agentId,
     queryMode: config.queryMode,
     promptStyle: config.promptStyle,
-    promptOverride: config.promptOverride,
+    customInstruction: config.customInstruction,
     promptAppend: config.promptAppend,
     maxSummaryChars: config.maxSummaryChars,
     entityGraphDepth: config.entityGraphDepth,
@@ -262,7 +262,7 @@ export function buildActiveRecallPrompt(params: {
   recallExplain: string | null;
 }): string {
   const sections = [
-    params.config.promptOverride?.trim() || STYLE_INSTRUCTIONS[params.config.promptStyle],
+    params.config.customInstruction?.trim() || STYLE_INSTRUCTIONS[params.config.promptStyle],
     `Query bundle:\n${params.queryBundle}`,
     params.recallContext ? `Retrieved memory:\n${params.recallContext}` : null,
     params.graphContext.length > 0 ? `Entity graph:\n${params.graphContext.join("\n")}` : null,

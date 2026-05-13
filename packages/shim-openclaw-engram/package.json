@@ -1,6 +1,6 @@
 {
   "name": "@joshuaswarren/openclaw-engram",
-  "version": "9.3.17",
+  "version": "9.3.20",
   "description": "Deprecated compatibility shim for Engram installs. Re-exports @remnic/plugin-openclaw and forwards engram-access to @remnic/core.",
   "type": "module",
   "main": "dist/index.js",
@@ -28,7 +28,23 @@
     "plugin": "./openclaw.plugin.json",
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.4.8"
+    },
+    "build": {
+      "openclawVersion": "2026.5.12-beta.4",
+      "pluginSdkVersion": "2026.5.12-beta.4"
+    },
+    "install": {
+      "clawhubSpec": "clawhub:@remnic/plugin-openclaw",
+      "npmSpec": "@joshuaswarren/openclaw-engram",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.4.8"
+    }
   },
   "scripts": {
     "build": "node ./scripts/sync-openclaw-plugin.mjs && tsup --config tsup.config.ts",

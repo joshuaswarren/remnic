@@ -151,6 +151,55 @@ declare module "openclaw/plugin-sdk" {
     publicArtifacts?: MemoryPluginPublicArtifactsProvider;
   }
 
+  export interface MemoryCorpusSearchResult {
+    corpus: string;
+    path: string;
+    title?: string;
+    kind?: string;
+    score: number;
+    snippet: string;
+    id?: string;
+    startLine?: number;
+    endLine?: number;
+    citation?: string;
+    source?: string;
+    provenanceLabel?: string;
+    sourceType?: string;
+    sourcePath?: string;
+    updatedAt?: string;
+  }
+
+  export interface MemoryCorpusGetResult {
+    corpus: string;
+    path: string;
+    title?: string;
+    kind?: string;
+    content: string;
+    fromLine: number;
+    lineCount: number;
+    id?: string;
+    provenanceLabel?: string;
+    sourceType?: string;
+    sourcePath?: string;
+    updatedAt?: string;
+  }
+
+  export interface MemoryCorpusSupplement {
+    id?: string;
+    label?: string;
+    search(params: {
+      query: string;
+      maxResults?: number;
+      agentSessionKey?: string;
+    }): Promise<MemoryCorpusSearchResult[]>;
+    get(params: {
+      lookup: string;
+      fromLine?: number;
+      lineCount?: number;
+      agentSessionKey?: string;
+    }): Promise<MemoryCorpusGetResult | null>;
+  }
+
   // ---- Runtime namespace (new SDK) ----
 
   export interface OpenClawRuntime {
@@ -228,8 +277,26 @@ declare module "openclaw/plugin-sdk" {
      *  (registerMemoryPromptSection, registerMemoryFlushPlan, registerMemoryRuntime). */
     registerMemoryCapability?: (capability: MemoryPluginCapability) => void;
 
-    /** Registration mode: "full" | "setup-only" | "setup-runtime" (new SDK >=2026.3.22) */
-    registrationMode?: "full" | "setup-only" | "setup-runtime";
+    /** Register the active memory runtime adapter on split-surface SDKs. */
+    registerMemoryRuntime?: (runtime: Record<string, unknown>) => void;
+
+    /** Register the pre-compaction memory flush plan on split-surface SDKs. */
+    registerMemoryFlushPlan?: (resolver: (...args: any[]) => any) => void;
+
+    /** Register an additive memory corpus supplement. */
+    registerMemoryCorpusSupplement?: (supplement: MemoryCorpusSupplement | Record<string, unknown>) => void;
+
+    /** Register an additive memory prompt supplement. */
+    registerMemoryPromptSupplement?: (builder: MemoryPromptSectionBuilder["build"] | ((...args: any[]) => any)) => void;
+
+    /** Registration mode: "full" | "discovery" | "tool-discovery" | "setup-only" | "setup-runtime" | "cli-metadata" (new SDK >=2026.3.22) */
+    registrationMode?:
+      | "full"
+      | "discovery"
+      | "tool-discovery"
+      | "setup-only"
+      | "setup-runtime"
+      | "cli-metadata";
 
     /** Runtime namespace (new SDK >=2026.3.22) */
     runtime?: OpenClawRuntime;

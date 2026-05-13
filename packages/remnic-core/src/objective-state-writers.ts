@@ -5,6 +5,11 @@ import {
   type ObjectiveStateSnapshot,
   recordObjectiveStateSnapshot,
 } from "./objective-state.js";
+import {
+  parseMessageParts,
+  type LcmMessagePartInput,
+  type MessagePartSourceFormat,
+} from "./message-parts/index.js";
 
 interface ToolCallContext {
   toolName?: string;
@@ -15,6 +20,33 @@ interface ToolCallContext {
 interface DerivedObjectiveStateResult {
   snapshots: ObjectiveStateSnapshot[];
   filePaths: string[];
+}
+
+interface ObservedMessageWithParts {
+  role?: string;
+  content?: string;
+  parts?: LcmMessagePartInput[] | null;
+  rawContent?: unknown;
+  sourceFormat?: MessagePartSourceFormat;
+}
+
+interface ObservedPartEntry {
+  messageIndex: number;
+  partIndex: number;
+  part: LcmMessagePartInput;
+}
+
+const rawProviderParts = new WeakSet<LcmMessagePartInput>();
+
+function markRawProviderParts(parts: LcmMessagePartInput[]): LcmMessagePartInput[] {
+  for (const part of parts) {
+    rawProviderParts.add(part);
+  }
+  return parts;
+}
+
+function isRawProviderPart(part: LcmMessagePartInput): boolean {
+  return rawProviderParts.has(part);
 }
 
 function hashSha256(value: string): string {
@@ -55,6 +87,19 @@ function parseToolArguments(value: unknown): Record<string, unknown> | undefined
   }
 }
 
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? String(value);
+}
+
 function extractTextContent(value: unknown): string {
   if (typeof value === "string") return value.trim();
   if (Array.isArray(value)) {
@@ -88,7 +133,7 @@ function parseToolResultPayload(content: unknown): unknown {
 function resultHash(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   const canonical =
-    typeof value === "string" ? value : JSON.stringify(value);
+    typeof value === "string" ? value : stableStringify(value);
   if (!canonical || canonical.length === 0) return undefined;
   return `sha256:${hashSha256(canonical)}`;
 }
@@ -189,6 +234,14 @@ function inferOutcome(message: Record<string, unknown>, parsedPayload: unknown):
     if (optionalString(parsedPayload.error)) return "failure";
     if (parsedPayload.status === "error" || parsedPayload.status === "failed") return "failure";
     if (parsedPayload.status === "ok" || parsedPayload.status === "success") return "success";
+    const outputText = [
+      optionalString(parsedPayload.stdout),
+      optionalString(parsedPayload.stderr),
+    ].filter((entry): entry is string => entry !== undefined).join("\n");
+    if (outputText) {
+      const outputOutcome = inferOutcome({}, outputText);
+      if (outputOutcome !== "unknown") return outputOutcome;
+    }
   }
   if (typeof parsedPayload === "string") {
     const lowered = parsedPayload.toLowerCase();
@@ -339,13 +392,405 @@ function snapshotIdFor(
   index: number,
   toolName: string,
   scope: string,
+  stableKey?: string,
 ): string {
   const digest = crypto
     .createHash("sha256")
-    .update(`${sessionKey}|${recordedAt}|${index}|${toolName}|${scope}`)
+    .update(
+      stableKey
+        ? `${sessionKey}|${recordedAt}|${index}|${toolName}|${scope}|stable|${stableKey}`
+        : `${sessionKey}|${recordedAt}|${index}|${toolName}|${scope}`,
+    )
     .digest("hex")
     .slice(0, 12);
   return `obj-${digest}`;
+}
+
+function objectiveStatePartsForObservedMessage(
+  message: ObservedMessageWithParts,
+): LcmMessagePartInput[] {
+  if (message.role === "user") {
+    const explicitParts = Array.isArray(message.parts) && message.parts.length > 0
+      ? sanitizeUserRoleToolResultParts(message.parts)
+      : [];
+    if (Array.isArray(message.parts) && message.parts.length > 0) {
+      const rawParts = userRawToolResultParts(message);
+      return mergeObservedEvidenceParts(explicitParts, rawParts);
+    }
+    return userRawToolResultParts(message);
+  }
+  if (message.role !== "assistant") {
+    return [];
+  }
+  const explicitParts = Array.isArray(message.parts) && message.parts.length > 0
+    ? message.parts
+    : [];
+  const rawParts = assistantRawObjectiveStateParts(message);
+  return mergeObservedEvidenceParts(explicitParts, rawParts);
+}
+
+function userRawToolResultParts(message: ObservedMessageWithParts): LcmMessagePartInput[] {
+  const rawContent = message.rawContent ?? message.content;
+  if (!containsProviderToolResultBlock(rawContent)) {
+    return [];
+  }
+  return markRawProviderParts(
+    sanitizeUserRoleToolResultParts(parseMessageParts(rawContent, {
+      sourceFormat: message.sourceFormat,
+      allowRenderedFallback: false,
+    })),
+  );
+}
+
+function assistantRawObjectiveStateParts(message: ObservedMessageWithParts): LcmMessagePartInput[] {
+  if (message.rawContent === undefined || message.rawContent === null) {
+    return [];
+  }
+  return markRawProviderParts(parseMessageParts(message.rawContent, {
+    sourceFormat: message.sourceFormat,
+    allowRenderedFallback: false,
+  }));
+}
+
+function mergeObservedEvidenceParts(
+  explicitParts: LcmMessagePartInput[],
+  rawParts: LcmMessagePartInput[],
+): LcmMessagePartInput[] {
+  if (explicitParts.length === 0) return rawParts;
+  if (rawParts.length === 0) return explicitParts;
+
+  const merged = [...explicitParts];
+  const seen = new Set(
+    explicitParts
+      .filter(isObjectiveStateEvidencePart)
+      .map(objectiveStateEvidencePartKey),
+  );
+
+  for (const part of rawParts) {
+    if (!isObjectiveStateEvidencePart(part)) continue;
+    const key = objectiveStateEvidencePartKey(part);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(part);
+  }
+
+  return merged;
+}
+
+function isObjectiveStateEvidencePart(part: LcmMessagePartInput): boolean {
+  return (
+    part.kind === "tool_call" ||
+    part.kind === "tool_result" ||
+    part.kind === "file_write" ||
+    part.kind === "patch"
+  );
+}
+
+function objectiveStateEvidencePartKey(part: LcmMessagePartInput): string {
+  const id = partToolCallId(part);
+  if (id) return `${part.kind}:id:${id}`;
+  const toolName = partToolName(part) ?? "";
+  const filePath = partFilePath(part) ?? "";
+  return `${part.kind}:shape:${toolName}:${filePath}:${stableStringify(partPayload(part))}`;
+}
+
+function flattenObservedParts(messages: readonly ObservedMessageWithParts[]): ObservedPartEntry[] {
+  const entries: ObservedPartEntry[] = [];
+  messages.forEach((message, messageIndex) => {
+    const parts = objectiveStatePartsForObservedMessage(message);
+    parts.forEach((part, partIndex) => {
+      entries.push({ messageIndex, partIndex, part });
+    });
+  });
+  return entries.sort((a, b) => {
+    if (a.messageIndex !== b.messageIndex) return a.messageIndex - b.messageIndex;
+    const aOrdinal = typeof a.part.ordinal === "number" ? a.part.ordinal : a.partIndex;
+    const bOrdinal = typeof b.part.ordinal === "number" ? b.part.ordinal : b.partIndex;
+    if (aOrdinal !== bOrdinal) return aOrdinal - bOrdinal;
+    return a.partIndex - b.partIndex;
+  });
+}
+
+function sanitizeUserRoleToolResultParts(parts: LcmMessagePartInput[]): LcmMessagePartInput[] {
+  return parts
+    .filter((part) => part.kind === "tool_result")
+    .map((part) => {
+      const payload = { ...partPayload(part) };
+      delete payload.name;
+      delete payload.tool;
+      delete payload.toolName;
+      delete payload.tool_name;
+      return {
+        ...part,
+        toolName: null,
+        tool_name: null,
+        payload,
+      };
+    });
+}
+
+function containsProviderToolResultBlock(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(containsProviderToolResultBlock);
+  }
+  if (!isRecord(value)) return false;
+  const type = optionalString(value.type ?? value.kind);
+  if (
+    type === "tool_result" ||
+    type === "function_call_output"
+  ) {
+    return true;
+  }
+  return (
+    containsProviderToolResultBlock(value.content) ||
+    containsProviderToolResultBlock(value.output) ||
+    containsProviderToolResultBlock(value.items)
+  );
+}
+
+function partPayload(part: LcmMessagePartInput): Record<string, unknown> {
+  return isRecord(part.payload) ? part.payload : {};
+}
+
+function partToolCallId(part: LcmMessagePartInput): string | undefined {
+  const payload = partPayload(part);
+  return (
+    optionalString(payload.call_id) ??
+    optionalString(payload.callId) ??
+    optionalString(payload.id) ??
+    optionalString(payload.tool_call_id) ??
+    optionalString(payload.toolCallId) ??
+    optionalString(payload.tool_use_id) ??
+    optionalString(payload.toolUseId)
+  );
+}
+
+function partToolName(part: LcmMessagePartInput): string | undefined {
+  const payload = partPayload(part);
+  return (
+    optionalString(part.toolName) ??
+    optionalString(part.tool_name) ??
+    optionalString(payload.name) ??
+    optionalString(payload.toolName) ??
+    optionalString(payload.tool_name) ??
+    (part.kind === "patch" ? "apply_patch" : undefined) ??
+    (part.kind === "file_write" ? "file_write" : undefined)
+  );
+}
+
+function partFilePath(part: LcmMessagePartInput): string | undefined {
+  const payload = partPayload(part);
+  return (
+    optionalString(part.filePath) ??
+    optionalString(part.file_path) ??
+    optionalString(payload.path) ??
+    optionalString(payload.filePath) ??
+    optionalString(payload.file_path)
+  );
+}
+
+function syntheticPartId(options: {
+  sessionKey: string;
+  messageIndex: number;
+  partIndex: number;
+  part: LcmMessagePartInput;
+}): string {
+  const digest = hashSha256(
+    [
+      options.sessionKey,
+      String(options.messageIndex),
+      String(options.part.ordinal ?? options.partIndex),
+      options.part.kind,
+      optionalString(options.part.toolName) ?? "",
+      optionalString(options.part.tool_name) ?? "",
+      optionalString(options.part.filePath) ?? "",
+      optionalString(options.part.file_path) ?? "",
+      stableStringify(options.part.payload),
+    ].join("|"),
+  ).slice(0, 12);
+  return `part-${digest}`;
+}
+
+function toolArgumentsFromPart(part: LcmMessagePartInput): Record<string, unknown> {
+  const payload = partPayload(part);
+  const parsedArgs =
+    parseToolArguments(payload.arguments) ??
+    parseToolArguments(payload.input) ??
+    parseToolArguments(payload.args) ??
+    parseToolArguments(payload.params) ??
+    payload;
+  const args = { ...parsedArgs };
+  const filePath = partFilePath(part);
+  if (filePath && !pickString(args, ["path", "filePath", "file_path"])) {
+    args.path = filePath;
+  }
+  if (part.kind === "patch" && !pickString(args, ["patch", "diff", "text"])) {
+    const text = optionalString(payload.text) ?? optionalString(payload.patch);
+    if (text) args.patch = text;
+  }
+  return args;
+}
+
+function toolResultContentFromPart(part: LcmMessagePartInput): unknown {
+  const payload = partPayload(part);
+  if ("output" in payload) return payload.output;
+  if ("content" in payload) return payload.content;
+  if ("result" in payload) return payload.result;
+  if ("value" in payload) return payload.value;
+  return payload;
+}
+
+function inlineToolResultContentFromPart(part: LcmMessagePartInput): unknown {
+  const payload = partPayload(part);
+  if (hasDefinedPayloadKey(payload, "output")) return payload.output;
+  if (hasDefinedPayloadKey(payload, "result")) return payload.result;
+  if (part.kind === "tool_result" && hasDefinedPayloadKey(payload, "value")) {
+    return payload.value;
+  }
+
+  const statusPayload: Record<string, unknown> = {};
+  for (const key of ["exitCode", "ok", "success", "error", "stdout", "stderr"]) {
+    if (hasDefinedPayloadKey(payload, key)) {
+      statusPayload[key] = payload[key];
+    }
+  }
+  return Object.keys(statusPayload).length > 0 ? statusPayload : payload;
+}
+
+function hasDefinedPayloadKey(payload: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(payload, key) && payload[key] !== undefined;
+}
+
+function partHasInlineToolResult(part: LcmMessagePartInput): boolean {
+  const payload = partPayload(part);
+  return (
+    hasDefinedPayloadKey(payload, "output") ||
+    hasDefinedPayloadKey(payload, "result") ||
+    (part.kind === "tool_result" && hasDefinedPayloadKey(payload, "value")) ||
+    hasDefinedPayloadKey(payload, "exitCode") ||
+    hasDefinedPayloadKey(payload, "ok") ||
+    hasDefinedPayloadKey(payload, "success") ||
+    hasDefinedPayloadKey(payload, "error") ||
+    hasDefinedPayloadKey(payload, "stdout") ||
+    hasDefinedPayloadKey(payload, "stderr")
+  );
+}
+
+function toolResultIsError(part: LcmMessagePartInput): boolean {
+  const payload = partPayload(part);
+  return payload.isError === true ||
+    payload.is_error === true ||
+    payload.ok === false ||
+    payload.success === false ||
+    optionalString(payload.error) !== undefined;
+}
+
+function buildSyntheticAssistantToolCall(
+  id: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    role: "assistant",
+    tool_calls: [
+      {
+        id,
+        function: {
+          name: toolName,
+          arguments: JSON.stringify(args),
+        },
+      },
+    ],
+  };
+}
+
+function observedPartsToAgentMessages(options: {
+  sessionKey: string;
+  messages: readonly ObservedMessageWithParts[];
+}): Array<Record<string, unknown>> {
+  const entries = flattenObservedParts(options.messages);
+  const resultIds = new Set(
+    entries
+      .filter((entry) => entry.part.kind === "tool_result")
+      .map((entry) => partToolCallId(entry.part))
+      .filter((id): id is string => id !== undefined),
+  );
+  const synthetic: Array<Record<string, unknown>> = [];
+  let pendingIdlessToolCallId: string | undefined;
+
+  for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+    const entry = entries[entryIndex]!;
+    const { part } = entry;
+    if (
+      part.kind === "tool_call" ||
+      part.kind === "file_write" ||
+      part.kind === "patch"
+    ) {
+      const toolName = partToolName(part);
+      if (!toolName) continue;
+      const observedToolCallId = partToolCallId(part);
+      const id = observedToolCallId ??
+        syntheticPartId({
+          sessionKey: options.sessionKey,
+          messageIndex: entry.messageIndex,
+          partIndex: entry.partIndex,
+          part,
+        });
+      const args = toolArgumentsFromPart(part);
+      synthetic.push(buildSyntheticAssistantToolCall(id, toolName, args));
+      const nextEntry = entries[entryIndex + 1];
+      const nextIsIdlessToolResult =
+        nextEntry?.part.kind === "tool_result" &&
+        partToolCallId(nextEntry.part) === undefined;
+      pendingIdlessToolCallId = nextIsIdlessToolResult
+        ? id
+        : undefined;
+
+      const hasSeparateToolResult = resultIds.has(id) || nextIsIdlessToolResult;
+      if (partHasInlineToolResult(part) && !hasSeparateToolResult) {
+        synthetic.push({
+          role: "tool",
+          tool_call_id: id,
+          name: toolName,
+          content: inlineToolResultContentFromPart(part),
+          ...(toolResultIsError(part) ? { isError: true } : {}),
+        });
+        pendingIdlessToolCallId = undefined;
+        continue;
+      }
+
+      if (
+        (part.kind === "file_write" || part.kind === "patch") &&
+        !nextIsIdlessToolResult &&
+        !resultIds.has(id) &&
+        !isRawProviderPart(part)
+      ) {
+        synthetic.push({
+          role: "tool",
+          tool_call_id: id,
+          name: toolName,
+          content: { ok: true, source: "message_part" },
+        });
+        pendingIdlessToolCallId = undefined;
+      }
+      continue;
+    }
+
+    if (part.kind === "tool_result") {
+      const id = partToolCallId(part) ?? pendingIdlessToolCallId;
+      const toolName = partToolName(part);
+      synthetic.push({
+        role: "tool",
+        ...(id ? { tool_call_id: id } : {}),
+        ...(toolName ? { name: toolName } : {}),
+        content: toolResultContentFromPart(part),
+        ...(toolResultIsError(part) ? { isError: true } : {}),
+      });
+      pendingIdlessToolCallId = undefined;
+    }
+  }
+
+  return synthetic;
 }
 
 export function deriveObjectiveStateSnapshotsFromAgentMessages(options: {
@@ -393,7 +838,14 @@ export function deriveObjectiveStateSnapshotsFromAgentMessages(options: {
 
     snapshots.push({
       schemaVersion: 1,
-      snapshotId: snapshotIdFor(options.sessionKey, options.recordedAt, snapshots.length, toolName, scope),
+      snapshotId: snapshotIdFor(
+        options.sessionKey,
+        options.recordedAt,
+        snapshots.length,
+        toolName,
+        scope,
+        toolCallId,
+      ),
       recordedAt: options.recordedAt,
       sessionKey: options.sessionKey,
       source: "tool_result",
@@ -414,6 +866,24 @@ export function deriveObjectiveStateSnapshotsFromAgentMessages(options: {
   return snapshots;
 }
 
+export function deriveObjectiveStateSnapshotsFromObservedMessages(options: {
+  sessionKey: string;
+  recordedAt: string;
+  messages: readonly ObservedMessageWithParts[];
+}): ObjectiveStateSnapshot[] {
+  const syntheticMessages = observedPartsToAgentMessages({
+    sessionKey: options.sessionKey,
+    messages: options.messages,
+  });
+  if (syntheticMessages.length === 0) return [];
+
+  return deriveObjectiveStateSnapshotsFromAgentMessages({
+    sessionKey: options.sessionKey,
+    recordedAt: options.recordedAt,
+    messages: syntheticMessages,
+  });
+}
+
 export async function recordObjectiveStateSnapshotsFromAgentMessages(options: {
   memoryDir: string;
   objectiveStateStoreDir?: string;
@@ -428,6 +898,39 @@ export async function recordObjectiveStateSnapshotsFromAgentMessages(options: {
   }
 
   const snapshots = deriveObjectiveStateSnapshotsFromAgentMessages({
+    sessionKey: options.sessionKey,
+    recordedAt: options.recordedAt,
+    messages: options.messages,
+  });
+
+  const filePaths: string[] = [];
+  for (const snapshot of snapshots) {
+    filePaths.push(
+      await recordObjectiveStateSnapshot({
+        memoryDir: options.memoryDir,
+        objectiveStateStoreDir: options.objectiveStateStoreDir,
+        snapshot,
+      }),
+    );
+  }
+
+  return { snapshots, filePaths };
+}
+
+export async function recordObjectiveStateSnapshotsFromObservedMessages(options: {
+  memoryDir: string;
+  objectiveStateStoreDir?: string;
+  objectiveStateMemoryEnabled: boolean;
+  objectiveStateSnapshotWritesEnabled: boolean;
+  sessionKey: string;
+  recordedAt: string;
+  messages: readonly ObservedMessageWithParts[];
+}): Promise<DerivedObjectiveStateResult> {
+  if (!options.objectiveStateMemoryEnabled || !options.objectiveStateSnapshotWritesEnabled) {
+    return { snapshots: [], filePaths: [] };
+  }
+
+  const snapshots = deriveObjectiveStateSnapshotsFromObservedMessages({
     sessionKey: options.sessionKey,
     recordedAt: options.recordedAt,
     messages: options.messages,

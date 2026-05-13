@@ -109,6 +109,7 @@ export const openclawReplayNormalizer: ReplayNormalizer = {
         role,
         content,
         timestamp,
+        sourceValidAt: timestamp,
         externalId: typeof externalIdRaw === "string" ? externalIdRaw : undefined,
       });
     }

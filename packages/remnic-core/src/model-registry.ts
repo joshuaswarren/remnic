@@ -4,7 +4,7 @@
  */
 
 import { log } from "./logger.js";
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import fs from "node:fs";
 import { join } from "node:path";
 
 export interface ModelCapabilities {
@@ -117,8 +117,8 @@ export class ModelRegistry {
 
   constructor(memoryDir: string) {
     const registryDir = join(memoryDir, ".registry");
-    if (!existsSync(registryDir)) {
-      mkdirSync(registryDir, { recursive: true });
+    if (!fs.existsSync(registryDir)) {
+      fs.mkdirSync(registryDir, { recursive: true });
     }
     this.registryPath = join(registryDir, "model-capabilities.json");
     this.data = this.loadRegistry();
@@ -126,8 +126,8 @@ export class ModelRegistry {
 
   private loadRegistry(): ModelRegistryData {
     try {
-      if (existsSync(this.registryPath)) {
-        const content = readFileSync(this.registryPath, "utf-8");
+      if (fs.existsSync(this.registryPath)) {
+        const content = fs.readFileSync(this.registryPath, "utf-8");
         const data = JSON.parse(content) as ModelRegistryData;
         log.info(`ModelRegistry: loaded ${Object.keys(data.models).length} cached models`);
         return data;
@@ -140,7 +140,7 @@ export class ModelRegistry {
 
   private saveRegistry(): void {
     try {
-      writeFileSync(this.registryPath, JSON.stringify(this.data, null, 2));
+      fs.writeFileSync(this.registryPath, JSON.stringify(this.data, null, 2));
     } catch (err) {
       log.warn(`ModelRegistry: failed to save registry: ${err}`);
     }

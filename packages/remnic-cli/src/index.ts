@@ -122,6 +122,9 @@ import {
   formatProcedureStatsText,
   parseXrayCliOptions,
   renderXray,
+  buildActionConfidenceInputFromOptions,
+  evaluateActionConfidence,
+  renderActionConfidenceText,
   expandTildePath,
   // capsule fork — issue #676 PR 4/6
   forkCapsule,
@@ -134,7 +137,16 @@ import { loadWecloneExportModule } from "./optional-weclone-export.js";
 import type {
   BinaryLifecycleConfig,
 } from "@remnic/core";
-import type { MemoryCategory, Taxonomy, TaxonomyCategory } from "@remnic/core";
+import type {
+  ActionConfidenceInput,
+  MemoryExtensionPublisher,
+  MemoryCategory,
+  PublishContext,
+  PublishResult,
+  Taxonomy,
+  TaxonomyCategory,
+  TokenEntry,
+} from "@remnic/core";
 // @remnic/bench is an optional install surface. Import types only at the
 // top level (erased at compile time); runtime access goes through
 // loadBenchModule() / tryLoadBenchModule() so the CLI stays functional for
@@ -198,12 +210,56 @@ export {
   parseBenchArgs,
 } from "./bench-args.js";
 
+type PiPublisherModule = {
+  PiMemoryExtensionPublisher: new () => MemoryExtensionPublisher;
+};
+
+class LazyPiMemoryExtensionPublisher implements MemoryExtensionPublisher {
+  readonly hostId = "pi";
+  private delegate: Promise<MemoryExtensionPublisher> | undefined;
+
+  async resolveExtensionRoot(env?: NodeJS.ProcessEnv): Promise<string> {
+    return (await this.load()).resolveExtensionRoot(env);
+  }
+
+  async isHostAvailable(): Promise<boolean> {
+    return (await this.load()).isHostAvailable();
+  }
+
+  async renderInstructions(ctx: PublishContext): Promise<string> {
+    return (await this.load()).renderInstructions(ctx);
+  }
+
+  async publish(ctx: PublishContext): Promise<PublishResult> {
+    return (await this.load()).publish(ctx);
+  }
+
+  async unpublish(): Promise<void> {
+    return (await this.load()).unpublish();
+  }
+
+  private async load(): Promise<MemoryExtensionPublisher> {
+    this.delegate ??= loadPiPublisherModule()
+      .then((mod) => new mod.PiMemoryExtensionPublisher())
+      .catch((err) => {
+        this.delegate = undefined;
+        throw err;
+      });
+    return this.delegate;
+  }
+}
+
+async function loadPiPublisherModule(): Promise<PiPublisherModule> {
+  return await import("@remnic/plugin-pi/publisher") as PiPublisherModule;
+}
+
 // ── Host-specific publisher registrations ───────────────────────────────────
 // Publisher classes live in @remnic/core, but wiring them into the registry
 // belongs in the host adapter layer (CLAUDE.md gotcha #31).
 registerPublisher("codex", () => new CodexMemoryExtensionPublisher());
 registerPublisher("claude-code", () => new ClaudeCodeMemoryExtensionPublisher());
 registerPublisher("hermes", () => new HermesMemoryExtensionPublisher());
+registerPublisher("pi", () => new LazyPiMemoryExtensionPublisher());
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -237,6 +293,7 @@ type CommandName =
   | "training:export"
   | "import"
   | "import-lossless-claw"
+  | "action-confidence"
   | "xray"
   | "capsule";
 
@@ -300,6 +357,12 @@ export const BENCHMARK_CATALOG: BenchCatalogEntry[] = [
     category: "conversational",
     summary: "Long-conversation memory benchmark for persistent dialogue context.",
   },
+  {
+    id: "beam",
+    title: "BEAM",
+    category: "retrieval",
+    summary: "Beyond a Million Tokens benchmark for long-term memory abilities.",
+  },
 ];
 
 const BENCHMARK_IDS = new Set(BENCHMARK_CATALOG.map((entry) => entry.id));
@@ -316,6 +379,7 @@ type PackageBenchProviderConfig = {
     max429WaitMs?: number;
   };
   disableThinking?: boolean;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 };
 
 type PackageBenchModule = {
@@ -336,7 +400,9 @@ type PackageBenchModule = {
     runtimeProfile?: BenchRuntimeProfile | null;
     systemProvider?: PackageBenchProviderConfig | null;
     judgeProvider?: PackageBenchProviderConfig | null;
+    internalProvider?: PackageBenchProviderConfig | null;
     remnicConfig?: Record<string, unknown>;
+    benchmarkOptions?: Record<string, unknown>;
     amaBenchJudgeProtocol?: "default" | "recommended";
     amaBenchCrossJudge?: unknown;
     amaBenchCrossJudgeProvider?: PackageBenchProviderConfig | null;
@@ -351,6 +417,7 @@ type PackageBenchModule = {
       runtimeProfile?: BenchRuntimeProfile | null;
       systemProvider?: PackageBenchProviderConfig | null;
       judgeProvider?: PackageBenchProviderConfig | null;
+      internalProvider?: PackageBenchProviderConfig | null;
       adapterMode: string;
       remnicConfig: Record<string, unknown>;
       benchmarkOptions?: Record<string, unknown>;
@@ -369,11 +436,25 @@ type PackageBenchModule = {
       provider: string;
       model: string;
       baseUrl?: string;
+      apiKey?: string;
+      disableThinking?: boolean;
+      reasoningEffort?: "low" | "medium" | "high" | "xhigh";
     } | null;
     judgeProvider?: {
       provider: string;
       model: string;
       baseUrl?: string;
+      apiKey?: string;
+      disableThinking?: boolean;
+      reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+    } | null;
+    internalProvider?: {
+      provider: string;
+      model: string;
+      baseUrl?: string;
+      apiKey?: string;
+      disableThinking?: boolean;
+      reasoningEffort?: "low" | "medium" | "high" | "xhigh";
     } | null;
     remnicConfig?: Record<string, unknown>;
     system: {
@@ -392,6 +473,17 @@ type PackageBenchModule = {
         provider: string;
         model: string;
         baseUrl?: string;
+        apiKey?: string;
+        disableThinking?: boolean;
+        reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+      } | null;
+      internalProvider?: {
+        provider: string;
+        model: string;
+        baseUrl?: string;
+        apiKey?: string;
+        disableThinking?: boolean;
+        reasoningEffort?: "low" | "medium" | "high" | "xhigh";
       } | null;
       adapterMode: string;
       remnicConfig: Record<string, unknown>;
@@ -412,6 +504,17 @@ type PackageBenchModule = {
         provider: string;
         model: string;
         baseUrl?: string;
+        apiKey?: string;
+        disableThinking?: boolean;
+        reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+      } | null;
+      internalProvider?: {
+        provider: string;
+        model: string;
+        baseUrl?: string;
+        apiKey?: string;
+        disableThinking?: boolean;
+        reasoningEffort?: "low" | "medium" | "high" | "xhigh";
       } | null;
       adapterMode: string;
       remnicConfig: Record<string, unknown>;
@@ -450,12 +553,14 @@ type PackageBenchModule = {
     preserveRuntimeDefaults?: boolean;
     responder?: unknown;
     judge?: unknown;
+    replayExtractionMode?: "await" | "background" | "skip";
   }) => Promise<{ destroy(): Promise<void> }>;
   createRemnicAdapter?: (options?: {
     configOverrides?: Record<string, unknown>;
     preserveRuntimeDefaults?: boolean;
     responder?: unknown;
     judge?: unknown;
+    replayExtractionMode?: "await" | "background" | "skip";
   }) => Promise<{ destroy(): Promise<void> }>;
   createSyntheticEmailIngestionAdapter?: (options?: {
     system?: unknown;
@@ -478,6 +583,17 @@ type PackageBenchModule = {
     source: "dataset" | "smoke" | "missing";
     filename?: string;
     items: unknown[];
+    errors: string[];
+  }>;
+  loadBeamDatasetPreview?: (options: {
+    mode: "full" | "quick";
+    datasetDir?: string;
+    limit?: number;
+  }) => Promise<{
+    source: "dataset" | "smoke" | "missing";
+    files: string[];
+    items: number;
+    tasks: number;
     errors: string[];
   }>;
 };
@@ -533,6 +649,9 @@ interface BenchProviderConfig {
     max429WaitMs?: number;
   };
   disableThinking?: boolean;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  responderContextBudgetChars?: number;
+  responderPromptBudgetChars?: number;
 }
 
 interface ResolveBenchRuntimeProfileOptions {
@@ -546,15 +665,26 @@ interface ResolveBenchRuntimeProfileOptions {
   systemModel?: string;
   systemBaseUrl?: string;
   systemApiKey?: string;
+  systemCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  systemResponderContextBudgetChars?: number;
+  systemResponderPromptBudgetChars?: number;
   judgeProvider?: string;
   judgeModel?: string;
   judgeBaseUrl?: string;
   judgeApiKey?: string;
+  judgeCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  internalProvider?: string;
+  internalModel?: string;
+  internalBaseUrl?: string;
+  internalApiKey?: string;
+  internalDisableThinking?: boolean;
+  internalCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
   amaBenchJudgeProtocol?: "default" | "recommended";
   amaBenchCrossJudgeProvider?: string;
   amaBenchCrossJudgeModel?: string;
   amaBenchCrossJudgeBaseUrl?: string;
   amaBenchCrossJudgeApiKey?: string;
+  amaBenchCrossJudgeCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
   requestTimeout?: number;
   max429WaitMs?: number;
   disableThinking?: boolean;
@@ -572,6 +702,7 @@ interface ResolvedBenchRuntimeProfile {
   };
   systemProvider: BenchProviderConfig | null;
   judgeProvider: BenchProviderConfig | null;
+  internalProvider: BenchProviderConfig | null;
 }
 
 interface BenchSummaryResult {
@@ -607,10 +738,10 @@ export function getBenchUsageText(): string {
 Commands:
   list                     List published benchmark packs
   run [benchmark...]       Run one or more benchmark packs
-  published --name <longmemeval|locomo> --dataset <path> --model <id>
+  published --name <longmemeval|locomo|beam> --dataset <path> --model <id>
                            Run a published benchmark with leaderboard-friendly flags
                            (see issue #566 slice 4). Accepts --limit, --seed,
-                           --out, --dry-run, --provider, --base-url.
+                           --trial-limit, --out, --dry-run, --provider, --base-url.
   datasets download [benchmark...]
                            Download local datasets for supported published benchmarks
   datasets status          Show local dataset availability for supported benchmarks
@@ -647,26 +778,48 @@ Options:
   --gateway-agent-id <id>  OpenClaw agent persona id for gateway model routing
   --fast-gateway-agent-id <id>
                            OpenClaw fast-tier agent persona id for gateway model routing
-  --system-provider <openai|anthropic|ollama|litellm>
+  --system-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
                            Use a direct provider-backed answering path
   --system-model <model>   Model name for the direct answering provider
   --system-base-url <url>  Base URL for the direct answering provider
-  --judge-provider <openai|anthropic|ollama|litellm>
+  --system-codex-reasoning-effort <low|medium|high|xhigh>
+                           Codex CLI reasoning effort for the direct answerer
+  --system-responder-context-budget-chars <n>
+                           Compact recalled memory context before sending it to the direct answerer
+  --system-responder-prompt-budget-chars <n>
+                           Compact repeated benchmark prompt instructions before sending them to the direct answerer
+  --judge-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
                            Use a direct provider-backed judge
   --judge-model <model>    Model name for the judge provider
   --judge-base-url <url>   Base URL for the judge provider
+  --judge-codex-reasoning-effort <low|medium|high|xhigh>
+                           Codex CLI reasoning effort for the judge
+  --internal-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
+                           Provider for Remnic's internal extraction/summarization LLM
+  --internal-model <model> Model name for Remnic's internal LLM provider
+  --internal-base-url <url>
+                           Base URL for Remnic's internal LLM provider
+  --internal-api-key <key> API key for Remnic's internal LLM provider
+  --internal-disable-thinking
+                           Suppress thinking for Remnic's internal LLM when supported
+  --internal-codex-reasoning-effort <low|medium|high|xhigh>
+                           Codex CLI reasoning effort for Remnic's internal LLM
   --ama-bench-judge-protocol <default|recommended>
                            For ama-bench, use the recommended binary LLM-judge protocol
   --ama-bench-cross-judge-model <model>
                            For ama-bench, add a second recommended-protocol judge for agreement checks
   --ama-bench-cross-judge-provider <provider>
                            Provider for the ama-bench cross judge (defaults to --judge-provider)
+  --ama-bench-cross-judge-codex-reasoning-effort <low|medium|high|xhigh>
+                           Codex CLI reasoning effort for the ama-bench cross judge
   --ama-bench-cross-judge-base-url <url>
                            Base URL for the ama-bench cross judge (defaults to --judge-base-url)
   --custom <path>          Run a YAML-defined custom benchmark file
   --results-dir <path>     Override the stored benchmark results directory
   --baselines-dir <path>   Override the named baseline directory
   --threshold <value>      Regression threshold for compare (default: 0.05)
+  --trial-limit <n>        Cap scored LoCoMo QA trials for staged published runs
+  --task-filter <pattern>  BEAM diagnostic filter; match task id, ability, or question text
   --detail                 Include per-task details for bench results
   --format <json|csv|html> Output format for bench export
   --output <path>          Write bench export output to a file
@@ -686,6 +839,7 @@ Examples:
   remnic bench run longmemeval --dataset-dir ~/datasets/longmemeval
   remnic bench run longmemeval --runtime-profile real --remnic-config ~/.config/remnic/config.json
   remnic bench run longmemeval --runtime-profile real --system-provider openai --system-model gpt-5.4-mini
+  remnic bench run longmemeval --quick --system-provider codex-cli --system-model gpt-5.5 --judge-provider codex-cli --judge-model gpt-5.5
   remnic bench run ama-bench --runtime-profile real --system-provider ollama --system-model gemma4:31b-cloud --judge-provider ollama --judge-model qwen3:32b --ama-bench-judge-protocol recommended
   remnic bench run longmemeval --runtime-profile openclaw-chain --openclaw-config ~/.openclaw/openclaw.json --gateway-agent-id memory-primary
   remnic bench run longmemeval --matrix baseline,real,openclaw-chain
@@ -736,10 +890,29 @@ export function buildBenchRuntimeProfileRequest(
       runtimeProfile === "openclaw-chain"
         ? undefined
         : parsed.systemApiKey,
+    systemCodexReasoningEffort:
+      runtimeProfile === "openclaw-chain"
+        ? undefined
+        : parsed.systemCodexReasoningEffort,
+    systemResponderContextBudgetChars:
+      runtimeProfile === "openclaw-chain"
+        ? undefined
+        : parsed.systemResponderContextBudgetChars,
+    systemResponderPromptBudgetChars:
+      runtimeProfile === "openclaw-chain"
+        ? undefined
+        : parsed.systemResponderPromptBudgetChars,
     judgeProvider: parsed.judgeProvider,
     judgeModel: parsed.judgeModel,
     judgeBaseUrl: parsed.judgeBaseUrl,
     judgeApiKey: parsed.judgeApiKey,
+    judgeCodexReasoningEffort: parsed.judgeCodexReasoningEffort,
+    internalProvider: parsed.internalProvider,
+    internalModel: parsed.internalModel,
+    internalBaseUrl: parsed.internalBaseUrl,
+    internalApiKey: parsed.internalApiKey,
+    internalDisableThinking: parsed.internalDisableThinking,
+    internalCodexReasoningEffort: parsed.internalCodexReasoningEffort,
     requestTimeout: parsed.requestTimeout,
     max429WaitMs: parsed.max429WaitMs,
     disableThinking: parsed.disableThinking,
@@ -923,6 +1096,12 @@ async function runBenchViaFallback(
     parsed.judgeProvider !== undefined ||
     parsed.judgeModel !== undefined ||
     parsed.judgeBaseUrl !== undefined ||
+    parsed.internalProvider !== undefined ||
+    parsed.internalModel !== undefined ||
+    parsed.internalBaseUrl !== undefined ||
+    parsed.internalApiKey !== undefined ||
+    parsed.internalDisableThinking === true ||
+    parsed.internalCodexReasoningEffort !== undefined ||
     parsed.amaBenchJudgeProtocol !== undefined ||
     parsed.amaBenchCrossJudgeProvider !== undefined ||
     parsed.amaBenchCrossJudgeModel !== undefined ||
@@ -1015,6 +1194,11 @@ const DOWNLOADED_DATASET_MARKERS: Record<string, { anyOf?: string[]; ext?: strin
       "500k.json",
       "1m.json",
       "10m.json",
+      "data/100K-00000-of-00001.parquet",
+      "data/500K-00000-of-00001.parquet",
+      "data/1M-00000-of-00001.parquet",
+      "data/10M-00000-of-00002.parquet",
+      "data/10M-00001-of-00002.parquet",
     ],
   },
   personamem: {
@@ -1966,13 +2150,13 @@ async function publishBenchPackageResults(parsed: ParsedBenchArgs): Promise<void
 }
 
 /**
- * `remnic bench published --name <longmemeval|locomo> --dataset <path>
- *    --model <id> --limit <n> --seed <n> --out <dir> [--dry-run]
+ * `remnic bench published --name <longmemeval|locomo|beam> --dataset <path>
+ *    --model <id> --limit <n> --trial-limit <n> --seed <n> --out <dir> [--dry-run]
  *    [--provider openai|anthropic|ollama|litellm] [--base-url <url>]`
  *
  * Issue #566 PR 4/7. Thin wrapper that routes the user's flags into the
  * existing `runBenchViaPackage` machinery. The wrapper is deliberately
- * narrow: it only accepts the two published benchmark IDs, enforces the
+ * narrow: it only accepts the supported published benchmark IDs, enforces the
  * `--name` + `--dataset` invariants at the boundary, and — in `--dry-run`
  * — loads the dataset and prints a preview without calling any LLM.
  *
@@ -1984,7 +2168,7 @@ async function publishBenchPackageResults(parsed: ParsedBenchArgs): Promise<void
 async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
   if (!parsed.publishedName) {
     console.error(
-      "ERROR: `bench published` requires --name longmemeval|locomo.",
+      "ERROR: `bench published` requires --name longmemeval|locomo|beam.",
     );
     process.exit(1);
   }
@@ -2063,6 +2247,22 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
       itemCount = loadResult.items.length;
       console.log(
         `[dry-run] locomo: source=${loadResult.source} filename=${loadResult.filename ?? "<smoke>"} items=${itemCount} errors=${loadResult.errors.length}`,
+      );
+    } else if (benchmarkId === "beam" && benchModule.loadBeamDatasetPreview) {
+      const preview = await benchModule.loadBeamDatasetPreview({
+        mode,
+        datasetDir: parsed.datasetDir,
+        limit: effectiveLimit,
+      });
+      loadResult = {
+        source: preview.source,
+        filename: preview.files.join(",") || undefined,
+        items: [],
+        errors: preview.errors,
+      };
+      itemCount = preview.items;
+      console.log(
+        `[dry-run] beam: source=${preview.source} files=${preview.files.length} items=${preview.items} tasks=${preview.tasks} errors=${preview.errors.length}`,
       );
     } else {
       console.error(
@@ -2235,6 +2435,41 @@ async function runBenchViaPackage(
   const benchStartTime = Date.now();
   const partialTasks: import("@remnic/bench").TaskResult[] = [];
   let system: Awaited<ReturnType<PackageBenchExecutionPlan["createAdapter"]>> | undefined;
+  const previousCodexDiagnosticsDir =
+    process.env[CODEX_CLI_BENCH_DIAGNOSTICS_DIR_ENV];
+  const previousCodexDiagnosticsMode =
+    process.env[CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV];
+  if (!previousCodexDiagnosticsDir) {
+    process.env[CODEX_CLI_BENCH_DIAGNOSTICS_DIR_ENV] = path.join(
+      outputDir,
+      "codex-cli-diagnostics",
+    );
+  }
+  if (!previousCodexDiagnosticsMode) {
+    process.env[CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV] = "metadata";
+  }
+
+  // `publishedLimit` (from `bench published --limit N`) takes
+  // precedence over the implicit quick-mode limit of 1.
+  const effectiveLimit =
+    parsed.publishedLimit ?? (parsed.quick ? 1 : undefined);
+  // Forward `--seed` through to the runner so the determinism contract
+  // advertised by `bench published --seed N` is actually honored.
+  // Cursor + Codex review on PR #603: without this, `publishedSeed` was
+  // parsed but dropped, and the harness recorded `ctx.options.seed ?? 0`
+  // instead of the user-specified seed, breaking reproducibility.
+  const effectiveSeed = parsed.publishedSeed;
+  const benchmarkOptions =
+    benchmarkId === "locomo"
+      ? {
+          ...(parsed.publishedTrialLimit !== undefined
+            ? { trialLimit: parsed.publishedTrialLimit }
+            : {}),
+          replayExtractionMode: "skip",
+        }
+      : benchmarkId === "beam" && parsed.publishedTaskFilter !== undefined
+        ? { taskFilter: parsed.publishedTaskFilter }
+      : undefined;
 
   try {
     const amaBenchProtocol = buildAmaBenchProtocolOptions(
@@ -2245,20 +2480,13 @@ async function runBenchViaPackage(
     );
     system = await plan.createAdapter({
       ...plan.runtime.adapterOptions,
+      ...(benchmarkId === "locomo"
+        ? { replayExtractionMode: "skip" as const }
+        : {}),
       ...(amaBenchProtocol.primaryJudge
         ? { judge: amaBenchProtocol.primaryJudge }
         : {}),
     });
-    // `publishedLimit` (from `bench published --limit N`) takes
-    // precedence over the implicit quick-mode limit of 1.
-    const effectiveLimit =
-      parsed.publishedLimit ?? (parsed.quick ? 1 : undefined);
-    // Forward `--seed` through to the runner so the determinism contract
-    // advertised by `bench published --seed N` is actually honored.
-    // Cursor + Codex review on PR #603: without this, `publishedSeed` was
-    // parsed but dropped, and the harness recorded `ctx.options.seed ?? 0`
-    // instead of the user-specified seed, breaking reproducibility.
-    const effectiveSeed = parsed.publishedSeed;
     const result = await benchModule.runBenchmark(benchmarkId, {
       mode: parsed.quick ? "quick" : "full",
       datasetDir,
@@ -2269,7 +2497,9 @@ async function runBenchViaPackage(
       runtimeProfile: plan.runtime.profile,
       systemProvider: plan.runtime.systemProvider,
       judgeProvider: plan.runtime.judgeProvider,
+      internalProvider: plan.runtime.internalProvider,
       remnicConfig: plan.runtime.effectiveRemnicConfig,
+      ...(benchmarkOptions ? { benchmarkOptions } : {}),
       ...(amaBenchProtocol.judgeProtocol
         ? { amaBenchJudgeProtocol: amaBenchProtocol.judgeProtocol }
         : {}),
@@ -2299,6 +2529,7 @@ async function runBenchViaPackage(
       },
     });
     result.config.remnicConfig = plan.runtime.remnicConfig;
+    result.config.internalProvider = plan.runtime.internalProvider;
     const writtenPath = await benchModule.writeBenchmarkResult(result, outputDir);
     if (parsed.json) {
       console.log(JSON.stringify(redactBenchResultForStdout(benchModule, result), null, 2));
@@ -2314,6 +2545,7 @@ async function runBenchViaPackage(
         definition,
         partialTasks,
         plan,
+        benchmarkOptions,
         remnicVersion,
         err instanceof Error ? err.message : String(err),
         parsed.quick ? "quick" : "full",
@@ -2327,8 +2559,27 @@ async function runBenchViaPackage(
     }
     throw err;
   } finally {
-    await system?.destroy();
+    try {
+      await system?.destroy();
+    } finally {
+      restoreOptionalEnv(
+        CODEX_CLI_BENCH_DIAGNOSTICS_DIR_ENV,
+        previousCodexDiagnosticsDir,
+      );
+      restoreOptionalEnv(
+        CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV,
+        previousCodexDiagnosticsMode,
+      );
+    }
   }
+}
+
+function restoreOptionalEnv(key: string, previousValue: string | undefined): void {
+  if (previousValue === undefined) {
+    delete process.env[key];
+    return;
+  }
+  process.env[key] = previousValue;
 }
 
 function buildAmaBenchProtocolOptions(
@@ -2426,6 +2677,11 @@ function resolveAmaBenchCrossJudgeProvider(
     ...(canInheritPrimaryTransport && primaryJudgeProvider?.disableThinking
       ? { disableThinking: primaryJudgeProvider.disableThinking }
       : {}),
+    ...(parsed.amaBenchCrossJudgeCodexReasoningEffort
+      ? { reasoningEffort: parsed.amaBenchCrossJudgeCodexReasoningEffort }
+      : canInheritPrimaryTransport && primaryJudgeProvider?.reasoningEffort
+        ? { reasoningEffort: primaryJudgeProvider.reasoningEffort }
+        : {}),
   };
 }
 
@@ -2434,6 +2690,7 @@ function buildPartialBenchmarkResult(
   definition: { tier?: string; meta?: { category?: string; version?: string } } | undefined,
   tasks: Array<{ taskId: string; scores: Record<string, number>; latencyMs: number; tokens: { input: number; output: number } }>,
   plan: PackageBenchExecutionPlan,
+  benchmarkOptions: Record<string, unknown> | undefined,
   remnicVersion: string,
   failureReason: string,
   mode: "full" | "quick",
@@ -2459,8 +2716,10 @@ function buildPartialBenchmarkResult(
     config: {
       systemProvider: plan.runtime.systemProvider ?? null,
       judgeProvider: plan.runtime.judgeProvider ?? null,
+      internalProvider: plan.runtime.internalProvider ?? null,
       adapterMode: plan.adapterMode,
       remnicConfig: plan.runtime.remnicConfig ?? {},
+      ...(benchmarkOptions ? { benchmarkOptions } : {}),
     },
     cost: {
       totalTokens: totalInput + totalOutput,
@@ -2516,10 +2775,12 @@ async function runCustomBenchViaPackage(parsed: ParsedBenchArgs): Promise<boolea
         runtimeProfile: plan.runtime.profile,
         systemProvider: plan.runtime.systemProvider,
         judgeProvider: plan.runtime.judgeProvider,
+        internalProvider: plan.runtime.internalProvider,
         remnicConfig: plan.runtime.effectiveRemnicConfig,
         system,
       });
       result.config.remnicConfig = plan.runtime.remnicConfig;
+      result.config.internalProvider = plan.runtime.internalProvider;
       customBenchmarkIds.push(result.meta.benchmark);
       const writtenPath = await benchModule.writeBenchmarkResult(result, outputDir);
       writtenPaths.push(writtenPath);
@@ -2554,9 +2815,14 @@ const BENCH_REPRO_ENV_KEYS = [
   "REMNIC_BENCH_LIMIT",
   "REMNIC_BENCH_MODE",
   "REMNIC_BENCH_PHASE_TIMEOUT_MS",
+  "REMNIC_BENCH_CODEX_CLI_EXECUTABLE",
   "REMNIC_BENCH_REQUEST_TIMEOUT_MS",
   "XDG_CACHE_HOME",
 ] as const;
+const CODEX_CLI_BENCH_DIAGNOSTICS_DIR_ENV =
+  "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_DIR";
+const CODEX_CLI_BENCH_DIAGNOSTICS_MODE_ENV =
+  "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_MODE";
 
 function resolveBenchReproEnvKeys(): string[] {
   return BENCH_REPRO_ENV_KEYS.filter((key) => process.env[key] !== undefined);
@@ -2914,6 +3180,23 @@ function parseOpenclawPluginState(
   const slots = (rawSlots ?? {}) as Record<string, unknown>;
 
   return { plugins, entries, slots };
+}
+
+function readOpenclawHooksPolicy(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function buildRemnicOpenclawHooksPolicy(
+  legacyHooks: unknown,
+  existingHooks: unknown,
+): Record<string, unknown> {
+  return {
+    ...readOpenclawHooksPolicy(legacyHooks),
+    ...readOpenclawHooksPolicy(existingHooks),
+    allowConversationAccess: true,
+  };
 }
 
 function resolveOpenclawInstallMemoryDir(args: {
@@ -3280,6 +3563,82 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
     // maintenance; the daemon/gateway process performs full warmup instead.
     orchestrator.abortDeferredInit();
   }
+}
+
+// ── Action confidence ──────────────────────────────────────────────────────
+
+function parseActionConfidenceRest(rest: string[]): {
+  input: ActionConfidenceInput;
+  json: boolean;
+} {
+  const valueFlags = new Set([
+    "--action",
+    "--confidence",
+    "--risk",
+    "--context",
+    "--rule",
+    "--current-scope",
+    "--memory-scope",
+  ]);
+  const booleanFlags = new Set(["--json", "--stale", "--corrected", "--unsafe"]);
+  const options: Record<string, string | boolean> = {};
+  const positional: string[] = [];
+
+  for (let i = 0; i < rest.length; i++) {
+    const token = rest[i];
+    if (!token.startsWith("--")) {
+      positional.push(token);
+      continue;
+    }
+    if (booleanFlags.has(token)) {
+      options[token.slice(2)] = true;
+      continue;
+    }
+    if (!valueFlags.has(token)) {
+      throw new Error(
+        `Unknown flag ${JSON.stringify(token)}. Supported flags: --action, --confidence, --risk, --context, --rule, --current-scope, --memory-scope, --stale, --corrected, --unsafe, --json.`,
+      );
+    }
+    const next = rest[i + 1];
+    if (next === undefined || next.startsWith("--")) {
+      throw new Error(`${token} requires a value.`);
+    }
+    options[token.slice(2)] = next;
+    i++;
+  }
+
+  const intendedAction =
+    typeof options.action === "string"
+      ? options.action
+      : positional.length > 0
+        ? positional.join(" ")
+        : undefined;
+
+  const input = buildActionConfidenceInputFromOptions({
+    action: intendedAction,
+    confidence: options.confidence,
+    risk: options.risk,
+    context: options.context,
+    rule: options.rule,
+    currentScope: options["current-scope"],
+    memoryScope: options["memory-scope"],
+    stale: options.stale,
+    corrected: options.corrected,
+    unsafe: options.unsafe,
+  });
+  return { input, json: options.json === true };
+}
+
+async function cmdActionConfidence(rest: string[]): Promise<void> {
+  let parsed: ReturnType<typeof parseActionConfidenceRest>;
+  try {
+    parsed = parseActionConfidenceRest(rest);
+  } catch (err) {
+    console.error(`action-confidence: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  const result = evaluateActionConfidence(parsed.input);
+  console.log(parsed.json ? JSON.stringify(result, null, 2) : renderActionConfidenceText(result));
 }
 
 // ── Recall X-ray (issue #570) ──────────────────────────────────────────────
@@ -4620,6 +4979,23 @@ function cmdDedup(json: boolean): void {
   console.log(`Duration: ${result.durationMs}ms`);
 }
 
+function readInstalledConnectorConfig(configPath: string | undefined, fallback: Record<string, unknown>): Record<string, unknown> {
+  if (!configPath) return fallback;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fallback;
+    const { token: _token, ...config } = parsed as Record<string, unknown>;
+    return config;
+  } catch {
+    return fallback;
+  }
+}
+
+function snapshotConnectorTokenEntry(connectorId: string): TokenEntry | null {
+  const entry = listTokens().find((candidate) => candidate.connector === connectorId);
+  return entry ? { ...entry } : null;
+}
+
 // ── M5 connectors command ────────────────────────────────────────────────────
 
 async function cmdConnectors(action: string, rest: string[], json: boolean): Promise<void> {
@@ -4650,6 +5026,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       process.exit(1);
     }
     const connectorConfig = parseConnectorConfig(rest);
+    const preInstallTokenEntry = snapshotConnectorTokenEntry(connectorId);
     const result = installConnector({
       connectorId,
       config: connectorConfig,
@@ -4663,10 +5040,12 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     if (result.configPath) console.log(`  Config: ${result.configPath}`);
     if (result.status === "already_installed") console.log("Use --force to reinstall.");
     if (result.status === "config_required") console.log("Set config with --config <key>=<value>");
+    const effectiveConnectorConfig = readInstalledConnectorConfig(result.configPath, connectorConfig);
 
     // Publish memory extension if the connector has a publisher and the
     // install was successful (not error/already_installed/config_required).
-    if (result.status === "installed") {
+    const shouldPublishExtension = coerceInstallExtension(effectiveConnectorConfig.installExtension) ?? true;
+    if (result.status === "installed" && shouldPublishExtension) {
       const pub = publisherForConnector(connectorId);
       if (pub) {
         try {
@@ -4677,12 +5056,17 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
             // the publish context so publishers use the actual namespace
             // instead of falling back to "default".
             const connectorNamespace =
-              typeof connectorConfig?.namespace === "string" && connectorConfig.namespace.length > 0
-                ? connectorConfig.namespace
+              typeof effectiveConnectorConfig.namespace === "string" && effectiveConnectorConfig.namespace.length > 0
+                ? effectiveConnectorConfig.namespace
+                : undefined;
+            const connectorDaemonUrl =
+              typeof effectiveConnectorConfig.remnicDaemonUrl === "string" && effectiveConnectorConfig.remnicDaemonUrl.trim().length > 0
+                ? effectiveConnectorConfig.remnicDaemonUrl.trim()
                 : undefined;
             const pubResult = await pub.publish({
-              config: { memoryDir, namespace: connectorNamespace },
+              config: { memoryDir, namespace: connectorNamespace, daemonUrl: connectorDaemonUrl },
               skillsRoot: path.join(memoryDir, "skills"),
+              rollbackTokenEntry: preInstallTokenEntry,
               log: { info: console.log, warn: console.warn, error: console.error },
             });
             if (pubResult.filesWritten.length > 0) {
@@ -4696,19 +5080,42 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
           console.warn(`  Warning: memory extension publish failed: ${msg}`);
         }
       }
+    } else if (result.status === "installed" && !shouldPublishExtension) {
+      console.log("  Memory extension publish skipped via installExtension=false");
     }
   } else if (action === "remove") {
     if (!connectorId) {
       console.error("Usage: remnic connectors remove <id>");
       process.exit(1);
     }
+    const connectorBeforeRemoval = listConnectors().installed.find(
+      (connector) => connector.connectorId === connectorId,
+    );
+    const savedInstallExtension = connectorBeforeRemoval
+      ? coerceInstallExtension(connectorBeforeRemoval.config.installExtension)
+      : undefined;
     const result = removeConnector(connectorId);
     if (result.status === "error") {
       console.error(result.message);
       process.exit(1);
     }
     console.log(result.message);
-    if (result.status === "skipped" && result.reason === "config-parse-failed") {
+    if (result.status === "removed" && connectorId !== "codex-cli") {
+      if (savedInstallExtension === false) {
+        console.log("  Memory extension removal skipped via installExtension=false");
+      } else {
+        const pub = publisherForConnector(connectorId);
+        if (pub) {
+          try {
+            await pub.unpublish();
+            console.log("  Removed memory extension");
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`  Warning: memory extension removal failed: ${msg}`);
+          }
+        }
+      }
+    } else if (result.status === "skipped" && result.reason === "config-parse-failed") {
       // A malformed codex-cli.json means we could not verify or complete removal.
       // This is not a benign no-op — the connector may still be partially installed.
       // Exit non-zero so automation does not treat a failed removal as success.
@@ -6456,6 +6863,10 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
   const newEntry: Record<string, unknown> = {
     ...legacyNonConfigFields,
     ...existingNewEntryFields,
+    hooks: buildRemnicOpenclawHooksPolicy(
+      legacyNonConfigFields.hooks,
+      existingNewEntryFields.hooks,
+    ),
     config: {
       modelSource: defaultModelSource,
       ...legacyConfigToMerge,
@@ -6497,6 +6908,7 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
   const changes: string[] = [];
   if (!hasNew) changes.push(`+ Added plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"]`);
   else changes.push(`~ Updated plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"].config.memoryDir`);
+  changes.push(`~ Set plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"].hooks.allowConversationAccess = true`);
   if (!slotIsActiveLegacy && currentSlot !== REMNIC_OPENCLAW_PLUGIN_ID) {
     changes.push(`~ Set plugins.slots.memory = "${REMNIC_OPENCLAW_PLUGIN_ID}" (was: ${currentSlot ?? "(unset)"})`);
   } else if (slotIsActiveLegacy) {
@@ -6517,7 +6929,8 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
     const entrySummary = dryRunEntries
       ? Object.keys(dryRunEntries).map((k) => {
           const cfg = (dryRunEntries[k] as Record<string, unknown>)?.config as Record<string, unknown> | undefined;
-          return `  ${k}: { config: { memoryDir: ${cfg?.memoryDir ?? "(unset)"}, ... } }`;
+          const hooks = (dryRunEntries[k] as Record<string, unknown>)?.hooks as Record<string, unknown> | undefined;
+          return `  ${k}: { hooks: { allowConversationAccess: ${hooks?.allowConversationAccess ?? "(unset)"} }, config: { memoryDir: ${cfg?.memoryDir ?? "(unset)"}, ... } }`;
         }).join("\n")
       : "  (none)";
     console.log("\nResulting plugins.entries:");
@@ -7426,6 +7839,10 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       await cmdQuery(queryText, json, explain);
       break;
     }
+
+    case "action-confidence":
+      await cmdActionConfidence(rest);
+      break;
 
     case "xray":
       // `remnic xray "<query>"` — recall with X-ray capture and print

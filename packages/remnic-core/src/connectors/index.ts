@@ -389,6 +389,32 @@ const BUILTIN_CONNECTORS: ConnectorManifest[] = [
     tags: ["official", "ai"],
   },
   {
+    id: "pi",
+    name: "Pi Coding Agent",
+    version: "1.0.0",
+    description: "Pi Coding Agent — native extension for recall, observe, MCP tools, and compaction coordination",
+    capabilities: {
+      observe: true,
+      recall: true,
+      store: true,
+      search: true,
+      entities: true,
+      realtimeSync: true,
+      batch: true,
+      maxBudgetChars: 32000,
+      connectionType: "http",
+    },
+    configSchema: {
+      remnicDaemonUrl: "URL of the Remnic daemon (default: http://127.0.0.1:4318)",
+      namespace: "Optional namespace",
+      installExtension: "Install the Pi extension into ~/.pi/agent/extensions/remnic (default: true)",
+    },
+    homepage: "https://pi.dev",
+    author: "Remnic",
+    tags: ["official", "ai", "pi", "coding-agent"],
+    requiresToken: true,
+  },
+  {
     id: "replit",
     name: "Replit Agent",
     version: "1.0.0",
@@ -627,6 +653,45 @@ export function getConnectorToken(connectorId: string): string | undefined {
   }
 }
 
+function readSavedConnectorConfig(configPath: string): Record<string, unknown> {
+  if (!fs.existsSync(configPath)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const {
+      connectorId: _connectorId,
+      installedAt: _installedAt,
+      token: _token,
+      ...config
+    } = parsed as Record<string, unknown>;
+    return config;
+  } catch {
+    return {};
+  }
+}
+
+function removeClearedSavedConnectorConfig(
+  savedConnectorConfig: Record<string, unknown>,
+  rawUserConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...savedConnectorConfig };
+  for (const [key, value] of Object.entries(rawUserConfig)) {
+    if (value === undefined || value === null || value === "") {
+      delete merged[key];
+    }
+  }
+  return merged;
+}
+
+function compactConnectorConfigOverrides(rawUserConfig: Record<string, unknown>): Record<string, unknown> {
+  const safeUserConfig: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(rawUserConfig)) {
+    if (value === undefined || value === null || value === "") continue;
+    safeUserConfig[key] = value;
+  }
+  return safeUserConfig;
+}
+
 // ── Install connector ───────────────────────────────────────────────────────
 
 export function installConnector(options: InstallOptions): InstallResult {
@@ -659,6 +724,7 @@ export function installConnector(options: InstallOptions): InstallResult {
   fs.mkdirSync(configDir, { recursive: true });
 
   const configPath = path.join(configDir, `${options.connectorId}.json`);
+  const savedConnectorConfig = existing ? readSavedConnectorConfig(configPath) : {};
 
   // For the hermes connector, resolve profile/host/port with the following
   // precedence: saved-connector-JSON → explicit options.config → defaults.
@@ -838,7 +904,7 @@ export function installConnector(options: InstallOptions): InstallResult {
     };
   }
 
-  // Build config from schema defaults + user overrides.
+  // Build config from saved values + user overrides.
   // Codex P1 (PRRT_kwDORJXyws56U9U0): tokens MUST NOT be written into
   // connector.json. The authoritative store is tokens.json (0o600). Writing the
   // token here created a second, unredacted copy that `remnic connectors list
@@ -851,11 +917,14 @@ export function installConnector(options: InstallOptions): InstallResult {
   //
   // Strip any stray `token` key the caller may have supplied via options.config
   // so it cannot be persisted to disk even on legacy call paths.
-  const { token: _callerToken, ...safeUserConfig } = (options.config ?? {}) as Record<string, unknown>;
+  const { token: _callerToken, ...rawUserConfig } = (options.config ?? {}) as Record<string, unknown>;
+  const savedConnectorConfigForMerge = removeClearedSavedConnectorConfig(savedConnectorConfig, rawUserConfig);
+  const safeUserConfig = compactConnectorConfigOverrides(rawUserConfig);
   const resolvedConfig: Record<string, unknown> = {
+    ...savedConnectorConfigForMerge,
+    ...safeUserConfig,
     connectorId: options.connectorId,
     installedAt: new Date().toISOString(),
-    ...safeUserConfig,
     // For hermes, always overlay the sanitized/coerced resolved values so that
     // the connector JSON always has a numeric port and validated profile/host.
     // This also ensures options.config string values (from --config=port=5555)

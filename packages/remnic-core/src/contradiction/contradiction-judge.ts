@@ -244,6 +244,7 @@ async function callLlm(
     const result = await client.chatCompletion(messages, {
       temperature: 0.1,
       maxTokens: 4096,
+      operation: "contradiction-judge",
     });
     return result?.content ?? "";
   }

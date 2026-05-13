@@ -106,6 +106,7 @@ import {
 } from "./memory-worth-filter.js";
 import { reorderRecallResultsWithMmr } from "./recall-mmr.js";
 import { applyReasoningTraceBoost } from "./reasoning-trace-recall.js";
+import { buildRetrievedMemoryProvenance } from "./memory-provenance.js";
 import {
   applyTemporalSupersession,
   normalizeSupersessionKey,
@@ -165,6 +166,22 @@ import {
 } from "./entity-retrieval.js";
 import { buildExplicitCueRecallSection } from "./explicit-cue-recall.js";
 import {
+  buildTargetedFactRecallSection,
+  shouldRecallTargetedFactEvidence,
+} from "./targeted-fact-recall.js";
+import {
+  buildFocusedListRecallSection,
+  shouldRecallFocusedListEvidence,
+} from "./focused-list-recall.js";
+import {
+  buildResponseGuidanceRecallSection,
+  shouldRecallResponseGuidance,
+} from "./response-guidance-recall.js";
+import {
+  buildEventOrderRecallSection,
+  shouldRecallEventOrderEvidence,
+} from "./event-order-recall.js";
+import {
   hasBroadGraphIntent,
   inferIntentFromText,
   intentCompatibilityScore,
@@ -207,6 +224,7 @@ import {
   type CausalTrajectorySearchResult,
 } from "./causal-trajectory.js";
 import {
+  objectiveStateStoreOverrideForNamespace,
   searchObjectiveStateSnapshots,
   type ObjectiveStateSearchResult,
 } from "./objective-state.js";
@@ -286,6 +304,7 @@ import {
   CompoundingEngine,
   defaultTierMigrationCycleBudget,
 } from "./compounding/engine.js";
+import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 // IRC preference consolidation — used by eval adapter directly;
 // orchestrator integration planned for future PR.
 // import { consolidatePreferences, buildQueryAwarePreferenceSection, synthesizePreferencesFromLcm } from "./compounding/preference-consolidator.js";
@@ -419,8 +438,10 @@ function fingerprintEntitySynthesisEvidence(entity: {
       entry.text,
     ].join("\u0000"))
     .sort();
-  fingerprint.update(timelineEntries.join("\u0001"));
-  fingerprint.update("\u0002");
+  const timelineEntrySeparator = String.fromCharCode(1);
+  const structuredFactsSeparator = String.fromCharCode(2);
+  fingerprint.update(timelineEntries.join(timelineEntrySeparator));
+  fingerprint.update(structuredFactsSeparator);
   fingerprint.update(fingerprintEntityStructuredFacts(entity) ?? "");
   return fingerprint.digest("hex");
 }
@@ -598,6 +619,12 @@ export interface RecallInvocationOptions {
    * normally be pruned by confidence decay.  Default `false`.
    */
   includeLowConfidence?: boolean;
+  /**
+   * User-aware context scopes active for this recall. Used by X-ray
+   * provenance safety checks so boundary-scoped memories are evaluated
+   * against the caller's real context.
+   */
+  currentContextScopes?: readonly unknown[];
 }
 
 type QueryAwarePrefilter = {
@@ -674,6 +701,131 @@ export function sanitizeSessionKeyForFilename(sessionKey: string): string {
     .digest("hex")
     .slice(0, 12);
   return `${readable}-${hash}`;
+}
+
+function latestSourceValidAtFromTurns(turns: readonly BufferTurn[]): string | undefined {
+  let latestMs: number | null = null;
+  for (const turn of turns) {
+    if (turn.extractionContextOnly === true) continue;
+    if (typeof turn.sourceValidAt !== "string") continue;
+    const parsed = parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
+    if (parsed === null) continue;
+    if (latestMs === null || parsed > latestMs) {
+      latestMs = parsed;
+    }
+  }
+  return latestMs === null ? undefined : new Date(latestMs).toISOString();
+}
+
+function sourceValidAtMs(turn: BufferTurn): number | null {
+  if (typeof turn.sourceValidAt !== "string") return null;
+  return parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
+}
+
+const SOURCE_VALID_AT_CONTEXT_TURNS = 2;
+
+function sourceValidAtSliceKey(turn: BufferTurn, index: number): string {
+  const validAtMs = sourceValidAtMs(turn);
+  return validAtMs === null ? `unknown:${index}` : String(validAtMs);
+}
+
+function asExtractionContextTurn(turn: BufferTurn): BufferTurn {
+  return { ...turn, extractionContextOnly: true };
+}
+
+function asExtractionTargetTurn(turn: BufferTurn): BufferTurn {
+  const { extractionContextOnly: _contextOnly, ...targetTurn } = turn;
+  return targetTurn;
+}
+
+function sourceValidAtContextTurns(
+  turns: readonly BufferTurn[],
+  targetStart: number,
+  targetEnd: number,
+  targetValidAtMs: number | null,
+): BufferTurn[] {
+  if (targetValidAtMs === null) return [];
+  return turns
+    .flatMap((turn, index) => {
+      if (index >= targetStart && index < targetEnd) return [];
+      const contextValidAtMs = sourceValidAtMs(turn);
+      if (contextValidAtMs === null || contextValidAtMs > targetValidAtMs) {
+        return [];
+      }
+      return [{ turn, index, validAtMs: contextValidAtMs }];
+    })
+    .sort((a, b) => {
+      if (a.validAtMs < b.validAtMs) return -1;
+      if (a.validAtMs > b.validAtMs) return 1;
+      if (a.index === b.index) return 0;
+      return a.index < b.index ? -1 : 1;
+    })
+    .slice(-SOURCE_VALID_AT_CONTEXT_TURNS)
+    .map(({ turn }) => asExtractionContextTurn(turn));
+}
+
+function targetSourceValidAtSortMs(turns: readonly BufferTurn[]): number {
+  let latestMs: number | null = null;
+  for (const turn of turns) {
+    if (turn.extractionContextOnly === true) continue;
+    const validAtMs = sourceValidAtMs(turn);
+    if (validAtMs === null) continue;
+    if (latestMs === null || validAtMs > latestMs) {
+      latestMs = validAtMs;
+    }
+  }
+  return latestMs ?? Number.POSITIVE_INFINITY;
+}
+
+function sortSourceValidAtSlicesChronologically(
+  slices: BufferTurn[][],
+): BufferTurn[][] {
+  return slices
+    .map((turns, order) => ({
+      turns,
+      order,
+      targetValidAtMs: targetSourceValidAtSortMs(turns),
+    }))
+    .sort((a, b) => {
+      if (a.targetValidAtMs < b.targetValidAtMs) return -1;
+      if (a.targetValidAtMs > b.targetValidAtMs) return 1;
+      if (a.order === b.order) return 0;
+      return a.order < b.order ? -1 : 1;
+    })
+    .map((slice) => slice.turns);
+}
+
+function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][] {
+  if (turns.length === 0) return [];
+  if (!turns.some((turn) => sourceValidAtMs(turn) !== null)) {
+    return [[...turns]];
+  }
+
+  const slices: BufferTurn[][] = [];
+  let start = 0;
+  while (start < turns.length) {
+    const targetValidAtMs = sourceValidAtMs(turns[start]);
+    const activeKey = sourceValidAtSliceKey(turns[start], start);
+    let end = start + 1;
+    while (
+      end < turns.length &&
+      sourceValidAtSliceKey(turns[end], end) === activeKey
+    ) {
+      end += 1;
+    }
+
+    slices.push([
+      ...sourceValidAtContextTurns(
+        turns,
+        start,
+        end,
+        targetValidAtMs,
+      ),
+      ...turns.slice(start, end).map(asExtractionTargetTurn),
+    ]);
+    start = end;
+  }
+  return sortSourceValidAtSlicesChronologically(slices);
 }
 
 export function isArtifactMemoryPath(filePath: string): boolean {
@@ -1322,7 +1474,7 @@ export class Orchestrator {
   >();
   private static readonly MEMORY_WORTH_CACHE_TTL_MS = 30_000;
   /**
-   * Per-session workspace overrides keyed by sessionKey.
+   * Per-session workspace selections keyed by sessionKey.
    * Set by the before_agent_start hook so recall() uses the correct
    * agent workspace for BOOT.md injection. Cleared after each recall.
    * Using a Map prevents concurrent sessions from overwriting each other.
@@ -1456,7 +1608,7 @@ export class Orchestrator {
     this._recallWorkspaceOverrides.set(sessionKey, dir);
   }
 
-  /** Remove a per-session workspace override (cleanup on error or early return). @internal */
+  /** Remove a per-session workspace selection (cleanup on error or early return). @internal */
   clearRecallWorkspaceOverride(sessionKey: string): void {
     this._recallWorkspaceOverrides.delete(sessionKey);
   }
@@ -1843,7 +1995,9 @@ export class Orchestrator {
       : this.localLlm;
     // Initialize gateway fast LLM for fast-tier ops when modelSource is "gateway"
     this._fastGatewayLlm = config.modelSource === "gateway"
-      ? new FallbackLlmClient(config.gatewayConfig)
+      ? new FallbackLlmClient(config.gatewayConfig, {
+          workspaceDir: config.workspaceDir,
+        })
       : null;
     if (config.modelSource === "gateway") {
       log.debug(
@@ -1879,21 +2033,28 @@ export class Orchestrator {
         targetTokens: number,
         aggressive: boolean,
       ) => {
-        const systemPrompt = aggressive
+        const instructionText = aggressive
           ? `Compress the following into bullet points. One bullet per distinct fact or decision. Maximum ${targetTokens} tokens total. No prose.`
           : `Compress the following conversation segment into a dense summary. Preserve: decisions made, code artifacts mentioned, errors encountered, open questions, and any commitments or next-steps. Omit: pleasantries, restatements, and anything the agent would not need to recall later. Output a single paragraph, maximum ${targetTokens} tokens.`;
         try {
-          const result = await this.localLlm.chatCompletion(
-            [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: text.slice(0, 12000) },
-            ],
-            {
-              maxTokens: targetTokens * 2,
-              operation: "lcm-summarize",
-              priority: "background",
-            },
-          );
+          const messages = [
+            { role: "system" as const, content: instructionText },
+            { role: "user" as const, content: text.slice(0, 12000) },
+          ];
+          const result = this.config.modelSource === "gateway" && this._fastGatewayLlm
+            ? await this._fastGatewayLlm.chatCompletion(messages, {
+                maxTokens: targetTokens * 2,
+                timeoutMs: this.config.localLlmFastTimeoutMs,
+                agentId:
+                  this.config.fastGatewayAgentId ||
+                  this.config.gatewayAgentId ||
+                  undefined,
+              })
+            : await this.localLlm.chatCompletion(messages, {
+                maxTokens: targetTokens * 2,
+                operation: "lcm-summarize",
+                priority: "background",
+              });
           return result?.content ?? null;
         } catch {
           return null;
@@ -2135,7 +2296,10 @@ export class Orchestrator {
       );
       return result ? { content: result.content } : null;
     }
-    const result = await this.fastLlm.chatCompletion(messages, options);
+    const result = await this.fastLlm.chatCompletion(messages, {
+      ...options,
+      forceDisableThinking: true,
+    });
     return result ? { content: result.content } : null;
   }
 
@@ -2156,7 +2320,13 @@ export class Orchestrator {
           this.fastChatCompletion(messages, options ?? {}),
       };
     }
-    return this.fastLlm;
+    return {
+      chatCompletion: (messages, options) =>
+        this.fastLlm.chatCompletion(messages, {
+          ...(options ?? {}),
+          forceDisableThinking: true,
+        }),
+    };
   }
 
   async initialize(): Promise<void> {
@@ -3148,7 +3318,9 @@ export class Orchestrator {
           ? this.config.fastGatewayAgentId
           : this.config.gatewayAgentId || undefined)
       : undefined;
-    const llm = new FallbackLlmClient(this.config.gatewayConfig);
+    const llm = new FallbackLlmClient(this.config.gatewayConfig, {
+      workspaceDir: this.config.workspaceDir,
+    });
     if (!llm.isAvailable(gatewayAgentId) && !(modelSetting === "fast" && this.fastLlm && !useGateway)) {
       log.warn(
         "[semantic-consolidation] no LLM available — skipping synthesis",
@@ -3205,6 +3377,7 @@ export class Orchestrator {
             maxTokens: llmOpts.maxTokens,
             temperature: llmOpts.temperature,
             priority: "background",
+            forceDisableThinking: true,
           });
           response = fastResult ? { content: fastResult.content } : null;
         } else {
@@ -3392,7 +3565,9 @@ export class Orchestrator {
     if (this.config.peerProfileReasonerEnabled) {
       try {
         const { runPeerProfileReasoner } = await import("./peers/index.js");
-        const llm = new FallbackLlmClient(this.config.gatewayConfig);
+        const llm = new FallbackLlmClient(this.config.gatewayConfig, {
+          workspaceDir: this.config.workspaceDir,
+        });
         const peerResult = await runPeerProfileReasoner({
           memoryDir: targetStorage.dir,
           enabled: true,
@@ -5713,6 +5888,15 @@ export class Orchestrator {
     return entry.enabled !== false;
   }
 
+  private isSpecializedRecallSectionEnabled(
+    sectionId: string,
+    topLevelEnabled: boolean,
+  ): boolean {
+    const entry = this.getRecallSectionEntry(sectionId);
+    if (!entry) return topLevelEnabled;
+    return entry.enabled === true || (topLevelEnabled && entry.enabled !== false);
+  }
+
   private getRecallSectionMaxChars(
     sectionId: string,
   ): number | null | undefined {
@@ -6283,7 +6467,7 @@ export class Orchestrator {
         namespace: selfNamespace,
         snapshot: intentSnapshot,
       });
-      // Clean up workspace override before early return to prevent Map leaks.
+      // Clean up workspace selection before early return to prevent Map leaks.
       const earlySessionKey = sessionKey ?? "default";
       this._recallWorkspaceOverrides.delete(earlySessionKey);
       timings.total = `${Date.now() - recallStart}ms`;
@@ -6848,13 +7032,34 @@ export class Orchestrator {
         return null;
       }
 
-      const results = await searchObjectiveStateSnapshots({
-        memoryDir: this.config.memoryDir,
-        objectiveStateStoreDir: this.config.objectiveStateStoreDir,
-        query: retrievalQuery,
-        maxResults,
-        sessionKey,
-      });
+      const objectiveStateSearches = await Promise.all(
+        recallNamespaces.map(async (namespace) => {
+          const storage = this.config.namespacesEnabled
+            ? await this.getStorage(namespace)
+            : null;
+          return searchObjectiveStateSnapshots({
+            memoryDir: this.config.namespacesEnabled
+              ? storage!.dir
+              : this.config.memoryDir,
+            objectiveStateStoreDir: objectiveStateStoreOverrideForNamespace({
+              memoryDir: this.config.memoryDir,
+              configuredStoreDir: this.config.objectiveStateStoreDir,
+              namespacesEnabled: this.config.namespacesEnabled,
+              namespace,
+            }),
+            query: retrievalQuery,
+            maxResults,
+            sessionKey,
+          });
+        }),
+      );
+      const results = objectiveStateSearches
+        .flat()
+        .sort((left, right) => {
+          if (right.score !== left.score) return right.score - left.score;
+          return right.snapshot.recordedAt.localeCompare(left.snapshot.recordedAt);
+        })
+        .slice(0, maxResults);
 
       recordRecallSectionMetric({
         section: "objectiveState",
@@ -7794,7 +7999,7 @@ export class Orchestrator {
     // Compaction reset runs independently of transcript — it must work even when
     // transcriptEnabled=false, since compaction recovery is a separate concern.
     const compactionPromise = (async (): Promise<string | null> => {
-      // Always clean up per-session workspace overrides, even if the feature is off,
+      // Always clean up per-session workspace selections, even if the feature is off,
       // to prevent the Map from accumulating stale entries on long-running gateways.
       const effectiveSessionKey = sessionKey ?? "default";
       const compactionWorkspaceDir =
@@ -8382,6 +8587,188 @@ export class Orchestrator {
         }
       } catch (err) {
         log.debug(`Explicit cue recall assembly error: ${err}`);
+      }
+    }
+
+    // 0b. Targeted factual evidence. This is query-triggered and lossless:
+    // it uses the LCM archive to recover exact numeric facts that broad
+    // compressed-history or search sections can crowd out.
+    const targetedFactMaxChars =
+      this.getRecallSectionMaxChars("targeted-facts") ??
+      this.config.targetedFactRecallMaxChars;
+    if (
+      this.isSpecializedRecallSectionEnabled(
+        "targeted-facts",
+        this.config.targetedFactRecallEnabled,
+      ) &&
+      targetedFactMaxChars !== 0 &&
+      this.lcmEngine?.enabled &&
+      (recallMode as RecallPlanMode) !== "no_recall" &&
+      shouldRecallTargetedFactEvidence(retrievalQuery)
+    ) {
+      try {
+        const targetedFactSection = await buildTargetedFactRecallSection({
+          engine: this.lcmEngine,
+          sessionId: sessionKey,
+          query: retrievalQuery,
+          maxChars: targetedFactMaxChars,
+          maxSearchResults:
+            this.getRecallSectionNumber("targeted-facts", "maxResults") ??
+            this.config.targetedFactRecallMaxResults,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("targeted-facts", "maxTurns") ??
+            this.config.targetedFactRecallScanWindowTurns,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("targeted-facts", "maxTokens") ??
+            this.config.targetedFactRecallScanWindowTokens,
+        });
+        if (targetedFactSection) {
+          this.appendRecallSection(
+            sectionBuckets,
+            "targeted-facts",
+            targetedFactSection,
+          );
+        }
+      } catch (err) {
+        log.debug(`Targeted fact recall assembly error: ${err}`);
+      }
+    }
+
+    // 0c. Focused list/count evidence. This recovers user-specific list
+    // candidates and countable facts that are easy to bury in broad search
+    // results, while staying gated to explicit list/count/recommendation
+    // prompts.
+    const focusedListMaxChars =
+      this.getRecallSectionMaxChars("focused-list") ??
+      this.config.focusedListRecallMaxChars;
+    if (
+      this.isSpecializedRecallSectionEnabled(
+        "focused-list",
+        this.config.focusedListRecallEnabled,
+      ) &&
+      focusedListMaxChars !== 0 &&
+      this.lcmEngine?.enabled &&
+      (recallMode as RecallPlanMode) !== "no_recall" &&
+      shouldRecallFocusedListEvidence(retrievalQuery)
+    ) {
+      try {
+        const focusedListSection = await buildFocusedListRecallSection({
+          engine: this.lcmEngine,
+          sessionId: sessionKey,
+          query: retrievalQuery,
+          maxChars: focusedListMaxChars,
+          maxSearchResults:
+            this.getRecallSectionNumber("focused-list", "maxResults") ??
+            this.config.focusedListRecallMaxResults,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("focused-list", "maxTurns") ??
+            this.config.focusedListRecallScanWindowTurns,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("focused-list", "maxTokens") ??
+            this.config.focusedListRecallScanWindowTokens,
+        });
+        if (focusedListSection) {
+          this.appendRecallSection(
+            sectionBuckets,
+            "focused-list",
+            focusedListSection,
+          );
+        }
+      } catch (err) {
+        log.debug(`Focused list recall assembly error: ${err}`);
+      }
+    }
+
+    // 0d. Response guidance evidence. This recovers durable user
+    // instructions and preferences that affect how an answer should be shaped
+    // for the current query, such as requested date formats, tool/version
+    // details, or preferred editing workflows.
+    const responseGuidanceMaxChars =
+      this.getRecallSectionMaxChars("response-guidance") ??
+      this.config.responseGuidanceRecallMaxChars;
+    const responseGuidanceEntry = this.getRecallSectionEntry("response-guidance");
+    const responseGuidanceMatchesQuery = shouldRecallResponseGuidance(retrievalQuery);
+    const responseGuidanceForcedByPipeline =
+      responseGuidanceEntry?.forceGeneric === true && !responseGuidanceMatchesQuery;
+    if (
+      this.isSpecializedRecallSectionEnabled(
+        "response-guidance",
+        this.config.responseGuidanceRecallEnabled,
+      ) &&
+      responseGuidanceMaxChars !== 0 &&
+      this.lcmEngine?.enabled &&
+      (recallMode as RecallPlanMode) !== "no_recall" &&
+      (responseGuidanceMatchesQuery || responseGuidanceForcedByPipeline)
+    ) {
+      try {
+        const responseGuidanceSection = await buildResponseGuidanceRecallSection({
+          engine: this.lcmEngine,
+          sessionId: sessionKey,
+          query: retrievalQuery,
+          maxChars: responseGuidanceMaxChars,
+          maxSearchResults:
+            this.getRecallSectionNumber("response-guidance", "maxResults") ??
+            this.config.responseGuidanceRecallMaxResults,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("response-guidance", "maxTurns") ??
+            this.config.responseGuidanceRecallScanWindowTurns,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("response-guidance", "maxTokens") ??
+            this.config.responseGuidanceRecallScanWindowTokens,
+          forceGeneric: responseGuidanceForcedByPipeline,
+        });
+        if (responseGuidanceSection) {
+          this.appendRecallSection(
+            sectionBuckets,
+            "response-guidance",
+            responseGuidanceSection,
+          );
+        }
+      } catch (err) {
+        log.debug(`Response guidance recall assembly error: ${err}`);
+      }
+    }
+
+    // 0e. Chronological event-order evidence. This recovers ordered user
+    // turns for prompts asking how topics unfolded across a conversation.
+    const eventOrderMaxChars =
+      this.getRecallSectionMaxChars("event-order") ??
+      this.config.eventOrderRecallMaxChars;
+    if (
+      this.isSpecializedRecallSectionEnabled(
+        "event-order",
+        this.config.eventOrderRecallEnabled,
+      ) &&
+      eventOrderMaxChars !== 0 &&
+      this.lcmEngine?.enabled &&
+      (recallMode as RecallPlanMode) !== "no_recall" &&
+      shouldRecallEventOrderEvidence(retrievalQuery)
+    ) {
+      try {
+        const eventOrderSection = await buildEventOrderRecallSection({
+          engine: this.lcmEngine,
+          sessionId: sessionKey,
+          query: retrievalQuery,
+          maxChars: eventOrderMaxChars,
+          maxItems:
+            this.getRecallSectionNumber("event-order", "maxResults") ??
+            this.config.eventOrderRecallMaxResults,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("event-order", "maxTurns") ??
+            this.config.eventOrderRecallScanWindowTurns,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("event-order", "maxTokens") ??
+            this.config.eventOrderRecallScanWindowTokens,
+        });
+        if (eventOrderSection) {
+          this.appendRecallSection(
+            sectionBuckets,
+            "event-order",
+            eventOrderSection,
+          );
+        }
+      } catch (err) {
+        log.debug(`Event order recall assembly error: ${err}`);
       }
     }
 
@@ -9660,12 +10047,30 @@ export class Orchestrator {
             scoreDecomposition.reinforcementBoost =
               xrayResult.explain.reinforcementBoost;
           }
+          const resultNamespace = this.namespaceFromPath(recalledPath);
+          let provenance: RecallXrayResult["provenance"] | undefined;
+          try {
+            const resultStorage =
+              await this.storageRouter.storageFor(resultNamespace);
+            const memory = await resultStorage.readMemoryByPath(recalledPath);
+            if (memory) {
+              provenance = buildRetrievedMemoryProvenance(memory, {
+                namespace: resultNamespace,
+                retrievalReason: `served-by=${servedBy}`,
+                currentContextScopes: options.currentContextScopes,
+              });
+            }
+          } catch {
+            // X-ray capture is best-effort; missing provenance must not
+            // perturb recall or suppress the surfaced result.
+          }
           results.push({
             memoryId: derivedId,
             path: recalledPath,
             servedBy,
             scoreDecomposition,
             admittedBy: [],
+            ...(provenance ? { provenance } : {}),
           });
         }
         // `considered` must reflect the pool size of the branch that
@@ -9954,6 +10359,7 @@ export class Orchestrator {
         role: turn.role,
         content: turn.content,
         timestamp: turn.timestamp,
+        sourceValidAt: turn.sourceValidAt,
         sessionKey: key,
         parts: turn.parts,
         rawContent: turn.rawContent,
@@ -9962,7 +10368,12 @@ export class Orchestrator {
       bySession.set(key, list);
     }
 
-    const replayTasks: Array<Promise<void>> = [];
+    const replaySlices: Array<{
+      bufferKey: string;
+      order: number;
+      targetValidAtMs: number;
+      turns: BufferTurn[];
+    }> = [];
     for (const [key, sessionTurns] of bySession.entries()) {
       if (sessionTurns.length === 0) continue;
       if (options.archiveLcm !== false && this.lcmEngine?.enabled) {
@@ -9977,19 +10388,37 @@ export class Orchestrator {
           })),
         );
       }
-      replayTasks.push(
-        new Promise<void>((resolve, reject) => {
-          void this.queueBufferedExtraction(sessionTurns, "trigger_mode", {
-            skipDedupeCheck: true,
-            clearBufferAfterExtraction: false,
-            skipCharThreshold: true,
-            bufferKey: key,
-            extractionDeadlineMs: options.deadlineMs,
-            onTaskSettled: (err) => (err ? reject(err) : resolve()),
-          }).catch(reject);
-        }),
-      );
+      for (const sessionSlice of splitTurnsBySourceValidAt(sessionTurns)) {
+        replaySlices.push({
+          bufferKey: key,
+          order: replaySlices.length,
+          targetValidAtMs: targetSourceValidAtSortMs(sessionSlice),
+          turns: sessionSlice,
+        });
+      }
     }
+
+    const replayTasks = replaySlices
+      .sort((a, b) => {
+        if (a.targetValidAtMs < b.targetValidAtMs) return -1;
+        if (a.targetValidAtMs > b.targetValidAtMs) return 1;
+        if (a.order === b.order) return 0;
+        return a.order < b.order ? -1 : 1;
+      })
+      .map(
+        ({ bufferKey, turns: sessionSlice }) =>
+          new Promise<void>((resolve, reject) => {
+            void this.queueBufferedExtraction(sessionSlice, "trigger_mode", {
+              skipDedupeCheck: true,
+              clearBufferAfterExtraction: false,
+              skipCharThreshold: true,
+              skipUserTurnThreshold: true,
+              bufferKey,
+              extractionDeadlineMs: options.deadlineMs,
+              onTaskSettled: (err) => (err ? reject(err) : resolve()),
+            }).catch(reject);
+          }),
+      );
     if (replayTasks.length > 0) {
       const settled = await Promise.allSettled(replayTasks);
       const firstRejected = settled.find(
@@ -10084,6 +10513,7 @@ export class Orchestrator {
         role: turn.role,
         content: turn.content,
         timestamp: turn.timestamp,
+        sourceValidAt: turn.timestamp,
         sessionKey,
         parts: turn.parts,
         rawContent: turn.rawContent,
@@ -10105,17 +10535,29 @@ export class Orchestrator {
       );
     }
 
-    await new Promise<void>((resolve, reject) => {
-      void this.queueBufferedExtraction(sessionTurns, "trigger_mode", {
-        skipDedupeCheck: true,
-        clearBufferAfterExtraction: false,
-        skipCharThreshold: true,
-        bufferKey: sessionKey,
-        extractionDeadlineMs: options.deadlineMs,
-        writeNamespaceOverride: this.bulkImportWriteNamespace(),
-        onTaskSettled: (err) => (err ? reject(err) : resolve()),
-      }).catch(reject);
-    });
+    const importTasks = splitTurnsBySourceValidAt(sessionTurns).map(
+      (sessionSlice) =>
+        new Promise<void>((resolve, reject) => {
+          void this.queueBufferedExtraction(sessionSlice, "trigger_mode", {
+            skipDedupeCheck: true,
+            clearBufferAfterExtraction: false,
+            skipCharThreshold: true,
+            skipUserTurnThreshold: true,
+            bufferKey: sessionKey,
+            extractionDeadlineMs: options.deadlineMs,
+            writeNamespaceOverride: this.bulkImportWriteNamespace(),
+            onTaskSettled: (err) => (err ? reject(err) : resolve()),
+          }).catch(reject);
+        }),
+    );
+    const settled = await Promise.allSettled(importTasks);
+    const firstRejected = settled.find(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected",
+    );
+    if (firstRejected) {
+      throw firstRejected.reason;
+    }
   }
 
   async observeSessionHeartbeat(
@@ -10195,6 +10637,7 @@ export class Orchestrator {
       skipDedupeCheck?: boolean;
       clearBufferAfterExtraction?: boolean;
       skipCharThreshold?: boolean;
+      skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
       onTaskSettled?: (error?: unknown) => void;
       bufferKey?: string;
@@ -10225,6 +10668,7 @@ export class Orchestrator {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
           skipCharThreshold: options.skipCharThreshold ?? false,
+          skipUserTurnThreshold: options.skipUserTurnThreshold ?? false,
           deadlineMs: options.extractionDeadlineMs,
           bufferKey,
           abortSignal: options.abortSignal,
@@ -10371,6 +10815,7 @@ export class Orchestrator {
     options: {
       clearBufferAfterExtraction?: boolean;
       skipCharThreshold?: boolean;
+      skipUserTurnThreshold?: boolean;
       deadlineMs?: number;
       bufferKey?: string;
       abortSignal?: AbortSignal;
@@ -10388,6 +10833,7 @@ export class Orchestrator {
     const clearBufferAfterExtraction =
       options.clearBufferAfterExtraction ?? true;
     const skipCharThreshold = options.skipCharThreshold ?? false;
+    const skipUserTurnThreshold = options.skipUserTurnThreshold ?? false;
     const deadlineMs =
       typeof options.deadlineMs === "number" &&
       Number.isFinite(options.deadlineMs)
@@ -10430,16 +10876,26 @@ export class Orchestrator {
         content: t.content.trim().slice(0, this.config.extractionMaxTurnChars),
       }))
       .filter((t) => t.content.length > 0);
+    const targetTurns = normalizedTurns.filter(
+      (turn) => turn.extractionContextOnly !== true,
+    );
+    if (targetTurns.length === 0) {
+      log.debug("skipping extraction: no non-context turns after normalization");
+      await clearBuffer();
+      return;
+    }
+    const sourceValidAt = latestSourceValidAtFromTurns(targetTurns);
     throwIfDeadlineExceeded("before_extract");
     throwIfAborted("before_extract");
 
-    const userTurns = normalizedTurns.filter((t) => t.role === "user");
-    const totalChars = normalizedTurns.reduce(
+    const userTurns = targetTurns.filter((t) => t.role === "user");
+    const totalChars = targetTurns.reduce(
       (sum, t) => sum + t.content.length,
       0,
     );
     const belowCharThreshold = totalChars < this.config.extractionMinChars;
     const belowUserTurnThreshold =
+      !skipUserTurnThreshold &&
       userTurns.length < this.config.extractionMinUserTurns;
     if ((!skipCharThreshold && belowCharThreshold) || belowUserTurnThreshold) {
       log.debug(
@@ -10463,11 +10919,11 @@ export class Orchestrator {
             defaultNamespaceForPrincipal(principal, this.config),
           );
     const storage = await this.storageRouter.storageFor(selfNamespace);
-    const shouldPersistProcessedFingerprint = normalizedTurns.some(
+    const shouldPersistProcessedFingerprint = targetTurns.some(
       (turn) => turn.persistProcessedFingerprint === true,
     );
     const extractionFingerprint = this.buildExtractionFingerprint(
-      normalizedTurns,
+      targetTurns,
       bufferKey,
     );
     let meta =
@@ -10546,7 +11002,7 @@ export class Orchestrator {
       result,
       storage,
       threadIdForExtraction,
-      { sessionKey, principal },
+      { sessionKey, principal, validAt: sourceValidAt },
     );
     meta ??= await storage.loadMeta();
     if (extractionFingerprint && shouldPersistProcessedFingerprint) {
@@ -11021,11 +11477,11 @@ export class Orchestrator {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string },
+    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
-    // the citation survives prompt injection, copy/paste, and LLM quoting.
+    // the citation survives hostile memory text, copy/paste, and LLM quoting.
     // The helper is a no-op when the feature flag is off, so legacy pipelines
     // see zero behavioral change.
     const citationEnabled = this.config.inlineSourceAttributionEnabled === true;
@@ -11054,6 +11510,8 @@ export class Orchestrator {
       // to avoid a maintenance hazard where the two guard paths could diverge.
       return attachCitation(content, citationContext, citationTemplate);
     };
+    const supersessionOrderingAt = (validAt?: string): string =>
+      validAt && validAt.length > 0 ? validAt : new Date().toISOString();
     const persistedIds: string[] = [];
     const persistedIdsByStorage = new Map<
       string,
@@ -11153,6 +11611,7 @@ export class Orchestrator {
       intentActionType?: string;
       intentEntityTypes?: string[];
       memoryKind?: MemoryFrontmatter["memoryKind"];
+      validAt?: string;
       source: string;
     }): Promise<void> => {
       if (
@@ -11283,25 +11742,26 @@ export class Orchestrator {
               hashDedupLookupComplete = true;
               if (hashDedupMatchingFact) {
                 // Finding UvU1 (PR #402 round-11): anchor supersession to the
-                // CURRENT wall-clock time, not the existing fact's persisted
-                // `created`.  The matching fact may be an old shared copy whose
-                // `created` predates the incoming promotion event — using it as
+                // incoming event's time, not the existing fact's persisted
+                // `created`.  For source-dated replay/import, this is the
+                // source valid_at; otherwise it is the current wall-clock. The
+                // matching fact may be an old shared copy whose `created`
+                // predates the incoming promotion event — using it as
                 // `createdAt` would make the new memory appear older than the
                 // existing one, preventing supersession from firing.
                 // PR #402 round-12 (Finding Uyui): the matching fact is an
                 // existing OLD memory — its persisted `frontmatter.created` is
                 // stale relative to the incoming promotion event.  Pass
                 // `useCallerTimestamp: true` so the function uses
-                // `createdAt` (current wall-clock) as the ordering anchor
-                // instead of the old fact's timestamp, ensuring supersession
-                // fires correctly even when the matching fact predates
-                // conflicting candidates.
+                // `createdAt` as the ordering anchor instead of the old fact's
+                // timestamp, ensuring supersession fires correctly even when
+                // the matching fact predates conflicting candidates.
                 await applyTemporalSupersession({
                   storage: sharedStorage,
                   newMemoryId: hashDedupMatchingFact.frontmatter.id,
                   entityRef: options.entityRef,
                   structuredAttributes: options.structuredAttributes,
-                  createdAt: new Date().toISOString(),
+                  createdAt: supersessionOrderingAt(options.validAt),
                   enabled: true,
                   useCallerTimestamp: true,
                 });
@@ -11364,6 +11824,7 @@ export class Orchestrator {
             intentActionType: options.intentActionType,
             intentEntityTypes: options.intentEntityTypes,
             memoryKind: options.memoryKind,
+            validAt: options.validAt,
             // Index the RAW content hash so hasFactContentHash(rawContent)
             // returns true on subsequent extractions. Without this, the index
             // would record the hash of citedContent (which changes every call
@@ -11389,7 +11850,7 @@ export class Orchestrator {
               newMemoryId: promotedId,
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
-              createdAt: new Date().toISOString(),
+              createdAt: supersessionOrderingAt(options.validAt),
               enabled: true,
             });
           } catch (sharedSupersessionErr) {
@@ -11680,7 +12141,9 @@ export class Orchestrator {
           judgeCandidates,
           this.config,
           this.localLlm,
-          new FallbackLlmClient(this.config.gatewayConfig),
+          new FallbackLlmClient(this.config.gatewayConfig, {
+            workspaceDir: this.config.workspaceDir,
+          }),
           this.judgeVerdictCache,
           this.judgeDeferCounts,
           judgeTelemetryHandler,
@@ -12171,6 +12634,7 @@ export class Orchestrator {
               intentEntityTypes: inferredIntent?.entityTypes,
               memoryKind,
               structuredAttributes: fact.structuredAttributes,
+              validAt: sourceContext?.validAt,
               contentHashSource: rawChunkedContent,
             },
           );
@@ -12206,6 +12670,7 @@ export class Orchestrator {
                 intentActionType: inferredIntent?.actionType,
                 intentEntityTypes: inferredIntent?.entityTypes,
                 memoryKind,
+                validAt: sourceContext?.validAt,
               },
             );
           }
@@ -12239,7 +12704,7 @@ export class Orchestrator {
               newMemoryId: parentId,
               entityRef: supersessionEntityRef,
               structuredAttributes: fact.structuredAttributes,
-              createdAt: new Date().toISOString(),
+              createdAt: supersessionOrderingAt(sourceContext?.validAt),
               enabled: this.config.temporalSupersessionEnabled,
             });
           } catch (err) {
@@ -12259,6 +12724,7 @@ export class Orchestrator {
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
             memoryKind,
+            validAt: sourceContext?.validAt,
             source: extractionWriteSource,
           });
           // Register chunked content in hash index too.
@@ -12415,6 +12881,7 @@ export class Orchestrator {
           intentEntityTypes: inferredIntent?.entityTypes,
           memoryKind,
           structuredAttributes: fact.structuredAttributes,
+          validAt: sourceContext?.validAt,
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
         },
       );
@@ -12436,7 +12903,7 @@ export class Orchestrator {
           newMemoryId: memoryId,
           entityRef: supersessionEntityRef,
           structuredAttributes: fact.structuredAttributes,
-          createdAt: new Date().toISOString(),
+          createdAt: supersessionOrderingAt(sourceContext?.validAt),
           enabled: this.config.temporalSupersessionEnabled,
         });
       } catch (err) {
@@ -12478,6 +12945,7 @@ export class Orchestrator {
         intentActionType: inferredIntent?.actionType,
         intentEntityTypes: inferredIntent?.entityTypes,
         memoryKind,
+        validAt: sourceContext?.validAt,
         source: extractionWriteSource,
       });
       // v8.2: graph edge building (fail-open — errors caught inside GraphIndex)
@@ -12570,11 +13038,12 @@ export class Orchestrator {
         const safeFacts = Array.isArray((entity as any)?.facts)
           ? (entity as any).facts.filter((f: any) => typeof f === "string")
           : [];
-        const id = await storage.writeEntity(name, type, safeFacts, {
-          source: typeof (entity as any)?.source === "string" ? (entity as any).source : "extraction",
-          sessionKey: sourceContext?.sessionKey,
-          principal: sourceContext?.principal,
-          structuredSections: Array.isArray((entity as any)?.structuredSections)
+          const id = await storage.writeEntity(name, type, safeFacts, {
+            source: typeof (entity as any)?.source === "string" ? (entity as any).source : "extraction",
+            timestamp: sourceContext?.validAt,
+            sessionKey: sourceContext?.sessionKey,
+            principal: sourceContext?.principal,
+            structuredSections: Array.isArray((entity as any)?.structuredSections)
             ? (entity as any).structuredSections
             : undefined,
         });

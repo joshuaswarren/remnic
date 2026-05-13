@@ -66,7 +66,12 @@ class CodexLLM(LLM):
             tool_args = data.get("tool_args")
             if not isinstance(tool_args, dict):
                 raise ValueError("Codex tool loop returned non-object tool_args")
-            selected_args = {key: tool_args[key] for key in tool.required if key in tool_args}
+            allowed_args = set(tool.required)
+            parameters = tool.parameters if isinstance(tool.parameters, dict) else {}
+            properties = parameters.get("properties")
+            if isinstance(properties, dict):
+                allowed_args.update(str(key) for key in properties)
+            selected_args = {key: tool_args[key] for key in allowed_args if key in tool_args}
             missing = [key for key in tool.required if key not in selected_args]
             if missing:
                 raise ValueError(f"Codex tool loop omitted required tool args: {missing}")

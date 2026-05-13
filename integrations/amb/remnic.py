@@ -31,6 +31,7 @@ class RemnicMemoryProvider(MemoryProvider):
     provider = "Remnic"
     variant = "core"
     link = "https://github.com/joshuaswarren/remnic"
+    logo = ""
     concurrency = 1
 
     def __init__(self) -> None:

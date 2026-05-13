@@ -279,7 +279,7 @@ export async function retryFetch(
     // Backoff before next attempt. Capped at maxAttempts for non-429 errors.
     if (attempt < opts.maxAttempts) {
       const backoffMs = opts.baseBackoffMs * Math.pow(2, attempt - 1);
-      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      await abortAwareSleep(backoffMs, init.signal as AbortSignal | undefined);
     }
   }
 

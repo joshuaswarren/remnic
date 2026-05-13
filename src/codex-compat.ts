@@ -158,10 +158,11 @@ export function buildTurnFingerprint(input: {
     input.maxContentChars > 0
       ? normalizedContent.slice(0, input.maxContentChars)
       : normalizedContent;
+  const fieldSeparator = String.fromCharCode(1);
   return [
     input.role,
     fingerprintContent,
     input.providerThreadId ?? input.logicalSessionKey,
     String(input.turnIndex),
-  ].join("\u0001");
+  ].join(fieldSeparator);
 }

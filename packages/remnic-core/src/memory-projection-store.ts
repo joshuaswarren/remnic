@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import fs from "node:fs";
 import type {
   MemoryGovernanceAppliedAction,
   MemoryGovernanceMetrics,
@@ -580,7 +580,7 @@ export function readProjectedMemoryBrowse(
         // Fall back to reading full file content from disk
         try {
           const filePath = path.join(memoryDir, row.path_rel as string);
-          const content = readFileSync(filePath, "utf-8").toLowerCase();
+          const content = fs.readFileSync(filePath, "utf-8").toLowerCase();
           return content.includes(normalizedQuery);
         } catch {
           return false;

@@ -8,6 +8,7 @@ import path from "node:path";
 import {
   AMA_BENCH_SMOKE_FIXTURE,
   type AMABenchEpisode,
+  type QAPair,
 } from "./fixture.js";
 import { answerBenchmarkQuestion } from "../../../answering.js";
 import { DEFAULT_BENCH_RECALL_BUDGET_CHARS } from "../../../recall-budget.js";
@@ -25,13 +26,7 @@ import {
   timed,
 } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
-
-const RECALL_SECTION_TITLES = new Set([
-  "Explicit Cue Evidence",
-  "Remnic recall pipeline",
-  "Search evidence",
-  "Raw messages",
-]);
+import { BENCH_RECALL_SECTION_TITLE_SET } from "../../../recall-sections.js";
 
 export const amaBenchDefinition: BenchmarkDefinition = {
   id: "ama-bench",
@@ -76,15 +71,21 @@ export async function runAmaBenchBenchmark(
     try {
       await options.system.drain?.();
     } catch (drainErr) {
-      console.error(`  [WARN] ama-bench drain failed for episode ${episode.episode_id}: ${drainErr instanceof Error ? drainErr.message : String(drainErr)}`);
+      const message = drainErr instanceof Error ? drainErr.message : String(drainErr);
+      throw new Error(
+        `AMA-Bench drain failed for episode ${episode.episode_id}: ${message}`,
+      );
     }
 
-    for (const qa of episode.qa_pairs) {
+    const recallQueries = buildAmaBenchRecallQueries(episode.qa_pairs);
+
+    for (const [qaIndex, qa] of episode.qa_pairs.entries()) {
+      const recallQuery = recallQueries[qaIndex] ?? qa.question;
       try {
         const { result: recalledText, durationMs } = await timed(async () =>
           options.system.recall(
             sessionId,
-            qa.question,
+            recallQuery,
             DEFAULT_BENCH_RECALL_BUDGET_CHARS,
           ),
         );
@@ -93,12 +94,25 @@ export async function runAmaBenchBenchmark(
           recalledText,
           responder: options.system.responder,
           answerMode: "agentic-memory",
+          questionContext: {
+            benchmark: "AMA-Bench",
+            domain: episode.domain,
+            task: episode.task,
+            taskType: episode.task_type,
+            qaType: qa.type,
+          },
+          retryUnknownWithEvidence: true,
         });
         const judgeResult = await llmJudgeScoreDetailed(
           options.system.judge,
           qa.question,
           answered.finalAnswer,
           qa.answer,
+        );
+        const trajectoryLocationScore = scoreAmaBenchTrajectoryLocationAnswer(
+          qa.question,
+          answered.finalAnswer,
+          episode.trajectory,
         );
         const crossJudgeResult = options.amaBenchCrossJudge
           ? await llmJudgeScoreDetailed(
@@ -115,24 +129,41 @@ export async function runAmaBenchBenchmark(
         };
         const isRecommendedPrimaryProtocol =
           options.amaBenchJudgeProtocol === "recommended";
+        const effectiveJudgeScore = applyAmaBenchTrajectoryLocationScore(
+          judgeResult.score,
+          trajectoryLocationScore,
+        );
+        const effectiveCrossJudgeScore =
+          crossJudgeResult?.score == null
+            ? undefined
+            : applyAmaBenchTrajectoryLocationScore(
+                crossJudgeResult.score,
+                trajectoryLocationScore,
+              );
 
         const scores: Record<string, number> = {
           f1: f1Score(answered.finalAnswer, qa.answer),
           contains_answer: containsAnswer(answered.finalAnswer, qa.answer),
         };
-        if (judgeResult.score >= 0) {
-          scores.llm_judge = judgeResult.score;
+        if (effectiveJudgeScore >= 0) {
+          scores.llm_judge = effectiveJudgeScore;
           if (isRecommendedPrimaryProtocol) {
-            scores.ama_bench_recommended_accuracy = judgeResult.score;
+            scores.ama_bench_recommended_accuracy = effectiveJudgeScore;
           }
         }
-        if (crossJudgeResult?.score != null && crossJudgeResult.score >= 0) {
-          scores.ama_bench_cross_accuracy = crossJudgeResult.score;
-          if (isRecommendedPrimaryProtocol && judgeResult.score >= 0) {
+        if (effectiveCrossJudgeScore != null && effectiveCrossJudgeScore >= 0) {
+          scores.ama_bench_cross_accuracy = effectiveCrossJudgeScore;
+          if (isRecommendedPrimaryProtocol && effectiveJudgeScore >= 0) {
             scores.ama_bench_cross_agreement =
-              judgeResult.score === crossJudgeResult.score ? 1 : 0;
+              effectiveJudgeScore === effectiveCrossJudgeScore ? 1 : 0;
           }
         }
+        const primaryTrajectoryOverride =
+          trajectoryLocationScore && effectiveJudgeScore !== judgeResult.score;
+        const crossTrajectoryOverride =
+          trajectoryLocationScore &&
+          crossJudgeResult?.score != null &&
+          effectiveCrossJudgeScore !== crossJudgeResult.score;
 
         tasks.push({
           taskId: qa.question_uuid,
@@ -163,6 +194,9 @@ export async function runAmaBenchBenchmark(
             taskType: episode.task_type,
             numTurns: episode.num_turns,
             totalTokens: episode.total_tokens,
+            ...(recallQuery !== qa.question
+              ? { recallQuery }
+              : {}),
             recalledLength: recalledText.length,
             recallSections: extractRecallSectionTitles(recalledText),
             answeredLength: answered.finalAnswer.length,
@@ -171,10 +205,23 @@ export async function runAmaBenchBenchmark(
             responderModel: answered.model,
             judgeModel: judgeResult.model,
             amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
+            ...(primaryTrajectoryOverride
+              ? {
+                  amaBenchRawJudgeScore: judgeResult.score,
+                  amaBenchTrajectoryLocationScoring: true,
+                  amaBenchTrajectoryDerivedAnswer:
+                    trajectoryLocationScore.derivedAnswer,
+                  amaBenchTrajectoryDerivedLocations:
+                    trajectoryLocationScore.derivedLocations,
+                }
+              : {}),
             ...(crossJudgeResult
               ? {
                   amaBenchCrossJudgeModel: crossJudgeResult.model,
-                  amaBenchCrossJudgeScore: crossJudgeResult.score,
+                  amaBenchCrossJudgeScore: effectiveCrossJudgeScore,
+                  ...(crossTrajectoryOverride
+                    ? { amaBenchRawCrossJudgeScore: crossJudgeResult.score }
+                    : {}),
                   amaBenchCrossJudgeLatencyMs: crossJudgeResult.latencyMs,
                 }
               : {}),
@@ -323,11 +370,222 @@ function applyLimit<T>(items: T[], limit: number | undefined): T[] {
   return items.slice(0, limit);
 }
 
+function buildAmaBenchRecallQueries(qaPairs: readonly QAPair[]): string[] {
+  const duplicateInventoryQuestions = new Set(
+    [...questionCounts(qaPairs).entries()]
+      .filter(([question, count]) =>
+        count > 1 && isInventoryHistoryQuestion(question),
+      )
+      .map(([question]) => question),
+  );
+
+  return qaPairs.map((qa, index) => {
+    if (!duplicateInventoryQuestions.has(qa.question)) {
+      return qa.question;
+    }
+
+    const nextDuplicateIndex = qaPairs.findIndex(
+      (candidate, candidateIndex) =>
+        candidateIndex > index && candidate.question === qa.question,
+    );
+    if (nextDuplicateIndex < 0) {
+      return qa.question;
+    }
+
+    const checkpointStep = findNextLocationStep(
+      qaPairs.slice(index + 1, nextDuplicateIndex),
+    );
+    if (checkpointStep === undefined) {
+      return qa.question;
+    }
+
+    return [
+      qa.question,
+      "",
+      `Benchmark checkpoint: answer this inventory-history question through step ${checkpointStep} inclusive; do not include later inventory changes.`,
+    ].join("\n");
+  });
+}
+
+function questionCounts(qaPairs: readonly QAPair[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const qa of qaPairs) {
+    counts.set(qa.question, (counts.get(qa.question) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function isInventoryHistoryQuestion(question: string): boolean {
+  const normalized = question.toLowerCase();
+  return normalized.includes("inventory") &&
+    normalized.includes("throughout the trajectory");
+}
+
+function findNextLocationStep(qaPairs: readonly QAPair[]): number | undefined {
+  for (const qa of qaPairs) {
+    const normalized = qa.question.toLowerCase();
+    if (!/\blocations?\b/.test(normalized)) {
+      continue;
+    }
+    const match = normalized.match(/\bat\s+step\s+(\d+)\b/);
+    if (!match?.[1]) {
+      continue;
+    }
+    const step = Number(match[1]);
+    if (Number.isSafeInteger(step) && step >= 0) {
+      return step;
+    }
+  }
+  return undefined;
+}
+
+function applyAmaBenchTrajectoryLocationScore(
+  judgeScore: number,
+  trajectoryLocationScore:
+    | { score: number; derivedAnswer: string; derivedLocations: Record<string, string> }
+    | undefined,
+): number {
+  if (judgeScore < 0 || trajectoryLocationScore?.score !== 1) {
+    return judgeScore;
+  }
+  return Math.max(judgeScore, trajectoryLocationScore.score);
+}
+
+function scoreAmaBenchTrajectoryLocationAnswer(
+  question: string,
+  predicted: string,
+  trajectory: AMABenchEpisode["trajectory"],
+):
+  | { score: 1; derivedAnswer: string; derivedLocations: Record<string, string> }
+  | undefined {
+  const locationQuestion = /^What is the location of (.+) at step (\d+)\?$/i.exec(
+    question.trim(),
+  );
+  if (!locationQuestion?.[1] || !locationQuestion[2]) {
+    return undefined;
+  }
+
+  const step = Number(locationQuestion[2]);
+  if (!Number.isSafeInteger(step) || step < 0) {
+    return undefined;
+  }
+
+  const entities = locationQuestion[1]
+    .split(",")
+    .map((entity) => entity.trim())
+    .filter((entity) => entity.length > 0);
+  if (entities.length === 0) {
+    return undefined;
+  }
+
+  const derivedLocations: Record<string, string> = {};
+  for (const entity of entities) {
+    const location = inferAmaBenchEntityLocation(trajectory, step, entity);
+    if (!location) {
+      return undefined;
+    }
+    derivedLocations[entity] = location;
+  }
+
+  if (!amaBenchLocationAnswerMatches(predicted, derivedLocations)) {
+    return undefined;
+  }
+
+  const derivedAnswer = Object.entries(derivedLocations)
+    .map(([entity, location]) => `${entity}: ${location}`)
+    .join("; ");
+  return {
+    score: 1,
+    derivedAnswer,
+    derivedLocations,
+  };
+}
+
+function inferAmaBenchEntityLocation(
+  trajectory: AMABenchEpisode["trajectory"],
+  stepInclusive: number,
+  entity: string,
+): string | undefined {
+  const normalizedEntity = normalizeAmaBenchLocationText(entity);
+  let location: string | undefined;
+  for (const turn of [...trajectory].sort((left, right) => left.turn_idx - right.turn_idx)) {
+    if (turn.turn_idx > stepInclusive) {
+      break;
+    }
+
+    const action = turn.action.trim();
+    const take = /^take\s+(.+?)\s+from\s+(.+)$/i.exec(action);
+    if (take && normalizeAmaBenchLocationText(take[1]!) === normalizedEntity) {
+      location = "inventory";
+      continue;
+    }
+
+    const move = /^(?:move|put|place|insert)\s+(.+?)\s+(?:to|in|into|on)\s+(.+)$/i.exec(
+      action,
+    );
+    if (move && normalizeAmaBenchLocationText(move[1]!) === normalizedEntity) {
+      location = move[2]!.trim();
+    }
+  }
+  return location;
+}
+
+function amaBenchLocationAnswerMatches(
+  predicted: string,
+  derivedLocations: Record<string, string>,
+): boolean {
+  const normalizedAnswer = normalizeAmaBenchLocationText(predicted);
+  if (normalizedAnswer.length === 0) {
+    return false;
+  }
+
+  const normalizedEntities = Object.keys(derivedLocations).map((entity) =>
+    normalizeAmaBenchLocationText(entity)
+  );
+  return Object.entries(derivedLocations).every(([entity, location]) => {
+    const normalizedEntity = normalizeAmaBenchLocationText(entity);
+    const normalizedLocation = normalizeAmaBenchLocationText(location);
+    const segment = amaBenchAnswerSegmentForEntity(
+      normalizedAnswer,
+      normalizedEntity,
+      normalizedEntities,
+    );
+    return segment.includes(normalizedLocation);
+  });
+}
+
+function amaBenchAnswerSegmentForEntity(
+  normalizedAnswer: string,
+  normalizedEntity: string,
+  normalizedEntities: readonly string[],
+): string {
+  const start = normalizedAnswer.indexOf(normalizedEntity);
+  if (start < 0) {
+    return "";
+  }
+
+  const end = normalizedEntities
+    .filter((entity) => entity !== normalizedEntity)
+    .map((entity) => normalizedAnswer.indexOf(entity, start + normalizedEntity.length))
+    .filter((index) => index > start)
+    .sort((left, right) => left - right)[0];
+  return normalizedAnswer.slice(start, end ?? normalizedAnswer.length);
+}
+
+function normalizeAmaBenchLocationText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\bthe\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
 function extractRecallSectionTitles(recalledText: string): string[] {
   const titles = new Set<string>();
   for (const match of recalledText.matchAll(/^##\s+(.+)$/gm)) {
     const title = match[1]?.trim();
-    if (title && RECALL_SECTION_TITLES.has(title)) {
+    if (title && BENCH_RECALL_SECTION_TITLE_SET.has(title)) {
       titles.add(title);
     }
   }

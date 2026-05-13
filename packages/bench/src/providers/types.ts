@@ -2,13 +2,17 @@
  * Minimal LLM provider contract for the bench engine.
  */
 
-import type { BuiltInProvider } from "../types.js";
+import type {
+  BenchReasoningEffort,
+  BuiltInProvider,
+} from "../types.js";
 
 export interface CompletionOpts {
   systemPrompt?: string;
   temperature?: number;
   maxTokens?: number;
   headers?: Record<string, string>;
+  signal?: AbortSignal;
 }
 
 export interface CompletionResult {
@@ -35,6 +39,18 @@ export interface ProviderBaseConfig {
   retryOptions?: { maxAttempts?: number; baseBackoffMs?: number; timeoutMs?: number; max429WaitMs?: number };
   /** Suppress thinking/reasoning tokens for thinking-capable models (Qwen 3.5, Gemma 4, DeepSeek). */
   disableThinking?: boolean;
+  /**
+   * Optional answering-only memory-context budget. Benchmark artifacts keep the
+   * full recalled text, but provider-backed responders may receive this compact
+   * deterministic view to avoid transport-specific prompt stalls.
+   */
+  responderContextBudgetChars?: number;
+  /**
+   * Optional answering-only question/protocol budget. This keeps the original
+   * benchmark question and artifact unchanged while shortening repeated harness
+   * instructions for slow transport-backed responders such as Codex CLI.
+   */
+  responderPromptBudgetChars?: number;
 }
 
 export interface OpenAiCompatibleProviderConfig extends ProviderBaseConfig {
@@ -63,11 +79,31 @@ export interface LocalLlmProviderConfig extends ProviderBaseConfig {
   baseUrl: string;
 }
 
+export interface CodexCliProviderConfig extends ProviderBaseConfig {
+  provider?: "codex-cli";
+  /** Codex CLI model reasoning effort. Bench CLI defaults this to xhigh. */
+  reasoningEffort?: BenchReasoningEffort;
+  /** Optional executable override for tests or non-standard Codex CLI installs. */
+  executable?: string;
+  /**
+   * Optional diagnostics artifact directory. When set, the provider writes
+   * per-call metadata that helps debug slow benchmark completions without
+   * depending on transient temp workspaces.
+   */
+  diagnosticsDir?: string;
+  /**
+   * `metadata` stores hashes/counts only. `full` additionally stores the full
+   * benchmark prompt and should only be used for isolated benchmark datasets.
+   */
+  diagnosticsMode?: "metadata" | "full";
+}
+
 export type ProviderFactoryConfig =
   | (OpenAiCompatibleProviderConfig & { provider: "openai" | "litellm" })
   | (AnthropicProviderConfig & { provider: "anthropic" })
   | (OllamaProviderConfig & { provider: "ollama" })
-  | (LocalLlmProviderConfig & { provider: "local-llm" });
+  | (LocalLlmProviderConfig & { provider: "local-llm" })
+  | (CodexCliProviderConfig & { provider: "codex-cli" });
 
 export interface ProviderDiscoveryResult {
   provider: BuiltInProvider;

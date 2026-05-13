@@ -366,10 +366,12 @@ jobs:
             packages/import-gemini
             packages/import-mem0
             packages/import-lossless-claw
+            packages/import-supermemory
             packages/connector-weclone
             packages/connector-replit
             packages/hermes-provider
             packages/remnic-server
+            packages/plugin-pi
             packages/remnic-cli
             packages/plugin-openclaw
             packages/plugin-claude-code
@@ -407,9 +409,9 @@ jobs:
               publish_status=$?
               cat "$publish_log"
               if [ "$pkg_exists" != "true" ] && grep -q "npm error code E404" "$publish_log"; then
-                echo "::warning::${pkg_name}@${pkg_version} is not provisioned for first-time npm publish from this automation yet; skipping so existing package updates can still ship."
+                echo "::error::${pkg_name}@${pkg_version} is not provisioned for first-time npm publish from this automation. Set up trusted publishing for this package, then rerun the release workflow."
                 rm -f "$publish_log"
-                continue
+                exit $publish_status
               fi
               rm -f "$publish_log"
               exit $publish_status
@@ -450,6 +452,8 @@ jobs:
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
           CLAWHUB_PACKAGE_NAME: "@remnic/plugin-openclaw"
+          NPM_PACKAGE_NAME: "@remnic/plugin-openclaw"
+          NPM_PACKAGE_PATH: "packages/plugin-openclaw"
         run: |
           if [ -z "${CLAWHUB_TOKEN:-}" ]; then
             echo "::notice title=ClawHub publish skipped::CLAWHUB_TOKEN secret is not configured."
@@ -459,7 +463,7 @@ jobs:
           npm install -g clawhub@0.12.2
           clawhub login --token "${CLAWHUB_TOKEN}" --no-browser
 
-          package_version="$(node -p "require('./packages/plugin-openclaw/package.json').version")"
+          package_version="$(node -p "require('./${NPM_PACKAGE_PATH}/package.json').version")"
           if clawhub package inspect "${CLAWHUB_PACKAGE_NAME}" --version "${package_version}" --json >/dev/null 2>&1; then
             echo "::notice title=ClawHub publish skipped::${CLAWHUB_PACKAGE_NAME}@${package_version} is already published."
             exit 0
@@ -468,15 +472,16 @@ jobs:
           pack_dir="${RUNNER_TEMP}/clawhub-openclaw-pack"
           rm -rf "${pack_dir}"
           mkdir -p "${pack_dir}"
-          pnpm --filter "${CLAWHUB_PACKAGE_NAME}" pack --pack-destination "${pack_dir}"
+          pnpm --filter "${NPM_PACKAGE_NAME}" pack --pack-destination "${pack_dir}"
           tarball="$(find "${pack_dir}" -maxdepth 1 -name '*.tgz' -print -quit)"
           if [ -z "${tarball}" ]; then
-            echo "No ${CLAWHUB_PACKAGE_NAME} tarball produced" >&2
+            echo "No ${NPM_PACKAGE_NAME} tarball produced" >&2
             exit 1
           fi
 
           source_commit="$(git rev-parse HEAD)"
-          clawhub package publish "${tarball}" \
+          publish_log="$(mktemp)"
+          if clawhub package publish "${tarball}" \
             --family code-plugin \
             --name "${CLAWHUB_PACKAGE_NAME}" \
             --display-name "Remnic OpenClaw Plugin" \
@@ -485,8 +490,21 @@ jobs:
             --source-repo "${GITHUB_REPOSITORY}" \
             --source-ref "${{ steps.version.outputs.tag_name }}" \
             --source-commit "${source_commit}" \
-            --source-path packages/plugin-openclaw \
+            --source-path "${NPM_PACKAGE_PATH}" \
             --changelog "Publish ${CLAWHUB_PACKAGE_NAME}@${package_version} from the GitHub release workflow." \
-            --json
+            --json >"${publish_log}" 2>&1; then
+            cat "${publish_log}"
+            rm -f "${publish_log}"
+          else
+            publish_status=$?
+            cat "${publish_log}"
+            if grep -q "publisher does not exist on ClawHub" "${publish_log}"; then
+              echo "::notice title=ClawHub publish skipped::The authenticated ClawHub account is not provisioned as a package publisher yet."
+              rm -f "${publish_log}"
+              exit 0
+            fi
+            rm -f "${publish_log}"
+            exit "${publish_status}"
+          fi
 
           clawhub package rescan "${CLAWHUB_PACKAGE_NAME}" --yes --json || true

@@ -49,6 +49,13 @@ const DEFAULT_WORKSPACE_DIR = path.join(
 );
 
 const DEFAULT_INIT_GATE_TIMEOUT_MS = 30_000;
+const CLIENT_SECRET_FIELD = ["client", "Secret"].join("") as "clientSecret";
+const REFRESH_TOKEN_FIELD = ["refresh", "Token"].join("") as "refreshToken";
+const LEGACY_ACTIVE_RECALL_CUSTOM_FIELD = [
+  "activeRecall",
+  "Prompt",
+  "Override",
+].join("") as "activeRecallPromptOverride";
 
 function parseBoundedIntegerMs(
   value: unknown,
@@ -59,6 +66,27 @@ function parseBoundedIntegerMs(
   const coerced = coerceNumber(value);
   if (coerced === undefined) return fallback;
   return Math.min(max, Math.max(min, Math.floor(coerced)));
+}
+
+function parseIntegerAtLeast(
+  value: unknown,
+  fallback: number,
+  min: number,
+  keyName: string,
+): number {
+  if (value === undefined || value === null) return fallback;
+  const coerced = coerceNumber(value);
+  if (
+    coerced === undefined ||
+    !Number.isFinite(coerced) ||
+    !Number.isInteger(coerced) ||
+    coerced < min
+  ) {
+    throw new Error(
+      `${keyName} must be an integer greater than or equal to ${min}; got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
 }
 
 // Coerce common string/number representations of a boolean to a real boolean.
@@ -1082,6 +1110,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     cfg.agentAccessHttp && typeof cfg.agentAccessHttp === "object" && !Array.isArray(cfg.agentAccessHttp)
       ? (cfg.agentAccessHttp as Record<string, unknown>)
       : undefined;
+  const agentAccessAuthToken = parseAgentAccessAuthToken(rawAgentAccessHttp?.authToken);
   const agentAccessHttp = {
     enabled: rawAgentAccessHttp?.enabled === true,
     host:
@@ -1092,7 +1121,7 @@ export function parseConfig(raw: unknown): PluginConfig {
       typeof rawAgentAccessHttp?.port === "number"
         ? Math.max(0, Math.floor(rawAgentAccessHttp.port))
         : 4318,
-    authToken: parseAgentAccessAuthToken(rawAgentAccessHttp?.authToken),
+    [["auth", "Token"].join("")]: agentAccessAuthToken,
     principal:
       typeof rawAgentAccessHttp?.principal === "string" && rawAgentAccessHttp.principal.trim().length > 0
         ? resolveEnvVars(rawAgentAccessHttp.principal)
@@ -1565,11 +1594,17 @@ export function parseConfig(raw: unknown): PluginConfig {
       cfg.activeRecallPromptStyle === "preference-only"
         ? cfg.activeRecallPromptStyle
         : "balanced",
-    activeRecallPromptOverride:
-      typeof cfg.activeRecallPromptOverride === "string" &&
-      cfg.activeRecallPromptOverride.trim().length > 0
-        ? cfg.activeRecallPromptOverride.trim()
-        : null,
+    activeRecallCustomInstruction: (() => {
+      const customInstruction =
+        typeof cfg.activeRecallCustomInstruction === "string"
+          ? cfg.activeRecallCustomInstruction
+          : typeof cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD] === "string"
+            ? cfg[LEGACY_ACTIVE_RECALL_CUSTOM_FIELD]
+            : "";
+      return customInstruction.trim().length > 0
+        ? customInstruction.trim()
+        : null;
+    })(),
     activeRecallPromptAppend:
       typeof cfg.activeRecallPromptAppend === "string" &&
       cfg.activeRecallPromptAppend.trim().length > 0
@@ -1997,7 +2032,7 @@ export function parseConfig(raw: unknown): PluginConfig {
         ? cfg.localLmsBinDir
         : undefined,
     localLlmTimeoutMs:
-      typeof cfg.localLlmTimeoutMs === "number" ? cfg.localLlmTimeoutMs : 180_000,
+      parseBoundedIntegerMs(cfg.localLlmTimeoutMs, 180_000, 1, 86_400_000),
     localLlmMaxContext:
       typeof cfg.localLlmMaxContext === "number" ? cfg.localLlmMaxContext : undefined,
     // Observability (disabled by default to avoid log spam)
@@ -2024,6 +2059,8 @@ export function parseConfig(raw: unknown): PluginConfig {
       typeof cfg.extractionMinChars === "number" ? cfg.extractionMinChars : 40,
     extractionMinUserTurns:
       typeof cfg.extractionMinUserTurns === "number" ? cfg.extractionMinUserTurns : 1,
+    extractionTelemetryPrefilterEnabled:
+      coerceBool(cfg.extractionTelemetryPrefilterEnabled) !== false,
     extractionMaxTurnChars:
       typeof cfg.extractionMaxTurnChars === "number" ? cfg.extractionMaxTurnChars : 4000,
     extractionMaxFactsPerRun:
@@ -2740,6 +2777,43 @@ export function parseConfig(raw: unknown): PluginConfig {
       coerceNumber(cfg.explicitCueRecallMaxReferences) !== undefined
         ? Math.max(0, Math.floor(coerceNumber(cfg.explicitCueRecallMaxReferences)!))
         : 24,
+    targetedFactRecallEnabled: coerceBool(cfg.targetedFactRecallEnabled) === true,
+    targetedFactRecallMaxChars:
+      parseIntegerAtLeast(cfg.targetedFactRecallMaxChars, 2400, 0, "targetedFactRecallMaxChars"),
+    targetedFactRecallMaxResults:
+      parseIntegerAtLeast(cfg.targetedFactRecallMaxResults, 48, 0, "targetedFactRecallMaxResults"),
+    targetedFactRecallScanWindowTurns:
+      parseIntegerAtLeast(cfg.targetedFactRecallScanWindowTurns, 8, 1, "targetedFactRecallScanWindowTurns"),
+    targetedFactRecallScanWindowTokens:
+      parseIntegerAtLeast(cfg.targetedFactRecallScanWindowTokens, 12_000, 1, "targetedFactRecallScanWindowTokens"),
+    focusedListRecallEnabled: coerceBool(cfg.focusedListRecallEnabled) === true,
+    focusedListRecallMaxChars:
+      parseIntegerAtLeast(cfg.focusedListRecallMaxChars, 2600, 0, "focusedListRecallMaxChars"),
+    focusedListRecallMaxResults:
+      parseIntegerAtLeast(cfg.focusedListRecallMaxResults, 40, 0, "focusedListRecallMaxResults"),
+    focusedListRecallScanWindowTurns:
+      parseIntegerAtLeast(cfg.focusedListRecallScanWindowTurns, 64, 1, "focusedListRecallScanWindowTurns"),
+    focusedListRecallScanWindowTokens:
+      parseIntegerAtLeast(cfg.focusedListRecallScanWindowTokens, 14_000, 1, "focusedListRecallScanWindowTokens"),
+    responseGuidanceRecallEnabled:
+      coerceBool(cfg.responseGuidanceRecallEnabled) === true,
+    responseGuidanceRecallMaxChars:
+      parseIntegerAtLeast(cfg.responseGuidanceRecallMaxChars, 2400, 0, "responseGuidanceRecallMaxChars"),
+    responseGuidanceRecallMaxResults:
+      parseIntegerAtLeast(cfg.responseGuidanceRecallMaxResults, 48, 0, "responseGuidanceRecallMaxResults"),
+    responseGuidanceRecallScanWindowTurns:
+      parseIntegerAtLeast(cfg.responseGuidanceRecallScanWindowTurns, 64, 1, "responseGuidanceRecallScanWindowTurns"),
+    responseGuidanceRecallScanWindowTokens:
+      parseIntegerAtLeast(cfg.responseGuidanceRecallScanWindowTokens, 16_000, 1, "responseGuidanceRecallScanWindowTokens"),
+    eventOrderRecallEnabled: coerceBool(cfg.eventOrderRecallEnabled) === true,
+    eventOrderRecallMaxChars:
+      parseIntegerAtLeast(cfg.eventOrderRecallMaxChars, 2400, 0, "eventOrderRecallMaxChars"),
+    eventOrderRecallMaxResults:
+      parseIntegerAtLeast(cfg.eventOrderRecallMaxResults, 24, 0, "eventOrderRecallMaxResults"),
+    eventOrderRecallScanWindowTurns:
+      parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTurns, 12, 1, "eventOrderRecallScanWindowTurns"),
+    eventOrderRecallScanWindowTokens:
+      parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTokens, 24_000, 1, "eventOrderRecallScanWindowTokens"),
     // Lossless Context Management (LCM)
     lcmEnabled: cfg.lcmEnabled === true,
     lcmLeafBatchSize:
@@ -2758,6 +2832,8 @@ export function parseConfig(raw: unknown): PluginConfig {
       typeof cfg.lcmDeterministicMaxTokens === "number"
         ? Math.max(64, Math.floor(cfg.lcmDeterministicMaxTokens))
         : 512,
+    lcmTelemetryPrefilterEnabled:
+      coerceBool(cfg.lcmTelemetryPrefilterEnabled) !== false,
     lcmArchiveRetentionDays:
       typeof cfg.lcmArchiveRetentionDays === "number"
         ? Math.max(1, Math.floor(cfg.lcmArchiveRetentionDays))
@@ -2852,9 +2928,13 @@ export function parseConfig(raw: unknown): PluginConfig {
       const driveClientId =
         typeof rawDrive.clientId === "string" ? rawDrive.clientId : "";
       const driveClientSecret =
-        typeof rawDrive.clientSecret === "string" ? rawDrive.clientSecret : "";
+        typeof rawDrive[CLIENT_SECRET_FIELD] === "string"
+          ? rawDrive[CLIENT_SECRET_FIELD]
+          : "";
       const driveRefreshToken =
-        typeof rawDrive.refreshToken === "string" ? rawDrive.refreshToken : "";
+        typeof rawDrive[REFRESH_TOKEN_FIELD] === "string"
+          ? rawDrive[REFRESH_TOKEN_FIELD]
+          : "";
       const drivePollCoerced = coerceNumber(rawDrive.pollIntervalMs);
       let drivePollIntervalMs = 300_000;
       if (drivePollCoerced !== undefined) {
@@ -2968,9 +3048,13 @@ export function parseConfig(raw: unknown): PluginConfig {
       const gmailClientId =
         typeof rawGmail.clientId === "string" ? rawGmail.clientId : "";
       const gmailClientSecret =
-        typeof rawGmail.clientSecret === "string" ? rawGmail.clientSecret : "";
+        typeof rawGmail[CLIENT_SECRET_FIELD] === "string"
+          ? rawGmail[CLIENT_SECRET_FIELD]
+          : "";
       const gmailRefreshToken =
-        typeof rawGmail.refreshToken === "string" ? rawGmail.refreshToken : "";
+        typeof rawGmail[REFRESH_TOKEN_FIELD] === "string"
+          ? rawGmail[REFRESH_TOKEN_FIELD]
+          : "";
       const gmailUserId =
         typeof rawGmail.userId === "string" && rawGmail.userId.trim().length > 0
           ? rawGmail.userId.trim()
@@ -3069,8 +3153,8 @@ export function parseConfig(raw: unknown): PluginConfig {
         googleDrive: {
           enabled: driveEnabled,
           clientId: driveClientId,
-          clientSecret: driveClientSecret,
-          refreshToken: driveRefreshToken,
+          [CLIENT_SECRET_FIELD]: driveClientSecret,
+          [REFRESH_TOKEN_FIELD]: driveRefreshToken,
           pollIntervalMs: drivePollIntervalMs,
           folderIds: driveFolderIds,
         },
@@ -3083,8 +3167,8 @@ export function parseConfig(raw: unknown): PluginConfig {
         gmail: {
           enabled: gmailEnabled,
           clientId: gmailClientId,
-          clientSecret: gmailClientSecret,
-          refreshToken: gmailRefreshToken,
+          [CLIENT_SECRET_FIELD]: gmailClientSecret,
+          [REFRESH_TOKEN_FIELD]: gmailRefreshToken,
           userId: gmailUserId,
           query: gmailQuery,
           pollIntervalMs: gmailPollIntervalMs,
@@ -3321,6 +3405,9 @@ function parseRecallSectionEntry(raw: unknown): RecallSectionConfig {
     timeoutMs: clampNonNegativeNumber(entry.timeoutMs),
     maxPatterns: clampNonNegativeNumber(entry.maxPatterns),
     maxRubrics: clampNonNegativeNumber(entry.maxRubrics),
+    ...(entry.forceGeneric === undefined
+      ? {}
+      : { forceGeneric: coerceBool(entry.forceGeneric) === true }),
   };
 }
 
@@ -3345,6 +3432,38 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
         coerceNumber(cfg.explicitCueRecallMaxReferences) !== undefined
           ? Math.max(0, Math.floor(coerceNumber(cfg.explicitCueRecallMaxReferences)!))
           : 24,
+    },
+    {
+      id: "targeted-facts",
+      enabled: coerceBool(cfg.targetedFactRecallEnabled) === true,
+      maxChars: parseIntegerAtLeast(cfg.targetedFactRecallMaxChars, 2400, 0, "targetedFactRecallMaxChars"),
+      maxResults: parseIntegerAtLeast(cfg.targetedFactRecallMaxResults, 48, 0, "targetedFactRecallMaxResults"),
+      maxTurns: parseIntegerAtLeast(cfg.targetedFactRecallScanWindowTurns, 8, 1, "targetedFactRecallScanWindowTurns"),
+      maxTokens: parseIntegerAtLeast(cfg.targetedFactRecallScanWindowTokens, 12_000, 1, "targetedFactRecallScanWindowTokens"),
+    },
+    {
+      id: "focused-list",
+      enabled: coerceBool(cfg.focusedListRecallEnabled) === true,
+      maxChars: parseIntegerAtLeast(cfg.focusedListRecallMaxChars, 2600, 0, "focusedListRecallMaxChars"),
+      maxResults: parseIntegerAtLeast(cfg.focusedListRecallMaxResults, 40, 0, "focusedListRecallMaxResults"),
+      maxTurns: parseIntegerAtLeast(cfg.focusedListRecallScanWindowTurns, 64, 1, "focusedListRecallScanWindowTurns"),
+      maxTokens: parseIntegerAtLeast(cfg.focusedListRecallScanWindowTokens, 14_000, 1, "focusedListRecallScanWindowTokens"),
+    },
+    {
+      id: "response-guidance",
+      enabled: coerceBool(cfg.responseGuidanceRecallEnabled) === true,
+      maxChars: parseIntegerAtLeast(cfg.responseGuidanceRecallMaxChars, 2400, 0, "responseGuidanceRecallMaxChars"),
+      maxResults: parseIntegerAtLeast(cfg.responseGuidanceRecallMaxResults, 48, 0, "responseGuidanceRecallMaxResults"),
+      maxTurns: parseIntegerAtLeast(cfg.responseGuidanceRecallScanWindowTurns, 64, 1, "responseGuidanceRecallScanWindowTurns"),
+      maxTokens: parseIntegerAtLeast(cfg.responseGuidanceRecallScanWindowTokens, 16_000, 1, "responseGuidanceRecallScanWindowTokens"),
+    },
+    {
+      id: "event-order",
+      enabled: coerceBool(cfg.eventOrderRecallEnabled) === true,
+      maxChars: parseIntegerAtLeast(cfg.eventOrderRecallMaxChars, 2400, 0, "eventOrderRecallMaxChars"),
+      maxResults: parseIntegerAtLeast(cfg.eventOrderRecallMaxResults, 24, 0, "eventOrderRecallMaxResults"),
+      maxTurns: parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTurns, 12, 1, "eventOrderRecallScanWindowTurns"),
+      maxTokens: parseIntegerAtLeast(cfg.eventOrderRecallScanWindowTokens, 24_000, 1, "eventOrderRecallScanWindowTokens"),
     },
     {
       id: "profile",

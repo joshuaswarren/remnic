@@ -77,6 +77,9 @@ export const BENCHMARK_RESULT_SCHEMA = {
                 provider: { type: "string" },
                 model: { type: "string" },
                 baseUrl: { type: "string" },
+                reasoningEffort: { type: "string" },
+                responderContextBudgetChars: { type: "number" },
+                responderPromptBudgetChars: { type: "number" },
               },
             },
           ],
@@ -91,6 +94,22 @@ export const BENCHMARK_RESULT_SCHEMA = {
                 provider: { type: "string" },
                 model: { type: "string" },
                 baseUrl: { type: "string" },
+                reasoningEffort: { type: "string" },
+              },
+            },
+          ],
+        },
+        internalProvider: {
+          anyOf: [
+            { type: "null" },
+            {
+              type: "object",
+              required: ["provider", "model"],
+              properties: {
+                provider: { type: "string" },
+                model: { type: "string" },
+                baseUrl: { type: "string" },
+                reasoningEffort: { type: "string" },
               },
             },
           ],

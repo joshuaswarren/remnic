@@ -87,6 +87,7 @@ export const claudeReplayNormalizer: ReplayNormalizer = {
           role,
           content,
           timestamp,
+          sourceValidAt: timestamp,
           externalId: typeof externalIdRaw === "string" ? externalIdRaw : undefined,
           metadata: {
             conversationId: convoId,

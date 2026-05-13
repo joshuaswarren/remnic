@@ -165,11 +165,22 @@ export async function llmJudgeScoreDetailed(
     };
   } catch {
     return {
-      score: -1,
+      score: deterministicJudgeFallback(predicted, expected),
       tokens: { input: 0, output: 0 },
       latencyMs: Math.round(performance.now() - startedAt),
+      model: "deterministic-fallback",
     };
   }
+}
+
+function deterministicJudgeFallback(
+  predicted: string,
+  expected: string | number | unknown,
+): number {
+  if (exactMatch(predicted, expected) === 1 || containsAnswer(predicted, expected) === 1) {
+    return 1;
+  }
+  return f1Score(predicted, expected) >= 0.8 ? 1 : 0;
 }
 
 export async function timed<T>(

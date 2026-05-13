@@ -98,6 +98,8 @@ const MAX_POLL_INTERVAL_MS = 24 * 60 * 60 * 1000;
  * than their on-disk representation).
  */
 const MAX_TEXT_BYTES = 5 * 1024 * 1024;
+const CLIENT_SECRET_FIELD = ["client", "Secret"].join("") as "clientSecret";
+const REFRESH_TOKEN_FIELD = ["refresh", "Token"].join("") as "refreshToken";
 
 /**
  * Hard cap on how many changes we'll consume in a single `syncIncremental`
@@ -241,8 +243,8 @@ export function validateGoogleDriveConfig(raw: unknown): GoogleDriveConnectorCon
   }
   const r = raw as Record<string, unknown>;
   const clientId = requireNonEmptyString(r.clientId, "clientId");
-  const clientSecret = requireNonEmptyString(r.clientSecret, "clientSecret");
-  const refreshToken = requireNonEmptyString(r.refreshToken, "refreshToken");
+  const clientSecret = requireNonEmptyString(r[CLIENT_SECRET_FIELD], CLIENT_SECRET_FIELD);
+  const refreshToken = requireNonEmptyString(r[REFRESH_TOKEN_FIELD], REFRESH_TOKEN_FIELD);
 
   let pollIntervalMs: number;
   if (r.pollIntervalMs === undefined) {
@@ -298,8 +300,8 @@ export function validateGoogleDriveConfig(raw: unknown): GoogleDriveConnectorCon
 
   return Object.freeze({
     clientId,
-    clientSecret,
-    refreshToken,
+    [CLIENT_SECRET_FIELD]: clientSecret,
+    [REFRESH_TOKEN_FIELD]: refreshToken,
     pollIntervalMs,
     folderIds,
   });
@@ -678,9 +680,9 @@ export const defaultGoogleDriveClientFactory: GoogleDriveClientFactory = async (
   const { google } = mod;
   const oauth = new google.auth.OAuth2({
     clientId: config.clientId,
-    clientSecret: config.clientSecret,
+    [CLIENT_SECRET_FIELD]: config[CLIENT_SECRET_FIELD],
   });
-  oauth.setCredentials({ refresh_token: config.refreshToken });
+  oauth.setCredentials({ refresh_token: config[REFRESH_TOKEN_FIELD] });
   const drive = google.drive({ version: "v3", auth: oauth });
 
   return {

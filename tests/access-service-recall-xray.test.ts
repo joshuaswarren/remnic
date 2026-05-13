@@ -8,9 +8,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { EngramAccessService } from "../src/access-service.js";
 import type { RecallXraySnapshot } from "../src/recall-xray.js";
+import type { MemoryFile } from "../src/types.js";
 
 function fakeSnapshot(
   overrides: Partial<RecallXraySnapshot> = {},
@@ -42,6 +44,8 @@ function stubOrchestrator(opts: {
     sessionKey: string | undefined,
     options: Record<string, unknown>,
   ) => void;
+  memoriesByPath?: Map<string, MemoryFile>;
+  onReadMemoryByPath?: (memoryPath: string) => Promise<void> | void;
 }) {
   const state = {
     clearedSnapshot: 0,
@@ -85,7 +89,17 @@ function stubOrchestrator(opts: {
       getMostRecent: () => null,
     },
     getStorage: async () => ({
-      getMemoryById: async () => null,
+      dir: "/tmp/engram",
+      readMemoryByPath: async (memoryPath: string) => {
+        await opts.onReadMemoryByPath?.(memoryPath);
+        return opts.memoriesByPath?.get(memoryPath) ?? null;
+      },
+      getMemoryById: async (memoryId: string) => {
+        if (!opts.memoriesByPath) return null;
+        return Array.from(opts.memoriesByPath.values()).find(
+          (memory) => memory.frontmatter.id === memoryId,
+        ) ?? null;
+      },
       getMemoryTimeline: async () => [],
     }),
   };
@@ -127,6 +141,196 @@ test("recallXray returns the captured snapshot when present", async () => {
   assert.equal(response.snapshotFound, true);
   assert.ok(response.snapshot);
   assert.equal(response.snapshot?.snapshotId, "snap-1");
+  assert.equal(response.recall, undefined);
+});
+
+test("recallXray can return recall metadata from the same captured snapshot", async () => {
+  const memoryPath = "/tmp/engram/memories/mem-a.md";
+  const memory: MemoryFile = {
+    path: memoryPath,
+    frontmatter: {
+      id: "mem-a",
+      category: "preference",
+      created: "2026-05-01T00:00:00.000Z",
+      updated: "2026-05-01T00:00:00.000Z",
+      source: "test",
+      confidence: 0.95,
+      confidenceTier: "explicit",
+      tags: ["style"],
+      status: "active",
+    },
+    content: "Same captured memory content for the inspector.",
+  };
+  const snap = fakeSnapshot({
+    namespace: "global",
+    traceId: "trace-same-snapshot",
+    results: [
+      {
+        memoryId: "mem-a",
+        path: memoryPath,
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.91 },
+        admittedBy: ["hybrid-search"],
+      },
+    ],
+    budget: { chars: 4096, used: memory.content.length },
+  });
+  const { orchestrator, state } = stubOrchestrator({
+    memoriesByPath: new Map([[memoryPath, memory]]),
+  });
+  orchestrator.recall = async () => {
+    state.snapshot = snap;
+    return "independent recall context that must not be used";
+  };
+
+  const service = new EngramAccessService(orchestrator as any);
+  const response = await service.recallXray({
+    query: "q",
+    sessionKey: "sess-1",
+    disclosure: "chunk",
+    includeRecall: true,
+  });
+
+  assert.equal(response.snapshotFound, true);
+  assert.equal(response.snapshot?.snapshotId, "snap-1");
+  assert.equal(response.recall?.sessionKey, "sess-1");
+  assert.equal(response.recall?.traceId, "trace-same-snapshot");
+  assert.deepEqual(response.recall?.memoryIds, ["mem-a"]);
+  assert.equal(response.recall?.results[0]?.id, "mem-a");
+  assert.equal(response.recall?.results[0]?.path, memoryPath);
+  assert.match(response.recall?.context ?? "", /Same captured memory content/);
+  assert.notEqual(
+    response.recall?.context,
+    "independent recall context that must not be used",
+  );
+});
+
+test("recallXray releases the snapshot mutex before optional recall serialization I/O", async () => {
+  const memoryPath = "/tmp/engram/memories/mem-a.md";
+  const memory: MemoryFile = {
+    path: memoryPath,
+    frontmatter: {
+      id: "mem-a",
+      category: "preference",
+      created: "2026-05-01T00:00:00.000Z",
+      updated: "2026-05-01T00:00:00.000Z",
+      source: "test",
+      confidence: 0.95,
+      confidenceTier: "explicit",
+      tags: ["style"],
+      status: "active",
+    },
+    content: "Same captured memory content for the inspector.",
+  };
+  const firstSnapshot = fakeSnapshot({
+    snapshotId: "snap-first",
+    results: [
+      {
+        memoryId: "mem-a",
+        path: memoryPath,
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.91 },
+        admittedBy: ["hybrid-search"],
+      },
+    ],
+    budget: { chars: 4096, used: memory.content.length },
+  });
+  const secondSnapshot = fakeSnapshot({ snapshotId: "snap-second" });
+  let resolveReadStarted: () => void = () => {};
+  const readStarted = new Promise<void>((resolve) => {
+    resolveReadStarted = resolve;
+  });
+  let releaseRead: () => void = () => {};
+  const readReleased = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  let resolveSecondRecallStarted: () => void = () => {};
+  const secondRecallStarted = new Promise<void>((resolve) => {
+    resolveSecondRecallStarted = resolve;
+  });
+  const { orchestrator, state } = stubOrchestrator({
+    memoriesByPath: new Map([[memoryPath, memory]]),
+    onReadMemoryByPath: async () => {
+      resolveReadStarted();
+      await readReleased;
+    },
+  });
+  orchestrator.recall = async (prompt: string) => {
+    if (prompt === "first") {
+      state.snapshot = firstSnapshot;
+    } else {
+      state.snapshot = secondSnapshot;
+      resolveSecondRecallStarted();
+    }
+    return "ctx";
+  };
+
+  const service = new EngramAccessService(orchestrator as any);
+  const first = service.recallXray({
+    query: "first",
+    includeRecall: true,
+  });
+  await readStarted;
+  const second = service.recallXray({ query: "second" });
+  const secondStartedBeforeReadFinished = await Promise.race([
+    secondRecallStarted.then(() => true),
+    delay(250).then(() => false),
+  ]);
+  releaseRead();
+
+  assert.equal(secondStartedBeforeReadFinished, true);
+  const [firstResponse, secondResponse] = await Promise.all([first, second]);
+  assert.equal(firstResponse.snapshot?.snapshotId, "snap-first");
+  assert.equal(firstResponse.recall?.memoryIds[0], "mem-a");
+  assert.equal(secondResponse.snapshot?.snapshotId, "snap-second");
+});
+
+test("recallXray includeRecall latency starts after waiting for the snapshot mutex", async () => {
+  const originalDateNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  try {
+    const firstSnapshot = fakeSnapshot({ snapshotId: "snap-first" });
+    const secondSnapshot = fakeSnapshot({ snapshotId: "snap-second" });
+    let resolveFirstRecallStarted: () => void = () => {};
+    const firstRecallStarted = new Promise<void>((resolve) => {
+      resolveFirstRecallStarted = resolve;
+    });
+    let releaseFirstRecall: () => void = () => {};
+    const firstRecallReleased = new Promise<void>((resolve) => {
+      releaseFirstRecall = resolve;
+    });
+    const { orchestrator, state } = stubOrchestrator({});
+    orchestrator.recall = async (prompt: string) => {
+      if (prompt === "first") {
+        resolveFirstRecallStarted();
+        await firstRecallReleased;
+        state.snapshot = firstSnapshot;
+        return "ctx";
+      }
+      state.snapshot = secondSnapshot;
+      now = 5_030;
+      return "ctx";
+    };
+
+    const service = new EngramAccessService(orchestrator as any);
+    const first = service.recallXray({ query: "first" });
+    await firstRecallStarted;
+    now = 1_500;
+    const second = service.recallXray({
+      query: "second",
+      includeRecall: true,
+    });
+    now = 5_000;
+    releaseFirstRecall();
+
+    const [firstResponse, secondResponse] = await Promise.all([first, second]);
+    assert.equal(firstResponse.snapshot?.snapshotId, "snap-first");
+    assert.equal(secondResponse.snapshot?.snapshotId, "snap-second");
+    assert.equal(secondResponse.recall?.latencyMs, 30);
+  } finally {
+    Date.now = originalDateNow;
+  }
 });
 
 test("recallXray forwards xrayCapture:true to orchestrator.recall", async () => {
@@ -134,6 +338,23 @@ test("recallXray forwards xrayCapture:true to orchestrator.recall", async () => 
   const service = new EngramAccessService(orchestrator as any);
   await service.recallXray({ query: "q" });
   assert.equal(state.lastOptions?.xrayCapture, true);
+});
+
+test("recallXray forwards current context scopes through invocation options", async () => {
+  const { orchestrator, state } = stubOrchestrator({ snapshot: null });
+  const service = new EngramAccessService(orchestrator as any);
+  await service.recallXray({
+    query: "q",
+    currentContextScopes: ["work", "repo"],
+  });
+  assert.deepEqual(state.lastOptions?.currentContextScopes, ["work", "repo"]);
+});
+
+test("recallXray forwards recall mode through invocation options", async () => {
+  const { orchestrator, state } = stubOrchestrator({ snapshot: null });
+  const service = new EngramAccessService(orchestrator as any);
+  await service.recallXray({ query: "q", mode: "full" });
+  assert.equal(state.lastOptions?.mode, "full");
 });
 
 test("recallXray clears any prior snapshot before capturing", async () => {

@@ -305,9 +305,12 @@ export async function runCalibrationConsolidation(options: {
   memoryDir: string;
   gatewayConfig?: GatewayConfig;
   gatewayAgentId?: string;
+  workspaceDir?: string;
 }): Promise<CalibrationRule[]> {
   try {
-    const llm = new FallbackLlmClient(options.gatewayConfig);
+    const llm = new FallbackLlmClient(options.gatewayConfig, {
+      workspaceDir: options.workspaceDir,
+    });
     if (!llm.isAvailable(options.gatewayAgentId)) {
       log.debug("[calibration] no LLM available — skipping consolidation");
       return [];
@@ -367,6 +370,7 @@ export async function runCalibrationIfEnabled(options: {
   memoryDir: string;
   calibrationEnabled: boolean;
   gatewayConfig?: GatewayConfig;
+  workspaceDir?: string;
 }): Promise<CalibrationRule[]> {
   if (!options.calibrationEnabled) {
     return [];
@@ -374,6 +378,7 @@ export async function runCalibrationIfEnabled(options: {
   return runCalibrationConsolidation({
     memoryDir: options.memoryDir,
     gatewayConfig: options.gatewayConfig,
+    workspaceDir: options.workspaceDir,
   });
 }
 

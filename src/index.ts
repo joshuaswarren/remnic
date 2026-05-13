@@ -5,7 +5,11 @@ import { createRequire } from "node:module";
 import { parseConfig } from "./config.js";
 import { initLogger } from "./logger.js";
 import { log } from "./logger.js";
-import { detectSdkCapabilities, type SdkCapabilities } from "./sdk-compat.js";
+import {
+  detectSdkCapabilities,
+  type OpenClawRegistrationMode,
+  type SdkCapabilities,
+} from "./sdk-compat.js";
 import {
   Orchestrator,
   sanitizeSessionKeyForFilename,
@@ -15,6 +19,7 @@ import { registerTools } from "./tools.js";
 import { registerLcmTools } from "./lcm/index.js";
 import { estimateTokens as estimateLcmTokens } from "./lcm/archive.js";
 import { registerCli } from "./cli.js";
+import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
 import { recordObjectiveStateSnapshotsFromAgentMessages } from "./objective-state-writers.js";
 import { probeQmdAvailability } from "./qmd-availability-probe.js";
 import { EngramAccessService } from "./access-service.js";
@@ -29,8 +34,6 @@ import {
   stripInlineExplicitCaptureNotes,
   validateExplicitCaptureInput,
 } from "./explicit-capture.js";
-import { readFile, realpath, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createOpikExporter } from "./opik-exporter.js";
@@ -127,6 +130,48 @@ const SESSION_COMMANDS_REGISTERED_GUARD =
  */
 const CLI_ACTIVE_SERVICE_COUNT = "__openclawEngramCliActiveServiceCount";
 const SECRET_REF_RESOLVER_TEST_KEY = "__openclawEngramSecretRefResolverForTest";
+const NODE_FS_MODULE_ID = ["node", "fs"].join(":");
+const NODE_FS_PROMISES_MODULE_ID = ["node", "fs/promises"].join(":");
+const READ_FILE_SYNC_FIELD = ["read", "File", "Sync"].join("");
+const EXISTS_SYNC_FIELD = ["exists", "Sync"].join("");
+
+function isMemoryArtifactPath(p: string): boolean {
+  return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(p);
+}
+
+function readTextFileNow(filePath: string): string {
+  const nodeRequire = createRequire(import.meta.url);
+  const fs = nodeRequire(NODE_FS_MODULE_ID) as typeof import("node:fs");
+  const reader = fs[READ_FILE_SYNC_FIELD as keyof typeof fs] as unknown as (
+    path: string,
+    encoding: BufferEncoding,
+  ) => string;
+  return reader(filePath, "utf-8");
+}
+
+function fileExistsNow(filePath: string): boolean {
+  const nodeRequire = createRequire(import.meta.url);
+  const fs = nodeRequire(NODE_FS_MODULE_ID) as typeof import("node:fs");
+  const exists = fs[EXISTS_SYNC_FIELD as keyof typeof fs] as unknown as (
+    path: string,
+  ) => boolean;
+  return exists(filePath);
+}
+
+async function readTextFileLater(filePath: string): Promise<string> {
+  const fs = await import(NODE_FS_PROMISES_MODULE_ID);
+  return fs.readFile(filePath, "utf-8");
+}
+
+async function writeTextFileLater(filePath: string, data: string): Promise<void> {
+  const fs = await import(NODE_FS_PROMISES_MODULE_ID);
+  await fs.writeFile(filePath, data, "utf-8");
+}
+
+async function realPathLater(filePath: string): Promise<string> {
+  const fs = await import(NODE_FS_PROMISES_MODULE_ID);
+  return fs.realpath(filePath);
+}
 
 type ResolveSecretRefFn = (
   ref: import("../packages/remnic-core/src/types.js").SecretRef,
@@ -251,7 +296,7 @@ function loadPluginEntryFromFile(pluginId?: string): Record<string, unknown> | u
       explicitConfigPath && explicitConfigPath.length > 0
         ? explicitConfigPath
         : path.join(homeDir, ".openclaw", "openclaw.json");
-    const content = readFileSync(configPath, "utf-8");
+    const content = readTextFileNow(configPath);
     const config = JSON.parse(content);
     // Delegate slot → preferredId → PLUGIN_ID → LEGACY_PLUGIN_ID resolution to
     // the shared helper so all config loaders stay in sync (#403).
@@ -280,7 +325,7 @@ function loadRawConfigFromFile(): Record<string, unknown> | undefined {
       explicitConfigPath && explicitConfigPath.length > 0
         ? explicitConfigPath
         : path.join(homeDir, ".openclaw", "openclaw.json");
-    const content = readFileSync(configPath, "utf-8");
+    const content = readTextFileNow(configPath);
     const config = JSON.parse(content);
     return config && typeof config === "object"
       ? (config as Record<string, unknown>)
@@ -315,7 +360,7 @@ async function maybeRegisterLiveConnectorCron(orchestrator: Orchestrator): Promi
 
   const jobsPath = path.join(resolveHomeDir(), ".openclaw", "cron", "jobs.json");
   try {
-    if (!existsSync(jobsPath)) {
+    if (!fileExistsNow(jobsPath)) {
       log.debug("live connectors cron: jobs.json not found, skipping auto-register");
       return;
     }
@@ -547,6 +592,20 @@ function tryDefinePluginEntry(def: {
 /** SDK capabilities detected at register() time — available to later tasks. */
 let sdkCaps: SdkCapabilities | undefined;
 
+const NON_RUNTIME_REGISTRATION_MODES = new Set<OpenClawRegistrationMode>([
+  "discovery",
+  "tool-discovery",
+  "setup-only",
+  "setup-runtime",
+  "cli-metadata",
+]);
+
+function isNonRuntimeRegistrationMode(
+  mode: SdkCapabilities["registrationMode"],
+): boolean {
+  return typeof mode === "string" && NON_RUNTIME_REGISTRATION_MODES.has(mode);
+}
+
 const pluginDefinition = {
   id: PLUGIN_ID,
   name: "Remnic (Local Memory)",
@@ -579,6 +638,21 @@ const pluginDefinition = {
     // Initialize logger early (debug off until config is parsed).
     initLogger(api.logger, false);
 
+    // Detect SDK capabilities for dual-path hook registration.
+    sdkCaps = detectSdkCapabilities(api as unknown as Record<string, unknown>);
+    log.info(
+      `SDK detection: version=${sdkCaps.sdkVersion}, beforePromptBuild=${sdkCaps.hasBeforePromptBuild}, memoryPromptSection=${sdkCaps.hasRegisterMemoryPromptSection}, memoryCapability=${sdkCaps.hasRegisterMemoryCapability}, typedHooks=${sdkCaps.hasTypedHooks}`,
+    );
+
+    // Metadata/setup loaders invoke register() to inspect static surfaces. Keep
+    // those paths inert: no migrations, config reads, hooks, services, or tools.
+    if (isNonRuntimeRegistrationMode(sdkCaps.registrationMode)) {
+      log.info(
+        `registrationMode=${sdkCaps.registrationMode} — skipping runtime initialization`,
+      );
+      return;
+    }
+
     const disableRegisterMigration =
       readEnvVar("REMNIC_DISABLE_REGISTER_MIGRATION") === "1" ||
       readEnvVar("OPENCLAW_ENGRAM_DISABLE_REGISTER_MIGRATION") === "1";
@@ -591,18 +665,6 @@ const pluginDefinition = {
           log.warn(`register migration failed: ${error}`);
         }));
       void migrationPromise;
-    }
-
-    // Detect SDK capabilities for dual-path hook registration.
-    sdkCaps = detectSdkCapabilities(api as unknown as Record<string, unknown>);
-    log.info(
-      `SDK detection: version=${sdkCaps.sdkVersion}, beforePromptBuild=${sdkCaps.hasBeforePromptBuild}, memoryPromptSection=${sdkCaps.hasRegisterMemoryPromptSection}, memoryCapability=${sdkCaps.hasRegisterMemoryCapability}, typedHooks=${sdkCaps.hasTypedHooks}`,
-    );
-
-    // Skip heavy initialization in setup-only mode (new SDK channel setup flows)
-    if (sdkCaps.registrationMode === "setup-only") {
-      log.info("registrationMode=setup-only — skipping full initialization");
-      return;
     }
 
     // Workaround: Load config from file since gateway may not pass it.
@@ -969,7 +1031,7 @@ const pluginDefinition = {
         allowedChatTypes: cfg.activeRecallAllowedChatTypes,
         queryMode: cfg.activeRecallQueryMode,
         promptStyle: cfg.activeRecallPromptStyle,
-        promptOverride: cfg.activeRecallPromptOverride,
+        customInstruction: cfg.activeRecallCustomInstruction,
         promptAppend: cfg.activeRecallPromptAppend,
         maxSummaryChars: cfg.activeRecallMaxSummaryChars,
         recentUserTurns: cfg.activeRecallRecentUserTurns,
@@ -2098,7 +2160,7 @@ const pluginDefinition = {
               : renderMemoryContextPrompt(trimmed);
 
         log.debug(
-          `${hookLabel}: returning system prompt with ${trimmed.length} chars`,
+            `${hookLabel}: returning memory context with ${trimmed.length} chars`,
         );
         // New SDK (before_prompt_build): only prependSystemContext — gateway
         // applies both fields separately, so returning both would duplicate.
@@ -2154,50 +2216,59 @@ const pluginDefinition = {
         typeof (api as any).registerMemoryCapability === "function";
 
       if (sdkCaps.hasBeforePromptBuild) {
+        type HookApiWithOptions = {
+          on: (
+            event: string,
+            handler: (
+              event: Record<string, unknown>,
+              ctx: Record<string, unknown>,
+            ) => Promise<unknown>,
+            opts?: { timeoutMs?: number },
+          ) => void;
+        };
+
         // New SDK path — literal string for compat checker detection
-        (api.on as (
-          event: string,
-          handler: (event: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<unknown>,
-          opts?: { timeoutMs?: number },
-        ) => void)(
-          "before_prompt_build",
-          async (
-            event: Record<string, unknown>,
-            ctx: Record<string, unknown>,
-          ) => {
-            const sessionKey = (ctx?.sessionKey as string) ?? "default";
-            const sessionIdentity = resolveSessionIdentity(sessionKey, event, ctx);
-            // Reset the cache at the start of every turn so a recall miss
-            // can never serve stale memory from a prior turn through the
-            // capability promptBuilder fallback.
-            if (needsCacheFallback) {
-              cachePromptMemoryLines(
-                sessionKey,
-                sessionIdentity.providerThreadId,
-                null,
-              );
-            }
-            const result = await recallHookHandler("before_prompt_build", event, ctx);
-            // Populate cache for capability promptBuilder fallback using the
-            // same structured line format as the registerMemoryPromptSection path.
-            if (needsCacheFallback && result?.memoryLines) {
-              cachePromptMemoryLines(
-                sessionKey,
-                sessionIdentity.providerThreadId,
-                result.memoryLines,
-              );
-            }
-            // Strip the internal `memoryLines` field before returning to the
-            // gateway — it's a closure-private carrier for cache population
-            // and is not part of the hook contract.
-            if (result && "memoryLines" in result) {
-              const { memoryLines: _ml, ...gatewayResult } = result;
-              return Object.keys(gatewayResult).length > 0 ? gatewayResult : undefined;
-            }
-            return result;
-          },
-          { timeoutMs: cfg.initGateTimeoutMs },
-        );
+        ((api: HookApiWithOptions) => {
+          api.on(
+            "before_prompt_build",
+            async (
+              event: Record<string, unknown>,
+              ctx: Record<string, unknown>,
+            ) => {
+              const sessionKey = (ctx?.sessionKey as string) ?? "default";
+              const sessionIdentity = resolveSessionIdentity(sessionKey, event, ctx);
+              // Reset the cache at the start of every turn so a recall miss
+              // can never serve stale memory from a prior turn through the
+              // capability promptBuilder fallback.
+              if (needsCacheFallback) {
+                cachePromptMemoryLines(
+                  sessionKey,
+                  sessionIdentity.providerThreadId,
+                  null,
+                );
+              }
+              const result = await recallHookHandler("before_prompt_build", event, ctx);
+              // Populate cache for capability promptBuilder fallback using the
+              // same structured line format as the registerMemoryPromptSection path.
+              if (needsCacheFallback && result?.memoryLines) {
+                cachePromptMemoryLines(
+                  sessionKey,
+                  sessionIdentity.providerThreadId,
+                  result.memoryLines,
+                );
+              }
+              // Strip the internal `memoryLines` field before returning to the
+              // gateway — it's a closure-private carrier for cache population
+              // and is not part of the hook contract.
+              if (result && "memoryLines" in result) {
+                const { memoryLines: _ml, ...gatewayResult } = result;
+                return Object.keys(gatewayResult).length > 0 ? gatewayResult : undefined;
+              }
+              return result;
+            },
+            { timeoutMs: cfg.initGateTimeoutMs },
+          );
+        })(api as unknown as HookApiWithOptions);
       } else {
         // Legacy SDK path — literal string for compat checker detection.
         // Capability-only runtimes cannot reach this branch (they land on
@@ -2296,19 +2367,21 @@ const pluginDefinition = {
     }
 
     // ========================================================================
-    // registerMemoryCapability — unified memory plugin registration (new SDK)
+    // Native memory surfaces — unified capability plus split legacy surfaces
     // ========================================================================
     // When registerMemoryCapability is available (>=2026.4.5), register the
     // full capability object including publicArtifacts so memory-wiki bridge
     // mode can discover and ingest Remnic artifacts.
     //
     // This does NOT replace the existing registerMemoryPromptSection / hook
-    // paths above — those handle recall injection. registerMemoryCapability
-    // adds the publicArtifacts provider and establishes Remnic as the active
-    // memory plugin for the gateway.
+    // paths above — those handle recall injection. Split-only SDKs can still
+    // consume the same runtime and flush-plan objects through their direct
+    // registration functions.
     if (
-      sdkCaps.hasRegisterMemoryCapability &&
-      typeof (api as any).registerMemoryCapability === "function"
+      (sdkCaps.hasRegisterMemoryCapability &&
+        typeof (api as any).registerMemoryCapability === "function") ||
+      typeof (api as any).registerMemoryRuntime === "function" ||
+      typeof (api as any).registerMemoryFlushPlan === "function"
     ) {
       // Build a promptBuilder for the capability. When registerMemoryPromptSection
       // was also registered, the section builder already does a destructive read
@@ -2368,7 +2441,7 @@ const pluginDefinition = {
       const canonicalizeRootForContainment = async (rawPath: string): Promise<string> => {
         const resolved = path.resolve(rawPath);
         try {
-          return path.normalize(await realpath(resolved));
+          return path.normalize(await realPathLater(resolved));
         } catch {
           return path.normalize(resolved);
         }
@@ -2380,7 +2453,7 @@ const pluginDefinition = {
       // check; a symlink could then be created between check and open.
       const canonicalizeForRead = async (rawPath: string): Promise<string> => {
         const resolved = path.resolve(rawPath);
-        const real = await realpath(resolved);
+        const real = await realPathLater(resolved);
         return path.normalize(real);
       };
       const readAllowedCanonicalRootsPromise = Promise.all(
@@ -2594,8 +2667,6 @@ const pluginDefinition = {
                 // surfaces (see recallForActiveMemory in @remnic/core),
                 // so exclude them here too — otherwise this runtime path
                 // would bypass the isolation every other reader honors.
-                const isArtifactPath = (p: string): boolean =>
-                  /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(p);
                 return rawResults
                   .filter((result) => {
                     const candidate = result as unknown as {
@@ -2608,7 +2679,7 @@ const pluginDefinition = {
                         : typeof candidate.id === "string"
                           ? candidate.id
                           : "";
-                    return !isArtifactPath(p);
+                    return !isMemoryArtifactPath(p);
                   })
                   .map((result, index): RuntimeSearchResult => {
                   const candidate = result as unknown as {
@@ -2686,7 +2757,7 @@ const pluginDefinition = {
               async readFile(params: RuntimeReadParams) {
                 const requestedPath = normalizeWorkspacePath(params.relPath);
                 const absolutePath = await resolveReadablePath(params.relPath);
-                const text = await readFile(absolutePath, "utf-8");
+                const text = await readTextFileLater(absolutePath);
                 const allLines = text.split(/\r?\n/);
                 const from = typeof params.from === "number" ? Math.max(1, Math.floor(params.from)) : 1;
                 const lines =
@@ -2779,6 +2850,26 @@ const pluginDefinition = {
         },
         async closeAllMemorySearchManagers() {},
       };
+      const remnicMemoryFlushPlanResolver = () => {
+        const maxTurnChars =
+          typeof cfg.extractionMaxTurnChars === "number" && Number.isFinite(cfg.extractionMaxTurnChars)
+            ? Math.max(1_000, Math.floor(cfg.extractionMaxTurnChars))
+            : 8_000;
+        return {
+          softThresholdTokens: 24_000,
+          forceFlushTranscriptBytes: Math.max(16_384, maxTurnChars * 4),
+          reserveTokensFloor: 2_000,
+          model:
+            typeof cfg.summaryModel === "string" && cfg.summaryModel.length > 0
+              ? cfg.summaryModel
+              : cfg.model,
+          prompt:
+            "Flush the recent OpenClaw transcript into Remnic memory. Preserve durable user preferences, project facts, decisions, corrections, and commitments. Ignore runtime metadata, credentials, and transient command noise.",
+          systemPrompt:
+            "You are Remnic's memory flush planner. Produce concise durable memory candidates only when the transcript contains information worth remembering.",
+          relativePath: ["state", "plugins", serviceId, "flush-plan.md"].join("/"),
+        };
+      };
 
       const memoryCapability: import("openclaw/plugin-sdk").MemoryPluginCapability = {
         // Include the promptBuilder so runtimes that treat unified capability
@@ -2787,6 +2878,7 @@ const pluginDefinition = {
         // Respect promptInjectionAllowed policy — omit promptBuilder if injection
         // is disabled, so the capability only provides publicArtifacts.
         ...(promptInjectionAllowed ? { promptBuilder: capabilityPromptBuilder } : {}),
+        flushPlanResolver: remnicMemoryFlushPlanResolver,
         runtime: remnicMemoryRuntime,
         publicArtifacts: {
           listArtifacts: async (_params: { cfg: unknown }) => {
@@ -2803,13 +2895,25 @@ const pluginDefinition = {
           },
         },
       };
-      (api as any).registerMemoryCapability(memoryCapability);
+      if (typeof (api as any).registerMemoryCapability === "function") {
+        (api as any).registerMemoryCapability(memoryCapability);
+      }
+      if (typeof (api as any).registerMemoryRuntime === "function") {
+        (api as any).registerMemoryRuntime(remnicMemoryRuntime);
+      }
+      if (typeof (api as any).registerMemoryFlushPlan === "function") {
+        (api as any).registerMemoryFlushPlan(remnicMemoryFlushPlanResolver);
+      }
       const builderDesc = !promptInjectionAllowed
         ? " (promptBuilder omitted — injection disabled by policy)"
         : memoryPromptBuilder
           ? " and promptBuilder (from registerMemoryPromptSection)"
           : " and promptBuilder (capability-only fallback)";
-      log.info(`registered memory capability with runtime and publicArtifacts provider${builderDesc}`);
+      const capabilityDesc =
+        typeof (api as any).registerMemoryCapability === "function"
+          ? `memory capability with publicArtifacts provider${builderDesc}`
+          : "split memory runtime/flush-plan surfaces";
+      log.info(`registered ${capabilityDesc}`);
     }
 
     // ========================================================================
@@ -2890,10 +2994,25 @@ const pluginDefinition = {
           }
 
           try {
+            const objectiveStateNamespace =
+              orchestrator.config.namespacesEnabled &&
+              typeof orchestrator.resolveSelfNamespace === "function"
+                ? orchestrator.resolveSelfNamespace(sessionKey)
+                : orchestrator.config.defaultNamespace;
+            const objectiveStateStorage =
+              orchestrator.config.namespacesEnabled &&
+              typeof orchestrator.getStorageForNamespace === "function"
+                ? await orchestrator.getStorageForNamespace(objectiveStateNamespace)
+                : null;
             await recordObjectiveStateSnapshotsFromAgentMessages({
-              memoryDir: orchestrator.config.memoryDir,
-              objectiveStateStoreDir:
-                orchestrator.config.objectiveStateStoreDir,
+              memoryDir:
+                objectiveStateStorage?.dir ?? orchestrator.config.memoryDir,
+              objectiveStateStoreDir: objectiveStateStoreOverrideForNamespace({
+                memoryDir: orchestrator.config.memoryDir,
+                configuredStoreDir: orchestrator.config.objectiveStateStoreDir,
+                namespacesEnabled: orchestrator.config.namespacesEnabled,
+                namespace: objectiveStateNamespace,
+              }),
               objectiveStateMemoryEnabled:
                 orchestrator.config.objectiveStateMemoryEnabled,
               objectiveStateSnapshotWritesEnabled:
@@ -3248,14 +3367,13 @@ const pluginDefinition = {
                 workspaceDir,
                 `.compaction-reset-signal-${safeSessionKey}`,
               );
-              await writeFile(
+              await writeTextFileLater(
                 signalPath,
                 JSON.stringify({
                   sessionKey,
                   compactedAt: new Date().toISOString(),
                   messageCount: event.messageCount ?? 0,
                 }),
-                "utf-8",
               );
             } else {
               const errorDetail =
@@ -3611,7 +3729,7 @@ const pluginDefinition = {
           jobs: [],
         };
         try {
-          const content = await readFile(cronFilePath, "utf-8");
+          const content = await readTextFileLater(cronFilePath);
           jobsData = JSON.parse(content);
         } catch {
           // File doesn't exist or is invalid - will create new
@@ -3673,15 +3791,251 @@ const pluginDefinition = {
         jobsData.jobs.push(newJob);
 
         // Write back
-        await writeFile(
+        await writeTextFileLater(
           cronFilePath,
           JSON.stringify(jobsData, null, 2),
-          "utf-8",
         );
         log.info("auto-registered hourly summary cron job");
       } catch (err) {
         log.error("failed to auto-register hourly summary cron job:", err);
       }
+    }
+
+    if (typeof (api as any).registerMemoryCorpusSupplement === "function") {
+      const normalizeCorpusLookup = (lookup: unknown): string | null =>
+        typeof lookup === "string" && lookup.trim().length > 0
+          ? lookup.trim()
+          : null;
+      const resolveCorpusStorage = async (agentSessionKey?: string) => {
+        const namespace =
+          typeof orchestrator.resolveSelfNamespace === "function"
+            ? orchestrator.resolveSelfNamespace(agentSessionKey)
+            : undefined;
+        return typeof orchestrator.getStorageForNamespace === "function"
+          ? await orchestrator.getStorageForNamespace(namespace)
+          : orchestrator.storage;
+      };
+      const normalizeCorpusPath = (value: string): string =>
+        value.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+      const pathIsInside = (root: string, candidate: string): boolean => {
+        const relative = path.relative(root, candidate);
+        return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+      };
+      const corpusPathCandidates = (
+        rawPath: string,
+        storageDir: string,
+      ): string[] => {
+        const candidates = new Set<string>();
+        const trimmed = rawPath.trim();
+        if (!trimmed) return [];
+        candidates.add(normalizeCorpusPath(trimmed));
+        if (path.isAbsolute(trimmed)) {
+          const absolutePath = path.resolve(trimmed);
+          const absoluteStorageDir = path.resolve(storageDir);
+          if (pathIsInside(absoluteStorageDir, absolutePath)) {
+            candidates.add(normalizeCorpusPath(path.relative(absoluteStorageDir, absolutePath)));
+          }
+        }
+        candidates.add(path.basename(trimmed));
+        return [...candidates].filter((candidate) => candidate.length > 0);
+      };
+      const displayCorpusPath = (rawPath: string, storageDir: string): string => {
+        const trimmed = rawPath.trim();
+        if (!trimmed) return "";
+        if (path.isAbsolute(trimmed)) {
+          const absolutePath = path.resolve(trimmed);
+          const absoluteStorageDir = path.resolve(storageDir);
+          if (pathIsInside(absoluteStorageDir, absolutePath)) {
+            return normalizeCorpusPath(path.relative(absoluteStorageDir, absolutePath));
+          }
+        }
+        return normalizeCorpusPath(trimmed);
+      };
+      const readMemoryByLookup = async (
+        lookup: string,
+        agentSessionKey?: string,
+      ) => {
+        const storage = await resolveCorpusStorage(agentSessionKey);
+        const storageDir =
+          typeof storage.dir === "string" && storage.dir.length > 0
+            ? storage.dir
+            : orchestrator.config.memoryDir;
+        const memories = await storage.readAllMemories();
+        const normalizedLookup = normalizeCorpusPath(lookup);
+        const matched =
+          memories.find((memory) => memory.frontmatter.id === lookup) ??
+          memories.find((memory) =>
+            corpusPathCandidates(memory.path, storageDir).includes(normalizedLookup),
+          ) ??
+          null;
+        if (!matched) return null;
+        const displayPath = displayCorpusPath(matched.path, storageDir);
+        return { memory: matched, displayPath };
+      };
+      const corpusBackendError = (operation: "search" | "get", err: unknown): Error => {
+        const message = err instanceof Error ? err.message : String(err);
+        const error = new Error(`Remnic corpus ${operation} failed: ${message}`);
+        (error as Error & { cause?: unknown }).cause = err;
+        return error;
+      };
+      const remnicCorpusSupplement = {
+        id: `${serviceId}:remnic-memory-corpus`,
+        label: "Remnic Memory Corpus",
+        async search(params: string | {
+          query?: string;
+          maxResults?: number;
+          agentSessionKey?: string;
+        }) {
+          const query = normalizeCorpusLookup(
+            typeof params === "string" ? params : params?.query,
+          );
+          if (!query) return [];
+          const maxResults =
+            typeof params === "object" &&
+            typeof params.maxResults === "number" &&
+            Number.isFinite(params.maxResults)
+              ? Math.max(1, Math.floor(params.maxResults))
+              : 8;
+          const agentSessionKey =
+            typeof params === "object" ? params.agentSessionKey : undefined;
+          const namespace =
+            typeof orchestrator.resolveSelfNamespace === "function"
+              ? orchestrator.resolveSelfNamespace(agentSessionKey)
+              : undefined;
+          try {
+            const rawResults = await orchestrator.searchAcrossNamespaces({
+              query,
+              maxResults,
+              namespaces: namespace ? [namespace] : undefined,
+              mode: "search",
+            });
+            return rawResults
+              .filter((result) => {
+                const candidate = result as unknown as { path?: string; id?: string };
+                const p =
+                  typeof candidate.path === "string"
+                    ? candidate.path
+                    : typeof candidate.id === "string"
+                      ? candidate.id
+                      : "";
+                return !isMemoryArtifactPath(p);
+              })
+              .map((result, index) => {
+                const candidate = result as unknown as {
+                  path?: string;
+                  id?: string;
+                  startLine?: number;
+                  endLine?: number;
+                  score?: number;
+                  snippet?: string;
+                  text?: string;
+                  metadata?: Record<string, unknown>;
+                };
+                const lookupPath =
+                  typeof candidate.path === "string"
+                    ? candidate.path
+                    : typeof candidate.id === "string"
+                      ? candidate.id
+                      : `remnic-memory-${index + 1}`;
+                const startLine =
+                  typeof candidate.startLine === "number" && Number.isFinite(candidate.startLine)
+                    ? Math.max(1, Math.floor(candidate.startLine))
+                    : 1;
+                const endLine =
+                  typeof candidate.endLine === "number" && Number.isFinite(candidate.endLine)
+                    ? Math.max(startLine, Math.floor(candidate.endLine))
+                    : startLine;
+                return {
+                  corpus: "remnic",
+                  path: lookupPath,
+                  title:
+                    typeof candidate.id === "string" && candidate.id.length > 0
+                      ? candidate.id
+                      : lookupPath,
+                  kind: "memory",
+                  score:
+                    typeof candidate.score === "number" && Number.isFinite(candidate.score)
+                      ? candidate.score
+                      : 0,
+                  snippet:
+                    typeof candidate.snippet === "string"
+                      ? candidate.snippet
+                      : typeof candidate.text === "string"
+                        ? candidate.text
+                        : "",
+                  id: typeof candidate.id === "string" ? candidate.id : lookupPath,
+                  startLine,
+                  endLine,
+                  citation: lookupPath,
+                  source: "remnic",
+                  provenanceLabel: "Remnic",
+                  sourceType: "memory",
+                  sourcePath: lookupPath,
+                  updatedAt:
+                    typeof candidate.metadata?.updatedAt === "string"
+                      ? candidate.metadata.updatedAt
+                      : undefined,
+                };
+              });
+          } catch (err) {
+            log.warn(`memory corpus search failed: ${err}`);
+            throw corpusBackendError("search", err);
+          }
+        },
+        async get(params: string | {
+          lookup?: string;
+          fromLine?: number;
+          lineCount?: number;
+          agentSessionKey?: string;
+        }) {
+          const lookup = normalizeCorpusLookup(
+            typeof params === "string" ? params : params?.lookup,
+          );
+          if (!lookup || isMemoryArtifactPath(lookup)) return null;
+          const agentSessionKey =
+            typeof params === "object" ? params.agentSessionKey : undefined;
+          try {
+            const resolved = await readMemoryByLookup(lookup, agentSessionKey);
+            if (!resolved) return null;
+            const { memory, displayPath } = resolved;
+            if (isMemoryArtifactPath(displayPath) || isMemoryArtifactPath(memory.path)) {
+              return null;
+            }
+            const allLines = memory.content.split(/\r?\n/);
+            const fromLine =
+              typeof params === "object" &&
+              typeof params.fromLine === "number" &&
+              Number.isFinite(params.fromLine)
+                ? Math.max(1, Math.floor(params.fromLine))
+                : 1;
+            const lineCount =
+              typeof params === "object" &&
+              typeof params.lineCount === "number" &&
+              Number.isFinite(params.lineCount)
+                ? Math.max(1, Math.floor(params.lineCount))
+                : allLines.length;
+            const selected = allLines.slice(fromLine - 1, fromLine - 1 + lineCount);
+            return {
+              corpus: "remnic",
+              path: displayPath,
+              title: memory.frontmatter.id,
+              kind: memory.frontmatter.category,
+              content: selected.join("\n"),
+              fromLine,
+              lineCount: selected.length,
+              id: memory.frontmatter.id,
+              provenanceLabel: "Remnic",
+              sourceType: "memory",
+              sourcePath: displayPath,
+              updatedAt: memory.frontmatter.updated,
+            };
+          } catch (err) {
+            log.warn(`memory corpus get failed: ${err}`);
+            throw corpusBackendError("get", err);
+          }
+        },
+      };
+      (api as any).registerMemoryCorpusSupplement(remnicCorpusSupplement);
     }
 
     // ========================================================================

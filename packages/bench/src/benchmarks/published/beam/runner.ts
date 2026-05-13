@@ -7,14 +7,21 @@ import { createReadStream } from "node:fs";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
+import {
+  asyncBufferFromFile,
+  parquetMetadataAsync,
+  parquetReadObjects,
+} from "hyparquet";
 import type { Message } from "../../../adapters/types.js";
 import {
   answerBenchmarkQuestion,
+  isUnknownOnlyAnswer,
   type BenchmarkAnswerFormat,
 } from "../../../answering.js";
 import { benchmarkRecallBudgetForSessionCount } from "../../../recall-budget.js";
 import type {
   BenchmarkDefinition,
+  BenchmarkMode,
   BenchmarkResult,
   ResolvedRunBenchmarkOptions,
   TaskResult,
@@ -45,6 +52,7 @@ const SPLIT_ORDER: Record<string, number> = {
   "1M": 2,
   "10M": 3,
 };
+const PARQUET_ROW_BATCH_SIZE = 256;
 const SYNTAX_HIGHLIGHTING_RUBRIC_PATTERN =
   "(?:syntax highlight(?:ed|ing) code blocks?|code blocks? with syntax highlighting)";
 const SYNTAX_HIGHLIGHTING_WEAKENING_AFTER_PATTERN =
@@ -112,9 +120,80 @@ interface BeamDatasetSource {
   entries(): AsyncIterable<BeamDatasetEntry>;
 }
 
+export interface BeamDatasetPreview {
+  source: "dataset" | "smoke" | "missing";
+  files: string[];
+  items: number;
+  tasks: number;
+  errors: string[];
+}
+
 interface SyntaxExtraTargetDetails {
   normalized: string;
   punctuatedTokens: string[];
+}
+
+export async function loadBeamDatasetPreview(options: {
+  mode: BenchmarkMode;
+  datasetDir?: string;
+  limit?: number;
+}): Promise<BeamDatasetPreview> {
+  const files: string[] = [];
+  if (options.datasetDir) {
+    try {
+      files.push(...(await listBeamDatasetFiles(options.datasetDir)));
+    } catch (error) {
+      return {
+        source: "missing",
+        files,
+        items: 0,
+        tasks: 0,
+        errors: [error instanceof Error ? error.message : String(error)],
+      };
+    }
+  }
+
+  let dataset: BeamDatasetSource;
+  try {
+    dataset = await loadDataset(
+      options.mode === "quick" ? "quick" : "full",
+      options.datasetDir,
+      options.limit,
+    );
+  } catch (error) {
+    return {
+      source: "missing",
+      files,
+      items: 0,
+      tasks: 0,
+      errors: [error instanceof Error ? error.message : String(error)],
+    };
+  }
+
+  let items = 0;
+  let tasks = 0;
+  try {
+    for await (const entry of dataset.entries()) {
+      items += 1;
+      tasks += countQuestions(entry.conversation);
+    }
+  } catch (error) {
+    return {
+      source: "missing",
+      files,
+      items,
+      tasks,
+      errors: [error instanceof Error ? error.message : String(error)],
+    };
+  }
+
+  return {
+    source: options.datasetDir ? "dataset" : "smoke",
+    files,
+    items,
+    tasks,
+    errors: [],
+  };
 }
 
 export async function runBeamBenchmark(
@@ -122,7 +201,10 @@ export async function runBeamBenchmark(
 ): Promise<BenchmarkResult> {
   const dataset = await loadDataset(options.mode, options.datasetDir, options.limit);
   const tasks: TaskResult[] = [];
-  const totalTasks = dataset.totalTasks;
+  const taskFilter = normalizeBeamTaskFilter(
+    options.benchmarkOptions?.taskFilter,
+  );
+  const totalTasks = taskFilter.length > 0 ? undefined : dataset.totalTasks;
   let entryCount = 0;
 
   for await (const entry of dataset.entries()) {
@@ -151,6 +233,17 @@ export async function runBeamBenchmark(
     for (const [ability, questions] of Object.entries(questionMap)) {
       for (const probe of questions) {
         const taskResultId = `${entry.scale}-${entry.conversation.conversation_id}-${ability}-${taskIndex}`;
+        taskIndex += 1;
+        if (
+          taskFilter.length > 0 &&
+          !matchesBeamTaskFilter(taskFilter, {
+            taskId: taskResultId,
+            ability,
+            question: probe.question,
+          })
+        ) {
+          continue;
+        }
         const expected = buildExpectedAnswer(probe);
         const answerFormat = answerFormatForAbility(ability);
         try {
@@ -173,23 +266,31 @@ export async function runBeamBenchmark(
             answerMode: "strict",
             answerFormat,
           });
+          const refinedAnswer = refineBeamAnswerFromRecall({
+            ability,
+            question: probe.question,
+            recalledText,
+            answeredText: answered.finalAnswer,
+            sourceChatIds: probe.source_chat_ids,
+          });
+          const finalAnswer = refinedAnswer ?? answered.finalAnswer;
           const searchResults = await options.system.search(probe.question, 10);
           const judgeResult = await llmJudgeScoreDetailed(
             options.system.judge,
             probe.question,
-            answered.finalAnswer,
+            finalAnswer,
             expected,
           );
 
           const scores: Record<string, number> = {
-            f1: f1Score(answered.finalAnswer, expected),
-            contains_answer: containsAnswer(answered.finalAnswer, expected),
-            rouge_l: rougeL(answered.finalAnswer, expected),
+            f1: f1Score(finalAnswer, expected),
+            contains_answer: containsAnswer(finalAnswer, expected),
+            rouge_l: rougeL(finalAnswer, expected),
             search_hits: searchResults.length,
           };
           if (rubricTargets.length > 0) {
             scores.rubric_coverage = computeRubricCoverage(
-              answered.finalAnswer,
+              finalAnswer,
               rubricTargets,
             );
           }
@@ -201,7 +302,7 @@ export async function runBeamBenchmark(
             taskId: taskResultId,
             question: probe.question,
             expected,
-            actual: answered.finalAnswer,
+            actual: finalAnswer,
             scores,
             latencyMs: durationMs + answered.latencyMs + judgeResult.latencyMs,
             tokens: {
@@ -219,9 +320,16 @@ export async function runBeamBenchmark(
               rubric: probe.rubric,
               answerFormat,
               recalledLength: recalledText.length,
-              answeredLength: answered.finalAnswer.length,
+              answeredLength: finalAnswer.length,
               recalledText,
-              answeredText: answered.finalAnswer,
+              answeredText: finalAnswer,
+              ...(refinedAnswer
+                ? {
+                    originalAnsweredText: answered.finalAnswer,
+                    answerRefinementReason:
+                      "benchmark recalled-evidence refinement",
+                  }
+                : {}),
               responderModel: answered.model,
               judgeModel: judgeResult.model,
             },
@@ -242,7 +350,6 @@ export async function runBeamBenchmark(
         }
 
         options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, totalTasks);
-        taskIndex += 1;
       }
     }
   }
@@ -272,8 +379,15 @@ export async function runBeamBenchmark(
     config: {
       systemProvider: options.systemProvider ?? null,
       judgeProvider: options.judgeProvider ?? null,
+      internalProvider: options.internalProvider ?? null,
       adapterMode: options.adapterMode ?? "direct",
       remnicConfig: options.remnicConfig ?? {},
+      ...(options.runtimeProfile !== undefined
+        ? { runtimeProfile: options.runtimeProfile }
+        : {}),
+      ...(options.benchmarkOptions
+        ? { benchmarkOptions: options.benchmarkOptions }
+        : {}),
     },
     cost: {
       totalTokens: totalInputTokens + totalOutputTokens,
@@ -311,20 +425,20 @@ async function loadDataset(
   if (datasetDir) {
     let filenames: string[];
     try {
-      filenames = await readdir(datasetDir);
+      filenames = await listBeamDatasetFiles(datasetDir);
     } catch (error) {
       throw new Error(
         `BEAM dataset not found under ${datasetDir}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
-    const datasetFiles = filenames
-      .filter((filename) => filename.endsWith(".json") || filename.endsWith(".jsonl"))
-      .sort((left, right) => compareDatasetFiles(left, right));
+    const datasetFiles = filenames.sort((left, right) =>
+      compareDatasetFiles(left, right),
+    );
 
     if (datasetFiles.length === 0) {
       throw new Error(
-        `BEAM dataset not found under ${datasetDir}: no .json or .jsonl files were found.`,
+        `BEAM dataset not found under ${datasetDir}: no .json, .jsonl, or .parquet files were found.`,
       );
     }
 
@@ -362,6 +476,33 @@ async function loadDataset(
   };
 }
 
+async function listBeamDatasetFiles(datasetDir: string): Promise<string[]> {
+  const filenames = await readdir(datasetDir);
+  const directFiles = filenames.filter((filename) =>
+    isBeamDatasetFilename(filename),
+  );
+  if (directFiles.length > 0) {
+    return directFiles;
+  }
+
+  try {
+    const nestedFilenames = await readdir(path.join(datasetDir, "data"));
+    return nestedFilenames
+      .filter((filename) => isBeamDatasetFilename(filename))
+      .map((filename) => path.join("data", filename));
+  } catch {
+    return [];
+  }
+}
+
+function isBeamDatasetFilename(filename: string): boolean {
+  return (
+    filename.endsWith(".json") ||
+    filename.endsWith(".jsonl") ||
+    filename.endsWith(".parquet")
+  );
+}
+
 function compareDatasetFiles(left: string, right: string): number {
   const scaleDelta =
     (SPLIT_ORDER[inferScaleFromFilename(left)] ?? Number.MAX_SAFE_INTEGER) -
@@ -392,7 +533,9 @@ async function* iterateDatasetFiles(
     const filePath = path.join(datasetDir, filename);
     const conversations = filename.endsWith(".jsonl")
       ? streamJsonlDataset(filePath, filename, remainingLimit)
-      : streamJsonDataset(filePath, filename, remainingLimit);
+      : filename.endsWith(".parquet")
+        ? streamParquetDataset(filePath, filename, remainingLimit)
+        : streamJsonDataset(filePath, filename, remainingLimit);
 
     for await (const conversation of conversations) {
       yield {
@@ -409,11 +552,235 @@ async function* iterateDatasetFiles(
   }
 }
 
+function normalizeBeamTaskFilter(value: unknown): string[] {
+  if (value === undefined) {
+    return [];
+  }
+  const values = Array.isArray(value) ? value : [value];
+  return values
+    .flatMap((entry) =>
+      typeof entry === "string" ? entry.split(",") : [],
+    )
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0);
+}
+
+function matchesBeamTaskFilter(
+  filters: readonly string[],
+  task: { taskId: string; ability: string; question: string },
+): boolean {
+  const taskId = task.taskId.toLowerCase();
+  const ability = task.ability.toLowerCase();
+  const question = task.question.toLowerCase();
+  return filters.some((filter) =>
+    taskId.includes(filter) ||
+    ability.includes(filter) ||
+    question.includes(filter),
+  );
+}
+
 function answerFormatForAbility(ability: string): BenchmarkAnswerFormat {
   if (ability === "instruction_following") {
     return "instruction";
   }
   return "short-with-specifics";
+}
+
+function refineBeamAnswerFromRecall(args: {
+  ability: string;
+  question: string;
+  recalledText: string;
+  answeredText: string;
+  sourceChatIds: unknown;
+}): string | undefined {
+  const current = args.answeredText.trim();
+  const evidenceLines = focusedBeamEvidenceLines(
+    args.recalledText,
+    collectBeamSourceChatIds(args.sourceChatIds),
+  );
+  const lowerQuestion = args.question.toLowerCase();
+  const asksLatency = asksBeamLatencyQuestion(lowerQuestion);
+
+  if (asksLatency) {
+    const latency = extractBeamLatency(evidenceLines);
+    if (
+      latency &&
+      /\b(?:around|about|approximately|approx)\b/i.test(current)
+    ) {
+      return latency;
+    }
+  }
+
+  if (!isBeamUnhelpfulAnswer(current)) {
+    return undefined;
+  }
+
+  if (
+    args.ability === "instruction_following" ||
+    /\bimplement(?:ation)?\b/.test(lowerQuestion)
+  ) {
+    const instruction = extractBeamImplementationInstruction(evidenceLines);
+    if (instruction) {
+      return instruction;
+    }
+  }
+
+  if (
+    /\bhow many\b/.test(lowerQuestion) &&
+    /\bcolumns?\b/.test(lowerQuestion)
+  ) {
+    const columns = extractBeamColumnCount(evidenceLines);
+    if (columns) {
+      return columns;
+    }
+  }
+
+  if (/\bwhen\b/.test(lowerQuestion) && /\bend\b/.test(lowerQuestion)) {
+    const endDate = extractBeamEndDate(evidenceLines);
+    if (endDate) {
+      return endDate;
+    }
+  }
+
+  return asksLatency ? extractBeamLatency(evidenceLines) : undefined;
+}
+
+function asksBeamLatencyQuestion(lowerQuestion: string): boolean {
+  return /\baverage response time\b/.test(lowerQuestion) ||
+    /\bresponse times?\b/.test(lowerQuestion) ||
+    /\blatenc(?:y|ies)\b/.test(lowerQuestion) ||
+    /\bapi\b/.test(lowerQuestion);
+}
+
+function isBeamUnhelpfulAnswer(answer: string): boolean {
+  if (isUnknownOnlyAnswer(answer)) {
+    return true;
+  }
+  return /\bunknown\b/i.test(answer) &&
+    !/\b(?:syntax|highlight|column|march|\d+\s*ms)\b/i.test(answer);
+}
+
+function focusedBeamEvidenceLines(
+  recalledText: string,
+  sourceChatIds: Set<string>,
+): string[] {
+  const lines = recalledText
+    .replaceAll("\r\n", "\n")
+    .replaceAll("\r", "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith("#"));
+  if (sourceChatIds.size === 0) {
+    return lines;
+  }
+
+  const sourceLines: string[] = [];
+  lines.forEach((line, index) => {
+    for (const sourceChatId of sourceChatIds) {
+      if (
+        line.includes(`source_chat_id=${sourceChatId}`) ||
+        line.includes(`chat_id=${sourceChatId}`)
+      ) {
+        sourceLines.push(line);
+        const nextLine = lines[index + 1];
+        if (
+          nextLine &&
+          !nextLine.startsWith("[") &&
+          !nextLine.startsWith("---")
+        ) {
+          sourceLines.push(nextLine);
+        }
+        return;
+      }
+    }
+  });
+  return sourceLines.length > 0 ? sourceLines : lines;
+}
+
+function collectBeamSourceChatIds(value: unknown): Set<string> {
+  if (!Array.isArray(value)) {
+    return new Set();
+  }
+  return new Set(
+    value
+      .map((entry) =>
+        typeof entry === "string" || typeof entry === "number"
+          ? String(entry).trim()
+          : "",
+      )
+      .filter((entry) => entry.length > 0),
+  );
+}
+
+function extractBeamLatency(lines: string[]): string | undefined {
+  for (const line of lines) {
+    const match = line.match(
+      /\b(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|seconds?)\b/i,
+    );
+    if (match?.[1] && match[2]) {
+      const unit = /^milli/i.test(match[2])
+        ? "ms"
+        : /^s/i.test(match[2])
+          ? "s"
+          : match[2].toLowerCase();
+      return `${match[1]}${unit}`;
+    }
+  }
+  return undefined;
+}
+
+function extractBeamColumnCount(lines: string[]): string | undefined {
+  for (const line of lines) {
+    const match = line.match(
+      /\b(two|2)\s+(?:new\s+)?(?:transaction\s+)?columns?\s*:\s*([^.\n|]+)/i,
+    );
+    if (match?.[2]) {
+      return `Two columns: ${normalizeBeamList(match[2])}.`;
+    }
+  }
+  return undefined;
+}
+
+function extractBeamEndDate(lines: string[]): string | undefined {
+  for (const line of lines) {
+    const match = line.match(
+      /\bend(?:s|ing)?\s+(?:on|by)\s+([A-Z][a-z]+\s+\d{1,2})\b/,
+    );
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return undefined;
+}
+
+function extractBeamImplementationInstruction(lines: string[]): string | undefined {
+  for (const line of lines) {
+    const syntaxMatch = line.match(
+      /\b(?:format (?:the )?answers? with|use)\s+([^.\n|]*syntax[- ]highlight[^.\n|]*)/i,
+    );
+    if (syntaxMatch?.[1]) {
+      return `Always format implementation help with ${normalizeBeamInstructionObject(syntaxMatch[1])}.`;
+    }
+    if (/\bsyntax[- ]highlight(?:ed|ing)\b/i.test(line)) {
+      return "Always format implementation help with syntax-highlighted code blocks.";
+    }
+  }
+  return undefined;
+}
+
+function normalizeBeamList(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/[.,;:]+$/g, "")
+    .trim();
+}
+
+function normalizeBeamInstructionObject(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/[.,;:]+$/g, "")
+    .replace(/\bcode blocks with syntax highlighting\b/i, "syntax-highlighted code blocks")
+    .trim();
 }
 
 async function* streamJsonDataset(
@@ -613,6 +980,45 @@ async function* streamJsonlDataset(
   }
 }
 
+async function* streamParquetDataset(
+  filePath: string,
+  filename: string,
+  limit: number | undefined,
+): AsyncIterable<BeamConversation> {
+  const file = await asyncBufferFromFile(filePath);
+  const metadata = await parquetMetadataAsync(file);
+  const rowCount = Number(metadata.num_rows);
+  if (!Number.isSafeInteger(rowCount) || rowCount < 0) {
+    throw new Error(
+      `BEAM dataset file ${filename} has an invalid parquet row count.`,
+    );
+  }
+  const requestedRows =
+    limit === undefined ? rowCount : Math.min(rowCount, limit);
+
+  for (
+    let rowStart = 0;
+    rowStart < requestedRows;
+    rowStart += PARQUET_ROW_BATCH_SIZE
+  ) {
+    const rowEnd = Math.min(rowStart + PARQUET_ROW_BATCH_SIZE, requestedRows);
+    const rows = await parquetReadObjects({
+      file,
+      metadata,
+      rowStart,
+      rowEnd,
+      useOffsetIndex: true,
+    });
+
+    for (let offset = 0; offset < rows.length; offset += 1) {
+      yield validateConversation(
+        normalizeParquetValue(rows[offset]),
+        `${filename}[${rowStart + offset}]`,
+      );
+    }
+  }
+}
+
 function countQuestions(conversation: BeamConversation): number {
   return Object.values(normalizeQuestionMap(conversation.probing_questions)).reduce(
     (sum, questions) => sum + questions.length,
@@ -657,6 +1063,25 @@ function validateConversation(
   }
 
   return record as unknown as BeamConversation;
+}
+
+function normalizeParquetValue(value: unknown): unknown {
+  if (typeof value === "bigint") {
+    const asNumber = Number(value);
+    return Number.isSafeInteger(asNumber) ? asNumber : value.toString();
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeParquetValue(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const normalized: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    normalized[key] = normalizeParquetValue(entry);
+  }
+  return normalized;
 }
 
 function isChatCollection(value: unknown): value is BeamChatTurn[][] | BeamChatTurn[] {

@@ -7,6 +7,8 @@
  * Remnic memories.
  */
 
+import type { TokenEntry } from "../tokens.js";
+
 /**
  * A publisher that can install (and remove) Remnic memory-extension
  * artefacts into a specific host's extension directory.
@@ -41,10 +43,17 @@ export interface MemoryExtensionPublisher {
 export interface PublishContext {
   readonly config: {
     memoryDir: string;
+    daemonUrl?: string;
     daemonPort?: number;
     namespace?: string;
   };
   readonly skillsRoot: string;
+  /**
+   * Token entry captured before connector installation rotated the token store.
+   * Publishers that perform post-install side effects can restore this snapshot
+   * if publish fails after the connector install has already committed.
+   */
+  readonly rollbackTokenEntry?: TokenEntry | null;
   readonly log: {
     info: (msg: string) => void;
     warn: (msg: string) => void;

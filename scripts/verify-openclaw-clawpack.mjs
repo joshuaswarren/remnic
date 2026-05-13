@@ -72,6 +72,10 @@ for (const extension of packageJson.openclaw?.extensions ?? []) {
   requiredFiles.add(extension.replace(/^\.\//, ""));
 }
 
+for (const runtimeExtension of packageJson.openclaw?.runtimeExtensions ?? []) {
+  requiredFiles.add(runtimeExtension.replace(/^\.\//, ""));
+}
+
 for (const requiredFile of requiredFiles) {
   if (!files.has(requiredFile)) {
     fail(`${packageJson.name}@${packageJson.version} packlist is missing ${requiredFile}`);

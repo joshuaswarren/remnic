@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { log } from "./logger.js";
@@ -64,7 +62,8 @@ function candidateRoots(): string[] {
   });
 }
 
-function resolvePromptPath(): string | null {
+async function resolvePromptPath(): Promise<string | null> {
+  const { existsSync } = await import("node:fs");
   for (const root of candidateRoots()) {
     const candidate = path.join(root, PROMPT_RELATIVE_PATH);
     if (existsSync(candidate)) {
@@ -75,9 +74,10 @@ function resolvePromptPath(): string | null {
 }
 
 export async function loadDaySummaryPrompt(): Promise<string> {
-  const promptPath = resolvePromptPath();
+  const promptPath = await resolvePromptPath();
   if (promptPath) {
     try {
+      const { readFile } = await import("node:fs/promises");
       const raw = await readFile(promptPath, "utf-8");
       // CRLF-compatible regex: allow \r\n or \n line endings
       const match = raw.match(/```(?:[a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)\r?\n```/);

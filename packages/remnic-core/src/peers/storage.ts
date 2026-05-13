@@ -409,7 +409,7 @@ function parsePeerFrontmatter(raw: string): ParsedFrontmatter {
   // Frontmatter must begin with a `---` line. We tolerate a leading BOM
   // and trailing newlines but otherwise require a strict, line-oriented
   // YAML subset of `key: value` pairs.
-  const text = raw.replace(/^﻿/, "");
+  const text = raw.replace(/^\uFEFF/, "");
   if (!text.startsWith("---")) {
     throw new Error("peer file is missing YAML frontmatter delimiter");
   }

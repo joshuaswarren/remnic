@@ -15,6 +15,14 @@ const ISO_UTC_TIMESTAMP_RE =
 const ISO_OFFSET_TIMESTAMP_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
+const FLEXIBLE_ISO_TIMESTAMP_RE =
+  /^(\d{4})-(\d{2})-(\d{2})(?:[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(?:[Zz]|([+-])(\d{2}):(\d{2}))?)?$/;
+
+function isoDaysInMonth(year: number, month: number): number {
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  return [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0;
+}
+
 /**
  * Validate the date/time components of an ISO timestamp string.
  * Catches overflowed dates like Feb 31 that `Date.parse` silently normalizes.
@@ -34,9 +42,7 @@ function validateDateComponents(isoString: string): boolean {
   if (m < 1 || m > 12) return false;
   if (d < 1 || d > 31) return false;
   if (h > 23 || min > 59 || s > 59) return false;
-  // Validate day for the specific month (using Date(y, m, 0) to get days).
-  const daysInMonth = new Date(y, m, 0).getDate();
-  if (d > daysInMonth) return false;
+  if (d > isoDaysInMonth(y, m)) return false;
   return true;
 }
 
@@ -105,4 +111,54 @@ export function parseIsoOffsetTimestamp(value: string): number | null {
     if (roundTrip !== normalizeUtcForComparison(value)) return null;
   }
   return ts;
+}
+
+/**
+ * Benchmark/adapter parser — accepts ISO date-only values plus reduced
+ * precision date-times used by public benchmark fixtures. Returns milliseconds
+ * since epoch, or `null` if invalid.
+ */
+export function parseFlexibleIsoTimestamp(value: string): number | null {
+  const match = typeof value === "string"
+    ? value.match(FLEXIBLE_ISO_TIMESTAMP_RE)
+    : null;
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = match[4] === undefined ? 0 : Number(match[4]);
+  const minute = match[5] === undefined ? 0 : Number(match[5]);
+  const second = match[6] === undefined ? 0 : Number(match[6]);
+  const offsetHour = match[8] === undefined ? undefined : Number(match[8]);
+  const offsetMinute = match[9] === undefined ? undefined : Number(match[9]);
+  const hasTime = match[4] !== undefined;
+  const hasOffset = offsetHour !== undefined && offsetMinute !== undefined;
+  const hasTimezone = /(?:[Zz]|[+-]\d{2}:\d{2})$/.test(value);
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > isoDaysInMonth(year, month) ||
+    (hasTime && !hasTimezone)
+  ) {
+    return null;
+  }
+  if (hasTime && (hour > 23 || minute > 59 || second > 59)) {
+    return null;
+  }
+  if (
+    hasOffset &&
+    (offsetMinute > 59 ||
+      offsetHour > 14 ||
+      (offsetHour === 14 && offsetMinute > 0))
+  ) {
+    return null;
+  }
+
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : null;
 }

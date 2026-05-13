@@ -2,7 +2,7 @@
  * Inline Source Attribution Protocol (issue #369)
  *
  * Extracted facts carry provenance inline inside the fact body, so the
- * citation survives prompt injection, copy/paste, and LLM quoting. This
+ * citation survives hostile memory text, copy/paste, and LLM quoting. This
  * complements — never replaces — the YAML frontmatter provenance stored on
  * disk.
  *

@@ -15,6 +15,7 @@
 import type { MemoryFile, MemoryFrontmatter } from "./types.js";
 import type { StorageManager } from "./storage.js";
 import { log } from "./logger.js";
+import { effectiveValidAt } from "./temporal-validity.js";
 
 /**
  * Shared normalization for supersession key components.
@@ -135,9 +136,11 @@ export function shouldSupersedeExisting(args: {
   const newEntityNorm = normalizeSupersessionKey(newEntityRef);
   if (candidateEntityNorm !== newEntityNorm) return null;
 
-  // Must be older than the new fact — equal timestamps are ignored to avoid
-  // races within the same millisecond.
-  const candidateCreated = Date.parse(candidate.created);
+  // Must be older than the new fact's effective validity start — equal
+  // timestamps are ignored to avoid races within the same millisecond. When
+  // replay/import supplies source time, valid_at must drive ordering instead
+  // of wall-clock persistence time.
+  const candidateCreated = Date.parse(effectiveValidAt(candidate));
   const newCreated = Date.parse(newCreatedAt);
   if (!Number.isFinite(candidateCreated) || !Number.isFinite(newCreated)) return null;
   if (candidateCreated >= newCreated) return null;
@@ -162,6 +165,55 @@ export function shouldSupersedeExisting(args: {
 
 function normalizeValue(v: string): string {
   return v.trim().toLowerCase();
+}
+
+async function expireChildChunksForSupersededParent(args: {
+  storage: StorageManager;
+  allCandidates: MemoryFile[];
+  parentId: string;
+  newMemoryId: string;
+  supersededAt: string;
+  invalidAt?: string;
+}): Promise<void> {
+  const processedChunkIds = new Set<string>();
+  const chunks = args.allCandidates.filter(
+    (candidate) => candidate.frontmatter.parentId === args.parentId,
+  );
+
+  for (const chunk of chunks) {
+    const chunkKey = chunk.frontmatter.id ?? chunk.path;
+    if (processedChunkIds.has(chunkKey)) continue;
+
+    try {
+      const freshChunk = await args.storage.readMemoryByPath(chunk.path);
+      if (!freshChunk) continue;
+      processedChunkIds.add(chunkKey);
+      const freshStatus = freshChunk.frontmatter.status ?? "active";
+      if (freshStatus !== "active" || freshChunk.frontmatter.supersededBy) continue;
+
+      await args.storage.writeMemoryFrontmatter(
+        freshChunk,
+        {
+          status: "superseded",
+          supersededBy: args.newMemoryId,
+          supersededAt: args.supersededAt,
+          updated: args.supersededAt,
+          ...(args.invalidAt && !freshChunk.frontmatter.invalid_at
+            ? { invalid_at: args.invalidAt }
+            : {}),
+        },
+        {
+          actor: "temporal-supersession",
+          reasonCode: "structured-attribute-update-child-chunk",
+          relatedMemoryIds: [args.newMemoryId, args.parentId],
+        },
+      );
+    } catch (err) {
+      log.warn(
+        `temporal-supersession: failed to expire child chunk ${chunk.frontmatter.id} for parent ${args.parentId}: ${err}`,
+      );
+    }
+  }
 }
 
 export interface TemporalSupersessionResult {
@@ -210,23 +262,26 @@ export async function applyTemporalSupersession(args: {
     return empty;
   }
 
-  // Finding 1 fix: use the on-disk `frontmatter.created` of the newly-written
-  // memory rather than a wall-clock timestamp sampled after `writeMemory`
-  // returns.  In concurrent writers the two can differ by enough to cause
-  // wrong-direction supersession.  If the memory is not yet visible in the
-  // cache (edge case during fast concurrent writes) fall back to args.createdAt.
+  // Finding 1 fix: use the on-disk effective validity start of the
+  // newly-written memory rather than a wall-clock timestamp sampled after
+  // `writeMemory` returns.  In concurrent writers the two can differ by enough
+  // to cause wrong-direction supersession.  If source replay/import provided
+  // valid_at, it must drive ordering; otherwise created remains the legacy
+  // fallback.  If the memory is not yet visible in the cache (edge case during
+  // fast concurrent writes) fall back to args.createdAt.
   //
   // PR #402 round-12 (Finding Uyui): on the hash-dedup early-return path the
   // caller supplies the OLD matching fact's id as `newMemoryId` (no new file is
   // written).  That makes `newMemoryFile.frontmatter.created` an arbitrarily
   // old timestamp.  When `args.useCallerTimestamp` is set the caller explicitly
-  // opts out of the persisted-timestamp lookup so `args.createdAt` (the current
-  // wall-clock) is used directly, keeping ordering correct regardless of how
-  // old the matching fact is.
+  // opts out of the persisted-timestamp lookup so `args.createdAt` (the
+  // incoming event time: source valid_at when present, otherwise wall-clock) is
+  // used directly, keeping ordering correct regardless of how old the matching
+  // fact is.
   const newMemoryFile = hotMemories.find((m) => m.frontmatter.id === args.newMemoryId);
   const persistedCreatedAt = args.useCallerTimestamp
     ? args.createdAt
-    : (newMemoryFile?.frontmatter.created ?? args.createdAt);
+    : (newMemoryFile ? effectiveValidAt(newMemoryFile.frontmatter) : args.createdAt);
 
   const supersededIds: string[] = [];
   const matchedKeys = new Set<string>();
@@ -397,6 +452,14 @@ export async function applyTemporalSupersession(args: {
       if (wrote) {
         supersededIds.push(memory.frontmatter.id);
         for (const key of decision.matchedKeys) matchedKeys.add(key);
+        await expireChildChunksForSupersededParent({
+          storage: args.storage,
+          allCandidates,
+          parentId: fresh.frontmatter.id,
+          newMemoryId: args.newMemoryId,
+          supersededAt,
+          invalidAt: invalidAtPatch ?? fresh.frontmatter.invalid_at,
+        });
       }
     } catch (err) {
       log.warn(

@@ -124,6 +124,25 @@ test("parseConfig modelSource=gateway still honors an explicit openaiApiKey over
   }
 });
 
+test("parseConfig localLlmTimeoutMs accepts CLI-style numeric strings for gateway fallback", () => {
+  const cfg = parseConfig({ localLlmTimeoutMs: "600000" });
+  assert.equal(cfg.localLlmTimeoutMs, 600_000);
+});
+
+test("parseConfig localLlmTimeoutMs clamps invalid values to a positive timeout", () => {
+  assert.equal(parseConfig({ localLlmTimeoutMs: 0 }).localLlmTimeoutMs, 1);
+  assert.equal(parseConfig({ localLlmTimeoutMs: Number.NaN }).localLlmTimeoutMs, 180_000);
+});
+test("parseConfig extractionTelemetryPrefilterEnabled defaults on and accepts string false", () => {
+  assert.equal(parseConfig({}).extractionTelemetryPrefilterEnabled, true);
+  assert.equal(parseConfig({ extractionTelemetryPrefilterEnabled: "false" }).extractionTelemetryPrefilterEnabled, false);
+});
+
+test("parseConfig lcmTelemetryPrefilterEnabled defaults on and accepts string false", () => {
+  assert.equal(parseConfig({}).lcmTelemetryPrefilterEnabled, true);
+  assert.equal(parseConfig({ lcmTelemetryPrefilterEnabled: "false" }).lcmTelemetryPrefilterEnabled, false);
+});
+
 test("parseConfig keeps explicit cue recall opt-in and budgets configurable", () => {
   const defaults = parseConfig({});
   assert.equal(defaults.explicitCueRecallEnabled, false);

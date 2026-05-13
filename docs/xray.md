@@ -5,8 +5,8 @@ unified per-result attribution snapshot for recalls. After any recall,
 an X-ray capture tells you **exactly why each memory surfaced** — which
 retrieval tier served it, how its score decomposed, every filter it
 passed (and the first filter that would have rejected it), any graph
-path traversed, the audit-log entry id, and the character budget the
-final payload consumed.
+path traversed, the audit-log entry id, memory provenance and safety
+context, and the character budget the final payload consumed.
 
 Most competitors treat retrieval as a black box. Remnic X-ray makes the
 whole ladder legible in one snapshot that is rendered identically by
@@ -73,11 +73,17 @@ budget: 5284 / 8192 chars
 [1] decisions/recall-cache-ttl — served-by=direct-answer
     path: decisions/recall-cache-ttl.md
     score: final=0.8912 importance=0.6000 tier_prior=0.3000
+    provenance: source=conversation created=2026-04-18T21:13:00.000Z scope=namespace:alice-project-origin-ab12cd34 confidence=0.94 stale=false corrected=false safe=true
+    retrieval-reason: served-by=direct-answer
+    context-scopes: repo, work
     admitted-by: namespace-scope, status-active, trust-zone, token-overlap
     audit-entry: audit-0e4a1b
 [2] decisions/recall-cache-eviction — served-by=hybrid
     path: decisions/recall-cache-eviction.md
     score: final=0.7204 vector=0.5812 bm25=0.4733 mmr_penalty=0.0400
+    provenance: source=conversation created=2026-03-28T14:02:00.000Z scope=namespace:alice-project-origin-ab12cd34 confidence=0.83 stale=true corrected=superseded safe=false
+    retrieval-reason: served-by=hybrid
+    safety: requires-review (status=superseded, stale=true)
     admitted-by: namespace-scope, status-active, trust-zone, token-overlap, mmr-diversify
     audit-entry: audit-0e4a1c
 [3] notes/perf-regression-2026-03 — served-by=graph
@@ -113,10 +119,10 @@ envelope.
 
 The canonical v1 shape lives in
 [`packages/remnic-core/src/recall-xray.ts`](../packages/remnic-core/src/recall-xray.ts).
-A stable `schemaVersion: "1"` tag on every snapshot (line 118) lets
-downstream consumers version-gate their parsers.
+A stable `schemaVersion: "1"` tag on every snapshot lets downstream
+consumers version-gate their parsers.
 
-### `RecallXraySnapshot` (lines 116-142)
+### `RecallXraySnapshot`
 
 ```ts
 interface RecallXraySnapshot {
@@ -134,7 +140,7 @@ interface RecallXraySnapshot {
 }
 ```
 
-### `RecallXrayResult` (lines 80-96)
+### `RecallXrayResult`
 
 ```ts
 interface RecallXrayResult {
@@ -153,8 +159,38 @@ interface RecallXrayResult {
   auditEntryId?: string;
   admittedBy: string[];      // filters the candidate passed
   rejectedBy?: string;       // first filter that would have rejected
+  provenance?: RetrievedMemoryProvenance;
 }
 ```
+
+### `RetrievedMemoryProvenance`
+
+```ts
+interface RetrievedMemoryProvenance {
+  source: string;                 // where the memory came from
+  created?: string;
+  updated?: string;
+  namespace?: string;
+  scope: string;                  // concrete retrieval scope
+  userContextScopes: UserContextScope[];
+  retrievalReason: string;        // why this result surfaced now
+  confidence: number;             // [0, 1]
+  stale: boolean;
+  corrected: boolean;
+  correctionState: "none" | "correction" | "superseded" | "disputed" | "forgotten";
+  safeToUse: boolean;
+  safety: "safe" | "requires-review" | "blocked";
+  safetyReasons: string[];
+}
+```
+
+Provenance is built from memory frontmatter already loaded by the retrieval
+ranking path. It records source, creation/update timestamps, namespace scope,
+retrieval reason, confidence, stale/correction state, and whether the memory is
+safe to use in the current context. User-aware scopes come from explicit
+in-memory metadata when present and from existing scope tags such as `work`,
+`repo`, `private`, or `do-not-use-outside-this-context`; the concrete namespace
+still remains the always-present retrieval scope.
 
 When the graph subsystem (`servedBy: "graph"`) produced a result, the X-ray
 optionally surfaces a `graphEdgeConfidences` array aligned with `graphPath`:

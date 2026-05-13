@@ -4,10 +4,15 @@ import type {
   ProviderFactoryConfig,
 } from "./types.js";
 import { createAnthropicProvider } from "./anthropic.js";
+import { createCodexCliProvider } from "./codex-cli.js";
 import { createLiteLlmProvider } from "./litellm.js";
 import { createLocalLlmProvider } from "./local-llm.js";
 import { createOllamaProvider } from "./ollama.js";
 import { createOpenAiCompatibleProvider } from "./openai-compatible.js";
+
+export interface DiscoverAllProvidersOptions {
+  includeCodexCli?: boolean;
+}
 
 export function createProvider(config: ProviderFactoryConfig): LlmProvider {
   switch (config.provider) {
@@ -21,6 +26,8 @@ export function createProvider(config: ProviderFactoryConfig): LlmProvider {
       return createLiteLlmProvider(config);
     case "local-llm":
       return createLocalLlmProvider(config);
+    case "codex-cli":
+      return createCodexCliProvider(config);
     default: {
       const exhaustive: never = config;
       throw new Error(`Unknown provider: ${JSON.stringify(exhaustive)}`);
@@ -28,8 +35,13 @@ export function createProvider(config: ProviderFactoryConfig): LlmProvider {
   }
 }
 
-export async function discoverAllProviders(): Promise<ProviderDiscoveryResult[]> {
-  const discoveryTargets = [
+export async function discoverAllProviders(
+  options: DiscoverAllProvidersOptions = {},
+): Promise<ProviderDiscoveryResult[]> {
+  const discoveryTargets: Array<{
+    provider: ProviderDiscoveryResult["provider"];
+    create: () => LlmProvider;
+  }> = [
     {
       provider: "ollama" as const,
       create: () => createOllamaProvider({ provider: "ollama", model: "probe" }),
@@ -52,6 +64,18 @@ export async function discoverAllProviders(): Promise<ProviderDiscoveryResult[]>
         }),
     },
   ];
+
+  if (options.includeCodexCli ?? true) {
+    discoveryTargets.push({
+      provider: "codex-cli" as const,
+      create: () =>
+        createCodexCliProvider({
+          provider: "codex-cli",
+          model: "gpt-5.5",
+          reasoningEffort: "xhigh",
+        }),
+    });
+  }
 
   const results: ProviderDiscoveryResult[] = [];
   for (const target of discoveryTargets) {

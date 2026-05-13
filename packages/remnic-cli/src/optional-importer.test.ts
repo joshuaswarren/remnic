@@ -7,18 +7,20 @@ import {
   isSupportedImporterName,
   loadImporterModule,
 } from "./optional-importer.js";
+import type { SupportedImporterName } from "./optional-importer.js";
 
 describe("optional-importer loader", () => {
   beforeEach(() => {
     clearImporterModuleCacheForTesting();
   });
 
-  it("SUPPORTED_IMPORTERS lists the four canonical sources in a stable order", () => {
+  it("SUPPORTED_IMPORTERS lists the five canonical sources in a stable order", () => {
     assert.deepEqual([...SUPPORTED_IMPORTERS], [
       "chatgpt",
       "claude",
       "gemini",
       "mem0",
+      "supermemory",
     ]);
   });
 
@@ -29,26 +31,16 @@ describe("optional-importer loader", () => {
     assert.equal(isSupportedImporterName("chatgpt "), false);
   });
 
-  // All four slice packages (chatgpt, claude, gemini, mem0) are installed
-  // alongside the CLI once the import series lands, so no durable
-  // "missing package" fixture remains inside the `remnic/import-*`
-  // family. The loader still raises a clear install hint when the user
-  // asks for an importer whose package is absent at runtime; we
-  // exercise that branch via a non-existent name that satisfies the
-  // SupportedImporterName type at the call site.
-  //
-  // Keeping "claude" here is still valid during the rollout window
-  // because PR 3 has not yet been merged from this branch's POV — the
-  // merged `main` will only see this once PR 3 lands. If this test
-  // destabilizes, flip it to another not-yet-shipped adapter.
   it("loading a missing importer throws a user-facing install hint", async () => {
+    const missing = "missing-fixture" as SupportedImporterName;
+
     await assert.rejects(
-      () => loadImporterModule("gemini"),
+      () => loadImporterModule(missing),
       (err: Error) => {
         // Install hint must include the package name and an install
         // command the user can actually run — not a raw MODULE_NOT_FOUND.
         assert.ok(
-          err.message.includes("@remnic/import-gemini"),
+          err.message.includes("@remnic/import-missing-fixture"),
           `expected package name in message, got: ${err.message}`,
         );
         assert.ok(
@@ -62,10 +54,12 @@ describe("optional-importer loader", () => {
   });
 
   it("loader caches negative results so repeated calls do not re-import", async () => {
+    const missing = "missing-fixture" as SupportedImporterName;
+
     // First call populates the cache with a null.
-    await assert.rejects(() => loadImporterModule("claude"));
+    await assert.rejects(() => loadImporterModule(missing));
     // Second call must still throw — but the cache hit path is covered
     // exclusively by the branch that rejects from cached null.
-    await assert.rejects(() => loadImporterModule("claude"));
+    await assert.rejects(() => loadImporterModule(missing));
   });
 });

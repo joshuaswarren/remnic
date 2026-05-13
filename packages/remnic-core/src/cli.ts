@@ -90,6 +90,11 @@ import { GraphDashboardServer, type DashboardStatus } from "./dashboard-runtime.
 import { EngramAccessService } from "./access-service.js";
 import { EngramAccessHttpServer } from "./access-http.js";
 import {
+  buildActionConfidenceInputFromOptions,
+  evaluateActionConfidence,
+  renderActionConfidenceText,
+} from "./action-confidence.js";
+import {
   resolveAgentAccessAuthToken,
   type ResolveSecretRefFn,
 } from "./resolve-auth-token.js";
@@ -6673,6 +6678,35 @@ export function registerCli(
           });
           console.log(JSON.stringify(report, null, 2));
           console.log("OK");
+        });
+
+      cmd
+        .command("action-confidence")
+        .description("Evaluate the read-only ask/draft/act/refuse/escalate advisory policy")
+        .option("--action <text>", "Intended action being evaluated")
+        .option("--confidence <0-1>", "Current confidence score")
+        .option("--risk <level>", "Risk: low, medium, high, irreversible, restricted")
+        .option("--context <state>", "Context readiness: none, partial, sufficient")
+        .option("--rule <kinds>", "Comma-separated user rules: ask-before, do-not-use-outside-this-context, never, requires-escalation")
+        .option("--current-scope <scopes>", "Comma-separated current context scopes")
+        .option("--memory-scope <scopes>", "Comma-separated scopes on the supplied memory")
+        .option("--stale", "Treat the supplied memory as stale")
+        .option("--corrected", "Treat the supplied memory as corrected")
+        .option("--unsafe", "Treat the supplied memory as blocked by safety metadata")
+        .option("--json", "Emit machine-readable JSON")
+        .action(async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as Record<string, unknown>;
+          try {
+            const result = evaluateActionConfidence(buildActionConfidenceInputFromOptions(options));
+            if (options.json === true) {
+              console.log(JSON.stringify(result, null, 2));
+            } else {
+              process.stdout.write(renderActionConfidenceText(result));
+            }
+          } catch (err) {
+            console.error(`action-confidence: ${(err as Error).message}`);
+            process.exitCode = 2;
+          }
         });
 
       cmd

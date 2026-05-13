@@ -8,7 +8,7 @@
  * Used when `remnic daemon install` has been run and the daemon is already active.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 
@@ -100,7 +100,7 @@ function configPathCandidates(): string[] {
 
 function fileExists(filePath: string): boolean {
   try {
-    return statSync(filePath).isFile();
+    return fs.statSync(filePath).isFile();
   } catch {
     return false;
   }
@@ -118,7 +118,7 @@ function isDaemonRunning(): boolean {
     path.join(resolveHomeDir(), ".engram", "server.pid"),
   ]) {
     try {
-      const pid = parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+      const pid = parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
       process.kill(pid, 0);
       return true;
     } catch {
@@ -183,9 +183,9 @@ function readDaemonPort(): number {
   if (envPort !== undefined) return envPort;
 
   for (const p of configPathCandidates()) {
-    if (!existsSync(p)) continue;
+    if (!fs.existsSync(p)) continue;
     try {
-      const raw = JSON.parse(readFileSync(p, "utf8"));
+      const raw = JSON.parse(fs.readFileSync(p, "utf8"));
       const configPort = coerceDaemonPort(raw.server?.port);
       if (configPort !== undefined) return configPort;
     } catch {
@@ -248,9 +248,9 @@ function loadAnyToken(): string {
     path.join(resolveHomeDir(), ".engram", "tokens.json"),
   ];
   for (const tokensPath of tokenPaths) {
-    if (!existsSync(tokensPath)) continue;
+    if (!fs.existsSync(tokensPath)) continue;
     try {
-      const store = JSON.parse(readFileSync(tokensPath, "utf8"));
+      const store = JSON.parse(fs.readFileSync(tokensPath, "utf8"));
       const tokens = Array.isArray(store.tokens) ? store.tokens : [];
       if (tokens.length > 0 && tokens[0].token) return tokens[0].token;
       if (typeof store === "object" && store !== null) {
@@ -270,8 +270,8 @@ function loadAnyToken(): string {
   }
   try {
     for (const p of configPathCandidates()) {
-      if (existsSync(p)) {
-        const raw = JSON.parse(readFileSync(p, "utf8"));
+      if (fs.existsSync(p)) {
+        const raw = JSON.parse(fs.readFileSync(p, "utf8"));
         if (raw.server?.authToken) return raw.server.authToken;
       }
     }

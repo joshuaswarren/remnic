@@ -79,10 +79,16 @@ function captureFetchBodies(): {
   };
 }
 
-async function runOneChatCompletion(client: LocalLlmClient): Promise<void> {
+async function runOneChatCompletion(
+  client: LocalLlmClient,
+  operation: string | null = "extraction",
+  options: { forceDisableThinking?: boolean } = {},
+): Promise<void> {
   await client.chatCompletion(
     [{ role: "user", content: "hello" }],
-    { maxTokens: 16 },
+    operation === null
+      ? { maxTokens: 16, ...options }
+      : { maxTokens: 16, operation, ...options },
   );
 }
 
@@ -99,6 +105,46 @@ test("disableThinking injects chat_template_kwargs for lmstudio backend (#548)",
   assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
 });
 
+test("disableThinking injects chat_template_kwargs for extraction judge (#979)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "extraction-judge");
+  } finally {
+    restore();
+  }
+  assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("disableThinking injects chat_template_kwargs for contradiction judge (#979)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "contradiction-judge");
+  } finally {
+    restore();
+  }
+  assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("disableThinking injects chat_template_kwargs for extraction enrichment (#979)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "contradiction_verification");
+    await runOneChatCompletion(client, "link_suggestion");
+    await runOneChatCompletion(client, "memory_summarization");
+  } finally {
+    restore();
+  }
+  assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
+  assert.deepEqual(bodies[1]?.chat_template_kwargs, { enable_thinking: false });
+  assert.deepEqual(bodies[2]?.chat_template_kwargs, { enable_thinking: false });
+});
+
 test("disableThinking injects chat_template_kwargs for vllm backend (#548)", async () => {
   const client = new LocalLlmClient(createConfig());
   primeClient(client, { thinking: true, detected: "vllm" });
@@ -109,6 +155,82 @@ test("disableThinking injects chat_template_kwargs for vllm backend (#548)", asy
     restore();
   }
   assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("disableThinking injects chat_template_kwargs for llama.cpp backend (#979)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "llamacpp" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client);
+  } finally {
+    restore();
+  }
+  assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("disableThinking injects chat_template_kwargs for day summaries (#979)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "day_summary");
+  } finally {
+    restore();
+  }
+  assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("disableThinking injects chat_template_kwargs for hourly summaries (#979)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "hourly_summary");
+    await runOneChatCompletion(client, "hourly_summary_extended");
+  } finally {
+    restore();
+  }
+  assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
+  assert.deepEqual(bodies[1]?.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("disableThinking leaves consolidation thinking enabled (#979)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "semantic-consolidation");
+  } finally {
+    restore();
+  }
+  assert.equal("chat_template_kwargs" in (bodies[0] ?? {}), false);
+});
+
+test("forceDisableThinking suppresses thinking for fast-tier consolidation (#979)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: false, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, "semantic-consolidation", {
+      forceDisableThinking: true,
+    });
+  } finally {
+    restore();
+  }
+  assert.deepEqual(bodies[0]?.chat_template_kwargs, { enable_thinking: false });
+});
+
+test("disableThinking leaves untagged operations thinking-enabled (#979)", async () => {
+  const client = new LocalLlmClient(createConfig());
+  primeClient(client, { thinking: true, detected: "lmstudio" });
+  const { restore, bodies } = captureFetchBodies();
+  try {
+    await runOneChatCompletion(client, null);
+  } finally {
+    restore();
+  }
+  assert.equal("chat_template_kwargs" in (bodies[0] ?? {}), false);
 });
 
 test("disableThinking fails open for generic backend — no kwarg sent (#548 Codex P1)", async () => {

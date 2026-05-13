@@ -166,7 +166,7 @@ test("discoverAllProviders skips unavailable endpoints and returns successful di
   });
 
   try {
-    const discovered = await discoverAllProviders();
+    const discovered = await discoverAllProviders({ includeCodexCli: false });
     assert.deepEqual(
       discovered.map((entry) => entry.provider),
       ["ollama", "openai"],

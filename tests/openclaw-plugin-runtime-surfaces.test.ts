@@ -21,7 +21,7 @@ const REQUIRED_RUNTIME_SURFACE_KEYS = [
   "activeRecallAllowedChatTypes",
   "activeRecallQueryMode",
   "activeRecallPromptStyle",
-  "activeRecallPromptOverride",
+  "activeRecallCustomInstruction",
   "activeRecallPromptAppend",
   "activeRecallMaxSummaryChars",
   "activeRecallRecentUserTurns",
@@ -45,6 +45,24 @@ const OPENCLAW_MANIFEST_PATHS = [
   "openclaw.plugin.json",
   "packages/plugin-openclaw/openclaw.plugin.json",
   "packages/shim-openclaw-engram/openclaw.plugin.json",
+];
+const OPENCLAW_PACKAGE_EXPECTATIONS = [
+  {
+    packageJsonPath: "packages/plugin-openclaw/package.json",
+    name: "@remnic/plugin-openclaw",
+    install: {
+      clawhubSpec: "clawhub:@remnic/plugin-openclaw",
+      npmSpec: "@remnic/plugin-openclaw",
+    },
+  },
+  {
+    packageJsonPath: "packages/shim-openclaw-engram/package.json",
+    name: "@joshuaswarren/openclaw-engram",
+    install: {
+      clawhubSpec: "clawhub:@remnic/plugin-openclaw",
+      npmSpec: "@joshuaswarren/openclaw-engram",
+    },
+  },
 ];
 const TOOL_SOURCE_PATHS = [
   "src/tools.ts",
@@ -111,6 +129,35 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
       readSourceToolNames(),
       "OpenClaw 2026.5 rejects plugin tools not declared in openclaw.plugin.json#contracts.tools",
     );
+  });
+
+  test(`${manifestPath} keeps runtime declarations on supported manifest surfaces`, () => {
+    const manifest = readManifest(manifestPath);
+
+    assert.deepEqual(manifest.commandAliases, [
+      {
+        name: "remnic",
+        kind: "runtime-slash",
+        cliCommand: "remnic",
+      },
+    ]);
+    assert.deepEqual(manifest.activation, {
+      onCommands: ["remnic"],
+      onCapabilities: ["tool", "hook"],
+    });
+    for (const deprecatedKey of [
+      "commands",
+      "hooks",
+      "memoryCapabilities",
+      "memoryPromptSections",
+      "services",
+    ]) {
+      assert.equal(
+        deprecatedKey in (manifest.contracts ?? {}),
+        false,
+        `${deprecatedKey} is no longer part of OpenClaw PluginManifestContracts`,
+      );
+    }
   });
 
   test(`${manifestPath} declares pre-runtime auth metadata for OpenAI-backed memory extraction`, () => {
@@ -324,6 +371,33 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
     assert.equal(briefing.properties?.maxFollowups?.maximum, 10);
     assert.deepEqual(briefing.properties?.calendarSource?.type, ["string", "null"]);
     assert.deepEqual(briefing.properties?.saveDir?.type, ["string", "null"]);
+  });
+}
+
+for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
+  test(`${expectation.name} declares OpenClaw 2026.5.12-beta.4 package install metadata`, () => {
+    const packageJson = readPackageJson(expectation.packageJsonPath);
+    const openclaw = packageJson.openclaw ?? {};
+
+    assert.equal(packageJson.name, expectation.name);
+    assert.deepEqual(openclaw.extensions, ["./dist/index.js"]);
+    assert.deepEqual(
+      openclaw.runtimeExtensions,
+      ["./dist/index.js"],
+      "OpenClaw 2026.5.12+ package discovery should have an explicit built runtime entrypoint",
+    );
+    assert.deepEqual(openclaw.compat, {
+      pluginApi: ">=2026.4.8",
+    });
+    assert.deepEqual(openclaw.build, {
+      openclawVersion: "2026.5.12-beta.4",
+      pluginSdkVersion: "2026.5.12-beta.4",
+    });
+    assert.deepEqual(openclaw.install, {
+      ...expectation.install,
+      defaultChoice: "clawhub",
+      minHostVersion: ">=2026.4.8",
+    });
   });
 }
 

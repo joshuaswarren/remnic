@@ -41,17 +41,7 @@
 import {
   createHash,
 } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 
 import { log } from "../logger.js";
@@ -198,7 +188,7 @@ export function materializeForNamespace(
     // Keep the `warn` level only when the dir exists but lacks a sentinel,
     // which is the "user hand-curated layout, don't overwrite" case that
     // genuinely warrants attention.
-    if (existsSync(memoriesDir)) {
+    if (fs.existsSync(memoriesDir)) {
       logger.warn(
         `sentinel ${SENTINEL_FILE} missing in ${memoriesDir}; skipping materialization to preserve hand-edits`,
       );
@@ -223,7 +213,7 @@ export function materializeForNamespace(
   // no-op because the sentinel read above already succeeded, but a defensive
   // mkdirSync protects against a race where the dir was removed between the
   // sentinel read and the first write.
-  mkdirSync(memoriesDir, { recursive: true });
+  fs.mkdirSync(memoriesDir, { recursive: true });
 
   // ── Render ─────────────────────────────────────────────────────────────
   const memories = [...options.memories];
@@ -326,7 +316,7 @@ export function materializeForNamespace(
       path.join(memoriesDir, "raw_memories.md"),
       ...rolloutFiles.map((r) => path.join(memoriesDir, ROLLOUT_SUBDIR, r.name)),
     ];
-    const allPresent = requiredFiles.every((f) => existsSync(f));
+    const allPresent = requiredFiles.every((f) => fs.existsSync(f));
     if (allPresent) {
       logger.debug?.(`no-op materialization for namespace=${namespace} (hash unchanged)`);
       return {
@@ -370,14 +360,14 @@ export function materializeForNamespace(
   const TMP_STALE_MS = 60 * 60 * 1000;
   const wallClockMs = Date.now();
   try {
-    for (const entry of readdirSync(memoriesDir, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(memoriesDir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       if (!entry.name.startsWith(TMP_DIR)) continue;
       const stalePath = path.join(memoriesDir, entry.name);
       try {
-        const stat = statSync(stalePath);
+        const stat = fs.statSync(stalePath);
         if (wallClockMs - stat.mtimeMs < TMP_STALE_MS) continue;
-        rmSync(stalePath, { recursive: true, force: true });
+        fs.rmSync(stalePath, { recursive: true, force: true });
       } catch {
         // ignore — another concurrent run may own it, or we lack perms
       }
@@ -385,22 +375,22 @@ export function materializeForNamespace(
   } catch {
     // ignore — dir may not exist yet
   }
-  mkdirSync(tmpDir, { recursive: true });
-  mkdirSync(path.join(tmpDir, ROLLOUT_SUBDIR), { recursive: true });
+  fs.mkdirSync(tmpDir, { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, ROLLOUT_SUBDIR), { recursive: true });
 
   const filesWritten: string[] = [];
 
-  writeFileSync(path.join(tmpDir, "memory_summary.md"), memorySummary);
+  fs.writeFileSync(path.join(tmpDir, "memory_summary.md"), memorySummary);
   filesWritten.push("memory_summary.md");
 
-  writeFileSync(path.join(tmpDir, "MEMORY.md"), memoryMd);
+  fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), memoryMd);
   filesWritten.push("MEMORY.md");
 
-  writeFileSync(path.join(tmpDir, "raw_memories.md"), rawMemories);
+  fs.writeFileSync(path.join(tmpDir, "raw_memories.md"), rawMemories);
   filesWritten.push("raw_memories.md");
 
   for (const rollout of rolloutFiles) {
-    writeFileSync(path.join(tmpDir, ROLLOUT_SUBDIR, rollout.name), rollout.body);
+    fs.writeFileSync(path.join(tmpDir, ROLLOUT_SUBDIR, rollout.name), rollout.body);
     filesWritten.push(path.join(ROLLOUT_SUBDIR, rollout.name));
   }
 
@@ -410,11 +400,11 @@ export function materializeForNamespace(
   for (const rel of ["memory_summary.md", "MEMORY.md", "raw_memories.md"]) {
     const src = path.join(tmpDir, rel);
     const dest = path.join(memoriesDir, rel);
-    renameSync(src, dest);
+    fs.renameSync(src, dest);
   }
 
   const destRolloutsDir = path.join(memoriesDir, ROLLOUT_SUBDIR);
-  mkdirSync(destRolloutsDir, { recursive: true });
+  fs.mkdirSync(destRolloutsDir, { recursive: true });
   // Only garbage-collect rollout files when the caller actually supplied a
   // `rolloutSummaries` array — otherwise we'd wipe legitimately
   // user/Codex-created recap files on every session-end run, since those
@@ -424,12 +414,12 @@ export function materializeForNamespace(
   if (rolloutsSupplied) {
     const retainedRolloutNames = new Set(rolloutFiles.map((r) => r.name));
     try {
-      for (const entry of readdirSync(destRolloutsDir, { withFileTypes: true })) {
+      for (const entry of fs.readdirSync(destRolloutsDir, { withFileTypes: true })) {
         if (!entry.isFile()) continue;
         if (!entry.name.endsWith(".md")) continue;
         if (retainedRolloutNames.has(entry.name)) continue;
         try {
-          unlinkSync(path.join(destRolloutsDir, entry.name));
+          fs.unlinkSync(path.join(destRolloutsDir, entry.name));
         } catch {
           // ignore
         }
@@ -442,7 +432,7 @@ export function materializeForNamespace(
   for (const rollout of rolloutFiles) {
     const src = path.join(tmpDir, ROLLOUT_SUBDIR, rollout.name);
     const dest = path.join(destRolloutsDir, rollout.name);
-    renameSync(src, dest);
+    fs.renameSync(src, dest);
   }
 
   // Update sentinel last so a crash leaves hash mismatched → next run rewrites.
@@ -452,10 +442,10 @@ export function materializeForNamespace(
     updated_at: now.toISOString(),
     content_hash: hash,
   };
-  writeFileSync(sentinelPath, `${JSON.stringify(sentinel, null, 2)}\n`);
+  fs.writeFileSync(sentinelPath, `${JSON.stringify(sentinel, null, 2)}\n`);
 
   try {
-    rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   } catch {
     // ignore
   }
@@ -481,16 +471,16 @@ export function materializeForNamespace(
  * we never write it implicitly, because its presence is the user's opt-in.
  */
 export function ensureSentinel(memoriesDir: string, namespace: string, now: Date = new Date()): void {
-  mkdirSync(memoriesDir, { recursive: true });
+  fs.mkdirSync(memoriesDir, { recursive: true });
   const sentinelPath = path.join(memoriesDir, SENTINEL_FILE);
-  if (existsSync(sentinelPath)) return;
+  if (fs.existsSync(sentinelPath)) return;
   const sentinel: SentinelFile = {
     version: MATERIALIZE_VERSION,
     namespace,
     updated_at: now.toISOString(),
     content_hash: "",
   };
-  writeFileSync(sentinelPath, `${JSON.stringify(sentinel, null, 2)}\n`);
+  fs.writeFileSync(sentinelPath, `${JSON.stringify(sentinel, null, 2)}\n`);
 }
 
 // ─── Rendering ─────────────────────────────────────────────────────────────
@@ -766,9 +756,9 @@ function resolveCodexHome(override?: string): string {
 }
 
 function readSentinel(sentinelPath: string): SentinelFile | null {
-  if (!existsSync(sentinelPath)) return null;
+  if (!fs.existsSync(sentinelPath)) return null;
   try {
-    const raw = readFileSync(sentinelPath, "utf-8");
+    const raw = fs.readFileSync(sentinelPath, "utf-8");
     const parsed = JSON.parse(raw) as Partial<SentinelFile>;
     if (typeof parsed !== "object" || parsed === null) return null;
     return {
@@ -958,17 +948,17 @@ export function describeMemoriesDir(memoriesDir: string): {
   files: string[];
   sentinel: SentinelFile | null;
 } | null {
-  if (!existsSync(memoriesDir)) return null;
+  if (!fs.existsSync(memoriesDir)) return null;
   const sentinelPath = path.join(memoriesDir, SENTINEL_FILE);
   const sentinel = readSentinel(sentinelPath);
   const files: string[] = [];
-  for (const entry of readdirSync(memoriesDir, { withFileTypes: true })) {
+  for (const entry of fs.readdirSync(memoriesDir, { withFileTypes: true })) {
     if (entry.isFile() && OWNED_FILES.has(entry.name)) files.push(entry.name);
   }
   const rolloutsDir = path.join(memoriesDir, ROLLOUT_SUBDIR);
-  if (existsSync(rolloutsDir)) {
+  if (fs.existsSync(rolloutsDir)) {
     try {
-      for (const entry of readdirSync(rolloutsDir, { withFileTypes: true })) {
+      for (const entry of fs.readdirSync(rolloutsDir, { withFileTypes: true })) {
         if (entry.isFile() && entry.name.endsWith(".md")) {
           files.push(path.join(ROLLOUT_SUBDIR, entry.name));
         }

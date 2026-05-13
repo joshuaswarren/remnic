@@ -93,6 +93,23 @@ export function resolveObjectiveStateStoreDir(memoryDir: string, overrideDir?: s
   return path.join(memoryDir, "state", "objective-state");
 }
 
+export function objectiveStateStoreOverrideForNamespace(options: {
+  memoryDir: string;
+  configuredStoreDir?: string;
+  namespacesEnabled: boolean;
+  namespace: string;
+}): string | undefined {
+  const configured = options.configuredStoreDir?.trim();
+  if (!configured) return undefined;
+  if (!options.namespacesEnabled) return configured;
+
+  const defaultStoreDir = path.join(options.memoryDir, "state", "objective-state");
+  if (path.resolve(configured) === path.resolve(defaultStoreDir)) {
+    return undefined;
+  }
+  return path.join(configured, "namespaces", options.namespace);
+}
+
 export function validateObjectiveStateSnapshot(raw: unknown): ObjectiveStateSnapshot {
   if (!isRecord(raw)) throw new Error("objective-state snapshot must be an object");
   if (raw.schemaVersion !== 1) throw new Error("schemaVersion must be 1");

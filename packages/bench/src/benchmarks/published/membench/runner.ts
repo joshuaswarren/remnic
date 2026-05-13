@@ -21,7 +21,6 @@ import type {
 import {
   aggregateTaskScores,
   containsAnswer,
-  exactMatch,
   f1Score,
   llmJudgeScoreDetailed,
   timed,
@@ -140,7 +139,7 @@ export async function runMemBenchBenchmark(
       if (testCase.correctChoice) {
         scores.membench_accuracy = predictedChoice === testCase.correctChoice ? 1 : 0;
       } else {
-        scores.membench_accuracy = exactMatch(actualAnswer, testCase.answer);
+        scores.membench_accuracy = memBenchExactAnswerMatch(actualAnswer, testCase.answer);
       }
       if (judgeResult.score >= 0) {
         scores.llm_judge = judgeResult.score;
@@ -1237,6 +1236,35 @@ function normalizeChoice(value: unknown): MemBenchChoice | undefined {
 
 function normalizeComparable(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function memBenchExactAnswerMatch(predicted: string, expected: string): number {
+  return normalizeMemBenchExactAnswer(predicted) === normalizeMemBenchExactAnswer(expected)
+    ? 1
+    : 0;
+}
+
+function normalizeMemBenchExactAnswer(value: string): string {
+  return trimTrailingSentencePunctuation(normalizeComparable(value));
+}
+
+function trimTrailingSentencePunctuation(value: string): string {
+  let end = value.length;
+  while (end > 0 && isTerminalSentencePunctuation(value[end - 1]!)) {
+    end -= 1;
+  }
+  return value.slice(0, end).trim();
+}
+
+function isTerminalSentencePunctuation(value: string): boolean {
+  return (
+    value === "."
+    || value === "!"
+    || value === "?"
+    || value === ","
+    || value === ";"
+    || value === ":"
+  );
 }
 
 function parseTargetStepRefs(

@@ -1,8 +1,8 @@
 # @remnic/cli
 
-CLI for Remnic memory -- init, query, daemon management, connectors, curation, and more.
+CLI for Remnic memory and context -- init, query, daemon management, connectors, curation, and more.
 
-Part of [Remnic](https://github.com/joshuaswarren/remnic), the universal memory layer for AI agents.
+Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory and context for user-aware agents.
 
 ## Install
 

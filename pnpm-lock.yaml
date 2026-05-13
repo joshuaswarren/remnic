@@ -45,6 +45,9 @@ importers:
         specifier: ^3.24.0
         version: 3.25.76
     devDependencies:
+      '@openclaw/plugin-inspector':
+        specifier: 0.3.10
+        version: 0.3.10
       '@remnic/bench':
         specifier: workspace:*
         version: link:packages/bench
@@ -76,6 +79,9 @@ importers:
       '@remnic/core':
         specifier: workspace:^
         version: link:../remnic-core
+      hyparquet:
+        specifier: ^1.25.7
+        version: 1.25.7
       yaml:
         specifier: ^2.4.2
         version: 2.8.3
@@ -244,6 +250,21 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/import-supermemory:
+    devDependencies:
+      '@remnic/core':
+        specifier: workspace:*
+        version: link:../remnic-core
+      tsup:
+        specifier: ^8.0.0
+        version: 8.5.1(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/import-weclone:
     dependencies:
       '@remnic/core':
@@ -277,9 +298,31 @@ importers:
         specifier: ^6.0.0
         version: 6.33.0(zod@4.0.0)
     devDependencies:
+      '@openclaw/plugin-inspector':
+        specifier: 0.3.10
+        version: 0.3.10
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  packages/plugin-pi:
+    dependencies:
+      '@remnic/core':
+        specifier: workspace:^
+        version: link:../remnic-core
+      '@sinclair/typebox':
+        specifier: ^0.34.0
+        version: 0.34.49
+    devDependencies:
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -289,6 +332,9 @@ importers:
       '@remnic/core':
         specifier: workspace:^
         version: link:../remnic-core
+      '@remnic/plugin-pi':
+        specifier: workspace:^
+        version: link:../plugin-pi
       yaml:
         specifier: ^2.4.2
         version: 2.8.3
@@ -314,6 +360,9 @@ importers:
       '@remnic/import-mem0':
         specifier: workspace:*
         version: link:../import-mem0
+      '@remnic/import-supermemory':
+        specifier: workspace:*
+        version: link:../import-supermemory
       '@remnic/import-weclone':
         specifier: workspace:*
         version: link:../import-weclone
@@ -837,6 +886,11 @@ packages:
     resolution: {integrity: sha512-t64wIsPEtNd4aUPuTAyeL2ubxATCBGmeluaKXEMAFk/8w6AJIVVkeLKMBpgLW6LU2t5cQxT+env/c6jxbtTQBg==}
     engines: {node: '>= 10'}
 
+  '@openclaw/plugin-inspector@0.3.10':
+    resolution: {integrity: sha512-YApX9F58E2/HORbVgJMWfryTkQAjwq/6HuTxls4RP/d0RnZ6swRcFuc9d09OcLoENzB0nvKY5cjyuCnBArv8iA==}
+    engines: {node: '>=22'}
+    hasBin: true
+
   '@orama/orama@3.1.18':
     resolution: {integrity: sha512-a61ljmRVVyG5MC/698C8/FfFDw5a8LOIvyOLW5fztgUXqUpc1jOfQzOitSCbge657OgXXThmY3Tk8fpiDb4UcA==}
     engines: {node: '>= 20.0.0'}
@@ -1256,6 +1310,9 @@ packages:
   has-flag@4.0.0:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
     engines: {node: '>=8'}
+
+  hyparquet@1.25.7:
+    resolution: {integrity: sha512-F+FoqZ1mQZK+nHaNMIOjKo6o8pH34L29oZ9oMNIQHdvMonaq+Inh5blMWlvNFvC1LUyyGkJjTrv1WEMTAEHAKQ==}
 
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
@@ -2056,6 +2113,8 @@ snapshots:
       '@node-rs/argon2-win32-ia32-msvc': 2.0.2
       '@node-rs/argon2-win32-x64-msvc': 2.0.2
 
+  '@openclaw/plugin-inspector@0.3.10': {}
+
   '@orama/orama@3.1.18': {}
 
   '@orama/plugin-data-persistence@3.1.18':
@@ -2419,6 +2478,8 @@ snapshots:
   graceful-fs@4.2.11: {}
 
   has-flag@4.0.0: {}
+
+  hyparquet@1.25.7: {}
 
   ieee754@1.2.1: {}
 

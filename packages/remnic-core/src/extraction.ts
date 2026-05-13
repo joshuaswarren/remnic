@@ -36,6 +36,7 @@ import { formatDaySummaryMemories, loadDaySummaryPrompt, buildExtensionsFooterFo
 import { ProfilingCollector } from "./profiling.js";
 import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
+import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 
 type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];
@@ -114,7 +115,9 @@ export class ExtractionEngine {
       log.warn("no OpenAI API key — direct OpenAI client disabled; local and gateway fallback paths remain available");
     }
     this.localLlm = localLlm ?? new LocalLlmClient(config, modelRegistry);
-    this.fallbackLlm = new FallbackLlmClient(gatewayConfig);
+    this.fallbackLlm = new FallbackLlmClient(gatewayConfig, {
+      workspaceDir: config.workspaceDir,
+    });
     this.modelRegistry = modelRegistry ?? new ModelRegistry(config.memoryDir);
     if (config.modelSource === "gateway") {
       log.debug(
@@ -953,10 +956,21 @@ export class ExtractionEngine {
       }))
       .filter((turn) => turn.content.trim().length > 0);
     const conversation = boundedTurns
-      .map((t) => `[${t.role}] ${t.content}`)
+      .map((t) => {
+        const roleLabel =
+          t.extractionContextOnly === true ? `context ${t.role}` : t.role;
+        return `[${roleLabel}] ${t.content}`;
+      })
       .join("\n\n");
     if (conversation.trim().length === 0) {
       log.debug("extraction skipped — conversation only contained non-memory work-layer context");
+      return { facts: [], profileUpdates: [], entities: [], questions: [] };
+    }
+    if (
+      this.config.extractionTelemetryPrefilterEnabled &&
+      looksLikeMechanicalTelemetryTranscript(conversation)
+    ) {
+      log.debug("extraction skipped — mechanical action/state telemetry without durable-memory cues");
       return { facts: [], profileUpdates: [], entities: [], questions: [] };
     }
 
@@ -1087,7 +1101,11 @@ export class ExtractionEngine {
       const detailed = await this.fallbackLlm.parseWithSchemaDetailed(
         messages,
         ExtractionResultSchema,
-        this.withGatewayAgent({ temperature: 0.3, maxTokens: 4096, timeoutMs: 30_000 }),
+        this.withGatewayAgent({
+          temperature: 0.3,
+          maxTokens: this.config.extractionMaxOutputTokens,
+          timeoutMs: this.config.localLlmTimeoutMs,
+        }),
       );
 
       const fallbackDurationMs = Date.now() - fallbackStartTime;
@@ -1221,6 +1239,7 @@ These are durable insights - capture them:
 - Confidence: Explicit (0.95-1.0), Implied (0.70-0.94), Inferred (0.40-0.69), Speculative (0.00-0.39)
 - Corrections get highest confidence (0.95+)
 - Each fact should be standalone and self-contained
+- Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
 - CRITICAL: Use canonical hyphenated entity names (e.g., "jane-doe" not "janedoe")
 - CRITICAL: NEVER extract the same fact twice - check for duplicates before adding to facts array
 - CRITICAL: NEVER extract cron job schedules, automation configurations, or system monitoring details (these are operational noise)
@@ -1467,6 +1486,7 @@ Rules:
 - Priority: corrections > principles${this.config.causalRuleExtractionEnabled ? " > rules" : ""} > preferences > commitments > decisions > relationships > entities > moments > skills > facts
 - Corrections (user saying "actually, don't do X" or "I prefer Y") get highest confidence
 - Each fact should be a standalone, self-contained statement
+- Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
 - Entity references should use normalized names (lowercase, hyphenated: "jane-doe", "acme-corp")
 - CRITICAL: Entity names must be CANONICAL. Always use the hyphenated multi-word form: "acme-corp" NOT "acmecorp" or "acme". "jane-doe" NOT "janedoe" or "jane". If unsure, prefer the most specific full name.
 - Avoid creating entities typed as "other" when a more specific type fits (company, project, tool, person, place)
@@ -1624,7 +1644,7 @@ Consolidate the new memories against existing ones.`,
     }
 
     try {
-      const systemPrompt = `You are a memory consolidation system. Compare new memories against existing ones and decide what to do with each.
+      const instructionText = `You are a memory consolidation system. Compare new memories against existing ones and decide what to do with each.
 
 Actions:
 - ADD: Keep the new memory as-is (no duplicate exists)
@@ -1653,7 +1673,7 @@ ${CONSOLIDATION_RESPONSE_SCHEMA}`;
       const response = await this.client.chat.completions.create({
         model: this.config.model,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: instructionText },
           { role: "user", content: "Consolidate the new memories against existing ones." },
         ],
         ...(this.config.reasoningEffort !== "none" ? { reasoning_effort: this.config.reasoningEffort } : {}),
@@ -1865,7 +1885,7 @@ The output should be the COMPLETE consolidated profile as valid markdown, starti
     }
 
     try {
-      const systemPrompt = `You are a profile consolidation system. You are given a behavioral profile (markdown) that has grown too large. Your job is to produce a CONSOLIDATED version that:
+      const instructionText = `You are a profile consolidation system. You are given a behavioral profile (markdown) that has grown too large. Your job is to produce a CONSOLIDATED version that:
 
 1. PRESERVES all ## section headers and their structure
 2. MERGES duplicate or near-duplicate bullet points into single, clear statements
@@ -1887,7 +1907,7 @@ Respond with valid JSON matching this schema:
       const response = await this.client.chat.completions.create({
         model: this.config.model,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: instructionText },
           { role: "user", content: fullProfileContent },
         ],
         ...(this.config.reasoningEffort !== "none" ? { reasoning_effort: this.config.reasoningEffort } : {}),
@@ -2086,7 +2106,7 @@ The goal is to reduce a bloated file to a compact, high-signal set of learned pa
     }
 
     try {
-      const systemPrompt = `You are an identity consolidation system. You are given the full contents of an IDENTITY.md file that contains many individual reflection entries. Your job is to:
+      const instructionText = `You are an identity consolidation system. You are given the full contents of an IDENTITY.md file that contains many individual reflection entries. Your job is to:
 
 1. Read all the reflection entries (sections starting with "## Reflection")
 2. Extract the most important, durable behavioral patterns and lessons learned
@@ -2106,7 +2126,7 @@ Respond with valid JSON matching this schema:
       const response = await this.client.chat.completions.create({
         model: this.config.model,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: instructionText },
           { role: "user", content: fullIdentityContent },
         ],
         ...(this.config.reasoningEffort !== "none" ? { reasoning_effort: this.config.reasoningEffort } : {}),
@@ -2252,7 +2272,7 @@ Category: ${newMemory.category}
 Content: ${newMemory.content}`;
 
     try {
-      const systemPrompt = `You are a contradiction detection system. Analyze whether two memories contradict each other.
+      const instructionText = `You are a contradiction detection system. Analyze whether two memories contradict each other.
 
 IMPORTANT: Not all similar memories are contradictions!
 - "User likes TypeScript" and "User likes Python" are NOT contradictions (preferences can coexist)
@@ -2279,7 +2299,7 @@ Respond with valid JSON matching this schema:
         try {
           const localResponse = await this.localLlm.chatCompletion(
             [
-              { role: "system", content: systemPrompt },
+              { role: "system", content: instructionText },
               { role: "user", content: input },
             ],
             {
@@ -2313,7 +2333,7 @@ Respond with valid JSON matching this schema:
       if (!this.shouldUseDirectClient) {
         const fallbackResponse = await this.fallbackLlm.chatCompletion(
           [
-            { role: "system", content: systemPrompt },
+            { role: "system", content: instructionText },
             { role: "user", content: input },
           ],
           this.withGatewayAgent({ temperature: 0.3, maxTokens: 2048 }),
@@ -2334,7 +2354,7 @@ Respond with valid JSON matching this schema:
       const response = await this.client!.chat.completions.create({
         model: this.config.model,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: instructionText },
           { role: "user", content: input },
         ],
         ...buildChatCompletionTokenLimit(this.config.model, 2048, {
@@ -2383,7 +2403,7 @@ Candidate memories to link to:
 ${candidateList}`;
 
     try {
-      const systemPrompt = `You are a memory linking system. Analyze the new memory and suggest relationships to existing memories.
+      const instructionText = `You are a memory linking system. Analyze the new memory and suggest relationships to existing memories.
 
 Link types:
 - follows: This memory is a continuation or next step (e.g., decision follows discussion)
@@ -2407,7 +2427,7 @@ Respond with valid JSON matching this schema:
         try {
           const localResponse = await this.localLlm.chatCompletion(
             [
-              { role: "system", content: systemPrompt },
+              { role: "system", content: instructionText },
               { role: "user", content: input },
             ],
             {
@@ -2437,7 +2457,7 @@ Respond with valid JSON matching this schema:
       if (!this.shouldUseDirectClient) {
         const fallbackResponse = await this.fallbackLlm.chatCompletion(
           [
-            { role: "system", content: systemPrompt },
+            { role: "system", content: instructionText },
             { role: "user", content: input },
           ],
           this.withGatewayAgent({ temperature: 0.3, maxTokens: 2048 }),
@@ -2454,7 +2474,7 @@ Respond with valid JSON matching this schema:
       const response = await this.client!.chat.completions.create({
         model: this.config.model,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: instructionText },
           { role: "user", content: input },
         ],
         ...buildChatCompletionTokenLimit(this.config.model, 2048, {
@@ -2486,7 +2506,7 @@ Respond with valid JSON matching this schema:
     const memoryContext = formatDaySummaryMemories(memories);
     if (memoryContext.length === 0) return null;
 
-    const systemPrompt = await loadDaySummaryPrompt();
+    const instructionText = await loadDaySummaryPrompt();
 
     // Append extension footer when extensions are active (#382)
     let extensionsFooter = "";
@@ -2507,7 +2527,7 @@ ${memoryContext}${extensionsFooter.length > 0 ? `\n\n${extensionsFooter}` : ""}`
       try {
         const localResponse = await this.localLlm.chatCompletion(
           [
-            { role: "system", content: `${systemPrompt}
+            { role: "system", content: `${instructionText}
 
 Return valid JSON only.` },
             { role: "user", content: userPrompt },
@@ -2545,7 +2565,7 @@ Return valid JSON only.` },
       startedAt,
       DaySummaryResultSchema,
       [
-        { role: "system", content: `${systemPrompt}
+        { role: "system", content: `${instructionText}
 
 Return valid JSON only.` },
         { role: "user", content: userPrompt },
@@ -2565,7 +2585,7 @@ Return valid JSON only.` },
       try {
         const response = await (this.client as any).responses.create({
           model: this.config.model,
-          instructions: `${systemPrompt}\n\nReturn valid JSON only.`,
+          instructions: `${instructionText}\n\nReturn valid JSON only.`,
           input: userPrompt,
           max_output_tokens: 2048,
         });
@@ -2601,7 +2621,7 @@ Return valid JSON only.` },
       .join("\n\n");
 
     try {
-      const systemPrompt = `You are a memory summarization system. You are given a batch of old memories that need to be compressed into a summary.
+      const instructionText = `You are a memory summarization system. You are given a batch of old memories that need to be compressed into a summary.
 
 Your task:
 1. Write a concise summary paragraph (2-4 sentences) capturing the essence of these memories
@@ -2625,7 +2645,7 @@ Respond with valid JSON matching this schema:
         try {
           const localResponse = await this.localLlm.chatCompletion(
             [
-              { role: "system", content: systemPrompt },
+              { role: "system", content: instructionText },
               { role: "user", content: `Summarize these ${memories.length} memories:\n\n${memoryList}` },
             ],
             {
@@ -2657,7 +2677,7 @@ Respond with valid JSON matching this schema:
       if (!this.shouldUseDirectClient) {
         const fallbackResponse = await this.fallbackLlm.chatCompletion(
           [
-            { role: "system", content: systemPrompt },
+            { role: "system", content: instructionText },
             { role: "user", content: `Summarize these ${memories.length} memories:\n\n${memoryList}` },
           ],
           this.withGatewayAgent({ temperature: 0.3, maxTokens: 4096 }),
@@ -2674,7 +2694,7 @@ Respond with valid JSON matching this schema:
       const response = await this.client!.chat.completions.create({
         model: this.config.model,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: instructionText },
           { role: "user", content: `Summarize these ${memories.length} memories:\n\n${memoryList}` },
         ],
         ...buildChatCompletionTokenLimit(this.config.model, 4096, {

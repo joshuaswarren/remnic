@@ -666,6 +666,7 @@ function renderBenchmarkResultHtml(result: BenchmarkResult): string {
   const renderedConfig = {
     systemProvider: result.config.systemProvider,
     judgeProvider: result.config.judgeProvider,
+    internalProvider: result.config.internalProvider,
     remnicConfig:
       remnicConfigKeyCount === 0
         ? "[empty]"

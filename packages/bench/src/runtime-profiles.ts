@@ -4,7 +4,9 @@ import { readFile } from "node:fs/promises";
 import {
   type FallbackLlmRuntimeContext,
   resolveRemnicPluginEntry,
+  setCodexCliFallbackRunnerForProcess,
   type GatewayConfig,
+  type CodexCliFallbackRunner,
 } from "@remnic/core";
 import type {
   BenchJudge,
@@ -14,6 +16,8 @@ import { buildBenchBaselineRemnicConfig } from "./adapters/remnic-adapter.js";
 import {
   ASSISTANT_AGENT_CONFIG_KEY,
   ASSISTANT_JUDGE_CONFIG_KEY,
+  buildAssistantResponderPrompt,
+  finalizeAssistantOutput,
 } from "./benchmarks/remnic/_assistant-common/default-agent.js";
 import type { AssistantAgent } from "./benchmarks/remnic/_assistant-common/types.js";
 import {
@@ -39,10 +43,20 @@ export interface ResolveBenchRuntimeProfileOptions {
   systemModel?: string;
   systemBaseUrl?: string;
   systemApiKey?: string;
+  systemCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
+  systemResponderContextBudgetChars?: number;
+  systemResponderPromptBudgetChars?: number;
   judgeProvider?: BuiltInProvider;
   judgeModel?: string;
   judgeBaseUrl?: string;
   judgeApiKey?: string;
+  judgeCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
+  internalProvider?: BuiltInProvider;
+  internalModel?: string;
+  internalBaseUrl?: string;
+  internalApiKey?: string;
+  internalDisableThinking?: boolean;
+  internalCodexReasoningEffort?: ProviderConfig["reasoningEffort"];
   requestTimeout?: number;
   max429WaitMs?: number;
   disableThinking?: boolean;
@@ -57,12 +71,17 @@ export interface ResolvedBenchRuntimeProfile {
     preserveRuntimeDefaults?: boolean;
     responder?: BenchResponder;
     judge?: BenchJudge;
+    drainTimeoutMs?: number;
   };
   systemProvider: ProviderConfig | null;
   judgeProvider: ProviderConfig | null;
+  internalProvider: ProviderConfig | null;
 }
 
 const REDACTED_CONFIG_VALUE = "[redacted]";
+const INTERNAL_GATEWAY_AGENT_ID = "remnic-bench-internal";
+let codexCliFallbackRegistered = false;
+let codexCliFallbackChain: Promise<void> = Promise.resolve();
 
 export async function resolveBenchRuntimeProfile(
   options: ResolveBenchRuntimeProfileOptions,
@@ -79,6 +98,9 @@ export async function resolveBenchRuntimeProfile(
       options.disableThinking,
       options.systemApiKey,
       options.max429WaitMs,
+      options.systemCodexReasoningEffort,
+      options.systemResponderContextBudgetChars,
+      options.systemResponderPromptBudgetChars,
     );
   const judgeProvider = resolveProviderConfig(
     "judge",
@@ -87,9 +109,33 @@ export async function resolveBenchRuntimeProfile(
     options.judgeBaseUrl,
     options.requestTimeout,
     options.disableThinking,
-    options.judgeApiKey,
-    options.max429WaitMs,
+      options.judgeApiKey,
+      options.max429WaitMs,
+      options.judgeCodexReasoningEffort,
+      undefined,
+      undefined,
+    );
+  const internalProvider = applyInternalProviderDefaults(
+    resolveProviderConfig(
+      "internal",
+      options.internalProvider,
+      options.internalModel,
+      options.internalBaseUrl,
+      options.requestTimeout,
+      options.internalDisableThinking,
+      options.internalApiKey,
+      options.max429WaitMs,
+      options.internalCodexReasoningEffort,
+      undefined,
+      undefined,
+    ),
   );
+  const internalConfigOverrides = buildInternalRemnicConfigOverrides(
+    internalProvider,
+    { disableThinking: options.internalDisableThinking === true },
+  );
+  const drainTimeoutMs = normalizeDrainTimeoutMs(options.requestTimeout);
+  registerCodexCliFallbackRunnerIfNeeded(internalProvider);
   const responderFactoryConfig = systemProvider
     ? asProviderFactoryConfig(systemProvider)
     : undefined;
@@ -111,23 +157,28 @@ export async function resolveBenchRuntimeProfile(
       ? createProviderBackedResponder(responderFactoryConfig)
       : undefined;
     const baselineConfig = buildBenchBaselineRemnicConfig();
-    const persistedRemnicConfig = sanitizePersistedConfig(baselineConfig);
+    const baselineWithInternalLlm = {
+      ...baselineConfig,
+      ...internalConfigOverrides,
+    };
     const effectiveRemnicConfig = withAssistantHooks(
-      { ...baselineConfig },
+      baselineWithInternalLlm,
       responder,
       structuredJudge,
     );
     return {
       profile,
-      remnicConfig: persistedRemnicConfig,
+      remnicConfig: sanitizePersistedConfig(baselineWithInternalLlm),
       effectiveRemnicConfig,
       adapterOptions: {
         configOverrides: effectiveRemnicConfig,
         responder,
         judge,
+        ...(drainTimeoutMs ? { drainTimeoutMs } : {}),
       },
       systemProvider,
       judgeProvider,
+      internalProvider: internalProvider ? sanitizeProviderConfig(internalProvider) : null,
     };
   }
 
@@ -138,24 +189,23 @@ export async function resolveBenchRuntimeProfile(
     const fileConfig = options.remnicConfigPath
       ? await loadRemnicConfigFile(options.remnicConfigPath)
       : {};
-    const persistedRemnicConfig = sanitizePersistedConfig({
-      ...fileConfig,
+    const realProfileOverrides = {
       lcmEnabled: true,
       ...(options.modelSource ? { modelSource: options.modelSource } : {}),
       ...(options.gatewayAgentId ? { gatewayAgentId: options.gatewayAgentId } : {}),
       ...(options.fastGatewayAgentId
         ? { fastGatewayAgentId: options.fastGatewayAgentId }
         : {}),
+      ...internalConfigOverrides,
+    };
+    const persistedRemnicConfig = sanitizePersistedConfig({
+      ...fileConfig,
+      ...realProfileOverrides,
     });
     const effectiveRemnicConfig = withAssistantHooks(
       {
         ...fileConfig,
-        lcmEnabled: true,
-        ...(options.modelSource ? { modelSource: options.modelSource } : {}),
-        ...(options.gatewayAgentId ? { gatewayAgentId: options.gatewayAgentId } : {}),
-        ...(options.fastGatewayAgentId
-          ? { fastGatewayAgentId: options.fastGatewayAgentId }
-          : {}),
+        ...realProfileOverrides,
       },
       responder,
       structuredJudge,
@@ -169,9 +219,11 @@ export async function resolveBenchRuntimeProfile(
         preserveRuntimeDefaults: true,
         responder,
         judge,
+        ...(drainTimeoutMs ? { drainTimeoutMs } : {}),
       },
       systemProvider,
       judgeProvider,
+      internalProvider: internalProvider ? sanitizeProviderConfig(internalProvider) : null,
     };
   }
 
@@ -196,6 +248,7 @@ export async function resolveBenchRuntimeProfile(
       modelSource: "gateway",
       ...(gatewayAgentId ? { gatewayAgentId } : {}),
       ...(fastGatewayAgentId ? { fastGatewayAgentId } : {}),
+      ...internalConfigOverrides,
     },
   );
   const effectiveRemnicConfig = withAssistantHooks(
@@ -206,6 +259,7 @@ export async function resolveBenchRuntimeProfile(
       modelSource: "gateway",
       ...(gatewayAgentId ? { gatewayAgentId } : {}),
       ...(fastGatewayAgentId ? { fastGatewayAgentId } : {}),
+      ...internalConfigOverrides,
     },
     gatewayResponder,
     structuredJudge,
@@ -220,9 +274,11 @@ export async function resolveBenchRuntimeProfile(
       preserveRuntimeDefaults: true,
       responder: gatewayResponder,
       judge,
+      ...(drainTimeoutMs ? { drainTimeoutMs } : {}),
     },
     systemProvider: null,
     judgeProvider,
+    internalProvider: internalProvider ? sanitizeProviderConfig(internalProvider) : null,
   };
 }
 
@@ -305,7 +361,7 @@ async function loadJsonObject(
 }
 
 function resolveProviderConfig(
-  kind: "system" | "judge",
+  kind: "system" | "judge" | "internal",
   provider: BuiltInProvider | undefined,
   model: string | undefined,
   baseUrl: string | undefined,
@@ -313,12 +369,27 @@ function resolveProviderConfig(
   disableThinking?: boolean,
   apiKey?: string,
   max429WaitMs?: number,
+  reasoningEffort?: ProviderConfig["reasoningEffort"],
+  responderContextBudgetChars?: number,
+  responderPromptBudgetChars?: number,
 ): ProviderConfig | null {
   const hasProvider = typeof provider === "string";
   const hasModel = typeof model === "string" && model.trim().length > 0;
   const hasBaseUrl = typeof baseUrl === "string" && baseUrl.trim().length > 0;
+  const hasApiKey = typeof apiKey === "string" && apiKey.trim().length > 0;
+  const hasReasoningEffort = reasoningEffort !== undefined;
+  const hasResponderContextBudget = responderContextBudgetChars !== undefined;
+  const hasResponderPromptBudget = responderPromptBudgetChars !== undefined;
 
-  if (!hasProvider && !hasModel && !hasBaseUrl) {
+  if (
+    !hasProvider &&
+    !hasModel &&
+    !hasBaseUrl &&
+    !hasApiKey &&
+    !hasReasoningEffort &&
+    !hasResponderContextBudget &&
+    !hasResponderPromptBudget
+  ) {
     return null;
   }
 
@@ -337,12 +408,17 @@ function resolveProviderConfig(
         "(e.g. http://localhost:8080/v1 for llama.cpp).",
     );
   }
+  if (reasoningEffort !== undefined && provider !== "codex-cli") {
+    throw new Error(
+      `${kind} Codex reasoning effort requires provider "codex-cli"`,
+    );
+  }
 
   return {
     provider,
     model: model.trim(),
     ...(hasBaseUrl ? { baseUrl: baseUrl!.trim() } : {}),
-    ...(apiKey ? { apiKey } : {}),
+    ...(hasApiKey ? { apiKey: apiKey!.trim() } : {}),
     ...(requestTimeout != null || max429WaitMs != null
       ? { retryOptions: {
           ...(requestTimeout != null ? { timeoutMs: requestTimeout } : {}),
@@ -350,6 +426,266 @@ function resolveProviderConfig(
         } }
       : {}),
     ...(disableThinking ? { disableThinking: true } : {}),
+    ...(provider === "codex-cli" ? { reasoningEffort: reasoningEffort ?? "xhigh" } : {}),
+    ...(responderContextBudgetChars !== undefined
+      ? { responderContextBudgetChars }
+      : {}),
+    ...(responderPromptBudgetChars !== undefined
+      ? { responderPromptBudgetChars }
+      : {}),
+  };
+}
+
+function normalizeDrainTimeoutMs(value: number | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `request timeout must be a positive integer when used for benchmark drain; received ${value}`,
+    );
+  }
+  return value;
+}
+
+function applyInternalProviderDefaults(
+  config: ProviderConfig | null,
+): ProviderConfig | null {
+  if (!config || config.baseUrl) {
+    return config;
+  }
+
+  const baseUrl = defaultInternalBaseUrl(config.provider);
+  return baseUrl ? { ...config, baseUrl } : config;
+}
+
+function buildInternalRemnicConfigOverrides(
+  config: ProviderConfig | null,
+  options: { disableThinking: boolean },
+): Record<string, unknown> {
+  const thinkingOverrides = options.disableThinking
+    ? {
+        localLlmDisableThinking: true,
+        reasoningEffort: "none",
+      }
+    : {};
+
+  if (!config) {
+    return thinkingOverrides;
+  }
+
+  if (config.provider === "local-llm") {
+    return {
+      ...thinkingOverrides,
+      modelSource: "plugin",
+      localLlmEnabled: true,
+      localLlmFallback: false,
+      localLlmUrl: config.baseUrl,
+      localLlmModel: config.model,
+      ...(config.apiKey ? { localLlmApiKey: config.apiKey } : {}),
+      ...(config.retryOptions?.timeoutMs
+        ? { localLlmTimeoutMs: config.retryOptions.timeoutMs }
+        : {}),
+    };
+  }
+
+  return {
+    ...thinkingOverrides,
+    modelSource: "gateway",
+    localLlmEnabled: false,
+    ...(config.retryOptions?.timeoutMs
+      ? {
+          localLlmTimeoutMs: config.retryOptions.timeoutMs,
+          localLlmFastTimeoutMs: config.retryOptions.timeoutMs,
+        }
+      : {}),
+    gatewayConfig: buildInternalGatewayConfig(config, options),
+    gatewayAgentId: INTERNAL_GATEWAY_AGENT_ID,
+    fastGatewayAgentId: INTERNAL_GATEWAY_AGENT_ID,
+  };
+}
+
+function buildInternalGatewayConfig(
+  config: ProviderConfig,
+  options: { disableThinking: boolean },
+): GatewayConfig {
+  const providerId = INTERNAL_GATEWAY_AGENT_ID;
+  const modelRef = `${providerId}/${config.model}`;
+  const timeoutMs = config.retryOptions?.timeoutMs;
+
+  return {
+    agents: {
+      defaults: {
+        model: { primary: modelRef },
+        ...(options.disableThinking ? { thinking: { mode: "off" as const } } : {}),
+      },
+      list: [
+        {
+          id: INTERNAL_GATEWAY_AGENT_ID,
+          name: "Remnic bench internal provider",
+          model: { primary: modelRef },
+        },
+      ],
+    },
+    models: {
+      providers: {
+        [providerId]: {
+          baseUrl: config.baseUrl ?? defaultInternalBaseUrl(config.provider) ?? "",
+          api: gatewayProviderApi(config.provider),
+          ...(config.apiKey ? { apiKey: config.apiKey } : {}),
+          ...(config.disableThinking || options.disableThinking ? { disableThinking: true } : {}),
+          ...(config.reasoningEffort ? { codexCliReasoningEffort: config.reasoningEffort } : {}),
+          ...(timeoutMs ? { retryOptions: { timeoutMs } } : {}),
+          models: [{ id: config.model, name: config.model }],
+        },
+      },
+    },
+  };
+}
+
+function gatewayProviderApi(provider: BuiltInProvider): string {
+  if (provider === "anthropic") {
+    return "anthropic-messages";
+  }
+  if (provider === "codex-cli") {
+    return "codex-cli";
+  }
+  if (provider === "ollama") {
+    return "ollama-chat";
+  }
+  if (provider === "openai") {
+    return "openai-responses";
+  }
+  return "openai-completions";
+}
+
+function defaultInternalBaseUrl(provider: BuiltInProvider): string | undefined {
+  switch (provider) {
+    case "openai":
+      return "https://api.openai.com/v1";
+    case "anthropic":
+      return "https://api.anthropic.com/v1";
+    case "litellm":
+      return "http://localhost:4000";
+    case "ollama":
+      return "http://localhost:11434/api";
+    case "codex-cli":
+      return "codex-cli://local";
+    case "local-llm":
+      return undefined;
+    default: {
+      const exhaustive: never = provider;
+      return exhaustive;
+    }
+  }
+}
+
+function sanitizeProviderConfig(config: ProviderConfig): ProviderConfig {
+  return {
+    ...config,
+    ...(config.apiKey ? { apiKey: REDACTED_CONFIG_VALUE } : {}),
+  };
+}
+
+function registerCodexCliFallbackRunnerIfNeeded(config: ProviderConfig | null): void {
+  if (!config || config.provider !== "codex-cli" || codexCliFallbackRegistered) {
+    return;
+  }
+
+  const runner: CodexCliFallbackRunner = async (request) =>
+    enqueueCodexCliFallback(async () => {
+      if (request.options.signal?.aborted) {
+        throw abortReason(request.options.signal);
+      }
+      const reasoningEffort = asCodexReasoningEffort(
+        request.config.codexCliReasoningEffort ?? request.config.reasoningEffort,
+      );
+      const provider = createProvider({
+        provider: "codex-cli",
+        model: request.modelId,
+        ...(typeof request.config.apiKey === "string"
+          ? { apiKey: request.config.apiKey }
+          : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(typeof request.config.codexCliExecutable === "string"
+          ? { executable: request.config.codexCliExecutable }
+          : typeof request.config.executable === "string"
+            ? { executable: request.config.executable }
+            : {}),
+        ...(typeof request.config.retryOptions?.timeoutMs === "number" ||
+          typeof request.options.timeoutMs === "number"
+          ? {
+              retryOptions: {
+                timeoutMs:
+                  typeof request.config.retryOptions?.timeoutMs === "number"
+                    ? request.config.retryOptions.timeoutMs
+                    : request.options.timeoutMs,
+              },
+            }
+          : {}),
+      });
+      const split = splitCodexFallbackMessages(request.messages);
+      const completion = await provider.complete(split.prompt, {
+        systemPrompt: split.systemPrompt,
+        temperature: 0.3,
+        maxTokens: 4096,
+        signal: request.options.signal,
+      });
+      return {
+        content: completion.text,
+        usage: {
+          inputTokens: completion.tokens.input,
+          outputTokens: completion.tokens.output,
+          totalTokens: completion.tokens.input + completion.tokens.output,
+        },
+      };
+    });
+
+  setCodexCliFallbackRunnerForProcess(runner);
+  codexCliFallbackRegistered = true;
+}
+
+function enqueueCodexCliFallback<T>(task: () => Promise<T>): Promise<T> {
+  const run = codexCliFallbackChain.then(task, task);
+  codexCliFallbackChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function abortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  return reason instanceof Error ? reason : new Error("codex-cli fallback aborted");
+}
+
+function asCodexReasoningEffort(
+  value: unknown,
+): ProviderConfig["reasoningEffort"] | undefined {
+  return value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "xhigh"
+    ? value
+    : undefined;
+}
+
+function splitCodexFallbackMessages(
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+): { systemPrompt?: string; prompt: string } {
+  const systemPrompt = messages
+    .filter((message) => message.role === "system")
+    .map((message) => message.content)
+    .join("\n\n")
+    .trim();
+  const prompt = messages
+    .filter((message) => message.role !== "system")
+    .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+    .join("\n\n")
+    .trim();
+  return {
+    ...(systemPrompt ? { systemPrompt } : {}),
+    prompt: prompt || messages.map((message) => message.content).join("\n\n"),
   };
 }
 
@@ -370,13 +706,16 @@ function withAssistantHooks(
   return next;
 }
 
-function createAssistantAgentFromResponder(
+export function createAssistantAgentFromResponder(
   responder: BenchResponder,
 ): AssistantAgent {
   return {
     async respond(request) {
-      const response = await responder.respond(request.prompt, request.memoryView);
-      return response.text;
+      const response = await responder.respond(
+        buildAssistantResponderPrompt(request.prompt),
+        request.memoryView,
+      );
+      return finalizeAssistantOutput(request, response.text);
     },
   };
 }
@@ -389,6 +728,13 @@ function asProviderFactoryConfig(config: ProviderConfig): ProviderFactoryConfig 
     ...(config.apiKey ? { apiKey: config.apiKey } : {}),
     ...(config.retryOptions ? { retryOptions: config.retryOptions } : {}),
     ...(config.disableThinking ? { disableThinking: config.disableThinking } : {}),
+    ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
+    ...(config.responderContextBudgetChars !== undefined
+      ? { responderContextBudgetChars: config.responderContextBudgetChars }
+      : {}),
+    ...(config.responderPromptBudgetChars !== undefined
+      ? { responderPromptBudgetChars: config.responderPromptBudgetChars }
+      : {}),
   } as ProviderFactoryConfig;
 }
 

@@ -89,6 +89,414 @@ test("persistExtraction is a no-op by default — no inline citation is injected
   assert.ok(written.content.includes(factBody));
 });
 
+test("ingestReplayBatch splits mixed source timestamps before persisting valid_at", async () => {
+  const { orchestrator, storage } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  const firstFact = "The BEAM fixture records the passphrase as alpine tea.";
+  const secondFact = "The BEAM fixture records the depot as cedar hall.";
+  const observedSourceGroups: Array<
+    Array<{ sourceValidAt: string | undefined; contextOnly: boolean }>
+  > = [];
+  orchestrator.extraction = {
+    extract: async (turns: any[]) => {
+      const sourceGroup = turns.map((turn) => ({
+        sourceValidAt: turn.sourceValidAt,
+        contextOnly: turn.extractionContextOnly === true,
+      }));
+      observedSourceGroups.push(sourceGroup);
+      const firstTarget = turns.find(
+        (turn) => turn.extractionContextOnly !== true,
+      );
+      const factBody =
+        firstTarget?.sourceValidAt === "2025-01-01T00:00:00Z"
+          ? firstFact
+          : secondFact;
+      return {
+        facts: [makeFact(factBody)],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  await orchestrator.ingestReplayBatch(
+    [
+      {
+        source: "openclaw",
+        sessionKey: "beam-source-validity",
+        role: "user",
+        content: "Earlier source-dated turn.",
+        timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-source-validity",
+        role: "assistant",
+        content: "Earlier source-dated response.",
+        timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-source-validity",
+        role: "user",
+        content: "Later source-dated turn.",
+        timestamp: "2025-01-02T03:04:05Z",
+        sourceValidAt: "2025-01-02T03:04:05Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-source-validity",
+        role: "assistant",
+        content: "Later source-dated response.",
+        timestamp: "2025-01-02T03:04:05Z",
+        sourceValidAt: "2025-01-02T03:04:05Z",
+      },
+    ],
+    { archiveLcm: false },
+  );
+
+  assert.deepEqual(observedSourceGroups, [
+    [
+      { sourceValidAt: "2025-01-01T00:00:00Z", contextOnly: false },
+      { sourceValidAt: "2025-01-01T00:00:00Z", contextOnly: false },
+    ],
+    [
+      { sourceValidAt: "2025-01-01T00:00:00Z", contextOnly: true },
+      { sourceValidAt: "2025-01-01T00:00:00Z", contextOnly: true },
+      { sourceValidAt: "2025-01-02T03:04:05Z", contextOnly: false },
+      { sourceValidAt: "2025-01-02T03:04:05Z", contextOnly: false },
+    ],
+  ]);
+
+  storage.invalidateAllMemoriesCacheForDir();
+  const memories = await storage.readAllMemories();
+  const firstWritten = memories.find((memory: any) => memory.content.includes(firstFact));
+  const secondWritten = memories.find((memory: any) => memory.content.includes(secondFact));
+  assert.ok(firstWritten, "first replay slice should persist its extracted fact");
+  assert.ok(secondWritten, "second replay slice should persist its extracted fact");
+  assert.equal(firstWritten.frontmatter.valid_at, "2025-01-01T00:00:00.000Z");
+  assert.equal(secondWritten.frontmatter.valid_at, "2025-01-02T03:04:05.000Z");
+});
+
+test("ingestReplayBatch queues source timestamps chronologically without future context", async () => {
+  const { orchestrator } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  const observedSourceGroups: Array<
+    Array<{ sourceValidAt: string | undefined; contextOnly: boolean; content: string }>
+  > = [];
+  orchestrator.extraction = {
+    extract: async (turns: any[]) => {
+      observedSourceGroups.push(
+        turns.map((turn) => ({
+          sourceValidAt: turn.sourceValidAt,
+          contextOnly: turn.extractionContextOnly === true,
+          content: turn.content,
+        })),
+      );
+      return {
+        facts: [makeFact(`Observed slice ${observedSourceGroups.length}.`)],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  await orchestrator.ingestReplayBatch(
+    [
+      {
+        source: "openclaw",
+        sessionKey: "beam-future-context",
+        role: "user",
+        content: "Later source-dated turn must not become earlier context.",
+        timestamp: "2025-01-03T00:00:00Z",
+        sourceValidAt: "2025-01-03T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-future-context",
+        role: "assistant",
+        content: "Later source-dated response must not become earlier context.",
+        timestamp: "2025-01-03T00:00:00Z",
+        sourceValidAt: "2025-01-03T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-future-context",
+        role: "user",
+        content: "Earlier source-dated turn.",
+        timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-future-context",
+        role: "assistant",
+        content: "Earlier source-dated response.",
+        timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
+      },
+    ],
+    { archiveLcm: false },
+  );
+
+  assert.deepEqual(observedSourceGroups, [
+    [
+      {
+        sourceValidAt: "2025-01-01T00:00:00Z",
+        contextOnly: false,
+        content: "Earlier source-dated turn.",
+      },
+      {
+        sourceValidAt: "2025-01-01T00:00:00Z",
+        contextOnly: false,
+        content: "Earlier source-dated response.",
+      },
+    ],
+    [
+      {
+        sourceValidAt: "2025-01-01T00:00:00Z",
+        contextOnly: true,
+        content: "Earlier source-dated turn.",
+      },
+      {
+        sourceValidAt: "2025-01-01T00:00:00Z",
+        contextOnly: true,
+        content: "Earlier source-dated response.",
+      },
+      {
+        sourceValidAt: "2025-01-03T00:00:00Z",
+        contextOnly: false,
+        content: "Later source-dated turn must not become earlier context.",
+      },
+      {
+        sourceValidAt: "2025-01-03T00:00:00Z",
+        contextOnly: false,
+        content: "Later source-dated response must not become earlier context.",
+      },
+    ],
+  ]);
+});
+
+test("ingestReplayBatch globally queues source timestamps across sessions", async () => {
+  const { orchestrator } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  const observedTargets: Array<{
+    sessionKey: string | undefined;
+    sourceValidAt: string | undefined;
+    content: string;
+  }> = [];
+  orchestrator.extraction = {
+    extract: async (turns: any[]) => {
+      const firstTarget = turns.find(
+        (turn) => turn.extractionContextOnly !== true,
+      );
+      observedTargets.push({
+        sessionKey: firstTarget?.sessionKey,
+        sourceValidAt: firstTarget?.sourceValidAt,
+        content: firstTarget?.content,
+      });
+      return {
+        facts: [makeFact(`Observed cross-session slice ${observedTargets.length}.`)],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  await orchestrator.ingestReplayBatch(
+    [
+      {
+        source: "openclaw",
+        sessionKey: "beam-cross-session-later",
+        role: "user",
+        content: "Later session source-dated turn.",
+        timestamp: "2025-01-03T00:00:00Z",
+        sourceValidAt: "2025-01-03T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-cross-session-earlier",
+        role: "user",
+        content: "Earlier session source-dated turn.",
+        timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
+      },
+    ],
+    { archiveLcm: false },
+  );
+
+  assert.deepEqual(observedTargets, [
+    {
+      sessionKey: "beam-cross-session-earlier",
+      sourceValidAt: "2025-01-01T00:00:00Z",
+      content: "Earlier session source-dated turn.",
+    },
+    {
+      sessionKey: "beam-cross-session-later",
+      sourceValidAt: "2025-01-03T00:00:00Z",
+      content: "Later session source-dated turn.",
+    },
+  ]);
+});
+
+test("ingestReplayBatch preserves undated replay batches without synthetic valid_at slicing", async () => {
+  const { orchestrator, storage } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  const observedSourceGroups: Array<
+    Array<{ sourceValidAt: string | undefined; content: string }>
+  > = [];
+  const undatedFact = "The BEAM undated fixture stores the project codename as river glass.";
+  orchestrator.extraction = {
+    extract: async (turns: any[]) => {
+      observedSourceGroups.push(
+        turns.map((turn) => ({
+          sourceValidAt: turn.sourceValidAt,
+          content: turn.content,
+        })),
+      );
+      return {
+        facts: [makeFact(undatedFact)],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  await orchestrator.ingestReplayBatch(
+    [
+      {
+        source: "openclaw",
+        sessionKey: "beam-undated-replay",
+        role: "user",
+        content: "[Turn 1] The codename is river glass.",
+        timestamp: "2026-05-11T09:00:00.000Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-undated-replay",
+        role: "assistant",
+        content: "[Turn 2] I will remember river glass.",
+        timestamp: "2026-05-11T09:00:00.001Z",
+      },
+    ],
+    { archiveLcm: false },
+  );
+
+  assert.deepEqual(observedSourceGroups, [
+    [
+      {
+        sourceValidAt: undefined,
+        content: "[Turn 1] The codename is river glass.",
+      },
+      {
+        sourceValidAt: undefined,
+        content: "[Turn 2] I will remember river glass.",
+      },
+    ],
+  ]);
+
+  storage.invalidateAllMemoriesCacheForDir();
+  const memories = await storage.readAllMemories();
+  const written = memories.find((memory: any) => memory.content.includes(undatedFact));
+  assert.ok(written, "undated replay batch should still persist extracted facts");
+  assert.equal(written.frontmatter.valid_at, undefined);
+});
+
+test("context-only replay turns do not satisfy the normal user-turn threshold", async () => {
+  const { orchestrator } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+  });
+
+  let extractCalls = 0;
+  orchestrator.extraction = {
+    extract: async () => {
+      extractCalls += 1;
+      return {
+        facts: [makeFact("The BEAM fixture records the depot as cedar hall.")],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  const contextOnlyUser = {
+    role: "user",
+    content: "What does the fixture call the depot?",
+    timestamp: "2025-01-01T00:00:00Z",
+    sourceValidAt: "2025-01-01T00:00:00Z",
+    extractionContextOnly: true,
+    sessionKey: "beam-source-validity",
+  };
+  const assistantTarget = {
+    role: "assistant",
+    content: "It calls the depot cedar hall.",
+    timestamp: "2025-01-02T03:04:05Z",
+    sourceValidAt: "2025-01-02T03:04:05Z",
+    sessionKey: "beam-source-validity",
+  };
+
+  await orchestrator.runExtraction(
+    [contextOnlyUser, assistantTarget],
+    {
+      clearBufferAfterExtraction: false,
+      skipCharThreshold: true,
+      bufferKey: "beam-source-validity",
+    },
+  );
+
+  assert.equal(
+    extractCalls,
+    0,
+    "context-only user turns must not satisfy the normal threshold",
+  );
+
+  await orchestrator.runExtraction(
+    [contextOnlyUser, assistantTarget],
+    {
+      clearBufferAfterExtraction: false,
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      bufferKey: "beam-source-validity",
+    },
+  );
+
+  assert.equal(
+    extractCalls,
+    1,
+    "replay/import callers may explicitly bypass the user-turn threshold",
+  );
+});
+
 test("persistExtraction injects the inline citation when the flag is enabled", async () => {
   const { orchestrator, storage } = await makeOrchestrator({
     inlineSourceAttributionEnabled: true,

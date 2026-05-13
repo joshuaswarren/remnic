@@ -45,6 +45,25 @@ test("timeout guard rejects a stuck adapter phase", async () => {
   assert.equal(timedOutPhase, "timeout-test:recall session=s");
 });
 
+test("timeout guard forwards recall options", async () => {
+  const adapter = makeAdapter();
+  let forwardedAsOf = "";
+  adapter.recall = async (_sessionId, _query, _budgetChars, options) => {
+    forwardedAsOf = options?.asOf ?? "";
+    return "ok";
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 100,
+  });
+
+  assert.equal(
+    await guarded.recall("s", "q", 1000, { asOf: "2026-05-10T12:00:00Z" }),
+    "ok",
+  );
+  assert.equal(forwardedAsOf, "2026-05-10T12:00:00Z");
+});
+
 test("timeout guard wraps responder and judge calls", async () => {
   const adapter = makeAdapter();
   adapter.responder = {
@@ -73,6 +92,102 @@ test("timeout guard wraps responder and judge calls", async () => {
     "answer",
   );
   assert.equal(await guarded.judge?.score("q", "p", "e"), 1);
+});
+
+test("timeout guard aborts responder phase work on timeout", async () => {
+  const adapter = makeAdapter();
+  let sawAbort = false;
+  adapter.responder = {
+    respond(_question, _recalledText, control) {
+      return new Promise<never>((_, reject) => {
+        const signal = control?.signal;
+        const onAbort = () => {
+          sawAbort = true;
+          reject(signal?.reason);
+        };
+        if (signal?.aborted) {
+          onAbort();
+          return;
+        }
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    },
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 5,
+  });
+
+  await assert.rejects(
+    () => guarded.responder!.respond("q", "r"),
+    /benchmark phase timed out after 5ms: timeout-test:respond/,
+  );
+  assert.equal(sawAbort, true);
+});
+
+test("timeout guard waits briefly for aborted phase cleanup", async () => {
+  const adapter = makeAdapter();
+  let cleanedUp = false;
+  adapter.responder = {
+    respond(_question, _recalledText, control) {
+      return new Promise<never>((_, reject) => {
+        control?.signal?.addEventListener(
+          "abort",
+          () => {
+            setTimeout(() => {
+              cleanedUp = true;
+              reject(control.signal?.reason);
+            }, 20);
+          },
+          { once: true },
+        );
+      });
+    },
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 5,
+  });
+
+  await assert.rejects(
+    () => guarded.responder!.respond("q", "r"),
+    /benchmark phase timed out after 5ms: timeout-test:respond/,
+  );
+  assert.equal(cleanedUp, true);
+});
+
+test("timeout guard aborts judge phase work on timeout", async () => {
+  const adapter = makeAdapter();
+  let sawAbort = false;
+  adapter.judge = {
+    async score() {
+      return 0;
+    },
+    scoreWithMetrics(_question, _predicted, _expected, control) {
+      return new Promise<never>((_, reject) => {
+        const signal = control?.signal;
+        const onAbort = () => {
+          sawAbort = true;
+          reject(signal?.reason);
+        };
+        if (signal?.aborted) {
+          onAbort();
+          return;
+        }
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
+    },
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 5,
+  });
+
+  await assert.rejects(
+    () => guarded.judge!.scoreWithMetrics!("q", "p", "e"),
+    /benchmark phase timed out after 5ms: timeout-test:judge.scoreWithMetrics/,
+  );
+  assert.equal(sawAbort, true);
 });
 
 test("resolveBenchmarkPhaseTimeoutMs prefers explicit benchmark config", () => {

@@ -90,6 +90,9 @@ class _LazyMemoryProvider:
             self._resolved = getattr(module, self._class_name)
         return self._resolved
 
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
+
     def __call__(self, *args: Any, **kwargs: Any) -> MemoryProvider:
         return self._resolve()(*args, **kwargs)
 
@@ -134,6 +137,9 @@ class _LazyDataset:
             module = import_module(self._module_name, __package__)
             self._resolved = getattr(module, self._class_name)
         return self._resolved
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Dataset:
         return self._resolve()(*args, **kwargs)
@@ -190,6 +196,9 @@ class _LazyLLM:
             module = import_module(self._module_name, __package__)
             self._resolved = getattr(module, self._class_name)
         return self._resolved
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
 
     def __call__(self, *args: Any, **kwargs: Any) -> LLM:
         return self._resolve()(*args, **kwargs)

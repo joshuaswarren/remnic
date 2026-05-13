@@ -65,6 +65,11 @@ const SECRET_REF_RESOLVER_TEST_KEY = "__openclawEngramSecretRefResolverForTest";
 // Helpers
 // ============================================================================
 
+const BASE_TEST_PLUGIN_CONFIG = {
+  qmdEnabled: false,
+  searchBackend: "noop",
+};
+
 function buildApi(label: string) {
   const registeredToolNames: string[] = [];
   let registeredCliCount = 0;
@@ -78,7 +83,7 @@ function buildApi(label: string) {
       warn: () => {},
       error: () => {},
     },
-    pluginConfig: {},
+    pluginConfig: { ...BASE_TEST_PLUGIN_CONFIG },
     config: {},
     registerTool(spec: { name: string }) {
       registeredToolNames.push(spec.name);
@@ -442,6 +447,7 @@ test("SecretRef auth resolution failure rejects start() and rolls back service o
     first = buildApi("secretref-failure-primary");
     second = buildApi("secretref-failure-secondary");
     const pluginConfig = {
+      ...BASE_TEST_PLUGIN_CONFIG,
       memoryDir,
       agentAccessHttp: {
         enabled: true,

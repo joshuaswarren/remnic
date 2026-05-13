@@ -120,6 +120,7 @@ export type MessagePartSourceFormat =
   | "openai"
   | "anthropic"
   | "openclaw"
+  | "pi"
   | "lossless-claw"
   | "remnic";
 

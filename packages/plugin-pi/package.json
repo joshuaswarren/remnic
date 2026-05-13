@@ -1,0 +1,68 @@
+{
+  "name": "@remnic/plugin-pi",
+  "version": "1.0.0",
+  "description": "Remnic memory extension for Pi Coding Agent",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./publisher": {
+      "import": "./dist/publisher.js",
+      "types": "./dist/publisher.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "keywords": [
+    "remnic",
+    "pi-package",
+    "pi",
+    "memory",
+    "ai-agent",
+    "coding-agent"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsup src/index.ts src/publisher.ts --format esm --dts",
+    "check-types": "tsc --noEmit",
+    "test": "tsx --test 'src/**/*.test.ts'",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@remnic/core": "workspace:^",
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "tsx": "^4.0.0",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/plugin-pi"
+  }
+}
