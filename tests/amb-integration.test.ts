@@ -1007,7 +1007,7 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
       "bin_dir = pathlib.Path('.venv/bin')",
       "bin_dir.mkdir(parents=True, exist_ok=True)",
       "omb = bin_dir / 'omb'",
-      "omb.write_text(\"\"\"#!/usr/bin/env python3\\nimport json, os, pathlib, sys\\nargs = sys.argv[1:]\\nif args == ['providers']:\\n    pathlib.Path(os.environ['OBSERVED_ENV_PATH']).write_text(json.dumps({\\n        'OMB_ANSWER_LLM': os.environ.get('OMB_ANSWER_LLM'),\\n        'OMB_JUDGE_LLM': os.environ.get('OMB_JUDGE_LLM'),\\n        'OMB_ANSWER_MODEL': os.environ.get('OMB_ANSWER_MODEL'),\\n        'OMB_JUDGE_MODEL': os.environ.get('OMB_JUDGE_MODEL'),\\n        'REMNIC_AMB_FORCE_CODEX_LLM': os.environ.get('REMNIC_AMB_FORCE_CODEX_LLM'),\\n        'REMNIC_AMB_CODEX_BIN': os.environ.get('REMNIC_AMB_CODEX_BIN'),\\n        'REMNIC_REPO': os.environ.get('REMNIC_REPO'),\\n        'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY'),\\n        'GOOGLE_API_KEY': os.environ.get('GOOGLE_API_KEY'),\\n    }))\\n    raise SystemExit(0)\\nif args == ['run', '--help']:\\n    print('--split')\\n    raise SystemExit(0)\\nif args and args[0] == 'run':\\n    pathlib.Path(os.environ['OBSERVED_RUN_ARGS_PATH']).write_text(json.dumps(args))\\n    raise SystemExit(0)\\nraise AssertionError(sys.argv)\\n\"\"\")",
+      "omb.write_text(\"\"\"#!/usr/bin/env python3\\nimport json, os, pathlib, sys\\nargs = sys.argv[1:]\\nif args == ['providers']:\\n    pathlib.Path(os.environ['OBSERVED_ENV_PATH']).write_text(json.dumps({\\n        'OMB_ANSWER_LLM': os.environ.get('OMB_ANSWER_LLM'),\\n        'OMB_JUDGE_LLM': os.environ.get('OMB_JUDGE_LLM'),\\n        'OMB_ANSWER_MODEL': os.environ.get('OMB_ANSWER_MODEL'),\\n        'OMB_JUDGE_MODEL': os.environ.get('OMB_JUDGE_MODEL'),\\n        'REMNIC_AMB_FORCE_CODEX_LLM': os.environ.get('REMNIC_AMB_FORCE_CODEX_LLM'),\\n        'REMNIC_AMB_CODEX_BIN': os.environ.get('REMNIC_AMB_CODEX_BIN'),\\n        'REMNIC_AMB_NODE': os.environ.get('REMNIC_AMB_NODE'),\\n        'REMNIC_REPO': os.environ.get('REMNIC_REPO'),\\n        'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY'),\\n        'GOOGLE_API_KEY': os.environ.get('GOOGLE_API_KEY'),\\n    }))\\n    raise SystemExit(0)\\nif args == ['run', '--help']:\\n    print('--split')\\n    raise SystemExit(0)\\nif args and args[0] == 'run':\\n    pathlib.Path(os.environ['OBSERVED_RUN_ARGS_PATH']).write_text(json.dumps(args))\\n    raise SystemExit(0)\\nraise AssertionError(sys.argv)\\n\"\"\")",
       "omb.chmod(0o755)",
       "",
     ].join("\n"),
@@ -1030,6 +1030,7 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
       HOME: fakeHome,
       PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
       REMNIC_AMB_CODEX_BIN: "~/bin/codex",
+      REMNIC_AMB_NODE: "relative-node/bin/node",
       REMNIC_REPO: ".",
       GEMINI_API_KEY: "should-not-leak",
       GOOGLE_API_KEY: "should-not-leak",
@@ -1046,6 +1047,7 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
   assert.equal(observed.OMB_JUDGE_MODEL, "gpt-5.5");
   assert.equal(observed.REMNIC_AMB_FORCE_CODEX_LLM, "1");
   assert.equal(observed.REMNIC_AMB_CODEX_BIN, fakeCodexPath);
+  assert.equal(observed.REMNIC_AMB_NODE, path.join(realpathSync(fakeRemnicRoot), "relative-node", "bin", "node"));
   assert.equal(observed.REMNIC_REPO, realpathSync(fakeRemnicRoot));
   assert.equal(observed.GEMINI_API_KEY, null);
   assert.equal(observed.GOOGLE_API_KEY, null);
@@ -1057,6 +1059,28 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
   assert.equal(observedRunArgs[observedRunArgs.indexOf("--memory") + 1], "remnic");
   assert.equal(observedRunArgs[observedRunArgs.indexOf("--llm") + 1], "codex");
   assert.deepEqual(observedRunArgs.slice(-2), ["--skip-ingestion", "--only-failed"]);
+});
+
+test("AMB runner rejects cache-reuse passthrough flags for SOTA verification", async () => {
+  const result = spawnSync("bash", [
+    path.resolve("scripts", "bench", "run-amb-remnic.sh"),
+    "--amb",
+    path.join(os.tmpdir(), "missing-amb-checkout"),
+    "--verify-sota",
+    "--min-queries",
+    "100",
+    "--",
+    "--skip-answer",
+  ], {
+    encoding: "utf8",
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(
+    result.stderr,
+    /--verify-sota cannot be combined with cache-reuse passthrough flag: --skip-answer/,
+  );
+  assert.doesNotMatch(result.stderr, /Agent Memory Benchmark checkout/);
 });
 
 test("AMB helper retrieves packed evidence without duplicate context documents", {
@@ -1438,6 +1462,89 @@ test("AMB helper answers direct-answer through Codex CLI", {
   const fakeCodexArgs = JSON.parse(await readFile(fakeCodexArgsPath, "utf8"));
   assert.ok(fakeCodexArgs.includes("--ephemeral"));
   assert.ok(fakeCodexArgs.includes("--ignore-rules"));
+});
+
+test("AMB helper preserves explicit-cue evidence for direct-answer prompts", {
+  skip:
+    existsSync(builtCoreEntry) && helperNode
+      ? false
+      : "built @remnic/core dist and a Node 22 runtime are required",
+}, async () => {
+  assert.ok(helperNode);
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-codex-explicit-"));
+  const storeDir = path.join(tmpDir, "store");
+  const fakeCodexPath = path.join(tmpDir, "bin", "fake-codex");
+  const fakeCodexPromptPath = path.join(tmpDir, "fake-codex-prompt.txt");
+  const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
+  const env = {
+    ...process.env,
+    REMNIC_REPO: repoRoot,
+    REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+    FAKE_CODEX_PROMPT: fakeCodexPromptPath,
+    REMNIC_AMB_EXTRACTION_DEADLINE_MS: "300000",
+  };
+
+  await mkdir(path.dirname(fakeCodexPath), { recursive: true });
+  await writeFile(
+    fakeCodexPath,
+    [
+      "#!/usr/bin/env python3",
+      "import json, os, pathlib, sys",
+      "prompt = sys.stdin.read()",
+      "pathlib.Path(os.environ['FAKE_CODEX_PROMPT']).write_text(prompt)",
+      "assert '## Explicit Cue Evidence' in prompt",
+      "assert 'Remember the launch review is May 20.' in prompt",
+      "output = pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1])",
+      "output.write_text(json.dumps({'answer': 'The launch review is May 20.'}))",
+      "",
+    ].join("\n"),
+  );
+  await chmod(fakeCodexPath, 0o755);
+
+  const ingest = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env,
+    input: JSON.stringify({
+      command: "ingest",
+      storeDir,
+      documents: [
+        {
+          id: "explicit-turn",
+          content: "Remember the launch review is May 20.",
+          messages: [
+            {
+              role: "system",
+              content: "Current user persona: Name: Kanoa Manu",
+            },
+            {
+              role: "user",
+              content: "Remember the launch review is May 20.",
+            },
+          ],
+          user_id: "u1",
+          timestamp: "2026-05-12T00:00:00Z",
+        },
+      ],
+    }),
+  });
+  assert.equal(ingest.status, 0, ingest.stderr);
+
+  const result = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env,
+    input: JSON.stringify({
+      command: "direct_answer",
+      storeDir,
+      query: "What did I say in turn 1 about the launch review?",
+      userId: "u1",
+    }),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.answer, "The launch review is May 20.");
+  assert.match(await readFile(fakeCodexPromptPath, "utf8"), /## Explicit Cue Evidence/);
 });
 
 test("AMB helper answers multiple-choice direct-answer with native evidence ranking", {

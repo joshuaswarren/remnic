@@ -527,7 +527,7 @@ function stripMultipleChoiceOptions(query) {
 
 function evidenceOnlyContext(context) {
   return String(context)
-    .replace(/## Retrieval context[\s\S]*?(?=\n\n## Search evidence|\n\n## Remnic recall pipeline|\n\n## Memory \d+|$)/g, "")
+    .replace(/## Retrieval context[\s\S]*?(?=\n\n## Explicit Cue Evidence|\n\n## Search evidence|\n\n## Remnic recall pipeline|\n\n## Memory \d+|$)/g, "")
     .replace(/\n\s*\([a-d]\)\s+[\s\S]*?(?=\n\s*\([a-d]\)\s+|$)/gi, "")
     .replace(/(?:^|\n)## Memory \d+\s*(?=\n|$)/g, "\n")
     .trim();

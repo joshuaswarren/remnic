@@ -109,6 +109,17 @@ resolve_executable() {
   esac
 }
 
+sota_cache_reuse_arg() {
+  case "$1" in
+    --skip-answer | --skip-answer=* | --skip-retrieval | --skip-retrieval=* | --skip-ingested | --skip-ingested=* | --only-failed | --only-failed=*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --)
@@ -269,6 +280,14 @@ if [[ "$VERIFY_SOTA" -eq 1 && -z "$MIN_QUERIES" ]]; then
   echo "error: --verify-sota requires --min-queries with the full split query count" >&2
   exit 2
 fi
+if [[ "$VERIFY_SOTA" -eq 1 ]]; then
+  for arg in "${AMB_EXTRA_ARGS[@]}"; do
+    if sota_cache_reuse_arg "$arg"; then
+      echo "error: --verify-sota cannot be combined with cache-reuse passthrough flag: $arg" >&2
+      exit 2
+    fi
+  done
+fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REMNIC_REPO_DEFAULT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
@@ -287,6 +306,7 @@ export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 export REMNIC_REPO
 REMNIC_REPO="$(resolve_existing_dir REMNIC_REPO "${REMNIC_REPO:-$REMNIC_REPO_DEFAULT}")"
 if [[ -n "$REMNIC_NODE" ]]; then
+  REMNIC_NODE="$(resolve_executable "$REMNIC_NODE")"
   export REMNIC_AMB_NODE="$REMNIC_NODE"
 fi
 CODEX_BIN="$(resolve_executable "${REMNIC_AMB_CODEX_BIN:-codex}")"
