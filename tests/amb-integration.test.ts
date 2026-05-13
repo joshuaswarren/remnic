@@ -1421,6 +1421,7 @@ test("AMB helper answers multiple-choice direct-answer with native evidence rank
     REMNIC_REPO: repoRoot,
     REMNIC_AMB_CODEX_BIN: fakeCodexPath,
     REMNIC_AMB_EXTRACTION_DEADLINE_MS: "300000",
+    REMNIC_AMB_NATIVE_ONLY_DIRECT_ANSWER: "1",
   };
 
   await writeFile(fakeCodexPath, "#!/usr/bin/env sh\nexit 23\n");
@@ -1501,7 +1502,7 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
       "args = sys.argv[1:]",
       "prompt = sys.stdin.read()",
       "assert 'return only the option letter' in prompt",
-      "assert '(a) Board games' in prompt and '(b) Charades' in prompt",
+      "assert '(a) Costume party' in prompt and '(b) Social games like charades' in prompt",
       "output = pathlib.Path(args[args.index('--output-last-message') + 1])",
       "output.write_text(json.dumps({'answer': '(b) Charades'}))",
       "",
@@ -1518,7 +1519,9 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
       documents: [
         {
           id: "social-night",
-          content: "The user wanted a low-key game night with friends and asked for a casual social suggestion.",
+          content: Array.from({ length: 12 }, () =>
+            "Social games like charades brought laughter, helped everyone bond, and made the fun-filled game night memorable.",
+          ).join(" "),
           user_id: "u1",
           timestamp: "2026-05-12T00:00:00Z",
         },
@@ -1534,12 +1537,12 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
       command: "direct_answer",
       storeDir,
       query: [
-        "What game night activity fits?",
+        "What are some engaging activities you would suggest for a fun-filled game night with friends?",
         "",
-        "(a) Board games",
-        "(b) Charades",
-        "(c) Trivia",
-        "(d) Costume party",
+        "(a) Costume party",
+        "(b) Social games like charades",
+        "(c) Settlers of Catan",
+        "(d) Trivia challenge",
       ].join("\n"),
       userId: "u1",
     }),
@@ -1549,6 +1552,7 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.ok, true);
   assert.equal(payload.answer, "b");
+  assert.equal(payload.raw_response.answerModel, "codex:gpt-5.5:xhigh:fast");
 });
 
 test("AMB helper records unsupported MCQ fallback errors despite adjacent memories", {

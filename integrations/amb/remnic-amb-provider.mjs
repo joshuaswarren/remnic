@@ -305,20 +305,6 @@ async function directAnswer(orchestrator, payload) {
     .join("\n\n");
   const memoryEvidence = evidenceOnlyContext(context);
   const nativeMcqAnswer = answerMultipleChoiceFromEvidence({ query, context });
-  const useNativeMcqAnswer = nativeMcqAnswer && shouldUseNativeMcqAnswer({ query, nativeMcqAnswer });
-  if (useNativeMcqAnswer) {
-    return {
-      answer: nativeMcqAnswer.answer,
-      context,
-      raw_response: {
-        ...retrieved.raw_response,
-        mode: "direct_answer",
-        answerModel: "remnic-native-mcq-evidence-ranker",
-        answerStrategy: nativeMcqAnswer.strategy,
-        optionScores: nativeMcqAnswer.scores,
-      },
-    };
-  }
   if (isMultipleChoiceQuery(query) && boolEnv("REMNIC_AMB_NATIVE_ONLY_DIRECT_ANSWER", false)) {
     if (!nativeMcqAnswer) {
       throw new Error("Native-only direct_answer requested but no evidence-backed multiple-choice answer was available.");
@@ -525,44 +511,6 @@ function answerMultipleChoiceFromEvidence({ query, context }) {
     scores,
     strategy: "option-keyword-and-phrase-overlap",
   };
-}
-
-function shouldUseNativeMcqAnswer({ query, nativeMcqAnswer }) {
-  const scores = nativeMcqAnswer.scores ?? [];
-  const best = scores[0]?.score ?? 0;
-  const second = scores[1]?.score ?? 0;
-  const margin = best - second;
-  const ratio = second > 0 ? best / second : Number.POSITIVE_INFINITY;
-  const visibleQuery = stripMultipleChoiceOptions(stripAmbUserPrefix(query)).toLowerCase();
-
-  if (/^\s*(?:i recently|i recall|spent another|lately|user:)/i.test(visibleQuery)) {
-    return false;
-  }
-  if (/\bcommunity event\b/.test(visibleQuery) && /\bmusic\b/.test(visibleQuery) && /\bwellness\b/.test(visibleQuery)) {
-    return false;
-  }
-
-  const recallStyle = (
-    /\bcreative ways to share\b/.test(visibleQuery) ||
-    /\bvolunteering opportunities\b/.test(visibleQuery) ||
-    /\bfun-filled game night\b/.test(visibleQuery)
-  );
-  if (recallStyle && best >= 60 && (margin >= 35 || ratio >= 1.3)) {
-    return true;
-  }
-
-  const workshopPersonalization = (
-    /\blarge workshops?\b/.test(visibleQuery) &&
-    /\b(?:one-on-one|small|personalized|tailored|compare|comparison)\b/i.test(
-      parseMultipleChoiceOptions(query)
-        .find((option) => option.letter === nativeMcqAnswer.answer)?.text ?? "",
-    )
-  );
-  if (workshopPersonalization && best >= 200 && margin >= 50) {
-    return true;
-  }
-
-  return false;
 }
 
 function parseMultipleChoiceOptions(query) {
@@ -1251,8 +1199,6 @@ const SEARCH_STOPWORDS = new Set([
   "into",
   "its",
   "just",
-  "kanoa",
-  "manu",
   "might",
   "more",
   "new",
