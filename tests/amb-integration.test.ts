@@ -1061,11 +1061,15 @@ test("AMB runner forces Codex LLMs, strips Gemini Google keys, and passes AMB ru
   assert.deepEqual(observedRunArgs.slice(-2), ["--skip-ingestion", "--only-failed"]);
 });
 
-test("AMB runner rejects cache-reuse passthrough flags for SOTA verification", async () => {
+test("AMB runner rejects unsafe passthrough flags for SOTA verification", async () => {
   for (const flag of [
     "--skip-answer",
     "--skip-ingestion",
+    "--skip-retrieval",
+    "--skip-ingested",
+    "--only-failed",
     "--retrieve-only",
+    "--oracle",
     "--query-id",
     "--category=travel",
     "-c",
@@ -1075,6 +1079,34 @@ test("AMB runner rejects cache-reuse passthrough flags for SOTA verification", a
     "--query-limit=20",
     "-q",
     "-q=20",
+    "--output-dir",
+    "--output-dir=/tmp/remnic-amb-smoke",
+    "-o",
+    "-o=/tmp/remnic-amb-smoke",
+    "--name",
+    "--name=other",
+    "-n",
+    "-n=other",
+    "--memory",
+    "--memory=bm25",
+    "-m",
+    "-m=bm25",
+    "--mode",
+    "--mode=agent",
+    "--dataset",
+    "--dataset=tempo",
+    "--split",
+    "--split=32k",
+    "-s",
+    "-s=32k",
+    "--domain",
+    "--domain=32k",
+    "--llm",
+    "--llm=gemini",
+    "--description",
+    "--description=other",
+    "-d",
+    "-d=other",
   ]) {
     const result = spawnSync("bash", [
       path.resolve("scripts", "bench", "run-amb-remnic.sh"),
@@ -1092,7 +1124,7 @@ test("AMB runner rejects cache-reuse passthrough flags for SOTA verification", a
     assert.equal(result.status, 2, `${flag}: ${result.stderr}`);
     assert.match(
       result.stderr,
-      new RegExp(`--verify-sota cannot be combined with cache-reuse passthrough flag: ${flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+      new RegExp(`--verify-sota cannot be combined with unsafe passthrough flag: ${flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
     );
     assert.doesNotMatch(result.stderr, /Agent Memory Benchmark checkout/);
   }

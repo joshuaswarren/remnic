@@ -120,12 +120,25 @@ resolve_executable() {
   esac
 }
 
-sota_cache_reuse_arg() {
+sota_forbidden_passthrough_arg() {
   case "$1" in
     --category | --category=* | \
     -c | -c=* | \
+    --dataset | --dataset=* | \
+    --description | --description=* | \
+    -d | -d=* | \
     --doc-limit | --doc-limit=* | \
+    --domain | --domain=* | \
+    --llm | --llm=* | \
+    --memory | --memory=* | \
+    -m | -m=* | \
+    --mode | --mode=* | \
+    --name | --name=* | \
+    -n | -n=* | \
     --only-failed | --only-failed=* | \
+    --oracle | --oracle=* | \
+    --output-dir | --output-dir=* | \
+    -o | -o=* | \
     --query-id | --query-id=* | \
     --query-limit | --query-limit=* | \
     -q | -q=* | \
@@ -133,7 +146,9 @@ sota_cache_reuse_arg() {
     --skip-answer | --skip-answer=* | \
     --skip-ingested | --skip-ingested=* | \
     --skip-ingestion | --skip-ingestion=* | \
-    --skip-retrieval | --skip-retrieval=*)
+    --skip-retrieval | --skip-retrieval=* | \
+    --split | --split=* | \
+    -s | -s=*)
       return 0
       ;;
     *)
@@ -308,8 +323,8 @@ if [[ "$VERIFY_SOTA" -eq 1 && -n "$QUERY_LIMIT" ]]; then
 fi
 if [[ "$VERIFY_SOTA" -eq 1 ]]; then
   for arg in "${AMB_EXTRA_ARGS[@]}"; do
-    if sota_cache_reuse_arg "$arg"; then
-      echo "error: --verify-sota cannot be combined with cache-reuse passthrough flag: $arg" >&2
+    if sota_forbidden_passthrough_arg "$arg"; then
+      echo "error: --verify-sota cannot be combined with unsafe passthrough flag: $arg" >&2
       exit 2
     fi
   done
