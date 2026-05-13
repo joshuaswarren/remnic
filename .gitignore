@@ -5,6 +5,10 @@ dist/
 # Dependencies
 node_modules/
 
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Environment
 .env
 .env.*
