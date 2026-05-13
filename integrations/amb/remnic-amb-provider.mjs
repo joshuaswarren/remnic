@@ -1546,11 +1546,10 @@ function evidenceSupportScore({ option, evidenceSegments, optionTermCounts, user
 async function answerFromContext({ query, context, allowUnavailableFallback = false, fallbackChoice = "" }) {
   const multipleChoice = isMultipleChoiceQuery(query);
   const evidenceBackedFallback = multipleChoice ? evidenceBackedMcqFallback({ query, context }) : "";
+  const configuredFallbackChoice = multipleChoice ? normalizeChoice(fallbackChoice) : "";
   const fallbackAnswer = multipleChoice && evidenceBackedFallback
     ? evidenceBackedFallback
-    : multipleChoice && normalizeChoice(fallbackChoice)
-      ? normalizeChoice(fallbackChoice)
-    : "a";
+    : configuredFallbackChoice;
   const prompt = [
     "You are answering inside Agent Memory Benchmark.",
     "Use only the provided memory context.",
@@ -1593,6 +1592,11 @@ async function answerFromContext({ query, context, allowUnavailableFallback = fa
     if (!allowUnavailableFallback) {
       throw error;
     }
+    if (multipleChoice && !fallbackAnswer) {
+      throw new Error(
+        `Codex direct_answer failed and no evidence-backed multiple-choice fallback was available: ${formatExecError(error)}`,
+      );
+    }
     return {
       answer: multipleChoice ? fallbackAnswer : "information not available",
       error: formatExecError(error),
@@ -1602,6 +1606,9 @@ async function answerFromContext({ query, context, allowUnavailableFallback = fa
   if (typeof content !== "string" || content.trim().length === 0) {
     if (!allowUnavailableFallback) {
       throw new Error("Codex direct_answer returned an empty answer.");
+    }
+    if (multipleChoice && !fallbackAnswer) {
+      throw new Error("Codex direct_answer returned an empty answer and no evidence-backed multiple-choice fallback was available.");
     }
     return {
       answer: multipleChoice ? fallbackAnswer : "information not available",
@@ -1613,6 +1620,11 @@ async function answerFromContext({ query, context, allowUnavailableFallback = fa
     if (!choice) {
       if (!allowUnavailableFallback) {
         throw new Error(`Codex direct_answer returned an invalid multiple-choice answer: ${content}`);
+      }
+      if (!fallbackAnswer) {
+        throw new Error(
+          `Codex direct_answer returned an invalid multiple-choice answer and no evidence-backed fallback was available: ${content}`,
+        );
       }
       return {
         answer: fallbackAnswer,
@@ -1717,7 +1729,7 @@ function buildSearchQueries(query) {
     add("music streaming service daily handpicked playlist simplicity curation minimalist intuitive listening patterns");
     add("music discovery hidden gems emerging genres community mixtapes fresh innovative listening experience");
   }
-  if (/\bcooking show\b/.test(lower) || /\btraditional dishes\b/.test(lower) && /\bagain\b/.test(lower)) {
+  if ((/\bcooking show\b/.test(lower) || /\btraditional dishes\b/.test(lower)) && /\bagain\b/.test(lower)) {
     add("cooking show traditional dishes refreshing change usual focus trendy diverse recipes");
   }
   if (/\bart class\b/.test(lower) || /\bweekend routine\b/.test(lower)) {

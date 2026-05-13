@@ -1186,7 +1186,7 @@ test("AMB helper normalizes multiple-choice direct answers to a letter", {
   assert.equal(payload.answer, "b");
 });
 
-test("AMB helper falls back to evidence-backed MCQ choice when Codex is unavailable", {
+test("AMB helper rejects unsupported MCQ fallback despite adjacent memories", {
   skip:
     existsSync(builtCoreEntry) && helperNode
       ? false
@@ -1246,11 +1246,51 @@ test("AMB helper falls back to evidence-backed MCQ choice when Codex is unavaila
     }),
   });
 
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.answer, "a");
-  assert.match(payload.raw_response.answerError, /exit code 23|Command failed|fake-codex/);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /no evidence-backed multiple-choice fallback/i);
+});
+
+test("AMB helper fails MCQ direct-answer when Codex is unavailable without evidence support", {
+  skip:
+    existsSync(builtCoreEntry) && helperNode
+      ? false
+      : "built @remnic/core dist and a Node 22 runtime are required",
+}, async () => {
+  assert.ok(helperNode);
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-mcq-no-fallback-"));
+  const storeDir = path.join(tmpDir, "store");
+  const fakeCodexPath = path.join(tmpDir, "fake-codex");
+  const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
+
+  await writeFile(fakeCodexPath, "#!/usr/bin/env sh\nexit 23\n");
+  await chmod(fakeCodexPath, 0o755);
+
+  const result = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REMNIC_REPO: repoRoot,
+      REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+    },
+    input: JSON.stringify({
+      command: "direct_answer",
+      storeDir,
+      query: [
+        "Which activity best matches the user's preference?",
+        "",
+        "(a) Board games",
+        "(b) Charades",
+        "(c) Trivia",
+        "(d) Costume party",
+      ].join("\n"),
+      userId: "u1",
+    }),
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /no evidence-backed multiple-choice fallback/i);
 });
 
 test("AMB helper falls back to positive health-event option when Codex is unavailable", {
