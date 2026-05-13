@@ -1765,10 +1765,10 @@ function buildSearchQueries(query) {
   if (/\bworkshops?\b/.test(lower)) {
     add("workshop workshops sales pitch genuine help supportive environment comfortable anxious personalized feedback small groups one-on-one coaching individual lessons compare comparison large groups");
   }
-  if (/\bblog|posts?|writing|readers?\b/.test(lower)) {
+  if (/\b(?:blog|posts?|writing|readers?)\b/.test(lower)) {
     add("blog post writing readers personal experiences reflecting stories community");
   }
-  if (/\bemotions?|express|reflection|reflect|connection|connect|hobb(?:y|ies)\b/.test(lower)) {
+  if (/\b(?:emotions?|express|reflection|reflect|connection|connect|hobb(?:y|ies))\b/.test(lower)) {
     add("reflecting emotions expression personal experiences writing blog connect others");
   }
   if (expandedTerms.length > 0) {
