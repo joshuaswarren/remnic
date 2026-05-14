@@ -309,13 +309,31 @@ test("AMB installer registers Remnic provider and bridge commands", {
     ].join("\n"),
   );
   await writeFile(
+    path.join(memoryDir, "new_provider.py"),
+    [
+      "from .base import MemoryProvider",
+      "",
+      "class NewMemoryProvider(MemoryProvider):",
+      "    provider = 'NewMemory'",
+      "    name = 'new-memory'",
+      "    description = 'New upstream memory provider fixture.'",
+      "    kind = 'local'",
+      "    link = 'https://example.com/new-memory'",
+      "    logo = ''",
+      "    variant = 'default'",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
     path.join(memoryDir, "__init__.py"),
     [
       "from .base import MemoryProvider",
       "from .bm25 import BM25MemoryProvider",
+      "from .new_provider import NewMemoryProvider",
       "",
       "REGISTRY: dict[str, type[MemoryProvider]] = {",
       '    "bm25": BM25MemoryProvider,',
+      '    "new-memory": NewMemoryProvider,',
       "}",
       "",
     ].join("\n"),
@@ -434,6 +452,10 @@ test("AMB installer registers Remnic provider and bridge commands", {
     patchedRegistry.match(/"remnic": _LazyMemoryProvider/g)?.length,
     1,
   );
+  assert.equal(
+    patchedRegistry.match(/"new-memory": _LazyMemoryProvider\("\.new_provider", "NewMemoryProvider"\)/g)?.length,
+    1,
+  );
   assert.match(patchedRegistry, /lazy optional-provider imports/);
   assert.match(patchedRegistry, /_MEMORY_PROVIDER_METADATA/);
   assert.match(patchedRegistry, /if name\.startswith\("_"\):\n            raise AttributeError\(name\)/);
@@ -510,6 +532,8 @@ test("AMB installer registers Remnic provider and bridge commands", {
     "assert REGISTRY['bm25'].logo == ''",
     "assert REGISTRY['bm25'].variant == 'default'",
     "assert not hasattr(REGISTRY['remnic'], '_missing_private_attr')",
+    "assert REGISTRY['new-memory'].provider == 'NewMemory'",
+    "assert REGISTRY['new-memory'].name == 'new-memory'",
     "assert REGISTRY['mem0'].provider == 'Mem0'",
     "assert REGISTRY['mem0'].name == 'mem0'",
     "assert DATASET_REGISTRY['personamem'].published is True",
@@ -2244,6 +2268,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const nonCodexLlmPath = path.join(tmpDir, "non-codex-llm-result.json");
   const percentageAccuracyPath = path.join(tmpDir, "percentage-accuracy-result.json");
   const inconsistentAccuracyPath = path.join(tmpDir, "inconsistent-accuracy-result.json");
+  const aggregateWinningPath = path.join(tmpDir, "aggregate-winning-result.json");
   const agentFailedPath = path.join(tmpDir, "agent-failed-result.json");
   const agentWinningPath = path.join(tmpDir, "agent-winning-result.json");
   const artifactWinningPath = path.join(tmpDir, "artifact-winning-result.json");
@@ -2365,6 +2390,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
     }),
   );
   await writeFile(
+    aggregateWinningPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "remnic",
+      run_name: "remnic-aggregate-only",
+      mode: "rag",
+      total_queries: 100,
+      correct: 53,
+      accuracy: 0.53,
+      answer_llm: "codex:gpt-5.5:xhigh:fast",
+      judge_llm: "codex:gpt-5.5:xhigh:fast",
+    }),
+  );
+  await writeFile(
     agentWinningPath,
     JSON.stringify({
       dataset: "personamem",
@@ -2422,6 +2462,10 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       correct: 2,
       ingestedDocs: 7,
       accuracy: 1,
+      results: [
+        { correct: true },
+        { correct: true },
+      ],
       llm: {
         answerLlm: "codex:gpt-5.5:xhigh:fast",
         judgeLlm: "codex:gpt-5.5:xhigh:fast",
@@ -2464,6 +2508,10 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       accuracy: 0.53,
       answer_llm: "codex:gpt-5.5:xhigh:fast",
       judge_llm: "codex:gpt-5.5:xhigh:fast",
+      results: Array.from({ length: 100 }, (_, index) => ({
+        query_id: `q${index + 1}`,
+        correct: index < 53,
+      })),
     }),
   );
   await writeFile(
@@ -2595,6 +2643,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(inconsistentAccuracy.status, 2);
   assert.match(inconsistentAccuracy.stderr, /result\.accuracy is inconsistent with result\.correct \/ result\.total_queries/);
   assert.equal(inconsistentAccuracy.stdout, "");
+
+  const aggregateWinning = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    aggregateWinningPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(aggregateWinning.status, 2);
+  assert.match(aggregateWinning.stderr, /result\.results must contain exactly result\.total_queries entries/);
+  assert.equal(aggregateWinning.stdout, "");
 
   const agentFailed = spawnSync(process.execPath, [
     verifier,

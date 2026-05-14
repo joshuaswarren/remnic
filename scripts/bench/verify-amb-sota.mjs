@@ -122,6 +122,9 @@ async function main() {
     epsilon,
     sota: beatsTarget,
   };
+  if (beatsTarget) {
+    assertFullSotaResults(result.results, totalQueries);
+  }
   const provenance = await collectProvenance(args.ambDir, {
     allowRemnicAmbPatches: args.allowRemnicAmbPatches === true,
     ambExpectedCommit: args.ambExpectedCommit,
@@ -337,6 +340,15 @@ function hasContinuousPerResultScore(results) {
       score !== 0 &&
       score !== 1;
   });
+}
+
+function assertFullSotaResults(results, totalQueries) {
+  if (!Array.isArray(results) || results.length !== totalQueries) {
+    fail(
+      `result.results must contain exactly result.total_queries entries for SOTA verification; got ${Array.isArray(results) ? results.length : "absent"}`,
+      2,
+    );
+  }
 }
 
 async function writeManifest(pathname, { verdict, result, resultPath, externalSource, command, provenance }) {

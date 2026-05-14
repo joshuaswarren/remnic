@@ -184,7 +184,10 @@ def patch_memory_provider(amb_root: Path, source_dir: Path) -> None:
 
     shutil.copy2(source_dir / "remnic.py", memory_dir / "remnic.py")
 
-    init_path.write_text(memory_init_text())
+    specs = dict(MEMORY_PROVIDER_SPECS)
+    specs.update(existing_memory_provider_specs(init_path.read_text()))
+    specs["remnic"] = MEMORY_PROVIDER_SPECS["remnic"]
+    init_path.write_text(memory_init_text(specs))
 
 
 def patch_dataset_registry(amb_root: Path) -> None:
@@ -196,14 +199,19 @@ def patch_dataset_registry(amb_root: Path) -> None:
     init_path.write_text(dataset_init_text(specs))
 
 
-def memory_init_text() -> str:
+def memory_init_text(specs: dict[str, tuple[str, str]]) -> str:
     registry_entries = "\n".join(
         f'    "{name}": _LazyMemoryProvider("{module}", "{class_name}"),'
-        for name, (module, class_name) in MEMORY_PROVIDER_SPECS.items()
+        for name, (module, class_name) in specs.items()
+    )
+    metadata_class_names = dict.fromkeys(
+        class_name
+        for _, class_name in specs.values()
+        if class_name in MEMORY_PROVIDER_METADATA
     )
     metadata_entries = "\n".join(
         f"    {class_name!r}: {MEMORY_PROVIDER_METADATA[class_name]!r},"
-        for _, class_name in MEMORY_PROVIDER_SPECS.values()
+        for class_name in metadata_class_names
     )
     return f'''"""Memory provider registry with lazy optional-provider imports.
 
@@ -259,7 +267,15 @@ def get_memory_provider(name: str) -> MemoryProvider:
 '''
 
 
+def existing_memory_provider_specs(text: str) -> dict[str, tuple[str, str]]:
+    return existing_registry_specs(text, "_LazyMemoryProvider")
+
+
 def existing_dataset_specs(text: str) -> dict[str, tuple[str, str]]:
+    return existing_registry_specs(text, "_LazyDataset")
+
+
+def existing_registry_specs(text: str, lazy_class_name: str) -> dict[str, tuple[str, str]]:
     imports = {
         class_name: module_name
         for module_name, class_name in re.findall(
@@ -273,7 +289,7 @@ def existing_dataset_specs(text: str) -> dict[str, tuple[str, str]]:
         return {}
     specs: dict[str, tuple[str, str]] = {}
     for name, module_name, class_name in re.findall(
-        r"[\"']([^\"']+)[\"']\s*:\s*_LazyDataset\([\"']([^\"']+)[\"'],\s*[\"']([^\"']+)[\"']\)",
+        rf"[\"']([^\"']+)[\"']\s*:\s*{re.escape(lazy_class_name)}\([\"']([^\"']+)[\"'],\s*[\"']([^\"']+)[\"']\)",
         registry_match.group("body"),
     ):
         specs[name] = (module_name, class_name)
