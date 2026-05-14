@@ -2243,6 +2243,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const missingLlmPath = path.join(tmpDir, "missing-llm-result.json");
   const nonCodexLlmPath = path.join(tmpDir, "non-codex-llm-result.json");
   const percentageAccuracyPath = path.join(tmpDir, "percentage-accuracy-result.json");
+  const inconsistentAccuracyPath = path.join(tmpDir, "inconsistent-accuracy-result.json");
   const agentFailedPath = path.join(tmpDir, "agent-failed-result.json");
   const agentWinningPath = path.join(tmpDir, "agent-winning-result.json");
   const artifactWinningPath = path.join(tmpDir, "artifact-winning-result.json");
@@ -2350,6 +2351,20 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
     }),
   );
   await writeFile(
+    inconsistentAccuracyPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "remnic",
+      run_name: "remnic",
+      total_queries: 100,
+      correct: 52,
+      accuracy: 0.521,
+      answer_llm: "codex:gpt-5.5:xhigh:fast",
+      judge_llm: "codex:gpt-5.5:xhigh:fast",
+    }),
+  );
+  await writeFile(
     agentWinningPath,
     JSON.stringify({
       dataset: "personamem",
@@ -2446,7 +2461,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       mode: "rag",
       total_queries: 100,
       correct: 53,
-      accuracy: 0.521,
+      accuracy: 0.53,
       answer_llm: "codex:gpt-5.5:xhigh:fast",
       judge_llm: "codex:gpt-5.5:xhigh:fast",
     }),
@@ -2565,6 +2580,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(percentageAccuracy.status, 2);
   assert.match(percentageAccuracy.stderr, /result\.accuracy must be a fraction between 0 and 1/);
   assert.equal(percentageAccuracy.stdout, "");
+
+  const inconsistentAccuracy = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    inconsistentAccuracyPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(inconsistentAccuracy.status, 2);
+  assert.match(inconsistentAccuracy.stderr, /result\.accuracy is inconsistent with result\.correct \/ result\.total_queries/);
+  assert.equal(inconsistentAccuracy.stdout, "");
 
   const agentFailed = spawnSync(process.execPath, [
     verifier,

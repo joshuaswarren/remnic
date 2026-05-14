@@ -14,6 +14,7 @@ const remnicRepoRoot = path.resolve(__dirname, "../..");
 const EXPECTED_CODEX_LLM_ID = "codex:gpt-5.5:xhigh:fast";
 const REMNIC_REPO_LABEL = "<remnic-repo>";
 const AMB_REPO_LABEL = "<agent-memory-benchmark-checkout>";
+const BINARY_ACCURACY_TOLERANCE = 5e-4;
 const REMNIC_AMB_INSTALLER_PATCH_PATHS = new Set([
   "src/memory_bench/memory/remnic.py",
   "src/memory_bench/memory/__init__.py",
@@ -49,7 +50,7 @@ async function main() {
 
   const dataset = nonEmptyString(result.dataset, "result.dataset");
   const split = nonEmptyString(result.split, "result.split");
-  const accuracy = fractionNumber(result.accuracy, "result.accuracy");
+  const reportedAccuracy = fractionNumber(result.accuracy, "result.accuracy");
   const memoryProviderResult = fieldValue(result, [
     ["memory_provider", "result.memory_provider"],
     ["memory", "result.memory"],
@@ -82,6 +83,7 @@ async function main() {
       1,
     );
   }
+  const accuracy = verifiedAccuracy(result, totalQueries, reportedAccuracy);
   if (!isRemnicMemoryProvider(memoryProvider)) {
     fail(
       `${memoryProviderResult.name} must be "remnic" for SOTA verification; got ${JSON.stringify(memoryProvider)} (run_name=${JSON.stringify(runName)})`,
@@ -286,6 +288,55 @@ function assertNoEmbeddedVerificationFailure(result) {
 function failedStatus(value) {
   return typeof value === "string" &&
     /\b(?:reject|rejected|fail|failed|dirty|invalid|error|unverified|missing)/i.test(value);
+}
+
+function verifiedAccuracy(result, totalQueries, reportedAccuracy) {
+  const binaryAccuracy = binaryAccuracyFromCounts(result, totalQueries);
+  if (binaryAccuracy === null) {
+    return reportedAccuracy;
+  }
+  if (Math.abs(reportedAccuracy - binaryAccuracy) > BINARY_ACCURACY_TOLERANCE) {
+    fail(
+      `result.accuracy is inconsistent with result.correct / result.total_queries: got ${reportedAccuracy}, expected ${binaryAccuracy}`,
+      2,
+    );
+  }
+  return binaryAccuracy;
+}
+
+function binaryAccuracyFromCounts(result, totalQueries) {
+  if (hasContinuousPerResultScore(result.results)) {
+    return null;
+  }
+  const correctResult = fieldValue(result, [
+    ["correct", "result.correct"],
+    ["correct_count", "result.correct_count"],
+    ["correctCount", "result.correctCount"],
+  ]);
+  if (correctResult.value === undefined || correctResult.value === null) {
+    return null;
+  }
+  const correct = finiteNumber(correctResult.value, correctResult.name);
+  if (!Number.isInteger(correct) || correct < 0 || correct > totalQueries) {
+    fail(`${correctResult.name} must be an integer between 0 and result.total_queries`, 2);
+  }
+  return correct / totalQueries;
+}
+
+function hasContinuousPerResultScore(results) {
+  if (!Array.isArray(results)) {
+    return false;
+  }
+  return results.some((entry) => {
+    if (!isPlainObject(entry)) {
+      return false;
+    }
+    const score = entry.score;
+    return typeof score === "number" &&
+      Number.isFinite(score) &&
+      score !== 0 &&
+      score !== 1;
+  });
 }
 
 async function writeManifest(pathname, { verdict, result, resultPath, externalSource, command, provenance }) {
