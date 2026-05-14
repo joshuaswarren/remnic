@@ -41,6 +41,7 @@ async function main() {
   if (result.oracle === true) {
     fail("oracle-aided AMB runs cannot be verified for SOTA", 2);
   }
+  assertNoEmbeddedVerificationFailure(result);
   const external = args.external
     ? await readJson(args.external, "external results")
     : await fetchJson(DEFAULT_EXTERNAL_RESULTS_URL);
@@ -260,6 +261,31 @@ function jsonObject(value, label) {
     fail(`${label} must be a JSON object`, 2);
   }
   return value;
+}
+
+function assertNoEmbeddedVerificationFailure(result) {
+  if (result.provenanceVerified === false) {
+    fail("result.provenanceVerified must not be false for SOTA verification", 2);
+  }
+  if (failedStatus(result.provenanceStatus)) {
+    fail(`result.provenanceStatus records failed verification: ${JSON.stringify(result.provenanceStatus)}`, 2);
+  }
+
+  const verification = isPlainObject(result.verification) ? result.verification : null;
+  if (!verification) {
+    return;
+  }
+  if (verification.provenanceVerified === false) {
+    fail("result.verification.provenanceVerified must not be false for SOTA verification", 2);
+  }
+  if (failedStatus(verification.status)) {
+    fail(`result.verification.status records failed verification: ${JSON.stringify(verification.status)}`, 2);
+  }
+}
+
+function failedStatus(value) {
+  return typeof value === "string" &&
+    /\b(?:reject|rejected|fail|failed|dirty|invalid|error|unverified|missing)/i.test(value);
 }
 
 async function writeManifest(pathname, { verdict, result, resultPath, externalSource, command, provenance }) {

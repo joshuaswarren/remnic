@@ -2246,6 +2246,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const agentFailedPath = path.join(tmpDir, "agent-failed-result.json");
   const agentWinningPath = path.join(tmpDir, "agent-winning-result.json");
   const artifactWinningPath = path.join(tmpDir, "artifact-winning-result.json");
+  const artifactRejectedProvenancePath = path.join(tmpDir, "artifact-rejected-provenance-result.json");
   const overfilledPath = path.join(tmpDir, "overfilled-result.json");
   const winningPath = path.join(tmpDir, "winning-result.json");
   const oraclePath = path.join(tmpDir, "oracle-result.json");
@@ -2409,6 +2410,29 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       llm: {
         answerLlm: "codex:gpt-5.5:xhigh:fast",
         judgeLlm: "codex:gpt-5.5:xhigh:fast",
+      },
+    }),
+  );
+  await writeFile(
+    artifactRejectedProvenancePath,
+    JSON.stringify({
+      schemaVersion: 1,
+      dataset: "personamem",
+      split: "128k",
+      memoryProvider: "remnic",
+      runName: "remnic-agent-rejected-provenance",
+      mode: "agent",
+      totalQueries: 2,
+      correct: 2,
+      accuracy: 1,
+      provenanceVerified: false,
+      llm: {
+        answerLlm: "codex:gpt-5.5:xhigh:fast",
+        judgeLlm: "codex:gpt-5.5:xhigh:fast",
+      },
+      verification: {
+        status: "rejected_dirty_provenance",
+        reason: "Original verification rejected dirty provenance.",
       },
     }),
   );
@@ -2611,6 +2635,23 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(artifactManifest.run.runName, "remnic-agent-artifact");
   assert.equal(artifactManifest.run.totalQueries, 2);
   assert.equal(artifactManifest.run.ingestedDocs, 7);
+
+  const artifactRejectedProvenance = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    artifactRejectedProvenancePath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "2",
+    "--amb-dir",
+    cleanAmbRepo,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(artifactRejectedProvenance.status, 2);
+  assert.match(artifactRejectedProvenance.stderr, /result\.provenanceVerified must not be false/);
+  assert.equal(artifactRejectedProvenance.stdout, "");
 
   const losing = spawnSync(process.execPath, [
     verifier,
