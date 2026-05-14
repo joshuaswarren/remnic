@@ -692,7 +692,7 @@ test("AMB runner requires explicit SOTA coverage floor", async () => {
   const result = spawnSync("bash", [
     path.resolve("scripts", "bench", "run-amb-remnic.sh"),
     "--amb",
-    path.join(os.tmpdir(), "missing-amb-checkout"),
+    "missing-amb-checkout",
     "--verify-sota",
   ], {
     encoding: "utf8",
@@ -1131,7 +1131,7 @@ test("AMB runner rejects passthrough arguments for SOTA verification", async () 
     const result = spawnSync("bash", [
       path.resolve("scripts", "bench", "run-amb-remnic.sh"),
       "--amb",
-      path.join(os.tmpdir(), "missing-amb-checkout"),
+      "missing-amb-checkout",
       "--verify-sota",
       "--min-queries",
       "100",
@@ -1154,7 +1154,7 @@ test("AMB runner rejects query-limited SOTA verification", async () => {
   const result = spawnSync("bash", [
     path.resolve("scripts", "bench", "run-amb-remnic.sh"),
     "--amb",
-    path.join(os.tmpdir(), "missing-amb-checkout"),
+    "missing-amb-checkout",
     "--verify-sota",
     "--min-queries",
     "100",
