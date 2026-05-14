@@ -814,6 +814,13 @@ test("AMB runner verifies SOTA results from absolute output directories", async 
       "if (!existsSync(resultPath)) {",
       "  throw new Error(`missing result at ${resultPath}`);",
       "}",
+      "if (!args.includes('--allow-remnic-amb-patches')) {",
+      "  throw new Error('missing --allow-remnic-amb-patches');",
+      "}",
+      "const expectedCommit = args[args.indexOf('--amb-expected-commit') + 1];",
+      "if (expectedCommit !== process.env.EXPECTED_AMB_COMMIT) {",
+      "  throw new Error(`unexpected AMB commit ${expectedCommit}`);",
+      "}",
       "process.stdout.write(JSON.stringify({ sota: true }) + '\\n');",
       "",
     ].join("\n"),
@@ -857,6 +864,18 @@ test("AMB runner verifies SOTA results from absolute output directories", async 
   await chmod(fakeCodexPath, 0o755);
   await chmod(fakeUvPath, 0o755);
   await chmod(fakeOmbPath, 0o755);
+  runGit(ambRoot, ["init"]);
+  runGit(ambRoot, ["add", "."]);
+  runGit(ambRoot, [
+    "-c",
+    "user.email=remnic-tests@example.invalid",
+    "-c",
+    "user.name=Remnic Tests",
+    "commit",
+    "-m",
+    "fixture",
+  ]);
+  const expectedAmbCommit = gitOutput(ambRoot, ["rev-parse", "HEAD"]);
 
   const result = spawnSync("bash", [
     path.resolve("scripts", "bench", "run-amb-remnic.sh"),
@@ -875,6 +894,7 @@ test("AMB runner verifies SOTA results from absolute output directories", async 
       REMNIC_AMB_CODEX_BIN: fakeCodexPath,
       REMNIC_REPO: fakeRemnicRoot,
       VERIFIER_ARGS_PATH: verifierArgsPath,
+      EXPECTED_AMB_COMMIT: expectedAmbCommit,
     },
   });
 
@@ -2131,12 +2151,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const manifestPath = path.join(tmpDir, "winning-manifest.json");
   const cleanAmbRepo = path.join(tmpDir, "clean-amb-repo");
   const dirtyAmbRepo = path.join(tmpDir, "dirty-amb-repo");
+  const patchedAmbRepo = path.join(tmpDir, "patched-amb-repo");
   const nonGitAmbRepo = path.join(tmpDir, "non-git-amb-repo");
+  const patchedManifestPath = path.join(tmpDir, "patched-winning-manifest.json");
   const verifier = path.join(repoRoot, "scripts", "bench", "verify-amb-sota.mjs");
 
   await initCleanGitRepo(cleanAmbRepo);
   await initCleanGitRepo(dirtyAmbRepo);
+  await initCleanGitRepo(patchedAmbRepo);
+  const dirtyAmbCommit = gitOutput(dirtyAmbRepo, ["rev-parse", "HEAD"]);
+  const patchedAmbCommit = gitOutput(patchedAmbRepo, ["rev-parse", "HEAD"]);
   await writeFile(path.join(dirtyAmbRepo, "untracked.txt"), "dirty\n");
+  await mkdir(path.join(patchedAmbRepo, "src", "memory_bench", "memory"), { recursive: true });
+  await mkdir(path.join(patchedAmbRepo, "src", "memory_bench", "llm"), { recursive: true });
+  await writeFile(path.join(patchedAmbRepo, "src", "memory_bench", "memory", "remnic.py"), "patched\n");
+  await writeFile(path.join(patchedAmbRepo, "src", "memory_bench", "llm", "codex.py"), "patched\n");
   await mkdir(nonGitAmbRepo, { recursive: true });
 
   await writeFile(
@@ -2487,6 +2516,50 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.match(dirtyAmbProvenance.stderr, /AMB checkout provenance is dirty or unavailable/);
   assert.equal(dirtyAmbProvenance.stdout, "");
 
+  const dirtyAllowedAmbProvenance = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    winningPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+    "--amb-dir",
+    dirtyAmbRepo,
+    "--allow-remnic-amb-patches",
+    "--amb-expected-commit",
+    dirtyAmbCommit,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(dirtyAllowedAmbProvenance.status, 2);
+  assert.match(dirtyAllowedAmbProvenance.stderr, /unexpected changes: untracked\.txt/);
+  assert.equal(dirtyAllowedAmbProvenance.stdout, "");
+
+  const patchedAmbProvenance = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    winningPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+    "--manifest-out",
+    patchedManifestPath,
+    "--amb-dir",
+    patchedAmbRepo,
+    "--allow-remnic-amb-patches",
+    "--amb-expected-commit",
+    patchedAmbCommit,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(patchedAmbProvenance.status, 0, patchedAmbProvenance.stderr);
+  const patchedManifest = JSON.parse(await readFile(patchedManifestPath, "utf8"));
+  assert.equal(patchedManifest.amb.dirty, true);
+  assert.equal(patchedManifest.amb.expectedCommit, patchedAmbCommit);
+  assert.equal(patchedManifest.amb.acceptedDirtyReason, "remnic_amb_installer_patches");
+
   const winning = spawnSync(process.execPath, [
     verifier,
     "--result",
@@ -2546,6 +2619,14 @@ function runGit(repoDir: string, args: string[]): void {
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+function gitOutput(repoDir: string, args: string[]): string {
+  const result = spawnSync("git", ["-C", repoDir, ...args], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result.stdout.trim();
 }
 
 function findHelperNode(): string | undefined {

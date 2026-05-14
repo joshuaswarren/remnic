@@ -16,6 +16,7 @@ AMB_CLI="${REMNIC_AMB_CLI:-}"
 VERIFY_SOTA=0
 MIN_QUERIES=""
 INSTALL_ONLY=0
+AMB_PREINSTALL_COMMIT=""
 AMB_EXTRA_ARGS=()
 
 usage() {
@@ -303,6 +304,21 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 export UV_LINK_MODE="${UV_LINK_MODE:-copy}"
 
+if [[ "$VERIFY_SOTA" -eq 1 ]]; then
+  if ! git -C "$AMB_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "error: --verify-sota requires --amb to be a git checkout so AMB provenance can be recorded" >&2
+    exit 2
+  fi
+  if ! AMB_PREINSTALL_COMMIT="$(git -C "$AMB_DIR" rev-parse HEAD 2>/dev/null)"; then
+    echo "error: --verify-sota requires --amb to have a checked-out git commit" >&2
+    exit 2
+  fi
+  if [[ -n "$(git -C "$AMB_DIR" status --porcelain --untracked-files=all)" ]]; then
+    echo "error: --verify-sota requires a clean AMB checkout before Remnic installs benchmark patches" >&2
+    exit 2
+  fi
+fi
+
 export REMNIC_REPO
 REMNIC_REPO="$(resolve_existing_dir REMNIC_REPO "${REMNIC_REPO:-$REMNIC_REPO_DEFAULT}")"
 if [[ -n "$REMNIC_NODE" ]]; then
@@ -428,7 +444,11 @@ if [[ "$VERIFY_SOTA" -eq 1 ]]; then
     --manifest-out "${result_path%.json}.sota-manifest.json"
     --command "${cmd[*]}"
     --amb-dir "$AMB_DIR"
+    --allow-remnic-amb-patches
   )
+  if [[ -n "$AMB_PREINSTALL_COMMIT" ]]; then
+    verify_cmd+=(--amb-expected-commit "$AMB_PREINSTALL_COMMIT")
+  fi
   if [[ -n "$MIN_QUERIES" ]]; then
     verify_cmd+=(--min-queries "$MIN_QUERIES")
   fi

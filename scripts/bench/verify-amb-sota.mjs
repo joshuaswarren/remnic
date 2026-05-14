@@ -14,6 +14,19 @@ const remnicRepoRoot = path.resolve(__dirname, "../..");
 const EXPECTED_CODEX_LLM_ID = "codex:gpt-5.5:xhigh:fast";
 const REMNIC_REPO_LABEL = "<remnic-repo>";
 const AMB_REPO_LABEL = "<agent-memory-benchmark-checkout>";
+const REMNIC_AMB_INSTALLER_PATCH_PATHS = new Set([
+  "src/memory_bench/memory/remnic.py",
+  "src/memory_bench/memory/__init__.py",
+  "src/memory_bench/dataset/__init__.py",
+  "src/memory_bench/llm/codex.py",
+  "src/memory_bench/llm/__init__.py",
+  "src/memory_bench/cli.py",
+  "src/memory_bench/modes/__init__.py",
+  "src/memory_bench/modes/rag.py",
+  "src/memory_bench/modes/agentic_rag.py",
+  "src/memory_bench/judge.py",
+  "src/memory_bench/runner.py",
+]);
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -106,7 +119,12 @@ async function main() {
     epsilon,
     sota: beatsTarget,
   };
-  const provenance = await collectProvenance(args.ambDir);
+  const provenance = await collectProvenance(args.ambDir, {
+    allowRemnicAmbPatches: args.allowRemnicAmbPatches === true,
+    ambExpectedCommit: args.ambExpectedCommit,
+    resultPath: args.result,
+    manifestOut: args.manifestOut,
+  });
   if (beatsTarget) {
     assertCleanSotaProvenance(provenance);
   }
@@ -169,6 +187,18 @@ function parseArgs(argv) {
     }
     if (arg.startsWith("--amb-dir=")) {
       args.ambDir = arg.slice("--amb-dir=".length);
+      continue;
+    }
+    if (arg === "--allow-remnic-amb-patches") {
+      args.allowRemnicAmbPatches = true;
+      continue;
+    }
+    if (arg === "--amb-expected-commit") {
+      args.ambExpectedCommit = requiredValue(argv, ++index, arg);
+      continue;
+    }
+    if (arg.startsWith("--amb-expected-commit=")) {
+      args.ambExpectedCommit = arg.slice("--amb-expected-commit=".length);
       continue;
     }
     if (arg.startsWith("--external-results=")) {
@@ -266,29 +296,71 @@ async function writeManifest(pathname, { verdict, result, resultPath, externalSo
   await writeFile(pathname, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-async function collectProvenance(ambDir) {
+async function collectProvenance(ambDir, options = {}) {
   const ambRepoRoot = ambDir ? path.resolve(ambDir) : null;
   return {
     remnic: await gitProvenance(remnicRepoRoot, REMNIC_REPO_LABEL),
-    amb: ambRepoRoot ? await gitProvenance(ambRepoRoot, AMB_REPO_LABEL) : null,
+    amb: ambRepoRoot
+      ? await gitProvenance(ambRepoRoot, AMB_REPO_LABEL, ambProvenanceOptions(ambRepoRoot, options))
+      : null,
   };
 }
 
-async function gitProvenance(repoPath, repoLabel) {
+function ambProvenanceOptions(ambRepoRoot, options) {
+  const allowedDirtyPaths = new Set(REMNIC_AMB_INSTALLER_PATCH_PATHS);
+  for (const candidate of [options.resultPath, options.manifestOut]) {
+    const relative = relativeRepoPath(ambRepoRoot, candidate);
+    if (relative) {
+      allowedDirtyPaths.add(relative);
+    }
+  }
   return {
+    allowRemnicAmbPatches: options.allowRemnicAmbPatches === true,
+    expectedCommit: options.ambExpectedCommit,
+    allowedDirtyPaths,
+  };
+}
+
+async function gitProvenance(repoPath, repoLabel, options = {}) {
+  const statusEntries = await gitStatusEntries(repoPath);
+  const dirty = Array.isArray(statusEntries) ? statusEntries.length > 0 : null;
+  const provenance = {
     repo: repoLabel,
     sourcePath: repoPath,
     commit: await gitRev(repoPath),
-    dirty: await gitDirty(repoPath),
+    dirty,
   };
+  if (options.expectedCommit) {
+    provenance.expectedCommit = options.expectedCommit;
+  }
+  if (dirty === true && options.allowRemnicAmbPatches === true) {
+    const disallowedDirtyPaths = disallowedAmbPatchPaths(statusEntries, options.allowedDirtyPaths);
+    if (
+      disallowedDirtyPaths.length === 0 &&
+      (!options.expectedCommit || provenance.commit === options.expectedCommit)
+    ) {
+      provenance.dirtyAllowed = true;
+      provenance.acceptedDirtyReason = "remnic_amb_installer_patches";
+    } else {
+      provenance.disallowedDirtyPaths = disallowedDirtyPaths;
+    }
+  }
+  return provenance;
 }
 
 function publicProvenance(provenance) {
-  return {
+  const result = {
     repo: provenance.repo,
     commit: provenance.commit,
     dirty: provenance.dirty,
   };
+  if (provenance.acceptedDirtyReason) {
+    result.acceptedDirtyReason = provenance.acceptedDirtyReason;
+  }
+  if (provenance.expectedCommit) {
+    result.expectedCommit = provenance.expectedCommit;
+  }
+  return result;
 }
 
 function assertCleanSotaProvenance(provenance) {
@@ -303,8 +375,20 @@ function assertCleanRepoProvenance(provenance, label) {
   if (!provenance.commit) {
     fail(`${label} provenance is missing a git commit; SOTA verification requires a git checkout`, 2);
   }
+  if (provenance.expectedCommit && provenance.commit !== provenance.expectedCommit) {
+    fail(
+      `${label} commit ${provenance.commit} does not match pre-install commit ${provenance.expectedCommit}`,
+      2,
+    );
+  }
   if (provenance.dirty !== false) {
-    fail(`${label} provenance is dirty or unavailable; commit or discard changes before SOTA verification`, 2);
+    if (provenance.dirtyAllowed === true) {
+      return;
+    }
+    const dirtyDetails = provenance.disallowedDirtyPaths?.length
+      ? `; unexpected changes: ${provenance.disallowedDirtyPaths.slice(0, 5).join(", ")}`
+      : "";
+    fail(`${label} provenance is dirty or unavailable${dirtyDetails}; commit or discard changes before SOTA verification`, 2);
   }
 }
 
@@ -337,13 +421,58 @@ async function gitRev(repo) {
   }
 }
 
-async function gitDirty(repo) {
+async function gitStatusEntries(repo) {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", repo, "status", "--porcelain"]);
-    return stdout.trim().length > 0;
+    const { stdout } = await execFileAsync("git", [
+      "-C",
+      repo,
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+    ]);
+    return stdout
+      .split(/\r?\n/)
+      .filter((line) => line.trim().length > 0)
+      .map((line) => gitStatusPath(line));
   } catch {
     return null;
   }
+}
+
+function gitStatusPath(line) {
+  const rawPath = line.slice(3);
+  const renamedPath = rawPath.includes(" -> ") ? rawPath.split(" -> ").at(-1) : rawPath;
+  return normalizeRepoPath(unquoteGitPath((renamedPath ?? rawPath).trim()));
+}
+
+function unquoteGitPath(value) {
+  if (!value.startsWith('"') || !value.endsWith('"')) {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value.slice(1, -1);
+  }
+}
+
+function disallowedAmbPatchPaths(statusPaths, allowedDirtyPaths = new Set()) {
+  return statusPaths.filter((statusPath) => !allowedDirtyPaths.has(normalizeRepoPath(statusPath)));
+}
+
+function relativeRepoPath(repoRoot, candidate) {
+  if (!candidate) {
+    return null;
+  }
+  const relative = path.relative(repoRoot, path.resolve(candidate));
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+  return normalizeRepoPath(relative);
+}
+
+function normalizeRepoPath(value) {
+  return value.split(path.sep).join("/");
 }
 
 function nonEmptyString(value, name) {
@@ -478,6 +607,8 @@ Options:
   --manifest-out <file>      Write a reproducibility manifest JSON.
   --command <string>         Command used to produce the AMB result.
   --amb-dir <dir>            Clean AMB git checkout used for the run.
+  --amb-expected-commit <sha> Pre-install AMB commit expected after installer patches.
+  --allow-remnic-amb-patches Accept dirty AMB status limited to Remnic installer files.
   --min-queries <n>          Required full split query count.
   --epsilon <n>              Require accuracy to exceed current best by n.
   -h, --help                 Show this help.
