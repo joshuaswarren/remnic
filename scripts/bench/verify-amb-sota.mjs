@@ -48,7 +48,7 @@ async function main() {
 
   const dataset = nonEmptyString(result.dataset, "result.dataset");
   const split = nonEmptyString(result.split, "result.split");
-  const accuracy = finiteNumber(result.accuracy, "result.accuracy");
+  const accuracy = fractionNumber(result.accuracy, "result.accuracy");
   const memoryProviderResult = fieldValue(result, [
     ["memory_provider", "result.memory_provider"],
     ["memory", "result.memory"],
@@ -100,7 +100,7 @@ async function main() {
       typeof currentBest?.accuracy === "number" ? currentBest.accuracy : -Infinity;
     return entryAccuracy > bestAccuracy ? entry : currentBest;
   }, entries[0]);
-  const target = finiteNumber(best.accuracy, `external_results.${dataset}.${split}.accuracy`);
+  const target = fractionNumber(best.accuracy, `external_results.${dataset}.${split}.accuracy`);
   const epsilon = args.epsilon ?? 0;
   const beatsTarget = accuracy > target + epsilon;
   const verdict = {
@@ -580,6 +580,14 @@ function finiteNumber(value, name) {
     fail(`${name} must be a finite number`, 2);
   }
   return value;
+}
+
+function fractionNumber(value, name) {
+  const number = finiteNumber(value, name);
+  if (number < 0 || number > 1) {
+    fail(`${name} must be a fraction between 0 and 1`, 2);
+  }
+  return number;
 }
 
 function parsePositiveInteger(value, flag) {
