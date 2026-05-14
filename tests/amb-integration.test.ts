@@ -1754,6 +1754,80 @@ test("AMB helper answers multiple-choice direct-answer with native evidence rank
   assert.ok(Array.isArray(payload.raw_response.optionScores));
 });
 
+test("AMB helper keeps MCQ-like retrieved memory evidence for native ranking", {
+  skip:
+    existsSync(builtCoreEntry) && helperNode
+      ? false
+      : "built @remnic/core dist and a Node 22 runtime are required",
+}, async () => {
+  assert.ok(helperNode);
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-native-mcq-evidence-lines-"));
+  const storeDir = path.join(tmpDir, "store");
+  const fakeCodexPath = path.join(tmpDir, "fake-codex");
+  const helperPath = path.join(repoRoot, "integrations", "amb", "remnic-amb-provider.mjs");
+  const env = {
+    ...process.env,
+    REMNIC_REPO: repoRoot,
+    REMNIC_AMB_CODEX_BIN: fakeCodexPath,
+    REMNIC_AMB_EXTRACTION_DEADLINE_MS: "300000",
+    REMNIC_AMB_NATIVE_ONLY_DIRECT_ANSWER: "1",
+  };
+
+  await writeFile(fakeCodexPath, "#!/usr/bin/env sh\nexit 23\n");
+  await chmod(fakeCodexPath, 0o755);
+
+  const checklistEvidence = Array.from({ length: 12 }, () => [
+    "My saved game-night checklist said:",
+    "(a) Costume party felt like too much planning.",
+    "(b) Social games like charades brought laughter, helped everyone bond, and made the fun-filled game night memorable.",
+    "(c) Board games were less lively.",
+    "(d) Trivia challenge felt too competitive.",
+  ].join("\n")).join("\n\n");
+
+  const ingest = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env,
+    input: JSON.stringify({
+      command: "ingest",
+      storeDir,
+      documents: [
+        {
+          id: "game-night-checklist",
+          content: checklistEvidence,
+          user_id: "u1",
+          timestamp: "2026-05-12T00:00:00Z",
+        },
+      ],
+    }),
+  });
+  assert.equal(ingest.status, 0, ingest.stderr);
+
+  const result = spawnSync(helperNode, [helperPath], {
+    encoding: "utf8",
+    env,
+    input: JSON.stringify({
+      command: "direct_answer",
+      storeDir,
+      query: [
+        "What are some engaging activities you would suggest for a fun-filled game night with friends?",
+        "",
+        "(a) Costume party",
+        "(b) Social games like charades",
+        "(c) Settlers of Catan",
+        "(d) Trivia challenge",
+      ].join("\n"),
+      userId: "u1",
+    }),
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.answer, "b");
+  assert.match(payload.context, /\(b\) Social games like charades/);
+  assert.equal(payload.raw_response.answerModel, "remnic-native-mcq-evidence-ranker");
+});
+
 test("AMB helper normalizes multiple-choice direct answers to a letter", {
   skip:
     existsSync(builtCoreEntry) && helperNode
