@@ -2123,6 +2123,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const nonCodexLlmPath = path.join(tmpDir, "non-codex-llm-result.json");
   const agentWinningPath = path.join(tmpDir, "agent-winning-result.json");
   const artifactWinningPath = path.join(tmpDir, "artifact-winning-result.json");
+  const overfilledPath = path.join(tmpDir, "overfilled-result.json");
   const winningPath = path.join(tmpDir, "winning-result.json");
   const oraclePath = path.join(tmpDir, "oracle-result.json");
   const agentManifestPath = path.join(tmpDir, "agent-winning-manifest.json");
@@ -2247,6 +2248,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       total_queries: 100,
       correct: 53,
       accuracy: 0.521,
+      answer_llm: "codex:gpt-5.5:xhigh:fast",
+      judge_llm: "codex:gpt-5.5:xhigh:fast",
+    }),
+  );
+  await writeFile(
+    overfilledPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "remnic",
+      run_name: "remnic",
+      mode: "rag",
+      total_queries: 101,
+      correct: 54,
+      accuracy: 0.535,
       answer_llm: "codex:gpt-5.5:xhigh:fast",
       judge_llm: "codex:gpt-5.5:xhigh:fast",
     }),
@@ -2410,6 +2426,23 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(oracle.status, 2);
   assert.match(oracle.stderr, /oracle-aided AMB runs cannot be verified for SOTA/);
   assert.equal(oracle.stdout, "");
+
+  const overfilled = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    overfilledPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+    "--amb-dir",
+    cleanAmbRepo,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(overfilled.status, 1);
+  assert.match(overfilled.stderr, /result has 101 queries, expected exactly --min-queries 100/);
+  assert.equal(overfilled.stdout, "");
 
   const missingAmbProvenance = spawnSync(process.execPath, [
     verifier,

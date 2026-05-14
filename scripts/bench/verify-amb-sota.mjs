@@ -57,14 +57,14 @@ async function main() {
   }
   if (args.minQueries === undefined) {
     fail(
-      "--min-queries is required for SOTA verification; pass the full split query count so partial runs cannot be marked SOTA",
+      "--min-queries is required for SOTA verification; pass the exact full split query count so partial or merged runs cannot be marked SOTA",
       2,
     );
   }
   const minimumQueries = args.minQueries;
-  if (totalQueries < minimumQueries) {
+  if (totalQueries !== minimumQueries) {
     fail(
-      `result has ${totalQueries} queries, below required --min-queries ${minimumQueries}`,
+      `result has ${totalQueries} queries, expected exactly --min-queries ${minimumQueries}`,
       1,
     );
   }
