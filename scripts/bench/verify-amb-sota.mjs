@@ -90,6 +90,7 @@ async function main() {
       2,
     );
   }
+  assertNoErroredAgentRows(result);
   const answerLlm = codexAnswerLlmId(result, totalQueries);
   const judgeLlm = requiredCodexLlmId(requiredLlmField(result, "judge"), "result.judge_llm");
 
@@ -658,6 +659,20 @@ function codexAnswerLlmId(result, totalQueries) {
     `result.answer_llm must be "${EXPECTED_CODEX_LLM_ID}" for SOTA verification, or agent-mode results must include ${EXPECTED_CODEX_LLM_ID} in every result.raw_response.answerModel`,
     2,
   );
+}
+
+function assertNoErroredAgentRows(result) {
+  const mode = typeof result.mode === "string" ? result.mode.trim().toLowerCase() : "";
+  if (mode !== "agent") {
+    return;
+  }
+  const answerError = firstAgentAnswerError(result.results);
+  if (answerError) {
+    fail(
+      `agent-mode result.raw_response.answerError must be empty for SOTA verification; got ${JSON.stringify(answerError)}`,
+      2,
+    );
+  }
 }
 
 function hasAgentCodexAnswerProvenance(results, totalQueries) {

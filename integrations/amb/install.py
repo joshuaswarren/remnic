@@ -360,13 +360,20 @@ def patch_codex_llm(amb_root: Path, source_dir: Path) -> None:
         raise SystemExit(f"AMB LLM package not found: {init_path}")
 
     shutil.copy2(source_dir / "codex_llm.py", llm_dir / "codex.py")
-    init_path.write_text(llm_init_text())
+    specs = dict(LLM_SPECS)
+    specs.update(existing_llm_specs(init_path.read_text()))
+    specs["codex"] = LLM_SPECS["codex"]
+    init_path.write_text(llm_init_text(specs))
 
 
-def llm_init_text() -> str:
+def existing_llm_specs(text: str) -> dict[str, tuple[str, str]]:
+    return existing_registry_specs(text, "_LazyLLM")
+
+
+def llm_init_text(specs: dict[str, tuple[str, str]]) -> str:
     registry_entries = "\n".join(
         f'    "{name}": _LazyLLM("{module}", "{class_name}"),'
-        for name, (module, class_name) in LLM_SPECS.items()
+        for name, (module, class_name) in specs.items()
     )
     return f'''"""LLM registry with lazy provider imports.
 

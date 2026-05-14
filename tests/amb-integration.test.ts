@@ -189,15 +189,27 @@ test("AMB installer registers Remnic provider and bridge commands", {
     ].join("\n"),
   );
   await writeFile(
+    path.join(llmDir, "new_llm.py"),
+    [
+      "from .base import LLM",
+      "",
+      "class NewLLM(LLM):",
+      "    pass",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
     path.join(llmDir, "__init__.py"),
     [
       "import os",
       "",
       "from .base import LLM, Schema",
       "from .gemini import GeminiLLM",
+      "from .new_llm import NewLLM",
       "",
       "REGISTRY: dict[str, type[LLM]] = {",
       '    "gemini": GeminiLLM,',
+      '    "new-llm": NewLLM,',
       "}",
       "",
     ].join("\n"),
@@ -479,6 +491,10 @@ test("AMB installer registers Remnic provider and bridge commands", {
     patchedLlmRegistry.match(/"codex": _LazyLLM/g)?.length,
     1,
   );
+  assert.equal(
+    patchedLlmRegistry.match(/"new-llm": _LazyLLM\("\.new_llm", "NewLLM"\)/g)?.length,
+    1,
+  );
   assert.match(patchedLlmRegistry, /lazy provider imports/);
   assert.match(patchedLlmRegistry, /if name\.startswith\("_"\):\n            raise AttributeError\(name\)/);
   const patchedCli = await readFile(path.join(ambRoot, "src", "memory_bench", "cli.py"), "utf8");
@@ -524,6 +540,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
     "",
     "assert list(REGISTRY).count('remnic') == 1",
     "assert list(LLM_REGISTRY).count('codex') == 1",
+    "assert LLM_REGISTRY['new-llm']().model_id == 'NewLLM'",
     "assert REGISTRY['bm25'].provider == 'BM25'",
     "assert REGISTRY['bm25'].name == 'bm25'",
     "assert REGISTRY['bm25'].description == 'BM25 memory provider.'",
@@ -2270,6 +2287,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const inconsistentAccuracyPath = path.join(tmpDir, "inconsistent-accuracy-result.json");
   const aggregateWinningPath = path.join(tmpDir, "aggregate-winning-result.json");
   const agentFailedPath = path.join(tmpDir, "agent-failed-result.json");
+  const agentTopLevelFailedPath = path.join(tmpDir, "agent-top-level-failed-result.json");
   const agentWinningPath = path.join(tmpDir, "agent-winning-result.json");
   const artifactWinningPath = path.join(tmpDir, "artifact-winning-result.json");
   const artifactRejectedProvenancePath = path.join(tmpDir, "artifact-rejected-provenance-result.json");
@@ -2439,6 +2457,35 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
           raw_response: {
             answerModel: "codex:gpt-5.5:xhigh:fast",
             answerError: "Codex CLI direct_answer failed: timed out after 300000ms",
+          },
+        },
+        {
+          raw_response: {
+            answerModel: "codex:gpt-5.5:xhigh:fast",
+            answerError: null,
+          },
+        },
+      ],
+    }),
+  );
+  await writeFile(
+    agentTopLevelFailedPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "remnic",
+      run_name: "remnic-agent-top-level-failed",
+      mode: "agent",
+      total_queries: 2,
+      correct: 2,
+      accuracy: 1,
+      answer_llm: "codex:gpt-5.5:xhigh:fast",
+      judge_llm: "codex:gpt-5.5:xhigh:fast",
+      results: [
+        {
+          raw_response: {
+            answerModel: "codex:gpt-5.5:xhigh:fast",
+            answerError: "Codex CLI direct_answer failed: invalid multiple-choice answer",
           },
         },
         {
@@ -2675,6 +2722,23 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(agentFailed.status, 2);
   assert.match(agentFailed.stderr, /agent-mode result\.raw_response\.answerError must be empty/);
   assert.equal(agentFailed.stdout, "");
+
+  const agentTopLevelFailed = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    agentTopLevelFailedPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "2",
+    "--amb-dir",
+    cleanAmbRepo,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(agentTopLevelFailed.status, 2);
+  assert.match(agentTopLevelFailed.stderr, /agent-mode result\.raw_response\.answerError must be empty/);
+  assert.equal(agentTopLevelFailed.stdout, "");
 
   const agentWinning = spawnSync(process.execPath, [
     verifier,
