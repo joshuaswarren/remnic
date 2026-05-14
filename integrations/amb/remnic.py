@@ -189,10 +189,6 @@ def _resolve_repo() -> Path:
     )
 
 
-def _expand_tilde(value: str) -> str:
-    return str(Path(value).expanduser()) if value.startswith("~") else value
-
-
 def _resolve_executable(value: str) -> str:
     path = Path(value).expanduser()
     if path.is_absolute():

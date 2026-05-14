@@ -241,16 +241,19 @@ async function writeManifest(pathname, { verdict, result, resultPath, externalSo
     remnic: publicProvenance(provenance.remnic),
     amb: provenance.amb ? publicProvenance(provenance.amb) : null,
     run: {
-      dataset: result.dataset,
-      split: result.split,
-      memoryProvider: result.memory_provider ?? result.memory ?? null,
-      runName: result.run_name ?? null,
+      dataset: verdict.dataset,
+      split: verdict.split,
+      memoryProvider: verdict.memoryProvider,
+      runName: verdict.runName || null,
       mode: result.mode ?? null,
       oracle: result.oracle ?? null,
-      totalQueries: result.total_queries,
+      totalQueries: verdict.totalQueries,
       correct: result.correct ?? null,
       accuracy: result.accuracy,
-      ingestedDocs: result.ingested_docs ?? null,
+      ingestedDocs: optionalResultField(result, [
+        ["ingested_docs", "result.ingested_docs"],
+        ["ingestedDocs", "result.ingestedDocs"],
+      ]),
       answerLlm: verdict.answerLlm,
       judgeLlm: verdict.judgeLlm,
       description:
@@ -361,6 +364,11 @@ function fieldValue(record, fields) {
     }
   }
   return { value: undefined, name: fields[0]?.[1] ?? "result field" };
+}
+
+function optionalResultField(record, fields) {
+  const resolved = fieldValue(record, fields);
+  return resolved.value ?? null;
 }
 
 function llmField(result, role) {

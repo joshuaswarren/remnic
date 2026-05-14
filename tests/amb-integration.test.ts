@@ -2127,6 +2127,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const winningPath = path.join(tmpDir, "winning-result.json");
   const oraclePath = path.join(tmpDir, "oracle-result.json");
   const agentManifestPath = path.join(tmpDir, "agent-winning-manifest.json");
+  const artifactManifestPath = path.join(tmpDir, "artifact-winning-manifest.json");
   const manifestPath = path.join(tmpDir, "winning-manifest.json");
   const cleanAmbRepo = path.join(tmpDir, "clean-amb-repo");
   const dirtyAmbRepo = path.join(tmpDir, "dirty-amb-repo");
@@ -2230,6 +2231,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       mode: "agent",
       totalQueries: 2,
       correct: 2,
+      ingestedDocs: 7,
       accuracy: 1,
       llm: {
         answerLlm: "codex:gpt-5.5:xhigh:fast",
@@ -2387,6 +2389,8 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
     externalPath,
     "--min-queries",
     "2",
+    "--manifest-out",
+    artifactManifestPath,
     "--amb-dir",
     cleanAmbRepo,
   ], {
@@ -2397,6 +2401,11 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(artifactVerdict.sota, true);
   assert.equal(artifactVerdict.answerLlm, "codex:gpt-5.5:xhigh:fast");
   assert.equal(artifactVerdict.judgeLlm, "codex:gpt-5.5:xhigh:fast");
+  const artifactManifest = JSON.parse(await readFile(artifactManifestPath, "utf8"));
+  assert.equal(artifactManifest.run.memoryProvider, "remnic");
+  assert.equal(artifactManifest.run.runName, "remnic-agent-artifact");
+  assert.equal(artifactManifest.run.totalQueries, 2);
+  assert.equal(artifactManifest.run.ingestedDocs, 7);
 
   const losing = spawnSync(process.execPath, [
     verifier,
