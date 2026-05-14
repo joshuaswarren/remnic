@@ -116,9 +116,24 @@ test("AMB installer registers Remnic provider and bridge commands", {
     path.join(datasetDir, "__init__.py"),
     [
       "from .base import Dataset",
+      "from .tempo import TempoDataset",
       "",
       "REGISTRY: dict[str, type[Dataset]] = {",
+      "    'tempo': TempoDataset,",
       "}",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    path.join(datasetDir, "tempo.py"),
+    [
+      "from .base import Dataset",
+      "",
+      "class TempoDataset(Dataset):",
+      "    published = True",
+      "    description = 'Tempo fixture'",
+      "    task_type = 'qa'",
+      "    splits = ['1k']",
       "",
     ].join("\n"),
   );
@@ -426,6 +441,10 @@ test("AMB installer registers Remnic provider and bridge commands", {
     patchedDatasets.match(/"personamem": _LazyDataset\("\.personamem", "PersonaMemDataset"\)/g)?.length,
     1,
   );
+  assert.equal(
+    patchedDatasets.match(/"tempo": _LazyDataset\("\.tempo", "TempoDataset"\)/g)?.length,
+    1,
+  );
   const patchedLlmRegistry = await readFile(path.join(llmDir, "__init__.py"), "utf8");
   assert.equal(
     patchedLlmRegistry.match(/_LazyLLM\("\.codex", "CodexLLM"\)/g)?.length,
@@ -493,6 +512,10 @@ test("AMB installer registers Remnic provider and bridge commands", {
     "assert DATASET_REGISTRY['personamem'].description == 'PersonaMem fixture'",
     "assert DATASET_REGISTRY['personamem'].task_type == 'qa'",
     "assert DATASET_REGISTRY['personamem'].splits == ['128k']",
+    "assert DATASET_REGISTRY['tempo'].published is True",
+    "assert DATASET_REGISTRY['tempo'].description == 'Tempo fixture'",
+    "assert DATASET_REGISTRY['tempo'].task_type == 'qa'",
+    "assert DATASET_REGISTRY['tempo'].splits == ['1k']",
     "assert codex_module._TOOL_SCHEMA['required'] == ['action']",
     "llm = LLM_REGISTRY['codex']()",
     "assert llm.model_id == 'codex:gpt-5.5:xhigh:fast'",

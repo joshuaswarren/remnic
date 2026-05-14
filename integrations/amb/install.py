@@ -191,7 +191,9 @@ def patch_dataset_registry(amb_root: Path) -> None:
     init_path = amb_root / "src" / "memory_bench" / "dataset" / "__init__.py"
     if not init_path.exists():
         raise SystemExit(f"AMB dataset package not found: {init_path}")
-    init_path.write_text(dataset_init_text())
+    specs = dict(DATASET_SPECS)
+    specs.update(existing_dataset_specs(init_path.read_text()))
+    init_path.write_text(dataset_init_text(specs))
 
 
 def memory_init_text() -> str:
@@ -257,10 +259,38 @@ def get_memory_provider(name: str) -> MemoryProvider:
 '''
 
 
-def dataset_init_text() -> str:
+def existing_dataset_specs(text: str) -> dict[str, tuple[str, str]]:
+    imports = {
+        class_name: module_name
+        for module_name, class_name in re.findall(
+            r"^from \.([A-Za-z_][A-Za-z0-9_]*) import ([A-Za-z_][A-Za-z0-9_]*)\s*$",
+            text,
+            flags=re.MULTILINE,
+        )
+    }
+    registry_match = re.search(r"REGISTRY\s*:[^=]*=\s*\{(?P<body>.*?)\n\}", text, flags=re.DOTALL)
+    if not registry_match:
+        return {}
+    specs: dict[str, tuple[str, str]] = {}
+    for name, module_name, class_name in re.findall(
+        r"[\"']([^\"']+)[\"']\s*:\s*_LazyDataset\([\"']([^\"']+)[\"'],\s*[\"']([^\"']+)[\"']\)",
+        registry_match.group("body"),
+    ):
+        specs[name] = (module_name, class_name)
+    for name, class_name in re.findall(
+        r"[\"']([^\"']+)[\"']\s*:\s*([A-Za-z_][A-Za-z0-9_]*)",
+        registry_match.group("body"),
+    ):
+        module_name = imports.get(class_name)
+        if module_name:
+            specs[name] = (f".{module_name}", class_name)
+    return specs
+
+
+def dataset_init_text(specs: dict[str, tuple[str, str]]) -> str:
     registry_entries = "\n".join(
         f'    "{name}": _LazyDataset("{module}", "{class_name}"),'
-        for name, (module, class_name) in DATASET_SPECS.items()
+        for name, (module, class_name) in specs.items()
     )
     return f'''"""Dataset registry with lazy optional-dataset imports.
 
