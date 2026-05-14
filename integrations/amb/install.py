@@ -521,13 +521,30 @@ def replace_gemini_llm_references(text: str, factory_name: str) -> str:
 def ensure_judge_llm_type_import(text: str) -> str:
     if "LLM" not in text:
         return text
-    if "from .llm.base import LLM" in text:
+    if has_llm_base_import(text, "LLM"):
         return text
-    if "from .llm.base import LLM, " in text:
-        return text
-    if "from .llm.base import " in text:
-        return re.sub(r"from \.llm\.base import (?!LLM\b)", "from .llm.base import LLM, ", text, count=1)
+
+    import_pattern = r"^from \.llm\.base import (?P<names>.+)$"
+    if re.search(import_pattern, text, flags=re.MULTILINE):
+        return re.sub(
+            import_pattern,
+            lambda match: f"from .llm.base import LLM, {match.group('names').strip()}",
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
     return "from .llm.base import LLM\n" + text
+
+
+def has_llm_base_import(text: str, symbol: str) -> bool:
+    for match in re.finditer(r"^from \.llm\.base import (?P<names>.+)$", text, flags=re.MULTILINE):
+        imports = [
+            part.strip().split(" as ", 1)[0].strip()
+            for part in match.group("names").split(",")
+        ]
+        if symbol in imports:
+            return True
+    return False
 
 
 def patch_runner_incremental_batch_save(amb_root: Path) -> None:

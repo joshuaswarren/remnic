@@ -168,6 +168,9 @@ test("AMB installer registers Remnic provider and bridge commands", {
       "    required: list",
       "    fn: object",
       "",
+      "class LLMConfig:",
+      "    pass",
+      "",
       "class LLM:",
       "    @property",
       "    def model_id(self):",
@@ -217,7 +220,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
   await writeFile(
     path.join(ambRoot, "src", "memory_bench", "judge.py"),
     [
-      "from .llm.base import LLM, Schema",
+      "from .llm.base import LLMConfig, Schema",
       "from .llm.gemini import GeminiLLM",
       "",
       "class Judge:",
@@ -471,6 +474,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
   assert.doesNotMatch(patchedAgenticMode, /llm\.gemini|GeminiLLM\(\)/);
   assert.doesNotMatch(patchedJudge, /llm\.gemini|GeminiLLM/);
   assert.match(patchedJudge, /get_judge_llm/);
+  assert.match(patchedJudge, /from \.llm\.base import LLM, LLMConfig, Schema/);
   assert.match(patchedModesInit, /getattr\(cls\.__init__, "__code__", None\)/);
   assert.match(patchedAgenticMode, /get_answer_llm/);
   assert.match(patchedAgenticMode, /RAGMode\(llm=self\._llm\)/);
