@@ -12,6 +12,8 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const remnicRepoRoot = path.resolve(__dirname, "../..");
 const EXPECTED_CODEX_LLM_ID = "codex:gpt-5.5:xhigh:fast";
+const REMNIC_REPO_LABEL = "<remnic-repo>";
+const AMB_REPO_LABEL = "<agent-memory-benchmark-checkout>";
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -104,6 +106,10 @@ async function main() {
     epsilon,
     sota: beatsTarget,
   };
+  const provenance = await collectProvenance(args.ambDir);
+  if (beatsTarget) {
+    assertCleanSotaProvenance(provenance);
+  }
   if (args.manifestOut) {
     await writeManifest(args.manifestOut, {
       verdict,
@@ -111,7 +117,7 @@ async function main() {
       resultPath: args.result,
       externalSource,
       command: args.command,
-      ambDir: args.ambDir,
+      provenance,
     });
   }
 
@@ -226,24 +232,14 @@ function jsonObject(value, label) {
   return value;
 }
 
-async function writeManifest(pathname, { verdict, result, resultPath, externalSource, command, ambDir }) {
+async function writeManifest(pathname, { verdict, result, resultPath, externalSource, command, provenance }) {
   const manifest = {
     generatedAt: new Date().toISOString(),
-    resultPath,
+    resultPath: sanitizeManifestText(resultPath, provenance),
     externalResults: externalSource,
-    command: command ?? null,
-    remnic: {
-      repo: remnicRepoRoot,
-      commit: await gitRev(remnicRepoRoot),
-      dirty: await gitDirty(remnicRepoRoot),
-    },
-    amb: ambDir
-      ? {
-          repo: path.resolve(ambDir),
-          commit: await gitRev(ambDir),
-          dirty: await gitDirty(ambDir),
-        }
-      : null,
+    command: command ? sanitizeManifestText(command, provenance) : null,
+    remnic: publicProvenance(provenance.remnic),
+    amb: provenance.amb ? publicProvenance(provenance.amb) : null,
     run: {
       dataset: result.dataset,
       split: result.split,
@@ -257,11 +253,76 @@ async function writeManifest(pathname, { verdict, result, resultPath, externalSo
       ingestedDocs: result.ingested_docs ?? null,
       answerLlm: verdict.answerLlm,
       judgeLlm: verdict.judgeLlm,
-      description: result.description ?? null,
+      description:
+        typeof result.description === "string"
+          ? sanitizeManifestText(result.description, provenance)
+          : result.description ?? null,
     },
     verdict,
   };
   await writeFile(pathname, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+async function collectProvenance(ambDir) {
+  const ambRepoRoot = ambDir ? path.resolve(ambDir) : null;
+  return {
+    remnic: await gitProvenance(remnicRepoRoot, REMNIC_REPO_LABEL),
+    amb: ambRepoRoot ? await gitProvenance(ambRepoRoot, AMB_REPO_LABEL) : null,
+  };
+}
+
+async function gitProvenance(repoPath, repoLabel) {
+  return {
+    repo: repoLabel,
+    sourcePath: repoPath,
+    commit: await gitRev(repoPath),
+    dirty: await gitDirty(repoPath),
+  };
+}
+
+function publicProvenance(provenance) {
+  return {
+    repo: provenance.repo,
+    commit: provenance.commit,
+    dirty: provenance.dirty,
+  };
+}
+
+function assertCleanSotaProvenance(provenance) {
+  assertCleanRepoProvenance(provenance.remnic, "Remnic checkout");
+  if (!provenance.amb) {
+    fail("--amb-dir is required for SOTA verification so AMB provenance can be recorded", 2);
+  }
+  assertCleanRepoProvenance(provenance.amb, "AMB checkout");
+}
+
+function assertCleanRepoProvenance(provenance, label) {
+  if (!provenance.commit) {
+    fail(`${label} provenance is missing a git commit; SOTA verification requires a git checkout`, 2);
+  }
+  if (provenance.dirty !== false) {
+    fail(`${label} provenance is dirty or unavailable; commit or discard changes before SOTA verification`, 2);
+  }
+}
+
+function sanitizeManifestText(value, provenance) {
+  let sanitized = value;
+  for (const repo of [provenance.remnic, provenance.amb].filter(Boolean)) {
+    sanitized = replaceAllLiteral(sanitized, repo.sourcePath, repo.repo);
+  }
+  sanitized = sanitized.replace(
+    /\bREMNIC_AMB_NODE=(?:"[^"]+"|'[^']+'|\S+)/g,
+    "REMNIC_AMB_NODE=<node>",
+  );
+  sanitized = sanitized.replace(
+    /\bREMNIC_AMB_CODEX_BIN=(?:"[^"]+"|'[^']+'|\S+)/g,
+    "REMNIC_AMB_CODEX_BIN=<codex>",
+  );
+  return sanitized;
+}
+
+function replaceAllLiteral(value, search, replacement) {
+  return value.split(search).join(replacement);
 }
 
 async function gitRev(repo) {
@@ -408,7 +469,7 @@ Options:
   --external-results <file>  Use a local AMB external_results.json file.
   --manifest-out <file>      Write a reproducibility manifest JSON.
   --command <string>         Command used to produce the AMB result.
-  --amb-dir <dir>            AMB checkout used for the run.
+  --amb-dir <dir>            Clean AMB git checkout used for the run.
   --min-queries <n>          Required full split query count.
   --epsilon <n>              Require accuracy to exceed current best by n.
   -h, --help                 Show this help.

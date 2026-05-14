@@ -91,9 +91,10 @@ scripts/bench/run-amb-remnic.sh \
   --verify-sota
 ```
 
-Full leaderboard-style runs must remove `--query-limit`, pin the AMB commit,
-pin the Remnic commit, preserve `outputs/.../*.json`, and use the same Codex
-CLI LLM path (`codex:gpt-5.5:xhigh:fast`) for answer generation and judging.
+Full leaderboard-style runs must remove `--query-limit`, run from clean git
+checkouts for both AMB and Remnic, preserve `outputs/.../*.json`, and use the
+same Codex CLI LLM path (`codex:gpt-5.5:xhigh:fast`) for answer generation and
+judging.
 
 ## BEAM / Hindsight Workflow
 
@@ -175,6 +176,8 @@ a result for the same split.
    unless the reporting context explicitly accepts ties with `--allow-equal`.
 6. The relevant verifier exits successfully for the exact artifact paths that
    will be published.
+7. The verifier records clean Remnic and AMB git provenance before any SOTA
+   claim is published.
 
 The BEAM helper intentionally fails before registering Remnic or building
 `@remnic/bench` when an official judged run is requested without

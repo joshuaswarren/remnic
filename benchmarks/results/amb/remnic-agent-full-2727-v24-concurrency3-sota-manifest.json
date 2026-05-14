@@ -1,15 +1,15 @@
 {
   "generatedAt": "2026-05-13T17:51:16.328Z",
-  "resultPath": "/tmp/remnic-amb-clean-1778558363/agent-memory-benchmark/outputs-remnic-agent-official/personamem/remnic-agent-full-2727-v24-concurrency3/agent/128k.json",
+  "resultPath": "<agent-memory-benchmark-checkout>/outputs-remnic-agent-official/personamem/remnic-agent-full-2727-v24-concurrency3/agent/128k.json",
   "externalResults": "https://raw.githubusercontent.com/vectorize-io/agent-memory-benchmark/main/external_results.json",
-  "command": "REMNIC_AMB_NODE=/opt/homebrew/opt/node@22/bin/node REMNIC_AMB_CODEX_BIN=/opt/homebrew/bin/codex REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb /tmp/remnic-amb-clean-1778558363/agent-memory-benchmark --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3",
+  "command": "REMNIC_AMB_NODE=<node> REMNIC_AMB_CODEX_BIN=<codex> REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb <agent-memory-benchmark-checkout> --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3",
   "remnic": {
-    "repo": "/Users/joshuawarren/src/remnic",
+    "repo": "<remnic-repo>",
     "commit": "862593aeb74e63c606b0b768da255e6179d0e634",
     "dirty": true
   },
   "amb": {
-    "repo": "/tmp/remnic-amb-clean-1778558363/agent-memory-benchmark",
+    "repo": "<agent-memory-benchmark-checkout>",
     "commit": null,
     "dirty": null
   },
@@ -26,7 +26,7 @@
     "ingestedDocs": 2148,
     "answerLlm": null,
     "judgeLlm": "codex:gpt-5.5:xhigh:fast",
-    "description": "Remnic full-stack AMB run from /Users/joshuawarren/src/remnic"
+    "description": "Remnic full-stack AMB run from <remnic-repo>"
   },
   "verdict": {
     "dataset": "personamem",
@@ -39,6 +39,9 @@
     "targetMemory": "Gemini-1.5-Flash",
     "targetSource": "PersonaMem Paper (arXiv:2504.14225)",
     "epsilon": 0,
-    "sota": true
+    "beatsTarget": true,
+    "sota": false,
+    "provenanceStatus": "rejected_dirty_provenance",
+    "provenanceReason": "The original verifier manifest recorded remnic.dirty=true and missing AMB git provenance. Current verification rejects dirty or missing provenance before publishing a SOTA claim."
   }
 }

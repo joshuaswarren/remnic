@@ -2127,7 +2127,15 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const oraclePath = path.join(tmpDir, "oracle-result.json");
   const agentManifestPath = path.join(tmpDir, "agent-winning-manifest.json");
   const manifestPath = path.join(tmpDir, "winning-manifest.json");
+  const cleanAmbRepo = path.join(tmpDir, "clean-amb-repo");
+  const dirtyAmbRepo = path.join(tmpDir, "dirty-amb-repo");
+  const nonGitAmbRepo = path.join(tmpDir, "non-git-amb-repo");
   const verifier = path.join(repoRoot, "scripts", "bench", "verify-amb-sota.mjs");
+
+  await initCleanGitRepo(cleanAmbRepo);
+  await initCleanGitRepo(dirtyAmbRepo);
+  await writeFile(path.join(dirtyAmbRepo, "untracked.txt"), "dirty\n");
+  await mkdir(nonGitAmbRepo, { recursive: true });
 
   await writeFile(
     externalPath,
@@ -2338,6 +2346,8 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
     "2",
     "--manifest-out",
     agentManifestPath,
+    "--amb-dir",
+    cleanAmbRepo,
   ], {
     encoding: "utf8",
   });
@@ -2349,6 +2359,9 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const agentManifest = JSON.parse(await readFile(agentManifestPath, "utf8"));
   assert.equal(agentManifest.run.answerLlm, "codex:gpt-5.5:xhigh:fast");
   assert.equal(agentManifest.run.judgeLlm, "codex:gpt-5.5:xhigh:fast");
+  assert.equal(agentManifest.remnic.repo, "<remnic-repo>");
+  assert.equal(agentManifest.amb.repo, "<agent-memory-benchmark-checkout>");
+  assert.equal(agentManifest.amb.dirty, false);
 
   const artifactWinning = spawnSync(process.execPath, [
     verifier,
@@ -2358,6 +2371,8 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
     externalPath,
     "--min-queries",
     "2",
+    "--amb-dir",
+    cleanAmbRepo,
   ], {
     encoding: "utf8",
   });
@@ -2396,6 +2411,40 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.match(oracle.stderr, /oracle-aided AMB runs cannot be verified for SOTA/);
   assert.equal(oracle.stdout, "");
 
+  const missingAmbProvenance = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    winningPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+    "--amb-dir",
+    nonGitAmbRepo,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(missingAmbProvenance.status, 2);
+  assert.match(missingAmbProvenance.stderr, /AMB checkout provenance is missing a git commit/);
+  assert.equal(missingAmbProvenance.stdout, "");
+
+  const dirtyAmbProvenance = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    winningPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+    "--amb-dir",
+    dirtyAmbRepo,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(dirtyAmbProvenance.status, 2);
+  assert.match(dirtyAmbProvenance.stderr, /AMB checkout provenance is dirty or unavailable/);
+  assert.equal(dirtyAmbProvenance.stdout, "");
+
   const winning = spawnSync(process.execPath, [
     verifier,
     "--result",
@@ -2409,7 +2458,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
     "--command",
     "uv run amb run --dataset personamem --split 128k --memory remnic",
     "--amb-dir",
-    tmpDir,
+    cleanAmbRepo,
   ], {
     encoding: "utf8",
   });
@@ -2424,9 +2473,38 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(manifest.run.answerLlm, "codex:gpt-5.5:xhigh:fast");
   assert.equal(manifest.run.judgeLlm, "codex:gpt-5.5:xhigh:fast");
   assert.match(manifest.command, /uv run amb run/);
-  assert.equal(manifest.amb.repo, tmpDir);
-  assert.equal(typeof manifest.remnic.dirty, "boolean");
+  assert.equal(manifest.remnic.repo, "<remnic-repo>");
+  assert.equal(manifest.remnic.dirty, false);
+  assert.equal(manifest.amb.repo, "<agent-memory-benchmark-checkout>");
+  assert.equal(manifest.amb.dirty, false);
+  const serializedManifest = JSON.stringify(manifest);
+  assert.doesNotMatch(serializedManifest, new RegExp(cleanAmbRepo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(serializedManifest, new RegExp(repoRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(serializedManifest, /\/Users\//);
+  assert.doesNotMatch(serializedManifest, /\/opt\/homebrew/);
 });
+
+async function initCleanGitRepo(repoDir: string): Promise<void> {
+  await mkdir(repoDir, { recursive: true });
+  runGit(repoDir, ["init"]);
+  runGit(repoDir, [
+    "-c",
+    "user.email=remnic-tests@example.invalid",
+    "-c",
+    "user.name=Remnic Tests",
+    "commit",
+    "--allow-empty",
+    "-m",
+    "init",
+  ]);
+}
+
+function runGit(repoDir: string, args: string[]): void {
+  const result = spawnSync("git", ["-C", repoDir, ...args], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
 
 function findHelperNode(): string | undefined {
   const candidates = [

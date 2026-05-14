@@ -18,7 +18,9 @@
   "targetAccuracy": 0.52,
   "targetMemory": "Gemini-1.5-Flash",
   "targetSource": "PersonaMem Paper (arXiv:2504.14225)",
-  "sota": true,
+  "sota": false,
+  "beatsTarget": true,
+  "provenanceVerified": false,
   "answer_llm": "codex:gpt-5.5:xhigh:fast",
   "judge_llm": "codex:gpt-5.5:xhigh:fast",
   "rawResult": {
@@ -43,7 +45,10 @@
   "command": "REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb <agent-memory-benchmark-checkout> --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3",
   "verification": {
     "command": "node scripts/bench/verify-amb-sota.mjs --result <agent-memory-benchmark-checkout>/outputs-remnic-agent-official/personamem/remnic-agent-full-2727-v24-concurrency3/agent/128k.json --min-queries 2727 --manifest-out benchmarks/results/amb/remnic-agent-full-2727-v24-concurrency3-sota-manifest.json --command \"REMNIC_AMB_CONCURRENCY=3 scripts/bench/run-amb-remnic.sh --amb <agent-memory-benchmark-checkout> --split 128k --mode agent --output-dir outputs-remnic-agent-official --name remnic-agent-full-2727-v24-concurrency3\" --amb-dir <agent-memory-benchmark-checkout>",
-    "sota": true,
+    "sota": false,
+    "beatsTarget": true,
+    "status": "rejected_dirty_provenance",
+    "reason": "The original verifier manifest recorded a dirty Remnic checkout and missing AMB git provenance. Current verification rejects dirty or missing provenance before publishing a SOTA claim.",
     "generatedManifest": "benchmarks/results/amb/remnic-agent-full-2727-v24-concurrency3-sota-manifest.json"
   }
 }
