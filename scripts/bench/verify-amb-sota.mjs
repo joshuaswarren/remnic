@@ -553,8 +553,17 @@ function codexAnswerLlmId(result, totalQueries) {
     return requiredCodexLlmId(answerField.value, answerField.name);
   }
   const mode = typeof result.mode === "string" ? result.mode.trim().toLowerCase() : "";
-  if (mode === "agent" && hasAgentCodexAnswerProvenance(result.results, totalQueries)) {
-    return EXPECTED_CODEX_LLM_ID;
+  if (mode === "agent") {
+    const answerError = firstAgentAnswerError(result.results);
+    if (answerError) {
+      fail(
+        `agent-mode result.raw_response.answerError must be empty for SOTA verification; got ${JSON.stringify(answerError)}`,
+        2,
+      );
+    }
+    if (hasAgentCodexAnswerProvenance(result.results, totalQueries)) {
+      return EXPECTED_CODEX_LLM_ID;
+    }
   }
   fail(
     `result.answer_llm must be "${EXPECTED_CODEX_LLM_ID}" for SOTA verification, or agent-mode results must include ${EXPECTED_CODEX_LLM_ID} in every result.raw_response.answerModel`,
@@ -573,6 +582,25 @@ function hasAgentCodexAnswerProvenance(results, totalQueries) {
     return isPlainObject(rawResponse) &&
       rawResponse.answerModel === EXPECTED_CODEX_LLM_ID;
   });
+}
+
+function firstAgentAnswerError(results) {
+  if (!Array.isArray(results)) {
+    return null;
+  }
+  for (const entry of results) {
+    const rawResponse = isPlainObject(entry)
+      ? entry.raw_response ?? entry.rawResponse
+      : null;
+    if (!isPlainObject(rawResponse)) {
+      continue;
+    }
+    const answerError = rawResponse.answerError ?? rawResponse.answer_error;
+    if (answerError !== undefined && answerError !== null && String(answerError).trim().length > 0) {
+      return String(answerError);
+    }
+  }
+  return null;
 }
 
 function finiteNumber(value, name) {

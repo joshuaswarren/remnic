@@ -2243,6 +2243,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const missingLlmPath = path.join(tmpDir, "missing-llm-result.json");
   const nonCodexLlmPath = path.join(tmpDir, "non-codex-llm-result.json");
   const percentageAccuracyPath = path.join(tmpDir, "percentage-accuracy-result.json");
+  const agentFailedPath = path.join(tmpDir, "agent-failed-result.json");
   const agentWinningPath = path.join(tmpDir, "agent-winning-result.json");
   const artifactWinningPath = path.join(tmpDir, "artifact-winning-result.json");
   const overfilledPath = path.join(tmpDir, "overfilled-result.json");
@@ -2362,6 +2363,34 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
       results: [
         { raw_response: { answerModel: "codex:gpt-5.5:xhigh:fast" } },
         { raw_response: { answerModel: "codex:gpt-5.5:xhigh:fast" } },
+      ],
+    }),
+  );
+  await writeFile(
+    agentFailedPath,
+    JSON.stringify({
+      dataset: "personamem",
+      split: "128k",
+      memory_provider: "remnic",
+      run_name: "remnic-agent-failed",
+      mode: "agent",
+      total_queries: 2,
+      correct: 2,
+      accuracy: 1,
+      judge_llm: "codex:gpt-5.5:xhigh:fast",
+      results: [
+        {
+          raw_response: {
+            answerModel: "codex:gpt-5.5:xhigh:fast",
+            answerError: "Codex CLI direct_answer failed: timed out after 300000ms",
+          },
+        },
+        {
+          raw_response: {
+            answerModel: "codex:gpt-5.5:xhigh:fast",
+            answerError: null,
+          },
+        },
       ],
     }),
   );
@@ -2512,6 +2541,23 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(percentageAccuracy.status, 2);
   assert.match(percentageAccuracy.stderr, /result\.accuracy must be a fraction between 0 and 1/);
   assert.equal(percentageAccuracy.stdout, "");
+
+  const agentFailed = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    agentFailedPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "2",
+    "--amb-dir",
+    cleanAmbRepo,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(agentFailed.status, 2);
+  assert.match(agentFailed.stderr, /agent-mode result\.raw_response\.answerError must be empty/);
+  assert.equal(agentFailed.stdout, "");
 
   const agentWinning = spawnSync(process.execPath, [
     verifier,
