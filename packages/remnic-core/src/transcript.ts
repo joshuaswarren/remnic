@@ -3,6 +3,31 @@ import path from "node:path";
 import { log } from "./logger.js";
 import type { TranscriptEntry, Checkpoint, PluginConfig } from "./types.js";
 import { analyzeSessionIntegrity, type SessionIntegrityReport } from "./session-integrity.js";
+import {
+  encodeStoragePathSegment,
+  encodeStoragePathSegmentWithHash,
+  isSafeLegacyPathSegment,
+  resolveSafeStoragePath,
+  storagePathHash,
+} from "./storage-paths.js";
+
+type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
+type DirectoryOwnershipCacheEntry = {
+  status: "empty" | "matches";
+  fileSizes: Map<string, number>;
+};
+
+function legacyTranscriptDirFor(
+  channelType: string,
+  channelId: string,
+  encodedDir: string,
+): string | undefined {
+  if (!isSafeLegacyPathSegment(channelType) || !isSafeLegacyPathSegment(channelId)) {
+    return undefined;
+  }
+  const legacyDir = path.join(channelType, channelId);
+  return legacyDir === encodedDir ? undefined : legacyDir;
+}
 
 /**
  * Manages conversation transcript storage, checkpointing, and recall formatting.
@@ -23,6 +48,7 @@ export class TranscriptManager {
     string,
     { totalBytes: number; fileBytes: Map<string, number>; fileSizes: Map<string, number> }
   >();
+  private directoryOwnershipCache = new Map<string, DirectoryOwnershipCacheEntry>();
 
   /** Default checkpoint TTL in hours */
   private static readonly DEFAULT_CHECKPOINT_TTL_HOURS = 24;
@@ -46,9 +72,16 @@ export class TranscriptManager {
    *   - agent:<agent-id>:cron:<job-id> → type="cron", id="<job-id>"
    *   - agent:<agent-id>:slack:channel:<channel-id> → type="slack", id="<channel-id>"
    *
-   * @returns Object with dir (channel type/channel id) and file (YYYY-MM-DD.jsonl)
+   * @returns Object with raw channel identifiers and encoded storage path pieces.
    */
-  getTranscriptPath(sessionKey: string): { dir: string; file: string } {
+  getTranscriptPath(sessionKey: string): {
+    dir: string;
+    file: string;
+    channelType: string;
+    channelId: string;
+    alternateDir: string;
+    legacyDir?: string;
+  } {
     const parts = sessionKey.split(":");
 
     // Default fallback
@@ -76,9 +109,21 @@ export class TranscriptManager {
 
     // Daily rotation: transcripts/{channelType}/{channelId}/YYYY-MM-DD.jsonl
     const today = new Date().toISOString().slice(0, 10);
+    const dir = path.join(
+      encodeStoragePathSegment(channelType),
+      encodeStoragePathSegment(channelId),
+    );
+    const alternateDir = path.join(
+      encodeStoragePathSegmentWithHash(channelType),
+      `${encodeStoragePathSegmentWithHash(channelId)}--session-${storagePathHash(sessionKey)}`,
+    );
     return {
-      dir: path.join(channelType, channelId),
+      dir,
       file: `${today}.jsonl`,
+      channelType,
+      channelId,
+      alternateDir,
+      legacyDir: legacyTranscriptDirFor(channelType, channelId, dir),
     };
   }
 
@@ -133,17 +178,221 @@ export class TranscriptManager {
     return Array.from(sessionKeys);
   }
 
-  getToolUsagePath(sessionKey: string): { dir: string; file: string } {
+  getToolUsagePath(sessionKey: string): {
+    dir: string;
+    file: string;
+    alternateDir: string;
+    legacyDir?: string;
+  } {
     const p = this.getTranscriptPath(sessionKey);
-    return { dir: p.dir, file: p.file };
+    return { dir: p.dir, file: p.file, alternateDir: p.alternateDir, legacyDir: p.legacyDir };
+  }
+
+  private async selectStorageDirForWrite(
+    root: string,
+    dir: string,
+    legacyDir?: string,
+    sessionKey?: string,
+    alternateDir?: string,
+  ): Promise<{ dir: string; channelDir: string }> {
+    const channelDir = await resolveSafeStoragePath(root, dir);
+    const encodedStatus = await this.directorySessionStatus(root, dir, sessionKey);
+    if (encodedStatus === "matches" || encodedStatus === "empty") return { dir, channelDir };
+
+    if (legacyDir) {
+      const legacyChannelDir = await resolveSafeStoragePath(root, legacyDir);
+      if ((await this.directorySessionStatus(root, legacyDir, sessionKey)) === "matches") {
+        return { dir: legacyDir, channelDir: legacyChannelDir };
+      }
+    }
+
+    if (encodedStatus === "missing") return { dir, channelDir };
+
+    if (alternateDir) {
+      const alternateChannelDir = await resolveSafeStoragePath(root, alternateDir);
+      const alternateStatus = await this.directorySessionStatus(root, alternateDir, sessionKey);
+      if (
+        alternateStatus === "missing" ||
+        alternateStatus === "empty" ||
+        alternateStatus === "matches"
+      ) {
+        return { dir: alternateDir, channelDir: alternateChannelDir };
+      }
+    }
+
+    throw new Error(`transcript storage path collision for session: ${sessionKey ?? "(unknown)"}`);
+  }
+
+  private async directorySessionStatus(
+    root: string,
+    dir: string,
+    sessionKey?: string,
+  ): Promise<DirectorySessionStatus> {
+    let channelDir: string;
+    try {
+      channelDir = await resolveSafeStoragePath(root, dir);
+      if (!(await stat(channelDir)).isDirectory()) return "occupied";
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? (err as { code?: string }).code
+          : undefined;
+      if (code === "ENOENT") return "missing";
+      throw err;
+    }
+
+    let names: string[];
+    try {
+      names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl"));
+    } catch {
+      return "occupied";
+    }
+
+    const fileSizes = await this.directoryJsonlFileSizes(root, dir, names);
+    if (!fileSizes) return "occupied";
+
+    if (!sessionKey) return "matches";
+    const cacheKey = this.directoryOwnershipCacheKey(root, dir, sessionKey);
+    const cached = this.directoryOwnershipCache.get(cacheKey);
+    if (cached && this.sameFileSizes(cached.fileSizes, fileSizes)) {
+      return cached.status;
+    }
+
+    let hasEntries = false;
+    let hasMatchingEntry = false;
+
+    for (const name of names) {
+      const filePath = await resolveSafeStoragePath(root, dir, name).catch(() => null);
+      if (filePath === null) return "occupied";
+      try {
+        const raw = await readFile(filePath, "utf-8");
+        for (const line of raw.split("\n")) {
+          if (!line.trim()) continue;
+          hasEntries = true;
+          try {
+            const obj = JSON.parse(line) as { sessionKey?: string };
+            if (obj.sessionKey === sessionKey) {
+              hasMatchingEntry = true;
+            } else {
+              return "occupied";
+            }
+          } catch {
+            return "occupied";
+          }
+        }
+      } catch {
+        return "occupied";
+      }
+    }
+
+    const status = hasMatchingEntry ? "matches" : hasEntries ? "occupied" : "empty";
+    if (status === "matches" || status === "empty") {
+      this.directoryOwnershipCache.set(cacheKey, { status, fileSizes });
+    }
+    return status;
+  }
+
+  private directoryOwnershipCacheKey(root: string, dir: string, sessionKey: string): string {
+    return `${path.resolve(root)}\0${dir}\0${sessionKey}`;
+  }
+
+  private sameFileSizes(left: Map<string, number>, right: Map<string, number>): boolean {
+    if (left.size !== right.size) return false;
+    for (const [name, size] of left) {
+      if (right.get(name) !== size) return false;
+    }
+    return true;
+  }
+
+  private async directoryJsonlFileSizes(
+    root: string,
+    dir: string,
+    names: string[],
+  ): Promise<Map<string, number> | null> {
+    const fileSizes = new Map<string, number>();
+    for (const name of names) {
+      const filePath = await resolveSafeStoragePath(root, dir, name).catch(() => null);
+      if (filePath === null) return null;
+      const fileInfo = await stat(filePath).catch(() => null);
+      if (!fileInfo?.isFile()) return null;
+      fileSizes.set(name, Math.max(0, fileInfo.size));
+    }
+    return fileSizes;
+  }
+
+  private async rememberDirectoryOwnership(
+    root: string,
+    dir: string,
+    sessionKey: string,
+  ): Promise<void> {
+    try {
+      const channelDir = await resolveSafeStoragePath(root, dir);
+      const names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl"));
+      const fileSizes = await this.directoryJsonlFileSizes(root, dir, names);
+      if (!fileSizes) return;
+      this.directoryOwnershipCache.set(
+        this.directoryOwnershipCacheKey(root, dir, sessionKey),
+        { status: "matches", fileSizes },
+      );
+    } catch {
+      // Cache refresh is best-effort; write path correctness does not depend on it.
+    }
+  }
+
+  private async getSessionStorageFiles(
+    root: string,
+    dir: string,
+    legacyDir?: string,
+    alternateDir?: string,
+  ): Promise<Array<{ cacheKey: string; name: string; path: string }>> {
+    const files: Array<{ cacheKey: string; name: string; path: string }> = [];
+    const seenDirs = new Set<string>();
+
+    for (const candidateDir of [dir, alternateDir, legacyDir]) {
+      if (!candidateDir || seenDirs.has(candidateDir)) continue;
+      seenDirs.add(candidateDir);
+
+      let channelDir: string;
+      try {
+        channelDir = await resolveSafeStoragePath(root, candidateDir);
+      } catch {
+        continue;
+      }
+
+      let names: string[];
+      try {
+        names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl")).sort();
+      } catch {
+        continue;
+      }
+
+      for (const name of names) {
+        const filePath = await resolveSafeStoragePath(root, candidateDir, name).catch(() => null);
+        if (filePath === null) continue;
+        files.push({
+          cacheKey: path.join(candidateDir, name),
+          name,
+          path: filePath,
+        });
+      }
+    }
+
+    return files.sort((a, b) => a.cacheKey.localeCompare(b.cacheKey));
   }
 
   async appendToolUse(entry: { timestamp: string; sessionKey: string; tool: string }): Promise<void> {
-    const { dir, file } = this.getToolUsagePath(entry.sessionKey);
-    const channelDir = path.join(this.toolUsageDir, dir);
+    const { dir, file, alternateDir, legacyDir } = this.getToolUsagePath(entry.sessionKey);
+    const { dir: writeDir, channelDir } = await this.selectStorageDirForWrite(
+      this.toolUsageDir,
+      dir,
+      legacyDir,
+      entry.sessionKey,
+      alternateDir,
+    );
     await mkdir(channelDir, { recursive: true });
-    const filePath = path.join(channelDir, file);
+    const filePath = await resolveSafeStoragePath(this.toolUsageDir, writeDir, file);
     await appendFile(filePath, JSON.stringify(entry) + "\n", "utf-8");
+    await this.rememberDirectoryOwnership(this.toolUsageDir, writeDir, entry.sessionKey);
   }
 
   async readToolUse(
@@ -151,15 +400,12 @@ export class TranscriptManager {
     startTime: Date,
     endTime: Date,
   ): Promise<Array<{ timestamp: string; sessionKey: string; tool: string }>> {
-    const { dir } = this.getToolUsagePath(sessionKey);
-    const channelDir = path.join(this.toolUsageDir, dir);
+    const { dir, alternateDir, legacyDir } = this.getToolUsagePath(sessionKey);
     try {
-      const files = await readdir(channelDir);
+      const files = await this.getSessionStorageFiles(this.toolUsageDir, dir, legacyDir, alternateDir);
       const out: Array<{ timestamp: string; sessionKey: string; tool: string }> = [];
       for (const file of files) {
-        if (!file.endsWith(".jsonl")) continue;
-        const fp = path.join(channelDir, file);
-        const raw = await readFile(fp, "utf-8");
+        const raw = await readFile(file.path, "utf-8");
         for (const line of raw.split("\n")) {
           if (!line.trim()) continue;
           try {
@@ -168,7 +414,9 @@ export class TranscriptManager {
             if (!Number.isFinite(ts)) continue;
             if (ts >= startTime.getTime() && ts < endTime.getTime()) {
               if (typeof obj.tool === "string" && typeof obj.sessionKey === "string") {
-                out.push({ timestamp: obj.timestamp, sessionKey: obj.sessionKey, tool: obj.tool });
+                if (obj.sessionKey === sessionKey) {
+                  out.push({ timestamp: obj.timestamp, sessionKey: obj.sessionKey, tool: obj.tool });
+                }
               }
             }
           } catch {
@@ -183,26 +431,24 @@ export class TranscriptManager {
   }
 
   async estimateSessionFootprint(sessionKey: string): Promise<{ bytes: number; tokens: number }> {
-    const { dir } = this.getTranscriptPath(sessionKey);
-    const channelDir = path.join(this.transcriptsDir, dir);
+    const { dir, alternateDir, legacyDir } = this.getTranscriptPath(sessionKey);
     let bytes = 0;
 
     try {
-      const files = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl")).sort();
+      const files = await this.getSessionStorageFiles(this.transcriptsDir, dir, legacyDir, alternateDir);
       const cached = this.sessionFootprintCache.get(sessionKey);
       if (!cached) {
         const fileBytes = new Map<string, number>();
         const fileSizes = new Map<string, number>();
         for (const file of files) {
           try {
-            const fullPath = path.join(channelDir, file);
-            const fileInfo = await stat(fullPath);
+            const fileInfo = await stat(file.path);
             const sessionBytes = await this.estimateSessionBytesInFile(
-              fullPath,
+              file.path,
               sessionKey,
             );
-            fileBytes.set(file, sessionBytes);
-            fileSizes.set(file, Math.max(0, fileInfo.size));
+            fileBytes.set(file.cacheKey, sessionBytes);
+            fileSizes.set(file.cacheKey, Math.max(0, fileInfo.size));
             bytes += sessionBytes;
           } catch {
             // fail-open
@@ -211,7 +457,7 @@ export class TranscriptManager {
         this.sessionFootprintCache.set(sessionKey, { totalBytes: bytes, fileBytes, fileSizes });
       } else {
         bytes = cached.totalBytes;
-        const seen = new Set(files);
+        const seen = new Set(files.map((file) => file.cacheKey));
 
         // Drop removed files from the cached total.
         for (const [cachedFile, cachedSessionBytes] of cached.fileBytes.entries()) {
@@ -224,32 +470,31 @@ export class TranscriptManager {
 
         // Read only newly discovered files.
         for (const file of files) {
-          if (cached.fileBytes.has(file)) continue;
+          if (cached.fileBytes.has(file.cacheKey)) continue;
           try {
-            const fullPath = path.join(channelDir, file);
-            const fileInfo = await stat(fullPath);
-            const sessionBytes = await this.estimateSessionBytesInFile(fullPath, sessionKey);
-            cached.fileBytes.set(file, sessionBytes);
-            cached.fileSizes.set(file, Math.max(0, fileInfo.size));
+            const fileInfo = await stat(file.path);
+            const sessionBytes = await this.estimateSessionBytesInFile(file.path, sessionKey);
+            cached.fileBytes.set(file.cacheKey, sessionBytes);
+            cached.fileSizes.set(file.cacheKey, Math.max(0, fileInfo.size));
             bytes += sessionBytes;
           } catch {
             // fail-open
           }
         }
 
-        // Recompute only the newest shard, where growth usually happens.
-        const newestFile = files[files.length - 1];
-        if (newestFile) {
+        // Recompute any shard whose file size changed. A session can have both
+        // encoded and legacy directories during migration, so path ordering does
+        // not reliably identify the file that can grow.
+        for (const file of files) {
           try {
-            const newestPath = path.join(channelDir, newestFile);
-            const fileInfo = await stat(newestPath);
+            const fileInfo = await stat(file.path);
             const size = Math.max(0, fileInfo.size);
-            const previousSessionBytes = cached.fileBytes.get(newestFile) ?? 0;
-            const previousSize = cached.fileSizes.get(newestFile) ?? -1;
+            const previousSessionBytes = cached.fileBytes.get(file.cacheKey) ?? 0;
+            const previousSize = cached.fileSizes.get(file.cacheKey) ?? -1;
             if (size !== previousSize) {
-              const sessionBytes = await this.estimateSessionBytesInFile(newestPath, sessionKey);
-              cached.fileBytes.set(newestFile, sessionBytes);
-              cached.fileSizes.set(newestFile, size);
+              const sessionBytes = await this.estimateSessionBytesInFile(file.path, sessionKey);
+              cached.fileBytes.set(file.cacheKey, sessionBytes);
+              cached.fileSizes.set(file.cacheKey, size);
               bytes += sessionBytes - previousSessionBytes;
             }
           } catch {
@@ -307,22 +552,28 @@ export class TranscriptManager {
    */
   async append(entry: TranscriptEntry): Promise<void> {
     try {
-      const { dir, file } = this.getTranscriptPath(entry.sessionKey);
+      const { dir, file, channelType, alternateDir, legacyDir } = this.getTranscriptPath(entry.sessionKey);
 
       // Skip if this channel type is in the skip list
-      const channelType = dir.split(path.sep)[0] ?? dir;
       if (this.config.transcriptSkipChannelTypes.includes(channelType)) {
         return;
       }
 
-      const channelDir = path.join(this.transcriptsDir, dir);
-      const filePath = path.join(channelDir, file);
+      const { dir: writeDir, channelDir } = await this.selectStorageDirForWrite(
+        this.transcriptsDir,
+        dir,
+        legacyDir,
+        entry.sessionKey,
+        alternateDir,
+      );
+      const filePath = await resolveSafeStoragePath(this.transcriptsDir, writeDir, file);
 
       // Ensure channel directory exists
       await mkdir(channelDir, { recursive: true });
 
       const line = JSON.stringify(entry) + "\n";
       await appendFile(filePath, line, "utf-8");
+      await this.rememberDirectoryOwnership(this.transcriptsDir, writeDir, entry.sessionKey);
       log.debug(`appended transcript entry for ${entry.sessionKey}: ${entry.turnId}`);
     } catch (err) {
       log.error("failed to append transcript entry:", err);
@@ -460,8 +711,7 @@ export class TranscriptManager {
     end: Date,
     sessionKey: string,
   ): Promise<TranscriptEntry[]> {
-    const { dir } = this.getTranscriptPath(sessionKey);
-    const channelDir = path.join(this.transcriptsDir, dir);
+    const { dir, alternateDir, legacyDir } = this.getTranscriptPath(sessionKey);
 
     // Build set of date strings that overlap with [start, end].
     // Always include end's date to handle midnight-crossing lookbacks
@@ -475,20 +725,15 @@ export class TranscriptManager {
     dateStrings.add(end.toISOString().slice(0, 10));
 
     const entries: TranscriptEntry[] = [];
-    let files: string[];
-    try {
-      files = (await readdir(channelDir)).filter((f) => f.endsWith(".jsonl"));
-    } catch {
-      return [];
-    }
+    const files = await this.getSessionStorageFiles(this.transcriptsDir, dir, legacyDir, alternateDir);
 
     for (const file of files) {
       // Only read files whose date is within the window
-      const dateStr = file.slice(0, 10);
+      const dateStr = file.name.slice(0, 10);
       if (!dateStrings.has(dateStr)) continue;
 
       try {
-        const content = await readFile(path.join(channelDir, file), "utf-8");
+        const content = await readFile(file.path, "utf-8");
         for (const line of content.split("\n")) {
           if (!line.trim()) continue;
           try {

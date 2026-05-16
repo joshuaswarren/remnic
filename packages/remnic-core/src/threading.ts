@@ -5,10 +5,15 @@
  * Thread boundary detection: new session key OR time gap > threshold.
  */
 
-import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
-import path from "node:path";
+import { readdir, readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { log } from "./logger.js";
 import type { BufferTurn, ConversationThread } from "./types.js";
+import {
+  encodeStoragePathSegment,
+  encodeStoragePathSegmentWithHash,
+  isSafeLegacyPathSegment,
+  resolveSafeStoragePath,
+} from "./storage-paths.js";
 
 /** Stop words for title extraction */
 const STOP_WORDS = new Set([
@@ -58,6 +63,28 @@ function generateTitle(keywords: string[]): string {
     .join(", ");
 }
 
+function isConversationThread(value: unknown): value is ConversationThread {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as Partial<ConversationThread>;
+  return (
+    typeof candidate.id === "string" &&
+    typeof candidate.title === "string" &&
+    typeof candidate.createdAt === "string" &&
+    typeof candidate.updatedAt === "string" &&
+    Array.isArray(candidate.episodeIds) &&
+    Array.isArray(candidate.linkedThreadIds)
+  );
+}
+
+function parseConversationThread(raw: string): ConversationThread | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isConversationThread(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export class ThreadingManager {
   private currentThreadId: string | null = null;
   private lastTurnTimestamp: number | null = null;
@@ -70,6 +97,69 @@ export class ThreadingManager {
 
   async ensureDirectory(): Promise<void> {
     await mkdir(this.threadsDir, { recursive: true });
+  }
+
+  private encodedThreadFileName(threadId: string): string {
+    return `${encodeStoragePathSegment(threadId)}.json`;
+  }
+
+  private collisionSafeThreadFileName(threadId: string): string {
+    return `${encodeStoragePathSegmentWithHash(threadId)}.json`;
+  }
+
+  private legacyThreadFileName(threadId: string): string | undefined {
+    if (!isSafeLegacyPathSegment(threadId)) return undefined;
+    const legacyFile = `${threadId}.json`;
+    return legacyFile === this.encodedThreadFileName(threadId) ? undefined : legacyFile;
+  }
+
+  private async threadCandidateStatus(
+    filePath: string,
+    threadId: string,
+  ): Promise<"missing" | "matches" | "invalid" | "mismatches"> {
+    try {
+      if (!(await stat(filePath)).isFile()) return "mismatches";
+      const thread = parseConversationThread(await readFile(filePath, "utf-8"));
+      if (!thread) return "invalid";
+      return thread.id === threadId ? "matches" : "mismatches";
+    } catch (err) {
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? (err as { code?: string }).code
+          : undefined;
+      if (code === "ENOENT") return "missing";
+      throw err;
+    }
+  }
+
+  private async threadFilePathForWrite(threadId: string): Promise<string> {
+    const encodedPath = await resolveSafeStoragePath(
+      this.threadsDir,
+      this.encodedThreadFileName(threadId),
+    );
+    const encodedStatus = await this.threadCandidateStatus(encodedPath, threadId);
+    if (encodedStatus === "matches") return encodedPath;
+
+    const legacyFile = this.legacyThreadFileName(threadId);
+    if (legacyFile) {
+      const legacyPath = await resolveSafeStoragePath(this.threadsDir, legacyFile);
+      if ((await this.threadCandidateStatus(legacyPath, threadId)) === "matches") {
+        return legacyPath;
+      }
+    }
+
+    if (encodedStatus === "missing") return encodedPath;
+
+    const collisionSafePath = await resolveSafeStoragePath(
+      this.threadsDir,
+      this.collisionSafeThreadFileName(threadId),
+    );
+    const collisionSafeStatus = await this.threadCandidateStatus(collisionSafePath, threadId);
+    if (collisionSafeStatus === "mismatches") {
+      throw new Error(`thread storage path collision for thread id: ${threadId}`);
+    }
+
+    return collisionSafePath;
   }
 
   /**
@@ -191,15 +281,40 @@ export class ThreadingManager {
   async getAllThreads(): Promise<ConversationThread[]> {
     try {
       const files = await readdir(this.threadsDir);
-      const threads: ConversationThread[] = [];
+      const threadsById = new Map<
+        string,
+        { thread: ConversationThread; storagePriority: number }
+      >();
 
       for (const file of files) {
         if (!file.endsWith(".json")) continue;
-        const thread = await this.loadThread(file.replace(".json", ""));
-        if (thread) threads.push(thread);
+        try {
+          const raw = await readFile(
+            await resolveSafeStoragePath(this.threadsDir, file),
+            "utf-8",
+          );
+          const thread = parseConversationThread(raw);
+          if (!thread) continue;
+
+          const legacyFile = this.legacyThreadFileName(thread.id);
+          const storagePriority =
+            file === this.encodedThreadFileName(thread.id)
+              ? 3
+              : file === this.collisionSafeThreadFileName(thread.id)
+                ? 2
+                : legacyFile && file === legacyFile
+                  ? 1
+                  : 0;
+          const current = threadsById.get(thread.id);
+          if (!current || storagePriority > current.storagePriority) {
+            threadsById.set(thread.id, { thread, storagePriority });
+          }
+        } catch {
+          // skip unreadable or malformed thread files
+        }
       }
 
-      return threads.sort(
+      return [...threadsById.values()].map(({ thread }) => thread).sort(
         (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
       );
     } catch {
@@ -211,13 +326,23 @@ export class ThreadingManager {
    * Get a thread by ID.
    */
   async loadThread(threadId: string): Promise<ConversationThread | null> {
-    const filePath = path.join(this.threadsDir, `${threadId}.json`);
-    try {
-      const raw = await readFile(filePath, "utf-8");
-      return JSON.parse(raw) as ConversationThread;
-    } catch {
-      return null;
+    const candidates = [
+      this.encodedThreadFileName(threadId),
+      this.legacyThreadFileName(threadId),
+      this.collisionSafeThreadFileName(threadId),
+    ];
+    for (const file of candidates) {
+      if (!file) continue;
+      try {
+        const filePath = await resolveSafeStoragePath(this.threadsDir, file);
+        const raw = await readFile(filePath, "utf-8");
+        const thread = parseConversationThread(raw);
+        if (thread?.id === threadId) return thread;
+      } catch {
+        // try the next candidate
+      }
     }
+    return null;
   }
 
   /**
@@ -225,7 +350,7 @@ export class ThreadingManager {
    */
   async saveThread(thread: ConversationThread): Promise<void> {
     await this.ensureDirectory();
-    const filePath = path.join(this.threadsDir, `${thread.id}.json`);
+    const filePath = await this.threadFilePathForWrite(thread.id);
     await writeFile(filePath, JSON.stringify(thread, null, 2), "utf-8");
   }
 
