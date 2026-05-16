@@ -104,7 +104,7 @@ test("inspectLaunchdPlist fails when installed plist points to missing server bi
   assert.match(result.remediation ?? "", /remnic daemon install/);
 });
 
-test("inspectLaunchdPlist accepts an existing built server binary", () => {
+test("inspectLaunchdPlist rejects an existing package import entry that does not run the CLI", () => {
   const plistPath = "/Users/test/Library/LaunchAgents/ai.remnic.daemon.plist";
   const server = "/opt/homebrew/lib/node_modules/@remnic/server/dist/index.js";
   const result = inspectLaunchdPlist(plistPath, {
@@ -121,6 +121,28 @@ test("inspectLaunchdPlist accepts an existing built server binary", () => {
   });
 
   assert.equal(result.installed, true);
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /does not invoke/);
+  assert.match(result.remediation ?? "", /remnic daemon install/);
+});
+
+test("inspectLaunchdPlist accepts an existing built server binary", () => {
+  const plistPath = "/Users/test/Library/LaunchAgents/ai.remnic.daemon.plist";
+  const server = "/opt/homebrew/lib/node_modules/@remnic/server/dist/bin/remnic-server.js";
+  const result = inspectLaunchdPlist(plistPath, {
+    existsSync: (candidate) => candidate === plistPath || candidate === server,
+    readFileSync: () => `
+      <plist><dict>
+        <key>ProgramArguments</key>
+        <array>
+          <string>/opt/homebrew/bin/node</string>
+          <string>${server}</string>
+        </array>
+      </dict></plist>
+    `,
+  });
+
+  assert.equal(result.installed, true);
   assert.equal(result.ok, true);
-  assert.match(result.detail, /dist\/index\.js/);
+  assert.match(result.detail, /dist\/bin\/remnic-server\.js/);
 });

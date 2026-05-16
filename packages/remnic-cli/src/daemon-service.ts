@@ -155,6 +155,15 @@ export function inspectLaunchdPlist(
     };
   }
 
+  if (!isRunnableServerNodePath(expandedServerArg)) {
+    return {
+      installed: true,
+      ok: false,
+      detail: `${expandedServerArg} (does not invoke the Remnic server CLI)`,
+      remediation: "Run `remnic daemon install` to rewrite the launchd service with the Remnic server bin path.",
+    };
+  }
+
   return {
     installed: true,
     ok: true,
@@ -213,6 +222,14 @@ function packageServerBinFromEntry(packageEntry: string): string {
     return path.join(path.dirname(packageEntry), "bin", "remnic-server.js");
   }
   return packageEntry;
+}
+
+function isRunnableServerNodePath(candidate: string): boolean {
+  const normalized = candidate.replaceAll("\\", "/");
+  return (
+    /(?:^|\/)(?:remnic-server|engram-server)(?:\.js)?$/.test(normalized) ||
+    /(?:^|\/)(?:remnic-server|engram-server)\/(?:dist|src)\/index\.[jt]s$/.test(normalized)
+  );
 }
 
 function unescapeXml(input: string): string {
