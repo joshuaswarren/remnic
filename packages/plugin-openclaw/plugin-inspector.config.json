@@ -26,8 +26,7 @@
         "after_tool_call",
         "llm_output",
         "subagent_spawning",
-        "subagent_ended",
-        "commands.list"
+        "subagent_ended"
       ],
       "registrations": [
         "registerTool",

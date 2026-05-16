@@ -1,6 +1,6 @@
 {
   "name": "@remnic/plugin-openclaw",
-  "version": "1.0.34",
+  "version": "1.0.35",
   "description": "OpenClaw adapter for Remnic memory with bundled @remnic/core runtime",
   "type": "module",
   "main": "dist/index.js",
@@ -29,8 +29,8 @@
       "pluginApi": ">=2026.4.8"
     },
     "build": {
-      "openclawVersion": "2026.5.12-beta.4",
-      "pluginSdkVersion": "2026.5.12-beta.4"
+      "openclawVersion": "2026.5.16-beta.2",
+      "pluginSdkVersion": "2026.5.16-beta.2"
     },
     "install": {
       "clawhubSpec": "clawhub:@remnic/plugin-openclaw",

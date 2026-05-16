@@ -45,6 +45,12 @@ let _resolverLoaded = false;
 let _resolverNextRetryAt = 0;
 const RESOLVER_RETRY_BACKOFF_MS = 60_000; // 1 minute between retries after first failure
 const resolvedCache = new Map<string, string | undefined>();
+const NON_LITERAL_AUTH_MARKERS = new Set([
+  "secretref-managed",
+  "lm-studio",
+]);
+const ENV_VAR_MARKER_RE =
+  /^[A-Z][A-Z0-9_]*(?:_API_KEY|_ACCESS_TOKEN|_TOKEN|_SECRET|_CREDENTIALS|_CREDENTIALS_JSON)$/;
 
 /**
  * Lazily load the gateway's resolveApiKeyForProvider function.
@@ -220,6 +226,16 @@ function findExecutableOnPath(
 
 export const __findExecutableOnPathForTest = findExecutableOnPath;
 
+function isNonLiteralAuthMarker(value: string): boolean {
+  return (
+    NON_LITERAL_AUTH_MARKERS.has(value) ||
+    value.endsWith("-oauth") ||
+    value.endsWith("-local") ||
+    value.startsWith("gcp-") ||
+    ENV_VAR_MARKER_RE.test(value)
+  );
+}
+
 /**
  * Resolve a provider API key from various OpenClaw formats.
  *
@@ -249,18 +265,13 @@ export async function resolveProviderApiKey(
 
   // Fast path: plain-text string that looks like an actual API key
   if (typeof apiKeyValue === "string" && apiKeyValue.trim().length > 0) {
-    // Skip known non-API-key markers used by the gateway for auth modes
-    // that don't use bearer tokens (OAuth, local endpoints, GCP credentials)
-    if (
-      apiKeyValue === "secretref-managed" ||
-      apiKeyValue.endsWith("-oauth") ||
-      apiKeyValue.endsWith("-local") ||
-      apiKeyValue === "lm-studio" ||
-      apiKeyValue.startsWith("gcp-")
-    ) {
+    const trimmedApiKeyValue = apiKeyValue.trim();
+    // Skip known non-API-key markers used by the gateway for auth modes,
+    // plus env-var-shaped markers such as OPENAI_API_KEY.
+    if (isNonLiteralAuthMarker(trimmedApiKeyValue)) {
       // Fall through to gateway resolver / env var fallback
     } else {
-      resolved = apiKeyValue;
+      resolved = trimmedApiKeyValue;
       resolvedCache.set(cacheKey, resolved);
       return resolved;
     }

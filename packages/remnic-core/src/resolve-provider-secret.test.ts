@@ -49,6 +49,42 @@ test("resolveProviderApiKey scopes cached gateway secrets by agent directory", a
   }
 });
 
+test("resolveProviderApiKey treats env-var-shaped config strings as markers", async () => {
+  clearSecretCache();
+  const previousOpenAI = process.env.OPENAI_API_KEY;
+  __setGatewayResolverForTest(async () => null);
+
+  try {
+    delete process.env.OPENAI_API_KEY;
+    const unresolved = await resolveProviderApiKey(
+      "openai",
+      "OPENAI_API_KEY",
+      {},
+      "/tmp/openclaw-profile-marker/agent",
+    );
+    assert.equal(
+      unresolved,
+      undefined,
+      "OPENAI_API_KEY must not be sent as a literal bearer token when no env value exists",
+    );
+
+    clearSecretCache();
+    __setGatewayResolverForTest(async () => null);
+    process.env.OPENAI_API_KEY = "sk-from-env";
+    const resolvedFromEnv = await resolveProviderApiKey(
+      "openai",
+      "OPENAI_API_KEY",
+      {},
+      "/tmp/openclaw-profile-marker/agent",
+    );
+    assert.equal(resolvedFromEnv, "sk-from-env");
+  } finally {
+    if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAI;
+    clearSecretCache();
+  }
+});
+
 test("findExecutableOnPath skips directories named like the executable", () => {
   const calls: string[] = [];
   const access = (candidate: string): void => {

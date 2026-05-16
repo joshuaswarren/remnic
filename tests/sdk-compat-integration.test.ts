@@ -610,30 +610,14 @@ test("legacy SDK api gets legacy hooks only", async () => {
     );
 
     assert.ok(
-      api._registeredHooks.includes("commands.list"),
-      "commands.list should remain registered on legacy SDKs without registerCommand()",
+      !api._registeredHooks.includes("commands.list"),
+      "commands.list should not be registered on legacy SDKs because it is a gateway RPC surface, not a typed hook",
     );
-    const listHandler = api._hookHandlers.get("commands.list") as
-      | (() => Promise<Array<{
-          name?: string;
-          handler?: (ctx?: {
-            sessionKey?: string;
-            agentId?: string;
-            args?: string;
-          }) => Promise<string>;
-        }>>)
-      | undefined;
-    assert.equal(typeof listHandler, "function");
-    const commands = await listHandler?.();
-    const remnicCommand = commands?.find((spec) => spec?.name === "remnic");
-    assert.equal(typeof remnicCommand?.handler, "function");
-    const legacyReply = await remnicCommand?.handler?.({
-      sessionKey: "legacy-session-command-test",
-      agentId: "main",
-      args: "status",
-    });
-    assert.equal(typeof legacyReply, "string");
-    assert.match(String(legacyReply ?? ""), /Remnic recall is/);
+    assert.equal(
+      api._registeredCommands.length,
+      0,
+      "legacy SDKs without registerCommand should not expose session command descriptors",
+    );
 
     // Core hooks still present
     assert.ok(

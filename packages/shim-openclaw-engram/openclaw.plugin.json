@@ -1,27 +1,11 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.20",
+  "version": "9.3.21",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
-    "providers": [
-      {
-        "id": "openai",
-        "authMethods": [
-          "api-key"
-        ],
-        "envVars": [
-          "OPENAI_API_KEY"
-        ]
-      }
-    ],
     "requiresRuntime": false
-  },
-  "providerAuthEnvVars": {
-    "openai": [
-      "OPENAI_API_KEY"
-    ]
   },
   "providerAuthChoices": [
     {
@@ -719,7 +703,7 @@
       "commandsListEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Advertise Remnic slash-command descriptors through the commands.list runtime surface."
+        "description": "Advertise Remnic slash-command descriptors through the registerCommand runtime surface."
       },
       "openclawToolsEnabled": {
         "type": "boolean",
@@ -5827,6 +5811,7 @@
     }
   ],
   "activation": {
+    "onStartup": false,
     "onCommands": [
       "remnic"
     ],

@@ -92,7 +92,7 @@ test("OpenClaw security scan wrapper handles minified scanner exports", async ()
     await mkdir(pluginDir, { recursive: true });
     await writeFile(
       path.join(openclawDir, "package.json"),
-      JSON.stringify({ name: "openclaw", version: "2026.5.12-beta.4", type: "module" }),
+      JSON.stringify({ name: "openclaw", version: "2026.5.16-beta.2", type: "module" }),
     );
     await writeFile(
       path.join(openclawDistDir, "skill-scanner-fake.js"),
@@ -116,7 +116,7 @@ test("OpenClaw security scan wrapper handles minified scanner exports", async ()
     );
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /OpenClaw 2026\.5\.12-beta\.4 scanner:/);
+    assert.match(result.stdout, /OpenClaw 2026\.5\.16-beta\.2 scanner:/);
     assert.match(result.stdout, /scanned=1 critical=0 warn=0/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });

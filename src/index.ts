@@ -57,7 +57,6 @@ import {
   forEachRuntimeSurfaceStorage,
 } from "../packages/plugin-openclaw/src/runtime-surface-namespaces.js";
 import {
-  buildLegacySessionCommandDescriptorsFromDescriptors,
   buildSessionCommandDescriptors,
 } from "../packages/plugin-openclaw/src/session-command-descriptors.js";
 import { validateSlotSelection } from "../packages/plugin-openclaw/src/slot-validator.js";
@@ -1011,8 +1010,6 @@ const pluginDefinition = {
         });
       },
     });
-    const legacySessionCommandDescriptors =
-      buildLegacySessionCommandDescriptorsFromDescriptors(sessionCommandDescriptors);
     const activeRecallEngine = createActiveRecallEngine(
       {
         recall: async (query, sessionKey) => orchestrator.recall(query, sessionKey),
@@ -4079,13 +4076,9 @@ const pluginDefinition = {
           commandApi.registerCommand(descriptor);
         }
       } else if (typeof commandApi.registerCommand !== "function") {
-        try {
-          api.on("commands.list", async () => legacySessionCommandDescriptors);
-        } catch (error) {
-          log.debug(
-            `commands.list unavailable on this runtime: ${String(error)}`,
-          );
-        }
+        log.debug(
+          "registerCommand unavailable on this runtime; skipping Remnic session command descriptors because commands.list is a gateway RPC surface, not a typed plugin hook",
+        );
       }
     }
 

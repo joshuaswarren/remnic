@@ -140,7 +140,7 @@ OpenClaw runtime surfaces currently wired by the plugin:
 - `agent_end` for buffered extraction
 - `before_compaction` / `after_compaction` for checkpoint and reset flows
 - `before_reset` for reset-time bounded buffer flush and session cleanup
-- `commands.list` for slash-command discovery metadata
+- `api.registerCommand()` for slash-command discovery metadata
 - `session_start` / `session_end`
 - `before_tool_call` / `after_tool_call`
 - `llm_output`
@@ -151,12 +151,14 @@ The plugin manifest advertises compatibility on two surfaces:
 - `supports` stays in place for OpenClaw 2026.4-era slot and lifecycle routing.
 - `contracts.tools` declares every Remnic-owned tool name for OpenClaw 2026.5+
   descriptor planning and tool ownership validation.
-- `setup.providers` mirrors the OpenAI auth env metadata for OpenClaw 2026.5.3+
-  setup/status discovery.
-- `providerAuthEnvVars` remains for older OpenClaw builds during the upstream
-  deprecation window.
+- `setup.requiresRuntime: false` is explicit; Remnic does not claim OpenAI
+  provider setup ownership.
+- `activation.onStartup: false` is explicit so startup activation remains
+  intentional.
+- `providerAuthChoices` advertises the optional plugin-mode OpenAI API key
+  without using the deprecated external-plugin `providerAuthEnvVars` surface.
 
-Keep both blocks. `contracts.tools` is additive for older OpenClaw runtimes, but
+Keep the supported blocks. `contracts.tools` is additive for older OpenClaw runtimes, but
 OpenClaw 2026.5 rejects plugin tool registration when a runtime tool is missing
 from the manifest contract.
 
@@ -201,8 +203,8 @@ Reset cleanup currently clears:
 
 ## Command Discovery
 
-Remnic responds to OpenClaw's `commands.list` surface with the current command
-descriptor group:
+Remnic registers the current command descriptor group through OpenClaw's
+`api.registerCommand()` surface:
 
 - `remnic off`
 - `remnic on`
@@ -211,8 +213,9 @@ descriptor group:
 - `remnic stats`
 - `remnic flush`
 
-This is discovery metadata for the command palette and help surfaces. The
-handlers are live:
+This is discovery metadata for the command palette and help surfaces. When
+`registerCommand` is unavailable, Remnic logs the missing surface instead of
+registering `commands.list` as a typed hook. The handlers are live:
 
 - `remnic off` / `remnic on` write the session toggle store
 - `remnic status` reports current toggle source and the last recall summary

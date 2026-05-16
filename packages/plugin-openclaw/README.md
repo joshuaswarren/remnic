@@ -86,7 +86,7 @@ This plugin hooks into the OpenClaw gateway lifecycle:
 - **`agent_end`** -- buffers the conversation turn for extraction
 - **`before_compaction`** / **`after_compaction`** -- saves checkpoints and triggers session reset on context compaction
 - **`before_reset`** -- bounded flush of the in-flight buffer before OpenClaw discards a session
-- **`commands.list`** -- exposes Remnic slash-command descriptors to the command palette
+- **`api.registerCommand()`** -- exposes Remnic slash-command descriptors to the command palette
 - **`session_start`** / **`session_end`** -- session lifecycle tracking
 - **`before_tool_call`** / **`after_tool_call`** -- tool usage observation for analytics
 - **`llm_output`** -- LLM token usage tracking
@@ -164,15 +164,15 @@ CI jobs that provision OpenClaw should use
 `npm run check:openclaw-sdk-surface:required` or pass
 `-- --require --package-root <path>` so a missing SDK fails instead of skipping.
 
-Last compatibility sweep: May 13, 2026. The SDK surface check passed against
+Last compatibility sweep: May 16, 2026. The SDK surface check passed against
 `openclaw@2026.5.3`, `openclaw@2026.5.3-1`, `openclaw@2026.5.4-beta.1`,
 `openclaw@2026.5.4-beta.2`, `openclaw@2026.5.4-beta.3`,
 `openclaw@2026.5.4`, `openclaw@2026.5.5`, `openclaw@2026.5.6`, and
-`openclaw@2026.5.12-beta.4`.
+`openclaw@2026.5.16-beta.2`.
 Keep the peer range broad unless an upstream release removes a runtime surface
 Remnic actively uses.
 
-OpenClaw 2026.5.12 package-entry discovery prefers explicit built runtime
+OpenClaw 2026.5.16 package-entry discovery prefers explicit built runtime
 entries for installed packages. The published Remnic adapter declares
 `openclaw.runtimeExtensions: ["./dist/index.js"]` alongside the existing
 extension entry, and its package install metadata advertises
@@ -181,6 +181,9 @@ extension entry, and its package install metadata advertises
 `openclaw.install.defaultChoice: "clawhub"`. That keeps OpenClaw setup,
 repair, and update flows ClawHub-first while preserving npm as the fallback
 install surface and `>=2026.4.8` as the minimum supported host range.
+The manifest also declares `activation.onStartup: false`, leaves provider
+ownership to the host, and exposes the optional plugin-mode OpenAI key through
+`providerAuthChoices`.
 
 Native memory registrars are tracked separately in
 [`docs/plugins/openclaw-native-memory-registrars.md`](../../docs/plugins/openclaw-native-memory-registrars.md).
@@ -265,7 +268,7 @@ private plugin state, transcript buffers, auth metadata, or artifact paths.
 | `session_start` / `session_end` hooks | Supported | 2026.3.22 |
 | `before_compaction` / `after_compaction` hooks | Supported | 2026.3.22 |
 | `before_reset` hook | Supported | 2026.4.10 |
-| `commands.list` runtime discovery | Supported | 2026.4.10 |
+| `api.registerCommand()` runtime discovery | Supported | 2026.5.16 |
 | `api.resetSession()` (compaction reset) | Supported | 2026.3.22 |
 | Checkpoint saves before compaction | Supported | 2026.3.22 |
 
@@ -296,8 +299,8 @@ registered as the `before_prompt_build` hook timeout on OpenClaw versions with
 per-hook timeout support. Raise it if first-turn recall is timing out during
 slow startup; older OpenClaw versions ignore the extra hook option safely.
 
-Session-scoped recall controls are exposed through OpenClaw's command
-discovery surface:
+Session-scoped recall controls are exposed through OpenClaw's
+`api.registerCommand()` surface when it is available:
 
 - `remnic off` / `remnic on`
 - `remnic status`
