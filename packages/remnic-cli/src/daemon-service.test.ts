@@ -147,6 +147,26 @@ test("inspectLaunchdPlist accepts an existing built server binary", () => {
   assert.match(result.detail, /dist\/bin\/remnic-server\.js/);
 });
 
+test("inspectLaunchdPlist recognizes legacy engram-server index paths", () => {
+  const plistPath = "/Users/test/Library/LaunchAgents/ai.engram.daemon.plist";
+  const server = "/opt/homebrew/lib/node_modules/engram-server/dist/index.js";
+  const result = inspectLaunchdPlist(plistPath, {
+    existsSync: (candidate) => candidate === plistPath || candidate === server,
+    readFileSync: () => `
+      <plist><dict>
+        <key>ProgramArguments</key>
+        <array>
+          <string>${server}</string>
+        </array>
+      </dict></plist>
+    `,
+  });
+
+  assert.equal(result.installed, true);
+  assert.equal(result.ok, true);
+  assert.match(result.detail, /engram-server\/dist\/index\.js/);
+});
+
 test("inspectLaunchdPlist expands shared home aliases in server arguments", () => {
   const originalHome = process.env.HOME;
   process.env.HOME = "/Users/test";

@@ -188,8 +188,8 @@ export function readLaunchdProgramArguments(plistContent: string): string[] {
 function findLaunchdServerArgument(args: string[]): string | undefined {
   const explicit = args.find((arg) =>
     /(?:^|[/\\])@remnic[/\\]server[/\\]/.test(arg) ||
-    /(?:^|[/\\])remnic-server(?:\.js)?$/.test(arg) ||
-    /(?:^|[/\\])remnic-server[/\\](?:dist|src)[/\\]index\.[jt]s$/.test(arg)
+    /(?:^|[/\\])(?:remnic-server|engram-server)(?:\.js)?$/.test(arg) ||
+    /(?:^|[/\\])(?:remnic-server|engram-server)[/\\](?:dist|src)[/\\]index\.[jt]s$/.test(arg)
   );
   if (explicit) return explicit;
 
