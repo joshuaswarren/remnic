@@ -78,6 +78,20 @@ test("resolveProviderApiKey treats env-var-shaped config strings as markers", as
       "/tmp/openclaw-profile-marker/agent",
     );
     assert.equal(resolvedFromEnv, "sk-from-env");
+
+    clearSecretCache();
+    __setGatewayResolverForTest(async () => null);
+    const resolvedNamedMarker = await resolveProviderApiKey(
+      "custom-openai",
+      "OPENAI_API_KEY",
+      {},
+      "/tmp/openclaw-profile-marker/agent",
+    );
+    assert.equal(
+      resolvedNamedMarker,
+      "sk-from-env",
+      "env-var markers should dereference the named variable before provider-derived fallback",
+    );
   } finally {
     if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previousOpenAI;

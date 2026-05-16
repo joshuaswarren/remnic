@@ -236,6 +236,12 @@ function isNonLiteralAuthMarker(value: string): boolean {
   );
 }
 
+function resolveFromNamedEnvVar(marker: string): string | undefined {
+  if (!ENV_VAR_MARKER_RE.test(marker)) return undefined;
+  const value = readEnvVar(marker);
+  return value && value.trim().length > 0 ? value.trim() : undefined;
+}
+
 /**
  * Resolve a provider API key from various OpenClaw formats.
  *
@@ -269,6 +275,12 @@ export async function resolveProviderApiKey(
     // Skip known non-API-key markers used by the gateway for auth modes,
     // plus env-var-shaped markers such as OPENAI_API_KEY.
     if (isNonLiteralAuthMarker(trimmedApiKeyValue)) {
+      const markerEnvValue = resolveFromNamedEnvVar(trimmedApiKeyValue);
+      if (markerEnvValue) {
+        resolved = markerEnvValue;
+        resolvedCache.set(cacheKey, resolved);
+        return resolved;
+      }
       // Fall through to gateway resolver / env var fallback
     } else {
       resolved = trimmedApiKeyValue;
