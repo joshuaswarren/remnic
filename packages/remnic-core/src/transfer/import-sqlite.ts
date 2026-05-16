@@ -1,7 +1,11 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { SQLITE_SCHEMA_VERSION } from "./sqlite-schema.js";
-import { fileExists, fromPosixRelPath } from "./fs-utils.js";
+import {
+  fileExists,
+  prepareSafeArchiveRoot,
+  resolveSafeArchiveTarget,
+} from "./fs-utils.js";
 import { openBetterSqlite3 } from "../runtime/better-sqlite.js";
 
 export type ConflictPolicy = "skip" | "overwrite" | "dedupe";
@@ -20,6 +24,11 @@ function normalizeForDedupe(s: string): string {
 export async function importSqlite(opts: ImportSqliteOptions): Promise<{ written: number; skipped: number }> {
   const conflict = opts.conflict ?? "skip";
   const memDirAbs = path.resolve(opts.targetMemoryDir);
+  const memoryRoot = await prepareSafeArchiveRoot(
+    memDirAbs,
+    "importSqlite",
+    "targetMemoryDir",
+  );
   const fromAbs = path.resolve(opts.fromFile);
   const db = openBetterSqlite3(fromAbs, { readonly: true });
 
@@ -35,8 +44,7 @@ export async function importSqlite(opts: ImportSqliteOptions): Promise<{ written
 
     const rows = db.prepare("SELECT path_rel, content FROM files").all() as Array<{ path_rel: string; content: string }>;
     for (const r of rows) {
-      const relFs = fromPosixRelPath(r.path_rel);
-      const absTarget = path.join(memDirAbs, relFs);
+      const absTarget = await resolveSafeArchiveTarget(memoryRoot, r.path_rel);
 
       const exists = await fileExists(absTarget);
       if (exists) {

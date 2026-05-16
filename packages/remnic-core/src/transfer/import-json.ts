@@ -1,7 +1,13 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { ExportBundleV1Schema } from "./types.js";
-import { fileExists, readJsonFile, fromPosixRelPath } from "./fs-utils.js";
+import {
+  fileExists,
+  prepareSafeArchiveRoot,
+  readJsonFile,
+  resolveSafeArchiveTarget,
+  type SafeArchiveRoot,
+} from "./fs-utils.js";
 
 export type ConflictPolicy = "skip" | "overwrite" | "dedupe";
 
@@ -24,20 +30,36 @@ export async function importJsonBundle(opts: ImportJsonOptions): Promise<{ writt
   const bundle = ExportBundleV1Schema.parse(await readJsonFile(bundlePath));
 
   const memDirAbs = path.resolve(opts.targetMemoryDir);
+  const memoryRoot = await prepareSafeArchiveRoot(
+    memDirAbs,
+    "importJsonBundle",
+    "targetMemoryDir",
+  );
   const written: Array<{ abs: string; content: string }> = [];
 
   let skipped = 0;
+  let workspaceRoot: SafeArchiveRoot | null = null;
 
   for (const rec of bundle.records) {
     const isWorkspace = rec.path.startsWith("workspace/");
-    const targetBase = isWorkspace ? (opts.workspaceDir ? path.resolve(opts.workspaceDir) : null) : memDirAbs;
-    if (isWorkspace && !targetBase) {
-      skipped += 1;
-      continue;
+    let absTarget: string;
+    if (isWorkspace) {
+      if (!opts.workspaceDir) {
+        skipped += 1;
+        continue;
+      }
+      workspaceRoot ??= await prepareSafeArchiveRoot(
+        path.resolve(opts.workspaceDir),
+        "importJsonBundle",
+        "workspaceDir",
+      );
+      absTarget = await resolveSafeArchiveTarget(
+        workspaceRoot,
+        rec.path.slice("workspace/".length),
+      );
+    } else {
+      absTarget = await resolveSafeArchiveTarget(memoryRoot, rec.path);
     }
-
-    const relFs = fromPosixRelPath(isWorkspace ? rec.path.replace(/^workspace\//, "") : rec.path);
-    const absTarget = path.join(targetBase!, relFs);
 
     const exists = await fileExists(absTarget);
     if (exists) {
@@ -81,4 +103,3 @@ export function looksLikeEngramJsonExport(fromDir: string): Promise<boolean> {
     fileExists(path.join(dir, "bundle.json")),
   ]).then(([m, b]) => m && b);
 }
-

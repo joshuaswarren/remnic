@@ -72,6 +72,99 @@ export function fromPosixRelPath(relPath: string): string {
   return relPath.split("/").join(path.sep);
 }
 
+export interface SafeArchiveRoot {
+  abs: string;
+  real: string;
+  errorPrefix: string;
+  argName: string;
+}
+
+export async function prepareSafeArchiveRoot(
+  absPath: string,
+  errorPrefix: string,
+  argName: string,
+): Promise<SafeArchiveRoot> {
+  const rootAbs = path.resolve(absPath);
+  await assertIsDirectoryNotSymlink(rootAbs, errorPrefix, argName);
+  return {
+    abs: rootAbs,
+    real: await realpath(rootAbs),
+    errorPrefix,
+    argName,
+  };
+}
+
+export function validateArchiveRelativePath(
+  relPath: string,
+  errorPrefix: string,
+): string {
+  if (relPath.length === 0) {
+    throw new Error(`${errorPrefix}: record path must not be empty`);
+  }
+  if (relPath.includes("\\")) {
+    throw new Error(
+      `${errorPrefix}: record path must use POSIX separators: ${relPath}`,
+    );
+  }
+  if (path.posix.isAbsolute(relPath)) {
+    throw new Error(
+      `${errorPrefix}: record path must be relative: ${relPath}`,
+    );
+  }
+
+  const segments = relPath.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    throw new Error(
+      `${errorPrefix}: record path contains unsafe segments: ${relPath}`,
+    );
+  }
+
+  const normalized = path.posix.normalize(relPath);
+  if (
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../") ||
+    path.posix.isAbsolute(normalized)
+  ) {
+    throw new Error(
+      `${errorPrefix}: record path escapes target root: ${relPath}`,
+    );
+  }
+
+  return normalized;
+}
+
+export async function resolveSafeArchiveTarget(
+  root: SafeArchiveRoot,
+  relPath: string,
+): Promise<string> {
+  const safeRelPath = validateArchiveRelativePath(relPath, root.errorPrefix);
+  const targetAbs = path.resolve(root.abs, fromPosixRelPath(safeRelPath));
+  if (!isPathInsideRoot(root.abs, targetAbs)) {
+    throw new Error(
+      `${root.errorPrefix}: record path escapes target root: ${relPath}`,
+    );
+  }
+
+  const targetStat = await lstat(targetAbs).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (targetStat?.isSymbolicLink()) {
+    throw new Error(
+      `${root.errorPrefix}: record path targets a symlink: ${relPath}`,
+    );
+  }
+
+  await assertRealpathInsideRoot(
+    root.real,
+    targetAbs,
+    relPath,
+    root.errorPrefix,
+  );
+  return targetAbs;
+}
+
 // ---------------------------------------------------------------------------
 // Shared path-safety helpers (used by capsule-import, capsule-merge, and
 // capsule-fork).
