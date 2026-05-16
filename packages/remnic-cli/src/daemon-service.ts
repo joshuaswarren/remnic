@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findCommandOnPath as findCommandOnPathDefault } from "./daemon-service-candidates.js";
 import { expandTilde } from "./path-utils.js";
 
-export type ServerBinSource = "package" | "workspace-dist" | "workspace-source";
+export type ServerBinSource = "package" | "path" | "workspace-dist" | "workspace-source";
 
 export interface ServerBinResolution {
   path: string;
@@ -14,8 +15,10 @@ export interface ServerBinResolution {
 
 export interface ResolveServerBinOptions {
   existsSync?: (candidate: string) => boolean;
+  findCommandOnPath?: (command: string, pathEnv?: string) => string | undefined;
   moduleDir?: string;
   packageResolve?: (specifier: string) => string;
+  pathEnv?: string;
 }
 
 export interface LaunchdPlistInspection {
@@ -35,6 +38,7 @@ const thisModuleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function resolveServerBinDetails(options: ResolveServerBinOptions = {}): ServerBinResolution {
   const existsSync = options.existsSync ?? fs.existsSync;
+  const findCommandOnPath = options.findCommandOnPath ?? findCommandOnPathDefault;
   const moduleDir = options.moduleDir ?? thisModuleDir;
   const packageResolve = options.packageResolve ?? resolveImportSpecifier;
   const candidates: Array<{ path: string; source: ServerBinSource }> = [];
@@ -55,11 +59,20 @@ export function resolveServerBinDetails(options: ResolveServerBinOptions = {}): 
       path: path.resolve(moduleDir, "../../remnic-server/dist/index.js"),
       source: "workspace-dist",
     },
-    {
-      path: path.resolve(moduleDir, "../../remnic-server/src/index.ts"),
-      source: "workspace-source",
-    },
   );
+
+  const pathBin = findCommandOnPath("remnic-server", options.pathEnv);
+  if (pathBin) {
+    candidates.push({
+      path: pathBin,
+      source: "path",
+    });
+  }
+
+  candidates.push({
+    path: path.resolve(moduleDir, "../../remnic-server/src/index.ts"),
+    source: "workspace-source",
+  });
 
   const selected = candidates.find((candidate) => existsSync(candidate.path)) ?? candidates[0] ?? {
     path: path.resolve(moduleDir, "../../remnic-server/dist/index.js"),

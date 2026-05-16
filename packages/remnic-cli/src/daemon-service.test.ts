@@ -64,6 +64,30 @@ test("resolveServerBinDetails reports TypeScript source as not launchd-loadable"
   assert.equal(result.loadableByNode, false);
 });
 
+test("resolveServerBinDetails falls back to PATH before TypeScript source", () => {
+  const moduleDir = "/repo/packages/remnic-cli/dist";
+  const pathServer = "/opt/homebrew/bin/remnic-server";
+  const workspaceSource = path.resolve(moduleDir, "../../remnic-server/src/index.ts");
+  const result = resolveServerBinDetails({
+    moduleDir,
+    pathEnv: "/opt/homebrew/bin",
+    packageResolve: () => {
+      throw new Error("not installed");
+    },
+    findCommandOnPath: (command, pathEnv) => {
+      assert.equal(command, "remnic-server");
+      assert.equal(pathEnv, "/opt/homebrew/bin");
+      return pathServer;
+    },
+    existsSync: (candidate) => candidate === pathServer || candidate === workspaceSource,
+  });
+
+  assert.equal(result.path, pathServer);
+  assert.equal(result.source, "path");
+  assert.equal(result.exists, true);
+  assert.equal(result.loadableByNode, true);
+});
+
 test("readLaunchdProgramArguments parses plist string entries", () => {
   const args = readLaunchdProgramArguments(`
     <plist><dict>
