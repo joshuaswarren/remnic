@@ -49,6 +49,8 @@ try {
   // execFileSync throws on non-zero exit — propagate the child's exit code.
   if (err.status != null) {
     process.exitCode = err.status;
+  } else if (err.signal) {
+    process.kill(process.pid, err.signal);
   } else {
     process.stderr.write(`Fatal: ${err.message}\n`);
     process.exitCode = 1;
