@@ -6588,8 +6588,8 @@ function renderTemplate(templateContent: string, vars: Record<string, string>): 
 }
 
 function isStandaloneServiceInstalled(): boolean {
-  if (isMacOS()) return fs.existsSync(LAUNCHD_PLIST_PATH) || fs.existsSync(LEGACY_LAUNCHD_PLIST_PATH);
-  if (isLinux()) return fs.existsSync(SYSTEMD_UNIT_PATH) || fs.existsSync(LEGACY_SYSTEMD_UNIT_PATH);
+  if (isMacOS()) return anyFileExists(LAUNCHD_PLIST_PATHS);
+  if (isLinux()) return anyFileExists(SYSTEMD_UNIT_PATHS);
   return false;
 }
 
@@ -6602,13 +6602,16 @@ function selectLaunchdInspection(openclawPluginModeConfigured: boolean): {
   const canonical = inspectLaunchdPlist(LAUNCHD_PLIST_PATH);
   if (canonical.installed) return canonical;
 
-  const legacy = inspectLaunchdPlist(LEGACY_LAUNCHD_PLIST_PATH);
-  if (legacy.installed) {
+  for (const plistPath of LAUNCHD_PLIST_PATHS.slice(1)) {
+    const legacy = inspectLaunchdPlist(plistPath);
+    if (!legacy.installed) continue;
+
+    const label = path.basename(plistPath, ".plist");
     return legacy.ok
       ? {
           ...legacy,
           warn: true,
-          detail: `${legacy.detail} (legacy ${LEGACY_LAUNCHD_LABEL}; reinstall recommended)`,
+          detail: `${legacy.detail} (legacy ${label}; reinstall recommended)`,
           remediation: "Run `remnic daemon install` to migrate the launchd service to ai.remnic.daemon.",
         }
       : legacy;

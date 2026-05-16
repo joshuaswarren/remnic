@@ -118,6 +118,23 @@ test("doctor: CLI validates stale launchd server binary paths", async () => {
   );
 });
 
+test("doctor: standalone service checks use merged service path arrays", async () => {
+  const src = await readCli();
+  assert.ok(
+    src.includes("anyFileExists(LAUNCHD_PLIST_PATHS)"),
+    "CLI doctor must check all launchd candidate paths",
+  );
+  assert.ok(
+    src.includes("anyFileExists(SYSTEMD_UNIT_PATHS)"),
+    "CLI doctor must check all systemd candidate paths",
+  );
+  assert.equal(
+    src.includes("LEGACY_LAUNCHD_PLIST_PATH") || src.includes("LEGACY_SYSTEMD_UNIT_PATH"),
+    false,
+    "CLI doctor must not reference removed legacy path constants",
+  );
+});
+
 // ── Logic unit tests (pure config parsing) ───────────────────────────────────
 
 interface OpenclawConfig {
