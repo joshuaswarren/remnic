@@ -5040,7 +5040,7 @@ async function cmdDoctor(): Promise<void> {
       ? "set"
       : openaiKeyOptionalForGateway
       ? "not set (not required for OpenClaw gateway modelSource)"
-      : "not set (required only for direct OpenAI-backed extraction)",
+      : "not set (required for direct OpenAI-backed extraction)",
   });
 
   const svcState = isServiceRunning();

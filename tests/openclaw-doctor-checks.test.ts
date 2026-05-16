@@ -135,6 +135,19 @@ test("doctor: standalone service checks use merged service path arrays", async (
   );
 });
 
+test("doctor: OPENAI_API_KEY failure message is unambiguous", async () => {
+  const src = await readCli();
+  assert.ok(
+    src.includes("not set (required for direct OpenAI-backed extraction)"),
+    "CLI doctor must make the failing OPENAI_API_KEY case explicit",
+  );
+  assert.equal(
+    src.includes("not set (required only for direct OpenAI-backed extraction)"),
+    false,
+    "CLI doctor must not imply OPENAI_API_KEY is optional when the check fails",
+  );
+});
+
 // ── Logic unit tests (pure config parsing) ───────────────────────────────────
 
 interface OpenclawConfig {
