@@ -7,6 +7,7 @@
 const { resolve } = require("node:path");
 const { existsSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
+const { constants: osConstants } = require("node:os");
 
 const cwd = __dirname;
 const distEntry = resolve(cwd, "../dist/index.js");
@@ -15,6 +16,11 @@ const srcEntry = resolve(cwd, "../src/index.ts");
 const colorEnv = {};
 if (!process.env.NO_COLOR && process.env.FORCE_COLOR === undefined) {
   colorEnv.FORCE_COLOR = "1";
+}
+
+function exitCodeForSignal(signal) {
+  const signalNumber = osConstants.signals?.[signal];
+  return typeof signalNumber === "number" ? 128 + signalNumber : 1;
 }
 
 try {
@@ -38,6 +44,7 @@ try {
   if (err.status != null) {
     process.exitCode = err.status;
   } else if (err.signal) {
+    process.exitCode = exitCodeForSignal(err.signal);
     process.kill(process.pid, err.signal);
   } else {
     process.stderr.write(`Fatal: ${err.message}\n`);

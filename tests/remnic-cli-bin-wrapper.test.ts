@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { constants as osConstants, tmpdir } from "node:os";
 
 const packageBinDir = join(process.cwd(), "packages", "remnic-cli", "bin");
 const remnicBin = join(packageBinDir, "remnic.cjs");
@@ -46,6 +46,51 @@ test("package bin wrappers preserve child signal termination", async () => {
 
       assert.equal(result.status, null);
       assert.equal(result.signal, "SIGTERM");
+      assert.doesNotMatch(result.stderr, /Fatal:/);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test("package bin wrappers keep a failing exit code when a self-signal is ignored", async () => {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const sigpipeExitCode = 128 + osConstants.signals.SIGPIPE;
+
+  for (const sourceBin of [remnicBin, engramBin]) {
+    const tempRoot = await mkdtemp(join(tmpdir(), "remnic-cli-bin-wrapper-"));
+    try {
+      const tempBinDir = join(tempRoot, "bin");
+      await mkdir(tempBinDir, { recursive: true });
+
+      const tempBin = join(tempBinDir, "wrapper.cjs");
+      const preload = join(tempRoot, "throw-sigpipe.cjs");
+      await copyFile(sourceBin, tempBin);
+      await chmod(tempBin, 0o755);
+      await writeFile(
+        preload,
+        [
+          'const childProcess = require("node:child_process");',
+          "childProcess.execFileSync = () => {",
+          '  const err = new Error("child terminated by SIGPIPE");',
+          '  err.signal = "SIGPIPE";',
+          "  throw err;",
+          "};",
+          "",
+        ].join("\n"),
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        ["--require", preload, tempBin],
+        { encoding: "utf8" },
+      );
+
+      assert.equal(result.status, sigpipeExitCode);
+      assert.equal(result.signal, null);
       assert.doesNotMatch(result.stderr, /Fatal:/);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
