@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +15,7 @@ export interface ServerBinResolution {
 export interface ResolveServerBinOptions {
   existsSync?: (candidate: string) => boolean;
   moduleDir?: string;
-  requireResolve?: (specifier: string) => string;
+  packageResolve?: (specifier: string) => string;
 }
 
 export interface LaunchdPlistInspection {
@@ -32,18 +31,17 @@ export interface InspectLaunchdPlistOptions {
   readFileSync?: (file: string, encoding: BufferEncoding) => string;
 }
 
-const thisRequire = createRequire(import.meta.url);
 const thisModuleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function resolveServerBinDetails(options: ResolveServerBinOptions = {}): ServerBinResolution {
   const existsSync = options.existsSync ?? fs.existsSync;
   const moduleDir = options.moduleDir ?? thisModuleDir;
-  const requireResolve = options.requireResolve ?? thisRequire.resolve.bind(thisRequire);
+  const packageResolve = options.packageResolve ?? resolveImportSpecifier;
   const candidates: Array<{ path: string; source: ServerBinSource }> = [];
 
   try {
     candidates.push({
-      path: requireResolve("@remnic/server"),
+      path: normalizeResolvedPath(packageResolve("@remnic/server")),
       source: "package",
     });
   } catch {
@@ -196,6 +194,17 @@ function expandHome(input: string): string {
   if (input === "~") return os.homedir();
   if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
   return input;
+}
+
+function resolveImportSpecifier(specifier: string): string {
+  const resolver = (import.meta as ImportMeta & { resolve?: (target: string) => string }).resolve;
+  if (!resolver) throw new Error("import.meta.resolve is unavailable");
+  return resolver.call(import.meta, specifier);
+}
+
+function normalizeResolvedPath(resolved: string): string {
+  if (resolved.startsWith("file:")) return fileURLToPath(resolved);
+  return resolved;
 }
 
 function unescapeXml(input: string): string {

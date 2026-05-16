@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   inspectLaunchdPlist,
@@ -8,13 +9,13 @@ import {
   resolveServerBinDetails,
 } from "./daemon-service.js";
 
-test("resolveServerBinDetails prefers installed @remnic/server package entry", () => {
+test("resolveServerBinDetails prefers installed @remnic/server package entry through ESM resolution", () => {
   const packageEntry = "/opt/homebrew/lib/node_modules/@remnic/server/dist/index.js";
   const result = resolveServerBinDetails({
     moduleDir: "/repo/packages/remnic-cli/dist",
-    requireResolve: (specifier) => {
+    packageResolve: (specifier) => {
       assert.equal(specifier, "@remnic/server");
-      return packageEntry;
+      return pathToFileURL(packageEntry).href;
     },
     existsSync: (candidate) => candidate === packageEntry,
   });
@@ -33,7 +34,7 @@ test("resolveServerBinDetails falls back to workspace dist before source", () =>
   const workspaceSource = path.resolve(moduleDir, "../../remnic-server/src/index.ts");
   const result = resolveServerBinDetails({
     moduleDir,
-    requireResolve: () => {
+    packageResolve: () => {
       throw new Error("not installed");
     },
     existsSync: (candidate) => candidate === workspaceDist || candidate === workspaceSource,
@@ -50,7 +51,7 @@ test("resolveServerBinDetails reports TypeScript source as not launchd-loadable"
   const workspaceSource = path.resolve(moduleDir, "../../remnic-server/src/index.ts");
   const result = resolveServerBinDetails({
     moduleDir,
-    requireResolve: () => {
+    packageResolve: () => {
       throw new Error("not installed");
     },
     existsSync: (candidate) => candidate === workspaceSource,
