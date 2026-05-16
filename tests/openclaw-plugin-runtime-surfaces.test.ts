@@ -176,10 +176,12 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
       false,
       "Remnic must not claim OpenAI provider setup ownership",
     );
-    assert.equal(
-      "providerAuthEnvVars" in manifest,
-      false,
-      "providerAuthEnvVars is deprecated for external plugins; use providerAuthChoices only",
+    assert.deepEqual(
+      manifest.providerAuthEnvVars,
+      {
+        openai: ["OPENAI_API_KEY"],
+      },
+      "providerAuthEnvVars remains compatibility metadata for pre-runtime OpenClaw auth probes",
     );
     const expectedAuthChoice = manifest.id === "openclaw-engram"
       ? {

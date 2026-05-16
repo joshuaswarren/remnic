@@ -182,8 +182,9 @@ extension entry, and its package install metadata advertises
 repair, and update flows ClawHub-first while preserving npm as the fallback
 install surface and `>=2026.5.16-beta.1` as the minimum supported host range.
 The manifest also declares `activation.onStartup: false`, leaves provider
-ownership to the host, and exposes the optional plugin-mode OpenAI key through
-`providerAuthChoices`.
+ownership to the host, exposes the optional plugin-mode OpenAI key through
+`providerAuthChoices`, and keeps `providerAuthEnvVars.openai` as compatibility
+metadata for OpenClaw's pre-runtime env-var auth probes.
 
 Native memory registrars are tracked separately in
 [`docs/plugins/openclaw-native-memory-registrars.md`](../../docs/plugins/openclaw-native-memory-registrars.md).

@@ -7,6 +7,11 @@
   "setup": {
     "requiresRuntime": false
   },
+  "providerAuthEnvVars": {
+    "openai": [
+      "OPENAI_API_KEY"
+    ]
+  },
   "providerAuthChoices": [
     {
       "provider": "openai",

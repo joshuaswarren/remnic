@@ -156,7 +156,10 @@ The plugin manifest advertises compatibility on two surfaces:
 - `activation.onStartup: false` is explicit so startup activation remains
   intentional.
 - `providerAuthChoices` advertises the optional plugin-mode OpenAI API key
-  without using the deprecated external-plugin `providerAuthEnvVars` surface.
+  for onboarding and CLI surfaces.
+- `providerAuthEnvVars.openai` is retained only as compatibility metadata for
+  OpenClaw's pre-runtime env-var auth probes; it does not reintroduce provider
+  setup ownership.
 
 Keep the supported blocks. `contracts.tools` is additive for older OpenClaw runtimes, but
 OpenClaw 2026.5 rejects plugin tool registration when a runtime tool is missing
