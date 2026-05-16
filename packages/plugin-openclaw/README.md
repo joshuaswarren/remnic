@@ -180,7 +180,7 @@ extension entry, and its package install metadata advertises
 `openclaw.install.npmSpec: "@remnic/plugin-openclaw"`, and
 `openclaw.install.defaultChoice: "clawhub"`. That keeps OpenClaw setup,
 repair, and update flows ClawHub-first while preserving npm as the fallback
-install surface and `>=2026.4.8` as the minimum supported host range.
+install surface and `>=2026.5.16-beta.1` as the minimum supported host range.
 The manifest also declares `activation.onStartup: false`, leaves provider
 ownership to the host, and exposes the optional plugin-mode OpenAI key through
 `providerAuthChoices`.

@@ -26,7 +26,7 @@
       "./dist/index.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.4.8"
+      "pluginApi": ">=2026.5.16-beta.1"
     },
     "build": {
       "openclawVersion": "2026.5.16-beta.2",
@@ -36,7 +36,7 @@
       "clawhubSpec": "clawhub:@remnic/plugin-openclaw",
       "npmSpec": "@remnic/plugin-openclaw",
       "defaultChoice": "clawhub",
-      "minHostVersion": ">=2026.4.8"
+      "minHostVersion": ">=2026.5.16-beta.1"
     },
     "environment": {
       "externalServices": [
@@ -79,7 +79,7 @@
     "openai": "^6.0.0"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.4.8"
+    "openclaw": ">=2026.5.16-beta.1"
   },
   "devDependencies": {
     "@openclaw/plugin-inspector": "0.3.10",

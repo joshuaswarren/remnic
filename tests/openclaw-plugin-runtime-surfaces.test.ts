@@ -388,7 +388,7 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
       "OpenClaw 2026.5.12+ package discovery should have an explicit built runtime entrypoint",
     );
     assert.deepEqual(openclaw.compat, {
-      pluginApi: ">=2026.4.8",
+      pluginApi: ">=2026.5.16-beta.1",
     });
     assert.deepEqual(openclaw.build, {
       openclawVersion: "2026.5.16-beta.2",
@@ -397,7 +397,7 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
     assert.deepEqual(openclaw.install, {
       ...expectation.install,
       defaultChoice: "clawhub",
-      minHostVersion: ">=2026.4.8",
+      minHostVersion: ">=2026.5.16-beta.1",
     });
   });
 }
