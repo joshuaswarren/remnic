@@ -156,6 +156,16 @@ import {
   loadBenchModule,
   tryLoadBenchModule,
 } from "./optional-bench.js";
+import {
+  LAUNCHD_LABEL,
+  LAUNCHD_LABEL_CANDIDATES,
+  SYSTEMD_SERVICE,
+  SYSTEMD_SERVICE_CANDIDATES,
+  anyFileExists,
+  launchdPlistPaths,
+  resolveServerBinPath,
+  systemdUnitPaths,
+} from "./daemon-service-candidates.js";
 import type {
   BenchConfig,
   BenchMemoryAdapter,
@@ -6488,36 +6498,10 @@ Options:
 // ── Daemon management ────────────────────────────────────────────────────────
 
 const LOGS_DIR = path.join(PID_DIR, "logs");
-const LAUNCHD_LABEL = "ai.remnic.daemon";
-const LEGACY_LAUNCHD_LABEL = "ai.engram.daemon";
-const LAUNCHD_PLIST_PATH = path.join(
-  resolveHomeDir(),
-  "Library",
-  "LaunchAgents",
-  `${LAUNCHD_LABEL}.plist`,
-);
-const LEGACY_LAUNCHD_PLIST_PATH = path.join(
-  resolveHomeDir(),
-  "Library",
-  "LaunchAgents",
-  `${LEGACY_LAUNCHD_LABEL}.plist`,
-);
-const SYSTEMD_SERVICE = "remnic.service";
-const LEGACY_SYSTEMD_SERVICE = "engram.service";
-const SYSTEMD_UNIT_PATH = path.join(
-  resolveHomeDir(),
-  ".config",
-  "systemd",
-  "user",
-  SYSTEMD_SERVICE,
-);
-const LEGACY_SYSTEMD_UNIT_PATH = path.join(
-  resolveHomeDir(),
-  ".config",
-  "systemd",
-  "user",
-  LEGACY_SYSTEMD_SERVICE,
-);
+const LAUNCHD_PLIST_PATHS = launchdPlistPaths(resolveHomeDir());
+const [LAUNCHD_PLIST_PATH] = LAUNCHD_PLIST_PATHS;
+const SYSTEMD_UNIT_PATHS = systemdUnitPaths(resolveHomeDir());
+const [SYSTEMD_UNIT_PATH] = SYSTEMD_UNIT_PATHS;
 
 
 function readPid(): number | undefined {
@@ -6546,11 +6530,7 @@ function resolveNodePath(): string {
 }
 
 function resolveServerBin(): string {
-  // Prefer built dist (production), fall back to source (dev)
-  const distPath = path.resolve(import.meta.dirname, "../../remnic-server/dist/index.js");
-  if (fs.existsSync(distPath)) return distPath;
-  const srcPath = path.resolve(import.meta.dirname, "../../remnic-server/src/index.ts");
-  return srcPath;
+  return resolveServerBinPath(import.meta.dirname);
 }
 
 function isMacOS(): boolean {
@@ -6628,7 +6608,7 @@ function daemonInstall(): void {
 function daemonUninstall(): void {
   if (isMacOS()) {
     let removed = false;
-    for (const plistPath of [LAUNCHD_PLIST_PATH, LEGACY_LAUNCHD_PLIST_PATH]) {
+    for (const plistPath of LAUNCHD_PLIST_PATHS) {
       try {
         childProcess.execSync(`launchctl unload "${plistPath}"`, { stdio: "pipe" });
       } catch {
@@ -6646,7 +6626,7 @@ function daemonUninstall(): void {
       console.log("Launchd plist not found — nothing to remove.");
     }
   } else if (isLinux()) {
-    for (const serviceName of [SYSTEMD_SERVICE, LEGACY_SYSTEMD_SERVICE]) {
+    for (const serviceName of SYSTEMD_SERVICE_CANDIDATES) {
       try {
         childProcess.execSync(`systemctl --user stop ${serviceName}`, { stdio: "pipe" });
         childProcess.execSync(`systemctl --user disable ${serviceName}`, { stdio: "pipe" });
@@ -6655,7 +6635,7 @@ function daemonUninstall(): void {
       }
     }
     let removed = false;
-    for (const unitPath of [SYSTEMD_UNIT_PATH, LEGACY_SYSTEMD_UNIT_PATH]) {
+    for (const unitPath of SYSTEMD_UNIT_PATHS) {
       try {
         fs.unlinkSync(unitPath);
         removed = true;
@@ -6694,7 +6674,7 @@ function isServiceRunning(): { running: boolean; pid?: number } {
   }
   // Check service manager (launchd/systemd from `daemon install`)
   if (isMacOS()) {
-    const status = firstSuccessfulResult([LAUNCHD_LABEL, LEGACY_LAUNCHD_LABEL], (label) => {
+    const status = firstSuccessfulResult(LAUNCHD_LABEL_CANDIDATES, (label) => {
       const out = childProcess.execSync(`launchctl list ${label} 2>/dev/null`, { encoding: "utf8" });
       const pidMatch = out.match(/"PID"\s*=\s*(\d+)/);
       if (pidMatch) return { running: true, pid: parseInt(pidMatch[1], 10) };
@@ -6702,7 +6682,7 @@ function isServiceRunning(): { running: boolean; pid?: number } {
     });
     if (status) return status;
   } else if (isLinux()) {
-    const status = firstSuccessfulResult([SYSTEMD_SERVICE, LEGACY_SYSTEMD_SERVICE], (serviceName) => {
+    const status = firstSuccessfulResult(SYSTEMD_SERVICE_CANDIDATES, (serviceName) => {
       const out = childProcess.execSync(`systemctl --user is-active ${serviceName} 2>/dev/null`, {
         encoding: "utf8",
       }).trim();
@@ -6728,9 +6708,9 @@ async function daemonStatus(): Promise<void> {
   const { running, pid } = isServiceRunning();
   const port = inferPort();
   const serviceInstalled = isMacOS()
-    ? fs.existsSync(LAUNCHD_PLIST_PATH) || fs.existsSync(LEGACY_LAUNCHD_PLIST_PATH)
+    ? anyFileExists(LAUNCHD_PLIST_PATHS)
     : isLinux()
-      ? fs.existsSync(SYSTEMD_UNIT_PATH) || fs.existsSync(LEGACY_SYSTEMD_UNIT_PATH)
+      ? anyFileExists(SYSTEMD_UNIT_PATHS)
       : false;
 
   console.log(`Remnic daemon status:`);
@@ -6771,16 +6751,16 @@ function daemonStart(): void {
   }
 
   // Try service manager first (for daemons installed via `remnic daemon install`)
-  if (isMacOS() && (fs.existsSync(LAUNCHD_PLIST_PATH) || fs.existsSync(LEGACY_LAUNCHD_PLIST_PATH))) {
-    const label = firstSuccessfulCandidate([LAUNCHD_LABEL, LEGACY_LAUNCHD_LABEL], (candidate) => {
+  if (isMacOS() && anyFileExists(LAUNCHD_PLIST_PATHS)) {
+    const label = firstSuccessfulCandidate(LAUNCHD_LABEL_CANDIDATES, (candidate) => {
       childProcess.execSync(`launchctl start ${candidate} 2>/dev/null`, { stdio: "pipe" });
     });
     if (label) {
       console.log(`Started remnic daemon via launchd (${label})`);
       return;
     }
-  } else if (isLinux() && (fs.existsSync(SYSTEMD_UNIT_PATH) || fs.existsSync(LEGACY_SYSTEMD_UNIT_PATH))) {
-    const serviceName = firstSuccessfulCandidate([SYSTEMD_SERVICE, LEGACY_SYSTEMD_SERVICE], (candidate) => {
+  } else if (isLinux() && anyFileExists(SYSTEMD_UNIT_PATHS)) {
+    const serviceName = firstSuccessfulCandidate(SYSTEMD_SERVICE_CANDIDATES, (candidate) => {
       childProcess.execSync(`systemctl --user start ${candidate}`, { stdio: "pipe" });
     });
     if (serviceName) {
@@ -6825,16 +6805,16 @@ function daemonStart(): void {
 
 function daemonStop(): void {
   // Try service manager first (for daemons started via `remnic daemon install`)
-  if (isMacOS() && (fs.existsSync(LAUNCHD_PLIST_PATH) || fs.existsSync(LEGACY_LAUNCHD_PLIST_PATH))) {
-    const label = firstSuccessfulCandidate([LAUNCHD_LABEL, LEGACY_LAUNCHD_LABEL], (candidate) => {
+  if (isMacOS() && anyFileExists(LAUNCHD_PLIST_PATHS)) {
+    const label = firstSuccessfulCandidate(LAUNCHD_LABEL_CANDIDATES, (candidate) => {
       childProcess.execSync(`launchctl stop ${candidate} 2>/dev/null`, { stdio: "pipe" });
     });
     if (label) {
       console.log(`Stopped remnic daemon via launchd (${label})`);
       return;
     }
-  } else if (isLinux() && (fs.existsSync(SYSTEMD_UNIT_PATH) || fs.existsSync(LEGACY_SYSTEMD_UNIT_PATH))) {
-    const serviceName = firstSuccessfulCandidate([SYSTEMD_SERVICE, LEGACY_SYSTEMD_SERVICE], (candidate) => {
+  } else if (isLinux() && anyFileExists(SYSTEMD_UNIT_PATHS)) {
+    const serviceName = firstSuccessfulCandidate(SYSTEMD_SERVICE_CANDIDATES, (candidate) => {
       childProcess.execSync(`systemctl --user stop ${candidate}`, { stdio: "pipe" });
     });
     if (serviceName) {

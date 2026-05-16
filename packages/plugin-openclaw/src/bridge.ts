@@ -67,6 +67,7 @@ try {
 `;
 const LAUNCHD_SERVICE_PATHS = [
   ["Library", "LaunchAgents", "ai.remnic.daemon.plist"],
+  ["Library", "LaunchAgents", "ai.remnic.server.plist"],
   ["Library", "LaunchAgents", "ai.engram.daemon.plist"],
 ] as const;
 const SYSTEMD_SERVICE_PATHS = [
@@ -175,6 +176,17 @@ function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEAL
   }
 }
 
+function shouldProbeDaemonHealth(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return (
+    normalized === DEFAULT_HOST ||
+    normalized === "localhost" ||
+    normalized === "::1" ||
+    normalized === "[::1]" ||
+    isDaemonServiceConfigured()
+  );
+}
+
 /**
  * Read daemon port from environment or remnic config.
  */
@@ -223,8 +235,8 @@ export function detectBridgeMode(): BridgeConfig {
   const daemonHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST") ?? DEFAULT_HOST;
   const daemonPort = readDaemonPort();
 
-  // Auto-detect: if daemon is running or service-managed and live, delegate; otherwise embedded.
-  if (isDaemonRunning() || (isDaemonServiceConfigured() && checkDaemonHealthSync(daemonHost, daemonPort))) {
+  // Auto-detect: if daemon is running or reachable locally, delegate; otherwise embedded.
+  if (isDaemonRunning() || (shouldProbeDaemonHealth(daemonHost) && checkDaemonHealthSync(daemonHost, daemonPort))) {
     return {
       mode: "delegate",
       daemonHost,
