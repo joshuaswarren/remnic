@@ -1,7 +1,7 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { expandTilde } from "./path-utils.js";
 
 export type ServerBinSource = "package" | "workspace-dist" | "workspace-source";
 
@@ -126,7 +126,7 @@ export function inspectLaunchdPlist(
     };
   }
 
-  const expandedServerArg = expandHome(serverArg);
+  const expandedServerArg = expandTilde(serverArg);
   if (!path.isAbsolute(expandedServerArg)) {
     return {
       installed: true,
@@ -198,12 +198,6 @@ function findLaunchdServerArgument(args: string[]): string | undefined {
     return firstArg;
   }
   return undefined;
-}
-
-function expandHome(input: string): string {
-  if (input === "~") return os.homedir();
-  if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
-  return input;
 }
 
 function resolveImportSpecifier(specifier: string): string {

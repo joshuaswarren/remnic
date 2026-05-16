@@ -146,3 +146,35 @@ test("inspectLaunchdPlist accepts an existing built server binary", () => {
   assert.equal(result.ok, true);
   assert.match(result.detail, /dist\/bin\/remnic-server\.js/);
 });
+
+test("inspectLaunchdPlist expands shared home aliases in server arguments", () => {
+  const originalHome = process.env.HOME;
+  process.env.HOME = "/Users/test";
+
+  try {
+    const plistPath = "/Users/test/Library/LaunchAgents/ai.remnic.daemon.plist";
+    const server = "/Users/test/.npm/lib/node_modules/@remnic/server/dist/bin/remnic-server.js";
+    const result = inspectLaunchdPlist(plistPath, {
+      existsSync: (candidate) => candidate === plistPath || candidate === server,
+      readFileSync: () => `
+        <plist><dict>
+          <key>ProgramArguments</key>
+          <array>
+            <string>/opt/homebrew/bin/node</string>
+            <string>\${HOME}/.npm/lib/node_modules/@remnic/server/dist/bin/remnic-server.js</string>
+          </array>
+        </dict></plist>
+      `,
+    });
+
+    assert.equal(result.installed, true);
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /\/Users\/test\/\.npm/);
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+  }
+});
