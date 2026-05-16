@@ -9,19 +9,20 @@ import {
   resolveServerBinDetails,
 } from "./daemon-service.js";
 
-test("resolveServerBinDetails prefers installed @remnic/server package entry through ESM resolution", () => {
+test("resolveServerBinDetails prefers installed @remnic/server bin through ESM resolution", () => {
   const packageEntry = "/opt/homebrew/lib/node_modules/@remnic/server/dist/index.js";
+  const packageBin = "/opt/homebrew/lib/node_modules/@remnic/server/dist/bin/remnic-server.js";
   const result = resolveServerBinDetails({
     moduleDir: "/repo/packages/remnic-cli/dist",
     packageResolve: (specifier) => {
       assert.equal(specifier, "@remnic/server");
       return pathToFileURL(packageEntry).href;
     },
-    existsSync: (candidate) => candidate === packageEntry,
+    existsSync: (candidate) => candidate === packageBin,
   });
 
   assert.deepEqual(result, {
-    path: packageEntry,
+    path: packageBin,
     source: "package",
     exists: true,
     loadableByNode: true,

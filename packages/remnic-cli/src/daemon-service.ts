@@ -40,8 +40,9 @@ export function resolveServerBinDetails(options: ResolveServerBinOptions = {}): 
   const candidates: Array<{ path: string; source: ServerBinSource }> = [];
 
   try {
+    const packageEntry = normalizeResolvedPath(packageResolve("@remnic/server"));
     candidates.push({
-      path: normalizeResolvedPath(packageResolve("@remnic/server")),
+      path: packageServerBinFromEntry(packageEntry),
       source: "package",
     });
   } catch {
@@ -205,6 +206,13 @@ function resolveImportSpecifier(specifier: string): string {
 function normalizeResolvedPath(resolved: string): string {
   if (resolved.startsWith("file:")) return fileURLToPath(resolved);
   return resolved;
+}
+
+function packageServerBinFromEntry(packageEntry: string): string {
+  if (path.basename(packageEntry) === "index.js" && path.basename(path.dirname(packageEntry)) === "dist") {
+    return path.join(path.dirname(packageEntry), "bin", "remnic-server.js");
+  }
+  return packageEntry;
 }
 
 function unescapeXml(input: string): string {
