@@ -45,12 +45,10 @@ function isRunnableNodeScript(filePath: string): boolean {
   try {
     const text = fs.readFileSync(filePath, "utf8").slice(0, 4096);
     const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
-    return (
-      /^#!.*\bnode\b/.test(firstLine) ||
-      /\bimport\s+/.test(text) ||
-      /\bexport\s+/.test(text) ||
-      /\brequire\s*\(/.test(text)
-    );
+    if (/^#!.*\bnode\b/.test(firstLine)) return true;
+    if (firstLine.startsWith("#!")) return false;
+    if (/\.(?:cjs|mjs|js)$/i.test(filePath)) return true;
+    return /\bimport\s+/.test(text) || /\bexport\s+/.test(text) || /\brequire\s*\(/.test(text);
   } catch {
     return false;
   }

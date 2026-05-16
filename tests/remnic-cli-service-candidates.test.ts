@@ -82,6 +82,7 @@ test("daemon server binary resolution unwraps shell shims to runnable JavaScript
     pathServer,
     [
       "#!/bin/sh",
+      "export REMNIC_SERVER_ENV=test",
       "basedir=$(dirname \"$(echo \"$0\" | sed -e 's,\\\\,/,g')\")",
       "exec node \"$basedir/../lib/node_modules/@remnic/server/dist/bin/remnic-server.js\" \"$@\"",
       "",
