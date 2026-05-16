@@ -41,6 +41,58 @@ function commandNames(command: string): string[] {
   return [command, `${command}.cmd`, `${command}.exe`, `${command}.bat`];
 }
 
+function isRunnableNodeScript(filePath: string): boolean {
+  try {
+    const text = fs.readFileSync(filePath, "utf8").slice(0, 4096);
+    const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+    return (
+      /^#!.*\bnode\b/.test(firstLine) ||
+      /\bimport\s+/.test(text) ||
+      /\bexport\s+/.test(text) ||
+      /\brequire\s*\(/.test(text)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function resolveShimNodeScript(filePath: string): string | undefined {
+  let text: string;
+  try {
+    text = fs.readFileSync(filePath, "utf8").slice(0, 16_384);
+  } catch {
+    return undefined;
+  }
+
+  const basedir = path.dirname(filePath);
+  const jsReferencePattern = /"([^"]+\.js)"|'([^']+\.js)'|([^\s"'`]+\.js)/g;
+  for (const match of text.matchAll(jsReferencePattern)) {
+    const raw = match[1] ?? match[2] ?? match[3];
+    if (!raw) continue;
+    const candidate = raw
+      .replaceAll("${basedir}", basedir)
+      .replaceAll("$basedir", basedir)
+      .replaceAll("\\ ", " ");
+    const resolved = path.isAbsolute(candidate)
+      ? candidate
+      : path.resolve(basedir, candidate);
+    try {
+      if (fs.statSync(resolved).isFile() && isRunnableNodeScript(resolved)) {
+        return fs.realpathSync(resolved);
+      }
+    } catch {
+      // Try the next JavaScript reference in the shim.
+    }
+  }
+  return undefined;
+}
+
+function resolveRunnableNodeScript(filePath: string): string | undefined {
+  const realPath = fs.realpathSync(filePath);
+  if (isRunnableNodeScript(realPath)) return realPath;
+  return resolveShimNodeScript(realPath);
+}
+
 export function findCommandOnPath(command: string, pathEnv = process.env.PATH ?? ""): string | undefined {
   for (const dir of pathEnv.split(path.delimiter)) {
     if (!dir) continue;
@@ -50,7 +102,8 @@ export function findCommandOnPath(command: string, pathEnv = process.env.PATH ??
         const stat = fs.statSync(candidate);
         if (!stat.isFile()) continue;
         if (process.platform !== "win32") fs.accessSync(candidate, fs.constants.X_OK);
-        return fs.realpathSync(candidate);
+        const runnable = resolveRunnableNodeScript(candidate);
+        if (runnable) return runnable;
       } catch {
         // Try the next PATH candidate.
       }

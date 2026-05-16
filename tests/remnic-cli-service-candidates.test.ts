@@ -62,3 +62,34 @@ test("daemon server binary resolution falls back to remnic-server on PATH before
   const resolved = resolveServerBinPath(packageDir, binDir);
   assert.equal(resolved, fs.realpathSync(globalServer));
 });
+
+test("daemon server binary resolution unwraps shell shims to runnable JavaScript", async () => {
+  const {
+    resolveServerBinPath,
+  } = await import(path.join(ROOT, "packages/remnic-cli/src/daemon-service-candidates.ts"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-shim-"));
+  const packageDir = path.join(tempDir, "packages", "remnic-cli", "dist");
+  const binDir = path.join(tempDir, "bin");
+  const globalServer = path.join(tempDir, "lib", "node_modules", "@remnic", "server", "dist", "bin", "remnic-server.js");
+  const pathServer = path.join(binDir, "remnic-server");
+
+  fs.mkdirSync(path.dirname(globalServer), { recursive: true });
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.mkdirSync(packageDir, { recursive: true });
+  await writeFile(globalServer, "#!/usr/bin/env node\nimport '../index.js';\n", "utf8");
+  await chmod(globalServer, 0o755);
+  await writeFile(
+    pathServer,
+    [
+      "#!/bin/sh",
+      "basedir=$(dirname \"$(echo \"$0\" | sed -e 's,\\\\,/,g')\")",
+      "exec node \"$basedir/../lib/node_modules/@remnic/server/dist/bin/remnic-server.js\" \"$@\"",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await chmod(pathServer, 0o755);
+
+  const resolved = resolveServerBinPath(packageDir, binDir);
+  assert.equal(resolved, fs.realpathSync(globalServer));
+});
