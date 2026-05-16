@@ -28,12 +28,13 @@
     "build": "tsup --config tsup.config.ts && node scripts/copy-bench-assets.mjs",
     "precheck-types": "node ../../scripts/ensure-cli-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "test": "tsx --test src/import-dispatch.test.ts src/import-bundle-detect.test.ts src/optional-importer.test.ts src/bench-args.test.ts src/xray.test.ts",
+    "test": "tsx --test src/import-dispatch.test.ts src/import-bundle-detect.test.ts src/optional-importer.test.ts src/bench-args.test.ts src/daemon-service.test.ts src/xray.test.ts",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@remnic/core": "workspace:^",
     "@remnic/plugin-pi": "workspace:^",
+    "@remnic/server": "workspace:^",
     "yaml": "^2.4.2"
   },
   "peerDependencies": {

@@ -195,6 +195,11 @@ import {
   swapDirectoryWithRollback,
 } from "./openclaw-upgrade-swap.js";
 import { expandTilde, resolveHomeDir } from "./path-utils.js";
+import {
+  inspectLaunchdPlist,
+  resolveServerBin,
+  resolveServerBinDetails,
+} from "./daemon-service.js";
 export { hasFlag, resolveFlag, stripResolveFlags, TAXONOMY_RESOLVE_BOOLEAN_FLAGS } from "./cli-args.js";
 import { hasFlag, resolveFlag, stripResolveFlags, TAXONOMY_RESOLVE_BOOLEAN_FLAGS } from "./cli-args.js";
 import { parseConnectorConfig, stripConfigArgv } from "./parse-connector-config.js";
@@ -4818,13 +4823,6 @@ async function cmdDoctor(): Promise<void> {
   const configExists = fs.existsSync(configPath);
   checks.push({ name: "Config file", ok: configExists, detail: configPath });
 
-  const hasApiKey = !!process.env.OPENAI_API_KEY;
-  checks.push({
-    name: "OPENAI_API_KEY",
-    ok: hasApiKey,
-    detail: hasApiKey ? "set" : "not set (extraction will not work)",
-  });
-
   const memoryDir = resolveMemoryDir();
   try {
     fs.mkdirSync(memoryDir, { recursive: true });
@@ -4833,18 +4831,13 @@ async function cmdDoctor(): Promise<void> {
     checks.push({ name: "Memory directory", ok: false, detail: `cannot create ${memoryDir}` });
   }
 
-  const svcState = isServiceRunning();
-  checks.push({
-    name: "Server daemon",
-    ok: svcState.running,
-    detail: svcState.running ? `running${svcState.pid ? ` (pid ${svcState.pid})` : ""}` : "stopped",
-  });
-
   // ── OpenClaw config checks ──────────────────────────────────────────────────
   const openclawConfigPath = resolveOpenclawConfigPath();
   const openclawConfigExists = fs.existsSync(openclawConfigPath);
   let openclawConfig: Record<string, unknown> = {};
   let openclawConfigValid = false;
+  let openclawPluginModeConfigured = false;
+  let activeOpenclawModelSource: string | undefined;
 
   if (openclawConfigExists) {
     try {
@@ -4986,6 +4979,14 @@ async function cmdDoctor(): Promise<void> {
       const entryConfig = entryToCheck?.config && typeof entryToCheck.config === "object"
         ? entryToCheck.config as Record<string, unknown>
         : null;
+      if (
+        slotMatchesEntry &&
+        (slotValue === REMNIC_OPENCLAW_PLUGIN_ID || slotValue === REMNIC_OPENCLAW_LEGACY_PLUGIN_ID)
+      ) {
+        openclawPluginModeConfigured = true;
+        activeOpenclawModelSource =
+          typeof entryConfig?.modelSource === "string" ? entryConfig.modelSource : undefined;
+      }
       const rawMemoryDir = entryConfig?.memoryDir;
       const configuredMemoryDir = typeof rawMemoryDir === "string" ? rawMemoryDir : undefined;
       if (configuredMemoryDir) {
@@ -5017,6 +5018,48 @@ async function cmdDoctor(): Promise<void> {
         });
       }
     }
+  }
+
+  const hasApiKey = !!process.env.OPENAI_API_KEY;
+  const openaiKeyOptionalForGateway =
+    openclawPluginModeConfigured && activeOpenclawModelSource === "gateway";
+  checks.push({
+    name: "OPENAI_API_KEY",
+    ok: hasApiKey || openaiKeyOptionalForGateway,
+    warn: !hasApiKey,
+    detail: hasApiKey
+      ? "set"
+      : openaiKeyOptionalForGateway
+      ? "not set (not required for OpenClaw gateway modelSource)"
+      : "not set (required only for direct OpenAI-backed extraction)",
+  });
+
+  const svcState = isServiceRunning();
+  const standaloneServiceInstalled = isStandaloneServiceInstalled();
+  const daemonOptionalForOpenclaw = openclawPluginModeConfigured && !standaloneServiceInstalled;
+  checks.push({
+    name: "Server daemon",
+    ok: svcState.running || daemonOptionalForOpenclaw,
+    warn: !svcState.running,
+    detail: svcState.running
+      ? `running${svcState.pid ? ` (pid ${svcState.pid})` : ""}`
+      : daemonOptionalForOpenclaw
+      ? "stopped (not required for OpenClaw plugin mode)"
+      : "stopped",
+    remediation: !svcState.running && standaloneServiceInstalled
+      ? "Run `remnic daemon start`, or `remnic daemon uninstall` if you only use the OpenClaw plugin."
+      : undefined,
+  });
+
+  if (isMacOS()) {
+    const launchdInspection = selectLaunchdInspection(openclawPluginModeConfigured);
+    checks.push({
+      name: "Standalone launchd plist",
+      ok: launchdInspection.ok,
+      warn: launchdInspection.warn,
+      detail: launchdInspection.detail,
+      remediation: launchdInspection.remediation,
+    });
   }
 
   // ── Coding-agent context (issue #569) ──────────────────────────────────
@@ -6545,14 +6588,6 @@ function resolveNodePath(): string {
   return process.execPath;
 }
 
-function resolveServerBin(): string {
-  // Prefer built dist (production), fall back to source (dev)
-  const distPath = path.resolve(import.meta.dirname, "../../remnic-server/dist/index.js");
-  if (fs.existsSync(distPath)) return distPath;
-  const srcPath = path.resolve(import.meta.dirname, "../../remnic-server/src/index.ts");
-  return srcPath;
-}
-
 function isMacOS(): boolean {
   return process.platform === "darwin";
 }
@@ -6569,16 +6604,61 @@ function renderTemplate(templateContent: string, vars: Record<string, string>): 
   return result;
 }
 
+function isStandaloneServiceInstalled(): boolean {
+  if (isMacOS()) return fs.existsSync(LAUNCHD_PLIST_PATH) || fs.existsSync(LEGACY_LAUNCHD_PLIST_PATH);
+  if (isLinux()) return fs.existsSync(SYSTEMD_UNIT_PATH) || fs.existsSync(LEGACY_SYSTEMD_UNIT_PATH);
+  return false;
+}
+
+function selectLaunchdInspection(openclawPluginModeConfigured: boolean): {
+  ok: boolean;
+  warn?: boolean;
+  detail: string;
+  remediation?: string;
+} {
+  const canonical = inspectLaunchdPlist(LAUNCHD_PLIST_PATH);
+  if (canonical.installed) return canonical;
+
+  const legacy = inspectLaunchdPlist(LEGACY_LAUNCHD_PLIST_PATH);
+  if (legacy.installed) {
+    return legacy.ok
+      ? {
+          ...legacy,
+          warn: true,
+          detail: `${legacy.detail} (legacy ${LEGACY_LAUNCHD_LABEL}; reinstall recommended)`,
+          remediation: "Run `remnic daemon install` to migrate the launchd service to ai.remnic.daemon.",
+        }
+      : legacy;
+  }
+
+  return {
+    ok: true,
+    warn: !openclawPluginModeConfigured,
+    detail: openclawPluginModeConfigured
+      ? "not installed (OpenClaw plugin mode does not require standalone launchd)"
+      : `${LAUNCHD_PLIST_PATH} (not installed)`,
+    remediation: openclawPluginModeConfigured
+      ? undefined
+      : "Run `remnic daemon install` to install the standalone launchd service.",
+  };
+}
+
 function daemonInstall(): void {
   const home = resolveHomeDir();
   const nodePath = resolveNodePath();
-  const serverBin = resolveServerBin();
+  const serverBinDetails = resolveServerBinDetails();
+  const serverBin = serverBinDetails.path;
 
   // Service templates use plain `node` — TypeScript source won't work
-  if (serverBin.endsWith(".ts")) {
+  if (!serverBinDetails.exists) {
+    console.error("Error: @remnic/server could not be found.");
+    console.error("  Install @remnic/server beside @remnic/cli, or build it from the workspace first.");
+    console.error(`  Expected: ${serverBin}`);
+    process.exit(1);
+  }
+  if (!serverBinDetails.loadableByNode) {
     console.error("Error: @remnic/server has not been built. Run 'pnpm run build --filter=@remnic/server' first.");
-    console.error(`  Expected: ${path.resolve(import.meta.dirname, "../../remnic-server/dist/index.js")}`);
-    console.error(`  Found:    ${serverBin} (TypeScript source — not loadable by node)`);
+    console.error(`  Found:    ${serverBin} (TypeScript source — not loadable by launchd/systemd node)`);
     process.exit(1);
   }
 

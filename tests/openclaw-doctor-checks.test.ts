@@ -93,6 +93,31 @@ test("doctor: CLI handles legacy openclaw-engram warn case", async () => {
   );
 });
 
+test("doctor: CLI distinguishes OpenClaw plugin mode from standalone launchd", async () => {
+  const src = await readCli();
+  assert.ok(
+    src.includes("Standalone launchd plist"),
+    "CLI doctor must include standalone launchd plist validation",
+  );
+  assert.ok(
+    src.includes("OpenClaw plugin mode does not require standalone launchd") ||
+      src.includes("not required for OpenClaw plugin mode"),
+    "CLI doctor must not require launchd when OpenClaw plugin mode is configured",
+  );
+});
+
+test("doctor: CLI validates stale launchd server binary paths", async () => {
+  const src = await readCli();
+  assert.ok(
+    src.includes("inspectLaunchdPlist"),
+    "CLI doctor must inspect the installed launchd plist",
+  );
+  assert.ok(
+    src.includes("remnic daemon install") && src.includes("remnic daemon uninstall"),
+    "CLI doctor must tell users how to rewrite or remove a stale standalone daemon",
+  );
+});
+
 // ── Logic unit tests (pure config parsing) ───────────────────────────────────
 
 interface OpenclawConfig {

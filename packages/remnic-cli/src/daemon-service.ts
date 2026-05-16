@@ -1,0 +1,208 @@
+import fs from "node:fs";
+import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+export type ServerBinSource = "package" | "workspace-dist" | "workspace-source";
+
+export interface ServerBinResolution {
+  path: string;
+  source: ServerBinSource;
+  exists: boolean;
+  loadableByNode: boolean;
+}
+
+export interface ResolveServerBinOptions {
+  existsSync?: (candidate: string) => boolean;
+  moduleDir?: string;
+  requireResolve?: (specifier: string) => string;
+}
+
+export interface LaunchdPlistInspection {
+  installed: boolean;
+  ok: boolean;
+  warn?: boolean;
+  detail: string;
+  remediation?: string;
+}
+
+export interface InspectLaunchdPlistOptions {
+  existsSync?: (candidate: string) => boolean;
+  readFileSync?: (file: string, encoding: BufferEncoding) => string;
+}
+
+const thisRequire = createRequire(import.meta.url);
+const thisModuleDir = path.dirname(fileURLToPath(import.meta.url));
+
+export function resolveServerBinDetails(options: ResolveServerBinOptions = {}): ServerBinResolution {
+  const existsSync = options.existsSync ?? fs.existsSync;
+  const moduleDir = options.moduleDir ?? thisModuleDir;
+  const requireResolve = options.requireResolve ?? thisRequire.resolve.bind(thisRequire);
+  const candidates: Array<{ path: string; source: ServerBinSource }> = [];
+
+  try {
+    candidates.push({
+      path: requireResolve("@remnic/server"),
+      source: "package",
+    });
+  } catch {
+    // @remnic/server may not be installed beside @remnic/cli in older or
+    // development setups. Fall through to workspace-relative candidates.
+  }
+
+  candidates.push(
+    {
+      path: path.resolve(moduleDir, "../../remnic-server/dist/index.js"),
+      source: "workspace-dist",
+    },
+    {
+      path: path.resolve(moduleDir, "../../remnic-server/src/index.ts"),
+      source: "workspace-source",
+    },
+  );
+
+  const selected = candidates.find((candidate) => existsSync(candidate.path)) ?? candidates[0] ?? {
+    path: path.resolve(moduleDir, "../../remnic-server/dist/index.js"),
+    source: "workspace-dist" as const,
+  };
+
+  const exists = existsSync(selected.path);
+  return {
+    ...selected,
+    exists,
+    loadableByNode: exists && !selected.path.endsWith(".ts"),
+  };
+}
+
+export function resolveServerBin(options: ResolveServerBinOptions = {}): string {
+  return resolveServerBinDetails(options).path;
+}
+
+export function inspectLaunchdPlist(
+  plistPath: string,
+  options: InspectLaunchdPlistOptions = {},
+): LaunchdPlistInspection {
+  const existsSync = options.existsSync ?? fs.existsSync;
+  const readFileSync = options.readFileSync ?? fs.readFileSync;
+
+  if (!existsSync(plistPath)) {
+    return {
+      installed: false,
+      ok: true,
+      warn: true,
+      detail: `${plistPath} (not installed)`,
+    };
+  }
+
+  let content: string;
+  try {
+    content = readFileSync(plistPath, "utf8");
+  } catch {
+    return {
+      installed: true,
+      ok: false,
+      detail: `${plistPath} (cannot read)`,
+      remediation: "Fix the launchd plist permissions or run `remnic daemon install` to recreate it.",
+    };
+  }
+
+  const args = readLaunchdProgramArguments(content);
+  if (args.length === 0) {
+    return {
+      installed: true,
+      ok: false,
+      detail: `${plistPath} (missing ProgramArguments)`,
+      remediation: "Run `remnic daemon install` to recreate the launchd service.",
+    };
+  }
+
+  const serverArg = findLaunchdServerArgument(args);
+  if (!serverArg) {
+    return {
+      installed: true,
+      ok: false,
+      detail: `${plistPath} (ProgramArguments do not include a Remnic server binary)`,
+      remediation: "Run `remnic daemon install` to recreate the launchd service.",
+    };
+  }
+
+  const expandedServerArg = expandHome(serverArg);
+  if (!path.isAbsolute(expandedServerArg)) {
+    return {
+      installed: true,
+      ok: false,
+      detail: `${serverArg} (not an absolute path in ${plistPath})`,
+      remediation: "Run `remnic daemon install` so launchd uses an absolute Remnic server path.",
+    };
+  }
+
+  if (!existsSync(expandedServerArg)) {
+    return {
+      installed: true,
+      ok: false,
+      detail: `${expandedServerArg} (missing; referenced by ${plistPath})`,
+      remediation:
+        "Run `remnic daemon install` to rewrite the launchd service, or `remnic daemon uninstall` if you only use the OpenClaw plugin.",
+    };
+  }
+
+  if (expandedServerArg.endsWith(".ts")) {
+    return {
+      installed: true,
+      ok: false,
+      detail: expandedServerArg + " (TypeScript source is not loadable by launchd node)",
+      remediation: "Build @remnic/server and run `remnic daemon install` again.",
+    };
+  }
+
+  return {
+    installed: true,
+    ok: true,
+    detail: `${expandedServerArg} (from ${plistPath})`,
+  };
+}
+
+export function readLaunchdProgramArguments(plistContent: string): string[] {
+  const programArguments = plistContent.match(
+    /<key>\s*ProgramArguments\s*<\/key>\s*<array>([\s\S]*?)<\/array>/,
+  );
+  if (!programArguments) return [];
+  const args: string[] = [];
+  const stringPattern = /<string>([\s\S]*?)<\/string>/g;
+  let match: RegExpExecArray | null;
+  while ((match = stringPattern.exec(programArguments[1] ?? "")) !== null) {
+    args.push(unescapeXml(match[1] ?? ""));
+  }
+  return args;
+}
+
+function findLaunchdServerArgument(args: string[]): string | undefined {
+  const explicit = args.find((arg) =>
+    /(?:^|[/\\])@remnic[/\\]server[/\\]/.test(arg) ||
+    /(?:^|[/\\])remnic-server(?:\.js)?$/.test(arg) ||
+    /(?:^|[/\\])remnic-server[/\\](?:dist|src)[/\\]index\.[jt]s$/.test(arg)
+  );
+  if (explicit) return explicit;
+
+  const [program, firstArg] = args;
+  if (program && firstArg && /(?:^|[/\\])node(?:\.exe)?$/.test(program)) {
+    return firstArg;
+  }
+  return undefined;
+}
+
+function expandHome(input: string): string {
+  if (input === "~") return os.homedir();
+  if (input.startsWith("~/")) return path.join(os.homedir(), input.slice(2));
+  return input;
+}
+
+function unescapeXml(input: string): string {
+  return input
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
