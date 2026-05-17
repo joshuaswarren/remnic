@@ -103,6 +103,42 @@ function redactSecrets(value: string): string {
   return redacted;
 }
 
+function containsSecretLikeValue(value: string): boolean {
+  return SECRET_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function assertNoSecretLikeMetadata(field: string, value: string | undefined): void {
+  const trimmed = asTrimmed(value);
+  if (trimmed && containsSecretLikeValue(trimmed)) {
+    throw new Error(`${field} appears to contain a secret or credential`);
+  }
+}
+
+function assertNoSecretLikeMetadataList(field: string, values: string[] | undefined): void {
+  for (const value of values ?? []) {
+    assertNoSecretLikeMetadata(field, value);
+  }
+}
+
+function sanitizeReviewText(value: string | undefined, fallback: string): string {
+  const redacted = redactSecrets(asTrimmed(value) ?? fallback);
+  const sanitized = sanitizeMemoryContent(redacted);
+  const safe = sanitized.text.trim();
+  return safe.length > 0 ? safe : fallback;
+}
+
+function sanitizeReviewMetadata(value: string | undefined): string | undefined {
+  const trimmed = asTrimmed(value);
+  if (!trimmed) return undefined;
+  return sanitizeReviewText(trimmed, "[redacted]");
+}
+
+function sanitizeReviewTags(tags: string[] | undefined): string[] {
+  return Array.from(new Set((tags ?? [])
+    .map((tag) => sanitizeReviewMetadata(tag))
+    .filter((tag): tag is string => typeof tag === "string" && tag.length > 0)));
+}
+
 function normalizeExplicitCaptureError(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message.trim();
   const rendered = String(error).trim();
@@ -285,6 +321,10 @@ export function validateExplicitCaptureInput(
       throw new Error("content appears to contain a secret or credential");
     }
   }
+  assertNoSecretLikeMetadata("sourceReason", input.sourceReason);
+  assertNoSecretLikeMetadata("entityRef", input.entityRef);
+  assertNoSecretLikeMetadata("ttl", input.ttl);
+  assertNoSecretLikeMetadataList("tags", input.tags);
 
   const confidence = Number.isFinite(input.confidence) ? Number(input.confidence) : 0.95;
   if (confidence < 0 || confidence > 1) {
@@ -384,8 +424,13 @@ export async function persistExplicitCapture(
 
 function buildExplicitCaptureReviewContent(input: ExplicitCaptureInput, reason: string): string {
   const requestedContent = asTrimmed(input.content);
-  const sanitized = sanitizeMemoryContent(redactSecrets(requestedContent ?? "[empty explicit capture]"));
-  const safeContent = sanitized.text.trim().length > 0 ? sanitized.text.trim() : "[empty explicit capture]";
+  const safeContent = sanitizeReviewText(requestedContent, "[empty explicit capture]");
+  const safeCategory = sanitizeReviewMetadata(input.category);
+  const safeNamespace = sanitizeReviewMetadata(input.namespace);
+  const safeEntityRef = sanitizeReviewMetadata(input.entityRef);
+  const safeTtl = sanitizeReviewMetadata(input.ttl);
+  const safeSourceReason = sanitizeReviewMetadata(input.sourceReason);
+  const safeTags = sanitizeReviewTags(input.tags);
   const lines = [
     "Explicit capture queued for review.",
     "",
@@ -395,12 +440,12 @@ function buildExplicitCaptureReviewContent(input: ExplicitCaptureInput, reason: 
     safeContent,
   ];
   const metadata = [
-    input.category ? `Requested category: ${input.category}` : undefined,
-    input.namespace ? `Requested namespace: ${input.namespace}` : undefined,
-    input.entityRef ? `Requested entityRef: ${input.entityRef}` : undefined,
-    input.ttl ? `Requested ttl: ${input.ttl}` : undefined,
-    input.sourceReason ? `Requested sourceReason: ${input.sourceReason}` : undefined,
-    input.tags && input.tags.length > 0 ? `Requested tags: ${input.tags.join(", ")}` : undefined,
+    safeCategory ? `Requested category: ${safeCategory}` : undefined,
+    safeNamespace ? `Requested namespace: ${safeNamespace}` : undefined,
+    safeEntityRef ? `Requested entityRef: ${safeEntityRef}` : undefined,
+    safeTtl ? `Requested ttl: ${safeTtl}` : undefined,
+    safeSourceReason ? `Requested sourceReason: ${safeSourceReason}` : undefined,
+    safeTags.length > 0 ? `Requested tags: ${safeTags.join(", ")}` : undefined,
   ].filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
   if (metadata.length > 0) {
     lines.push("", ...metadata);
@@ -431,7 +476,7 @@ export async function queueExplicitCaptureForReview(
   source: ExplicitCaptureSource,
   error: unknown,
 ): Promise<{ id: string; duplicateOf?: string }> {
-  const reason = normalizeExplicitCaptureError(error);
+  const reason = sanitizeReviewText(normalizeExplicitCaptureError(error), "explicit capture failed");
   const requestedNamespace = asTrimmed(input.namespace);
   const queueNamespace = resolveExplicitCaptureReviewNamespace(orchestrator, requestedNamespace);
   const content = buildExplicitCaptureReviewContent(input, reason);
@@ -444,14 +489,12 @@ export async function queueExplicitCaptureForReview(
   const reviewCategory = requestedCategory && INLINE_ALLOWED_CATEGORIES.has(requestedCategory as MemoryCategory)
     ? requestedCategory as MemoryCategory
     : "fact";
-  const requestedTags = Array.isArray(input.tags)
-    ? input.tags.map((tag) => tag.trim()).filter(Boolean)
-    : [];
+  const requestedTags = sanitizeReviewTags(input.tags);
   const storage = await orchestrator.getStorage(queueNamespace);
   const id = await storage.writeMemory(reviewCategory, content, {
     confidence: 0.2,
     tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
-    entityRef: asTrimmed(input.entityRef),
+    entityRef: sanitizeReviewMetadata(input.entityRef),
     source: source === "inline" ? "explicit-inline-review" : "explicit-review",
   });
   const created = await storage.getMemoryById(id);

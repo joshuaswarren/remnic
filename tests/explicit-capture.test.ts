@@ -98,6 +98,27 @@ test("explicit capture validation rejects likely secrets", () => {
   );
 });
 
+test("explicit capture validation rejects credential-like metadata", () => {
+  const tagName = ["api", "key"].join("_");
+  const tagValue = ["tag", "Secret", "12345"].join("");
+  const unsafeTag = [tagName, tagValue].join("=");
+  for (const [field, input] of [
+    ["sourceReason", { sourceReason: "token=sourceReasonSecret12345" }],
+    ["entityRef", { entityRef: "secret=entitySecret12345" }],
+    ["ttl", { ttl: "password=ttlSecret12345" }],
+    ["tags", { tags: ["operator-review", unsafeTag] }],
+  ] as const) {
+    assert.throws(
+      () =>
+        validateExplicitCaptureInput({
+          content: "This safe explicit capture has unsafe metadata.",
+          ...input,
+        }),
+      new RegExp(`${field} appears to contain a secret or credential`),
+    );
+  }
+});
+
 test("explicit capture validation rejects invalid ttl values before persistence", () => {
   assert.throws(
     () =>
@@ -282,6 +303,107 @@ test("queueExplicitCaptureForReview stores a pending-review memory and lifecycle
   assert.doesNotMatch(memories[0]?.content ?? "", /supersecretvalue123/);
   assert.match(memories[0]?.content ?? "", /\[redacted credential\]/);
   assert.equal(lifecycleEvents.some((event) => event.eventType === "explicit_capture_queued"), true);
+});
+
+test("queueExplicitCaptureForReview redacts credential-like review metadata", async () => {
+  const tagName = ["api", "key"].join("_");
+  const tagValue = ["tag", "Secret", "12345"].join("");
+  const unsafeTag = [tagName, tagValue].join("=");
+  const memories: Array<{
+    frontmatter: { id: string; status?: string; tags?: string[]; category?: string; entityRef?: string };
+    content: string;
+    path: string;
+  }> = [];
+  const frontmatterReasons: string[] = [];
+  const lifecycleReasons: string[] = [];
+  const storage = {
+    readAllMemories: async () => memories,
+    writeMemory: async (
+      category: string,
+      content: string,
+      options: { tags?: string[]; entityRef?: string },
+    ) => {
+      memories.push({
+        frontmatter: {
+          id: "fact-1",
+          category,
+          tags: options.tags,
+          entityRef: options.entityRef,
+          status: "active",
+        },
+        content,
+        path: "/tmp/fact-1.md",
+      });
+      return "fact-1";
+    },
+    getMemoryById: async (id: string) => memories.find((memory) => memory.frontmatter.id === id) ?? null,
+    writeMemoryFrontmatter: async (
+      memory: { frontmatter: { status?: string } },
+      patch: { status: string },
+      options: { reasonCode?: string },
+    ) => {
+      memory.frontmatter.status = patch.status;
+      frontmatterReasons.push(options.reasonCode ?? "");
+      return memory;
+    },
+    appendMemoryLifecycleEvents: async (events: Array<{ reasonCode?: string }>) => {
+      lifecycleReasons.push(...events.map((event) => event.reasonCode ?? ""));
+      return events.length;
+    },
+  };
+
+  await queueExplicitCaptureForReview(
+    {
+      config: {
+        defaultNamespace: "default",
+        sharedNamespace: "shared",
+        namespacesEnabled: false,
+        namespacePolicies: [],
+      },
+      getStorage: async () => storage,
+    } as never,
+    {
+      content: "This safe explicit capture should be queued for manual review.",
+      category: "fact",
+      tags: ["operator-review", unsafeTag],
+      entityRef: "secret=entitySecret12345",
+      ttl: "password=ttlSecret12345",
+      sourceReason: "token=sourceReasonSecret12345",
+    },
+    "memory_capture",
+    new Error("Bearer abcdefghijklmnop"),
+  );
+
+  assert.equal(memories.length, 1);
+  const persisted = [
+    memories[0]?.content ?? "",
+    ...(memories[0]?.frontmatter.tags ?? []),
+    memories[0]?.frontmatter.entityRef ?? "",
+    ...frontmatterReasons,
+    ...lifecycleReasons,
+  ].join("\n");
+
+  for (const secret of [
+    "tagSecret12345",
+    "entitySecret12345",
+    "ttlSecret12345",
+    "sourceReasonSecret12345",
+    "abcdefghijklmnop",
+  ]) {
+    assert.equal(persisted.includes(secret), false, `review record leaked ${secret}`);
+  }
+  assert.match(memories[0]?.content ?? "", /Reason: Bearer \[redacted token\]/);
+  assert.match(memories[0]?.content ?? "", /Requested sourceReason: \[redacted credential\]/);
+  assert.match(memories[0]?.content ?? "", /Requested ttl: \[redacted credential\]/);
+  assert.deepEqual(memories[0]?.frontmatter.tags, [
+    "explicit-capture",
+    "queued-review",
+    "operator-review",
+    "[redacted credential]",
+  ]);
+  assert.equal(memories[0]?.frontmatter.entityRef, "[redacted credential]");
+  assert.deepEqual(frontmatterReasons, ["Bearer [redacted token]"]);
+  assert.deepEqual(lifecycleReasons, ["Bearer [redacted token]"]);
 });
 
 test("queueExplicitCaptureForReview preserves requested namespace isolation when namespaces are enabled", async () => {
