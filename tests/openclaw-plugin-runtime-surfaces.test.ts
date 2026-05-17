@@ -41,15 +41,30 @@ const REQUIRED_RUNTIME_SURFACE_KEYS = [
   "activeRecallAttachRecallExplain",
   "activeRecallAllowChainedActiveMemory",
 ];
-const OPENCLAW_MANIFEST_PATHS = [
-  "openclaw.plugin.json",
-  "packages/plugin-openclaw/openclaw.plugin.json",
-  "packages/shim-openclaw-engram/openclaw.plugin.json",
+const OPENCLAW_PROVIDER_SETUP_DESCRIPTOR = {
+  id: "openai",
+  authMethods: ["api-key"],
+  envVars: ["OPENAI_API_KEY"],
+};
+const OPENCLAW_MANIFEST_EXPECTATIONS = [
+  {
+    manifestPath: "openclaw.plugin.json",
+    providerSetup: true,
+  },
+  {
+    manifestPath: "packages/plugin-openclaw/openclaw.plugin.json",
+    providerSetup: true,
+  },
+  {
+    manifestPath: "packages/shim-openclaw-engram/openclaw.plugin.json",
+    providerSetup: false,
+  },
 ];
 const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/plugin-openclaw/package.json",
     name: "@remnic/plugin-openclaw",
+    buildVersion: "2026.5.16-beta.4",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@remnic/plugin-openclaw",
@@ -58,6 +73,7 @@ const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/shim-openclaw-engram/package.json",
     name: "@joshuaswarren/openclaw-engram",
+    buildVersion: "2026.5.16-beta.3",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@joshuaswarren/openclaw-engram",
@@ -106,7 +122,7 @@ function readSourceToolNames(): string[] {
   return [...names].sort();
 }
 
-for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
+for (const { manifestPath, providerSetup } of OPENCLAW_MANIFEST_EXPECTATIONS) {
   test(`${manifestPath} advertises the v2026.4.10 runtime capability surfaces`, () => {
     const manifest = readManifest(manifestPath);
 
@@ -161,7 +177,7 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
     }
   });
 
-  test(`${manifestPath} declares plugin-mode auth metadata without provider setup ownership`, () => {
+  test(`${manifestPath} declares plugin-mode auth metadata on supported setup surfaces`, () => {
     const manifest = readManifest(manifestPath);
     const packageJsonPath = manifestPath === "packages/shim-openclaw-engram/openclaw.plugin.json"
       ? "packages/shim-openclaw-engram/package.json"
@@ -170,12 +186,27 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
 
     assert.equal(manifest.name, "Remnic OpenClaw Plugin");
     assert.equal(manifest.version, packageJson.version);
-    assert.deepEqual(manifest.setup, { requiresRuntime: false });
-    assert.equal(
-      "providers" in (manifest.setup ?? {}),
-      false,
-      "Remnic must not claim OpenAI provider setup ownership",
-    );
+    if (providerSetup) {
+      assert.deepEqual(
+        manifest.setup,
+        {
+          providers: [OPENCLAW_PROVIDER_SETUP_DESCRIPTOR],
+          requiresRuntime: false,
+        },
+        "canonical Remnic manifests should expose minimal cold-path OpenAI env-var metadata for OpenClaw setup detection",
+      );
+    } else {
+      assert.deepEqual(
+        manifest.setup,
+        { requiresRuntime: false },
+        "legacy shim should not grow canonical package setup metadata",
+      );
+      assert.equal(
+        "providers" in (manifest.setup ?? {}),
+        false,
+        "legacy shim must not claim OpenAI provider setup ownership",
+      );
+    }
     assert.deepEqual(
       manifest.providerAuthEnvVars,
       {
@@ -378,7 +409,7 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
 }
 
 for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
-  test(`${expectation.name} declares OpenClaw 2026.5.16-beta.3 package install metadata`, () => {
+  test(`${expectation.name} declares expected OpenClaw package install metadata`, () => {
     const packageJson = readPackageJson(expectation.packageJsonPath);
     const openclaw = packageJson.openclaw ?? {};
 
@@ -393,8 +424,8 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
       pluginApi: ">=2026.5.16-beta.1",
     });
     assert.deepEqual(openclaw.build, {
-      openclawVersion: "2026.5.16-beta.3",
-      pluginSdkVersion: "2026.5.16-beta.3",
+      openclawVersion: expectation.buildVersion,
+      pluginSdkVersion: expectation.buildVersion,
     });
     assert.deepEqual(openclaw.install, {
       ...expectation.install,

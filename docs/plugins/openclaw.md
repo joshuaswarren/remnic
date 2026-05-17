@@ -22,7 +22,7 @@ openclaw plugins install clawhub:@remnic/plugin-openclaw
 
 OpenClaw 2026.5.2+ resolves bare plugin package names through ClawHub first and
 then falls back to npm. Remnic is published on ClawHub as
-`@remnic/plugin-openclaw` under the `joshuaswarren` account, so the explicit
+`@remnic/plugin-openclaw` under the `remnic` publisher, so the explicit
 `clawhub:` prefix keeps fresh installs deterministic. For npm-only fallback or
 rollback versions, use the explicit `npm:` source prefix, such as
 `npm:@remnic/plugin-openclaw@<version>`.
@@ -49,8 +49,8 @@ Publish ClawHub releases from the built npm/ClawPack tarball, not from the raw
 GitHub source folder. Source-folder publishing does not run the package build,
 so ClawHub can scan an incomplete three-file artifact with no `dist/index.js`.
 The ClawHub listing is `@remnic/plugin-openclaw` and is owned by the
-`joshuaswarren` account. Publish it with the authenticated owner account and do
-not pass `--owner` unless deliberately transferring ownership.
+`remnic` publisher. Publish it with an authenticated account that can publish
+to the `remnic` publisher, and pass `--owner remnic` when publishing manually.
 
 ```bash
 pnpm --filter @remnic/plugin-openclaw build
@@ -59,6 +59,7 @@ clawhub package pack packages/plugin-openclaw --pack-destination /tmp/remnic-cla
 clawhub package publish /tmp/remnic-clawpack/remnic-plugin-openclaw-<version>.tgz \
   --family code-plugin \
   --name @remnic/plugin-openclaw \
+  --owner remnic \
   --display-name "Remnic OpenClaw Plugin" \
   --version <version> \
   --source-repo joshuaswarren/remnic \
@@ -151,8 +152,10 @@ The plugin manifest advertises compatibility on two surfaces:
 - `supports` stays in place for OpenClaw 2026.4-era slot and lifecycle routing.
 - `contracts.tools` declares every Remnic-owned tool name for OpenClaw 2026.5+
   descriptor planning and tool ownership validation.
-- `setup.requiresRuntime: false` is explicit; Remnic does not claim OpenAI
-  provider setup ownership.
+- `setup.requiresRuntime: false` is explicit.
+- `setup.providers[].envVars` declares the minimal OpenAI API-key env-var
+  metadata OpenClaw 2026.5.16-beta.4+ uses for cold-path setup/onboarding
+  detection; it does not make Remnic the owner of provider configuration.
 - `activation.onStartup: false` is explicit so startup activation remains
   intentional.
 - `providerAuthChoices` advertises the optional plugin-mode OpenAI API key

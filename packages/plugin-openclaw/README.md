@@ -168,7 +168,8 @@ Last compatibility sweep: May 16, 2026. The SDK surface check passed against
 `openclaw@2026.5.3`, `openclaw@2026.5.3-1`, `openclaw@2026.5.4-beta.1`,
 `openclaw@2026.5.4-beta.2`, `openclaw@2026.5.4-beta.3`,
 `openclaw@2026.5.4`, `openclaw@2026.5.5`, `openclaw@2026.5.6`,
-`openclaw@2026.5.16-beta.2`, and `openclaw@2026.5.16-beta.3`.
+`openclaw@2026.5.16-beta.2`, `openclaw@2026.5.16-beta.3`, and
+`openclaw@2026.5.16-beta.4`.
 Keep the peer range broad unless an upstream release removes a runtime surface
 Remnic actively uses.
 
@@ -192,6 +193,13 @@ restart/reload behavior after plugin install changes, uses `gateway_stop`
 instead of the deprecated `deactivate` cleanup alias, and should not claim
 OpenAI `setup.providers` ownership because gateway/provider configuration
 remains host-owned.
+
+OpenClaw 2026.5.16-beta.4 prefers `setup.providers[].envVars` for cold-path
+setup and onboarding credential detection. The canonical Remnic manifest
+declares a minimal OpenAI API-key env-var descriptor for that detection path
+while still leaving provider configuration ownership to OpenClaw. The legacy
+`openclaw-engram` shim keeps only `setup.requiresRuntime: false` plus the
+compatibility auth metadata.
 
 Native memory registrars are tracked separately in
 [`docs/plugins/openclaw-native-memory-registrars.md`](../../docs/plugins/openclaw-native-memory-registrars.md).
