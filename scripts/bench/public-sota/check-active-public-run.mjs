@@ -56,10 +56,39 @@ function benchmarkFromRun(runId, statusRows) {
   return match?.[1] ?? null;
 }
 
-function newestDiagnostics(diagDir, count) {
+function latestLifecycleStart(statusRows, benchmark) {
+  let latest;
+  for (const line of statusRows) {
+    const [rowBenchmark, status, timestamp] = line.split('\t');
+    if (rowBenchmark !== benchmark) {
+      continue;
+    }
+    if (status !== 'start' && !status?.startsWith('restart')) {
+      continue;
+    }
+    const timestampMs = Date.parse(timestamp);
+    if (!Number.isFinite(timestampMs)) {
+      continue;
+    }
+    if (!latest || timestampMs > latest.timestampMs) {
+      latest = { status, timestamp, timestampMs };
+    }
+  }
+  return latest;
+}
+
+function newestDiagnostics(diagDir, count, lifecycleStart) {
   if (!fs.existsSync(diagDir)) {
     return {
       total: 0,
+      allDiagnostics: 0,
+      beforeLifecycleStart: 0,
+      lifecycleStart: lifecycleStart
+        ? {
+            status: lifecycleStart.status,
+            timestamp: lifecycleStart.timestamp,
+          }
+        : null,
       sampleSize: 0,
       errors: 0,
       nonzero: 0,
@@ -82,9 +111,19 @@ function newestDiagnostics(diagDir, count) {
   let errors = 0;
   let nonzero = 0;
   let inFlight = 0;
-  const parsedRecords = records.map((entry) => {
+  let beforeLifecycleStart = 0;
+  const parsedRecords = records.flatMap((entry) => {
     try {
       const record = { ...JSON.parse(fs.readFileSync(entry.file, 'utf8')), name: entry.name };
+      const startedAtMs = Date.parse(record.startedAt);
+      if (
+        lifecycleStart
+        && Number.isFinite(startedAtMs)
+        && startedAtMs < lifecycleStart.timestampMs
+      ) {
+        beforeLifecycleStart += 1;
+        return [];
+      }
       if (record.error || record.parseError) {
         errors += 1;
       }
@@ -94,10 +133,10 @@ function newestDiagnostics(diagDir, count) {
       if (!record.finishedAt) {
         inFlight += 1;
       }
-      return record;
+      return [record];
     } catch (error) {
       errors += 1;
-      return { name: entry.name, parseError: String(error) };
+      return [{ name: entry.name, parseError: String(error) }];
     }
   });
   const sample = parsedRecords.slice(0, count);
@@ -106,9 +145,17 @@ function newestDiagnostics(diagDir, count) {
     .sort((left, right) => String(right.finishedAt).localeCompare(String(left.finishedAt)))
     .slice(0, 5);
   return {
-    total: records.length,
+    total: parsedRecords.length,
+    allDiagnostics: records.length,
+    beforeLifecycleStart,
+    lifecycleStart: lifecycleStart
+      ? {
+          status: lifecycleStart.status,
+          timestamp: lifecycleStart.timestamp,
+        }
+      : null,
     scanned: parsedRecords.length,
-    countsMode: 'all-diagnostics',
+    countsMode: lifecycleStart ? 'diagnostics-since-lifecycle-start' : 'all-diagnostics',
     sampleSize: sample.length,
     errors,
     nonzero,
@@ -191,6 +238,7 @@ function parseBenchmarkProgress(lines, benchmark) {
 const runId = path.basename(resultsDir);
 const statusRows = readStatusRows(path.join(resultsDir, 'status.tsv'));
 const benchmark = benchmarkFromRun(runId, statusRows);
+const lifecycleStart = latestLifecycleStart(statusRows, benchmark);
 const monitorSessionName = runId === 'public-matrix-codex-bf9b2643-20260515T052919Z'
   ? 'public-matrix-codex-monitor-bf9b2643'
   : `${runId}-monitor`;
@@ -222,7 +270,7 @@ const summary = {
         tail: readLines(monitorPath, 12),
       }
     : null,
-  diagnostics: newestDiagnostics(path.join(resultsDir, 'codex-cli-diagnostics'), 30),
+  diagnostics: newestDiagnostics(path.join(resultsDir, 'codex-cli-diagnostics'), 30, lifecycleStart),
   checkedAt: new Date().toISOString(),
 };
 

@@ -1787,6 +1787,64 @@ test("active public run diagnostics picks latest finished record from full scan"
   }
 });
 
+test("active public run diagnostics ignore records before latest lifecycle start", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-public-sota-active-run-restart-"));
+  try {
+    const runDir = path.join(root, "public-memory-arena-codex-20260517T000000Z");
+    const diagnosticsDir = path.join(runDir, "codex-cli-diagnostics");
+    await mkdir(diagnosticsDir, { recursive: true });
+    await writeFile(
+      path.join(runDir, "status.tsv"),
+      [
+        "benchmark\tstatus\ttimestamp",
+        "memory-arena\tstart\t2026-05-17T00:00:00Z",
+        "memory-arena\trestart-after-reboot\t2026-05-17T02:00:00Z",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeJson(path.join(diagnosticsDir, "pre-restart-failed.json"), {
+      runId: path.basename(runDir),
+      startedAt: "2026-05-17T01:59:00.000Z",
+      finishedAt: "2026-05-17T01:59:30.000Z",
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      reasoningEffort: "xhigh",
+      serviceTier: "fast",
+      error: "Codex CLI completion failed (signal SIGTERM)",
+    });
+    await writeJson(path.join(diagnosticsDir, "post-restart-ok.json"), {
+      runId: path.basename(runDir),
+      startedAt: "2026-05-17T02:00:10.000Z",
+      finishedAt: "2026-05-17T02:00:20.000Z",
+      durationMs: 10_000,
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      reasoningEffort: "xhigh",
+      serviceTier: "fast",
+      result: { status: 0 },
+    });
+
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [path.join("scripts", "bench", "public-sota", "check-active-public-run.mjs"), runDir],
+      { cwd: process.cwd(), maxBuffer: 1024 * 1024 },
+    );
+    const status = JSON.parse(stdout);
+    assert.equal(status.diagnostics.countsMode, "diagnostics-since-lifecycle-start");
+    assert.equal(status.diagnostics.lifecycleStart.status, "restart-after-reboot");
+    assert.equal(status.diagnostics.lifecycleStart.timestamp, "2026-05-17T02:00:00Z");
+    assert.equal(status.diagnostics.allDiagnostics, 2);
+    assert.equal(status.diagnostics.beforeLifecycleStart, 1);
+    assert.equal(status.diagnostics.total, 1);
+    assert.equal(status.diagnostics.errors, 0);
+    assert.equal(status.diagnostics.nonzero, 0);
+    assert.equal(status.diagnostics.latestFinished[0].name, "post-restart-ok.json");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("public SOTA evidence scripts share manifest hash identity helpers", async () => {
   const files = [
     path.join("scripts", "bench", "public-sota", "package-public-benchmark-evidence.mjs"),
