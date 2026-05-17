@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -358,6 +359,56 @@ test("bench providers discovery is exposed as a package-backed CLI surface", asy
   assert.match(parserSource, /first === "providers"/);
   assert.match(parserSource, /const providerAction =[\s\S]*args\[0\] === "discover"/);
   assert.match(readme, /remnic bench providers discover/);
+});
+
+test("bench run exits non-zero after a mixed success/failure run", async () => {
+  const { mkdtemp } = await import("node:fs/promises");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = join(__dirname, "..");
+  const datasetDir = await mkdtemp(
+    path.join(os.tmpdir(), "remnic-empty-locomo-dataset-"),
+  );
+  const resultsDir = await mkdtemp(
+    path.join(os.tmpdir(), "remnic-mixed-bench-results-"),
+  );
+
+  try {
+    const result = spawnSync(
+      "pnpm",
+      [
+        "exec",
+        "tsx",
+        "packages/remnic-cli/src/index.ts",
+        "bench",
+        "run",
+        "taxonomy-accuracy",
+        "locomo",
+        "--dataset-dir",
+        datasetDir,
+        "--results-dir",
+        resultsDir,
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        timeout: 30_000,
+      },
+    );
+
+    assert.equal(
+      result.status,
+      1,
+      `expected mixed benchmark run to exit 1\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.match(result.stdout, /Benchmark: taxonomy-accuracy/);
+    assert.match(result.stderr, /benchmark "locomo" failed/);
+    assert.match(result.stderr, /Failed benchmarks: locomo/);
+  } finally {
+    rmSync(datasetDir, { recursive: true, force: true });
+    rmSync(resultsDir, { recursive: true, force: true });
+  }
 });
 
 test("bench surface retains local UI compatibility alongside providers discovery", async () => {

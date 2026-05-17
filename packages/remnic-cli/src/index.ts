@@ -6429,9 +6429,7 @@ async function cmdBench(rest: string[]): Promise<void> {
   });
   if (failures.size > 0) {
     console.error(`\nFailed benchmarks: ${[...failures].join(", ")}`);
-    if (failures.size === selectedBenchmarks.length) {
-      process.exit(1);
-    }
+    process.exitCode = 1;
   }
 }
 
