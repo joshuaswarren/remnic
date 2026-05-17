@@ -123,6 +123,36 @@ export class LcmDag {
     return row.cnt;
   }
 
+  /** Delete all summary and compaction state for one session. */
+  deleteSession(sessionId: string): number {
+    const txn = this.db.transaction(() => {
+      this.db
+        .prepare(
+          "DELETE FROM lcm_summaries_fts WHERE rowid IN (SELECT rowid FROM lcm_summary_nodes WHERE session_id = ?)",
+        )
+        .run(sessionId);
+      this.db
+        .prepare("DELETE FROM lcm_compaction_events WHERE session_id = ?")
+        .run(sessionId);
+      const result = this.db
+        .prepare("DELETE FROM lcm_summary_nodes WHERE session_id = ?")
+        .run(sessionId);
+      return result.changes;
+    });
+    return txn();
+  }
+
+  /** Delete all summary and compaction state. */
+  deleteAll(): number {
+    const txn = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM lcm_summaries_fts").run();
+      this.db.prepare("DELETE FROM lcm_compaction_events").run();
+      const result = this.db.prepare("DELETE FROM lcm_summary_nodes").run();
+      return result.changes;
+    });
+    return txn();
+  }
+
   /** Set parent_id for a list of child node IDs. */
   setParent(childIds: string[], parentId: string): void {
     const stmt = this.db.prepare(

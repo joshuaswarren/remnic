@@ -412,6 +412,54 @@ test("waitForSessionObserveIdle resolves once the target session drains even if 
   }
 });
 
+test("LCM normalizes session IDs across observe, stats, and clear", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-lcm-session-normalize-"),
+  );
+
+  try {
+    const engine = new LcmEngine(createPluginConfig(memoryDir), async () => {
+      return "summary";
+    });
+
+    await engine.observeMessages("  session-normalized  ", [
+      { role: "user", content: "normalization marker alpha" },
+    ]);
+    await engine.waitForSessionObserveIdle("session-normalized");
+
+    assert.equal((await engine.getStats("session-normalized")).totalMessages, 1);
+    assert.equal((await engine.getStats("  session-normalized  ")).totalMessages, 1);
+    assert.equal(
+      (await engine.searchContextFull(
+        "normalization",
+        10,
+        "session-normalized",
+      )).length,
+      1,
+    );
+
+    await engine.clearSession("  session-normalized  ");
+
+    assert.equal((await engine.getStats("session-normalized")).totalMessages, 0);
+    assert.equal(
+      (await engine.searchContextFull(
+        "normalization",
+        10,
+        "session-normalized",
+      )).length,
+      0,
+    );
+
+    await engine.observeMessages("   ", [
+      { role: "user", content: "blank session should be ignored" },
+    ]);
+    await engine.waitForObserveQueueIdle();
+    assert.equal((await engine.getStats()).totalMessages, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("close prevents deferred observe work from reinitializing the engine", async () => {
   const memoryDir = await mkdtemp(
     path.join(os.tmpdir(), "engram-lcm-engine-close-"),

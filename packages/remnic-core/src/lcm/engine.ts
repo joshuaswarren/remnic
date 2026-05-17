@@ -47,6 +47,24 @@ export function extractLcmConfig(cfg: PluginConfig): LcmEngineConfig {
   };
 }
 
+function normalizeLcmSessionId(sessionId: string): string {
+  return sessionId.trim();
+}
+
+function normalizeOptionalLcmSessionId(sessionId?: string): string | undefined {
+  if (sessionId === undefined) {
+    return undefined;
+  }
+  const normalized = normalizeLcmSessionId(sessionId);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+const EMPTY_LCM_STATS = {
+  totalMessages: 0,
+  totalSummaryNodes: 0,
+  maxDepth: -1,
+} as const;
+
 export class LcmEngine {
   private db: Database.Database | null = null;
   private archive: LcmArchive | null = null;
@@ -161,7 +179,9 @@ export class LcmEngine {
     sessionId: string,
     messages: LcmObserveMessage[],
   ): Promise<void> {
-    this.enqueueObserveMessages(sessionId, messages);
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return;
+    this.enqueueObserveMessages(normalizedSessionId, messages);
   }
 
   /** Enqueue an observe job without waiting for worker completion. */
@@ -170,16 +190,18 @@ export class LcmEngine {
     messages: LcmObserveMessage[],
   ): void {
     if (!this.config.enabled || this.closed) return;
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return;
     if (messages.length === 0) return;
 
-    this.reservePendingObserveInit(sessionId);
+    this.reservePendingObserveInit(normalizedSessionId);
 
     void this.ensureInitialized()
       .then(() => {
         if (this.closed || !this.observeQueue) return;
-        this.observeQueue.enqueue(sessionId, messages);
+        this.observeQueue.enqueue(normalizedSessionId, messages);
         log.debug(
-          `LCM observe enqueued: session=${sessionId}, depth=${this.observeQueue.depth}, inFlight=${this.observeQueue.inFlightCount}`,
+          `LCM observe enqueued: session=${normalizedSessionId}, depth=${this.observeQueue.depth}, inFlight=${this.observeQueue.inFlightCount}`,
         );
       })
       .catch((err) => {
@@ -187,7 +209,7 @@ export class LcmEngine {
         log.error(`LCM observe enqueue initialization error: ${err}`);
       })
       .finally(() => {
-        this.releasePendingObserveInit(sessionId);
+        this.releasePendingObserveInit(normalizedSessionId);
       });
   }
 
@@ -241,10 +263,12 @@ export class LcmEngine {
 
   async waitForSessionObserveIdle(sessionId: string): Promise<void> {
     if (!this.config.enabled || this.closed) return;
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return;
     await this.ensureInitialized();
     if (this.closed) return;
-    await this.waitForPendingObserveInitIdle(sessionId);
-    await this.observeQueue?.whenSessionIdle(sessionId);
+    await this.waitForPendingObserveInitIdle(normalizedSessionId);
+    await this.observeQueue?.whenSessionIdle(normalizedSessionId);
   }
 
   private reservePendingObserveInit(sessionId: string): void {
@@ -297,6 +321,8 @@ export class LcmEngine {
     budgetChars: number,
   ): Promise<string> {
     if (!this.config.enabled) return "";
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return "";
     await this.ensureInitialized();
 
     const effectiveBudget = Math.ceil(
@@ -304,7 +330,7 @@ export class LcmEngine {
     );
     if (effectiveBudget <= 0) return "";
 
-    return assembleCompressedHistory(this.dag!, this.archive!, sessionId, {
+    return assembleCompressedHistory(this.dag!, this.archive!, normalizedSessionId, {
       freshTailTurns: this.config.freshTailTurns,
       budgetChars: effectiveBudget,
     });
@@ -316,9 +342,11 @@ export class LcmEngine {
     limit = this.config.messagePartsRecallMaxResults,
   ): Promise<LcmStructuredRecallMatch[]> {
     if (!this.config.enabled || !this.config.messagePartsEnabled) return [];
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return [];
     await this.ensureInitialized();
     if (!this.archive) return [];
-    return this.archive.searchStructuredParts(query, limit, sessionId);
+    return this.archive.searchStructuredParts(query, limit, normalizedSessionId);
   }
 
   formatStructuredRecall(
@@ -346,10 +374,12 @@ export class LcmEngine {
   /** Flush pending summaries before compaction (called from before_compaction hook). */
   async preCompactionFlush(sessionId: string): Promise<void> {
     if (!this.config.enabled) return;
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return;
     await this.ensureInitialized();
 
     try {
-      await this.summarizer!.summarizeIncremental(sessionId);
+      await this.summarizer!.summarizeIncremental(normalizedSessionId);
     } catch (err) {
       log.debug(`LCM pre-compaction flush error: ${err}`);
     }
@@ -362,25 +392,29 @@ export class LcmEngine {
     tokensAfter: number,
   ): Promise<void> {
     if (!this.config.enabled) return;
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return;
     await this.ensureInitialized();
 
-    const maxTurn = this.archive!.getMaxTurnIndex(sessionId);
+    const maxTurn = this.archive!.getMaxTurnIndex(normalizedSessionId);
 
-    this.dag!.recordCompaction(sessionId, maxTurn, tokensBefore, tokensAfter);
+    this.dag!.recordCompaction(normalizedSessionId, maxTurn, tokensBefore, tokensAfter);
     log.info(
-      `LCM compaction recorded: session=${sessionId}, turn=${maxTurn}, tokens ${tokensBefore}→${tokensAfter}`,
+      `LCM compaction recorded: session=${normalizedSessionId}, turn=${maxTurn}, tokens ${tokensBefore}→${tokensAfter}`,
     );
   }
 
   /** Verify archive coverage after compaction. */
   async verifyPostCompaction(sessionId: string): Promise<void> {
     if (!this.config.enabled) return;
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return;
     await this.ensureInitialized();
 
-    const msgCount = this.archive!.getMessageCount(sessionId);
-    const nodeCount = this.dag!.getNodeCount(sessionId);
+    const msgCount = this.archive!.getMessageCount(normalizedSessionId);
+    const nodeCount = this.dag!.getNodeCount(normalizedSessionId);
     log.debug(
-      `LCM post-compaction verify: session=${sessionId}, messages=${msgCount}, summaryNodes=${nodeCount}`,
+      `LCM post-compaction verify: session=${normalizedSessionId}, messages=${msgCount}, summaryNodes=${nodeCount}`,
     );
   }
 
@@ -400,8 +434,10 @@ export class LcmEngine {
     }>
   > {
     if (!this.config.enabled) return [];
+    const normalizedSessionId = normalizeOptionalLcmSessionId(sessionId);
+    if (sessionId !== undefined && !normalizedSessionId) return [];
     await this.ensureInitialized();
-    return this.archive!.search(query, limit, sessionId);
+    return this.archive!.search(query, limit, normalizedSessionId);
   }
 
   /** Search via FTS returning full message content (not snippets). */
@@ -420,8 +456,10 @@ export class LcmEngine {
     }>
   > {
     if (!this.config.enabled) return [];
+    const normalizedSessionId = normalizeOptionalLcmSessionId(sessionId);
+    if (sessionId !== undefined && !normalizedSessionId) return [];
     await this.ensureInitialized();
-    return this.archive!.searchWithContent(query, limit, sessionId);
+    return this.archive!.searchWithContent(query, limit, normalizedSessionId);
   }
 
   /** Get a compressed summary of a turn range. */
@@ -431,12 +469,14 @@ export class LcmEngine {
     toTurn: number,
   ): Promise<{ summary: string; turn_count: number; depth: number } | null> {
     if (!this.config.enabled) return null;
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return null;
     await this.ensureInitialized();
 
-    const nodes = this.dag!.getCoveringNodes(sessionId, fromTurn, toTurn);
+    const nodes = this.dag!.getCoveringNodes(normalizedSessionId, fromTurn, toTurn);
     if (nodes.length === 0) {
       // No summary exists — build a description from raw messages
-      const messages = this.archive!.getMessages(sessionId, fromTurn, toTurn);
+      const messages = this.archive!.getMessages(normalizedSessionId, fromTurn, toTurn);
       if (messages.length === 0) return null;
       const preview = messages
         .slice(0, 5)
@@ -466,9 +506,11 @@ export class LcmEngine {
     maxTokens: number,
   ): Promise<Array<{ turn_index: number; role: string; content: string }>> {
     if (!this.config.enabled) return [];
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return [];
     await this.ensureInitialized();
 
-    const messages = this.archive!.getMessages(sessionId, fromTurn, toTurn);
+    const messages = this.archive!.getMessages(normalizedSessionId, fromTurn, toTurn);
     if (messages.length === 0) return [];
 
     // Enforce token budget — keep first and last, truncate middle
@@ -529,14 +571,18 @@ export class LcmEngine {
   }> {
     if (!this.config.enabled)
       return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: -1 };
+    const normalizedSessionId = normalizeOptionalLcmSessionId(sessionId);
+    if (sessionId !== undefined && !normalizedSessionId) {
+      return { ...EMPTY_LCM_STATS };
+    }
     await this.ensureInitialized();
 
-    if (sessionId) {
+    if (normalizedSessionId) {
       return {
-        totalMessages: this.archive!.getMessageCount(sessionId),
-        totalSummaryNodes: this.dag!.getNodeCount(sessionId),
-        maxDepth: this.dag!.getMaxDepth(sessionId),
-        maxTurnIndex: this.archive!.getMaxTurnIndex(sessionId),
+        totalMessages: this.archive!.getMessageCount(normalizedSessionId),
+        totalSummaryNodes: this.dag!.getNodeCount(normalizedSessionId),
+        maxDepth: this.dag!.getMaxDepth(normalizedSessionId),
+        maxTurnIndex: this.archive!.getMaxTurnIndex(normalizedSessionId),
       };
     }
 
@@ -545,6 +591,28 @@ export class LcmEngine {
       totalSummaryNodes: 0, // Would need a global count query
       maxDepth: -1,
     };
+  }
+
+  /** Clear all LCM archive and summary state for one session. */
+  async clearSession(sessionId: string): Promise<void> {
+    if (!this.config.enabled || this.closed) return;
+    const normalizedSessionId = normalizeLcmSessionId(sessionId);
+    if (!normalizedSessionId) return;
+    await this.ensureInitialized();
+    if (this.closed || !this.archive || !this.dag) return;
+    await this.waitForSessionObserveIdle(normalizedSessionId);
+    this.dag.deleteSession(normalizedSessionId);
+    this.archive.deleteSession(normalizedSessionId);
+  }
+
+  /** Clear all LCM archive and summary state without closing the engine. */
+  async clearAll(): Promise<void> {
+    if (!this.config.enabled || this.closed) return;
+    await this.ensureInitialized();
+    if (this.closed || !this.archive || !this.dag) return;
+    await this.waitForObserveQueueIdle();
+    this.dag.deleteAll();
+    this.archive.deleteAll();
   }
 
   /** Prune old data beyond retention period. */

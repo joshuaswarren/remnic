@@ -395,6 +395,38 @@ export class LcmArchive {
     return row.cnt;
   }
 
+  /** Delete all archived messages for one session. */
+  deleteSession(sessionId: string): number {
+    const txn = this.db.transaction(() => {
+      this.db
+        .prepare(
+          "DELETE FROM lcm_messages_fts WHERE rowid IN (SELECT id FROM lcm_messages WHERE session_id = ?)",
+        )
+        .run(sessionId);
+      this.db
+        .prepare(
+          "DELETE FROM lcm_message_parts WHERE message_id IN (SELECT id FROM lcm_messages WHERE session_id = ?)",
+        )
+        .run(sessionId);
+      const result = this.db
+        .prepare("DELETE FROM lcm_messages WHERE session_id = ?")
+        .run(sessionId);
+      return result.changes;
+    });
+    return txn();
+  }
+
+  /** Delete all archived messages. */
+  deleteAll(): number {
+    const txn = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM lcm_messages_fts").run();
+      this.db.prepare("DELETE FROM lcm_message_parts").run();
+      const result = this.db.prepare("DELETE FROM lcm_messages").run();
+      return result.changes;
+    });
+    return txn();
+  }
+
   /** Prune messages older than retentionDays. */
   pruneOldMessages(retentionDays: number): number {
     const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();

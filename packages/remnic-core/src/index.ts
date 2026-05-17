@@ -96,7 +96,11 @@ export {
 // Storage
 // ---------------------------------------------------------------------------
 
-export { StorageManager } from "./storage.js";
+export {
+  StorageManager,
+  parseEntityFile,
+  serializeEntityFile,
+} from "./storage.js";
 
 // ---------------------------------------------------------------------------
 // Extraction
@@ -1125,6 +1129,8 @@ export type {
 export type {
   PluginConfig,
   GatewayConfig,
+  EntityFile,
+  EntityStructuredSection,
   MemoryFile,
   MemoryObservation,
   ExtractedFact,

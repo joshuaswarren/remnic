@@ -4,7 +4,17 @@
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -18,7 +28,10 @@ import {
   Orchestrator,
   parseFlexibleIsoTimestamp,
   parseConfig,
+  parseEntityFile,
+  serializeEntityFile,
 } from "@remnic/core";
+import type { EntityStructuredSection, MemoryFile } from "@remnic/core";
 import type {
   BenchJudge,
   BenchMemoryAdapter,
@@ -158,6 +171,8 @@ type BenchRecallEngine = {
     maxDepth: number;
     maxTurnIndex?: number;
   }>;
+  clearSession?(sessionId: string): Promise<void>;
+  clearAll?(): Promise<void>;
 };
 
 const BENCH_TEARDOWN_DEFERRED_READY_WAIT_MS = 500;
@@ -166,7 +181,61 @@ const CORE_EXPLICIT_CUE_MAX_CHARS = 18_000;
 const CORE_EXPLICIT_CUE_MAX_ITEM_CHARS = 2_400;
 const CORE_EXPLICIT_CUE_MAX_REFERENCES = 24;
 const CORE_TRAJECTORY_ANALYSIS_MAX_CHARS = 18_000;
+const BENCH_REMNIC_STATE_CHILDREN = [
+  "archive",
+  "artifacts",
+  "cold",
+  "conversation-index",
+  "corrections",
+  "entities",
+  "facts",
+  "identity",
+  "profiling",
+  "procedures",
+  "qmd-bench",
+  "qmd-cache",
+  "qmd-config",
+  "questions",
+  "reasoning-traces",
+  "state",
+  "summaries",
+  "threads",
+  "transcripts",
+] as const;
 const execFileAsync = promisify(execFile);
+
+type BenchCoreMemoryTier = "hot" | "cold";
+
+type BenchQmdIndex = {
+  isAvailable(): boolean;
+  update(): Promise<void>;
+  updateCollection?(collection: string): Promise<void>;
+  updateCollectionStrict?(collection: string): Promise<void>;
+};
+
+type BenchArtifactStorageView = {
+  artifactIndexCache?: unknown;
+  bumpArtifactWriteVersion?: () => number;
+};
+
+type BenchEntityStructuredFactSources = Map<string, Map<string, Set<string>>>;
+
+type BenchEntityStructuredFactSourceFile = {
+  version: 1;
+  sessionId: string;
+  entries: Array<{
+    entityName: string;
+    sectionKey: string;
+    facts: string[];
+  }>;
+};
+
+type BenchEntityStorageView = {
+  entitySchemas?: Parameters<typeof parseEntityFile>[1];
+  writeStorageSecureFile?: (filePath: string, content: string) => Promise<void>;
+  invalidateKnowledgeIndexCache?: () => void;
+  bumpMemoryStatusVersion?: () => void;
+};
 
 function normalizeReplaySourceValidAtMode(
   value: RemnicAdapterOptions["replaySourceValidAtMode"],
@@ -446,6 +515,21 @@ function resolveConfiguredBenchDir(options: RemnicAdapterOptions): string | unde
   return sandboxDir ?? memoryDir;
 }
 
+function normalizeBenchSessionId(sessionId: string): string {
+  const normalized = sessionId.trim();
+  if (!normalized) {
+    throw new Error("benchmark sessionId must be non-empty.");
+  }
+  return normalized;
+}
+
+function normalizeOptionalBenchSessionId(sessionId?: string): string | undefined {
+  if (sessionId === undefined) {
+    return undefined;
+  }
+  return normalizeBenchSessionId(sessionId);
+}
+
 async function removeBenchQmdSandbox(sandbox: BenchQmdSandbox): Promise<void> {
   if (!sandbox.indexName.startsWith("remnic-bench-")) {
     return;
@@ -453,6 +537,785 @@ async function removeBenchQmdSandbox(sandbox: BenchQmdSandbox): Promise<void> {
   await Promise.all([
     rm(sandbox.cacheDir, { recursive: true, force: true }),
     rm(sandbox.configDir, { recursive: true, force: true }),
+  ]);
+}
+
+async function clearCallerOwnedBenchState(memoryDir: string): Promise<void> {
+  await Promise.all(
+    BENCH_REMNIC_STATE_CHILDREN.map((entry) =>
+      rm(path.join(memoryDir, entry), { recursive: true, force: true }),
+    ),
+  );
+}
+
+async function readBenchCoreMemories(
+  orchestrator: Orchestrator,
+): Promise<MemoryFile[]> {
+  return [
+    ...await orchestrator.storage.readAllMemories(),
+    ...await orchestrator.storage.readAllColdMemories(),
+  ];
+}
+
+async function readBenchCoreMemoryIds(
+  orchestrator: Orchestrator,
+): Promise<Set<string>> {
+  const memories = await readBenchCoreMemories(orchestrator);
+  return new Set(memories.map((memory) => memory.frontmatter.id));
+}
+
+function isErrnoCode(err: unknown, code: string): boolean {
+  return (
+    !!err &&
+    typeof err === "object" &&
+    (err as { code?: unknown }).code === code
+  );
+}
+
+function benchCoreMemoryTier(memory: MemoryFile): BenchCoreMemoryTier {
+  return memory.path.includes(`${path.sep}cold${path.sep}`) ? "cold" : "hot";
+}
+
+function benchCoreMemorySource(sessionId: string): string {
+  return `bench-replay-${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}`;
+}
+
+function benchEntityStructuredFactSourceDir(memoryDir: string): string {
+  return path.join(memoryDir, "state", "bench-entity-structured-facts");
+}
+
+function benchEntityStructuredFactSourcePath(
+  memoryDir: string,
+  sessionId: string,
+): string {
+  return path.join(
+    benchEntityStructuredFactSourceDir(memoryDir),
+    `${benchCoreMemorySource(sessionId)}.json`,
+  );
+}
+
+function normalizeBenchEntityStructuredFact(fact: string): string {
+  return fact.replace(/\s+/g, " ").trim();
+}
+
+function addBenchEntityStructuredFactSource(
+  sources: BenchEntityStructuredFactSources,
+  entityName: string,
+  sectionKey: string,
+  fact: string,
+): void {
+  const normalizedFact = normalizeBenchEntityStructuredFact(fact);
+  if (!entityName || !sectionKey || !normalizedFact) return;
+  let entitySources = sources.get(entityName);
+  if (!entitySources) {
+    entitySources = new Map<string, Set<string>>();
+    sources.set(entityName, entitySources);
+  }
+  let sectionFacts = entitySources.get(sectionKey);
+  if (!sectionFacts) {
+    sectionFacts = new Set<string>();
+    entitySources.set(sectionKey, sectionFacts);
+  }
+  sectionFacts.add(normalizedFact);
+}
+
+function mergeBenchEntityStructuredFactSources(
+  target: BenchEntityStructuredFactSources,
+  source: BenchEntityStructuredFactSources,
+): void {
+  for (const [entityName, sections] of source) {
+    for (const [sectionKey, facts] of sections) {
+      for (const fact of facts) {
+        addBenchEntityStructuredFactSource(target, entityName, sectionKey, fact);
+      }
+    }
+  }
+}
+
+function serializeBenchEntityStructuredFactSources(
+  sessionId: string,
+  sources: BenchEntityStructuredFactSources,
+): BenchEntityStructuredFactSourceFile {
+  return {
+    version: 1,
+    sessionId,
+    entries: Array.from(sources.entries())
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([entityName, sections]) =>
+        Array.from(sections.entries())
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([sectionKey, facts]) => ({
+            entityName,
+            sectionKey,
+            facts: Array.from(facts).sort(),
+          })),
+      ),
+  };
+}
+
+async function readBenchEntityStructuredFactSourceFile(
+  filePath: string,
+  expectedSessionId?: string,
+): Promise<{
+  sessionId: string | undefined;
+  sources: BenchEntityStructuredFactSources;
+}> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(filePath, "utf8"));
+  } catch {
+    return { sessionId: undefined, sources: new Map() };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { sessionId: undefined, sources: new Map() };
+  }
+  const file = parsed as {
+    version?: unknown;
+    sessionId?: unknown;
+    entries?: unknown;
+  };
+  const sessionId = typeof file.sessionId === "string" ? file.sessionId : undefined;
+  if (
+    file.version !== 1 ||
+    !Array.isArray(file.entries) ||
+    (expectedSessionId !== undefined && sessionId !== expectedSessionId)
+  ) {
+    return { sessionId, sources: new Map() };
+  }
+
+  const sources: BenchEntityStructuredFactSources = new Map();
+  for (const entry of file.entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const candidate = entry as {
+      entityName?: unknown;
+      sectionKey?: unknown;
+      facts?: unknown;
+    };
+    if (
+      typeof candidate.entityName !== "string" ||
+      typeof candidate.sectionKey !== "string" ||
+      !Array.isArray(candidate.facts)
+    ) {
+      continue;
+    }
+    for (const fact of candidate.facts) {
+      if (typeof fact !== "string") continue;
+      addBenchEntityStructuredFactSource(
+        sources,
+        candidate.entityName,
+        candidate.sectionKey,
+        fact,
+      );
+    }
+  }
+  return { sessionId, sources };
+}
+
+async function readBenchEntityStructuredFactSources(
+  memoryDir: string,
+  sessionId: string,
+): Promise<BenchEntityStructuredFactSources> {
+  return (
+    await readBenchEntityStructuredFactSourceFile(
+      benchEntityStructuredFactSourcePath(memoryDir, sessionId),
+      sessionId,
+    )
+  ).sources;
+}
+
+async function readOtherBenchEntityStructuredFactSources(
+  memoryDir: string,
+  sessionId: string,
+): Promise<BenchEntityStructuredFactSources> {
+  const sourceDir = benchEntityStructuredFactSourceDir(memoryDir);
+  const excludedPath = benchEntityStructuredFactSourcePath(memoryDir, sessionId);
+  let entries;
+  try {
+    entries = await readdir(sourceDir, { withFileTypes: true });
+  } catch {
+    return new Map();
+  }
+
+  const merged: BenchEntityStructuredFactSources = new Map();
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const filePath = path.join(sourceDir, entry.name);
+    if (path.resolve(filePath) === path.resolve(excludedPath)) continue;
+    const sourceFile = await readBenchEntityStructuredFactSourceFile(filePath);
+    if (sourceFile.sessionId === sessionId) continue;
+    mergeBenchEntityStructuredFactSources(merged, sourceFile.sources);
+  }
+  return merged;
+}
+
+async function writeBenchEntityStructuredFactSources(
+  memoryDir: string,
+  sessionId: string,
+  sources: BenchEntityStructuredFactSources,
+): Promise<void> {
+  if (sources.size === 0) return;
+
+  const sourcePath = benchEntityStructuredFactSourcePath(memoryDir, sessionId);
+  const merged = await readBenchEntityStructuredFactSources(memoryDir, sessionId);
+  mergeBenchEntityStructuredFactSources(merged, sources);
+  await mkdir(path.dirname(sourcePath), { recursive: true });
+  const tempPath = `${sourcePath}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(
+    tempPath,
+    `${JSON.stringify(
+      serializeBenchEntityStructuredFactSources(sessionId, merged),
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  await rename(tempPath, sourcePath);
+}
+
+async function removeBenchEntityStructuredFactSources(
+  memoryDir: string,
+  sessionId: string,
+): Promise<void> {
+  await unlink(benchEntityStructuredFactSourcePath(memoryDir, sessionId)).catch((err) => {
+    if (!isErrnoCode(err, "ENOENT")) {
+      throw err;
+    }
+  });
+}
+
+async function captureBenchEntityStructuredFactWrite(
+  orchestrator: Orchestrator,
+  sources: BenchEntityStructuredFactSources,
+  entityName: string,
+  structuredSections: EntityStructuredSection[] | undefined,
+  beforeSources: BenchEntityStructuredFactSources,
+): Promise<void> {
+  const incomingFacts = new Set<string>();
+  for (const section of structuredSections ?? []) {
+    for (const fact of section.facts ?? []) {
+      if (typeof fact !== "string") continue;
+      const normalizedFact = normalizeBenchEntityStructuredFact(fact);
+      if (normalizedFact) incomingFacts.add(normalizedFact);
+    }
+  }
+  if (!entityName || incomingFacts.size === 0) return;
+
+  const entityStorage = orchestrator.storage as unknown as BenchEntityStorageView;
+  const raw = await orchestrator.storage.readEntity(entityName);
+  if (!raw) return;
+  const entity = parseEntityFile(raw, entityStorage.entitySchemas);
+  for (const section of entity.structuredSections ?? []) {
+    for (const fact of section.facts) {
+      const normalizedFact = normalizeBenchEntityStructuredFact(fact);
+      if (!incomingFacts.has(normalizedFact)) continue;
+      if (beforeSources.get(entityName)?.get(section.key)?.has(normalizedFact)) {
+        continue;
+      }
+      addBenchEntityStructuredFactSource(
+        sources,
+        entityName,
+        section.key,
+        normalizedFact,
+      );
+    }
+  }
+}
+
+async function readBenchEntityStructuredFactSnapshot(
+  orchestrator: Orchestrator,
+): Promise<BenchEntityStructuredFactSources> {
+  const storage = orchestrator.storage;
+  const entityStorage = storage as unknown as BenchEntityStorageView;
+  const sources: BenchEntityStructuredFactSources = new Map();
+  for (const entityName of await storage.listEntityNames()) {
+    const raw = await storage.readEntity(entityName);
+    if (!raw) continue;
+    const entity = parseEntityFile(raw, entityStorage.entitySchemas);
+    for (const section of entity.structuredSections ?? []) {
+      for (const fact of section.facts) {
+        addBenchEntityStructuredFactSource(sources, entityName, section.key, fact);
+      }
+    }
+  }
+  return sources;
+}
+
+function hasBenchEntityStructuredFacts(
+  structuredSections: EntityStructuredSection[] | undefined,
+): boolean {
+  return (structuredSections ?? []).some((section) =>
+    (section.facts ?? []).some((fact) =>
+      typeof fact === "string" &&
+      normalizeBenchEntityStructuredFact(fact).length > 0,
+    ),
+  );
+}
+
+async function withBenchEntityStructuredFactCapture(
+  orchestrator: Orchestrator,
+  sessionId: string,
+  task: () => Promise<void>,
+): Promise<void> {
+  type BenchWriteEntity = (
+    name: string,
+    type: string,
+    facts: string[],
+    options?: { structuredSections?: EntityStructuredSection[] },
+  ) => Promise<string>;
+  const storage = orchestrator.storage as unknown as { writeEntity: BenchWriteEntity };
+  const originalWriteEntity = storage.writeEntity;
+  const writeEntity = originalWriteEntity.bind(orchestrator.storage);
+  const captured: BenchEntityStructuredFactSources = new Map();
+
+  storage.writeEntity = async (...args: Parameters<BenchWriteEntity>): Promise<string> => {
+    const structuredSections = args[3]?.structuredSections;
+    const beforeSources = hasBenchEntityStructuredFacts(structuredSections)
+      ? await readBenchEntityStructuredFactSnapshot(orchestrator)
+      : new Map<string, Map<string, Set<string>>>();
+    const entityName = await writeEntity(...args);
+    await captureBenchEntityStructuredFactWrite(
+      orchestrator,
+      captured,
+      entityName,
+      structuredSections,
+      beforeSources,
+    );
+    return entityName;
+  };
+
+  let taskError: unknown;
+  try {
+    await task();
+  } catch (err) {
+    taskError = err;
+    throw err;
+  } finally {
+    storage.writeEntity = originalWriteEntity;
+    try {
+      await writeBenchEntityStructuredFactSources(
+        orchestrator.storage.dir,
+        sessionId,
+        captured,
+      );
+    } catch (err) {
+      if (taskError === undefined) {
+        throw err;
+      }
+    }
+  }
+}
+
+async function rememberNewBenchCoreMemories(
+  orchestrator: Orchestrator,
+  sessionMemoryIds: Map<string, Set<string>>,
+  sessionId: string,
+  beforeIds: Set<string>,
+): Promise<void> {
+  const after = await readBenchCoreMemories(orchestrator);
+  const remembered = sessionMemoryIds.get(sessionId) ?? new Set<string>();
+  const source = benchCoreMemorySource(sessionId);
+  for (const memory of after) {
+    if (!beforeIds.has(memory.frontmatter.id)) {
+      await orchestrator.storage.writeMemoryFrontmatter(memory, { source });
+      remembered.add(memory.frontmatter.id);
+    }
+  }
+  if (remembered.size > 0) {
+    sessionMemoryIds.set(sessionId, remembered);
+  }
+}
+
+async function clearBenchCoreSessionMemories(
+  orchestrator: Orchestrator,
+  sessionId: string,
+  memoryIds: Set<string> | undefined,
+  coldCollection: string,
+): Promise<void> {
+  const memories = [
+    ...await orchestrator.storage.readAllMemories(),
+    ...await orchestrator.storage.readAllColdMemories(),
+  ];
+  const trackedIds = memoryIds ?? new Set<string>();
+  const source = benchCoreMemorySource(sessionId);
+  const targets = memories
+    .filter((memory) =>
+      trackedIds.has(memory.frontmatter.id) ||
+      memory.frontmatter.source === source,
+    )
+    .map((memory) => ({ memory, tier: benchCoreMemoryTier(memory) }));
+  const targetMemoryIds = new Set(trackedIds);
+  for (const target of targets) {
+    targetMemoryIds.add(target.memory.frontmatter.id);
+  }
+
+  await clearBenchCoreArtifactsForMemoryIds(orchestrator, targetMemoryIds);
+  await clearBenchCoreEntitiesForSession(orchestrator, sessionId);
+  if (targets.length === 0) return;
+
+  await orchestrator.storage.removeFactContentHashesForMemories(
+    targets.map((target) => target.memory),
+  );
+
+  const changedTiers = new Set<BenchCoreMemoryTier>();
+  for (const { memory, tier } of targets) {
+    if (tier === "cold") {
+      try {
+        await unlink(memory.path);
+      } catch (err) {
+        if (!isErrnoCode(err, "ENOENT")) {
+          throw err;
+        }
+      }
+      changedTiers.add("cold");
+      continue;
+    }
+
+    await orchestrator.storage.invalidateMemory(memory.frontmatter.id);
+    changedTiers.add("hot");
+  }
+
+  const invalidateTierCaches = (
+    orchestrator.storage as unknown as {
+      invalidateMemoryCachesForTiers?: (
+        tiers: Iterable<"hot" | "cold" | "archive">,
+      ) => void;
+    }
+  ).invalidateMemoryCachesForTiers;
+  if (typeof invalidateTierCaches === "function") {
+    invalidateTierCaches.call(orchestrator.storage, changedTiers);
+  } else {
+    orchestrator.storage.invalidateAllMemoriesCacheForDir();
+  }
+
+  const qmd = orchestrator.qmd as BenchQmdIndex;
+  if (!qmd.isAvailable()) {
+    return;
+  }
+  if (changedTiers.has("hot")) {
+    await qmd.update();
+  }
+  if (changedTiers.has("cold")) {
+    if (typeof qmd.updateCollectionStrict === "function") {
+      await qmd.updateCollectionStrict(coldCollection);
+    } else if (typeof qmd.updateCollection === "function") {
+      await qmd.updateCollection(coldCollection);
+    } else {
+      await qmd.update();
+    }
+  }
+}
+
+function compileBenchEntityFacts(entity: ReturnType<typeof parseEntityFile>): string[] {
+  const facts: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of entity.timeline) {
+    const fact = entry.text.trim();
+    if (!fact || seen.has(fact)) continue;
+    seen.add(fact);
+    facts.push(fact);
+  }
+  for (const section of entity.structuredSections ?? []) {
+    for (const rawFact of section.facts) {
+      const fact = rawFact.replace(/\s+/g, " ").trim();
+      if (!fact || seen.has(fact)) continue;
+      seen.add(fact);
+      facts.push(fact);
+    }
+  }
+  return facts;
+}
+
+function hasBenchEntityState(entity: ReturnType<typeof parseEntityFile>): boolean {
+  return entity.timeline.length > 0 ||
+    (entity.structuredSections ?? []).some((section) => section.facts.length > 0) ||
+    entity.relationships.length > 0 ||
+    entity.activity.length > 0 ||
+    entity.aliases.length > 0 ||
+    (entity.extraSections ?? []).some((section) =>
+      section.lines.some((line) => line.trim().length > 0),
+    ) ||
+    (entity.preSectionLines ?? []).some((line) => line.trim().length > 0);
+}
+
+function pruneBenchEntityStructuredFacts(
+  structuredSections: EntityStructuredSection[] | undefined,
+  targetSources: Map<string, Set<string>> | undefined,
+  protectedSources: Map<string, Set<string>> | undefined,
+): { changed: boolean; structuredSections: EntityStructuredSection[] } {
+  const sections = structuredSections ?? [];
+  if (sections.length === 0) {
+    return { changed: false, structuredSections: [] };
+  }
+  if (!targetSources || targetSources.size === 0) {
+    return { changed: false, structuredSections: sections };
+  }
+
+  let changed = false;
+  const nextSections: EntityStructuredSection[] = [];
+  for (const section of sections) {
+    const targetFacts = targetSources?.get(section.key);
+    const protectedFacts = protectedSources?.get(section.key);
+    const nextFacts = section.facts.filter((fact) => {
+      const normalizedFact = normalizeBenchEntityStructuredFact(fact);
+      if (!targetFacts?.has(normalizedFact)) {
+        return true;
+      }
+      return protectedFacts?.has(normalizedFact) === true;
+    });
+    if (nextFacts.length !== section.facts.length) {
+      changed = true;
+    }
+    if (nextFacts.length === 0) {
+      continue;
+    }
+    nextSections.push({ ...section, facts: nextFacts });
+  }
+
+  return { changed, structuredSections: nextSections };
+}
+
+async function clearBenchCoreEntitiesForSession(
+  orchestrator: Orchestrator,
+  sessionId: string,
+): Promise<void> {
+  const storage = orchestrator.storage;
+  const entityStorage = storage as unknown as BenchEntityStorageView;
+  const entitySchemas = entityStorage.entitySchemas;
+  const targetStructuredSources = await readBenchEntityStructuredFactSources(
+    storage.dir,
+    sessionId,
+  );
+  const protectedStructuredSources = await readOtherBenchEntityStructuredFactSources(
+    storage.dir,
+    sessionId,
+  );
+  const entityNames = await storage.listEntityNames();
+  let changedAny = false;
+
+  for (const entityName of entityNames) {
+    const raw = await storage.readEntity(entityName);
+    if (!raw) continue;
+
+    const entity = parseEntityFile(raw, entitySchemas);
+    const nextTimeline = entity.timeline.filter((entry) => entry.sessionKey !== sessionId);
+    const timelineChanged = nextTimeline.length !== entity.timeline.length;
+    const prunedStructured = pruneBenchEntityStructuredFacts(
+      entity.structuredSections,
+      targetStructuredSources.get(entityName),
+      protectedStructuredSources.get(entityName),
+    );
+    if (!timelineChanged && !prunedStructured.changed) {
+      continue;
+    }
+
+    entity.timeline = nextTimeline;
+    entity.structuredSections = prunedStructured.structuredSections;
+    entity.facts = compileBenchEntityFacts(entity);
+    entity.summary = undefined;
+    entity.synthesis = undefined;
+    entity.synthesisUpdatedAt = undefined;
+    entity.synthesisTimelineCount = undefined;
+    entity.synthesisStructuredFactCount = undefined;
+    entity.synthesisStructuredFactDigest = undefined;
+    entity.updated = new Date().toISOString();
+
+    const entityPath = path.join(storage.dir, "entities", `${entityName}.md`);
+    if (!hasBenchEntityState(entity)) {
+      await unlink(entityPath).catch((err) => {
+        if (!isErrnoCode(err, "ENOENT")) {
+          throw err;
+        }
+      });
+      await storage.removeEntitySynthesisQueueEntries([entityName]).catch(() => undefined);
+      changedAny = true;
+      continue;
+    }
+
+    const serialized = serializeEntityFile(entity, entitySchemas);
+    if (typeof entityStorage.writeStorageSecureFile === "function") {
+      await entityStorage.writeStorageSecureFile.call(storage, entityPath, serialized);
+    } else {
+      await writeFile(entityPath, serialized, "utf8");
+    }
+    await storage.removeEntitySynthesisQueueEntries([entityName]).catch(() => undefined);
+    changedAny = true;
+  }
+
+  if (targetStructuredSources.size > 0) {
+    await removeBenchEntityStructuredFactSources(storage.dir, sessionId);
+  }
+
+  if (!changedAny) return;
+  entityStorage.invalidateKnowledgeIndexCache?.call(storage);
+  entityStorage.bumpMemoryStatusVersion?.call(storage);
+}
+
+async function listBenchArtifactMarkdownFiles(dir: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listBenchArtifactMarkdownFiles(fullPath));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+async function clearBenchCoreArtifactsForMemoryIds(
+  orchestrator: Orchestrator,
+  memoryIds: Set<string>,
+): Promise<void> {
+  if (memoryIds.size === 0) return;
+
+  const artifactFiles = await listBenchArtifactMarkdownFiles(
+    path.join(orchestrator.storage.dir, "artifacts"),
+  );
+  let removedAny = false;
+  for (const filePath of artifactFiles) {
+    const artifact = await orchestrator.storage.readMemoryByPath(filePath);
+    const sourceMemoryId = artifact?.frontmatter.sourceMemoryId;
+    if (typeof sourceMemoryId !== "string" || !memoryIds.has(sourceMemoryId)) {
+      continue;
+    }
+    try {
+      await unlink(filePath);
+      removedAny = true;
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) {
+        throw err;
+      }
+    }
+  }
+
+  if (!removedAny) return;
+  const artifactStorage = orchestrator.storage as unknown as BenchArtifactStorageView;
+  artifactStorage.artifactIndexCache = null;
+  artifactStorage.bumpArtifactWriteVersion?.call(orchestrator.storage);
+}
+
+async function listTranscriptJsonlFiles(dir: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await listTranscriptJsonlFiles(fullPath));
+    } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+async function clearBenchTranscriptSession(
+  memoryDir: string,
+  sessionId: string,
+): Promise<void> {
+  const transcriptFiles = await listTranscriptJsonlFiles(path.join(memoryDir, "transcripts"));
+  for (const filePath of transcriptFiles) {
+    let content: string;
+    try {
+      content = await readFile(filePath, "utf8");
+    } catch {
+      continue;
+    }
+
+    let removed = false;
+    const kept: string[] = [];
+    for (const line of content.split("\n")) {
+      if (line.trim().length === 0) {
+        kept.push(line);
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line) as { sessionKey?: unknown };
+        if (parsed.sessionKey === sessionId) {
+          removed = true;
+          continue;
+        }
+      } catch {
+        // Preserve malformed lines; reset should only remove known session entries.
+      }
+      kept.push(line);
+    }
+    if (!removed) continue;
+
+    const nonEmptyLines = kept.filter((line) => line.trim().length > 0);
+    if (nonEmptyLines.length === 0) {
+      await unlink(filePath).catch(() => undefined);
+      continue;
+    }
+
+    const nextContent = kept.join("\n");
+    const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(
+      tempPath,
+      nextContent.endsWith("\n") ? nextContent : `${nextContent}\n`,
+      "utf8",
+    );
+    await rename(tempPath, filePath);
+  }
+}
+
+function resolveBenchChildPath(root: string, ...segments: string[]): string {
+  const resolvedRoot = path.resolve(root);
+  const resolvedPath = path.resolve(resolvedRoot, ...segments);
+  const relative = path.relative(resolvedRoot, resolvedPath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("benchmark sessionId resolves outside Remnic benchmark state.");
+  }
+  return resolvedPath;
+}
+
+function resolveBenchSummarySessionPaths(
+  memoryDir: string,
+  sessionId: string,
+): {
+  hourlyDir: string;
+  snapshotPath: string;
+  lockPath: string;
+} {
+  const hourlyRoot = path.join(memoryDir, "summaries", "hourly");
+  const snapshotRoot = path.join(memoryDir, "state", "summaries");
+  return {
+    hourlyDir: resolveBenchChildPath(hourlyRoot, sessionId),
+    snapshotPath: resolveBenchChildPath(snapshotRoot, `${sessionId}.json`),
+    lockPath: resolveBenchChildPath(snapshotRoot, `${sessionId}.lock`),
+  };
+}
+
+async function clearBenchSummarySession(
+  memoryDir: string,
+  sessionId: string,
+): Promise<void> {
+  const summaryPaths = resolveBenchSummarySessionPaths(memoryDir, sessionId);
+  await Promise.all([
+    rm(summaryPaths.hourlyDir, {
+      recursive: true,
+      force: true,
+    }),
+    rm(summaryPaths.snapshotPath, {
+      force: true,
+    }),
+    rm(summaryPaths.lockPath, {
+      force: true,
+    }),
   ]);
 }
 
@@ -467,6 +1330,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
     );
     const drainTimeoutMs = normalizeDrainTimeoutMs(options.drainTimeoutMs);
     const configuredBenchDir = resolveConfiguredBenchDir(options);
+    const coreSessionMemoryIds = new Map<string, Set<string>>();
+    const coreReplaySessionChains = new Map<string, Promise<void>>();
+    let coreReplayChain: Promise<void> = Promise.resolve();
     let state = await createBenchOrchestrator(
       mode,
       options.configOverrides,
@@ -474,6 +1340,32 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       configuredBenchDir,
     );
     const sessionTurnCounters = new Map<string, number>();
+
+    const queueBenchCoreReplay = (
+      sessionId: string,
+      task: () => Promise<void>,
+    ): Promise<void> => {
+      const queued = coreReplayChain.catch(() => undefined).then(task);
+      let tracked: Promise<void>;
+      tracked = queued.finally(() => {
+        if (coreReplaySessionChains.get(sessionId) === tracked) {
+          coreReplaySessionChains.delete(sessionId);
+        }
+      });
+      coreReplaySessionChains.set(sessionId, tracked);
+      coreReplayChain = tracked.catch(() => undefined);
+      return queued;
+    };
+
+    const waitForBenchCoreReplaySession = async (
+      sessionId: string,
+    ): Promise<void> => {
+      await coreReplaySessionChains.get(sessionId)?.catch(() => undefined);
+    };
+
+    const waitForAllBenchCoreReplay = async (): Promise<void> => {
+      await coreReplayChain.catch(() => undefined);
+    };
 
     const getEngine = () => {
       const engine = state.orchestrator.lcmEngine;
@@ -484,6 +1376,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
     };
 
     const cleanup = async (): Promise<void> => {
+      await waitForAllBenchCoreReplay();
       const orchestrator = state.orchestrator as unknown as OrchestratorTeardownView;
 
       orchestrator.abortDeferredInit();
@@ -512,12 +1405,15 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       }
     };
 
-    const rebuild = async (): Promise<void> => {
-      const shouldClearCallerOwnedMemoryDir = !state.ownsTempDir;
+    const rebuild = async (
+      rebuildOptions: { clearCallerOwnedBenchState?: boolean } = {},
+    ): Promise<void> => {
+      const shouldClearCallerOwnedBenchState =
+        !state.ownsTempDir && rebuildOptions.clearCallerOwnedBenchState === true;
       const callerOwnedMemoryDir = state.tempDir;
       await cleanup();
-      if (shouldClearCallerOwnedMemoryDir) {
-        await rm(callerOwnedMemoryDir, { recursive: true, force: true });
+      if (shouldClearCallerOwnedBenchState) {
+        await clearCallerOwnedBenchState(callerOwnedMemoryDir);
       }
       state = await createBenchOrchestrator(
         mode,
@@ -526,10 +1422,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         configuredBenchDir,
       );
       sessionTurnCounters.clear();
+      coreSessionMemoryIds.clear();
     };
 
     return {
       async store(sessionId: string, messages: Message[]): Promise<void> {
+        sessionId = normalizeBenchSessionId(sessionId);
         const timestampedMessages = messages.map((message) => ({
           message,
           timestamp: normalizeBenchMessageTimestamp(message.timestamp),
@@ -551,6 +1449,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           return;
         }
 
+        const replayOrchestrator = state.orchestrator;
         const batchStartMs = Date.now();
         const conversationalMessages = timestampedMessages.filter(
           (
@@ -579,7 +1478,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             sessionId,
             turn,
           );
-          await state.orchestrator.transcript.append({
+          await replayOrchestrator.transcript.append({
             timestamp: turn.timestamp,
             role: turn.role,
             content: turn.content,
@@ -588,8 +1487,24 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           });
         }
 
-        const replayExtraction = state.orchestrator.ingestReplayBatch(replayTurns, {
-          archiveLcm: false,
+        const replayExtraction = queueBenchCoreReplay(sessionId, async () => {
+          const beforeCoreMemoryIds = await readBenchCoreMemoryIds(replayOrchestrator);
+          try {
+            await withBenchEntityStructuredFactCapture(
+              replayOrchestrator,
+              sessionId,
+              () => replayOrchestrator.ingestReplayBatch(replayTurns, {
+                archiveLcm: false,
+              }),
+            );
+          } finally {
+            await rememberNewBenchCoreMemories(
+              replayOrchestrator,
+              coreSessionMemoryIds,
+              sessionId,
+              beforeCoreMemoryIds,
+            );
+          }
         });
         if (replayExtractionMode === "background") {
           void replayExtraction.catch(() => undefined);
@@ -604,6 +1519,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         budgetChars?: number,
         recallOptions: BenchRecallOptions = {},
       ): Promise<string> {
+        sessionId = normalizeBenchSessionId(sessionId);
         const engine = getEngine();
         const budget = budgetChars ?? DEFAULT_BENCH_RECALL_BUDGET_CHARS;
         if (budget <= 0) {
@@ -1036,7 +1952,8 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       },
 
       async search(query: string, limit: number, sessionId?: string): Promise<SearchResult[]> {
-        const results = await getEngine().searchContext(query, limit, sessionId);
+        const normalizedSessionId = normalizeOptionalBenchSessionId(sessionId);
+        const results = await getEngine().searchContext(query, limit, normalizedSessionId);
         return results.map((result) => ({
           turnIndex: result.turn_index,
           role: result.role,
@@ -1045,8 +1962,51 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }));
       },
 
-      async reset(_sessionId?: string): Promise<void> {
-        await rebuild();
+      async reset(sessionId?: string): Promise<void> {
+        const normalizedSessionId = normalizeOptionalBenchSessionId(sessionId);
+        if (normalizedSessionId !== undefined) {
+          if (useCoreMemoryPipeline) {
+            resolveBenchSummarySessionPaths(state.tempDir, normalizedSessionId);
+          }
+          if (useCoreMemoryPipeline && replayExtractionMode !== "skip") {
+            await waitForBenchCoreReplaySession(normalizedSessionId);
+          }
+          const engine = getEngine();
+          if (typeof engine.clearSession !== "function") {
+            throw new Error("Remnic benchmark adapter does not support session-scoped reset for this engine.");
+          }
+          await engine.clearSession(normalizedSessionId);
+          if (useCoreMemoryPipeline) {
+            await clearBenchCoreSessionMemories(
+              state.orchestrator,
+              normalizedSessionId,
+              coreSessionMemoryIds.get(normalizedSessionId),
+              state.qmdSandbox.coldCollection,
+            );
+            coreSessionMemoryIds.delete(normalizedSessionId);
+            await clearBenchTranscriptSession(state.tempDir, normalizedSessionId);
+            await clearBenchSummarySession(state.tempDir, normalizedSessionId);
+          }
+          sessionTurnCounters.delete(normalizedSessionId);
+          return;
+        }
+
+        if (state.ownsTempDir) {
+          await rebuild();
+          return;
+        }
+
+        if (useCoreMemoryPipeline) {
+          await rebuild({ clearCallerOwnedBenchState: true });
+          return;
+        }
+
+        const engine = getEngine();
+        if (typeof engine.clearAll !== "function") {
+          throw new Error("Remnic benchmark adapter cannot safely reset a caller-owned memory directory.");
+        }
+        await engine.clearAll();
+        sessionTurnCounters.clear();
       },
 
       async drain(): Promise<void> {
@@ -1066,16 +2026,17 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         try {
           await Promise.race([
             (async () => {
-              const [, extractionIdle, consolidationIdle] = await Promise.all([
-                engine.waitForObserveQueueIdle(),
-                state.orchestrator.waitForExtractionIdle(drainTimeoutMs),
-                state.orchestrator.waitForConsolidationIdle(drainTimeoutMs),
-              ]);
+              await engine.waitForObserveQueueIdle();
+              await waitForAllBenchCoreReplay();
+              const extractionIdle =
+                await state.orchestrator.waitForExtractionIdle(drainTimeoutMs);
               if (!extractionIdle) {
                 throw new Error(
                   `drain() timed out waiting for extraction idle (${describeDrainState(state.orchestrator)})`,
                 );
               }
+              const consolidationIdle =
+                await state.orchestrator.waitForConsolidationIdle(drainTimeoutMs);
               if (!consolidationIdle) {
                 throw new Error(
                   `drain() timed out waiting for consolidation idle (${describeDrainState(state.orchestrator)})`,
@@ -1093,7 +2054,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       },
 
       async getStats(sessionId?: string): Promise<MemoryStats> {
-        return getEngine().getStats(sessionId);
+        return getEngine().getStats(normalizeOptionalBenchSessionId(sessionId));
       },
 
       async destroy(): Promise<void> {

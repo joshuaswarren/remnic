@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { Orchestrator, parseConfig } from "@remnic/core";
+import { Orchestrator, parseConfig, parseEntityFile, StorageManager } from "@remnic/core";
 
 import {
   buildBenchAdapterConfig,
@@ -19,8 +20,55 @@ const BASE_CONFIG = {
   lcmEnabled: true as const,
 };
 
+function benchReplaySourceForTest(sessionId: string): string {
+  return `bench-replay-${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}`;
+}
+
+function createDeferredForTest(): {
+  promise: Promise<void>;
+  resolve: () => void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 function shellQuoteForTest(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function hourlySummarySnapshotForTest(sessionKey: string, bullet: string): string {
+  const generatedAt = "2026-05-17T10:00:00.000Z";
+  return JSON.stringify(
+    {
+      schemaVersion: 1,
+      sessionKey,
+      generatedAt,
+      summaries: [
+        {
+          hour: "2026-05-17T10:00:00.000Z",
+          sessionKey,
+          bullets: [bullet],
+          turnCount: 1,
+          generatedAt,
+        },
+      ],
+    },
+    null,
+    2,
+  );
+}
+
+async function assertPathMissingForTest(filePath: string): Promise<void> {
+  await assert.rejects(
+    () => stat(filePath),
+    (err: unknown) =>
+      !!err &&
+      typeof err === "object" &&
+      (err as { code?: unknown }).code === "ENOENT",
+  );
 }
 
 test("direct adapter keeps its recall-friendly defaults without overrides", () => {
@@ -160,7 +208,27 @@ test("direct adapter can use a caller-owned memory directory", async () => {
 
 test("direct adapter reset clears caller-owned memory directory", async () => {
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-owned-"));
-  const adapter = await createRemnicAdapter({ memoryDir });
+  const sentinelPath = path.join(memoryDir, "caller-owned-sentinel.txt");
+  const threadPath = path.join(memoryDir, "threads", "stale-thread.json");
+  const summaryPath = path.join(
+    memoryDir,
+    "summaries",
+    "hourly",
+    "owned-reset-session",
+    "2026-05-17.md",
+  );
+  await writeFile(sentinelPath, "do not remove");
+  await mkdir(path.dirname(threadPath), { recursive: true });
+  await writeFile(threadPath, "{}");
+  await mkdir(path.dirname(summaryPath), { recursive: true });
+  await writeFile(summaryPath, "stale hourly summary");
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
 
   try {
     await adapter.store("owned-reset-session", [
@@ -179,12 +247,1123 @@ test("direct adapter reset clears caller-owned memory directory", async () => {
 
     await adapter.reset?.();
     assert.equal((await stat(memoryDir)).isDirectory(), true);
+    assert.equal(await readFile(sentinelPath, "utf8"), "do not remove");
+    await assertPathMissingForTest(threadPath);
+    await assertPathMissingForTest(summaryPath);
 
     const afterReset = await adapter.recall(
       "owned-reset-session",
       "What is the caller-owned reset code?",
     );
     assert.doesNotMatch(afterReset, /violet-19/);
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter session reset preserves other caller-owned sessions", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-session-"));
+  const sentinelPath = path.join(memoryDir, "caller-owned-sentinel.txt");
+  await writeFile(sentinelPath, "preserve caller data");
+  const adapter = await createRemnicAdapter({ memoryDir });
+
+  try {
+    await adapter.store("owned-reset-session-a", [
+      {
+        role: "user",
+        content: "Remember the session-a reset code is indigo-41.",
+      },
+    ]);
+    await adapter.store("owned-reset-session-b", [
+      {
+        role: "user",
+        content: "Remember the session-b reset code is copper-82.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    assert.match(
+      await adapter.recall(
+        "owned-reset-session-a",
+        "What is the session-a reset code?",
+      ),
+      /indigo-41/,
+    );
+    assert.match(
+      await adapter.recall(
+        "owned-reset-session-b",
+        "What is the session-b reset code?",
+      ),
+      /copper-82/,
+    );
+
+    await adapter.reset?.("owned-reset-session-a");
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve caller data");
+
+    assert.doesNotMatch(
+      await adapter.recall(
+        "owned-reset-session-a",
+        "What is the session-a reset code?",
+      ),
+      /indigo-41/,
+    );
+    assert.match(
+      await adapter.recall(
+        "owned-reset-session-b",
+        "What is the session-b reset code?",
+      ),
+      /copper-82/,
+    );
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter session reset clears caller-owned hourly summaries", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-summary-"));
+  const resetSession = "owned-summary-reset-session";
+  const otherSession = "owned-summary-other-session";
+  const resetSummaryPath = path.join(
+    memoryDir,
+    "summaries",
+    "hourly",
+    resetSession,
+    "2026-05-17.md",
+  );
+  const otherSummaryPath = path.join(
+    memoryDir,
+    "summaries",
+    "hourly",
+    otherSession,
+    "2026-05-17.md",
+  );
+  const resetSnapshotPath = path.join(
+    memoryDir,
+    "state",
+    "summaries",
+    `${resetSession}.json`,
+  );
+  const otherSnapshotPath = path.join(
+    memoryDir,
+    "state",
+    "summaries",
+    `${otherSession}.json`,
+  );
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    configOverrides: {
+      hourlySummariesEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    await mkdir(path.dirname(resetSummaryPath), { recursive: true });
+    await mkdir(path.dirname(otherSummaryPath), { recursive: true });
+    await mkdir(path.dirname(resetSnapshotPath), { recursive: true });
+    await writeFile(resetSummaryPath, "stale reset hourly summary");
+    await writeFile(otherSummaryPath, "preserve other hourly summary");
+    await writeFile(
+      resetSnapshotPath,
+      hourlySummarySnapshotForTest(resetSession, "stale reset snapshot"),
+    );
+    await writeFile(
+      otherSnapshotPath,
+      hourlySummarySnapshotForTest(otherSession, "preserve other snapshot"),
+    );
+
+    await adapter.reset?.(resetSession);
+
+    await assertPathMissingForTest(resetSummaryPath);
+    await assertPathMissingForTest(resetSnapshotPath);
+    assert.equal(await readFile(otherSummaryPath, "utf8"), "preserve other hourly summary");
+    assert.equal(
+      await readFile(otherSnapshotPath, "utf8"),
+      hourlySummarySnapshotForTest(otherSession, "preserve other snapshot"),
+    );
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter session reset rejects summary path traversal", async () => {
+  const parentDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-bench-reset-summary-traversal-"),
+  );
+  const memoryDir = path.join(parentDir, "memory");
+  const outsideDir = path.join(parentDir, "outside");
+  const outsidePath = path.join(outsideDir, "sentinel.txt");
+  await mkdir(memoryDir, { recursive: true });
+  await mkdir(outsideDir, { recursive: true });
+  await writeFile(outsidePath, "preserve caller data");
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    configOverrides: {
+      hourlySummariesEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    await adapter.store("../../../outside", [
+      {
+        role: "user",
+        content: "Remember the traversal reset code is calendula-91.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    await assert.rejects(
+      () => adapter.reset?.("../../../outside"),
+      /benchmark sessionId resolves outside Remnic benchmark state/,
+    );
+    assert.equal(await readFile(outsidePath, "utf8"), "preserve caller data");
+    assert.match(
+      await adapter.recall("../../../outside", "What is the traversal reset code?"),
+      /calendula-91/,
+    );
+  } finally {
+    await adapter.destroy();
+    await rm(parentDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter session reset clears caller-owned core replay state", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-core-session-"));
+  const sentinelPath = path.join(memoryDir, "caller-owned-sentinel.txt");
+  await writeFile(sentinelPath, "preserve caller data");
+  const adapterOptions = {
+    memoryDir,
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  };
+  let adapter = await createRemnicAdapter(adapterOptions);
+
+  try {
+    await adapter.store("owned-core-reset-session", [
+      {
+        role: "user",
+        content: "Remember the old core reset code is orchid-17.",
+      },
+    ]);
+    await adapter.store("owned-core-reset-other-session", [
+      {
+        role: "user",
+        content: "Remember the other core reset code is cedar-29.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    assert.match(
+      await adapter.recall(
+        "owned-core-reset-session",
+        "What is the core reset code?",
+      ),
+      /orchid-17/,
+    );
+    assert.match(
+      await adapter.recall(
+        "owned-core-reset-other-session",
+        "What is the other core reset code?",
+      ),
+      /cedar-29/,
+    );
+
+    await adapter.destroy();
+    adapter = await createRemnicAdapter(adapterOptions);
+
+    await adapter.reset?.("owned-core-reset-session");
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve caller data");
+
+    await adapter.store("owned-core-reset-session", [
+      {
+        role: "user",
+        content: "Remember the new core reset code is willow-83.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "owned-core-reset-session",
+      "What is the core reset code?",
+    );
+    assert.doesNotMatch(recalled, /orchid-17/);
+    assert.match(recalled, /willow-83/);
+    assert.match(
+      await adapter.recall(
+        "owned-core-reset-other-session",
+        "What is the other core reset code?",
+      ),
+      /cedar-29/,
+    );
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter session reset clears caller-owned verbatim artifacts", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-artifacts-"));
+  const resetSession = "owned-artifact-reset-session";
+  const otherSession = "owned-artifact-other-session";
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    configOverrides: {
+      transcriptEnabled: true,
+      verbatimArtifactsEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    const storage = new StorageManager(memoryDir);
+    const resetMemoryId = await storage.writeMemory(
+      "fact",
+      "Remember the stale artifact reset code is hibiscus-57.",
+      { source: benchReplaySourceForTest(resetSession) },
+    );
+    const otherMemoryId = await storage.writeMemory(
+      "fact",
+      "Remember the other artifact code is juniper-68.",
+      { source: benchReplaySourceForTest(otherSession) },
+    );
+    await storage.writeArtifact(
+      "Verbatim stale artifact quote: hibiscus-57.",
+      { sourceMemoryId: resetMemoryId },
+    );
+    await storage.writeArtifact(
+      "Verbatim other artifact quote: juniper-68.",
+      { sourceMemoryId: otherMemoryId },
+    );
+
+    const resetArtifact = (await storage.searchArtifacts("hibiscus-57", 10))
+      .find((artifact) => artifact.frontmatter.sourceMemoryId === resetMemoryId);
+    const otherArtifact = (await storage.searchArtifacts("juniper-68", 10))
+      .find((artifact) => artifact.frontmatter.sourceMemoryId === otherMemoryId);
+    assert.ok(resetArtifact);
+    assert.ok(otherArtifact);
+
+    await adapter.reset?.(resetSession);
+
+    await assertPathMissingForTest(resetArtifact.path);
+    assert.match(await readFile(otherArtifact.path, "utf8"), /juniper-68/);
+    const remainingArtifacts = await new StorageManager(memoryDir).searchArtifacts(
+      "juniper-68",
+      10,
+    );
+    assert.equal(
+      remainingArtifacts.some(
+        (artifact) => artifact.frontmatter.sourceMemoryId === otherMemoryId,
+      ),
+      true,
+    );
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter session reset clears caller-owned entity timeline state", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-entities-"));
+  const resetSession = "owned-entity-reset-session";
+  const otherSession = "owned-entity-other-session";
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    configOverrides: {
+      entityRetrievalEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    const storage = new StorageManager(memoryDir);
+    const sharedEntityName = await storage.writeEntity(
+      "Shared Reset Entity",
+      "project",
+      ["Remember the stale entity reset code is camellia-33."],
+      { source: "extraction", sessionKey: resetSession },
+    );
+    await storage.writeEntity(
+      "Shared Reset Entity",
+      "project",
+      ["Remember the other entity code is fern-44."],
+      { source: "extraction", sessionKey: otherSession },
+    );
+    const resetOnlyEntityName = await storage.writeEntity(
+      "Reset Only Entity",
+      "project",
+      ["Remember the reset-only entity code is moss-13."],
+      { source: "extraction", sessionKey: resetSession },
+    );
+    const whitespaceEntityName = await storage.writeEntity(
+      "Whitespace Entity",
+      "project",
+      [
+        "Keep the alpha  beta spacing variant.",
+        "Keep the alpha beta spacing variant.",
+      ],
+      { source: "extraction", sessionKey: otherSession },
+    );
+    await storage.writeEntity(
+      "Whitespace Entity",
+      "project",
+      ["Remember the reset whitespace code is lichen-92."],
+      { source: "extraction", sessionKey: resetSession },
+    );
+    const preexistingStructuredEntityName = await storage.writeEntity(
+      "Preexisting Structured Entity",
+      "project",
+      [],
+      {
+        structuredSections: [
+          {
+            key: "details",
+            title: "Details",
+            facts: ["Preserve the preexisting structured code agate-64."],
+          },
+        ],
+      },
+    );
+    await storage.writeEntity(
+      "Preexisting Structured Entity",
+      "project",
+      ["Remember the reset-only timeline code is basalt-29."],
+      { source: "extraction", sessionKey: resetSession },
+    );
+
+    await adapter.reset?.(resetSession);
+
+    const sharedEntity = await storage.readEntity(sharedEntityName);
+    assert.doesNotMatch(sharedEntity, /camellia-33/);
+    assert.match(sharedEntity, /fern-44/);
+    assert.equal(sharedEntity.includes(`[session=${resetSession}]`), false);
+    assert.equal(sharedEntity.includes(`[session=${otherSession}]`), true);
+    await assertPathMissingForTest(
+      path.join(memoryDir, "entities", `${resetOnlyEntityName}.md`),
+    );
+    const whitespaceEntity = parseEntityFile(await storage.readEntity(whitespaceEntityName));
+    assert.deepEqual(
+      whitespaceEntity.facts.filter((fact) => fact.includes("alpha")),
+      [
+        "Keep the alpha  beta spacing variant.",
+        "Keep the alpha beta spacing variant.",
+      ],
+    );
+    const preexistingStructuredEntity = await storage.readEntity(
+      preexistingStructuredEntityName,
+    );
+    assert.match(preexistingStructuredEntity, /agate-64/);
+    assert.doesNotMatch(preexistingStructuredEntity, /basalt-29/);
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter session reset clears replay structured entity facts", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-bench-reset-structured-entities-"),
+  );
+  const resetSession = "structured-entity-reset-session";
+  const otherSession = "structured-entity-other-session";
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  let adapter: Awaited<ReturnType<typeof createRemnicAdapter>> | undefined;
+  let sharedEntityName = "";
+  let duplicateEntityName = "";
+
+  Orchestrator.prototype.ingestReplayBatch = async function (
+    this: Orchestrator,
+    turns: Parameters<Orchestrator["ingestReplayBatch"]>[0],
+  ): Promise<void> {
+    const sessionKey = turns[0]?.sessionKey ?? "";
+    const code = sessionKey === resetSession ? "iris-41" : "cedar-52";
+    sharedEntityName = await this.storage.writeEntity(
+      "Shared Structured Entity",
+      "project",
+      [`Remember the structured entity timeline code is ${code}.`],
+      {
+        source: "extraction",
+        sessionKey,
+        structuredSections: [
+          {
+            key: "details",
+            title: "Details",
+            facts: [`Remember the structured entity section code is ${code}.`],
+          },
+        ],
+      },
+    );
+    if (sessionKey === resetSession) {
+      await this.storage.writeEntity(
+        "Duplicate Structured Entity",
+        "project",
+        ["Remember the duplicate structured reset timeline code is quartz-18."],
+        {
+          source: "extraction",
+          sessionKey,
+          structuredSections: [
+            {
+              key: "details",
+              title: "Details",
+              facts: ["Preserve the duplicate structured code opal-73."],
+            },
+          ],
+        },
+      );
+    }
+  };
+
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: {
+        entityRetrievalEnabled: true,
+        extractionMinUserTurns: 999,
+      },
+    });
+    const storage = new StorageManager(memoryDir);
+    duplicateEntityName = await storage.writeEntity(
+      "Duplicate Structured Entity",
+      "project",
+      [],
+      {
+        structuredSections: [
+          {
+            key: "details",
+            title: "Details",
+            facts: ["Preserve the duplicate structured code opal-73."],
+          },
+        ],
+      },
+    );
+    await adapter.store(resetSession, [
+      {
+        role: "user",
+        content: "Remember the structured entity reset code is iris-41.",
+      },
+    ]);
+    await adapter.store(otherSession, [
+      {
+        role: "user",
+        content: "Remember the structured entity other code is cedar-52.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const beforeReset = await storage.readEntity(sharedEntityName);
+    assert.match(beforeReset, /iris-41/);
+    assert.match(beforeReset, /cedar-52/);
+
+    await adapter.reset?.(resetSession);
+
+    const afterReset = await storage.readEntity(sharedEntityName);
+    assert.doesNotMatch(afterReset, /iris-41/);
+    assert.match(afterReset, /cedar-52/);
+    const duplicateAfterReset = await storage.readEntity(duplicateEntityName);
+    assert.match(duplicateAfterReset, /opal-73/);
+    assert.doesNotMatch(duplicateAfterReset, /quartz-18/);
+  } finally {
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter scoped reset waits for background core replay", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-bench-reset-background-replay-"),
+  );
+  const releaseReplay = createDeferredForTest();
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  Orchestrator.prototype.ingestReplayBatch = async function (
+    this: Orchestrator,
+    turns: Parameters<Orchestrator["ingestReplayBatch"]>[0],
+    options?: Parameters<Orchestrator["ingestReplayBatch"]>[1],
+  ): Promise<void> {
+    const sessionKey = turns[0]?.sessionKey;
+    if (sessionKey !== "background-reset-session") {
+      return originalIngestReplayBatch.call(this, turns, options);
+    }
+
+    await releaseReplay.promise;
+    await this.storage.writeMemory(
+      "fact",
+      "Remember the background reset replay code is azalea-24.",
+      { source: "unclaimed-test-source" },
+    );
+  };
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    replayExtractionMode: "background",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    await adapter.store("background-reset-session", [
+      {
+        role: "user",
+        content: "Remember the background reset replay code is azalea-24.",
+      },
+    ]);
+
+    let resetSettled = false;
+    const resetPromise = adapter.reset?.("background-reset-session").then(() => {
+      resetSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(resetSettled, false);
+
+    releaseReplay.resolve();
+    await resetPromise;
+
+    const memories = await new StorageManager(memoryDir).readAllMemories();
+    assert.equal(
+      memories.some((memory) => memory.content.includes("azalea-24")),
+      false,
+    );
+  } finally {
+    releaseReplay.resolve();
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter scoped reset marks partial replay writes after rejection", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-bench-reset-partial-replay-"),
+  );
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  Orchestrator.prototype.ingestReplayBatch = async function (
+    this: Orchestrator,
+    turns: Parameters<Orchestrator["ingestReplayBatch"]>[0],
+    options?: Parameters<Orchestrator["ingestReplayBatch"]>[1],
+  ): Promise<void> {
+    const sessionKey = turns[0]?.sessionKey;
+    if (sessionKey !== "partial-replay-reset-session") {
+      return originalIngestReplayBatch.call(this, turns, options);
+    }
+
+    await this.storage.writeMemory(
+      "fact",
+      "Remember the partial replay reset code is primrose-12.",
+      { source: "unclaimed-test-source" },
+    );
+    throw new Error("simulated partial replay failure");
+  };
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    replayExtractionMode: "background",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    await adapter.store("partial-replay-reset-session", [
+      {
+        role: "user",
+        content: "Remember the partial replay reset code is primrose-12.",
+      },
+    ]);
+
+    await adapter.reset?.("partial-replay-reset-session");
+
+    const memories = await new StorageManager(memoryDir).readAllMemories();
+    assert.equal(
+      memories.some((memory) => memory.content.includes("primrose-12")),
+      false,
+    );
+  } finally {
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter drain checks extraction idle after background replay completes", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-bench-drain-background-replay-"),
+  );
+  const releaseReplay = createDeferredForTest();
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  const originalWaitForExtractionIdle = Orchestrator.prototype.waitForExtractionIdle;
+  const originalWaitForConsolidationIdle = Orchestrator.prototype.waitForConsolidationIdle;
+  let replayCompleted = false;
+  let extractionIdleCallCount = 0;
+  let extractionIdleBeforeReplay = false;
+  Orchestrator.prototype.ingestReplayBatch = async function (
+    this: Orchestrator,
+    turns: Parameters<Orchestrator["ingestReplayBatch"]>[0],
+    options?: Parameters<Orchestrator["ingestReplayBatch"]>[1],
+  ): Promise<void> {
+    const sessionKey = turns[0]?.sessionKey;
+    if (sessionKey !== "drain-background-replay-session") {
+      return originalIngestReplayBatch.call(this, turns, options);
+    }
+
+    await releaseReplay.promise;
+    replayCompleted = true;
+  };
+  Orchestrator.prototype.waitForExtractionIdle = async function (): Promise<boolean> {
+    extractionIdleCallCount += 1;
+    if (!replayCompleted) {
+      extractionIdleBeforeReplay = true;
+    }
+    return true;
+  };
+  Orchestrator.prototype.waitForConsolidationIdle = async function (): Promise<boolean> {
+    return true;
+  };
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    replayExtractionMode: "background",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    await adapter.store("drain-background-replay-session", [
+      {
+        role: "user",
+        content: "Remember the drain background replay code is anise-27.",
+      },
+    ]);
+
+    let drainSettled = false;
+    const drainPromise = adapter.drain?.().then(() => {
+      drainSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(drainSettled, false);
+    assert.equal(extractionIdleCallCount, 0);
+
+    releaseReplay.resolve();
+    await drainPromise;
+
+    assert.equal(replayCompleted, true);
+    assert.equal(extractionIdleBeforeReplay, false);
+    assert.equal(extractionIdleCallCount, 1);
+  } finally {
+    releaseReplay.resolve();
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+    Orchestrator.prototype.waitForExtractionIdle = originalWaitForExtractionIdle;
+    Orchestrator.prototype.waitForConsolidationIdle = originalWaitForConsolidationIdle;
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter full reset waits for background core replay before rebuild", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-bench-reset-background-full-"),
+  );
+  const sentinelPath = path.join(memoryDir, "caller-owned-sentinel.txt");
+  await writeFile(sentinelPath, "preserve caller data");
+  const releaseReplay = createDeferredForTest();
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  Orchestrator.prototype.ingestReplayBatch = async function (
+    this: Orchestrator,
+    turns: Parameters<Orchestrator["ingestReplayBatch"]>[0],
+    options?: Parameters<Orchestrator["ingestReplayBatch"]>[1],
+  ): Promise<void> {
+    const sessionKey = turns[0]?.sessionKey;
+    if (sessionKey !== "background-full-reset-session") {
+      return originalIngestReplayBatch.call(this, turns, options);
+    }
+
+    await releaseReplay.promise;
+    await this.storage.writeMemory(
+      "fact",
+      "Remember the background full reset replay code is marigold-64.",
+      { source: "unclaimed-test-source" },
+    );
+  };
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    replayExtractionMode: "background",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    await adapter.store("background-full-reset-session", [
+      {
+        role: "user",
+        content: "Remember the background full reset replay code is marigold-64.",
+      },
+    ]);
+
+    let resetSettled = false;
+    const resetPromise = adapter.reset?.().then(() => {
+      resetSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(resetSettled, false);
+
+    releaseReplay.resolve();
+    await resetPromise;
+
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve caller data");
+    const memories = await new StorageManager(memoryDir).readAllMemories();
+    assert.equal(
+      memories.some((memory) => memory.content.includes("marigold-64")),
+      false,
+    );
+  } finally {
+    releaseReplay.resolve();
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter attributes concurrent background replay memories by session", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-bench-background-attribution-"),
+  );
+  const releaseFirstReplay = createDeferredForTest();
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  Orchestrator.prototype.ingestReplayBatch = async function (
+    this: Orchestrator,
+    turns: Parameters<Orchestrator["ingestReplayBatch"]>[0],
+    options?: Parameters<Orchestrator["ingestReplayBatch"]>[1],
+  ): Promise<void> {
+    const sessionKey = turns[0]?.sessionKey;
+    if (
+      sessionKey !== "background-attribution-a" &&
+      sessionKey !== "background-attribution-b"
+    ) {
+      return originalIngestReplayBatch.call(this, turns, options);
+    }
+
+    if (sessionKey === "background-attribution-a") {
+      await releaseFirstReplay.promise;
+    }
+    const code = sessionKey === "background-attribution-a"
+      ? "iris-31"
+      : "lotus-52";
+    await this.storage.writeMemory(
+      "fact",
+      `Remember the ${sessionKey} replay code is ${code}.`,
+      { source: "unclaimed-test-source" },
+    );
+  };
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    replayExtractionMode: "background",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  });
+
+  try {
+    await adapter.store("background-attribution-a", [
+      {
+        role: "user",
+        content: "Remember the background-attribution-a replay code is iris-31.",
+      },
+    ]);
+    await adapter.store("background-attribution-b", [
+      {
+        role: "user",
+        content: "Remember the background-attribution-b replay code is lotus-52.",
+      },
+    ]);
+
+    releaseFirstReplay.resolve();
+    await adapter.drain?.();
+    await adapter.reset?.("background-attribution-a");
+
+    const memories = await new StorageManager(memoryDir).readAllMemories();
+    assert.equal(
+      memories.some((memory) => memory.content.includes("iris-31")),
+      false,
+    );
+    assert.equal(
+      memories.some((memory) => memory.content.includes("lotus-52")),
+      true,
+    );
+  } finally {
+    releaseFirstReplay.resolve();
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter normalizes session IDs for scoped reset", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-bench-reset-normalized-session-"),
+  );
+  const adapterOptions = {
+    memoryDir,
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  };
+  const adapter = await createRemnicAdapter(adapterOptions);
+
+  try {
+    await adapter.store("  owned-normalized-reset-session  ", [
+      {
+        role: "user",
+        content: "Remember the normalized reset code is pearl-44.",
+      },
+    ]);
+    await adapter.store("owned-normalized-other-session", [
+      {
+        role: "user",
+        content: "Remember the normalized other code is granite-55.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    assert.match(
+      await adapter.recall(
+        "owned-normalized-reset-session",
+        "What is the normalized reset code?",
+      ),
+      /pearl-44/,
+    );
+    assert.match(
+      await adapter.recall(
+        "owned-normalized-other-session",
+        "What is the normalized other code?",
+      ),
+      /granite-55/,
+    );
+
+    await assert.rejects(
+      async () => {
+        await adapter.reset?.("   ");
+      },
+      /benchmark sessionId must be non-empty/,
+    );
+    assert.match(
+      await adapter.recall(
+        "owned-normalized-other-session",
+        "What is the normalized other code?",
+      ),
+      /granite-55/,
+    );
+
+    await adapter.reset?.("  owned-normalized-reset-session  ");
+    await adapter.store("owned-normalized-reset-session", [
+      {
+        role: "user",
+        content: "Remember the replacement normalized code is quartz-66.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const recalled = await adapter.recall(
+      "  owned-normalized-reset-session  ",
+      "What is the normalized reset code?",
+    );
+    assert.doesNotMatch(recalled, /pearl-44/);
+    assert.match(recalled, /quartz-66/);
+    assert.match(
+      await adapter.recall(
+        "owned-normalized-other-session",
+        "What is the normalized other code?",
+      ),
+      /granite-55/,
+    );
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter session reset clears caller-owned cold replay state", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-cold-session-"));
+  const adapterOptions = {
+    memoryDir,
+    configOverrides: {
+      qmdColdTierEnabled: true,
+      transcriptEnabled: true,
+      extractionMinUserTurns: 999,
+    },
+  };
+  const adapter = await createRemnicAdapter(adapterOptions);
+
+  try {
+    const coldStorage = new StorageManager(path.join(memoryDir, "cold"));
+    const resetColdId = await coldStorage.writeMemory(
+      "fact",
+      "Remember the stale cold reset code is frost-77.",
+      { source: benchReplaySourceForTest("owned-cold-reset-session") },
+    );
+    const otherColdId = await coldStorage.writeMemory(
+      "fact",
+      "Remember the other cold reset code is ember-88.",
+      { source: benchReplaySourceForTest("owned-cold-other-session") },
+    );
+
+    await adapter.reset?.("owned-cold-reset-session");
+
+    const coldMemories = await new StorageManager(memoryDir).readAllColdMemories();
+    assert.equal(
+      coldMemories.some((memory) => memory.frontmatter.id === resetColdId),
+      false,
+    );
+    assert.equal(
+      coldMemories.some((memory) => memory.frontmatter.id === otherColdId),
+      true,
+    );
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter session reset tracks replay-created cold memories", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-bench-reset-replay-cold-session-"),
+  );
+  const resetSession = "replay-cold-reset-session";
+  const otherSession = "replay-cold-other-session";
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  let adapter: Awaited<ReturnType<typeof createRemnicAdapter>> | undefined;
+
+  Orchestrator.prototype.ingestReplayBatch = async function (
+    this: Orchestrator,
+    turns: Parameters<Orchestrator["ingestReplayBatch"]>[0],
+  ): Promise<void> {
+    const content = turns.map((turn) => turn.content).join("\n");
+    const code = content.includes("glacier-31") ? "glacier-31" : "lantern-46";
+    const memoryId = await this.storage.writeMemory(
+      "fact",
+      `Remember the replay-created cold reset code is ${code}.`,
+    );
+    const memory = (await this.storage.readAllMemories())
+      .find((candidate) => candidate.frontmatter.id === memoryId);
+    assert.ok(memory);
+    await this.storage.migrateMemoryToTier(memory, "cold");
+  };
+
+  try {
+    adapter = await createRemnicAdapter({
+      memoryDir,
+      configOverrides: {
+        qmdColdTierEnabled: true,
+        transcriptEnabled: true,
+        extractionMinUserTurns: 999,
+      },
+    });
+    await adapter.store(resetSession, [
+      {
+        role: "user",
+        content: "Remember the replay-created cold reset code is glacier-31.",
+      },
+    ]);
+    await adapter.store(otherSession, [
+      {
+        role: "user",
+        content: "Remember the replay-created cold other code is lantern-46.",
+      },
+    ]);
+    await adapter.drain?.();
+
+    const beforeReset = await new StorageManager(memoryDir).readAllColdMemories();
+    assert.equal(beforeReset.some((memory) => memory.content.includes("glacier-31")), true);
+    assert.equal(beforeReset.some((memory) => memory.content.includes("lantern-46")), true);
+
+    await adapter.reset?.(resetSession);
+
+    const afterReset = await new StorageManager(memoryDir).readAllColdMemories();
+    assert.equal(afterReset.some((memory) => memory.content.includes("glacier-31")), false);
+    assert.equal(afterReset.some((memory) => memory.content.includes("lantern-46")), true);
+  } finally {
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+    await adapter?.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter full reset clears caller-owned core state when replay is skipped", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-skip-full-"));
+  const sentinelPath = path.join(memoryDir, "caller-owned-sentinel.txt");
+  await writeFile(sentinelPath, "preserve caller data");
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    replayExtractionMode: "skip",
+    configOverrides: {
+      transcriptEnabled: true,
+    },
+  });
+
+  try {
+    const staleId = await new StorageManager(memoryDir).writeMemory(
+      "fact",
+      "Remember the stale skip full reset code is saffron-18.",
+      { source: benchReplaySourceForTest("skip-full-reset-session") },
+    );
+
+    await adapter.reset?.();
+
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve caller data");
+    const memories = await new StorageManager(memoryDir).readAllMemories();
+    assert.equal(
+      memories.some((memory) => memory.frontmatter.id === staleId),
+      false,
+    );
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter scoped reset clears caller-owned core state when replay is skipped", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-skip-session-"));
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    replayExtractionMode: "skip",
+    configOverrides: {
+      transcriptEnabled: true,
+    },
+  });
+
+  try {
+    const storage = new StorageManager(memoryDir);
+    const resetId = await storage.writeMemory(
+      "fact",
+      "Remember the stale skip session reset code is topaz-74.",
+      { source: benchReplaySourceForTest("skip-reset-session") },
+    );
+    const otherId = await storage.writeMemory(
+      "fact",
+      "Remember the other skip session code is opal-36.",
+      { source: benchReplaySourceForTest("skip-other-session") },
+    );
+
+    await adapter.reset?.("skip-reset-session");
+
+    const memories = await new StorageManager(memoryDir).readAllMemories();
+    assert.equal(
+      memories.some((memory) => memory.frontmatter.id === resetId),
+      false,
+    );
+    assert.equal(
+      memories.some((memory) => memory.frontmatter.id === otherId),
+      true,
+    );
   } finally {
     await adapter.destroy();
     await rm(memoryDir, { recursive: true, force: true });
