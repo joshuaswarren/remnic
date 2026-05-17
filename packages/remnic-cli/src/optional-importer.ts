@@ -1,8 +1,8 @@
 // Lazy loader for optional @remnic/import-<source> packages (issue #568).
 //
-// Each supported source (chatgpt, claude, gemini, mem0) ships as its own
-// optional workspace package so the CLI stays à la carte — users who only
-// need one importer should not have to install the other three. Loading goes
+// Each supported source (chatgpt, claude, gemini, mem0, supermemory) ships as
+// its own optional workspace package so the CLI stays à la carte — users who only
+// need one importer should not have to install the others. Loading goes
 // through this helper so the bundler cannot statically resolve the specifier
 // (computed-string-concatenation import) and so every importer gets the same
 // "install hint on miss, re-throw on every other error" treatment as the

@@ -422,6 +422,7 @@ type PackageBenchModule = {
     amaBenchJudgeProtocol?: "default" | "recommended";
     amaBenchCrossJudge?: unknown;
     amaBenchCrossJudgeProvider?: PackageBenchProviderConfig | null;
+    drainTimeoutMs?: number;
     system: {
       destroy(): Promise<void>;
     };
@@ -701,7 +702,9 @@ interface ResolveBenchRuntimeProfileOptions {
   amaBenchCrossJudgeBaseUrl?: string;
   amaBenchCrossJudgeApiKey?: string;
   amaBenchCrossJudgeCodexReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  lcmObserveConcurrency?: number;
   requestTimeout?: number;
+  drainTimeout?: number;
   max429WaitMs?: number;
   disableThinking?: boolean;
 }
@@ -715,6 +718,7 @@ interface ResolvedBenchRuntimeProfile {
     preserveRuntimeDefaults?: boolean;
     responder?: unknown;
     judge?: unknown;
+    drainTimeoutMs?: number;
   };
   systemProvider: BenchProviderConfig | null;
   judgeProvider: BenchProviderConfig | null;
@@ -8552,8 +8556,9 @@ Other:
     }
 
     case "import": {
-      // Infrastructure-only in slice 1 (#568). The four adapter packages
-      // (@remnic/import-chatgpt/claude/gemini/mem0) land in slices 2-5 and
+      // Infrastructure-only in slice 1 (#568). The optional adapter packages
+      // (@remnic/import-chatgpt/claude/gemini/mem0/supermemory) land in
+      // follow-up slices and
       // are loaded via computed-specifier dynamic import — running
       // `remnic import --adapter chatgpt` today surfaces a clean install
       // hint rather than MODULE_NOT_FOUND.

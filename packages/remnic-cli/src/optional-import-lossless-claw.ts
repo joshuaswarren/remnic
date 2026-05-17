@@ -8,14 +8,13 @@
 // type-checks even when the optional package is not yet linked into
 // node_modules — same pattern as optional-importer.ts.
 
+import type { openLcmDatabase } from "@remnic/core";
+
 import { isSpecifierNotFoundError } from "./optional-module-loader.js";
 
 const SPECIFIER = "@remnic/" + "import-lossless-claw";
 
-interface BetterSqlite3DatabaseLike {
-  prepare(sql: string): unknown;
-  close(): void;
-}
+type BetterSqlite3DatabaseLike = ReturnType<typeof openLcmDatabase>;
 
 export interface ImportLosslessClawModule {
   openSourceDatabase(filePath: string): BetterSqlite3DatabaseLike;
@@ -32,6 +31,8 @@ export interface ImportLosslessClawModule {
     sessionsTouched: string[];
     messagesInserted: number;
     messagesSkipped: number;
+    messagePartsInserted: number;
+    messagePartsSkipped: number;
     summariesInserted: number;
     summariesSkipped: number;
     summariesMultiParentCollapsed: number;

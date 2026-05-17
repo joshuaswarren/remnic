@@ -95,12 +95,18 @@ describe("parseImportArgs", () => {
   it("rejects an unknown adapter with the valid list", () => {
     assert.throws(
       () => parseImportArgs(["--adapter", "bogus"]),
-      /chatgpt, claude, gemini, mem0/,
+      /chatgpt, claude, gemini, mem0, supermemory/,
     );
   });
 
-  it("accepts the four canonical adapters", () => {
-    for (const name of ["chatgpt", "claude", "gemini", "mem0"] as const) {
+  it("accepts the canonical adapters", () => {
+    for (const name of [
+      "chatgpt",
+      "claude",
+      "gemini",
+      "mem0",
+      "supermemory",
+    ] as const) {
       const parsed = parseImportArgs(["--adapter", name]);
       assert.equal(parsed.adapter, name);
     }

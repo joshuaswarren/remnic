@@ -23,8 +23,16 @@ import path from "node:path";
 
 import type { SupportedImporterName } from "./optional-importer.js";
 
+export const BUNDLE_SUPPORTED_IMPORTERS = [
+  "chatgpt",
+  "claude",
+  "gemini",
+  "mem0",
+] as const satisfies readonly SupportedImporterName[];
+export type BundleSupportedImporterName = (typeof BUNDLE_SUPPORTED_IMPORTERS)[number];
+
 export interface DetectedBundleEntry {
-  adapter: SupportedImporterName;
+  adapter: BundleSupportedImporterName;
   filePath: string;
   /**
    * Optional transform hint — e.g. a ChatGPT `conversations.json` should
@@ -48,8 +56,8 @@ export interface BundleDetectOptions {
 
 /**
  * Walk `bundleDir` (one level deep, plus one nested directory layer) and
- * return the list of importer entries to run. The order is stable
- * (chatgpt, claude, gemini, mem0) so re-scans produce identical output.
+ * return the list of importer entries to run. The order is stable across
+ * BUNDLE_SUPPORTED_IMPORTERS so re-scans produce identical output.
  *
  * Returns an empty array when no known files are found. Callers are
  * responsible for surfacing "bundle was empty" to the user.
@@ -116,12 +124,12 @@ export function detectBundleEntries(
   }
 
   // Stable sort by (adapter preference order, file path).
-  const adapterOrder: Record<SupportedImporterName, number> = {
+  const adapterOrder = {
     chatgpt: 0,
     claude: 1,
     gemini: 2,
     mem0: 3,
-  };
+  } satisfies Record<BundleSupportedImporterName, number>;
   entries.sort((a, b) => {
     const delta = adapterOrder[a.adapter] - adapterOrder[b.adapter];
     if (delta !== 0) return delta;
@@ -210,7 +218,7 @@ function classifyFile(
 function disambiguateConversations(
   filePath: string,
   readFileImpl: (p: string) => string,
-): SupportedImporterName {
+): BundleSupportedImporterName {
   try {
     const content = readFileImpl(filePath);
     const parsed = JSON.parse(content);

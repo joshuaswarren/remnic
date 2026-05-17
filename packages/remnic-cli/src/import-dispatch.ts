@@ -2,9 +2,9 @@
 // `remnic import` command dispatcher (issue #568, slice 1)
 // ---------------------------------------------------------------------------
 //
-// This module is the top-level CLI entry for the four memory importers
-// (ChatGPT, Claude, Gemini, Mem0). Slice 1 wires ONLY the infrastructure —
-// actual source adapters land in slices 2-5 and are discovered via the
+// This module is the top-level CLI entry for optional memory importers
+// (ChatGPT, Claude, Gemini, Mem0, Supermemory). Slice 1 wires ONLY the infrastructure —
+// actual source adapters land in follow-up slices and are discovered via the
 // computed-specifier loader in `optional-importer.ts`. Running
 // `remnic import --adapter chatgpt ...` today will therefore surface a clean
 // "optional package not installed" hint rather than a bare MODULE_NOT_FOUND.
@@ -13,7 +13,7 @@
 //   `--flag` without a following value; rule 51 — reject invalid input with
 //   a list of valid options instead of silently defaulting):
 //
-//   --adapter <name>       Required. One of chatgpt|claude|gemini|mem0.
+//   --adapter <name>       Required. One of the supported optional importers.
 //   --file <path>          Required unless the adapter accepts an API-only
 //                          input (mem0). Expanded via ~.
 //   --dry-run              Parse + transform only; no writes, no API calls.
@@ -92,7 +92,7 @@ export interface ImportDispatchIO {
   stderr: (line: string) => void;
 }
 
-export const IMPORT_USAGE = `remnic import — Bring memory from ChatGPT, Claude, Gemini, or Mem0 (issue #568)
+export const IMPORT_USAGE = `remnic import — Bring memory from ChatGPT, Claude, Gemini, Mem0, or Supermemory (issue #568)
 
 Usage:
   remnic import --adapter <name> --file <path> [options]
@@ -116,14 +116,16 @@ Bulk mode (slice 7):
                               mem0 exports inside <dir> and run each
                               matching adapter. Replaces --adapter/--file.
 
-Slice 1 ships infrastructure only. The four adapter packages
+Slice 1 ships infrastructure only. Adapter packages
 (@remnic/import-chatgpt, @remnic/import-claude, @remnic/import-gemini,
-@remnic/import-mem0) land in slices 2-5. Install whichever you need:
+@remnic/import-mem0, @remnic/import-supermemory) land in follow-up slices.
+Install whichever you need:
 
   npm install -g @remnic/import-chatgpt
   npm install -g @remnic/import-claude
   npm install -g @remnic/import-gemini
   npm install -g @remnic/import-mem0
+  npm install -g @remnic/import-supermemory
 `;
 
 /**

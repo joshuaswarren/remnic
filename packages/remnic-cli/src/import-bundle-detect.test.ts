@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  BUNDLE_SUPPORTED_IMPORTERS,
   detectBundleEntries,
   type BundleDetectOptions,
 } from "./import-bundle-detect.js";
+import { SUPPORTED_IMPORTERS } from "./optional-importer.js";
 
 /**
  * Build a fake filesystem map that the detect helpers can query through
@@ -46,6 +48,22 @@ function makeFs(
 }
 
 describe("detectBundleEntries", () => {
+  it("keeps bundle-supported importers intentionally narrower than optional importers", () => {
+    assert.deepEqual([...BUNDLE_SUPPORTED_IMPORTERS], [
+      "chatgpt",
+      "claude",
+      "gemini",
+      "mem0",
+    ]);
+    for (const name of BUNDLE_SUPPORTED_IMPORTERS) {
+      assert.ok(SUPPORTED_IMPORTERS.includes(name));
+    }
+    assert.equal(
+      (BUNDLE_SUPPORTED_IMPORTERS as readonly string[]).includes("supermemory"),
+      false,
+    );
+  });
+
   it("finds a ChatGPT saved-memories file at the bundle root", () => {
     const fs = makeFs(
       { "/bundle/memory.json": "{}" },
