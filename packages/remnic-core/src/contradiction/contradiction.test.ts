@@ -12,6 +12,7 @@ import {
   listPairs,
   isCoolingDown,
   resolvePair,
+  deferPair,
   type ContradictionPair,
 } from "./contradiction-review.js";
 import { _pairKey, _contentHash } from "./contradiction-judge.js";
@@ -41,6 +42,12 @@ function makePair(overrides?: Partial<ContradictionPair>): Omit<ContradictionPai
     detectedAt: new Date().toISOString(),
     ...overrides,
   };
+}
+
+async function writeStoredPair(dir: string, pair: ContradictionPair): Promise<void> {
+  const reviewDir = path.join(dir, ".review", "contradictions");
+  await mkdir(reviewDir, { recursive: true });
+  await writeFile(path.join(reviewDir, `${pair.pairId}.json`), JSON.stringify(pair, null, 2), "utf-8");
 }
 
 function makeMemory(id: string, category: MemoryCategory = "fact"): MemoryFile {
@@ -351,6 +358,38 @@ test("isCoolingDown returns false when cooldownDays is 0 (rule 27)", () => {
     lastReviewedAt: new Date().toISOString(),
   };
   assert.equal(isCoolingDown(pair, 0), false, "0 cooldownDays should disable cooldown");
+  assert.equal(
+    isCoolingDown({ ...pair, pairId: "deferred", deferredUntil: new Date(Date.now() + 60_000).toISOString() }, 0),
+    false,
+    "0 cooldownDays should disable explicit deferral cooldown",
+  );
+  assert.equal(
+    isCoolingDown({ ...pair, pairId: "legacy-deferred", resolution: "needs-more-context" }, 0),
+    false,
+    "0 cooldownDays should disable legacy deferral cooldown",
+  );
+});
+
+test("isCoolingDown uses deferredUntil instead of generic cooldown for deferrals", () => {
+  const now = Date.now();
+  const active: ContradictionPair = {
+    pairId: "active-deferral",
+    memoryIds: ["a", "b"],
+    verdict: "contradicts",
+    rationale: "",
+    confidence: 0.8,
+    detectedAt: new Date(now).toISOString(),
+    lastReviewedAt: new Date(now).toISOString(),
+    deferredUntil: new Date(now + 60_000).toISOString(),
+  };
+  const expired: ContradictionPair = {
+    ...active,
+    pairId: "expired-deferral",
+    deferredUntil: new Date(now - 60_000).toISOString(),
+  };
+
+  assert.equal(isCoolingDown(active, 14), true);
+  assert.equal(isCoolingDown(expired, 14), false);
 });
 
 // ── Resolution verbs ───────────────────────────────────────────────────────────
@@ -582,6 +621,82 @@ test("executeResolution merge keeps created replacement when rollback fails", as
   }
 });
 
+test("executeResolution needs-more-context defers without terminal resolution", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair());
+    const storage = makeResolutionStorage();
+
+    const result = await executeResolution(dir, storage, written.pairId, "needs-more-context");
+    const deferred = readPair(dir, written.pairId);
+
+    assert.deepEqual(result.affectedIds, []);
+    assert.match(result.message, /Deferred/);
+    assert.ok(deferred?.lastReviewedAt);
+    assert.ok(deferred?.deferredUntil);
+    assert.equal(deferred?.resolution, undefined);
+    assert.equal(listPairs(dir, { filter: "unresolved" }).total, 0);
+    assert.equal(listPairs(dir, { filter: "all" }).total, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("expired needs-more-context deferral returns to unresolved and can be refreshed", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ confidence: 0.95 }));
+    const deferred = resolvePair(dir, written.pairId, "needs-more-context");
+    assert.ok(deferred);
+
+    const expiredAt = new Date(Date.now() - 60_000).toISOString();
+    await writeStoredPair(dir, {
+      ...deferred!,
+      lastReviewedAt: expiredAt,
+      deferredUntil: expiredAt,
+    });
+
+    assert.equal(listPairs(dir, { filter: "unresolved" }).total, 1);
+
+    const refreshed = writePair(dir, makePair({
+      confidence: 0.5,
+      verdict: "duplicates",
+      rationale: "Fresh judge result after deferral expiry",
+    }));
+
+    assert.equal(refreshed.confidence, 0.5);
+    assert.equal(refreshed.verdict, "duplicates");
+    assert.equal(refreshed.resolution, undefined);
+    assert.equal(refreshed.deferredUntil, undefined);
+    assert.equal(readPair(dir, written.pairId)?.deferredUntil, undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("legacy needs-more-context resolutions honor cooldown before returning to unresolved", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair());
+
+    await writeStoredPair(dir, {
+      ...written,
+      lastReviewedAt: new Date().toISOString(),
+      resolution: "needs-more-context",
+    });
+    assert.equal(listPairs(dir, { filter: "unresolved" }).total, 0);
+
+    await writeStoredPair(dir, {
+      ...written,
+      lastReviewedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+      resolution: "needs-more-context",
+    });
+    assert.equal(listPairs(dir, { filter: "unresolved" }).total, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
 // ── resolvePair ────────────────────────────────────────────────────────────────
 
 test("resolvePair sets resolution and lastReviewedAt", async () => {
@@ -592,6 +707,26 @@ test("resolvePair sets resolution and lastReviewedAt", async () => {
     assert.ok(resolved);
     assert.equal(resolved!.resolution, "both-valid");
     assert.ok(resolved!.lastReviewedAt);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("needs-more-context deferral does not clear terminal resolutions", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair());
+    const resolved = resolvePair(dir, written.pairId, "keep-a");
+    assert.equal(resolved?.resolution, "keep-a");
+
+    const deferredViaResolve = resolvePair(dir, written.pairId, "needs-more-context");
+    assert.equal(deferredViaResolve?.resolution, "keep-a");
+    assert.equal(deferredViaResolve?.deferredUntil, undefined);
+
+    const deferredDirectly = deferPair(dir, written.pairId);
+    assert.equal(deferredDirectly?.resolution, "keep-a");
+    assert.equal(deferredDirectly?.deferredUntil, undefined);
+    assert.equal(listPairs(dir, { filter: "unresolved" }).total, 0);
   } finally {
     await cleanup();
   }

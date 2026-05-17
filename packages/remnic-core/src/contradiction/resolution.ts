@@ -56,7 +56,7 @@ export async function executeResolution(
     return { pairId, verb, affectedIds: [], message: `Pair ${pairId} not found` };
   }
 
-  if (pair.resolution) {
+  if (pair.resolution && pair.resolution !== "needs-more-context") {
     return { pairId, verb, affectedIds: [], message: `Pair already resolved with verb "${pair.resolution}"` };
   }
 

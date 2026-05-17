@@ -37,6 +37,8 @@ export interface ContradictionPair {
   lastReviewedAt?: string;
   /** Resolution verb applied by user. */
   resolution?: ResolutionVerb;
+  /** ISO timestamp until which a non-terminal deferral remains hidden from review. */
+  deferredUntil?: string;
   /** Namespace scope. */
   namespace?: string;
 }
@@ -48,12 +50,44 @@ export interface ContradictionListResult {
 }
 
 export type ContradictionFilter = ContradictionVerdict | "all" | "unresolved";
+const NEEDS_MORE_CONTEXT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 export function computePairId(memoryIdA: string, memoryIdB: string): string {
   const sorted = [memoryIdA, memoryIdB].sort();
   return createHash("sha256").update(sorted.join("::")).digest("hex").slice(0, 24);
+}
+
+function isTerminalResolution(resolution: ResolutionVerb | undefined): boolean {
+  return Boolean(resolution && resolution !== "needs-more-context");
+}
+
+function parseIsoMillis(value: string | undefined): number | null {
+  if (!value) return null;
+  const millis = new Date(value).getTime();
+  return Number.isFinite(millis) ? millis : null;
+}
+
+function isDeferred(pair: Pick<ContradictionPair, "resolution" | "deferredUntil">): boolean {
+  return pair.resolution === "needs-more-context" || Boolean(pair.deferredUntil);
+}
+
+function deferralUntilMillis(pair: ContradictionPair): number | null {
+  const deferredUntil = parseIsoMillis(pair.deferredUntil);
+  if (deferredUntil !== null) return deferredUntil;
+
+  if (pair.resolution === "needs-more-context") {
+    const lastReviewed = parseIsoMillis(pair.lastReviewedAt);
+    return lastReviewed === null ? null : lastReviewed + NEEDS_MORE_CONTEXT_COOLDOWN_MS;
+  }
+
+  return null;
+}
+
+function isDeferralActive(pair: ContradictionPair): boolean {
+  const deferredUntil = deferralUntilMillis(pair);
+  return deferredUntil !== null && Date.now() < deferredUntil;
 }
 
 function reviewDir(memoryDir: string): string {
@@ -86,21 +120,28 @@ export function writePair(memoryDir: string, pair: Omit<ContradictionPair, "pair
   const pairId = computePairId(pair.memoryIds[0], pair.memoryIds[1]);
   const existing = readPair(memoryDir, pairId);
 
-  // Preserve user resolution if already reviewed
-  if (existing?.resolution) {
+  // Preserve terminal user resolutions if already reviewed.
+  if (isTerminalResolution(existing?.resolution)) {
+    return existing!;
+  }
+
+  // Preserve active deferrals, but allow expired deferrals to be refreshed.
+  const existingDeferralExpired = Boolean(existing && isDeferred(existing) && !isDeferralActive(existing));
+  if (existing && isDeferralActive(existing)) {
     return existing;
   }
 
   // Preserve cooldown: don't overwrite a cooled-down entry with lower confidence
-  if (existing && existing.confidence >= pair.confidence) {
+  if (existing && !existingDeferralExpired && existing.confidence >= pair.confidence) {
     return existing;
   }
 
   const full: ContradictionPair = {
     ...pair,
     pairId,
-    lastReviewedAt: existing?.lastReviewedAt,
-    resolution: existing?.resolution,
+    lastReviewedAt: existingDeferralExpired ? pair.lastReviewedAt : (existing?.lastReviewedAt ?? pair.lastReviewedAt),
+    resolution: undefined,
+    deferredUntil: existingDeferralExpired ? undefined : existing?.deferredUntil,
   };
 
   const filePath = pairPath(memoryDir, pairId);
@@ -185,7 +226,8 @@ export function listPairs(
 
       // Verdict filter
       if (filter === "unresolved") {
-        if (pair.resolution) continue;
+        if (isTerminalResolution(pair.resolution)) continue;
+        if (isDeferralActive(pair)) continue;
         if (pair.verdict === "independent") continue;
       } else if (filter !== "all" && pair.verdict !== filter) {
         continue;
@@ -209,23 +251,33 @@ export function listPairs(
  */
 export function isCoolingDown(pair: ContradictionPair, cooldownDays: number): boolean {
   if (cooldownDays <= 0) return false; // rule 27: guard against 0
+
+  const deferredUntil = deferralUntilMillis(pair);
+  if (deferredUntil !== null) {
+    return Date.now() < deferredUntil;
+  }
+
   if (!pair.lastReviewedAt) return false;
 
-  const lastReviewed = new Date(pair.lastReviewedAt).getTime();
-  if (!Number.isFinite(lastReviewed)) return false;
+  const lastReviewed = parseIsoMillis(pair.lastReviewedAt);
+  if (lastReviewed === null) return false;
 
   const cooldownMs = cooldownDays * 24 * 60 * 60 * 1000;
   return Date.now() < lastReviewed + cooldownMs;
 }
 
 /**
- * Mark a pair as reviewed (sets lastReviewedAt and resolution).
+ * Mark a pair as reviewed (sets lastReviewedAt and, for terminal verbs, resolution).
  */
 export function resolvePair(
   memoryDir: string,
   pairId: string,
   verb: ResolutionVerb,
 ): ContradictionPair | null {
+  if (verb === "needs-more-context") {
+    return deferPair(memoryDir, pairId);
+  }
+
   const existing = readPair(memoryDir, pairId);
   if (!existing) return null;
 
@@ -233,6 +285,35 @@ export function resolvePair(
     ...existing,
     lastReviewedAt: new Date().toISOString(),
     resolution: verb,
+    deferredUntil: undefined,
+  };
+
+  const filePath = pairPath(memoryDir, pairId);
+  const tmpPath = `${filePath}.tmp`;
+
+  fs.writeFileSync(tmpPath, JSON.stringify(updated, null, 2), "utf-8");
+  fs.renameSync(tmpPath, filePath);
+
+  return updated;
+}
+
+/**
+ * Defer a pair without terminally resolving it.
+ */
+export function deferPair(
+  memoryDir: string,
+  pairId: string,
+  deferredUntil = new Date(Date.now() + NEEDS_MORE_CONTEXT_COOLDOWN_MS).toISOString(),
+): ContradictionPair | null {
+  const existing = readPair(memoryDir, pairId);
+  if (!existing) return null;
+  if (isTerminalResolution(existing.resolution)) return existing;
+
+  const updated: ContradictionPair = {
+    ...existing,
+    lastReviewedAt: new Date().toISOString(),
+    resolution: undefined,
+    deferredUntil,
   };
 
   const filePath = pairPath(memoryDir, pairId);
