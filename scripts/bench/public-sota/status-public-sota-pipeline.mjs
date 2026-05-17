@@ -152,6 +152,7 @@ console.log(JSON.stringify({
   activeRun: activeRunStatus ? {
     runId: activeRunStatus.runId,
     benchmark: activeRunStatus.benchmark,
+    benchmarkSession: activeRunStatus.benchmarkSession,
     progress: activeRunStatus.progress,
     resultFiles: activeRunStatus.benchmarkResultFiles,
     monitorSession: activeRunStatus.monitorSession,
@@ -165,6 +166,9 @@ console.log(JSON.stringify({
     },
   } : null,
   memoryArena: memoryArenaStatus ? {
+    benchmarkSession: memoryArenaStatus.benchmarkSession,
+    monitorSession: memoryArenaStatus.monitorSession,
+    monitorSessionName: memoryArenaStatus.monitorSessionName,
     progress: memoryArenaStatus.progress,
     resultFiles: memoryArenaStatus.memoryArenaResultFiles,
     diagnostics: {

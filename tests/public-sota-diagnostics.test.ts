@@ -1650,6 +1650,20 @@ test("public SOTA status maps MemoryArena publish watcher sessions with run suff
   assert.doesNotMatch(source, /publishWatcher: watcherSessions\.find\(\(session\) => session === `remnic-\$\{benchmark\}-publish-watcher`\)/);
 });
 
+test("public SOTA status exposes active run and MemoryArena session states", async () => {
+  const source = await readFile(
+    path.join("scripts", "bench", "public-sota", "status-public-sota-pipeline.mjs"),
+    "utf8",
+  );
+
+  assert.match(source, /benchmarkSession: activeRunStatus\.benchmarkSession/);
+  assert.match(source, /monitorSession: activeRunStatus\.monitorSession/);
+  assert.match(source, /monitorSessionName: activeRunStatus\.monitorSessionName/);
+  assert.match(source, /benchmarkSession: memoryArenaStatus\.benchmarkSession/);
+  assert.match(source, /monitorSession: memoryArenaStatus\.monitorSession/);
+  assert.match(source, /monitorSessionName: memoryArenaStatus\.monitorSessionName/);
+});
+
 test("generic public benchmark publish watcher keeps completion and staging evidence roots aligned", async () => {
   const source = await readFile(
     path.join("scripts", "bench", "public-sota", "watch-public-benchmark-publish.sh"),
