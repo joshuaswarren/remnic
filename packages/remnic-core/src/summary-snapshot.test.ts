@@ -62,6 +62,87 @@ test("summary snapshot helpers round-trip summaries in descending hour order", a
   assert.deepEqual(loaded, [summaries[1], summaries[0]]);
 });
 
+test("summary snapshot paths encode traversal-looking session keys", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-summary-snapshot-traversal-"),
+  );
+  const sessionKey = "../meta";
+  const summary = {
+    hour: "2026-03-26T08:00:00.000Z",
+    sessionKey,
+    bullets: ["safe bullet"],
+    turnCount: 1,
+    generatedAt: "2026-03-26T08:15:00.000Z",
+  };
+
+  await writeSummarySnapshot(memoryDir, sessionKey, [summary]);
+
+  const snapshotRoot = path.join(memoryDir, "state", "summaries");
+  const snapshotPath = summarySnapshotPath(memoryDir, sessionKey);
+  assert.equal(path.dirname(snapshotPath), snapshotRoot);
+  assert.match(path.basename(snapshotPath), /^%2E%2E%2Fmeta\.json$/);
+  await assert.rejects(
+    readFile(path.join(memoryDir, "state", "meta.json"), "utf-8"),
+    /ENOENT/,
+  );
+  assert.deepEqual(await readSummarySnapshot(memoryDir, sessionKey), [summary]);
+});
+
+test("summary snapshot helpers round-trip slash-containing session keys", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-summary-snapshot-slash-"),
+  );
+  const sessionKey = "thread/a";
+  const summary = {
+    hour: "2026-03-26T08:00:00.000Z",
+    sessionKey,
+    bullets: ["slash bullet"],
+    turnCount: 1,
+    generatedAt: "2026-03-26T08:15:00.000Z",
+  };
+
+  await upsertSummarySnapshot(memoryDir, summary);
+
+  const snapshotRoot = path.join(memoryDir, "state", "summaries");
+  const snapshotPath = summarySnapshotPath(memoryDir, sessionKey);
+  assert.equal(path.dirname(snapshotPath), snapshotRoot);
+  assert.match(path.basename(snapshotPath), /^thread%2Fa\.json$/);
+  assert.deepEqual(await readSummarySnapshot(memoryDir, sessionKey), [summary]);
+});
+
+test("readSummarySnapshot keeps a safe nested legacy raw-path fallback", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-summary-snapshot-legacy-"),
+  );
+  const sessionKey = "thread/a.with.dots";
+  const summary = {
+    hour: "2026-03-26T08:00:00.000Z",
+    sessionKey,
+    bullets: ["legacy bullet"],
+    turnCount: 1,
+    generatedAt: "2026-03-26T08:15:00.000Z",
+  };
+  const snapshotRoot = path.join(memoryDir, "state", "summaries");
+  const legacyPath = path.join(snapshotRoot, `${sessionKey}.json`);
+  await mkdir(path.dirname(legacyPath), { recursive: true });
+  await writeFile(
+    legacyPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      sessionKey,
+      generatedAt: "2026-03-26T08:20:00.000Z",
+      summaries: [summary],
+    }),
+    "utf-8",
+  );
+
+  assert.notEqual(
+    summarySnapshotPath(memoryDir, sessionKey),
+    legacyPath,
+  );
+  assert.deepEqual(await readSummarySnapshot(memoryDir, sessionKey), [summary]);
+});
+
 test("readRecent prefers the materialized summary snapshot over markdown fallback", async () => {
   const memoryDir = await mkdtemp(
     path.join(os.tmpdir(), "engram-summary-prefers-snapshot-"),

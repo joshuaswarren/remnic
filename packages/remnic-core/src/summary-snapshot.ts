@@ -9,6 +9,10 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import {
+  encodeStoragePathSegment,
+  resolvePathInsideStorageRoot,
+} from "./storage-paths.js";
 import type { HourlySummary } from "./types.js";
 
 const summarySnapshotSchemaVersion = 1;
@@ -42,19 +46,64 @@ export function summarySnapshotPath(
   memoryDir: string,
   sessionKey: string,
 ): string {
-  return path.join(memoryDir, "state", "summaries", `${sessionKey}.json`);
+  return resolveSummarySnapshotPath(memoryDir, sessionKey, "json");
 }
 
 function summarySnapshotLockPath(memoryDir: string, sessionKey: string): string {
-  return path.join(memoryDir, "state", "summaries", `${sessionKey}.lock`);
+  return resolveSummarySnapshotPath(memoryDir, sessionKey, "lock");
+}
+
+function summarySnapshotRoot(memoryDir: string): string {
+  return resolvePathInsideStorageRoot(memoryDir, "state", "summaries");
+}
+
+function resolveSummarySnapshotPath(
+  memoryDir: string,
+  sessionKey: string,
+  extension: "json" | "lock",
+): string {
+  const safeSessionKey = encodeStoragePathSegment(sessionKey, "session");
+  return resolvePathInsideStorageRoot(
+    summarySnapshotRoot(memoryDir),
+    `${safeSessionKey}.${extension}`,
+  );
+}
+
+function legacySummarySnapshotPath(
+  memoryDir: string,
+  sessionKey: string,
+): string | null {
+  if (sessionKey.includes("\0")) {
+    return null;
+  }
+  try {
+    return resolvePathInsideStorageRoot(
+      summarySnapshotRoot(memoryDir),
+      `${sessionKey}.json`,
+    );
+  } catch {
+    return null;
+  }
 }
 
 export async function readSummarySnapshot(
   memoryDir: string,
   sessionKey: string,
 ): Promise<HourlySummary[] | null> {
+  const filePath = summarySnapshotPath(memoryDir, sessionKey);
+  const snapshot = await readSummarySnapshotFile(filePath, sessionKey);
+  if (snapshot !== null) return snapshot;
+
+  const legacyPath = legacySummarySnapshotPath(memoryDir, sessionKey);
+  if (legacyPath === null || legacyPath === filePath) return null;
+  return readSummarySnapshotFile(legacyPath, sessionKey);
+}
+
+async function readSummarySnapshotFile(
+  filePath: string,
+  sessionKey: string,
+): Promise<HourlySummary[] | null> {
   try {
-    const filePath = summarySnapshotPath(memoryDir, sessionKey);
     const raw = await readFile(filePath, "utf-8");
     const data = SummarySnapshotSchema.parse(JSON.parse(raw));
     if (data.sessionKey !== sessionKey) return null;
