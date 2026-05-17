@@ -18,7 +18,8 @@
   "files": [
     "dist",
     "bin/engram-access.js",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "scripts/postinstall-banner.mjs"
   ],
   "publishConfig": {
     "access": "public",

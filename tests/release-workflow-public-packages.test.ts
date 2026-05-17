@@ -117,6 +117,24 @@ test("@remnic/server build verifies declared bin artifacts", async () => {
   assert.equal(packageJson.scripts["verify:bin"], "node scripts/verify-bin.mjs");
 });
 
+test("legacy OpenClaw Engram shim package ships its postinstall script", async () => {
+  const packageJson = JSON.parse(
+    await readFile("packages/shim-openclaw-engram/package.json", "utf8"),
+  ) as {
+    files?: string[];
+    scripts?: Record<string, string>;
+  };
+
+  assert.equal(
+    packageJson.scripts?.postinstall,
+    "node ./scripts/postinstall-banner.mjs",
+  );
+  assert.ok(
+    packageJson.files?.includes("scripts/postinstall-banner.mjs"),
+    "postinstall-banner.mjs must be included in the packed shim package",
+  );
+});
+
 test("@remnic/server bin verifier accepts Node executable bin targets", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-server-bin-ok-"));
   try {
