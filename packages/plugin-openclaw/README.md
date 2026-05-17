@@ -194,12 +194,11 @@ instead of the deprecated `deactivate` cleanup alias, and should not claim
 OpenAI `setup.providers` ownership because gateway/provider configuration
 remains host-owned.
 
-OpenClaw 2026.5.16-beta.4 prefers `setup.providers[].envVars` for cold-path
-setup and onboarding credential detection. The canonical Remnic manifest
-declares a minimal OpenAI API-key env-var descriptor for that detection path
-while still leaving provider configuration ownership to OpenClaw. The legacy
-`openclaw-engram` shim keeps only `setup.requiresRuntime: false` plus the
-compatibility auth metadata.
+OpenClaw 2026.5.16-beta.4 treats `setup.providers[].id` as provider ownership
+metadata with globally unique ids. Remnic does not own the `openai` provider,
+so the canonical manifest keeps OpenAI API-key metadata on `providerAuthChoices`
+and the compatibility `providerAuthEnvVars.openai` surface instead of declaring
+`setup.providers`.
 
 Native memory registrars are tracked separately in
 [`docs/plugins/openclaw-native-memory-registrars.md`](../../docs/plugins/openclaw-native-memory-registrars.md).

@@ -152,10 +152,8 @@ The plugin manifest advertises compatibility on two surfaces:
 - `supports` stays in place for OpenClaw 2026.4-era slot and lifecycle routing.
 - `contracts.tools` declares every Remnic-owned tool name for OpenClaw 2026.5+
   descriptor planning and tool ownership validation.
-- `setup.requiresRuntime: false` is explicit.
-- `setup.providers[].envVars` declares the minimal OpenAI API-key env-var
-  metadata OpenClaw 2026.5.16-beta.4+ uses for cold-path setup/onboarding
-  detection; it does not make Remnic the owner of provider configuration.
+- `setup.requiresRuntime: false` is explicit; Remnic does not claim OpenAI
+  provider setup ownership.
 - `activation.onStartup: false` is explicit so startup activation remains
   intentional.
 - `providerAuthChoices` advertises the optional plugin-mode OpenAI API key
@@ -163,6 +161,9 @@ The plugin manifest advertises compatibility on two surfaces:
 - `providerAuthEnvVars.openai` is retained only as compatibility metadata for
   OpenClaw's pre-runtime env-var auth probes; it does not reintroduce provider
   setup ownership.
+- `setup.providers` is intentionally omitted because OpenClaw treats setup
+  provider ids as globally unique provider ownership metadata, and Remnic does
+  not own the `openai` provider.
 
 Keep the supported blocks. `contracts.tools` is additive for older OpenClaw runtimes, but
 OpenClaw 2026.5 rejects plugin tool registration when a runtime tool is missing
