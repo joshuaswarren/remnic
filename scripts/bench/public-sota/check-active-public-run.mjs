@@ -189,7 +189,7 @@ function newestDiagnostics(diagDir, count, lifecycleStart) {
         name: record.name,
         startedAt: record.startedAt,
         ageSeconds: record.startedAt
-          ? Math.round((Date.now() - Date.parse(record.startedAt)) / 1000)
+          ? Math.round((checkedAtMs - Date.parse(record.startedAt)) / 1000)
           : undefined,
         provider: record.provider,
         model: record.model,

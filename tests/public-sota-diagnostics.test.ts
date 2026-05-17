@@ -1871,6 +1871,15 @@ test("active public run progress ignores pre-restart checkpoints", async () => {
       new Date("2026-05-17T03:50:00.000Z"),
       new Date("2026-05-17T03:50:00.000Z"),
     );
+    const diagnosticsDir = path.join(runDir, "codex-cli-diagnostics");
+    await mkdir(diagnosticsDir, { recursive: true });
+    await writeJson(path.join(diagnosticsDir, "in-flight.json"), {
+      startedAt: "2026-05-17T03:55:00.000Z",
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      reasoningEffort: "xhigh",
+      serviceTier: "fast",
+    });
     await writeFile(
       path.join(runDir, "run.log"),
       [
@@ -1890,6 +1899,7 @@ test("active public run progress ignores pre-restart checkpoints", async () => {
     assert.equal(beforeStatus.progress, null);
     assert.equal(beforeStatus.checkedAt, "2026-05-17T04:00:00.000Z");
     assert.equal(beforeStatus.monitor.ageSeconds, 600);
+    assert.equal(beforeStatus.diagnostics.inFlightRecords[0].ageSeconds, 300);
     assert.equal(beforeStatus.progressSource.mode, "run-log-lines-since-lifecycle-start");
     assert.equal(beforeStatus.progressSource.markerFound, true);
     assert.equal(beforeStatus.progressSource.scannedLines, 0);
