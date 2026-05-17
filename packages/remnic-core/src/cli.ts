@@ -229,6 +229,7 @@ import {
   renderConnectorsList,
   renderConnectorsRunResult,
   runConnectorPollOnce,
+  type ConnectorsOutputFormat,
   type ConnectorRow,
   type ConnectorRunResult,
 } from "./connectors-cli.js";
@@ -280,6 +281,14 @@ interface EngramMcpServerLike {
   runStdio(input: Readable, output: Writable): Promise<void>;
 }
 
+export interface ConnectorsRunCliOutputOptions {
+  connectorId: string;
+  result: ConnectorRunResult;
+  format: ConnectorsOutputFormat;
+  stdout?: (output: string) => void;
+  stderr?: (output: string) => void;
+}
+
 export interface DedupeCandidate {
   path: string;
   content: string;
@@ -289,6 +298,24 @@ export interface DedupeCandidate {
     updated?: string;
     created?: string;
   };
+}
+
+export function emitConnectorsRunCliResult({
+  connectorId,
+  result,
+  format,
+  stdout = (output) => process.stdout.write(output),
+  stderr = (output) => process.stderr.write(output),
+}: ConnectorsRunCliOutputOptions): number {
+  const output = renderConnectorsRunResult(connectorId, result, format);
+  const failed = result.error !== undefined || result.stateWriteError !== undefined;
+  if (failed) {
+    stderr(output + "\n");
+    return 1;
+  }
+
+  stdout(output + "\n");
+  return 0;
 }
 
 export interface ExactDedupePlan {
@@ -5688,13 +5715,12 @@ export function registerCli(
               return;
             }
 
-            const output = renderConnectorsRunResult(name, runResult, format);
-            if (runResult.error !== undefined) {
-              process.stderr.write(output + "\n");
-              process.exitCode = 1;
-            } else {
-              console.log(output);
-            }
+            const exitCode = emitConnectorsRunCliResult({
+              connectorId: name,
+              result: runResult,
+              format,
+            });
+            if (exitCode !== 0) process.exitCode = exitCode;
           });
       }
 
