@@ -15,6 +15,11 @@ type ParsedArgs = {
   flags: Set<string>;
 };
 
+type CommandSpec = {
+  valueOptions: ReadonlySet<string>;
+  flagOptions: ReadonlySet<string>;
+};
+
 type Runtime = {
   config: PluginConfig;
   service: EngramAccessService;
@@ -34,6 +39,8 @@ export type AccessCliOptions = {
 type UsageErrorKind =
   | "unsupported-command"
   | "unexpected-positional"
+  | "unknown-option"
+  | "option-does-not-take-value"
   | "missing-option"
   | "missing-content"
   | "invalid-integer"
@@ -54,6 +61,10 @@ function formatUsageError(error: UsageError): string {
       return "unsupported command";
     case "unexpected-positional":
       return "unexpected positional argument";
+    case "unknown-option":
+      return `unknown option: --${error.optionName ?? "unknown"}`;
+    case "option-does-not-take-value":
+      return `option does not accept a value: --${error.optionName ?? "unknown"}`;
     case "missing-option":
       return `missing required option: --${error.optionName ?? "unknown"}`;
     case "missing-content":
@@ -100,11 +111,44 @@ function usage(): string {
   ].join("\n");
 }
 
+const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
+  browse: {
+    valueOptions: new Set([
+      "namespace",
+      "query",
+      "category",
+      "status",
+      "sort",
+      "limit",
+      "offset",
+    ]),
+    flagOptions: new Set(),
+  },
+  store: {
+    valueOptions: new Set([
+      "namespace",
+      "session-key",
+      "principal",
+      "content",
+      "content-file",
+      "category",
+      "confidence",
+      "tag",
+      "entity-ref",
+      "ttl",
+      "source-reason",
+      "idempotency-key",
+    ]),
+    flagOptions: new Set(["dry-run"]),
+  },
+};
+
 function parseArgs(argv: string[]): ParsedArgs {
   const [commandRaw, ...rest] = argv;
   if (commandRaw !== "browse" && commandRaw !== "store") {
     throw new UsageError("unsupported-command");
   }
+  const spec = COMMAND_SPECS[commandRaw];
 
   const options: Record<string, string[]> = {};
   const flags = new Set<string>();
@@ -114,11 +158,44 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (!token.startsWith("--")) {
       throw new UsageError("unexpected-positional");
     }
-    const key = token.slice(2);
-    const next = rest[i + 1];
-    if (!next || next.startsWith("--")) {
+    const rawKey = token.slice(2);
+    if (!rawKey) {
+      throw new UsageError("unknown-option", rawKey);
+    }
+    const equalsIndex = rawKey.indexOf("=");
+    const key = equalsIndex === -1 ? rawKey : rawKey.slice(0, equalsIndex);
+    const inlineValue = equalsIndex === -1 ? undefined : rawKey.slice(equalsIndex + 1);
+
+    if (!spec.valueOptions.has(key) && !spec.flagOptions.has(key)) {
+      throw new UsageError("unknown-option", key);
+    }
+
+    if (spec.flagOptions.has(key)) {
+      if (inlineValue !== undefined) {
+        throw new UsageError("option-does-not-take-value", key);
+      }
+      const next = rest[i + 1];
+      if (next && !next.startsWith("--")) {
+        throw new UsageError("option-does-not-take-value", key);
+      }
       flags.add(key);
       continue;
+    }
+
+    if (inlineValue !== undefined) {
+      if (inlineValue.length === 0) {
+        throw new UsageError("missing-option", key);
+      }
+      if (!options[key]) {
+        options[key] = [];
+      }
+      options[key].push(inlineValue);
+      continue;
+    }
+
+    const next = rest[i + 1];
+    if (!next || next.startsWith("--")) {
+      throw new UsageError("missing-option", key);
     }
     if (!options[key]) {
       options[key] = [];
@@ -155,18 +232,36 @@ function requireOption(args: ParsedArgs, name: string): string {
 function parseIntegerOption(args: ParsedArgs, name: string): number | undefined {
   const raw = getLastOption(args, name);
   if (!raw) return undefined;
-  const value = parseInt(raw, 10);
-  if (!Number.isFinite(value)) {
+  const trimmed = raw.trim();
+  if (!/^[+-]?\d+$/.test(trimmed)) {
+    throw new UsageError("invalid-integer", name);
+  }
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value)) {
     throw new UsageError("invalid-integer", name);
   }
   return value;
 }
 
-function parseFloatOption(args: ParsedArgs, name: string): number | undefined {
+function parseFloatOption(
+  args: ParsedArgs,
+  name: string,
+  options: { min?: number; max?: number } = {},
+): number | undefined {
   const raw = getLastOption(args, name);
   if (!raw) return undefined;
-  const value = Number.parseFloat(raw);
+  const trimmed = raw.trim();
+  if (!/^[+-]?(?:(?:\d+\.?\d*)|(?:\.\d+))(?:e[+-]?\d+)?$/i.test(trimmed)) {
+    throw new UsageError("invalid-number", name);
+  }
+  const value = Number(trimmed);
   if (!Number.isFinite(value)) {
+    throw new UsageError("invalid-number", name);
+  }
+  if (options.min !== undefined && value < options.min) {
+    throw new UsageError("invalid-number", name);
+  }
+  if (options.max !== undefined && value > options.max) {
     throw new UsageError("invalid-number", name);
   }
   return value;
@@ -196,8 +291,7 @@ function buildRuntime(preferredId?: string): Runtime {
 }
 
 async function runBrowse(args: ParsedArgs, preferredId?: string): Promise<void> {
-  const { service } = buildRuntime(preferredId);
-  const result = await service.memoryBrowse({
+  const request = {
     namespace: getLastOption(args, "namespace"),
     query: getLastOption(args, "query"),
     category: getLastOption(args, "category"),
@@ -205,32 +299,47 @@ async function runBrowse(args: ParsedArgs, preferredId?: string): Promise<void> 
     sort: getLastOption(args, "sort") as "updated_desc" | "updated_asc" | "created_desc" | "created_asc" | undefined,
     limit: parseIntegerOption(args, "limit"),
     offset: parseIntegerOption(args, "offset"),
-  });
+  };
+  const { service } = buildRuntime(preferredId);
+  const result = await service.memoryBrowse(request);
   console.log(JSON.stringify(result, null, 2));
 }
 
 async function runStore(args: ParsedArgs, preferredId?: string): Promise<void> {
-  const { config, service } = buildRuntime(preferredId);
   const contentFile = getLastOption(args, "content-file");
   const inlineContent = getLastOption(args, "content");
   const content = contentFile ? fs.readFileSync(contentFile, "utf8") : inlineContent;
   if (!content || content.trim().length === 0) {
     throw new UsageError("missing-content");
   }
-
-  const result = await service.memoryStore({
+  const storeArgs = {
     namespace: getLastOption(args, "namespace"),
     sessionKey: getLastOption(args, "session-key"),
-    authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
     content,
     category: requireOption(args, "category"),
-    confidence: parseFloatOption(args, "confidence"),
+    confidence: parseFloatOption(args, "confidence", { min: 0, max: 1 }),
     tags: getAllOptions(args, "tag"),
     entityRef: getLastOption(args, "entity-ref"),
     ttl: getLastOption(args, "ttl"),
     sourceReason: getLastOption(args, "source-reason"),
     idempotencyKey: getLastOption(args, "idempotency-key"),
     dryRun: args.flags.has("dry-run"),
+  };
+
+  const { config, service } = buildRuntime(preferredId);
+  const result = await service.memoryStore({
+    namespace: storeArgs.namespace,
+    sessionKey: storeArgs.sessionKey,
+    authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
+    content: storeArgs.content,
+    category: storeArgs.category,
+    confidence: storeArgs.confidence,
+    tags: storeArgs.tags,
+    entityRef: storeArgs.entityRef,
+    ttl: storeArgs.ttl,
+    sourceReason: storeArgs.sourceReason,
+    idempotencyKey: storeArgs.idempotencyKey,
+    dryRun: storeArgs.dryRun,
   });
   console.log(JSON.stringify(result, null, 2));
 }
