@@ -211,7 +211,6 @@ function approveItem(memoryDir: string, itemId: string): ReviewResult {
 
     const content = fs.readFileSync(found, "utf8");
     const fm = parseFrontmatter(content);
-    const body = extractBody(content);
     if (!fm) return { itemId, action: "approve", message: "Could not parse frontmatter" };
 
     // Promote to facts/ with boosted confidence
@@ -226,7 +225,7 @@ function approveItem(memoryDir: string, itemId: string): ReviewResult {
       .replace(/confidenceTier: \w+/, "confidenceTier: high");
 
     fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-    fs.writeFileSync(outputPath, updatedContent);
+    const promotedPath = writeFileWithoutClobber(outputPath, updatedContent, itemId);
 
     // Remove from review
     fs.unlinkSync(found);
@@ -234,7 +233,7 @@ function approveItem(memoryDir: string, itemId: string): ReviewResult {
     return {
       itemId,
       action: "approve",
-      updatedPath: outputPath,
+      updatedPath: promotedPath,
       message: `Promoted to ${category} with confidence 0.9`,
     };
   }
@@ -308,6 +307,64 @@ function readFileSafe(filePath: string): string | null {
   } catch {
     return null;
   }
+}
+
+function writeFileWithoutClobber(basePath: string, content: string, discriminator: string): string {
+  const parsed = path.parse(basePath);
+  const safeDiscriminator = sanitizeFilePart(discriminator);
+
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const candidate = attempt === 0
+      ? basePath
+      : path.join(
+        parsed.dir,
+        `${parsed.name}-${safeDiscriminator}${attempt === 1 ? "" : `-${attempt}`}${parsed.ext || ".md"}`,
+      );
+
+    try {
+      fs.writeFileSync(candidate, content, { encoding: "utf8", flag: "wx" });
+      return candidate;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+  }
+
+  throw new Error(`Could not find a free review promotion path for ${basePath}`);
+}
+
+function sanitizeFilePart(value: string): string {
+  const chars: string[] = [];
+  let previousWasDash = false;
+
+  for (const char of value) {
+    const next = isSafeFilePartChar(char) ? char : "-";
+    if (next === "-" && previousWasDash) continue;
+    chars.push(next);
+    previousWasDash = next === "-";
+    if (chars.length >= 64) break;
+  }
+
+  let start = 0;
+  let end = chars.length;
+  while (start < end && chars[start] === "-") start++;
+  while (end > start && chars[end - 1] === "-") end--;
+
+  const sanitized = chars.slice(start, end).join("");
+  return sanitized || "review-item";
+}
+
+function isSafeFilePartChar(value: string): boolean {
+  if (value.length !== 1) return false;
+  const code = value.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    value === "." ||
+    value === "_" ||
+    value === "-"
+  );
 }
 
 function parseFrontmatter(content: string): Record<string, unknown> | null {
