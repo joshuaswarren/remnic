@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { constants as osConstants, tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 
-const packageBinDir = join(process.cwd(), "packages", "remnic-cli", "bin");
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const packageBinDir = join(repoRoot, "packages", "remnic-cli", "bin");
 const remnicBin = join(packageBinDir, "remnic.cjs");
 const engramBin = join(packageBinDir, "engram.cjs");
 
