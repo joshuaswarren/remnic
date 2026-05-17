@@ -206,6 +206,8 @@ import {
 import { expandTilde, resolveHomeDir } from "./path-utils.js";
 import {
   inspectLaunchdPlist,
+  launchdLoadPlist,
+  launchdUnloadPlist,
   resolveServerBin,
   resolveServerBinDetails,
 } from "./daemon-service.js";
@@ -6661,8 +6663,7 @@ function daemonInstall(): void {
     fs.mkdirSync(path.dirname(LAUNCHD_PLIST_PATH), { recursive: true });
     fs.writeFileSync(LAUNCHD_PLIST_PATH, plist);
     try {
-
-      childProcess.execSync(`launchctl load -w "${LAUNCHD_PLIST_PATH}"`, { stdio: "pipe" });
+      launchdLoadPlist(LAUNCHD_PLIST_PATH);
     } catch {
       // May already be loaded
     }
@@ -6698,7 +6699,7 @@ function daemonUninstall(): void {
     let removed = false;
     for (const plistPath of LAUNCHD_PLIST_PATHS) {
       try {
-        childProcess.execSync(`launchctl unload "${plistPath}"`, { stdio: "pipe" });
+        launchdUnloadPlist(plistPath);
       } catch {
         // May not be loaded
       }

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import * as childProcess from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   findCommandOnPath as findCommandOnPathDefault,
@@ -43,7 +44,29 @@ export interface InspectLaunchdPlistOptions {
   readFileSync?: (file: string, encoding: BufferEncoding) => string;
 }
 
+export interface LaunchctlProcess {
+  execFileSync: (
+    command: string,
+    args: string[],
+    options: childProcess.ExecFileSyncOptions,
+  ) => Buffer | string;
+}
+
 const thisModuleDir = path.dirname(fileURLToPath(import.meta.url));
+
+export function launchdLoadPlist(
+  plistPath: string,
+  processApi: LaunchctlProcess = childProcess,
+): void {
+  processApi.execFileSync("launchctl", ["load", "-w", plistPath], { stdio: "pipe" });
+}
+
+export function launchdUnloadPlist(
+  plistPath: string,
+  processApi: LaunchctlProcess = childProcess,
+): void {
+  processApi.execFileSync("launchctl", ["unload", plistPath], { stdio: "pipe" });
+}
 
 export function resolveServerBinDetails(options: ResolveServerBinOptions = {}): ServerBinResolution {
   const existsSync = options.existsSync ?? fs.existsSync;

@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 
 import {
   inspectLaunchdPlist,
+  launchdLoadPlist,
+  launchdUnloadPlist,
   readLaunchdProgramArguments,
   resolveServerBinDetails,
 } from "./daemon-service.js";
@@ -185,6 +187,46 @@ test("readLaunchdProgramArguments parses plist string entries", () => {
   assert.deepEqual(args, [
     "/usr/local/bin/node",
     "/Users/test/Remnic & Server/dist/index.js",
+  ]);
+});
+
+test("launchdLoadPlist invokes launchctl with argv instead of a shell command", () => {
+  const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+  const hostilePath = `/Users/test"$(touch injected)"/Library/LaunchAgents/ai.remnic.daemon.plist`;
+
+  launchdLoadPlist(hostilePath, {
+    execFileSync: (command, args, options) => {
+      calls.push({ command, args: [...args], options });
+      return Buffer.alloc(0);
+    },
+  });
+
+  assert.deepEqual(calls, [
+    {
+      command: "launchctl",
+      args: ["load", "-w", hostilePath],
+      options: { stdio: "pipe" },
+    },
+  ]);
+});
+
+test("launchdUnloadPlist invokes launchctl with argv instead of a shell command", () => {
+  const calls: Array<{ command: string; args: string[]; options: unknown }> = [];
+  const hostilePath = `/Users/test"; touch injected; echo "/Library/LaunchAgents/ai.remnic.daemon.plist`;
+
+  launchdUnloadPlist(hostilePath, {
+    execFileSync: (command, args, options) => {
+      calls.push({ command, args: [...args], options });
+      return Buffer.alloc(0);
+    },
+  });
+
+  assert.deepEqual(calls, [
+    {
+      command: "launchctl",
+      args: ["unload", hostilePath],
+      options: { stdio: "pipe" },
+    },
   ]);
 });
 
