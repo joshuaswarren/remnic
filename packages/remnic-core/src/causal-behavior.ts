@@ -9,7 +9,7 @@
  * Key insight: "Preferences are recurring causal pathways."
  */
 
-import type { CausalTrajectoryRecord } from "./causal-trajectory.js";
+import { resolveCausalTrajectoryStoreDir, type CausalTrajectoryRecord } from "./causal-trajectory.js";
 import type { CausalChainIndex } from "./causal-chain.js";
 import { readChainIndex, resolveChainsDir } from "./causal-chain.js";
 import { normalizeRecallTokens } from "./recall-tokenization.js";
@@ -270,9 +270,7 @@ export async function extractCausalBehaviorSignals(options: {
     const { memoryDir, causalTrajectoryStoreDir, config: behaviorConfig } = options;
 
     // Read all trajectories
-    const root = causalTrajectoryStoreDir
-      ? path.join(memoryDir, causalTrajectoryStoreDir)
-      : path.join(memoryDir, "state", "causal-trajectories");
+    const root = resolveCausalTrajectoryStoreDir(memoryDir, causalTrajectoryStoreDir);
     const trajectoriesDir = path.join(root, "trajectories");
     const files = await listJsonFiles(trajectoriesDir).catch(() => [] as string[]);
 

@@ -10,7 +10,7 @@ import path from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { listJsonFiles, readJsonFile } from "./json-store.js";
-import type { CausalTrajectoryRecord } from "./causal-trajectory.js";
+import { resolveCausalTrajectoryStoreDir, type CausalTrajectoryRecord } from "./causal-trajectory.js";
 import { topicOverlapScore } from "./boxes.js";
 import { countRecallTokenOverlap, normalizeRecallTokens } from "./recall-tokenization.js";
 import {
@@ -118,9 +118,7 @@ export function makeEdgeId(fromId: string, toId: string): string {
 // ─── Storage Paths ───────────────────────────────────────────────────────────
 
 export function resolveChainsDir(memoryDir: string, causalTrajectoryStoreDir?: string): string {
-  const root = causalTrajectoryStoreDir
-    ? path.join(memoryDir, causalTrajectoryStoreDir)
-    : path.join(memoryDir, "state", "causal-trajectories");
+  const root = resolveCausalTrajectoryStoreDir(memoryDir, causalTrajectoryStoreDir);
   return path.join(root, "chains");
 }
 
@@ -312,9 +310,7 @@ async function readRecentTrajectories(
   currentSessionKey: string,
   lookbackDays: number,
 ): Promise<CausalTrajectoryRecord[]> {
-  const root = causalTrajectoryStoreDir
-    ? path.join(memoryDir, causalTrajectoryStoreDir)
-    : path.join(memoryDir, "state", "causal-trajectories");
+  const root = resolveCausalTrajectoryStoreDir(memoryDir, causalTrajectoryStoreDir);
   const trajectoriesDir = path.join(root, "trajectories");
 
   const files = await listJsonFiles(trajectoriesDir).catch(() => [] as string[]);

@@ -239,9 +239,9 @@ test("resolveChainsDir uses default path", () => {
   assert.equal(dir, path.join("/tmp/engram", "state", "causal-trajectories", "chains"));
 });
 
-test("resolveChainsDir uses custom store dir", () => {
+test("resolveChainsDir treats custom store dir as the resolved store root", () => {
   const dir = resolveChainsDir("/tmp/engram", "custom/store");
-  assert.equal(dir, path.join("/tmp/engram", "custom/store", "chains"));
+  assert.equal(dir, path.join("custom/store", "chains"));
 });
 
 // ─── End-to-end stitching ────────────────────────────────────────────────────

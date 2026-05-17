@@ -13,7 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { CausalTrajectoryRecord } from "./causal-trajectory.js";
+import { resolveCausalTrajectoryStoreDir, type CausalTrajectoryRecord } from "./causal-trajectory.js";
 import { readChainIndex, resolveChainsDir, type CausalChainIndex, type CausalEdge } from "./causal-chain.js";
 import { listJsonFiles, readJsonFile } from "./json-store.js";
 import { isRecord } from "./store-contract.js";
@@ -67,9 +67,7 @@ async function readAllTrajectories(
   memoryDir: string,
   causalTrajectoryStoreDir?: string,
 ): Promise<CausalTrajectoryRecord[]> {
-  const root = causalTrajectoryStoreDir
-    ? path.join(memoryDir, causalTrajectoryStoreDir)
-    : path.join(memoryDir, "state", "causal-trajectories");
+  const root = resolveCausalTrajectoryStoreDir(memoryDir, causalTrajectoryStoreDir);
   const trajectoriesDir = path.join(root, "trajectories");
 
   const files = await listJsonFiles(trajectoriesDir).catch(() => [] as string[]);

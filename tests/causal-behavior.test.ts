@@ -9,6 +9,7 @@ import {
   extractCausalBehaviorSignals,
   type CausalBehaviorSignal,
 } from "../src/causal-behavior.js";
+import { parseConfig } from "../src/config.js";
 import { recordCausalTrajectory } from "../src/causal-trajectory.js";
 import { writeChainIndex, resolveChainsDir, type CausalChainIndex, type CausalEdge } from "../src/causal-chain.js";
 
@@ -159,6 +160,43 @@ test("extractCausalBehaviorSignals detects topic revisitation", async () => {
   const topicSignals = signals.filter((s) => s.signalType === "topic_revisitation");
   assert.ok(topicSignals.length > 0, "Expected topic revisitation signal");
   assert.ok(topicSignals[0].frequency >= 3);
+});
+
+test("extractCausalBehaviorSignals reads trajectories from parsed config store dir", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-behavior-config-dir-"));
+  const cfg = parseConfig({ memoryDir });
+
+  for (let i = 0; i < 3; i++) {
+    await recordCausalTrajectory({
+      memoryDir: cfg.memoryDir,
+      causalTrajectoryStoreDir: cfg.causalTrajectoryStoreDir,
+      record: {
+        schemaVersion: 1,
+        trajectoryId: `traj-config-topic-${i}`,
+        recordedAt: new Date(Date.UTC(2026, 4, i + 1, 10)).toISOString(),
+        sessionKey: `session-config-${i}`,
+        goal: "Fix authentication error handling",
+        actionSummary: "Patched login handler",
+        observationSummary: "Tests pass",
+        outcomeKind: "success",
+        outcomeSummary: "Auth fixed",
+      },
+    });
+  }
+
+  const signals = await extractCausalBehaviorSignals({
+    memoryDir: cfg.memoryDir,
+    causalTrajectoryStoreDir: cfg.causalTrajectoryStoreDir,
+    config: { minFrequency: 3, minSessions: 2, confidenceThreshold: 0.6 },
+  });
+
+  const topicSignals = signals.filter((s) => s.signalType === "topic_revisitation");
+  assert.equal(topicSignals.length, 1);
+  assert.deepEqual(topicSignals[0].trajectoryIds, [
+    "traj-config-topic-0",
+    "traj-config-topic-1",
+    "traj-config-topic-2",
+  ]);
 });
 
 test("extractCausalBehaviorSignals detects action patterns", async () => {
