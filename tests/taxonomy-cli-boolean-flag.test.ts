@@ -12,6 +12,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { coerceBool, coerceInstallExtension } from "../packages/remnic-core/src/connectors/coerce.js";
 import {
+  parseTaxonomyResolveArgs,
   stripResolveFlags,
   TAXONOMY_RESOLVE_BOOLEAN_FLAGS,
 } from "../packages/remnic-cli/src/cli-args.js";
@@ -57,6 +58,38 @@ describe("taxonomy resolve flag stripping", () => {
     const args = ["--json"];
     const result = stripResolveFlags(args, TAXONOMY_RESOLVE_BOOLEAN_FLAGS);
     assert.deepStrictEqual(result, []);
+  });
+
+  it("rejects unknown option-looking tokens instead of dropping following text", () => {
+    assert.throws(
+      () => stripResolveFlags(["remember", "--jsoon", "the", "thing"]),
+      /Unknown flag: --jsoon/,
+    );
+  });
+
+  it("rejects --category with no value", () => {
+    assert.throws(
+      () => stripResolveFlags(["remember", "--category"]),
+      /--category requires a value/,
+    );
+  });
+
+  it("rejects --category followed by another flag", () => {
+    assert.throws(
+      () => stripResolveFlags(["remember", "--category", "--json"]),
+      /--category requires a value/,
+    );
+  });
+
+  it("allows literal option-looking text after -- delimiter", () => {
+    const result = stripResolveFlags(["--json", "--", "--literal", "text"]);
+    assert.deepStrictEqual(result, ["--literal", "text"]);
+  });
+
+  it("does not treat --category after -- delimiter as a flag value", () => {
+    const result = parseTaxonomyResolveArgs(["--category", "fact", "--", "--category", "literal"]);
+    assert.deepStrictEqual(result.textParts, ["--category", "literal"]);
+    assert.equal(result.values["--category"], "fact");
   });
 });
 

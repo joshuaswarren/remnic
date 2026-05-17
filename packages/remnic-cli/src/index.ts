@@ -211,8 +211,19 @@ import {
   resolveServerBin,
   resolveServerBinDetails,
 } from "./daemon-service.js";
-export { hasFlag, resolveFlag, stripResolveFlags, TAXONOMY_RESOLVE_BOOLEAN_FLAGS } from "./cli-args.js";
-import { hasFlag, resolveFlag, stripResolveFlags, TAXONOMY_RESOLVE_BOOLEAN_FLAGS } from "./cli-args.js";
+export {
+  hasFlag,
+  parseTaxonomyResolveArgs,
+  resolveFlag,
+  stripResolveFlags,
+  TAXONOMY_RESOLVE_BOOLEAN_FLAGS,
+  TAXONOMY_RESOLVE_VALUE_FLAGS,
+} from "./cli-args.js";
+import {
+  hasFlag,
+  parseTaxonomyResolveArgs,
+  resolveFlag,
+} from "./cli-args.js";
 import { parseConnectorConfig, stripConfigArgv } from "./parse-connector-config.js";
 // `remnic import` top-level command (issue #568 slice 1). The adapter packages
 // are optional à-la-carte installs loaded via computed-specifier dynamic
@@ -7710,22 +7721,26 @@ async function cmdTaxonomy(rest: string[]): Promise<void> {
     }
 
     case "resolve": {
-      // Strip --flag and its following value token together so flag values
-      // (e.g. "preference" in `--category preference`) don't leak into text.
-      // Boolean flags (like --json) don't consume a following value token.
       const resolveArgs = rest.slice(1);
-      const textParts = stripResolveFlags(resolveArgs, TAXONOMY_RESOLVE_BOOLEAN_FLAGS);
+      let parsedResolveArgs: ReturnType<typeof parseTaxonomyResolveArgs>;
+      try {
+        parsedResolveArgs = parseTaxonomyResolveArgs(resolveArgs);
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      const textParts = parsedResolveArgs.textParts;
       const text = textParts.join(" ");
       if (!text) {
         console.error("Usage: remnic taxonomy resolve <text>");
         process.exit(1);
       }
 
-      const categoryFlag = resolveFlag(rest, "--category") as MemoryCategory | undefined;
+      const categoryFlag = parsedResolveArgs.values["--category"] as MemoryCategory | undefined;
       const memoryCategory: MemoryCategory = categoryFlag ?? "fact";
       const taxonomy = await loadTaxonomy(config.memoryDir);
       const decision = resolveCategory(text, memoryCategory, taxonomy);
-      const json = rest.includes("--json");
+      const json = parsedResolveArgs.booleans.has("--json");
 
       if (json) {
         console.log(JSON.stringify(decision, null, 2));

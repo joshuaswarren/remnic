@@ -26,32 +26,76 @@ export function hasFlag(args: string[], flag: string): boolean {
 }
 
 /**
- * Set of flags for `taxonomy resolve` that are boolean (no trailing value).
- * Key-value flags (like `--category`) consume the next token as their value.
+ * Flag spec for `taxonomy resolve`.
  */
 export const TAXONOMY_RESOLVE_BOOLEAN_FLAGS = new Set(["--json"]);
+export const TAXONOMY_RESOLVE_VALUE_FLAGS = new Set(["--category"]);
+
+export interface TaxonomyResolveArgs {
+  textParts: string[];
+  values: Record<string, string>;
+  booleans: Set<string>;
+}
 
 /**
  * Strip CLI flags from `taxonomy resolve` argument tokens, returning only
  * the text parts. Boolean flags (e.g. `--json`) skip only the flag itself;
  * key-value flags (e.g. `--category preference`) skip the flag and its
  * following value token.
+ *
+ * Use `--` before literal text that starts with `--`.
  */
 export function stripResolveFlags(
   args: string[],
   booleanFlags: ReadonlySet<string> = TAXONOMY_RESOLVE_BOOLEAN_FLAGS,
+  valueFlags: ReadonlySet<string> = TAXONOMY_RESOLVE_VALUE_FLAGS,
 ): string[] {
+  return parseTaxonomyResolveArgs(args, booleanFlags, valueFlags).textParts;
+}
+
+export function parseTaxonomyResolveArgs(
+  args: string[],
+  booleanFlags: ReadonlySet<string> = TAXONOMY_RESOLVE_BOOLEAN_FLAGS,
+  valueFlags: ReadonlySet<string> = TAXONOMY_RESOLVE_VALUE_FLAGS,
+): TaxonomyResolveArgs {
   const textParts: string[] = [];
+  const values: Record<string, string> = {};
+  const booleans = new Set<string>();
+  let literalText = false;
+
   for (let i = 0; i < args.length; i++) {
-    if (args[i].startsWith("--")) {
-      // Boolean flags have no trailing value — skip only the flag itself
-      if (!booleanFlags.has(args[i])) {
-        // Key-value flag: skip the flag and its value (next token)
-        i++;
-      }
+    const arg = args[i];
+    if (literalText) {
+      textParts.push(arg);
       continue;
     }
-    textParts.push(args[i]);
+
+    if (arg === "--") {
+      literalText = true;
+      continue;
+    }
+
+    if (arg.startsWith("--")) {
+      if (booleanFlags.has(arg)) {
+        booleans.add(arg);
+        continue;
+      }
+
+      if (valueFlags.has(arg)) {
+        const value = args[i + 1];
+        if (value === undefined || value.startsWith("--")) {
+          throw new Error(`${arg} requires a value`);
+        }
+        values[arg] = value;
+        i++;
+        continue;
+      }
+
+      throw new Error(`Unknown flag: ${arg}`);
+    }
+
+    textParts.push(arg);
   }
-  return textParts;
+
+  return { textParts, values, booleans };
 }
