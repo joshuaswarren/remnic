@@ -45,6 +45,12 @@ const SHIM_BIN_PATH = path.resolve(
   "bin",
   "engram-access.js",
 );
+const ROOT_ENGRAM_ACCESS_BIN_PATH = path.resolve(
+  __dirname,
+  "..",
+  "bin",
+  "engram-access.js",
+);
 
 function configWithBothEntries() {
   return {
@@ -173,5 +179,19 @@ test("shim engram-access bin wrapper passes preferredId='openclaw-engram' to run
     src,
     /runCli\s*\(\s*process\.argv\.slice\(2\)\s*,/,
     "shim bin wrapper must forward process.argv AND options to runCli",
+  );
+});
+
+test("root engram-access bin wrapper passes preferredId='openclaw-engram'", () => {
+  const src = fs.readFileSync(ROOT_ENGRAM_ACCESS_BIN_PATH, "utf8");
+  assert.match(
+    src,
+    /preferredId:\s*"openclaw-engram"/,
+    "root engram-access bin must identify itself as the legacy caller so mixed canonical/legacy configs target the legacy entry",
+  );
+  assert.match(
+    src,
+    /runCli\s*\(\s*process\.argv\.slice\(2\)\s*,/,
+    "root engram-access bin wrapper must forward process.argv AND options to runCli",
   );
 });
