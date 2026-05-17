@@ -3380,7 +3380,7 @@
       "conversationIndexFaissModelId": {
         "type": "string",
         "default": "text-embedding-3-small",
-        "description": "Embedding model identifier passed to the FAISS sidecar. By default the sidecar aliases OpenAI embedding ids to a local sentence-transformers model when ENGRAM_FAISS_ENABLE_ST=1, and otherwise falls back to deterministic hash embeddings."
+        "description": "Embedding model identifier passed to the FAISS sidecar. By default the sidecar aliases OpenAI embedding ids to a local sentence-transformers model when REMNIC_FAISS_ENABLE_ST=1 (or legacy ENGRAM_FAISS_ENABLE_ST=1), and otherwise falls back to deterministic hash embeddings."
       },
       "conversationIndexFaissIndexDir": {
         "type": "string",

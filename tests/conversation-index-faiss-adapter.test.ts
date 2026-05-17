@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import type * as childProcess from "node:child_process";
@@ -64,12 +66,124 @@ function sampleChunks(count: number = 1): ConversationChunk[] {
   }));
 }
 
-test("resolveDefaultFaissScriptPath handles src and dist module locations", () => {
-  const srcUrl = pathToFileURL("/tmp/repo/src/conversation-index/faiss-adapter.ts").toString();
-  const distUrl = pathToFileURL("/tmp/repo/dist/index.js").toString();
+function resolvePythonBin(): string | undefined {
+  for (const candidate of ["python3", "python"]) {
+    const result = spawnSync(candidate, ["--version"], { encoding: "utf-8" });
+    if (result.status === 0) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
 
-  assert.equal(resolveDefaultFaissScriptPath(srcUrl), path.resolve("/tmp/repo/scripts/faiss_index.py"));
-  assert.equal(resolveDefaultFaissScriptPath(distUrl), path.resolve("/tmp/repo/scripts/faiss_index.py"));
+test("resolveDefaultFaissScriptPath handles src and dist module locations", () => {
+  const rootSrcUrl = pathToFileURL("/tmp/repo/src/conversation-index/faiss-adapter.ts").toString();
+  const packageSrcUrl = pathToFileURL(
+    "/tmp/repo/packages/remnic-core/src/conversation-index/faiss-adapter.ts",
+  ).toString();
+  const distUrl = pathToFileURL("/tmp/repo/packages/remnic-core/dist/index.js").toString();
+  const pluginDistUrl = pathToFileURL("/tmp/repo/packages/plugin-openclaw/dist/index.js").toString();
+
+  assert.equal(resolveDefaultFaissScriptPath(rootSrcUrl), path.resolve("/tmp/repo/scripts/faiss_index.py"));
+  assert.equal(
+    resolveDefaultFaissScriptPath(packageSrcUrl),
+    path.resolve("/tmp/repo/packages/remnic-core/scripts/faiss_index.py"),
+  );
+  assert.equal(
+    resolveDefaultFaissScriptPath(distUrl),
+    path.resolve("/tmp/repo/packages/remnic-core/scripts/faiss_index.py"),
+  );
+  assert.equal(
+    resolveDefaultFaissScriptPath(pluginDistUrl),
+    path.resolve("/tmp/repo/packages/plugin-openclaw/scripts/faiss_index.py"),
+  );
+});
+
+test("@remnic/core package ships the default FAISS sidecar", () => {
+  const packageJson = JSON.parse(readFileSync("packages/remnic-core/package.json", "utf-8")) as {
+    files?: string[];
+  };
+  const rootSidecar = readFileSync("scripts/faiss_index.py", "utf-8");
+  const packagedSidecar = readFileSync("packages/remnic-core/scripts/faiss_index.py", "utf-8");
+
+  assert.ok(packageJson.files?.includes("scripts/faiss_index.py"));
+  assert.ok(packageJson.files?.includes("scripts/faiss_requirements.txt"));
+  assert.ok(existsSync("packages/remnic-core/scripts/faiss_index.py"));
+  assert.ok(existsSync("packages/remnic-core/scripts/faiss_requirements.txt"));
+  assert.equal(packagedSidecar, rootSidecar);
+  assert.match(packagedSidecar, /"REMNIC_FAISS_ENABLE_ST" in os\.environ/);
+  assert.ok(
+    packagedSidecar.indexOf('"REMNIC_FAISS_ENABLE_ST"') <
+      packagedSidecar.indexOf('"ENGRAM_FAISS_ENABLE_ST"'),
+  );
+});
+
+test("@remnic/plugin-openclaw package ships the default FAISS sidecar", () => {
+  const packageJson = JSON.parse(readFileSync("packages/plugin-openclaw/package.json", "utf-8")) as {
+    files?: string[];
+  };
+  const rootSidecar = readFileSync("scripts/faiss_index.py", "utf-8");
+  const packagedSidecar = readFileSync("packages/plugin-openclaw/scripts/faiss_index.py", "utf-8");
+
+  assert.ok(packageJson.files?.includes("scripts/faiss_index.py"));
+  assert.ok(packageJson.files?.includes("scripts/faiss_requirements.txt"));
+  assert.ok(existsSync("packages/plugin-openclaw/scripts/faiss_index.py"));
+  assert.ok(existsSync("packages/plugin-openclaw/scripts/faiss_requirements.txt"));
+  assert.equal(packagedSidecar, rootSidecar);
+  assert.match(packagedSidecar, /"REMNIC_FAISS_ENABLE_ST" in os\.environ/);
+  assert.ok(
+    packagedSidecar.indexOf('"REMNIC_FAISS_ENABLE_ST"') <
+      packagedSidecar.indexOf('"ENGRAM_FAISS_ENABLE_ST"'),
+  );
+});
+
+test("FAISS sidecar treats an explicitly empty REMNIC sentence-transformer flag as disabled", {
+  skip: resolvePythonBin() === undefined,
+}, () => {
+  const pythonBin = resolvePythonBin();
+  assert.ok(pythonBin);
+  const modulePath = path.resolve("packages/remnic-core/scripts/faiss_index.py");
+  const script = [
+    "import importlib.util, json",
+    `spec = importlib.util.spec_from_file_location("faiss_index", ${JSON.stringify(modulePath)})`,
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    'print(json.dumps([module.sentence_transformers_enabled(), module.normalize_model_id("text-embedding-3-small")], separators=(",", ":")))',
+  ].join("\n");
+
+  const result = spawnSync(pythonBin, ["-c", script], {
+    encoding: "utf-8",
+    env: {
+      ...process.env,
+      REMNIC_FAISS_ENABLE_ST: "",
+      ENGRAM_FAISS_ENABLE_ST: "1",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), [false, "__hash__"]);
+});
+
+test("FAISS sidecar merge_rows keeps same chunk ids from different sessions", { skip: resolvePythonBin() === undefined }, () => {
+  const pythonBin = resolvePythonBin();
+  assert.ok(pythonBin);
+  const modulePath = path.resolve("packages/remnic-core/scripts/faiss_index.py");
+  const script = [
+    "import importlib.util, json",
+    `spec = importlib.util.spec_from_file_location("faiss_index", ${JSON.stringify(modulePath)})`,
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "existing = [{'id':'same-start-0','sessionKey':'session-A','text':'old','startTs':'2026-02-27T00:00:00.000Z','endTs':'2026-02-27T00:01:00.000Z'}]",
+    "updates = [{'id':'same-start-0','sessionKey':'session-B','text':'new','startTs':'2026-02-27T00:00:00.000Z','endTs':'2026-02-27T00:01:00.000Z'}]",
+    "print(json.dumps(module.merge_rows(existing, updates), separators=(',', ':')))",
+  ].join("\n");
+
+  const result = spawnSync(pythonBin, ["-c", script], { encoding: "utf-8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const rows = JSON.parse(result.stdout) as Array<{ sessionKey: string; text: string }>;
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.sessionKey), ["session-A", "session-B"]);
+  assert.deepEqual(rows.map((row) => row.text), ["old", "new"]);
 });
 
 test("faiss adapter upsertChunks success path parses JSON output", async () => {

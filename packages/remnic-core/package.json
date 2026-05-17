@@ -17,7 +17,9 @@
   },
   "files": [
     "dist",
-    "scripts/ensure-better-sqlite3.mjs"
+    "scripts/ensure-better-sqlite3.mjs",
+    "scripts/faiss_index.py",
+    "scripts/faiss_requirements.txt"
   ],
   "publishConfig": {
     "access": "public",
