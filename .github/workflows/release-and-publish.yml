@@ -451,6 +451,7 @@ jobs:
       - name: Publish OpenClaw plugin to ClawHub
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+          CLAWHUB_OWNER: "remnic"
           CLAWHUB_PACKAGE_NAME: "@remnic/plugin-openclaw"
           NPM_PACKAGE_NAME: "@remnic/plugin-openclaw"
           NPM_PACKAGE_PATH: "packages/plugin-openclaw"
@@ -484,6 +485,7 @@ jobs:
           if clawhub package publish "${tarball}" \
             --family code-plugin \
             --name "${CLAWHUB_PACKAGE_NAME}" \
+            --owner "${CLAWHUB_OWNER}" \
             --display-name "Remnic OpenClaw Plugin" \
             --version "${package_version}" \
             --host-targets openclaw \
