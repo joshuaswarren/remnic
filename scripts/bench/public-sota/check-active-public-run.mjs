@@ -7,6 +7,19 @@ import path from 'node:path';
 const defaultRunId = process.env.DEFAULT_PUBLIC_RUN_ID ?? 'public-matrix-codex-bf9b2643-20260515T052919Z';
 const defaultResultsRoot = process.env.RESULTS_ROOT ?? path.join(os.homedir(), '.remnic/bench/results');
 const [resultsDir = path.join(defaultResultsRoot, defaultRunId)] = process.argv.slice(2);
+const checkedAtMs = parseNowMs();
+
+function parseNowMs() {
+  const override = process.env.CHECK_ACTIVE_PUBLIC_RUN_NOW;
+  if (!override) {
+    return Date.now();
+  }
+  const parsed = Date.parse(override);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid CHECK_ACTIVE_PUBLIC_RUN_NOW: ${override}`);
+  }
+  return parsed;
+}
 
 function hasTmuxSession(name) {
   try {
@@ -212,7 +225,7 @@ function newestDiagnostics(diagDir, count, lifecycleStart) {
   };
 }
 
-function parseBenchmarkProgress(lines, benchmark) {
+function parseBenchmarkProgress(lines, benchmark, lifecycleStart) {
   if (!benchmark) {
     return null;
   }
@@ -229,7 +242,15 @@ function parseBenchmarkProgress(lines, benchmark) {
   const completed = Number(match[2]);
   const total = Number(match[3]);
   const elapsedSeconds = Number(match[4]);
-  const remainingSeconds = Number(match[5]);
+  const remainingSecondsAtCheckpoint = Number(match[5]);
+  const checkpointAtMs = lifecycleStart
+    ? lifecycleStart.timestampMs + (elapsedSeconds * 1000)
+    : checkedAtMs;
+  const estimatedFinishAtMs = checkpointAtMs + (remainingSecondsAtCheckpoint * 1000);
+  const remainingSeconds = Math.max(
+    0,
+    Math.round((estimatedFinishAtMs - checkedAtMs) / 1000),
+  );
   return {
     line: latest,
     benchmark: match[1],
@@ -238,8 +259,11 @@ function parseBenchmarkProgress(lines, benchmark) {
     remaining: total - completed,
     percent: total > 0 ? Math.round((completed / total) * 10000) / 100 : 0,
     elapsedSeconds,
+    checkpointAt: new Date(checkpointAtMs).toISOString(),
+    checkpointAgeSeconds: Math.max(0, Math.round((checkedAtMs - checkpointAtMs) / 1000)),
+    remainingSecondsAtCheckpoint,
     remainingSeconds,
-    estimatedFinishAt: new Date(Date.now() + remainingSeconds * 1000).toISOString(),
+    estimatedFinishAt: new Date(estimatedFinishAtMs).toISOString(),
   };
 }
 
@@ -300,7 +324,7 @@ const summary = {
     : [],
   memoryArenaResultFiles: jsonFiles.filter((name) => name.startsWith('memory-arena-')),
   runLogTail: runLogTail.slice(-12),
-  progress: parseBenchmarkProgress(progressLines.lines, benchmark),
+  progress: parseBenchmarkProgress(progressLines.lines, benchmark, lifecycleStart),
   progressSource: {
     mode: progressLines.mode,
     markerFound: progressLines.markerFound,
@@ -310,12 +334,12 @@ const summary = {
   monitor: monitorStat
     ? {
         mtime: monitorStat.mtime.toISOString(),
-        ageSeconds: Math.round((Date.now() - monitorStat.mtimeMs) / 1000),
+        ageSeconds: Math.round((checkedAtMs - monitorStat.mtimeMs) / 1000),
         tail: readLines(monitorPath, 12),
       }
     : null,
   diagnostics: newestDiagnostics(path.join(resultsDir, 'codex-cli-diagnostics'), 30, lifecycleStart),
-  checkedAt: new Date().toISOString(),
+  checkedAt: new Date(checkedAtMs).toISOString(),
 };
 
 console.log(JSON.stringify(summary, null, 2));

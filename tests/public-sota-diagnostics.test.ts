@@ -1860,6 +1860,17 @@ test("active public run progress ignores pre-restart checkpoints", async () => {
       ].join("\n"),
       "utf8",
     );
+    const activeRunEnv = {
+      ...process.env,
+      CHECK_ACTIVE_PUBLIC_RUN_NOW: "2026-05-17T04:00:00.000Z",
+    };
+    const monitorPath = path.join(runDir, "monitor-30m.log");
+    await writeFile(monitorPath, "status monitor\n", "utf8");
+    await utimes(
+      monitorPath,
+      new Date("2026-05-17T03:50:00.000Z"),
+      new Date("2026-05-17T03:50:00.000Z"),
+    );
     await writeFile(
       path.join(runDir, "run.log"),
       [
@@ -1873,10 +1884,12 @@ test("active public run progress ignores pre-restart checkpoints", async () => {
     const beforeCheckpoint = await execFileAsync(
       process.execPath,
       [path.join("scripts", "bench", "public-sota", "check-active-public-run.mjs"), runDir],
-      { cwd: process.cwd(), maxBuffer: 1024 * 1024 },
+      { cwd: process.cwd(), env: activeRunEnv, maxBuffer: 1024 * 1024 },
     );
     const beforeStatus = JSON.parse(beforeCheckpoint.stdout);
     assert.equal(beforeStatus.progress, null);
+    assert.equal(beforeStatus.checkedAt, "2026-05-17T04:00:00.000Z");
+    assert.equal(beforeStatus.monitor.ageSeconds, 600);
     assert.equal(beforeStatus.progressSource.mode, "run-log-lines-since-lifecycle-start");
     assert.equal(beforeStatus.progressSource.markerFound, true);
     assert.equal(beforeStatus.progressSource.scannedLines, 0);
@@ -1895,12 +1908,17 @@ test("active public run progress ignores pre-restart checkpoints", async () => {
     const afterCheckpoint = await execFileAsync(
       process.execPath,
       [path.join("scripts", "bench", "public-sota", "check-active-public-run.mjs"), runDir],
-      { cwd: process.cwd(), maxBuffer: 1024 * 1024 },
+      { cwd: process.cwd(), env: activeRunEnv, maxBuffer: 1024 * 1024 },
     );
     const afterStatus = JSON.parse(afterCheckpoint.stdout);
     assert.equal(afterStatus.progress.completed, 50);
     assert.equal(afterStatus.progress.total, 4209);
     assert.equal(afterStatus.progress.remaining, 4159);
+    assert.equal(afterStatus.progress.checkpointAt, "2026-05-17T02:40:00.000Z");
+    assert.equal(afterStatus.progress.checkpointAgeSeconds, 4800);
+    assert.equal(afterStatus.progress.remainingSecondsAtCheckpoint, 199632);
+    assert.equal(afterStatus.progress.remainingSeconds, 194832);
+    assert.equal(afterStatus.progress.estimatedFinishAt, "2026-05-19T10:07:12.000Z");
     assert.equal(afterStatus.progressSource.scannedLines, 1);
     assert.doesNotMatch(afterStatus.progress.line, /1850\/4209/);
 
@@ -1919,11 +1937,16 @@ test("active public run progress ignores pre-restart checkpoints", async () => {
     const longLogCheckpoint = await execFileAsync(
       process.execPath,
       [path.join("scripts", "bench", "public-sota", "check-active-public-run.mjs"), runDir],
-      { cwd: process.cwd(), maxBuffer: 1024 * 1024 },
+      { cwd: process.cwd(), env: activeRunEnv, maxBuffer: 1024 * 1024 },
     );
     const longLogStatus = JSON.parse(longLogCheckpoint.stdout);
     assert.equal(longLogStatus.progress.completed, 100);
     assert.equal(longLogStatus.progress.total, 4209);
+    assert.equal(longLogStatus.progress.checkpointAt, "2026-05-17T03:20:00.000Z");
+    assert.equal(longLogStatus.progress.checkpointAgeSeconds, 2400);
+    assert.equal(longLogStatus.progress.remainingSecondsAtCheckpoint, 197232);
+    assert.equal(longLogStatus.progress.remainingSeconds, 194832);
+    assert.equal(longLogStatus.progress.estimatedFinishAt, "2026-05-19T10:07:12.000Z");
     assert.equal(longLogStatus.progressSource.markerFound, true);
     assert.equal(longLogStatus.progressSource.scannedLines, 5002);
   } finally {
