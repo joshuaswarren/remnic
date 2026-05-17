@@ -9,7 +9,7 @@
  */
 
 import { createWeCloneProxy } from "./proxy.js";
-import { parseConfig } from "./config.js";
+import { parseConfig, type WeCloneConnectorConfig } from "./config.js";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
@@ -42,63 +42,83 @@ function defaultConfigPath(): string {
   return resolve(home, ".remnic", "connectors", "weclone.json");
 }
 
-// Parse --config first so an explicit path takes precedence over env-var
-// resolution. Only fall back to defaultConfigPath() when the user has not
-// supplied an explicit --config flag. This lets `remnic-weclone-proxy
-// --config /abs/path` work even in environments where REMNIC_HOME is
-// misconfigured, without defaultConfigPath() (and any env-var validation
-// it contains) running unnecessarily.
-const args = process.argv.slice(2);
-let configPath: string | null = null;
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--config") {
-    if (!args[i + 1]) {
-      console.error("Error: --config requires a path argument");
-      process.exit(1);
+async function main(): Promise<void> {
+  // Parse --config first so an explicit path takes precedence over env-var
+  // resolution. Only fall back to defaultConfigPath() when the user has not
+  // supplied an explicit --config flag. This lets `remnic-weclone-proxy
+  // --config /abs/path` work even in environments where REMNIC_HOME is
+  // misconfigured, without defaultConfigPath() (and any env-var validation
+  // it contains) running unnecessarily.
+  const args = process.argv.slice(2);
+  let configPath: string | null = null;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--config") {
+      if (!args[i + 1]) {
+        console.error("Error: --config requires a path argument");
+        process.exit(1);
+      }
+      configPath = resolve(args[i + 1]);
+      i++;
     }
-    configPath = resolve(args[i + 1]);
-    i++;
   }
-}
 
-if (configPath === null) {
-  configPath = defaultConfigPath();
-}
+  if (configPath === null) {
+    configPath = defaultConfigPath();
+  }
 
-if (!existsSync(configPath)) {
-  console.error(`Config not found: ${configPath}`);
-  console.error("Run: remnic connectors install weclone");
-  process.exit(1);
-}
+  if (!existsSync(configPath)) {
+    console.error(`Config not found: ${configPath}`);
+    console.error("Run: remnic connectors install weclone");
+    process.exit(1);
+  }
 
-let raw: unknown;
-try {
-  raw = JSON.parse(readFileSync(configPath, "utf-8"));
-} catch (err) {
-  console.error(`Failed to parse config at ${configPath}: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-}
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(configPath, "utf-8"));
+  } catch (err) {
+    console.error(`Failed to parse config at ${configPath}: ${errorMessage(err)}`);
+    process.exit(1);
+  }
 
-if (typeof raw !== "object" || raw === null) {
-  console.error(`Config at ${configPath} must be a JSON object`);
-  process.exit(1);
-}
+  if (typeof raw !== "object" || raw === null) {
+    console.error(`Config at ${configPath} must be a JSON object`);
+    process.exit(1);
+  }
 
-const config = parseConfig(raw);
-const proxy = createWeCloneProxy(config);
+  let config: WeCloneConnectorConfig;
+  try {
+    config = parseConfig(raw);
+  } catch (err) {
+    console.error(`Invalid config at ${configPath}: ${errorMessage(err)}`);
+    process.exit(1);
+  }
 
-proxy.start().then(() => {
+  const proxy = createWeCloneProxy(config);
+  try {
+    await proxy.start();
+  } catch (err) {
+    console.error(`Failed to start WeClone proxy: ${errorMessage(err)}`);
+    process.exit(1);
+  }
+
   console.log(`WeClone memory proxy listening on :${config.proxyPort}`);
   console.log(`  WeClone API: ${config.wecloneApiUrl}`);
   console.log(`  Remnic daemon: ${config.remnicDaemonUrl}`);
-});
 
-process.on("SIGINT", () => {
-  proxy.stop();
-  process.exit(0);
-});
-process.on("SIGTERM", () => {
-  proxy.stop();
-  process.exit(0);
+  const stopAndExit = () => {
+    void proxy.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", stopAndExit);
+  process.on("SIGTERM", stopAndExit);
+}
+
+void main().catch((err) => {
+  console.error(`Failed to start WeClone proxy: ${errorMessage(err)}`);
+  process.exit(1);
 });
