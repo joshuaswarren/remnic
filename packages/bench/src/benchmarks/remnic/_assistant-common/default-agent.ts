@@ -213,12 +213,19 @@ export function neutralizeUnsupportedGenderedPronouns(text: string): string {
 export function finalizeAssistantOutput(
   request: { prompt: string; memoryView: string },
   text: string,
+  options: { allowSpecializedFallback?: boolean } = {},
 ): string {
   const neutralized = neutralizeUnsupportedGenderedPronouns(text);
-  const baseText = shouldUseSpecializedAssistantFallback(neutralized)
-    ? buildSpecializedAssistantOutput(request) ?? neutralized
-    : neutralized;
-  const additions = buildGroundedFrameAdditions(request, baseText);
+  const allowSpecializedFallback = options.allowSpecializedFallback === true;
+  const shouldUseFallback = shouldUseSpecializedAssistantFallback(neutralized);
+  const baseText =
+    allowSpecializedFallback && shouldUseFallback
+      ? buildSpecializedAssistantOutput(request) ?? neutralized
+      : neutralized;
+  const additions =
+    !allowSpecializedFallback && shouldUseFallback
+      ? []
+      : buildGroundedFrameAdditions(request, baseText);
   if (additions.length === 0) {
     return baseText;
   }

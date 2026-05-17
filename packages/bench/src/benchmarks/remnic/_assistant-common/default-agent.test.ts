@@ -101,6 +101,7 @@ test("finalizeAssistantOutput specializes next-best-action with explicit deadlin
         "Recent memory items:\n- Rollback runbook for Project Atlas is approximately 60% drafted; missing the failback-to-warm-standby section.\n- Remnic PR #481 has been waiting on Alex's review for 48 hours and blocks Jordan's next task.\n- Alex committed to Priya yesterday to send a written latency-target commitment by EOD Thursday.\nStated positions:\n- commitments: Alex treats written commitments as hard deadlines.\n- unblocking peers: Alex prioritizes unblocking peers over own deep work.",
     },
     "[deterministic-assistant]\nGeneric answer.",
+    { allowSpecializedFallback: true },
   );
 
   assert.match(output, /Do \*\*Remnic PR #481 review\*\* now/);
@@ -123,6 +124,24 @@ test("finalizeAssistantOutput preserves provider-backed answers even when specia
   assert.match(output, /^Review PR #481 first/);
   assert.doesNotMatch(output, /Do \*\*Remnic PR #481 review\*\* now/);
   assert.match(output, /Leverage frame:/);
+});
+
+test("finalizeAssistantOutput does not replace uncertain provider-backed answers with fixture fallbacks", () => {
+  const output = finalizeAssistantOutput(
+    {
+      prompt:
+        "I have 45 minutes free. Given what you know about my current commitments and open work, what's the single highest-leverage thing I should do right now, and why?",
+      memoryView:
+        "Recent memory items:\n- Rollback runbook for Project Atlas is approximately 60% drafted; missing the failback-to-warm-standby section.\n- Remnic PR #481 has been waiting on Alex's review for 48 hours and blocks Jordan's next task.\n- Alex committed to Priya yesterday to send a written latency-target commitment by EOD Thursday.\nStated positions:\n- commitments: Alex treats written commitments as hard deadlines.\n- unblocking peers: Alex prioritizes unblocking peers over own deep work.",
+    },
+    "I don't know.",
+  );
+
+  assert.match(output, /^I don't know\./);
+  assert.doesNotMatch(output, /Do \*\*Remnic PR #481 review\*\* now/);
+  assert.doesNotMatch(output, /Concrete 45-minute outcome/);
+  assert.doesNotMatch(output, /Calibration note:/);
+  assert.doesNotMatch(output, /Leverage frame:/);
 });
 
 test("finalizeAssistantOutput appends a grounded synthesis frame for synthesis prompts", () => {
@@ -165,6 +184,7 @@ test("finalizeAssistantOutput specializes the Aurora meeting prep brief from mem
         "Recent memory items:\n- Priya Shah leads the Aurora team; Aurora depends on Atlas's storage API.\n- Priya's last 1:1 with Alex flagged concerns about Atlas write-latency SLOs.\n- Atlas p99 write latency is 180ms; Aurora's target is 120ms.\n- Hiroki Tanaka is joining the meeting; new skip-level, has not met Alex before.\n- Alex decided last week to move Atlas to a sharded read cache rather than expanding the write-through cluster.",
     },
     "[deterministic-assistant]\nGeneric prep.",
+    { allowSpecializedFallback: true },
   );
 
   assert.match(output, /Atlas\/Aurora latency gap/);
@@ -182,6 +202,7 @@ test("finalizeAssistantOutput specializes Monday morning brief without inventing
         "Recent memory items:\n- Project Atlas migration has a soft-launch next Tuesday; rollback runbook is partially written.\n- Alex blocks Mondays for deep work and declines non-urgent meetings.\n- Remnic PR #481 is waiting on Alex's review -- touches retrieval-personalization.\n- Jordan Okafor joined the team last week and has not yet been paired with Alex.\nOpen threads:\n- Draft 1 of the Atlas rollback runbook is in progress -- last updated two days ago.\n- Decision pending: whether to co-schedule the Atlas launch with the Aurora team's release window.",
     },
     "[deterministic-assistant]\nGeneric brief.",
+    { allowSpecializedFallback: true },
   );
 
   assert.match(output, /finish the Atlas rollback runbook/);
