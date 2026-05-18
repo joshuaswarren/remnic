@@ -1,4 +1,4 @@
-import { isReplayRole, type ReplayRole } from "../types.js";
+import { isReplayRole, parseIsoTimestamp, type ReplayRole } from "../types.js";
 
 type NormalizeRoleOptions = {
   assistantAliases?: string[];
@@ -64,5 +64,6 @@ export function normalizeReplayTimestamp(value: unknown, options: NormalizeTimes
   if (typeof value !== "string") return null;
   const raw = options.trimString === false ? value : value.trim();
   if (raw.length === 0) return null;
-  return toIso(Date.parse(raw));
+  const millis = parseIsoTimestamp(raw);
+  return millis === null ? null : toIso(millis);
 }

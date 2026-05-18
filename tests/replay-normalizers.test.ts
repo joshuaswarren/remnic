@@ -271,3 +271,35 @@ test("normalizers skip out-of-range numeric timestamps instead of throwing", asy
   assert.equal(claude.warnings.length > 0, true);
   assert.equal(chatgpt.warnings.length > 0, true);
 });
+
+test("normalizers reject overflowed string timestamps instead of rewriting them", async () => {
+  const openclaw = await openclawReplayNormalizer.parse(
+    [{ role: "user", content: "x", timestamp: "2024-02-31T10:00:00Z" }],
+    {},
+  );
+  const claude = await claudeReplayNormalizer.parse(
+    { chat_messages: [{ sender: "human", text: "x", created_at: "2024-02-31T10:00:00Z" }] },
+    {},
+  );
+
+  assert.equal(openclaw.turns.length, 0);
+  assert.equal(claude.turns.length, 0);
+  assert.equal(openclaw.warnings.length > 0, true);
+  assert.equal(claude.warnings.length > 0, true);
+});
+
+test("normalizers reject non-UTC string timestamps instead of Date.parse coercion", async () => {
+  const openclaw = await openclawReplayNormalizer.parse(
+    [{ role: "user", content: "x", timestamp: "February 25, 2026 10:00 AM" }],
+    {},
+  );
+  const claude = await claudeReplayNormalizer.parse(
+    { chat_messages: [{ sender: "human", text: "x", created_at: "2026-02-25T10:00:00-05:00" }] },
+    {},
+  );
+
+  assert.equal(openclaw.turns.length, 0);
+  assert.equal(claude.turns.length, 0);
+  assert.equal(openclaw.warnings.length > 0, true);
+  assert.equal(claude.warnings.length > 0, true);
+});
