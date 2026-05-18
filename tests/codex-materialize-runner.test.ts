@@ -22,9 +22,16 @@ import { mkdtempSync, mkdirSync, existsSync, readdirSync, rmSync } from "node:fs
 import os from "node:os";
 import path from "node:path";
 
-import { runCodexMaterialize } from "../src/connectors/codex-materialize-runner.js";
+import {
+  runCodexMaterialize,
+  runPostConsolidationMaterialize,
+} from "../src/connectors/codex-materialize-runner.js";
 import { ensureSentinel, SENTINEL_FILE } from "../src/connectors/codex-materialize.js";
 import { parseConfig } from "../src/config.js";
+import {
+  SecureStoreLockedError,
+  writeMaybeEncryptedFile,
+} from "../src/secure-store/index.js";
 import { StorageManager } from "../src/storage.js";
 
 function makeTempDir(prefix: string): string {
@@ -233,6 +240,92 @@ test("runner propagates schema errors instead of silently returning null", async
       }),
       /EISDIR|ENOTEMPTY|EEXIST|EPERM|EACCES|is a directory|directory not empty|file already exists/iu,
     );
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("runner skips before reading locked memories when Codex sentinel is missing", async () => {
+  const memoryDir = makeTempDir("codex-materialize-runner-nosentinel-memdir-");
+  const workspaceDir = makeTempDir("codex-materialize-runner-nosentinel-workspace-");
+  const { root: codexHome } = makeCodexHome();
+
+  try {
+    const lockedMemoryPath = path.join(memoryDir, "facts", "2026-04-02", "locked.md");
+    await writeMaybeEncryptedFile(
+      lockedMemoryPath,
+      "---\nid: locked-test-memory\ncategory: fact\n---\nsynthetic locked memory",
+      Buffer.alloc(32, 0x42),
+      {},
+      memoryDir,
+    );
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir,
+      qmdEnabled: false,
+      codexMaterializeMemories: true,
+    });
+
+    const result = await runCodexMaterialize({
+      config,
+      codexHome,
+      reason: "manual",
+      now: new Date("2026-04-02T00:00:00Z"),
+    });
+
+    assert.ok(result, "missing sentinel should return an expected skip result");
+    assert.equal(result.skippedNoSentinel, true);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
+test("runner propagates opted-in storage read failures while post-consolidation catches them", async () => {
+  const memoryDir = makeTempDir("codex-materialize-runner-readfail-memdir-");
+  const workspaceDir = makeTempDir("codex-materialize-runner-readfail-workspace-");
+  const { root: codexHome, memoriesDir } = makeCodexHome();
+
+  try {
+    const lockedMemoryPath = path.join(memoryDir, "facts", "2026-04-02", "locked.md");
+    await writeMaybeEncryptedFile(
+      lockedMemoryPath,
+      "---\nid: locked-test-memory\ncategory: fact\n---\nsynthetic locked memory",
+      Buffer.alloc(32, 0x42),
+      {},
+      memoryDir,
+    );
+    ensureSentinel(memoriesDir, "default", new Date("2026-04-02T00:00:00Z"));
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir,
+      qmdEnabled: false,
+      codexMaterializeMemories: true,
+    });
+
+    await assert.rejects(
+      runCodexMaterialize({
+        config,
+        codexHome,
+        reason: "manual",
+        now: new Date("2026-04-02T00:00:00Z"),
+      }),
+      (error) => error instanceof SecureStoreLockedError,
+    );
+
+    const postConsolidationResult = await runPostConsolidationMaterialize("[test]", {
+      config,
+      codexHome,
+      now: new Date("2026-04-02T00:00:00Z"),
+    });
+    assert.equal(postConsolidationResult, null);
   } finally {
     rmSync(memoryDir, { recursive: true, force: true });
     rmSync(workspaceDir, { recursive: true, force: true });

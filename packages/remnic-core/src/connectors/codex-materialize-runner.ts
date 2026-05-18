@@ -16,6 +16,7 @@ import { log } from "../logger.js";
 import { StorageManager } from "../storage.js";
 import type { PluginConfig, MemoryFile } from "../types.js";
 import {
+  hasCodexMaterializeSentinel,
   materializeForNamespace,
   type MaterializeResult,
   type RolloutSummaryInput,
@@ -88,18 +89,19 @@ export async function runCodexMaterialize(
   if (options.memories) {
     memories = options.memories;
   } else {
+    if (!hasCodexMaterializeSentinel(options.codexHome)) {
+      return materializeForNamespace(namespace, {
+        memories: [],
+        codexHome: options.codexHome,
+        maxSummaryTokens: cfg.codexMaterializeMaxSummaryTokens,
+        rolloutRetentionDays: cfg.codexMaterializeRolloutRetentionDays,
+        rolloutSummaries: options.rolloutSummaries,
+        now: options.now,
+      });
+    }
     const nsDir = resolveNamespaceDir(memoryDir, namespace, cfg);
     const storage = new StorageManager(nsDir);
-    try {
-      memories = await storage.readAllMemories();
-    } catch (error) {
-      log.warn(
-        `[codex-materialize] skipped — failed to read memories from ${nsDir}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return null;
-    }
+    memories = await storage.readAllMemories();
   }
 
   // Intentionally NOT catching here: per the JSDoc contract above,

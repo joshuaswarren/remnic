@@ -156,8 +156,7 @@ export function materializeForNamespace(
     warn: (msg) => log.warn(`[codex-materialize] ${msg}`),
     debug: (msg) => log.debug(`[codex-materialize] ${msg}`),
   };
-  const codexHome = resolveCodexHome(options.codexHome);
-  const memoriesDir = path.join(codexHome, "memories");
+  const memoriesDir = resolveCodexMemoriesDir(options.codexHome);
   const now = options.now ?? new Date();
   // Honor `0` as "no summary budget" — parseConfig already clamps to non-
   // negative integers, so any provided number is meaningful. Only fall back
@@ -753,6 +752,14 @@ function resolveCodexHome(override?: string): string {
   const fromEnv = readEnvVar("CODEX_HOME");
   if (fromEnv && fromEnv.trim().length > 0) return fromEnv;
   return path.join(resolveHomeDir(), ".codex");
+}
+
+export function resolveCodexMemoriesDir(codexHome?: string): string {
+  return path.join(resolveCodexHome(codexHome), "memories");
+}
+
+export function hasCodexMaterializeSentinel(codexHome?: string): boolean {
+  return readSentinel(path.join(resolveCodexMemoriesDir(codexHome), SENTINEL_FILE)) !== null;
 }
 
 function readSentinel(sentinelPath: string): SentinelFile | null {
