@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   buildBenchRunnerArgs,
   createFallbackBenchOutputDir,
+  findUnsupportedFallbackBenchOptions,
   resolveFallbackBenchResultPath,
 } from "./bench-fallback.js";
 import type { ParsedBenchArgs } from "./bench-args.js";
@@ -45,6 +46,18 @@ test("buildBenchRunnerArgs forwards a run-scoped output directory", () => {
     "/tmp/datasets/longmemeval",
     "--output-dir",
     "/tmp/remnic-bench/fallback-runs/longmemeval-1710000000000-123",
+  ]);
+});
+
+test("findUnsupportedFallbackBenchOptions rejects package-only timeout options", () => {
+  const parsed = createParsedBenchArgs({
+    drainTimeout: 1,
+    max429WaitMs: 2,
+  });
+
+  assert.deepEqual(findUnsupportedFallbackBenchOptions(parsed), [
+    "--drain-timeout",
+    "--max-429-wait",
   ]);
 });
 

@@ -194,6 +194,7 @@ import {
 import {
   buildBenchRunnerArgs,
   createFallbackBenchOutputDir,
+  findUnsupportedFallbackBenchOptions,
   resolveFallbackBenchResultPath,
 } from "./bench-fallback.js";
 import {
@@ -1125,32 +1126,10 @@ async function runBenchViaFallback(
       'Fallback benchmark runner does not support --runtime-profile "openclaw-chain". Build/install @remnic/bench to use package-backed runtime profiles.',
     );
   }
-  if (
-    parsed.modelSource !== undefined ||
-    parsed.gatewayAgentId !== undefined ||
-    parsed.fastGatewayAgentId !== undefined ||
-    parsed.systemProvider !== undefined ||
-    parsed.systemModel !== undefined ||
-    parsed.systemBaseUrl !== undefined ||
-    parsed.judgeProvider !== undefined ||
-    parsed.judgeModel !== undefined ||
-    parsed.judgeBaseUrl !== undefined ||
-    parsed.internalProvider !== undefined ||
-    parsed.internalModel !== undefined ||
-    parsed.internalBaseUrl !== undefined ||
-    parsed.internalApiKey !== undefined ||
-    parsed.internalDisableThinking === true ||
-    parsed.internalCodexReasoningEffort !== undefined ||
-    parsed.amaBenchJudgeProtocol !== undefined ||
-    parsed.amaBenchCrossJudgeProvider !== undefined ||
-    parsed.amaBenchCrossJudgeModel !== undefined ||
-    parsed.amaBenchCrossJudgeBaseUrl !== undefined ||
-    parsed.amaBenchCrossJudgeApiKey !== undefined ||
-    parsed.disableThinking === true ||
-    parsed.requestTimeout !== undefined
-  ) {
+  const unsupportedOptions = findUnsupportedFallbackBenchOptions(parsed);
+  if (unsupportedOptions.length > 0) {
     throw new Error(
-      "Fallback benchmark runner does not support provider-backed, gateway, or thinking/timeout flags. Build/install @remnic/bench to use those options.",
+      `Fallback benchmark runner does not support provider-backed, gateway, or thinking/timeout flags (${unsupportedOptions.join(", ")}). Build/install @remnic/bench to use those options.`,
     );
   }
   if (!fs.existsSync(EVAL_RUNNER_PATH)) {
