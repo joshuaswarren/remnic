@@ -85,7 +85,7 @@
     "check:openclaw-plugin-sync": "node scripts/check-openclaw-plugin-sync.mjs",
     "check:openclaw-sdk-surface": "node scripts/check-openclaw-sdk-surface.mjs",
     "check:openclaw-sdk-surface:required": "node scripts/check-openclaw-sdk-surface.mjs --require",
-    "build": "pnpm run check:openclaw-plugin-sync && tsup && node scripts/copy-admin-console.mjs",
+    "build": "pnpm --filter @remnic/core build && pnpm run check:openclaw-plugin-sync && tsup && node scripts/copy-admin-console.mjs",
     "dev": "tsup --watch",
     "check-types": "tsc --noEmit",
     "check-config-contract": "tsx scripts/validate-config-contract.ts",

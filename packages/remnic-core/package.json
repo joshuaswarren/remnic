@@ -13,6 +13,10 @@
     "./access-cli": {
       "import": "./dist/access-cli.js",
       "types": "./dist/access-cli.d.ts"
+    },
+    "./cli": {
+      "import": "./dist/cli.js",
+      "types": "./dist/cli.d.ts"
     }
   },
   "files": [

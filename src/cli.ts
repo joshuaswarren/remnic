@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/cli.js";
+export * from "@remnic/core/cli";

@@ -20,6 +20,9 @@
     "paths": {
       "@remnic/core": [
         "./packages/remnic-core/src/index.ts"
+      ],
+      "@remnic/core/*": [
+        "./packages/remnic-core/src/*.ts"
       ]
     }
   },
