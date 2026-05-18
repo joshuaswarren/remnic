@@ -34,7 +34,7 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10
+          package_json_file: candidate/package.json
 
       - name: Setup Node
         uses: actions/setup-node@v4

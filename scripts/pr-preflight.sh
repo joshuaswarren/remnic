@@ -10,6 +10,11 @@ run() {
   "$@"
 }
 
+run_quiet() {
+  echo "[preflight] $*"
+  "$@" >/dev/null
+}
+
 changed_files() {
   local base_ref="${PREFLIGHT_BASE_REF:-origin/main}"
 
@@ -42,6 +47,8 @@ run npm run check-types
 run npm run check-config-contract
 run npm run plugin:inspect
 run bash scripts/check-review-patterns.sh
+run pnpm exec turbo --version
+run_quiet pnpm exec turbo run check-types --dry=json
 
 if needs_entity_hardening; then
   run npm run test:entity-hardening
