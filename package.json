@@ -58,7 +58,7 @@
     "dist",
     "bin/engram-access.js",
     "openclaw.plugin.json",
-    "packages/remnic-core/scripts/ensure-better-sqlite3.mjs"
+    "scripts/ensure-better-sqlite3.mjs"
   ],
   "dependencies": {
     "@remnic/core": "workspace:^",
@@ -116,7 +116,7 @@
     "review:patterns": "bash scripts/check-review-patterns.sh",
     "hooks:install": "bash scripts/install-git-hooks.sh",
     "migrate": "tsx scripts/migrate.ts",
-    "postinstall": "node packages/remnic-core/scripts/ensure-better-sqlite3.mjs",
+    "postinstall": "node scripts/ensure-better-sqlite3.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {

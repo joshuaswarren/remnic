@@ -69,4 +69,36 @@ describe("root CLI package boundaries", () => {
       );
     }
   });
+
+  it("root postinstall runs a root-level script included in the package files", () => {
+    const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
+      files?: string[];
+      scripts?: { postinstall?: string };
+    };
+    const postinstall = manifest.scripts?.postinstall ?? "";
+    const postinstallHelper = readFileSync(
+      resolve("scripts/ensure-better-sqlite3.mjs"),
+      "utf8",
+    );
+
+    assert.equal(
+      postinstall,
+      "node scripts/ensure-better-sqlite3.mjs",
+      "root postinstall should not depend on workspace-internal package paths",
+    );
+    assert.ok(
+      manifest.files?.includes("scripts/ensure-better-sqlite3.mjs"),
+      "root package files must include the postinstall helper",
+    );
+    assert.doesNotMatch(
+      postinstall,
+      /packages\/remnic-core\//,
+      "root postinstall must use a stable root-level published path",
+    );
+    assert.doesNotMatch(
+      postinstallHelper,
+      /packages\/remnic-core\//,
+      "root postinstall helper must not delegate through workspace-internal paths",
+    );
+  });
 });
