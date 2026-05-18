@@ -18,7 +18,7 @@ import {
 import { registerTools } from "./tools.js";
 import { registerLcmTools } from "./lcm/index.js";
 import { estimateTokens as estimateLcmTokens } from "./lcm/archive.js";
-import { registerCli } from "./cli.js";
+import { registerCli } from "@remnic/core/cli";
 import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
 import { recordObjectiveStateSnapshotsFromAgentMessages } from "./objective-state-writers.js";
 import { probeQmdAvailability } from "./qmd-availability-probe.js";

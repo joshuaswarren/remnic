@@ -49,6 +49,9 @@
     },
     "./access-cli": {
       "import": "./dist/access-cli.js"
+    },
+    "./cli": {
+      "import": "./dist/cli.js"
     }
   },
   "files": [

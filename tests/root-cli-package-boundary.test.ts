@@ -42,4 +42,31 @@ describe("root CLI package boundaries", () => {
       "root build should prepare @remnic/core dist before running root tsup",
     );
   });
+
+  it("root package exposes each CLI shim through package exports and build entries", () => {
+    const manifest = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as {
+      exports?: Record<string, { import?: string }>;
+    };
+    const tsupConfig = readFileSync(resolve("tsup.config.ts"), "utf8");
+
+    for (const [filePath] of ROOT_CLI_SHIMS) {
+      const subpath = `./${filePath
+        .replace(/^src\//, "")
+        .replace(/\.ts$/, "")}`;
+      const distPath = `./dist/${filePath
+        .replace(/^src\//, "")
+        .replace(/\.ts$/, ".js")}`;
+
+      assert.equal(
+        manifest.exports?.[subpath]?.import,
+        distPath,
+        `${subpath} must resolve to ${distPath} through package exports`,
+      );
+      assert.ok(
+        tsupConfig.includes(`"${filePath}"`) ||
+          tsupConfig.includes(`'${filePath}'`),
+        `${filePath} must be a root tsup entry so ${distPath} exists after build`,
+      );
+    }
+  });
 });
