@@ -395,6 +395,11 @@ test("writePair refreshes expired independent verdicts with actionable lower-con
     assert.equal(refreshed.resolution, undefined);
     assert.equal(refreshed.lastReviewedAt, undefined);
     assert.equal(readPair(dir, dormant.pairId)?.verdict, "contradicts");
+
+    const unresolved = listPairs(dir, { filter: "unresolved" });
+    assert.equal(unresolved.total, 1);
+    assert.equal(unresolved.pairs[0]?.pairId, dormant.pairId);
+    assert.equal(unresolved.pairs[0]?.verdict, "contradicts");
   } finally {
     await cleanup();
   }
