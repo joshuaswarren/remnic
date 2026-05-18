@@ -2795,7 +2795,10 @@ export class EngramMcpServer {
       // ── Contradiction Review (issue #520) ──────────────────────────────────
       case "engram.review_list":
       case "remnic.review_list": {
-        const { listPairs } = await import("./contradiction/contradiction-review.js");
+        const {
+          isDefaultReviewNamespace,
+          listPairs,
+        } = await import("./contradiction/contradiction-review.js");
         const VALID_REVIEW_FILTERS = new Set(["all", "unresolved", "contradicts", "independent", "duplicates", "needs-user"]);
         const rawFilter = typeof args.filter === "string" ? args.filter : "unresolved";
         if (!VALID_REVIEW_FILTERS.has(rawFilter)) {
@@ -2804,7 +2807,17 @@ export class EngramMcpServer {
         const filter = rawFilter as "all" | "unresolved" | "contradicts" | "independent" | "duplicates" | "needs-user";
         const ns = typeof args.namespace === "string" ? args.namespace : undefined;
         const limit = typeof args.limit === "number" ? args.limit : 50;
-        return listPairs(this.service.memoryDir, { filter, namespace: ns, limit });
+        const resolved = await this.service.getReadableStorageForNamespace(ns, effectivePrincipal);
+        const reviewNamespace = this.service.configRef.namespacesEnabled ? resolved.namespace : undefined;
+        const includeUnscopedForNamespace = Boolean(
+          reviewNamespace && isDefaultReviewNamespace(this.service.configRef.defaultNamespace, ns, reviewNamespace),
+        );
+        return listPairs(this.service.memoryDir, {
+          filter,
+          namespace: reviewNamespace,
+          includeUnscopedForNamespace,
+          limit,
+        });
       }
       case "engram.review_resolve":
       case "remnic.review_resolve": {
@@ -2818,6 +2831,10 @@ export class EngramMcpServer {
         return executeResolution(this.service.memoryDir, this.service.storageRef, pairId, verb, {
           mergedMemoryId: typeof args.mergedMemoryId === "string" ? args.mergedMemoryId : undefined,
           mergedContent: typeof args.mergedContent === "string" ? args.mergedContent : undefined,
+          storageForNamespace: async (namespace) => {
+            const resolved = await this.service.getWritableStorageForNamespace(namespace, effectivePrincipal);
+            return resolved.storage;
+          },
         });
       }
       case "engram.contradiction_scan_run":
@@ -2828,6 +2845,8 @@ export class EngramMcpServer {
           config: this.service.configRef,
           memoryDir: this.service.memoryDir,
           embeddingLookupFactory: this.service.embeddingLookupFactoryRef,
+          storageForNamespace: (namespace) =>
+            this.service.getWritableStorageForNamespace(namespace, effectivePrincipal),
           localLlm: this.service.localLlmRef,
           fallbackLlm: this.service.fallbackLlmRef,
           namespace: typeof args.namespace === "string" ? args.namespace : undefined,

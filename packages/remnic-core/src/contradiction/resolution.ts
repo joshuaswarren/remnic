@@ -27,6 +27,8 @@ export interface ExecuteResolutionOptions {
   mergedContent?: string;
   /** Category for a newly created merged memory. Defaults to the shared source category, or fact. */
   mergedCategory?: MemoryCategory;
+  /** Resolve storage for the pair namespace, or the default namespace for legacy unscoped pairs. */
+  storageForNamespace?: (namespace: string | undefined) => StorageManager | Promise<StorageManager>;
 }
 
 const VALID_VERBS: ResolutionVerb[] = ["keep-a", "keep-b", "merge", "both-valid", "needs-more-context"];
@@ -56,6 +58,16 @@ export async function executeResolution(
     return { pairId, verb, affectedIds: [], message: `Pair ${pairId} not found` };
   }
 
+  if (pair.namespace && !options.storageForNamespace) {
+    throw new Error(
+      "contradiction resolution requires storageForNamespace for namespaced pairs so callers resolve the correct namespace storage",
+    );
+  }
+
+  const resolutionStorage = options.storageForNamespace
+    ? await options.storageForNamespace(pair.namespace)
+    : storage;
+
   if (pair.resolution && pair.resolution !== "needs-more-context") {
     return { pairId, verb, affectedIds: [], message: `Pair already resolved with verb "${pair.resolution}"` };
   }
@@ -67,21 +79,21 @@ export async function executeResolution(
 
   switch (verb) {
     case "keep-a": {
-      const keepTarget = await validateKeepTarget(storage, pairId, idA);
+      const keepTarget = await validateKeepTarget(resolutionStorage, pairId, idA);
       if (!keepTarget.ok) {
         supersedeFailed = true;
         message = keepTarget.message;
         break;
       }
-      const sourceB = await loadSourceSnapshot(storage, idB);
+      const sourceB = await loadSourceSnapshot(resolutionStorage, idB);
       const ok = sourceB
-        ? await supersedeSafe(storage, idB, idA, "contradiction-resolution:keep-a")
+        ? await supersedeSafe(resolutionStorage, idB, idA, "contradiction-resolution:keep-a")
         : false;
       if (ok) { affectedIds.push(idB); message = `Kept ${idA}, superseded ${idB}`; }
       else {
         supersedeFailed = true;
         const rolledBack = sourceB
-          ? await restoreMemorySnapshot(storage, sourceB, "contradiction-resolution:keep-a-rollback")
+          ? await restoreMemorySnapshot(resolutionStorage, sourceB, "contradiction-resolution:keep-a-rollback")
           : false;
         message = rolledBack
           ? `Supersede failed for ${idB}; restored ${idB} and did not resolve`
@@ -90,21 +102,21 @@ export async function executeResolution(
       break;
     }
     case "keep-b": {
-      const keepTarget = await validateKeepTarget(storage, pairId, idB);
+      const keepTarget = await validateKeepTarget(resolutionStorage, pairId, idB);
       if (!keepTarget.ok) {
         supersedeFailed = true;
         message = keepTarget.message;
         break;
       }
-      const sourceA = await loadSourceSnapshot(storage, idA);
+      const sourceA = await loadSourceSnapshot(resolutionStorage, idA);
       const ok = sourceA
-        ? await supersedeSafe(storage, idA, idB, "contradiction-resolution:keep-b")
+        ? await supersedeSafe(resolutionStorage, idA, idB, "contradiction-resolution:keep-b")
         : false;
       if (ok) { affectedIds.push(idA); message = `Kept ${idB}, superseded ${idA}`; }
       else {
         supersedeFailed = true;
         const rolledBack = sourceA
-          ? await restoreMemorySnapshot(storage, sourceA, "contradiction-resolution:keep-b-rollback")
+          ? await restoreMemorySnapshot(resolutionStorage, sourceA, "contradiction-resolution:keep-b-rollback")
           : false;
         message = rolledBack
           ? `Supersede failed for ${idA}; restored ${idA} and did not resolve`
@@ -113,31 +125,31 @@ export async function executeResolution(
       break;
     }
     case "merge": {
-      const replacement = await prepareMergeReplacement(storage, pairId, idA, idB, options);
+      const replacement = await prepareMergeReplacement(resolutionStorage, pairId, idA, idB, options);
       if (!replacement.ok) {
         supersedeFailed = true;
         message = replacement.message;
         break;
       }
 
-      const okA = await supersedeSafe(storage, idA, replacement.mergedId, "contradiction-resolution:merge");
+      const okA = await supersedeSafe(resolutionStorage, idA, replacement.mergedId, "contradiction-resolution:merge");
       if (!okA) {
         supersedeFailed = true;
-        const rolledBackA = await restoreMemorySnapshot(storage, replacement.sourceA);
+        const rolledBackA = await restoreMemorySnapshot(resolutionStorage, replacement.sourceA);
         message = rolledBackA
           ? `Merge failed for ${idA}; restored ${idA} and did not resolve`
           : `Merge failed for ${idA}; rollback incomplete for ${idA} and pair is not resolved`;
         if (rolledBackA) {
-          await cleanupCreatedReplacement(storage, replacement);
+          await cleanupCreatedReplacement(resolutionStorage, replacement);
         }
         break;
       }
 
-      const okB = await supersedeSafe(storage, idB, replacement.mergedId, "contradiction-resolution:merge");
+      const okB = await supersedeSafe(resolutionStorage, idB, replacement.mergedId, "contradiction-resolution:merge");
       if (!okB) {
         supersedeFailed = true;
-        const rolledBackA = await restoreMemorySnapshot(storage, replacement.sourceA);
-        const rolledBackB = await restoreMemorySnapshot(storage, replacement.sourceB);
+        const rolledBackA = await restoreMemorySnapshot(resolutionStorage, replacement.sourceA);
+        const rolledBackB = await restoreMemorySnapshot(resolutionStorage, replacement.sourceB);
         message = rolledBackA && rolledBackB
           ? `Merge failed for ${idB}; restored ${idA} and ${idB} and did not resolve`
           : `Merge failed for ${idB}; rollback incomplete for ${[
@@ -145,7 +157,7 @@ export async function executeResolution(
             rolledBackB ? undefined : idB,
           ].filter(Boolean).join(", ")} and pair is not resolved`;
         if (rolledBackA && rolledBackB) {
-          await cleanupCreatedReplacement(storage, replacement);
+          await cleanupCreatedReplacement(resolutionStorage, replacement);
         }
         break;
       }

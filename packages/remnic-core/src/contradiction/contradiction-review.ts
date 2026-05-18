@@ -2,7 +2,7 @@
  * Contradiction Review Queue — storage for detected contradiction pairs (issue #520).
  *
  * Stores candidate pairs as JSON files under `memoryDir/.review/contradictions/`.
- * Pair IDs are deterministic (sha256 of sorted memory IDs) so reruns are idempotent.
+ * Pair IDs are deterministic (sha256 of sorted memory IDs plus namespace when scoped) so reruns are idempotent.
  *
  * Lifecycle:
  *   - `contradicts` → awaiting user review
@@ -20,7 +20,7 @@ import type { ContradictionVerdict } from "./contradiction-judge.js";
 export type ResolutionVerb = "keep-a" | "keep-b" | "merge" | "both-valid" | "needs-more-context";
 
 export interface ContradictionPair {
-  /** Deterministic pair ID: sha256(sorted(memoryIdA, memoryIdB)). */
+  /** Deterministic pair ID: sha256(sorted(memoryIdA, memoryIdB) plus namespace when scoped). */
   pairId: string;
   /** Memory IDs (sorted). */
   memoryIds: [string, string];
@@ -54,12 +54,25 @@ export interface WritePairOptions {
   cooldownDays?: number;
 }
 const NEEDS_MORE_CONTEXT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const UNSCOPED_MIGRATION_MARKER_PREFIX = ".unscoped-migrated-";
+const UNSCOPED_MIGRATION_MARKER_SUFFIX = ".done";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-export function computePairId(memoryIdA: string, memoryIdB: string): string {
+export function computePairId(memoryIdA: string, memoryIdB: string, namespace?: string): string {
   const sorted = [memoryIdA, memoryIdB].sort();
-  return createHash("sha256").update(sorted.join("::")).digest("hex").slice(0, 24);
+  const normalizedNamespace = namespace?.trim();
+  const scope = normalizedNamespace ? `ns:${normalizedNamespace}::` : "";
+  return createHash("sha256").update(`${scope}${sorted.join("::")}`).digest("hex").slice(0, 24);
+}
+
+export function isDefaultReviewNamespace(
+  defaultNamespace: string,
+  requestedNamespace: string | undefined,
+  resolvedNamespace: string,
+): boolean {
+  const requested = requestedNamespace?.trim();
+  return !requested || requested === defaultNamespace || resolvedNamespace === defaultNamespace;
 }
 
 function isTerminalResolution(resolution: ResolutionVerb | undefined): boolean {
@@ -72,6 +85,17 @@ function preservesDirectResolution(resolution: ResolutionVerb | undefined): bool
 
 function isDormantReviewedPair(pair: ContradictionPair): boolean {
   return pair.verdict === "independent" || pair.resolution === "both-valid";
+}
+
+function reviewStateRank(pair: ContradictionPair, cooldownDays?: number): number {
+  if (isTerminalResolution(pair.resolution)) return 5;
+  if (pair.resolution === "both-valid") return 4;
+  if (isDeferralActive(pair)) return 3;
+  if (isDormantReviewedPair(pair)) {
+    if (cooldownDays === undefined) return 2;
+    return isCoolingDown(pair, cooldownDays) ? 2 : 0;
+  }
+  return 1;
 }
 
 function parseIsoMillis(value: string | undefined): number | null {
@@ -101,8 +125,54 @@ function isDeferralActive(pair: ContradictionPair): boolean {
   return deferredUntil !== null && Date.now() < deferredUntil;
 }
 
+function reviewStateMillis(pair: ContradictionPair): number {
+  return Math.max(
+    parseIsoMillis(pair.deferredUntil) ?? Number.NEGATIVE_INFINITY,
+    parseIsoMillis(pair.lastReviewedAt) ?? Number.NEGATIVE_INFINITY,
+    parseIsoMillis(pair.detectedAt) ?? Number.NEGATIVE_INFINITY,
+  );
+}
+
+function mergeMigratedPair(existing: ContradictionPair, migrated: ContradictionPair, options: WritePairOptions): ContradictionPair {
+  const existingRank = reviewStateRank(existing, options.cooldownDays);
+  const migratedRank = reviewStateRank(migrated, options.cooldownDays);
+  const selected = migratedRank > existingRank
+    ? migrated
+    : migratedRank < existingRank
+      ? existing
+      : reviewStateMillis(migrated) > reviewStateMillis(existing)
+        ? migrated
+        : existing;
+
+  return {
+    ...selected,
+    pairId: migrated.pairId,
+    namespace: migrated.namespace,
+  };
+}
+
 function reviewDir(memoryDir: string): string {
   return path.join(memoryDir, ".review", "contradictions");
+}
+
+function migrationMarkerPath(memoryDir: string, namespace: string): string {
+  const namespaceKey = createHash("sha256").update(namespace).digest("hex").slice(0, 16);
+  return path.join(reviewDir(memoryDir), `${UNSCOPED_MIGRATION_MARKER_PREFIX}${namespaceKey}${UNSCOPED_MIGRATION_MARKER_SUFFIX}`);
+}
+
+function clearUnscopedMigrationMarkers(memoryDir: string): void {
+  const dir = reviewDir(memoryDir);
+  if (!fs.existsSync(dir)) return;
+
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith(UNSCOPED_MIGRATION_MARKER_PREFIX) && entry.endsWith(UNSCOPED_MIGRATION_MARKER_SUFFIX)) {
+        fs.rmSync(path.join(dir, entry), { force: true });
+      }
+    }
+  } catch {
+    // Marker cleanup is best-effort. The next migration/list call can recover.
+  }
 }
 
 function pairPath(memoryDir: string, pairId: string): string {
@@ -151,7 +221,10 @@ export function writePair(
   options: WritePairOptions = {},
 ): ContradictionPair {
   ensureDir(memoryDir);
-  const pairId = computePairId(pair.memoryIds[0], pair.memoryIds[1]);
+  if (pair.namespace === undefined) {
+    clearUnscopedMigrationMarkers(memoryDir);
+  }
+  const pairId = computePairId(pair.memoryIds[0], pair.memoryIds[1], pair.namespace);
   const existing = readPair(memoryDir, pairId);
 
   // Preserve terminal user resolutions if already reviewed.
@@ -220,7 +293,7 @@ export function writePairs(
   const results: ContradictionPair[] = [];
 
   for (const pair of pairs) {
-    const key = computePairId(pair.memoryIds[0], pair.memoryIds[1]);
+    const key = computePairId(pair.memoryIds[0], pair.memoryIds[1], pair.namespace);
     if (seen.has(key)) continue;
     seen.add(key);
     results.push(writePair(memoryDir, pair, options));
@@ -256,12 +329,13 @@ export function listPairs(
   options?: {
     filter?: ContradictionFilter;
     namespace?: string;
+    includeUnscopedForNamespace?: boolean;
     limit?: number;
   },
 ): ContradictionListResult {
   const startTime = Date.now();
   const dir = reviewDir(memoryDir);
-  const { filter = "all", namespace, limit = 50 } = options ?? {};
+  const { filter = "all", namespace, includeUnscopedForNamespace = false, limit = 50 } = options ?? {};
   const pairs: ContradictionPair[] = [];
   let total = 0;
 
@@ -280,7 +354,7 @@ export function listPairs(
       if (!Array.isArray(pair.memoryIds)) continue;
 
       // Namespace filter
-      if (namespace && pair.namespace !== namespace) continue;
+      if (namespace && pair.namespace !== namespace && !(includeUnscopedForNamespace && pair.namespace === undefined)) continue;
 
       // Verdict filter
       if (filter === "unresolved") {
@@ -300,6 +374,55 @@ export function listPairs(
   }
 
   return { pairs, total, durationMs: Date.now() - startTime };
+}
+
+export function migrateUnscopedPairsToNamespace(memoryDir: string, namespace: string, options: WritePairOptions = {}): number {
+  const resolvedNamespace = namespace.trim();
+  if (!resolvedNamespace) return 0;
+
+  const dir = reviewDir(memoryDir);
+  if (!fs.existsSync(dir)) return 0;
+  const markerPath = migrationMarkerPath(memoryDir, resolvedNamespace);
+  if (fs.existsSync(markerPath)) return 0;
+
+  let migrated = 0;
+  for (const entry of fs.readdirSync(dir)) {
+    if (!entry.endsWith(".json")) continue;
+    const filePath = path.join(dir, entry);
+
+    try {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const pair = JSON.parse(raw) as ContradictionPair;
+      if (typeof pair !== "object" || pair === null) continue;
+      if (!Array.isArray(pair.memoryIds)) continue;
+      if (pair.namespace !== undefined) continue;
+
+      const pairId = computePairId(pair.memoryIds[0], pair.memoryIds[1], resolvedNamespace);
+      const migratedPair = { ...pair, namespace: resolvedNamespace, pairId };
+      const targetPath = pairPath(memoryDir, pairId);
+      if (targetPath === filePath) {
+        writePairFile(filePath, migratedPair);
+      } else if (!fs.existsSync(targetPath)) {
+        writePairFile(targetPath, migratedPair);
+        fs.rmSync(filePath, { force: true });
+      } else {
+        const existing = readPair(memoryDir, pairId);
+        writePairFile(targetPath, existing ? mergeMigratedPair(existing, migratedPair, options) : migratedPair);
+        fs.rmSync(filePath, { force: true });
+      }
+      migrated += 1;
+    } catch {
+      continue;
+    }
+  }
+
+  try {
+    fs.writeFileSync(markerPath, `${new Date().toISOString()}\n`, { encoding: "utf-8", flag: "wx" });
+  } catch {
+    // Another caller may have completed the same one-shot migration first.
+  }
+
+  return migrated;
 }
 
 // ── Cooldown ───────────────────────────────────────────────────────────────────

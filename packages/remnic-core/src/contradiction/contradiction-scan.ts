@@ -24,6 +24,7 @@ import {
   listPairs,
   isCoolingDown,
   computePairId,
+  migrateUnscopedPairsToNamespace,
   type ContradictionPair,
 } from "./contradiction-review.js";
 import type { LocalLlmClient } from "../local-llm.js";
@@ -59,6 +60,11 @@ export interface ScanResult {
   elapsedMs: number;
 }
 
+export interface ScanStorageResolution {
+  storage: StorageManager;
+  namespace?: string;
+}
+
 export interface ScanDependencies {
   storage: StorageManager;
   config: PluginConfig;
@@ -71,6 +77,10 @@ export interface ScanDependencies {
    * The scan driver passes its own `storage` so the lookup queries the correct index.
    */
   embeddingLookupFactory?: (storage: StorageManager) => SemanticDedupLookup | undefined;
+  /** Resolver for namespace-scoped storage. Required for scans when namespaces are enabled. */
+  storageForNamespace?: (
+    namespace: string | undefined,
+  ) => StorageManager | ScanStorageResolution | Promise<StorageManager | ScanStorageResolution>;
   localLlm: LocalLlmClient | null;
   fallbackLlm: FallbackLlmClient | null;
   namespace?: string;
@@ -85,22 +95,31 @@ export interface ScanDependencies {
  */
 export async function runContradictionScan(deps: ScanDependencies): Promise<ScanResult> {
   const startTime = Date.now();
-  const { storage, config, memoryDir, embeddingLookup, embeddingLookupFactory, localLlm, fallbackLlm, namespace } = deps;
+  const { config, memoryDir, embeddingLookup, embeddingLookupFactory, localLlm, fallbackLlm } = deps;
+  const requestedNamespace = normalizeScanNamespace(deps.namespace);
   const scanConfig = config.contradictionScan;
-
-  // Prefer the factory (which uses the scan's own storage for correct namespace scoping)
-  // over a pre-built lookup (which may use default-namespace storage).
-  const scopedEmbeddingLookup = embeddingLookupFactory
-    ? embeddingLookupFactory(storage)
-    : embeddingLookup;
 
   if (!scanConfig.enabled) {
     log.info("[contradiction-scan] disabled by config");
     return { scanned: 0, candidates: 0, judged: 0, queued: 0, cooledDown: 0, elapsedMs: 0 };
   }
 
+  const { storage: scanStorage, namespace } = await resolveScanStorage(deps, requestedNamespace);
+  if (config.namespacesEnabled && namespace !== undefined && isDefaultNamespaceScan(config, requestedNamespace, namespace)) {
+    const migrated = migrateUnscopedPairsToNamespace(memoryDir, namespace, { cooldownDays: scanConfig.cooldownDays });
+    if (migrated > 0) {
+      log.info("[contradiction-scan] migrated %d legacy unscoped review pairs to namespace %s", migrated, namespace);
+    }
+  }
+
+  // Prefer the factory (which uses the scan's own storage for correct namespace scoping)
+  // over a pre-built lookup (which may use default-namespace storage).
+  const scopedEmbeddingLookup = embeddingLookupFactory
+    ? embeddingLookupFactory(scanStorage)
+    : embeddingLookup;
+
   // 1. Load active memories in scan categories
-  const memories = await loadEligibleMemories(storage, namespace);
+  const memories = await loadEligibleMemories(scanStorage);
   log.info("[contradiction-scan] loaded %d eligible memories", memories.length);
 
   if (memories.length < 2) {
@@ -115,7 +134,7 @@ export async function runContradictionScan(deps: ScanDependencies): Promise<Scan
   }
 
   // 3. Generate candidate pairs
-  const candidates = await generatePairs(memories, existingMap, scanConfig, scopedEmbeddingLookup);
+  const candidates = await generatePairs(memories, existingMap, scanConfig, namespace, scopedEmbeddingLookup);
   const cooledDown = candidates.skipped;
   log.info("[contradiction-scan] generated %d candidates (%d cooled down)", candidates.pairs.length, cooledDown);
 
@@ -132,7 +151,7 @@ export async function runContradictionScan(deps: ScanDependencies): Promise<Scan
 
   // 4. Cap at maxPairsPerRun (deterministic selection by pairId)
   const capped = candidates.pairs
-    .sort((a, b) => computePairId(a.idA, a.idB).localeCompare(computePairId(b.idA, b.idB)))
+    .sort((a, b) => computePairId(a.idA, a.idB, namespace).localeCompare(computePairId(b.idA, b.idB, namespace)))
     .slice(0, scanConfig.maxPairsPerRun);
 
   // 5. Build judge inputs
@@ -199,6 +218,7 @@ async function generatePairs(
   memories: MemoryFile[],
   existingPairs: Map<string, ContradictionPair>,
   scanConfig: PluginConfig["contradictionScan"],
+  namespace: string | undefined,
   embeddingLookup?: SemanticDedupLookup,
 ): Promise<PairGenResult> {
   const pairs: CandidatePair[] = [];
@@ -224,7 +244,7 @@ async function generatePairs(
       for (let j = i + 1; j < group.length; j++) {
         const a = group[i];
         const b = group[j];
-        const pairId = computePairId(a.frontmatter.id!, b.frontmatter.id!);
+        const pairId = computePairId(a.frontmatter.id!, b.frontmatter.id!, namespace);
 
         if (seen.has(pairId)) continue;
         seen.add(pairId);
@@ -261,7 +281,7 @@ async function generatePairs(
 
       if (overlap < scanConfig.topicOverlapFloor) continue;
 
-      const pairId = computePairId(a.frontmatter.id!, b.frontmatter.id!);
+      const pairId = computePairId(a.frontmatter.id!, b.frontmatter.id!, namespace);
       if (seen.has(pairId)) continue;
       seen.add(pairId);
 
@@ -295,7 +315,7 @@ async function generatePairs(
           const peer = memoryById.get(hit.id);
           if (!peer) continue;
 
-          const pairId = computePairId(id, hit.id);
+          const pairId = computePairId(id, hit.id, namespace);
           if (seen.has(pairId)) continue;
           seen.add(pairId);
 
@@ -329,7 +349,73 @@ async function generatePairs(
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-async function loadEligibleMemories(storage: StorageManager, namespace?: string): Promise<MemoryFile[]> {
+function normalizeScanNamespace(namespace: string | undefined): string | undefined {
+  const trimmed = namespace?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+async function resolveScanStorage(
+  deps: ScanDependencies,
+  namespace: string | undefined,
+): Promise<ScanStorageResolution> {
+  if (!deps.config.namespacesEnabled) {
+    const defaultNamespace = normalizeScanNamespace(deps.config.defaultNamespace);
+    if (namespace && namespace !== defaultNamespace) {
+      throw new Error(`unsupported namespace: ${namespace}`);
+    }
+    return { storage: deps.storage, namespace: undefined };
+  }
+
+  if (deps.storageForNamespace) {
+    const resolved = await deps.storageForNamespace(namespace);
+    if (isScanStorageResolution(resolved)) {
+      return {
+        storage: resolved.storage,
+        namespace: normalizeScanNamespace(resolved.namespace) ?? fallbackResolvedNamespace(deps, namespace),
+      };
+    }
+    if (!isStorageManagerLike(resolved)) {
+      throw new Error("storageForNamespace must return a StorageManager or { storage: StorageManager, namespace?: string }");
+    }
+    return {
+      storage: resolved,
+      namespace: fallbackResolvedNamespace(deps, namespace),
+    };
+  }
+
+  throw new Error(
+    "contradiction scans require storageForNamespace when namespaces are enabled so callers can enforce namespace access",
+  );
+}
+
+function isScanStorageResolution(value: StorageManager | ScanStorageResolution): value is ScanStorageResolution {
+  if (isStorageManagerLike(value)) return false;
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { storage?: unknown };
+  return isStorageManagerLike(candidate.storage);
+}
+
+function isStorageManagerLike(value: unknown): value is StorageManager {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { readAllMemories?: unknown };
+  return typeof candidate.readAllMemories === "function";
+}
+
+function fallbackResolvedNamespace(deps: ScanDependencies, namespace: string | undefined): string | undefined {
+  if (namespace) return namespace;
+  return deps.config.namespacesEnabled ? deps.config.defaultNamespace : undefined;
+}
+
+function isDefaultNamespaceScan(
+  config: PluginConfig,
+  requestedNamespace: string | undefined,
+  resolvedNamespace: string,
+): boolean {
+  if (requestedNamespace === undefined) return true;
+  return requestedNamespace === config.defaultNamespace || resolvedNamespace === config.defaultNamespace;
+}
+
+async function loadEligibleMemories(storage: StorageManager): Promise<MemoryFile[]> {
   let all: MemoryFile[];
   try {
     all = await storage.readAllMemories();
@@ -352,10 +438,6 @@ async function loadEligibleMemories(storage: StorageManager, namespace?: string)
 
     // Must have an ID
     if (!fm.id) return false;
-
-    // Namespace scoping is handled at the storage layer — memoryDir is
-    // already namespace-scoped, so readAllMemories() returns only memories
-    // within the requested namespace.
 
     return true;
   });

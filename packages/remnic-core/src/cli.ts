@@ -8545,6 +8545,16 @@ export function registerCli(
           const result = await executeResolution(orchestrator.config.memoryDir, orchestrator.storage, pairId, verb, {
             mergedMemoryId: cmdOpts.mergedMemoryId,
             mergedContent: cmdOpts.mergedContent,
+            storageForNamespace: (namespace) => {
+              const requested = namespace?.trim();
+              if (!orchestrator.config.namespacesEnabled) {
+                if (requested && requested !== orchestrator.config.defaultNamespace) {
+                  throw new Error(`unsupported namespace: ${requested}`);
+                }
+                return orchestrator.storage;
+              }
+              return orchestrator.getStorageForNamespace(requested || orchestrator.config.defaultNamespace);
+            },
           });
           console.log(result.message);
           if (result.affectedIds.length > 0) {
@@ -8573,6 +8583,13 @@ export function registerCli(
                   return [];
                 }
               };
+            },
+            storageForNamespace: async (namespace) => {
+              const resolvedNamespace =
+                namespace?.trim() ||
+                (orchestrator.config.namespacesEnabled ? orchestrator.config.defaultNamespace : undefined);
+              const storage = await orchestrator.getStorageForNamespace(resolvedNamespace);
+              return { storage, namespace: resolvedNamespace };
             },
             localLlm: orchestrator.localLlm ?? null,
             fallbackLlm: orchestrator.fastGatewayLlm ?? null,

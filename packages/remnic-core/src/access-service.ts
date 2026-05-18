@@ -5130,6 +5130,29 @@ export class EngramAccessService {
     return storage.dir;
   }
 
+  async getReadableStorageForNamespace(namespace?: string, principal?: string): Promise<{
+    namespace: string;
+    storage: StorageManager;
+  }> {
+    const resolved = this.resolveReadableNamespace(namespace, principal);
+    const storage = await this.orchestrator.getStorage(resolved);
+    return { namespace: resolved, storage };
+  }
+
+  async getWritableStorageForNamespace(namespace?: string, principal?: string): Promise<{
+    namespace: string;
+    storage: StorageManager;
+  }> {
+    if (this.orchestrator.config.namespacesEnabled && !principal?.trim()) {
+      throw new EngramAccessInputError(
+        "authentication required: namespaces are enabled and no principal was supplied",
+      );
+    }
+    const resolved = this.resolveWritableNamespace(namespace, undefined, principal);
+    const storage = await this.orchestrator.getStorage(resolved);
+    return { namespace: resolved, storage };
+  }
+
   get storageRef(): StorageManager {
     return this.orchestrator.storage;
   }

@@ -7,10 +7,16 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { EngramMcpServer } from "./access-mcp.js";
-import type { EngramAccessService } from "./access-service.js";
+import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { parseConfig } from "./config.js";
+import { readPair, writePair } from "./contradiction/contradiction-review.js";
+import type { StorageManager } from "./storage.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Stub service — only implements the members EngramMcpServer actually touches.
@@ -173,6 +179,133 @@ test("MCP maintenance: hourly summarization dispatches to the access service", a
 
   assert.equal(called, true, "memorySummarizeHourly should be dispatched");
   assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+});
+
+test("MCP contradiction scan uses writable namespace resolver", async () => {
+  const resolverCalls: Array<{ namespace: string | undefined; principal: string | undefined }> = [];
+  const storage = {
+    readAllMemories: async () => [],
+  } as unknown as StorageManager;
+  const service = {
+    ...makeMockService(),
+    storageRef: storage,
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-mcp-contradiction-scan-test",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      contradictionScan: {
+        enabled: true,
+        maxPairsPerRun: 10,
+      },
+    }),
+    memoryDir: "/tmp/remnic-mcp-contradiction-scan-test",
+    embeddingLookupFactoryRef: undefined,
+    localLlmRef: null,
+    fallbackLlmRef: null,
+    getReadableStorageForNamespace: async () => {
+      throw new Error("readable resolver must not authorize contradiction scan writes");
+    },
+    getWritableStorageForNamespace: async (namespace: string | undefined, principal: string | undefined) => {
+      resolverCalls.push({ namespace, principal });
+      return { namespace: namespace ?? "default", storage };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service, { principal: "writer" });
+
+  const response = await server.handleRequest(
+    makeToolRequest("engram.contradiction_scan_run", { namespace: "team" }),
+  );
+
+  const result = (response as Record<string, unknown> & {
+    result?: { isError?: boolean; structuredContent?: { scanned?: number } };
+  }).result;
+  assert.equal(result?.isError, false);
+  assert.equal(result?.structuredContent?.scanned, 0);
+  assert.deepEqual(resolverCalls, [{ namespace: "team", principal: "writer" }]);
+});
+
+test("MCP review list uses readable namespace resolver", async () => {
+  const resolverCalls: Array<{ namespace: string | undefined; principal: string | undefined }> = [];
+  const storage = {
+    readAllMemories: async () => [],
+  } as unknown as StorageManager;
+  const service = {
+    ...makeMockService(),
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-mcp-review-list-test",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryDir: "/tmp/remnic-mcp-review-list-test",
+    getReadableStorageForNamespace: async (namespace: string | undefined, principal: string | undefined) => {
+      resolverCalls.push({ namespace, principal });
+      throw new EngramAccessInputError(`namespace is not readable: ${namespace}`);
+    },
+    storageRef: storage,
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service, { principal: "reader" });
+
+  const response = await server.handleRequest(
+    makeToolRequest("engram.review_list", { namespace: "team" }),
+  );
+
+  const result = (response as Record<string, unknown> & {
+    result?: { isError?: boolean; content?: Array<{ text?: string }> };
+  }).result;
+  assert.equal(result?.isError, true);
+  assert.match(result?.content?.[0]?.text ?? "", /namespace is not readable: team/);
+  assert.deepEqual(resolverCalls, [{ namespace: "team", principal: "reader" }]);
+});
+
+test("MCP default review list includes legacy unscoped pairs without mutating storage", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-review-list-default-"));
+  try {
+    const legacy = writePair(dir, {
+      memoryIds: ["legacy-a", "legacy-b"],
+      verdict: "contradicts",
+      rationale: "legacy pending pair",
+      confidence: 0.9,
+      detectedAt: new Date().toISOString(),
+    });
+    const resolverCalls: Array<{ namespace: string | undefined; principal: string | undefined }> = [];
+    const storage = {
+      readAllMemories: async () => [],
+    } as unknown as StorageManager;
+    const service = {
+      ...makeMockService(),
+      configRef: parseConfig({
+        memoryDir: dir,
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+      }),
+      memoryDir: dir,
+      getReadableStorageForNamespace: async (namespace: string | undefined, principal: string | undefined) => {
+        resolverCalls.push({ namespace, principal });
+        return { namespace: namespace ?? "default", storage };
+      },
+      storageRef: storage,
+    } as unknown as EngramAccessService;
+    const server = new EngramMcpServer(service, { principal: "reader" });
+
+    const response = await server.handleRequest(makeToolRequest("engram.review_list"));
+    const result = (response as Record<string, unknown> & {
+      result?: {
+        isError?: boolean;
+        structuredContent?: {
+          total?: number;
+          pairs?: Array<{ pairId?: string; namespace?: string }>;
+        };
+      };
+    }).result;
+    assert.equal(result?.isError, false);
+    assert.equal(result?.structuredContent?.total, 1);
+    assert.equal(result?.structuredContent?.pairs?.[0]?.pairId, legacy.pairId);
+    assert.equal(result?.structuredContent?.pairs?.[0]?.namespace, undefined);
+    assert.equal(readPair(dir, legacy.pairId)?.namespace, undefined);
+    assert.deepEqual(resolverCalls, [{ namespace: undefined, principal: "reader" }]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("MCP maintenance: conversation index update sanitizes optional args", async () => {

@@ -1128,10 +1128,20 @@ export class EngramAccessHttpServer {
       }
       const namespace = parsed.searchParams.get("namespace") ?? undefined;
       const limitRaw = parseInt(parsed.searchParams.get("limit") ?? "50", 10);
-      const { listPairs } = await import("./contradiction/contradiction-review.js");
+      const {
+        isDefaultReviewNamespace,
+        listPairs,
+      } = await import("./contradiction/contradiction-review.js");
+      const principal = this.resolveRequestPrincipal(req);
+      const resolved = await this.service.getReadableStorageForNamespace(namespace, principal);
+      const reviewNamespace = this.service.configRef.namespacesEnabled ? resolved.namespace : undefined;
+      const includeUnscopedForNamespace = Boolean(
+        reviewNamespace && isDefaultReviewNamespace(this.service.configRef.defaultNamespace, namespace, reviewNamespace),
+      );
       const result = listPairs(this.service.memoryDir, {
         filter: rawFilter as "all" | "unresolved" | "contradicts" | "independent" | "duplicates" | "needs-user",
-        namespace,
+        namespace: reviewNamespace,
+        includeUnscopedForNamespace,
         limit: Number.isFinite(limitRaw) ? limitRaw : 50,
       });
       this.respondJson(res, 200, result);
@@ -1143,6 +1153,12 @@ export class EngramAccessHttpServer {
       const { readPair } = await import("./contradiction/contradiction-review.js");
       const pair = readPair(this.service.memoryDir, pairId);
       if (!pair) {
+        this.respondJson(res, 404, { error: "pair_not_found" });
+        return;
+      }
+      try {
+        await this.service.getReadableStorageForNamespace(pair.namespace, this.resolveRequestPrincipal(req));
+      } catch {
         this.respondJson(res, 404, { error: "pair_not_found" });
         return;
       }
@@ -1163,9 +1179,14 @@ export class EngramAccessHttpServer {
         this.respondJson(res, 400, { error: `Invalid verb: ${verb}. Must be one of: keep-a, keep-b, merge, both-valid, needs-more-context` });
         return;
       }
+      const principal = this.resolveRequestPrincipal(req);
       const result = await executeResolution(this.service.memoryDir, this.service.storageRef, pairId, verb, {
         mergedMemoryId: typeof body.mergedMemoryId === "string" ? body.mergedMemoryId : undefined,
         mergedContent: typeof body.mergedContent === "string" ? body.mergedContent : undefined,
+        storageForNamespace: async (namespace) => {
+          const resolved = await this.service.getWritableStorageForNamespace(namespace, principal);
+          return resolved.storage;
+        },
       });
       this.respondJson(res, 200, result);
       return;
@@ -1267,11 +1288,14 @@ export class EngramAccessHttpServer {
     if (req.method === "POST" && pathname === "/engram/v1/contradiction-scan") {
       const body = await this.readJsonBody(req) as Record<string, unknown>;
       const { runContradictionScan } = await import("./contradiction/contradiction-scan.js");
+      const principal = this.resolveRequestPrincipal(req);
       const result = await runContradictionScan({
         storage: this.service.storageRef,
         config: this.service.configRef,
         memoryDir: this.service.memoryDir,
         embeddingLookupFactory: this.service.embeddingLookupFactoryRef,
+        storageForNamespace: (namespace) =>
+          this.service.getWritableStorageForNamespace(namespace, principal),
         localLlm: this.service.localLlmRef,
         fallbackLlm: this.service.fallbackLlmRef,
         namespace: typeof body.namespace === "string" ? body.namespace : undefined,
