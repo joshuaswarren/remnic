@@ -19,7 +19,7 @@ test:
 	npm test
 
 lint:
-	npm run lint
+	npm run check-types
 
 preflight:
 	npm run preflight
