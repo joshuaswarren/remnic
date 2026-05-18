@@ -36,7 +36,7 @@ test("memory-search tool uses ctx session key and returns a structured JSON payl
     {
       snippetMaxChars: 120,
       recallForActiveMemory: async (_orchestrator, params) => {
-        received = params as Record<string, unknown>;
+        received = params as unknown as Record<string, unknown>;
         return {
           results: [
             {
@@ -81,7 +81,7 @@ test("memory-search tool ignores explicit sessionKey overrides when runtime cont
     {} as never,
     {
       recallForActiveMemory: async (_orchestrator, params) => {
-        received = params as Record<string, unknown>;
+        received = params as unknown as Record<string, unknown>;
         return {
           results: [],
           truncated: false,
@@ -97,12 +97,14 @@ test("memory-search tool ignores explicit sessionKey overrides when runtime cont
     { sessionKey: "ctx-session" },
   );
 
-  assert.equal(received?.sessionKey, "ctx-session");
+  const ctxReceived = received as unknown as Record<string, unknown> | null;
+  assert.equal(ctxReceived?.sessionKey, "ctx-session");
 
   await tool.execute(
     "tc-memory-search-param-fallback",
     { query: "preferences", sessionKey: "param-session" },
   );
 
-  assert.equal(received?.sessionKey, "param-session");
+  const paramReceived = received as unknown as Record<string, unknown> | null;
+  assert.equal(paramReceived?.sessionKey, "param-session");
 });

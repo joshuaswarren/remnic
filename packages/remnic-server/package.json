@@ -24,6 +24,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --target es2022 --platform node --outDir dist && node scripts/verify-bin.mjs",
     "verify:bin": "node scripts/verify-bin.mjs",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },

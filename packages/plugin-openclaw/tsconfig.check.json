@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "noEmit": true,
+    "paths": {
+      "@remnic/core": [
+        "packages/remnic-core/src/index.ts"
+      ],
+      "@remnic/core/*": [
+        "packages/remnic-core/src/*.ts"
+      ]
+    },
+    "rootDir": "../.."
+  },
+  "include": [
+    "src",
+    "../../src/**/*.d.ts"
+  ]
+}

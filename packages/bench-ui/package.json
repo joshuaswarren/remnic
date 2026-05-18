@@ -6,6 +6,7 @@
   "description": "Minimal local UI shell for browsing Remnic benchmark result summaries.",
   "scripts": {
     "dev": "vite",
+    "check-types": "tsc --noEmit",
     "build": "vite build"
   },
   "dependencies": {

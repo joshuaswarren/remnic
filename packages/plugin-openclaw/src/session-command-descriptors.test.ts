@@ -35,9 +35,13 @@ test("buildSessionCommandDescriptors wires toggle and status handlers", async ()
     getLastRecall(sessionKey: string) {
       recallCalls.push(sessionKey);
       return {
+        sessionKey,
+        recordedAt: "2026-04-12T12:00:00.000Z",
+        queryHash: "test-query",
+        queryLen: 12,
         memoryIds: ["mem-1", "mem-2"],
         latencyMs: 33,
-        plannerMode: "minimal",
+        plannerMode: "minimal" as const,
       };
     },
     getLastRecallSummary(sessionKey: string) {

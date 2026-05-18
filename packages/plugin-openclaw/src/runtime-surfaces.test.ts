@@ -5,7 +5,7 @@ import type {
   ConsolidationObservation,
   MemoryFile,
   MemoryFrontmatter,
-} from "../../../remnic-core/src/types.js";
+} from "@remnic/core/types";
 import {
   parseDreamNarrativeResponse,
   planDreamEntryFromConsolidation,

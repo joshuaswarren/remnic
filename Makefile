@@ -6,7 +6,7 @@ help:
 	@echo ""
 	@echo "  make build           Compile TypeScript to dist/"
 	@echo "  make test            Run full test suite"
-	@echo "  make lint            TypeScript type check (tsc --noEmit)"
+	@echo "  make lint            TypeScript type check (root + workspace packages)"
 	@echo "  make preflight       Full pre-PR gate (types + contract + tests + build)"
 	@echo "  make preflight-quick Fast pre-PR gate (types + contract + key tests)"
 	@echo "  make clean           Remove dist/ and build artifacts"

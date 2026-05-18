@@ -10,7 +10,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { Worker } from "node:worker_threads";
+import { Worker, type WorkerOptions } from "node:worker_threads";
 
 export type BridgeMode = "embedded" | "delegate";
 
@@ -154,7 +154,7 @@ function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEAL
     const state = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
     const view = new Int32Array(state);
     const workerUrl = new URL(`data:text/javascript,${encodeURIComponent(HEALTH_WORKER_SOURCE)}`);
-    worker = new Worker(workerUrl, {
+    const workerOptions: WorkerOptions & { type: "module" } = {
       type: "module",
       workerData: {
         host,
@@ -164,7 +164,8 @@ function checkDaemonHealthSync(host: string, port: number, timeoutMs = SYNC_HEAL
         timeoutMs,
         state,
       },
-    });
+    };
+    worker = new Worker(workerUrl, workerOptions);
 
     Atomics.wait(view, 0, 0, timeoutMs + 250);
     const status = Atomics.load(view, 0);

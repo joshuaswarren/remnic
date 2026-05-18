@@ -71,7 +71,7 @@
   },
   "scripts": {
     "build": "tsup --config tsup.config.ts && node scripts/clean-clawhub-artifact.mjs",
-    "check-types": "tsc --noEmit",
+    "check-types": "tsc -p tsconfig.check.json",
     "plugin:inspect": "plugin-inspector check --config plugin-inspector.config.json --no-openclaw",
     "plugin:inspect:runtime": "pnpm run build && PLUGIN_INSPECTOR_EXECUTE_ISOLATED=1 plugin-inspector check --config plugin-inspector.config.json --no-openclaw --runtime --mock-sdk",
     "prepublishOnly": "npm run build"

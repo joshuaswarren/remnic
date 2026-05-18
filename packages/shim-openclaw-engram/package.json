@@ -49,6 +49,7 @@
   },
   "scripts": {
     "build": "node ./scripts/sync-openclaw-plugin.mjs && tsup --config tsup.config.ts",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "postinstall": "node ./scripts/postinstall-banner.mjs",
     "prepack": "npm run build",

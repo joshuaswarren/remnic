@@ -13,8 +13,8 @@ function buildLogger() {
     logger: {
       debug() {},
       info() {},
-      warn(message: string) {
-        warnings.push(message);
+      warn(...args: unknown[]) {
+        warnings.push(String(args[0] ?? ""));
       },
       error() {},
     },

@@ -34,6 +34,7 @@
   "scripts": {
     "prebuild": "node ../../scripts/ensure-bench-build-deps.mjs",
     "build": "tsup --config tsup.config.ts",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },

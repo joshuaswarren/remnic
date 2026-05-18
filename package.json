@@ -87,7 +87,7 @@
     "check:openclaw-sdk-surface:required": "node scripts/check-openclaw-sdk-surface.mjs --require",
     "build": "pnpm --filter @remnic/core build && pnpm run check:openclaw-plugin-sync && tsup && node scripts/copy-admin-console.mjs",
     "dev": "tsup --watch",
-    "check-types": "tsc --noEmit",
+    "check-types": "pnpm --filter @remnic/core build && tsc --noEmit && pnpm --recursive --if-present --filter=\"./packages/*\" run check-types",
     "check-config-contract": "tsx scripts/validate-config-contract.ts",
     "test": "tsx --test 'tests/**/*.test.ts' 'packages/remnic-core/src/**/*.test.ts' 'packages/bench/src/**/*.test.ts' 'packages/export-weclone/src/**/*.test.ts' 'packages/import-weclone/src/**/*.test.ts'",
     "test:openclaw-scenarios": "pnpm exec tsx --test tests/openclaw-adapter-scenarios.test.ts",

@@ -1134,7 +1134,9 @@ describe("WeCloneProxy", () => {
 
     assert.equal(res.status, 200);
     assert.ok(recallCalled, "Recall must be invoked for chat URLs with query strings");
-    const msgs = (receivedBody as Record<string, unknown>).messages as Array<{
+    const forwardedBody = receivedBody as unknown as Record<string, unknown> | null;
+    assert.ok(forwardedBody, "WeClone should have received a request");
+    const msgs = forwardedBody.messages as Array<{
       role: string;
       content: string;
     }>;
