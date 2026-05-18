@@ -5393,15 +5393,30 @@ function snapshotConnectorTokenEntry(connectorId: string): TokenEntry | null {
 // ── M5 connectors command ────────────────────────────────────────────────────
 
 async function cmdConnectors(action: string, rest: string[], json: boolean): Promise<void> {
-  // For install/remove/doctor, the connector ID is the first non-flag positional
-  // arg. We must strip the value tokens consumed by split-form `--config key=value`
-  // flags BEFORE filtering for non-flags, otherwise `installExtension=false`
-  // (the value of `--config installExtension=false`) would be mistaken for the
-  // connector ID when the user writes:
-  //   remnic connectors install --config installExtension=false codex-cli
-  const strippedRest = stripConfigArgv(rest);
-  const nonFlagArgs = strippedRest.filter((a) => !a.startsWith("--"));
-  const connectorId = nonFlagArgs[0];
+  const rawNonFlagArgs = rest.filter((a) => !a.startsWith("--"));
+  const resolveConfigStrippedNonFlagArgs = (): string[] => {
+    // Connector actions that resolve a connector id/name must strip split-form
+    // `--config key=value` values before filtering for positionals; otherwise
+    // `installExtension=false` can be mistaken for the connector name. Keep
+    // this out of the marketplace path because marketplace uses
+    // `--config <path>` with file-path semantics.
+    let strippedRest: string[];
+    try {
+      strippedRest = stripConfigArgv(rest);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }
+    return strippedRest.filter((a) => !a.startsWith("--"));
+  };
+  const resolveConnectorId = (usage: string): string => {
+    const connectorId = resolveConfigStrippedNonFlagArgs()[0];
+    if (!connectorId) {
+      console.error(usage);
+      process.exit(1);
+    }
+    return connectorId;
+  };
 
   if (action === "list") {
     const { installed, available } = listConnectors();
@@ -5415,11 +5430,14 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       }
     }
   } else if (action === "install") {
-    if (!connectorId) {
-      console.error("Usage: remnic connectors install <id>");
+    const connectorId = resolveConnectorId("Usage: remnic connectors install <id>");
+    let connectorConfig: Record<string, unknown>;
+    try {
+      connectorConfig = parseConnectorConfig(rest);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err));
       process.exit(1);
     }
-    const connectorConfig = parseConnectorConfig(rest);
     const preInstallTokenEntry = snapshotConnectorTokenEntry(connectorId);
     const result = installConnector({
       connectorId,
@@ -5478,10 +5496,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       console.log("  Memory extension publish skipped via installExtension=false");
     }
   } else if (action === "remove") {
-    if (!connectorId) {
-      console.error("Usage: remnic connectors remove <id>");
-      process.exit(1);
-    }
+    const connectorId = resolveConnectorId("Usage: remnic connectors remove <id>");
     const connectorBeforeRemoval = listConnectors().installed.find(
       (connector) => connector.connectorId === connectorId,
     );
@@ -5520,10 +5535,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       process.exit(1);
     }
   } else if (action === "doctor") {
-    if (!connectorId) {
-      console.error("Usage: remnic connectors doctor <id>");
-      process.exit(1);
-    }
+    const connectorId = resolveConnectorId("Usage: remnic connectors doctor <id>");
     const result = await doctorConnector(connectorId);
 
     // Append memory extension publisher health only for the requested
@@ -5591,7 +5603,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       console.log(healthy ? "\nConnector healthy" : "\nConnector has issues");
     }
   } else if (action === "marketplace") {
-    const subAction = nonFlagArgs[0];
+    const subAction = rawNonFlagArgs[0];
     // Use the original `rest` (not strippedRest) because marketplace uses
     // `--config <path>` for a file path, not `--config key=value` pairs.
     // `stripConfigArgv` would silently remove that flag, breaking config
@@ -5676,7 +5688,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       runConnectorPollOnce: pollOnce,
     } = await import("@remnic/core" as string);
 
-    const rawName = nonFlagArgs[0];
+    const rawName = resolveConfigStrippedNonFlagArgs()[0];
     let connectorName: string;
     try {
       connectorName = parseRunName(rawName);

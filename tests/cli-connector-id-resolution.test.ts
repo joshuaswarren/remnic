@@ -72,10 +72,7 @@ test("stripConfigArgv: split-form --config with value containing = signs", () =>
   assert.deepEqual(stripped, ["codex-cli"]);
 });
 
-test("stripConfigArgv: split-form --config followed by another flag (malformed) — flag only removed", () => {
-  // --config followed by --force (no = in next token) — should only skip the --config token.
+test("stripConfigArgv: split-form --config followed by another flag rejects malformed input", () => {
   const argv = ["--config", "--force", "codex-cli"];
-  const stripped = stripConfigArgv(argv);
-  // --force is NOT a config value (starts with --), so it is kept. --config is removed.
-  assert.deepEqual(stripped, ["--force", "codex-cli"]);
+  assert.throws(() => stripConfigArgv(argv), /--config requires key=value/);
 });

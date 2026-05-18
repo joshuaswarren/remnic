@@ -11,6 +11,18 @@
  *
  * Values may themselves contain "=", so we split on the first "=" only.
  */
+function parseConfigAssignment(raw: string, flag: string): [string, string] {
+  const eqIdx = raw.indexOf("=");
+  if (eqIdx === -1) {
+    throw new Error(`${flag} requires key=value`);
+  }
+  const key = raw.slice(0, eqIdx);
+  if (!key) {
+    throw new Error(`${flag} requires a non-empty key`);
+  }
+  return [key, raw.slice(eqIdx + 1)];
+}
+
 export function parseConnectorConfig(args: string[]): Record<string, unknown> {
   const config: Record<string, unknown> = {};
   for (let i = 0; i < args.length; i++) {
@@ -18,26 +30,17 @@ export function parseConnectorConfig(args: string[]): Record<string, unknown> {
     if (arg.startsWith("--config=")) {
       // Joined form: --config=key=value  (value may itself contain "=")
       const rest = arg.slice("--config=".length);
-      const eqIdx = rest.indexOf("=");
-      if (eqIdx !== -1) {
-        const key = rest.slice(0, eqIdx);
-        const value = rest.slice(eqIdx + 1);
-        if (key) config[key] = value;
-      }
+      const [key, value] = parseConfigAssignment(rest, "--config");
+      config[key] = value;
     } else if (arg === "--config") {
       // Split form: --config key=value
       const next = args[i + 1];
-      if (next !== undefined) {
-        const eqIdx = next.indexOf("=");
-        if (eqIdx !== -1) {
-          const key = next.slice(0, eqIdx);
-          const value = next.slice(eqIdx + 1);
-          if (key) {
-            config[key] = value;
-            i++; // consume the next token
-          }
-        }
+      if (next === undefined || next.startsWith("--")) {
+        throw new Error("--config requires key=value");
       }
+      const [key, value] = parseConfigAssignment(next, "--config");
+      config[key] = value;
+      i++; // consume the next token
     }
   }
   return config;
@@ -64,15 +67,17 @@ export function stripConfigArgv(args: string[]): string[] {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg.startsWith("--config=")) {
-      // Joined form: the flag+value is a single token — skip it.
+      // Joined form: the flag+value is a single token - validate then skip it.
+      parseConfigAssignment(arg.slice("--config=".length), "--config");
       continue;
     } else if (arg === "--config") {
-      // Split form: peek at the next token. If it looks like key=value, skip
-      // both the flag and its value; otherwise skip only the flag (malformed).
+      // Split form: validate and skip both the flag and its value.
       const next = args[i + 1];
-      if (next !== undefined && next.includes("=") && !next.startsWith("--")) {
-        i++; // skip value token too
+      if (next === undefined || next.startsWith("--")) {
+        throw new Error("--config requires key=value");
       }
+      parseConfigAssignment(next, "--config");
+      i++; // skip value token too
       continue;
     }
     result.push(arg);

@@ -54,8 +54,27 @@ test("parseConnectorConfig: no --config flags yields empty object", () => {
   assert.deepEqual(result, {});
 });
 
-test("parseConnectorConfig: split form does not consume non-kv next arg", () => {
-  // --config followed by something without = should be ignored
-  const result = parseConnectorConfig(["--config", "--force"]);
-  assert.deepEqual(result, {});
+test("parseConnectorConfig: split form rejects missing key=value", () => {
+  assert.throws(
+    () => parseConnectorConfig(["--config", "--force"]),
+    /--config requires key=value/,
+  );
+  assert.throws(
+    () => parseConnectorConfig(["--config", "codex-cli"]),
+    /--config requires key=value/,
+  );
+});
+
+test("parseConnectorConfig: joined form rejects missing key=value", () => {
+  assert.throws(
+    () => parseConnectorConfig(["--config=installExtension"]),
+    /--config requires key=value/,
+  );
+});
+
+test("parseConnectorConfig: rejects empty keys", () => {
+  assert.throws(
+    () => parseConnectorConfig(["--config==false"]),
+    /--config requires a non-empty key/,
+  );
 });
