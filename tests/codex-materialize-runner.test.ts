@@ -38,6 +38,33 @@ function makeCodexHome(): { root: string; memoriesDir: string } {
   return { root, memoriesDir };
 }
 
+test("parseConfig coerces string Codex materialization config values", () => {
+  const config = parseConfig({
+    codexMaterializeMemories: "false",
+    codexMaterializeOnSessionEnd: "false",
+    codexMaterializeOnConsolidation: "false",
+    codexMaterializeMaxSummaryTokens: "0",
+    codexMaterializeRolloutRetentionDays: "0",
+  });
+
+  assert.equal(config.codexMaterializeMemories, false);
+  assert.equal(config.codexMaterializeOnSessionEnd, false);
+  assert.equal(config.codexMaterializeOnConsolidation, false);
+  assert.equal(config.codexMaterializeMaxSummaryTokens, 0);
+  assert.equal(config.codexMaterializeRolloutRetentionDays, 0);
+});
+
+test("parseConfig rejects invalid Codex materialization numeric config values", () => {
+  assert.throws(
+    () => parseConfig({ codexMaterializeMaxSummaryTokens: "abc" }),
+    /codexMaterializeMaxSummaryTokens must be an integer greater than or equal to 0/,
+  );
+  assert.throws(
+    () => parseConfig({ codexMaterializeRolloutRetentionDays: "3.7" }),
+    /codexMaterializeRolloutRetentionDays must be an integer greater than or equal to 0/,
+  );
+});
+
 test("runner reads namespaced memories from memoryDir/namespaces/<ns> (P1 fix)", async () => {
   const memoryDir = makeTempDir("codex-materialize-runner-memdir-");
   const workspaceDir = makeTempDir("codex-materialize-runner-workspace-");

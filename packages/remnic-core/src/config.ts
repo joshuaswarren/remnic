@@ -3196,21 +3196,25 @@ export function parseConfig(raw: unknown): PluginConfig {
     taxonomyAutoGenResolver: coerceBool(cfg.taxonomyAutoGenResolver) ?? true,
 
     // Codex CLI — native memory materialization (#378)
-    codexMaterializeMemories: cfg.codexMaterializeMemories !== false,
+    codexMaterializeMemories: coerceBool(cfg.codexMaterializeMemories) ?? true,
     codexMaterializeNamespace:
       typeof cfg.codexMaterializeNamespace === "string" && cfg.codexMaterializeNamespace.trim().length > 0
         ? cfg.codexMaterializeNamespace.trim()
         : "auto",
-    codexMaterializeMaxSummaryTokens:
-      typeof cfg.codexMaterializeMaxSummaryTokens === "number"
-        ? Math.max(0, Math.floor(cfg.codexMaterializeMaxSummaryTokens))
-        : 4500,
-    codexMaterializeRolloutRetentionDays:
-      typeof cfg.codexMaterializeRolloutRetentionDays === "number"
-        ? Math.max(0, Math.floor(cfg.codexMaterializeRolloutRetentionDays))
-        : 30,
-    codexMaterializeOnConsolidation: cfg.codexMaterializeOnConsolidation !== false,
-    codexMaterializeOnSessionEnd: cfg.codexMaterializeOnSessionEnd !== false,
+    codexMaterializeMaxSummaryTokens: parseIntegerAtLeast(
+      cfg.codexMaterializeMaxSummaryTokens,
+      4500,
+      0,
+      "codexMaterializeMaxSummaryTokens",
+    ),
+    codexMaterializeRolloutRetentionDays: parseIntegerAtLeast(
+      cfg.codexMaterializeRolloutRetentionDays,
+      30,
+      0,
+      "codexMaterializeRolloutRetentionDays",
+    ),
+    codexMaterializeOnConsolidation: coerceBool(cfg.codexMaterializeOnConsolidation) ?? true,
+    codexMaterializeOnSessionEnd: coerceBool(cfg.codexMaterializeOnSessionEnd) ?? true,
     // Codex CLI — marketplace integration (#418)
     codexMarketplaceEnabled: cfg.codexMarketplaceEnabled !== false, // default: true
 
