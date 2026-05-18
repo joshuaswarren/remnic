@@ -12,31 +12,48 @@ const repoRoot = resolve(__dirname, "../../..");
 const tsxCli = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const cliPath = join(__dirname, "cli.ts");
 
+function mergeEnv(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      delete env[key];
+    } else {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+function runCli(args: string[], envOverrides: Record<string, string | undefined> = {}) {
+  return spawnSync(process.execPath, [tsxCli, cliPath, ...args], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 5_000,
+    env: mergeEnv(envOverrides),
+  });
+}
+
 function runCliWithConfig(config: unknown) {
   const tempDir = mkdtempSync(join(tmpdir(), "remnic-weclone-cli-"));
   const configPath = join(tempDir, "weclone.json");
   writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
   try {
-    return spawnSync(process.execPath, [tsxCli, cliPath, "--config", configPath], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      timeout: 5_000,
-    });
+    return runCli(["--config", configPath]);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
-function runCliWithoutConfig(env: NodeJS.ProcessEnv) {
-  return spawnSync(process.execPath, [tsxCli, cliPath], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ...env,
-    },
-    timeout: 5_000,
-  });
+function writeInvalidConfig(configPath: string): void {
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      proxyPort: 8100,
+      remnicDaemonUrl: "http://127.0.0.1:4318",
+    }),
+    { mode: 0o600 },
+  );
 }
 
 function listenOnEphemeralPort(): Promise<{ server: net.Server; port: number }> {
@@ -78,20 +95,11 @@ describe("remnic-weclone-proxy CLI", () => {
   it("falls back to ENGRAM_HOME when REMNIC_HOME is empty", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "remnic-weclone-env-"));
     const remnicHome = join(tempDir, "legacy-home");
-    const configDir = join(remnicHome, "connectors");
-    const configPath = join(configDir, "weclone.json");
-    mkdirSync(configDir, { recursive: true });
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        proxyPort: 8100,
-        remnicDaemonUrl: "http://127.0.0.1:4318",
-      }),
-      { mode: 0o600 },
-    );
+    const configPath = join(remnicHome, "connectors", "weclone.json");
+    writeInvalidConfig(configPath);
 
     try {
-      const result = runCliWithoutConfig({
+      const result = runCli([], {
         REMNIC_HOME: "",
         ENGRAM_HOME: remnicHome,
         HOME: join(tempDir, "home"),
@@ -122,6 +130,31 @@ describe("remnic-weclone-proxy CLI", () => {
       assert.match(result.stderr, /EADDRINUSE|address already in use/i);
     } finally {
       await closeServer(server);
+    }
+  });
+
+  it("expands tilde in explicit --config paths", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "remnic-weclone-cli-"));
+    const home = join(tempDir, "home");
+    const configPath = join(home, ".remnic", "connectors", "weclone.json");
+    writeInvalidConfig(configPath);
+
+    try {
+      const result = runCli(["--config", "~/.remnic/connectors/weclone.json"], {
+        HOME: home,
+        USERPROFILE: home,
+        REMNIC_HOME: undefined,
+        ENGRAM_HOME: undefined,
+      });
+
+      assert.ifError(result.error);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /Invalid config at /);
+      assert.ok(result.stderr.includes(configPath), result.stderr);
+      assert.match(result.stderr, /wecloneApiUrl/);
+      assert.doesNotMatch(result.stderr, /Config not found/);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
     }
   });
 });

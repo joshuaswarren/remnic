@@ -805,6 +805,26 @@ test("resolveWeCloneProxyConfigPath treats empty HOME as absent (aligns with os.
   );
 });
 
+test("resolveWeCloneProxyConfigPath expands tilde home overrides", async (t) => {
+  const sandbox = makeSandbox(t);
+  await withEnv(
+    {
+      HOME: sandbox.home,
+      USERPROFILE: sandbox.home,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+      REMNIC_HOME: "~/custom-remnic",
+      ENGRAM_HOME: undefined,
+    },
+    () => {
+      const resolved = resolveWeCloneProxyConfigPath();
+      assert.equal(
+        resolved,
+        path.resolve(sandbox.home, "custom-remnic", "connectors", "weclone.json"),
+      );
+    },
+  );
+});
+
 test("buildWeCloneProxyConfig merges memoryInjection partials", () => {
   const config = buildWeCloneProxyConfig({
     userConfig: { memoryInjection: { maxTokens: 2500 } },
