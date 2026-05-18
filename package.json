@@ -53,7 +53,8 @@
   "files": [
     "dist",
     "bin/engram-access.js",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "packages/remnic-core/scripts/ensure-better-sqlite3.mjs"
   ],
   "dependencies": {
     "@remnic/core": "workspace:^",
