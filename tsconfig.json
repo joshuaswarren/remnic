@@ -21,12 +21,20 @@
       "@remnic/core": [
         "./packages/remnic-core/src/index.ts"
       ],
+      "@remnic/core/access-cli": [
+        "./packages/remnic-core/src/access-cli.ts"
+      ],
+      "@remnic/core/cli": [
+        "./packages/remnic-core/src/cli.ts"
+      ],
       "@remnic/core/connectors": [
         "./packages/remnic-core/src/connectors/index.ts"
       ],
-      "@remnic/core/*": [
-        "./packages/remnic-core/src/*.ts",
-        "./packages/remnic-core/src/*/index.ts"
+      "@remnic/core/connectors/codex-materialize": [
+        "./packages/remnic-core/src/connectors/codex-materialize.ts"
+      ],
+      "@remnic/core/connectors/codex-materialize-runner": [
+        "./packages/remnic-core/src/connectors/codex-materialize-runner.ts"
       ]
     }
   },
@@ -39,6 +47,8 @@
     "node_modules",
     "dist",
     "scripts",
+    "**/*.test.ts",
+    "**/*.spec.ts",
     ".worktrees"
   ]
 }
