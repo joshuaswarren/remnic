@@ -18,8 +18,19 @@ export interface BestEffortGatewayRestartResult {
   restarted: boolean;
 }
 
+interface AtomicFileOperationHooks {
+  copyTempFileSync?: (sourcePath: string, tempPath: string) => void;
+  renameTempFileSync?: (tempPath: string, targetPath: string) => void;
+  writeTempFileSync?: (tempPath: string) => void;
+}
+
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function createSiblingTempFilePath(targetPath: string, label: string): string {
+  const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  return path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${label}.${nonce}.tmp`);
 }
 
 function createSiblingSwapPath(targetDir: string, label: string): string {
@@ -41,6 +52,48 @@ function cleanupDisplacedDirectoryBestEffort(
       `Warning: ${context}, but failed to remove the displaced plugin copy at ` +
       `${displacedDir}: ${describeError(error)}`
     );
+  }
+}
+
+export function atomicWriteFileSync(
+  targetPath: string,
+  data: string | NodeJS.ArrayBufferView,
+  options: { hooks?: AtomicFileOperationHooks; mode?: fs.Mode } = {},
+): void {
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  const tempPath = createSiblingTempFilePath(targetPath, "write");
+
+  try {
+    if (options.hooks?.writeTempFileSync) {
+      options.hooks.writeTempFileSync(tempPath);
+    } else {
+      fs.writeFileSync(tempPath, data, options.mode === undefined ? undefined : { mode: options.mode });
+    }
+    const renameTempFileSync = options.hooks?.renameTempFileSync ?? fs.renameSync;
+    renameTempFileSync(tempPath, targetPath);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
+  }
+}
+
+export function atomicCopyFileSync(
+  sourcePath: string,
+  targetPath: string,
+  options: { hooks?: AtomicFileOperationHooks } = {},
+): void {
+  if (!fs.existsSync(sourcePath)) return;
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  const tempPath = createSiblingTempFilePath(targetPath, "copy");
+
+  try {
+    const copyTempFileSync = options.hooks?.copyTempFileSync ?? fs.copyFileSync;
+    copyTempFileSync(sourcePath, tempPath);
+    const renameTempFileSync = options.hooks?.renameTempFileSync ?? fs.renameSync;
+    renameTempFileSync(tempPath, targetPath);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
   }
 }
 
@@ -196,9 +249,7 @@ function restoreDirectoryFromBackup(targetDir: string, backupDir: string): strin
 }
 
 function restoreFileFromBackup(targetPath: string, backupPath: string): void {
-  if (!fs.existsSync(backupPath)) return;
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  fs.cpSync(backupPath, targetPath);
+  atomicCopyFileSync(backupPath, targetPath);
 }
 
 export function rollbackOpenclawUpgrade({

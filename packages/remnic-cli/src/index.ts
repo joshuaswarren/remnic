@@ -201,7 +201,7 @@ import {
   resolveFallbackBenchResultPath,
 } from "./bench-fallback.js";
 import {
-  cleanupRollbackDirectoryBestEffort,
+  atomicWriteFileSync, cleanupRollbackDirectoryBestEffort,
   createOpenclawUpgradeRollbackFailure,
   runBestEffortGatewayRestart,
   rollbackOpenclawUpgrade,
@@ -7429,7 +7429,7 @@ async function cmdOpenclawInstall(opts: OpenclawInstallOptions): Promise<void> {
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
   }
-  fs.writeFileSync(configPath, JSON.stringify(updatedConfig, null, 2) + "\n");
+  atomicWriteFileSync(configPath, JSON.stringify(updatedConfig, null, 2) + "\n");
 
   console.log("\nDone! Summary of changes:");
   for (const c of changes) console.log("  " + c);

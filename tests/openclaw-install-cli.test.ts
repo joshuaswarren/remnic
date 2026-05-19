@@ -144,6 +144,24 @@ test("CLI openclaw install grants required conversation hook access", async () =
   );
 });
 
+test("CLI openclaw install writes config atomically", async () => {
+  const src = await readCli();
+  const installStart = src.indexOf("async function cmdOpenclawInstall");
+  const upgradeStart = src.indexOf("async function cmdOpenclawUpgrade");
+  assert.ok(installStart >= 0, "cmdOpenclawInstall must exist");
+  assert.ok(upgradeStart > installStart, "cmdOpenclawUpgrade should follow cmdOpenclawInstall");
+  const installBody = src.slice(installStart, upgradeStart);
+
+  assert.ok(
+    installBody.includes("atomicWriteFileSync(configPath"),
+    "OpenClaw install must write openclaw.json through the atomic config writer",
+  );
+  assert.ok(
+    !installBody.includes("writeFileSync(configPath"),
+    "OpenClaw install must not write directly to the live openclaw.json path",
+  );
+});
+
 test("CLI query does not wait for deferred QMD startup maintenance", async () => {
   const src = await readCli();
   const queryStart = src.indexOf("async function cmdQuery");
