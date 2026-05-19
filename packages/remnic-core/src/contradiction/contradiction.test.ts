@@ -1327,6 +1327,26 @@ test("executeResolution merge requires a real merged memory", async () => {
   }
 });
 
+test("executeResolution merge rejects missing replacement before superseding sources", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair());
+    const storage = makeResolutionStorage();
+
+    const result = await executeResolution(dir, storage, written.pairId, "merge", {
+      mergedMemoryId: "missing-merged-memory",
+    });
+
+    assert.deepEqual(storage.supersedeCalls, []);
+    assert.match(result.message, /Merged memory missing-merged-memory not found/);
+    assert.equal(storage.memories.get("mem-a-001")?.frontmatter.status, undefined);
+    assert.equal(storage.memories.get("mem-b-002")?.frontmatter.status, undefined);
+    assert.equal(readPair(dir, written.pairId)?.resolution, undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("executeResolution merge supersedes both sources to a verified merged memory", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
