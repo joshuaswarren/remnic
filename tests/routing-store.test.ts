@@ -65,6 +65,26 @@ test("routing store upsert rejects malformed state without overwriting it", asyn
   }
 });
 
+test("routing store write rejects malformed state without overwriting", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-routing-store-write-malformed-"));
+  try {
+    const statePath = path.join(memoryDir, "state", "routing-rules.json");
+    await mkdir(path.dirname(statePath), { recursive: true });
+    await writeFile(statePath, "{bad-json", "utf-8");
+    const store = new RoutingRulesStore(memoryDir);
+
+    await assert.rejects(
+      async () => store.write([sampleRule({ id: "replacement-rule" })]),
+      /failed to parse routing rules state/,
+    );
+
+    const raw = await readFile(statePath, "utf-8");
+    assert.equal(raw, "{bad-json");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("routing store upsert rejects invalid state shape without overwriting it", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-routing-store-invalid-shape-upsert-"));
   try {
@@ -74,12 +94,30 @@ test("routing store upsert rejects invalid state shape without overwriting it", 
     await writeFile(statePath, invalidState, "utf-8");
 
     const store = new RoutingRulesStore(memoryDir);
+
     await assert.rejects(
       async () => store.upsert(sampleRule({ id: "new-rule", pattern: "new incident" })),
       /rules must be an array/,
     );
 
     assert.equal(await readFile(statePath, "utf-8"), invalidState);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("routing store upsert creates state when file is missing", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-routing-store-upsert-missing-"));
+  try {
+    const store = new RoutingRulesStore(memoryDir);
+    await store.upsert(sampleRule({ id: "new-rule" }));
+
+    const rules = await store.read();
+    assert.equal(rules.length, 1);
+    assert.equal(rules[0].id, "new-rule");
+
+    const raw = await readFile(path.join(memoryDir, "state", "routing-rules.json"), "utf-8");
+    assert.match(raw, /"new-rule"/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

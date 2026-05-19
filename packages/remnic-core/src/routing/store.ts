@@ -97,7 +97,10 @@ export class RoutingRulesStore {
   }
 
   async write(rules: RouteRule[], options?: RoutingEngineOptions): Promise<RouteRule[]> {
-    return this.withWriteLock(async () => this.writeNormalized(rules, options));
+    return this.withWriteLock(async () => {
+      await this.readPersistedRules();
+      return this.writeNormalized(rules, options);
+    });
   }
 
   async upsert(rule: RouteRule, options?: RoutingEngineOptions): Promise<RouteRule[]> {
