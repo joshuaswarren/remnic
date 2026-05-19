@@ -87,6 +87,11 @@ interface CodexCliDiagnosticRecord {
   command: {
     args: string[];
   };
+  retry?: {
+    attempt: number;
+    maxAttempts: number;
+    transientFailure?: boolean;
+  };
   result?: {
     status: number | null;
     signal: NodeJS.Signals | null;
@@ -103,6 +108,12 @@ interface CodexCliDiagnosticRecord {
 interface CodexCliDiagnosticHandle {
   path: string;
   record: CodexCliDiagnosticRecord;
+}
+
+interface CodexCliDiagnosticOutcome {
+  result?: CodexCliRunResult;
+  error?: unknown;
+  transientFailure?: boolean;
 }
 
 const DEFAULT_REASONING_EFFORT = "xhigh";
@@ -212,55 +223,95 @@ class CodexCliProvider implements LlmProvider {
       return this.completeViaResponsesApi(prompt, opts, startedAt);
     }
 
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-cli-"));
-    const workspacePath = path.join(tempDir, "workspace");
-    const outputPath = path.join(tempDir, "last-message.txt");
-    let diagnostics: CodexCliDiagnosticHandle | undefined;
+    const maxAttempts = normalizeCodexCliMaxAttempts(
+      this.config.retryOptions?.maxAttempts,
+    );
+    let lastError: unknown;
 
-    try {
-      await mkdir(workspacePath, { recursive: true });
-      const request = this.buildRunRequest(prompt, opts, workspacePath, outputPath);
-      diagnostics = await startCodexCliDiagnostics({
-        config: this.config,
-        request,
-        reasoningEffort: this.config.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-        serviceTier: DEFAULT_SERVICE_TIER,
-      });
-      const result = await this.runCodexCli(request);
-      await finishCodexCliDiagnostics(diagnostics, startedAt, { result });
-      if (result.status !== 0) {
-        const exitLabel = result.signal
-          ? `signal ${result.signal}`
-          : `exit ${result.status ?? "unknown"}`;
-        throw new Error(
-          `Codex CLI completion failed (${exitLabel}): ${summarizeProcessOutput(result.stderr, result.stdout)}`,
-        );
-      }
-
-      const text = result.outputText.trim();
-      if (text.length === 0) {
-        throw new Error(
-          `Codex CLI completion returned no final message: ${summarizeProcessOutput(result.stderr, result.stdout)}`,
-        );
-      }
-      const tokens = parseCodexTokenUsage(
-        `${result.stderr}\n${result.stdout}`,
-        text,
-      );
-      this.recordUsage(tokens.input, tokens.output);
-
-      return {
-        text,
-        tokens,
-        latencyMs: Math.round(performance.now() - startedAt),
-        model: this.config.model,
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-cli-"));
+      const workspacePath = path.join(tempDir, "workspace");
+      const outputPath = path.join(tempDir, "last-message.txt");
+      let diagnostics: CodexCliDiagnosticHandle | undefined;
+      let diagnosticsFinished = false;
+      const finishDiagnostics = async (outcome: CodexCliDiagnosticOutcome): Promise<void> => {
+        if (diagnosticsFinished) {
+          return;
+        }
+        diagnosticsFinished = true;
+        await finishCodexCliDiagnostics(diagnostics, startedAt, outcome);
       };
-    } catch (error) {
-      await finishCodexCliDiagnostics(diagnostics, startedAt, { error });
-      throw error;
-    } finally {
-      await rm(tempDir, { force: true, recursive: true });
+
+      try {
+        await mkdir(workspacePath, { recursive: true });
+        const request = this.buildRunRequest(prompt, opts, workspacePath, outputPath);
+        diagnostics = await startCodexCliDiagnostics({
+          config: this.config,
+          request,
+          reasoningEffort: this.config.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
+          serviceTier: DEFAULT_SERVICE_TIER,
+          retry: { attempt, maxAttempts },
+        });
+        const result = await this.runCodexCli(request);
+        if (result.status !== 0) {
+          const exitLabel = result.signal
+            ? `signal ${result.signal}`
+            : `exit ${result.status ?? "unknown"}`;
+          const error = new Error(
+            `Codex CLI completion failed (${exitLabel}): ${summarizeProcessOutput(result.stderr, result.stdout)}`,
+          );
+          if (
+            attempt < maxAttempts &&
+            isRetryableCodexCliResult(result)
+          ) {
+            lastError = error;
+            await finishDiagnostics({
+              result,
+              error,
+              transientFailure: true,
+            });
+            await sleepBeforeCodexCliRetry(
+              attempt,
+              this.config.retryOptions?.baseBackoffMs,
+              opts.signal,
+            );
+            continue;
+          }
+          await finishDiagnostics({ result, error });
+          throw error;
+        }
+
+        const text = result.outputText.trim();
+        if (text.length === 0) {
+          const error = new Error(
+            `Codex CLI completion returned no final message: ${summarizeProcessOutput(result.stderr, result.stdout)}`,
+          );
+          await finishDiagnostics({ result, error });
+          throw error;
+        }
+        await finishDiagnostics({ result });
+        const tokens = parseCodexTokenUsage(
+          `${result.stderr}\n${result.stdout}`,
+          text,
+        );
+        this.recordUsage(tokens.input, tokens.output);
+
+        return {
+          text,
+          tokens,
+          latencyMs: Math.round(performance.now() - startedAt),
+          model: this.config.model,
+        };
+      } catch (error) {
+        lastError = error;
+        await finishDiagnostics({ error });
+        throw error;
+      } finally {
+        await rm(tempDir, { force: true, recursive: true });
+      }
     }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   async discover(): Promise<DiscoveredModel[]> {
@@ -671,6 +722,7 @@ async function startCodexCliDiagnostics(args: {
   request: CodexCliRunRequest;
   reasoningEffort: string;
   serviceTier: string;
+  retry: { attempt: number; maxAttempts: number };
 }): Promise<CodexCliDiagnosticHandle | undefined> {
   const diagnosticsDir = resolveCodexCliDiagnosticsDir(args.config);
   if (!diagnosticsDir) {
@@ -699,6 +751,7 @@ async function startCodexCliDiagnostics(args: {
       command: {
         args: redactCodexCliArgs(args.request.args),
       },
+      retry: args.retry,
       ...(mode === "full" ? { fullPrompt: args.request.input } : {}),
     };
     const filePath = path.join(diagnosticsDir, `${id}.json`);
@@ -712,7 +765,7 @@ async function startCodexCliDiagnostics(args: {
 async function finishCodexCliDiagnostics(
   handle: CodexCliDiagnosticHandle | undefined,
   startedAt: number,
-  outcome: { result?: CodexCliRunResult; error?: unknown },
+  outcome: CodexCliDiagnosticOutcome,
 ): Promise<void> {
   if (!handle) {
     return;
@@ -722,6 +775,14 @@ async function finishCodexCliDiagnostics(
   const error = outcome.error;
   const record: CodexCliDiagnosticRecord = {
     ...handle.record,
+    ...(outcome.transientFailure
+      ? {
+          retry: {
+            ...(handle.record.retry ?? { attempt: 1, maxAttempts: 1 }),
+            transientFailure: true,
+          },
+        }
+      : {}),
     finishedAt: new Date().toISOString(),
     durationMs: Math.round(performance.now() - startedAt),
     ...(result
@@ -732,8 +793,8 @@ async function finishCodexCliDiagnostics(
             stdoutChars: result.stdout.length,
             stderrChars: result.stderr.length,
             outputChars: result.outputText.length,
-            stdoutTail: result.stdout.slice(-2_000),
-            stderrTail: result.stderr.slice(-2_000),
+            stdoutTail: tailText(result.stdout, 2_000),
+            stderrTail: tailText(result.stderr, 2_000),
           },
         }
       : {}),
@@ -1077,6 +1138,88 @@ function appendBounded(existing: string, next: string): string {
     return combined;
   }
   return combined.slice(combined.length - CODEX_CLI_STDIO_LIMIT);
+}
+
+function tailText(value: string, maxChars: number): string {
+  if (!Number.isFinite(maxChars) || maxChars <= 0) {
+    return "";
+  }
+  const normalizedMaxChars = Math.floor(maxChars);
+  return value.length <= normalizedMaxChars
+    ? value
+    : value.slice(value.length - normalizedMaxChars);
+}
+
+function normalizeCodexCliMaxAttempts(value: number | undefined): number {
+  if (value === undefined) {
+    return 3;
+  }
+  if (!Number.isFinite(value) || value < 1) {
+    return 1;
+  }
+  return Math.min(10, Math.floor(value));
+}
+
+function isRetryableCodexCliResult(result: CodexCliRunResult): boolean {
+  if (!result.signal) {
+    return false;
+  }
+  const stderr = result.stderr.toLowerCase();
+  if (
+    stderr.includes("timed out after") ||
+    stderr.includes("aborted by benchmark timeout")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function sleepBeforeCodexCliRetry(
+  attempt: number,
+  configuredBaseBackoffMs: number | undefined,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const baseBackoffMs =
+    configuredBaseBackoffMs !== undefined &&
+    Number.isFinite(configuredBaseBackoffMs) &&
+    configuredBaseBackoffMs > 0
+      ? configuredBaseBackoffMs
+      : 1000;
+  const delayMs = Math.min(baseBackoffMs * Math.pow(2, attempt - 1), 30_000);
+  if (!signal) {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, delayMs);
+    });
+    return;
+  }
+  if (signal.aborted) {
+    throw codexCliAbortError(signal);
+  }
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      clearTimeout(timeout);
+      cleanup();
+      reject(codexCliAbortError(signal));
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function codexCliAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) {
+    return signal.reason;
+  }
+  if (signal.reason !== undefined) {
+    return new Error(String(signal.reason));
+  }
+  return new DOMException("The operation was aborted.", "AbortError");
 }
 
 function summarizeProcessOutput(stderr: string, stdout: string): string {

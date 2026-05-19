@@ -554,6 +554,177 @@ test("codex-cli provider surfaces non-zero CLI exits", async () => {
   );
 });
 
+test("codex-cli provider retries transient subprocess signals", async () => {
+  let attempts = 0;
+  const provider = createCodexCliProvider(
+    {
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      retryOptions: { maxAttempts: 2, baseBackoffMs: 1 },
+    },
+    {
+      async runCodexCli() {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            status: null,
+            signal: "SIGTERM",
+            stdout: "",
+            stderr: "parent process interrupted child",
+            outputText: "",
+          };
+        }
+        return {
+          status: 0,
+          signal: null,
+          stdout: "",
+          stderr: "tokens used 8",
+          outputText: "recovered answer",
+        };
+      },
+    },
+  );
+
+  const result = await provider.complete("hello");
+
+  assert.equal(attempts, 2);
+  assert.equal(result.text, "recovered answer");
+  assert.deepEqual(result.tokens, { input: 4, output: 4 });
+});
+
+test("codex-cli provider stops retry backoff when the completion is aborted", async () => {
+  const controller = new AbortController();
+  let attempts = 0;
+  const provider = createCodexCliProvider(
+    {
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      retryOptions: { maxAttempts: 2, baseBackoffMs: 10_000 },
+    },
+    {
+      async runCodexCli() {
+        attempts += 1;
+        setTimeout(() => {
+          controller.abort(new Error("benchmark cancelled"));
+        }, 10);
+        return {
+          status: null,
+          signal: "SIGTERM",
+          stdout: "",
+          stderr: "parent process interrupted child",
+          outputText: "",
+        };
+      },
+    },
+  );
+
+  const startedAt = performance.now();
+  await assert.rejects(
+    provider.complete("hello", { signal: controller.signal }),
+    /benchmark cancelled/,
+  );
+
+  assert.equal(attempts, 1);
+  assert.ok(performance.now() - startedAt < 1_000);
+});
+
+test("codex-cli provider marks transient retry diagnostics without counting final success as failure", async () => {
+  const diagnosticsDir = await mkdtemp(
+    path.join(os.tmpdir(), "remnic-codex-cli-diag-"),
+  );
+  let attempts = 0;
+
+  try {
+    const provider = createCodexCliProvider(
+      {
+        provider: "codex-cli",
+        model: "gpt-5.5",
+        diagnosticsDir,
+        retryOptions: { maxAttempts: 2, baseBackoffMs: 1 },
+      },
+      {
+        async runCodexCli() {
+          attempts += 1;
+          if (attempts === 1) {
+            return {
+              status: null,
+              signal: "SIGTERM",
+              stdout: "partial stdout",
+              stderr: "parent process interrupted child",
+              outputText: "",
+            };
+          }
+          return {
+            status: 0,
+            signal: null,
+            stdout: "",
+            stderr: "ok",
+            outputText: "recovered answer",
+          };
+        },
+      },
+    );
+
+    await provider.complete("hello");
+
+    const diagnostics = await Promise.all(
+      (await readdir(diagnosticsDir)).map(async (file) =>
+        JSON.parse(await readFile(path.join(diagnosticsDir, file), "utf8")) as Record<string, unknown>,
+      ),
+    );
+    diagnostics.sort((left, right) =>
+      String((left.retry as { attempt?: number } | undefined)?.attempt ?? 0)
+        .localeCompare(String((right.retry as { attempt?: number } | undefined)?.attempt ?? 0)),
+    );
+
+    assert.equal(diagnostics.length, 2);
+    assert.deepEqual(diagnostics[0]?.retry, {
+      attempt: 1,
+      maxAttempts: 2,
+      transientFailure: true,
+    });
+    assert.equal((diagnostics[0]?.result as { signal?: string }).signal, "SIGTERM");
+    assert.match(String(diagnostics[0]?.error), /Codex CLI completion failed/);
+    assert.deepEqual(diagnostics[1]?.retry, {
+      attempt: 2,
+      maxAttempts: 2,
+    });
+    assert.equal((diagnostics[1]?.result as { status?: number }).status, 0);
+    assert.equal("error" in diagnostics[1]!, false);
+  } finally {
+    await rm(diagnosticsDir, { force: true, recursive: true });
+  }
+});
+
+test("codex-cli provider does not retry benchmark timeouts", async () => {
+  let attempts = 0;
+  const provider = createCodexCliProvider(
+    {
+      provider: "codex-cli",
+      model: "gpt-5.5",
+      retryOptions: { maxAttempts: 2, baseBackoffMs: 1 },
+    },
+    {
+      async runCodexCli() {
+        attempts += 1;
+        return {
+          status: 124,
+          signal: "SIGTERM",
+          stdout: "",
+          stderr: "Codex CLI timed out after 1000ms.",
+          outputText: "",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(
+    provider.complete("hello"),
+    /Codex CLI completion failed \(signal SIGTERM\): Codex CLI timed out after 1000ms\./,
+  );
+  assert.equal(attempts, 1);
+});
+
 test("codex-cli provider writes metadata diagnostics without full prompt text", async () => {
   const diagnosticsDir = await mkdtemp(
     path.join(os.tmpdir(), "remnic-codex-cli-diag-"),
