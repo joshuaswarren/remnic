@@ -15,6 +15,7 @@
   },
   "files": [
     "dist",
+    "assets",
     "bin/remnic.cjs",
     "bin/engram.cjs",
     "templates"

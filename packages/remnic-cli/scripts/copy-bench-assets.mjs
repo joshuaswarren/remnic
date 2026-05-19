@@ -3,11 +3,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const pkgRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = path.resolve(pkgRoot, "../..");
 
 const assets = [
   {
-    from: path.join(repoRoot, "evals", "scripts", "download-datasets.sh"),
+    from: path.join(pkgRoot, "assets", "download-datasets.sh"),
     to: path.join(pkgRoot, "dist", "assets", "download-datasets.sh"),
     mode: 0o755,
   },
@@ -21,5 +20,5 @@ for (const asset of assets) {
   fs.mkdirSync(path.dirname(asset.to), { recursive: true });
   fs.copyFileSync(asset.from, asset.to);
   fs.chmodSync(asset.to, asset.mode);
-  console.log(`[copy-bench-assets] ${path.relative(repoRoot, asset.from)} → ${path.relative(repoRoot, asset.to)}`);
+  console.log(`[copy-bench-assets] ${path.relative(pkgRoot, asset.from)} → ${path.relative(pkgRoot, asset.to)}`);
 }
