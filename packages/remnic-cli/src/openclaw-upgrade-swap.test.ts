@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -28,6 +28,18 @@ test("atomicWriteFileSync preserves the target when temp write fails", async () 
 
   assert.equal(await readFile(configPath, "utf8"), '{"plugins":{"entries":{"old":true}}}\n');
   assert.deepEqual(await visibleEntries(root), ["openclaw.json"]);
+});
+
+test("atomicWriteFileSync preserves existing owner-only config permissions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-openclaw-atomic-mode-"));
+  const configPath = path.join(root, "openclaw.json");
+  await writeFile(configPath, '{"plugins":{"entries":{"old":true}}}\n', "utf8");
+  await chmod(configPath, 0o600);
+
+  atomicWriteFileSync(configPath, '{"plugins":{"entries":{"new":true}}}\n');
+
+  assert.equal(await readFile(configPath, "utf8"), '{"plugins":{"entries":{"new":true}}}\n');
+  assert.equal((await stat(configPath)).mode & 0o777, 0o600);
 });
 
 test("atomicCopyFileSync preserves the target when temp copy fails", async () => {

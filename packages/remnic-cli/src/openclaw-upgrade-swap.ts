@@ -33,6 +33,18 @@ function createSiblingTempFilePath(targetPath: string, label: string): string {
   return path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.${label}.${nonce}.tmp`);
 }
 
+function resolveAtomicWriteMode(targetPath: string, explicitMode: fs.Mode | undefined): fs.Mode {
+  if (explicitMode !== undefined) return explicitMode;
+  try {
+    return fs.statSync(targetPath).mode & 0o7777;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return 0o600;
+    }
+    throw error;
+  }
+}
+
 function createSiblingSwapPath(targetDir: string, label: string): string {
   const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   return path.join(path.dirname(targetDir), `.${path.basename(targetDir)}.${label}.${nonce}`);
@@ -62,13 +74,15 @@ export function atomicWriteFileSync(
 ): void {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const tempPath = createSiblingTempFilePath(targetPath, "write");
+  const mode = resolveAtomicWriteMode(targetPath, options.mode);
 
   try {
     if (options.hooks?.writeTempFileSync) {
       options.hooks.writeTempFileSync(tempPath);
     } else {
-      fs.writeFileSync(tempPath, data, options.mode === undefined ? undefined : { mode: options.mode });
+      fs.writeFileSync(tempPath, data, { mode });
     }
+    fs.chmodSync(tempPath, mode);
     const renameTempFileSync = options.hooks?.renameTempFileSync ?? fs.renameSync;
     renameTempFileSync(tempPath, targetPath);
   } catch (error) {
