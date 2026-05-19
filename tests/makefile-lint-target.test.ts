@@ -14,8 +14,8 @@ test("make lint delegates to an existing type-check script", () => {
   });
 
   assert.equal(dryRun.status, 0, dryRun.stderr);
-  assert.match(dryRun.stdout, /\bnpm run check-types\b/);
-  assert.doesNotMatch(dryRun.stdout, /\bnpm run lint\b/);
+  assert.match(dryRun.stdout, /\bpnpm check-types\b/);
+  assert.doesNotMatch(dryRun.stdout, /\bpnpm lint\b/);
 
   const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as {
     scripts?: Record<string, string>;

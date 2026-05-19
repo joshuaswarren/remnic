@@ -13,19 +13,19 @@ help:
 	@echo ""
 
 build:
-	npm run build
+	pnpm build
 
 test:
-	npm test
+	pnpm test
 
 lint:
-	npm run check-types
+	pnpm check-types
 
 preflight:
-	npm run preflight
+	pnpm preflight
 
 preflight-quick:
-	npm run preflight:quick
+	pnpm preflight:quick
 
 clean:
 	rm -rf dist/
