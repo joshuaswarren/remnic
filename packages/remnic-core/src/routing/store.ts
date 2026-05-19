@@ -69,6 +69,10 @@ function normalizeRule(rule: RouteRule, options?: RoutingEngineOptions): RouteRu
   };
 }
 
+function isEnoent(err: unknown): boolean {
+  return err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
+}
+
 export class RoutingRulesStore {
   private readonly memoryRoot: string;
   private readonly statePath: string;
@@ -135,18 +139,37 @@ export class RoutingRulesStore {
   }
 
   private async readPersistedRules(): Promise<RouteRule[]> {
+    await this.assertStatePathScoped();
+    let raw: string;
     try {
-      await this.assertStatePathScoped();
-      const raw = await readFile(this.statePath, "utf-8");
-      const parsed = JSON.parse(raw) as Partial<RoutingRulesState>;
-      if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.rules)) return [];
-      const normalized = parsed.rules
-        .map((rule) => normalizeRule(rule))
-        .filter((rule): rule is RouteRule => rule !== null);
-      return this.dedupeById(normalized);
-    } catch {
-      return [];
+      raw = await readFile(this.statePath, "utf-8");
+    } catch (err) {
+      if (isEnoent(err)) {
+        return [];
+      }
+      throw err;
     }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(
+        `failed to parse routing rules state at ${this.statePath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`invalid routing rules state at ${this.statePath}: expected object`);
+    }
+    const state = parsed as Partial<RoutingRulesState>;
+    if (!Array.isArray(state.rules)) {
+      throw new Error(`invalid routing rules state at ${this.statePath}: rules must be an array`);
+    }
+    const normalized = state.rules
+      .map((rule) => normalizeRule(rule))
+      .filter((rule): rule is RouteRule => rule !== null);
+    return this.dedupeById(normalized);
   }
 
   private async writeNormalized(rules: RouteRule[], options?: RoutingEngineOptions): Promise<RouteRule[]> {
