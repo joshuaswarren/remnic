@@ -14,6 +14,7 @@ test("root test script builds core before running package tests", () => {
   const testScript = pkg.scripts?.test ?? "";
   assert.match(testScript, /^pnpm --filter @remnic\/core build && /);
   assert.match(testScript, /"packages\/\*\/src\/\*\*\/\*\.test\.ts"/);
+  assert.match(testScript, /\bintegrations\/amb\/\*\.test\.mjs\b/);
   assert.doesNotMatch(
     testScript,
     /'[^']*\*[^']*'/,

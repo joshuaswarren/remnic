@@ -110,7 +110,7 @@
     "dev": "tsup --watch",
     "check-types": "pnpm --filter @remnic/core build && tsc --noEmit && pnpm --recursive --if-present --filter=\"./packages/*\" run check-types && node scripts/check-test-types.mjs",
     "check-config-contract": "tsx scripts/validate-config-contract.ts",
-    "test": "pnpm --filter @remnic/core build && tsx --test \"tests/**/*.test.ts\" \"packages/*/src/**/*.test.ts\" dashboard/lib/*.test.ts",
+    "test": "pnpm --filter @remnic/core build && tsx --test \"tests/**/*.test.ts\" \"packages/*/src/**/*.test.ts\" dashboard/lib/*.test.ts integrations/amb/*.test.mjs",
     "test:openclaw-scenarios": "pnpm exec tsx --test tests/openclaw-adapter-scenarios.test.ts",
     "test:openclaw-privacy": "pnpm exec tsx --test tests/openclaw-hook-privacy.test.ts",
     "test:entity-hardening": "tsx --test tests/intent.test.ts tests/recall-no-recall-short-circuit.test.ts tests/orchestrator-path-filter.test.ts tests/artifact-cache.test.ts tests/memory-cache.test.ts tests/entity-retrieval.test.ts tests/entity-synthesis-storage.test.ts tests/entity-synthesis-orchestrator.test.ts tests/config-recall-pipeline.test.ts tests/entity-contamination.test.ts",

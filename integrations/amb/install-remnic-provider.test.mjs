@@ -68,6 +68,22 @@ function runAmbPreflight(ambDir, env) {
   );
 }
 
+function commandExists(command) {
+  return spawnSync("sh", ["-c", 'command -v "$1"', "sh", command], {
+    encoding: "utf8",
+  }).status === 0;
+}
+
+const codexCliAvailable = commandExists(
+  process.env.OMB_CODEX_EXECUTABLE ||
+    process.env.REMNIC_BENCH_CODEX_CLI_EXECUTABLE ||
+    "codex",
+);
+const uvAvailable = commandExists("uv");
+const requireCodexCli = {
+  skip: codexCliAvailable && uvAvailable ? false : "codex CLI and uv are required",
+};
+
 test("installRemnicProvider exposes provider files before registry patches", () => {
   const source = readFileSync(
     path.join(__dirname, "install-remnic-provider.mjs"),
@@ -393,7 +409,7 @@ def run(llm: str): _resolve_gemini_key(); ds = get_dataset(dataset)
   );
 });
 
-test("check-remnic-run accepts the Codex CLI iteration profile", async () => {
+test("check-remnic-run accepts the Codex CLI iteration profile", requireCodexCli, async () => {
   const ambDir = await createAmbFixture();
   const storeDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-store-test-"));
 
@@ -477,7 +493,7 @@ test("check-remnic-run rejects Codex profile without AMB LLM registration", asyn
   }
 });
 
-test("check-remnic-run treats Codex internal LLM vars as optional unless configured", async () => {
+test("check-remnic-run treats Codex internal LLM vars as optional unless configured", requireCodexCli, async () => {
   const ambDir = await createAmbFixture();
   const storeDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-store-test-"));
 
@@ -519,7 +535,7 @@ test("check-remnic-run treats Codex internal LLM vars as optional unless configu
   }
 });
 
-test("check-remnic-run does not reset the caller AMB store directory", async () => {
+test("check-remnic-run does not reset the caller AMB store directory", requireCodexCli, async () => {
   const ambDir = await createAmbFixture();
   const storeDir = await mkdtemp(path.join(tmpdir(), "remnic-amb-store-preserve-test-"));
   const sentinelPath = path.join(storeDir, "sentinel.txt");
