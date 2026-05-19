@@ -261,6 +261,37 @@ test("CLI openclaw upgrade mentions backups and npm package refresh", async () =
   );
 });
 
+test("CLI openclaw upgrade uses collision-resistant backup directories", async () => {
+  const src = await readCli();
+  const upgradeStart = src.indexOf("async function cmdOpenclawUpgrade");
+  const migrateStart = src.indexOf("async function cmdOpenclawMigrateEngram");
+  assert.ok(upgradeStart >= 0 && migrateStart > upgradeStart, "CLI upgrade function must be present");
+  const upgradeSrc = src.slice(upgradeStart, migrateStart);
+  assert.ok(
+    src.includes("function createOpenclawUpgradeBackupDir"),
+    "CLI upgrade must isolate backup directory creation behind a helper",
+  );
+  assert.ok(
+    src.includes("fs.mkdtempSync(") &&
+      src.includes("remnic-openclaw-upgrade-${formatOpenclawUpgradeStamp()}-"),
+    "CLI upgrade backups must reserve a unique directory even for same-second retries",
+  );
+  assert.ok(
+    src.includes("const backupDir = createOpenclawUpgradeBackupDir();"),
+    "CLI upgrade must use the collision-resistant backup directory helper",
+  );
+  assert.ok(
+    upgradeSrc.indexOf("if (opts.dryRun)") <
+      upgradeSrc.indexOf("const backupDir = createOpenclawUpgradeBackupDir();"),
+    "CLI upgrade must not create backup directories during dry runs",
+  );
+  assert.ok(
+    upgradeSrc.indexOf("if (!opts.yes)") <
+      upgradeSrc.indexOf("const backupDir = createOpenclawUpgradeBackupDir();"),
+    "CLI upgrade must not create backup directories before confirmation",
+  );
+});
+
 test("CLI openclaw upgrade rolls back if the published plugin install fails after swap", async () => {
   const src = await readCli();
   assert.ok(

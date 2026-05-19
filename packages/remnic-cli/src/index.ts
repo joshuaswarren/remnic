@@ -7466,18 +7466,6 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
   const preservedMemoryDir = opts.memoryDir
     ? path.resolve(expandTilde(opts.memoryDir))
     : resolveCurrentOpenclawMemoryDir(entries, slots, fallbackMemoryDir);
-  const backupDir = path.join(
-    resolveHomeDir(),
-    ".openclaw",
-    "backups",
-    `remnic-openclaw-upgrade-${formatOpenclawUpgradeStamp()}`,
-  );
-  const configBackupPath = path.join(backupDir, "openclaw.json");
-  const pluginBackupDir = path.join(backupDir, "extensions", REMNIC_OPENCLAW_PLUGIN_ID);
-  const legacyPluginBackupDir = legacyPluginDirForBackup
-    ? path.join(backupDir, "extensions", REMNIC_OPENCLAW_LEGACY_PLUGIN_ID)
-    : undefined;
-
   assertDirectoryPathOrMissing(pluginDir, "OpenClaw plugin dir");
   if (legacyPluginDirForBackup) {
     assertDirectoryPathOrMissing(legacyPluginDirForBackup, "Legacy OpenClaw plugin dir");
@@ -7490,7 +7478,7 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
   }
   console.log(`Memory dir:      ${preservedMemoryDir}`);
   console.log(`Package spec:    ${packageSpec}`);
-  console.log(`Backup dir:      ${backupDir}`);
+  console.log(`Backup root:     ${path.join(resolveHomeDir(), ".openclaw", "backups")}`);
 
   const plannedActions = [
     `backup openclaw.json and the existing ${REMNIC_OPENCLAW_PLUGIN_ID} extension`,
@@ -7522,6 +7510,13 @@ async function cmdOpenclawUpgrade(opts: OpenclawUpgradeOptions): Promise<void> {
       return;
     }
   }
+
+  const backupDir = createOpenclawUpgradeBackupDir();
+  const configBackupPath = path.join(backupDir, "openclaw.json");
+  const pluginBackupDir = path.join(backupDir, "extensions", REMNIC_OPENCLAW_PLUGIN_ID);
+  const legacyPluginBackupDir = legacyPluginDirForBackup
+    ? path.join(backupDir, "extensions", REMNIC_OPENCLAW_LEGACY_PLUGIN_ID)
+    : undefined;
 
   const backupNotes: string[] = [];
   if (backupPathIfPresent(configPath, configBackupPath)) {
@@ -7637,6 +7632,11 @@ async function cmdOpenclawMigrateEngram(opts: OpenclawUpgradeOptions): Promise<v
   console.log(`  - plugins.entries["${REMNIC_OPENCLAW_PLUGIN_ID}"] is the canonical entry.`);
   console.log(`  - plugins.entries["${REMNIC_OPENCLAW_LEGACY_PLUGIN_ID}"] is retained temporarily for rollback.`);
   console.log("  - Re-apply any local source patches to the new package only after verifying the published build.");
+}
+
+function createOpenclawUpgradeBackupDir(): string {
+  const backupsRoot = path.join(resolveHomeDir(), ".openclaw", "backups"); fs.mkdirSync(backupsRoot, { recursive: true });
+  return fs.mkdtempSync(path.join(backupsRoot, `remnic-openclaw-upgrade-${formatOpenclawUpgradeStamp()}-`));
 }
 
 // ── Taxonomy commands (#366) ─────────────────────────────────────────────────

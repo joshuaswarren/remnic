@@ -68,8 +68,13 @@ export function checkBenchBuildFreshness(
     return { stale: false };
   }
 
+  const srcDir = path.join(benchPackageDir, "src");
+  if (!isDirectory(srcDir)) {
+    return { stale: false };
+  }
+
   const sourceRoots = [
-    path.join(benchPackageDir, "src"),
+    srcDir,
     packageJsonPath,
     path.join(benchPackageDir, "tsup.config.ts"),
     path.join(benchPackageDir, "tsconfig.json"),
@@ -136,6 +141,14 @@ function newestMtime(
     visit(root);
   }
   return newest;
+}
+
+function isDirectory(entryPath: string): boolean {
+  try {
+    return statSync(entryPath).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function isTruthyEnv(value: string | undefined): boolean {

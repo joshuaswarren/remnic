@@ -46,6 +46,25 @@ test("checkBenchBuildFreshness ignores non-local bench package paths", async () 
   assert.equal(checkBenchBuildFreshness(benchDir).stale, false);
 });
 
+test("checkBenchBuildFreshness ignores published bench packages without source", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-freshness-"));
+  const benchDir = path.join(root, "bench");
+  const distDir = path.join(benchDir, "dist");
+  await mkdir(distDir, { recursive: true });
+  await writeFile(
+    path.join(benchDir, "package.json"),
+    JSON.stringify({ name: "@remnic/bench" }),
+  );
+  await writeFile(path.join(distDir, "index.js"), "export const value = 0;\n");
+
+  const oldTime = new Date("2026-01-01T00:00:00.000Z");
+  const newTime = new Date("2026-01-01T00:00:05.000Z");
+  await touch(path.join(distDir, "index.js"), oldTime);
+  await touch(path.join(benchDir, "package.json"), newTime);
+
+  assert.equal(checkBenchBuildFreshness(benchDir).stale, false);
+});
+
 async function touch(filePath: string, date: Date): Promise<void> {
   const { utimes } = await import("node:fs/promises");
   await utimes(filePath, date, date);
