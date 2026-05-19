@@ -45,6 +45,20 @@ function resolveAtomicWriteMode(targetPath: string, explicitMode: fs.Mode | unde
   }
 }
 
+function resolveAtomicReplacementPath(targetPath: string): string {
+  try {
+    if (fs.lstatSync(targetPath).isSymbolicLink()) {
+      return fs.realpathSync(targetPath);
+    }
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return targetPath;
+    }
+    throw error;
+  }
+  return targetPath;
+}
+
 function createSiblingSwapPath(targetDir: string, label: string): string {
   const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
   return path.join(path.dirname(targetDir), `.${path.basename(targetDir)}.${label}.${nonce}`);
@@ -72,9 +86,10 @@ export function atomicWriteFileSync(
   data: string | NodeJS.ArrayBufferView,
   options: { hooks?: AtomicFileOperationHooks; mode?: fs.Mode } = {},
 ): void {
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  const tempPath = createSiblingTempFilePath(targetPath, "write");
-  const mode = resolveAtomicWriteMode(targetPath, options.mode);
+  const resolvedTargetPath = resolveAtomicReplacementPath(targetPath);
+  fs.mkdirSync(path.dirname(resolvedTargetPath), { recursive: true });
+  const tempPath = createSiblingTempFilePath(resolvedTargetPath, "write");
+  const mode = resolveAtomicWriteMode(resolvedTargetPath, options.mode);
 
   try {
     if (options.hooks?.writeTempFileSync) {
@@ -84,7 +99,7 @@ export function atomicWriteFileSync(
     }
     fs.chmodSync(tempPath, mode);
     const renameTempFileSync = options.hooks?.renameTempFileSync ?? fs.renameSync;
-    renameTempFileSync(tempPath, targetPath);
+    renameTempFileSync(tempPath, resolvedTargetPath);
   } catch (error) {
     fs.rmSync(tempPath, { force: true });
     throw error;
@@ -97,8 +112,9 @@ export function atomicCopyFileSync(
   options: { hooks?: AtomicFileOperationHooks } = {},
 ): void {
   if (!fs.existsSync(sourcePath)) return;
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  const tempPath = createSiblingTempFilePath(targetPath, "copy");
+  const resolvedTargetPath = resolveAtomicReplacementPath(targetPath);
+  fs.mkdirSync(path.dirname(resolvedTargetPath), { recursive: true });
+  const tempPath = createSiblingTempFilePath(resolvedTargetPath, "copy");
   const mode = fs.statSync(sourcePath).mode & 0o7777;
 
   try {
@@ -106,7 +122,7 @@ export function atomicCopyFileSync(
     copyTempFileSync(sourcePath, tempPath);
     fs.chmodSync(tempPath, mode);
     const renameTempFileSync = options.hooks?.renameTempFileSync ?? fs.renameSync;
-    renameTempFileSync(tempPath, targetPath);
+    renameTempFileSync(tempPath, resolvedTargetPath);
   } catch (error) {
     fs.rmSync(tempPath, { force: true });
     throw error;

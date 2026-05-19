@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -42,6 +42,20 @@ test("atomicWriteFileSync preserves existing owner-only config permissions", asy
   assert.equal((await stat(configPath)).mode & 0o777, 0o600);
 });
 
+test("atomicWriteFileSync updates symlink targets without replacing the link", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-openclaw-atomic-symlink-write-"));
+  const targetPath = path.join(root, "managed", "openclaw.json");
+  const linkPath = path.join(root, "openclaw.json");
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, '{"plugins":{"entries":{"old":true}}}\n', "utf8");
+  await symlink(targetPath, linkPath);
+
+  atomicWriteFileSync(linkPath, '{"plugins":{"entries":{"new":true}}}\n');
+
+  assert.equal((await lstat(linkPath)).isSymbolicLink(), true);
+  assert.equal(await readFile(targetPath, "utf8"), '{"plugins":{"entries":{"new":true}}}\n');
+});
+
 test("atomicCopyFileSync preserves the target when temp copy fails", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-openclaw-atomic-copy-"));
   const backupPath = path.join(root, "backup", "openclaw.json");
@@ -82,6 +96,23 @@ test("atomicCopyFileSync preserves backup file permissions on restore", async ()
 
   assert.equal(await readFile(configPath, "utf8"), '{"plugins":{"entries":{"backup":true}}}\n');
   assert.equal((await stat(configPath)).mode & 0o777, 0o600);
+});
+
+test("atomicCopyFileSync restores through symlink targets without replacing the link", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-openclaw-atomic-symlink-copy-"));
+  const backupPath = path.join(root, "backup", "openclaw.json");
+  const targetPath = path.join(root, "managed", "openclaw.json");
+  const linkPath = path.join(root, "openclaw.json");
+  await mkdir(path.dirname(backupPath), { recursive: true });
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(backupPath, '{"plugins":{"entries":{"backup":true}}}\n', "utf8");
+  await writeFile(targetPath, '{"plugins":{"entries":{"live":true}}}\n', "utf8");
+  await symlink(targetPath, linkPath);
+
+  atomicCopyFileSync(backupPath, linkPath);
+
+  assert.equal((await lstat(linkPath)).isSymbolicLink(), true);
+  assert.equal(await readFile(targetPath, "utf8"), '{"plugins":{"entries":{"backup":true}}}\n');
 });
 
 async function visibleEntries(dir: string): Promise<string[]> {
