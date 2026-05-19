@@ -15,7 +15,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -332,7 +332,7 @@ async function createBenchOrchestrator(
   configuredMemoryDir?: string,
 ): Promise<BenchOrchestratorState> {
   const tempDir = configuredMemoryDir
-    ? path.resolve(expandTildePath(configuredMemoryDir))
+    ? assertSafeConfiguredBenchDir(configuredMemoryDir)
     : await mkdtemp(path.join(tmpdir(), `remnic-bench-${mode}-`));
   const ownsTempDir = !configuredMemoryDir;
   await mkdir(tempDir, { recursive: true });
@@ -513,6 +513,31 @@ function resolveConfiguredBenchDir(options: RemnicAdapterOptions): string | unde
   const memoryDir = normalizeConfiguredBenchDir(options.memoryDir);
   const sandboxDir = normalizeConfiguredBenchDir(options.sandboxDir);
   return sandboxDir ?? memoryDir;
+}
+
+function assertSafeConfiguredBenchDir(configuredDir: string): string {
+  const resolved = path.resolve(expandTildePath(configuredDir));
+  const root = path.parse(resolved).root;
+  const dangerousDirs = [
+    root,
+    path.resolve(homedir()),
+    path.resolve(tmpdir()),
+    path.resolve(process.cwd()),
+  ];
+  if (
+    dangerousDirs.includes(resolved) ||
+    isPathAncestorOf(resolved, path.resolve(process.cwd()))
+  ) {
+    throw new Error(
+      `Remnic benchmark memoryDir/sandboxDir must not be a root, home, temp, cwd, or repository ancestor path: ${resolved}`,
+    );
+  }
+  return resolved;
+}
+
+function isPathAncestorOf(candidate: string, child: string): boolean {
+  const relative = path.relative(candidate, child);
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function normalizeBenchSessionId(sessionId: string): string {

@@ -262,6 +262,21 @@ test("direct adapter reset clears caller-owned memory directory", async () => {
   }
 });
 
+test("direct adapter rejects unsafe caller-owned memory directories before initialization", async () => {
+  const sentinelPath = path.join(tmpdir(), `remnic-bench-unsafe-sentinel-${process.pid}.txt`);
+  await writeFile(sentinelPath, "preserve temp root data");
+
+  try {
+    await assert.rejects(
+      () => createRemnicAdapter({ memoryDir: tmpdir() }),
+      /must not be a root, home, temp, cwd, or repository ancestor path/,
+    );
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve temp root data");
+  } finally {
+    await rm(sentinelPath, { force: true });
+  }
+});
+
 test("direct adapter session reset preserves other caller-owned sessions", async () => {
   const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-reset-session-"));
   const sentinelPath = path.join(memoryDir, "caller-owned-sentinel.txt");
