@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/resolve-provider-secret.js";
+export * from "@remnic/core/resolve-provider-secret";

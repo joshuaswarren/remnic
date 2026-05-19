@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/extraction.js";
+export * from "@remnic/core/extraction";

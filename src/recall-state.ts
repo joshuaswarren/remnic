@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/recall-state.js";
+export * from "@remnic/core/recall-state";

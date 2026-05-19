@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/transfer/import-json.js";
+export * from "@remnic/core/transfer/import-json";

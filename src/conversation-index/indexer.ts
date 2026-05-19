@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/conversation-index/indexer.js";
+export * from "@remnic/core/conversation-index/indexer";

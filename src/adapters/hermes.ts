@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/adapters/hermes.js";
+export * from "@remnic/core/adapters/hermes";

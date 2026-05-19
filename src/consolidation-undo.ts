@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/consolidation-undo.js";
+export * from "@remnic/core/consolidation-undo";

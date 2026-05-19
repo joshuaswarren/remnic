@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/graph-dashboard-diff.js";
+export * from "@remnic/core/graph-dashboard-diff";

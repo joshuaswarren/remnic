@@ -1,1 +1,1 @@
-export * from "../../../packages/remnic-core/src/replay/normalizers/claude.js";
+export * from "@remnic/core/replay/normalizers/claude";

@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/namespaces/principal.js";
+export * from "@remnic/core/namespaces/principal";

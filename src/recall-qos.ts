@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/recall-qos.js";
+export * from "@remnic/core/recall-qos";

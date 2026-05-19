@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/explicit-capture.js";
+export * from "@remnic/core/explicit-capture";

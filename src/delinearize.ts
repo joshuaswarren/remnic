@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/delinearize.js";
+export * from "@remnic/core/delinearize";

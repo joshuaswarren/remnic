@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/conversation-index/faiss-adapter.js";
+export * from "@remnic/core/conversation-index/faiss-adapter";

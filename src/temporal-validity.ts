@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/temporal-validity.js";
+export * from "@remnic/core/temporal-validity";

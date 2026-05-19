@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/profiling.js";
+export * from "@remnic/core/profiling";

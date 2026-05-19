@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/source-attribution.js";
+export * from "@remnic/core/source-attribution";

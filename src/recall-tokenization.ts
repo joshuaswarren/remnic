@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/recall-tokenization.js";
+export * from "@remnic/core/recall-tokenization";

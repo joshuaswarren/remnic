@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/graph-dashboard-parser.js";
+export * from "@remnic/core/graph-dashboard-parser";

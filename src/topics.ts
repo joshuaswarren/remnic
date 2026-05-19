@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/topics.js";
+export * from "@remnic/core/topics";

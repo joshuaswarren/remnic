@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/graph.js";
+export * from "@remnic/core/graph";

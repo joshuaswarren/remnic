@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/threading.js";
+export * from "@remnic/core/threading";

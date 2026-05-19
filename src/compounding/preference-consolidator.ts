@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/compounding/preference-consolidator.js";
+export * from "@remnic/core/compounding/preference-consolidator";

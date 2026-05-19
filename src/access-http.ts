@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/access-http.js";
+export * from "@remnic/core/access-http";

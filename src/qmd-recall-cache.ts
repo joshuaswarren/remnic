@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/qmd-recall-cache.js";
+export * from "@remnic/core/qmd-recall-cache";

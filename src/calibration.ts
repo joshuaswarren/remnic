@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/calibration.js";
+export * from "@remnic/core/calibration";

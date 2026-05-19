@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/compression-optimizer.js";
+export * from "@remnic/core/compression-optimizer";

@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/runtime/child-process.js";
+export * from "@remnic/core/runtime/child-process";

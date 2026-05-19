@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/routing/store.js";
+export * from "@remnic/core/routing/store";

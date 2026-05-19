@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/transfer/export-sqlite.js";
+export * from "@remnic/core/transfer/export-sqlite";

@@ -5,6 +5,11 @@ MODE="${1:-full}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+case " ${NODE_OPTIONS:-} " in
+  *" --conditions=remnic-source "*) ;;
+  *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source" ;;
+esac
+
 run() {
   echo "[preflight] $*"
   "$@"

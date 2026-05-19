@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type { PluginConfig } from "../src/types.js";
-import { CompoundingEngine } from "../src/compounding/engine.js";
-import { StorageManager } from "../src/storage.js";
-import { SecureStoreDecryptError, isEncryptedFile } from "../packages/remnic-core/src/secure-store/secure-fs.js";
+import type { PluginConfig } from "@remnic/core/types";
+import { CompoundingEngine } from "@remnic/core/compounding/engine";
+import { StorageManager } from "@remnic/core/storage";
+import { isEncryptedFile, SecureStoreDecryptError } from "@remnic/core/secure-store";
 
 function tmpDir(prefix: string): string {
   return path.join(os.tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -146,6 +146,9 @@ function minimalConfig(memoryDir: string, sharedContextDir?: string): PluginConf
     compoundingInjectEnabled: true,
   };
 }
+
+const isSecureStoreDecryptError = (error: unknown): boolean =>
+  error instanceof SecureStoreDecryptError;
 
 test("v5 compounding writes weekly report and mistakes.json even with no feedback", async () => {
   const memoryDir = tmpDir("engram-compound-mem");
@@ -350,7 +353,7 @@ test("v5 compounding surfaces encrypted memory-action telemetry decrypt failures
   const eng = new CompoundingEngine(cfg, wrongKeyStorage);
   await assert.rejects(
     () => eng.synthesizeWeekly(),
-    (err) => err instanceof SecureStoreDecryptError,
+    isSecureStoreDecryptError,
   );
 });
 

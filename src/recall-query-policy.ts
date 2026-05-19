@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/recall-query-policy.js";
+export * from "@remnic/core/recall-query-policy";

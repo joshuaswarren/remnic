@@ -1,1 +1,1 @@
-export * from "../../../packages/remnic-core/src/replay/normalizers/openclaw.js";
+export * from "@remnic/core/replay/normalizers/openclaw";

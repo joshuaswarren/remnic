@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/adapters/replit.js";
+export * from "@remnic/core/adapters/replit";

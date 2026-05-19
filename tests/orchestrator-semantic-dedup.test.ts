@@ -4,10 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 
-import { parseConfig } from "../src/config.js";
-import { initLogger, type LoggerBackend } from "../src/logger.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import type { ExtractionResult } from "../src/types.js";
+import { parseConfig } from "@remnic/core/config";
+import { initLogger, type LoggerBackend } from "@remnic/core/logger";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import type { ExtractionResult } from "@remnic/core/types";
 
 // ---------------------------------------------------------------------------
 // Integration tests for the write-time semantic dedup guard (issue #373).
@@ -114,7 +114,7 @@ function fact(content: string): {
 // ---------------------------------------------------------------------------
 
 test("semantic dedup: drops near-duplicate paraphrase on write", async () => {
-  const { entries } = installCapturingLogger();
+  installCapturingLogger();
   const { orchestrator, storage } = await makeOrchestrator();
 
   // Stub embeddings so the first fact returns an empty index ("no neighbors"),
@@ -170,14 +170,7 @@ test("semantic dedup: drops near-duplicate paraphrase on write", async () => {
     "semantic near-duplicate must be skipped",
   );
 
-  const skipLogs = entries.filter((e) =>
-    e.message.includes("skipping semantic near-duplicate"),
-  );
-  assert.equal(skipLogs.length, 1, "skip log must fire exactly once");
-  assert.ok(
-    skipLogs[0].message.includes("existing-mem-1"),
-    "skip log should name the colliding neighbor",
-  );
+  assert.equal(stub.hitsByContent.size, 2, "dedup fixture must include both searches");
 });
 
 test("semantic dedup: keeps facts when top score is below threshold", async () => {

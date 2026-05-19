@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/causal-chain.js";
+export * from "@remnic/core/causal-chain";

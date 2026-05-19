@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/lcm/dag.js";
+export * from "@remnic/core/lcm/dag";

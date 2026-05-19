@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/shared-context/manager.js";
+export * from "@remnic/core/shared-context/manager";

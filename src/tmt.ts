@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/tmt.js";
+export * from "@remnic/core/tmt";

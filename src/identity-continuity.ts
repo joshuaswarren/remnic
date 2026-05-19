@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/identity-continuity.js";
+export * from "@remnic/core/identity-continuity";

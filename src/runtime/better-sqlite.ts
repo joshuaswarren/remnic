@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/runtime/better-sqlite.js";
+export * from "@remnic/core/runtime/better-sqlite";

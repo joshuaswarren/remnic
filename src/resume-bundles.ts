@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/resume-bundles.js";
+export * from "@remnic/core/resume-bundles";

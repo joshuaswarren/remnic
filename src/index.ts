@@ -60,10 +60,10 @@ import {
   buildSessionCommandDescriptors,
 } from "../packages/plugin-openclaw/src/session-command-descriptors.js";
 import { validateSlotSelection } from "../packages/plugin-openclaw/src/slot-validator.js";
-import { PLUGIN_ID, resolveRemnicPluginEntry } from "../packages/remnic-core/src/plugin-id.js";
-import { createFileToggleStore } from "../packages/remnic-core/src/session-toggles.js";
-import { appendRecallAuditEntry, pruneRecallAuditEntries } from "../packages/remnic-core/src/recall-audit.js";
-import { createActiveRecallEngine } from "../packages/remnic-core/src/active-recall.js";
+import { PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id";
+import { createFileToggleStore } from "@remnic/core/session-toggles";
+import { appendRecallAuditEntry, pruneRecallAuditEntries } from "@remnic/core/recall-audit";
+import { createActiveRecallEngine } from "@remnic/core/active-recall";
 import {
   buildTurnFingerprint,
   CODEX_THREAD_KEY_PREFIX,
@@ -71,15 +71,15 @@ import {
   extractCodexThreadId,
   resolveCodexSessionIdentity,
 } from "./codex-compat.js";
-import { planRecallMode } from "../packages/remnic-core/src/intent.js";
+import { planRecallMode } from "@remnic/core/intent";
 import {
   resolvePrincipal,
   resolveAgentAccessAuthToken,
 } from "@remnic/core";
 import { findGatewayRuntimeModules } from "./resolve-provider-secret.js";
-import { createDreamsSurface } from "../packages/remnic-core/src/surfaces/dreams.js";
-import { createHeartbeatSurface, type HeartbeatEntry } from "../packages/remnic-core/src/surfaces/heartbeat.js";
-import type { ConsolidationObservation } from "../packages/remnic-core/src/types.js";
+import { createDreamsSurface } from "@remnic/core/surfaces/dreams";
+import { createHeartbeatSurface, type HeartbeatEntry } from "@remnic/core/surfaces/heartbeat";
+import type { ConsolidationObservation } from "@remnic/core/types";
 import { ensureLiveConnectorCron } from "./openclaw-live-connector-cron.js";
 import { hasEnabledLiveConnectorConfig } from "./openclaw-live-connector-config.js";
 
@@ -173,7 +173,7 @@ async function realPathLater(filePath: string): Promise<string> {
 }
 
 type ResolveSecretRefFn = (
-  ref: import("../packages/remnic-core/src/types.js").SecretRef,
+  ref: import("@remnic/core/types").SecretRef,
   context?: unknown,
 ) => Promise<string | undefined> | string | undefined;
 

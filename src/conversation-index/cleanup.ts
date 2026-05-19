@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/conversation-index/cleanup.js";
+export * from "@remnic/core/conversation-index/cleanup";

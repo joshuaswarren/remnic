@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/recall-xray.js";
+export * from "@remnic/core/recall-xray";

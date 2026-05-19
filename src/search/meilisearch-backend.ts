@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/search/meilisearch-backend.js";
+export * from "@remnic/core/search/meilisearch-backend";

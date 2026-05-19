@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/transfer/constants.js";
+export * from "@remnic/core/transfer/constants";

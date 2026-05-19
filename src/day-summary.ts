@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/day-summary.js";
+export * from "@remnic/core/day-summary";

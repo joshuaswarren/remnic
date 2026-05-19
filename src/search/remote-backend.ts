@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/search/remote-backend.js";
+export * from "@remnic/core/search/remote-backend";

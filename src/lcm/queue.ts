@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/lcm/queue.js";
+export * from "@remnic/core/lcm/queue";

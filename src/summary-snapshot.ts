@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/summary-snapshot.js";
+export * from "@remnic/core/summary-snapshot";

@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/access-idempotency.js";
+export * from "@remnic/core/access-idempotency";

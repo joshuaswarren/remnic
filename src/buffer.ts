@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/buffer.js";
+export * from "@remnic/core/buffer";

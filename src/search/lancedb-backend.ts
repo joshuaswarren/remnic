@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/search/lancedb-backend.js";
+export * from "@remnic/core/search/lancedb-backend";

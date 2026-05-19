@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/consolidation-provenance-check.js";
+export * from "@remnic/core/consolidation-provenance-check";

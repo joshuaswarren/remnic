@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/bootstrap.js";
+export * from "@remnic/core/bootstrap";

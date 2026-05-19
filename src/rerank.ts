@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/rerank.js";
+export * from "@remnic/core/rerank";

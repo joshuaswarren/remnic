@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/policy-runtime.js";
+export * from "@remnic/core/policy-runtime";

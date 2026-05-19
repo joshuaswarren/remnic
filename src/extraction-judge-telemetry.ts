@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/extraction-judge-telemetry.js";
+export * from "@remnic/core/extraction-judge-telemetry";

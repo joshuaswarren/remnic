@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/dashboard-runtime.js";
+export * from "@remnic/core/dashboard-runtime";

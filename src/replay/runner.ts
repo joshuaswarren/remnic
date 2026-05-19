@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/replay/runner.js";
+export * from "@remnic/core/replay/runner";

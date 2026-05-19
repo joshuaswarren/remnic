@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/causal-retrieval.js";
+export * from "@remnic/core/causal-retrieval";

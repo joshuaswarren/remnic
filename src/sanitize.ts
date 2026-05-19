@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/sanitize.js";
+export * from "@remnic/core/sanitize";

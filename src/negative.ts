@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/negative.js";
+export * from "@remnic/core/negative";

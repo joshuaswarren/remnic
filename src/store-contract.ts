@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/store-contract.js";
+export * from "@remnic/core/store-contract";

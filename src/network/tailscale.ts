@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/network/tailscale.js";
+export * from "@remnic/core/network/tailscale";

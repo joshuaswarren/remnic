@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/memory-action-policy.js";
+export * from "@remnic/core/memory-action-policy";

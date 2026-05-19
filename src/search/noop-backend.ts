@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/search/noop-backend.js";
+export * from "@remnic/core/search/noop-backend";

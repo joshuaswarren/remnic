@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/graph-events.js";
+export * from "@remnic/core/graph-events";

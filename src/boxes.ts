@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/boxes.js";
+export * from "@remnic/core/boxes";

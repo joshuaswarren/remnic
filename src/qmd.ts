@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/qmd.js";
+export * from "@remnic/core/qmd";

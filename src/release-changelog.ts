@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/release-changelog.js";
+export * from "@remnic/core/release-changelog";

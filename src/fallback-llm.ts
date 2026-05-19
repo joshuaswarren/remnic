@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/fallback-llm.js";
+export * from "@remnic/core/fallback-llm";

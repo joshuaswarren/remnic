@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/version-utils.js";
+export * from "@remnic/core/version-utils";

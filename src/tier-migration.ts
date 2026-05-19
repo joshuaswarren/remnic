@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/tier-migration.js";
+export * from "@remnic/core/tier-migration";

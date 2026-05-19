@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/consolidation-operator.js";
+export * from "@remnic/core/consolidation-operator";

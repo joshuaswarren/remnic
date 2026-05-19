@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/maintenance/archive-observations.js";
+export * from "@remnic/core/maintenance/archive-observations";

@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/namespaces/storage.js";
+export * from "@remnic/core/namespaces/storage";

@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/signal.js";
+export * from "@remnic/core/signal";

@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/enrichment/index.js";
+export * from "@remnic/core/enrichment/index";

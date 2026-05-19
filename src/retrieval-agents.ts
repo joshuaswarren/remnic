@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/retrieval-agents.js";
+export * from "@remnic/core/retrieval-agents";

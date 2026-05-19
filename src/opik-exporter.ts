@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/opik-exporter.js";
+export * from "@remnic/core/opik-exporter";

@@ -4,15 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 
-import { parseConfig } from "../src/config.js";
+import { parseConfig } from "@remnic/core/config";
 import {
   isAboveImportanceThreshold,
   scoreImportance,
-} from "../src/importance.js";
-import { initLogger, type LoggerBackend } from "../src/logger.js";
-import { Orchestrator } from "../src/orchestrator.js";
-import { normalizeEntityName, parseEntityFile } from "../src/storage.js";
-import type { ExtractionResult, ImportanceLevel } from "../src/types.js";
+} from "@remnic/core/importance";
+import { initLogger, type LoggerBackend } from "@remnic/core/logger";
+import { Orchestrator } from "@remnic/core/orchestrator";
+import { normalizeEntityName, parseEntityFile } from "@remnic/core/storage";
+import type { ExtractionResult, ImportanceLevel } from "@remnic/core/types";
 
 // ---------------------------------------------------------------------------
 // Logger capture helper
@@ -169,13 +169,11 @@ test("persistExtraction drops trivial facts under the default 'low' gate", async
 
   assert.equal(persistedIds.length, 0, "trivial facts must not be persisted");
 
-  // Metric counter fires once per gated fact.
   const metricLogs = entries.filter((e) =>
     e.message.includes("metric:importance_gated"),
   );
   assert.equal(metricLogs.length, trivialInputs.length);
 
-  // Skip log includes a snippet of the gated content.
   const skipLogs = entries.filter((e) =>
     e.message.includes("extraction: skip trivial"),
   );
@@ -325,7 +323,7 @@ test("persistExtraction honours a stricter 'high' gate override", async () => {
   assert.equal(persistedIds.length, 0);
 });
 
-test("importance_gated metric counter increments monotonically across a run", async () => {
+test("importance gate metric counter increments monotonically across a run", async () => {
   const { entries } = installCapturingLogger();
   const { orchestrator, storage } = await makeOrchestrator();
 
@@ -341,14 +339,15 @@ test("importance_gated metric counter increments monotonically across a run", as
     profileUpdates: [],
   } as ExtractionResult;
 
-  await orchestrator.persistExtraction(result, storage, null);
+  const persistedIds = await orchestrator.persistExtraction(result, storage, null);
+
+  assert.deepEqual(persistedIds, []);
 
   const counters = entries
     .filter((e) => e.message.includes("metric:importance_gated"))
     .map((e) => {
-      const match = /count=(\d+)/.exec(e.message);
+      const match = e.message.match(/count=(\d+)/);
       return match ? Number(match[1]) : NaN;
     });
-
   assert.deepEqual(counters, [1, 2, 3]);
 });

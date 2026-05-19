@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/search/embed-helper.js";
+export * from "@remnic/core/search/embed-helper";

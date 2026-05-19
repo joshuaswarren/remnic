@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/compounding/engine.js";
+export * from "@remnic/core/compounding/engine";

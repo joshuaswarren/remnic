@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/causal-trajectory-graph.js";
+export * from "@remnic/core/causal-trajectory-graph";

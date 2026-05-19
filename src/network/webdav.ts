@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/network/webdav.js";
+export * from "@remnic/core/network/webdav";

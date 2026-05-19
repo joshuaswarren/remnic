@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/memory-lifecycle-ledger-utils.js";
+export * from "@remnic/core/memory-lifecycle-ledger-utils";

@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/search/document-scanner.js";
+export * from "@remnic/core/search/document-scanner";

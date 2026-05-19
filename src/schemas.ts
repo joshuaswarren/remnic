@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/schemas.js";
+export * from "@remnic/core/schemas";

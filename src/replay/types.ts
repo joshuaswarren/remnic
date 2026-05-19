@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/replay/types.js";
+export * from "@remnic/core/replay/types";

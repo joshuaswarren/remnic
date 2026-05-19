@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/lcm/recall.js";
+export * from "@remnic/core/lcm/recall";

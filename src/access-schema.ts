@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/access-schema.js";
+export * from "@remnic/core/access-schema";

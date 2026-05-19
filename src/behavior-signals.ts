@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/behavior-signals.js";
+export * from "@remnic/core/behavior-signals";

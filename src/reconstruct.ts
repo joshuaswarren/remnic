@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/reconstruct.js";
+export * from "@remnic/core/reconstruct";

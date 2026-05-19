@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/trust-zones.js";
+export * from "@remnic/core/trust-zones";

@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/harmonic-retrieval.js";
+export * from "@remnic/core/harmonic-retrieval";

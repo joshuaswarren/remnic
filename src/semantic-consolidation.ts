@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/semantic-consolidation.js";
+export * from "@remnic/core/semantic-consolidation";

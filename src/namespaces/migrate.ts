@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/namespaces/migrate.js";
+export * from "@remnic/core/namespaces/migrate";

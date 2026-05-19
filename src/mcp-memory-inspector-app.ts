@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/mcp-memory-inspector-app.js";
+export * from "@remnic/core/mcp-memory-inspector-app";

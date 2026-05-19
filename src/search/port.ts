@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/search/port.js";
+export * from "@remnic/core/search/port";

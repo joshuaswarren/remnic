@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/native-knowledge.js";
+export * from "@remnic/core/native-knowledge";

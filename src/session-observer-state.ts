@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/session-observer-state.js";
+export * from "@remnic/core/session-observer-state";

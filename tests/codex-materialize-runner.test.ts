@@ -25,14 +25,17 @@ import path from "node:path";
 import {
   runCodexMaterialize,
   runPostConsolidationMaterialize,
-} from "../src/connectors/codex-materialize-runner.js";
-import { ensureSentinel, SENTINEL_FILE } from "../src/connectors/codex-materialize.js";
-import { parseConfig } from "../src/config.js";
+} from "@remnic/core/connectors/codex-materialize-runner";
+import { ensureSentinel, SENTINEL_FILE } from "@remnic/core/connectors/codex-materialize";
+import { parseConfig } from "@remnic/core/config";
 import {
   SecureStoreLockedError,
   writeMaybeEncryptedFile,
-} from "../src/secure-store/index.js";
-import { StorageManager } from "../src/storage.js";
+} from "@remnic/core/secure-store";
+import { StorageManager } from "@remnic/core/storage";
+
+const isSecureStoreLockedError = (error: unknown): boolean =>
+  error instanceof SecureStoreLockedError;
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -317,7 +320,7 @@ test("runner propagates opted-in storage read failures while post-consolidation 
         reason: "manual",
         now: new Date("2026-04-02T00:00:00Z"),
       }),
-      (error) => error instanceof SecureStoreLockedError,
+      isSecureStoreLockedError,
     );
 
     const postConsolidationResult = await runPostConsolidationMaterialize("[test]", {

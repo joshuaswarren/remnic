@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/compat/types.js";
+export * from "@remnic/core/compat/types";

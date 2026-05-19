@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/utility-runtime.js";
+export * from "@remnic/core/utility-runtime";

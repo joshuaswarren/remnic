@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/maintenance/memory-governance-cron.js";
+export * from "@remnic/core/maintenance/memory-governance-cron";

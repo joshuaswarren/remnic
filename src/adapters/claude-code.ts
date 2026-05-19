@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/adapters/claude-code.js";
+export * from "@remnic/core/adapters/claude-code";

@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/adapters/registry.js";
+export * from "@remnic/core/adapters/registry";

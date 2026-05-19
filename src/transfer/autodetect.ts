@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/transfer/autodetect.js";
+export * from "@remnic/core/transfer/autodetect";

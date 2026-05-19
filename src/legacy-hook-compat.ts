@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/legacy-hook-compat.js";
+export * from "@remnic/core/legacy-hook-compat";

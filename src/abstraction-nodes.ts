@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/abstraction-nodes.js";
+export * from "@remnic/core/abstraction-nodes";

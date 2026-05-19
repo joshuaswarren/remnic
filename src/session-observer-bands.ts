@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/session-observer-bands.js";
+export * from "@remnic/core/session-observer-bands";

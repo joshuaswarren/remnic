@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/objective-state-writers.js";
+export * from "@remnic/core/objective-state-writers";

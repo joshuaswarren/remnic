@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/lcm/index.js";
+export * from "@remnic/core/lcm/index";

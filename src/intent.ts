@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/intent.js";
+export * from "@remnic/core/intent";

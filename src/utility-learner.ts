@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/utility-learner.js";
+export * from "@remnic/core/utility-learner";

@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/transfer/fs-utils.js";
+export * from "@remnic/core/transfer/fs-utils";

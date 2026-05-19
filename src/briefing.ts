@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/briefing.js";
+export * from "@remnic/core/briefing";

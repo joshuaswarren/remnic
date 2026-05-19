@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/config.js";
+export * from "@remnic/core/config";

@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/memory-projection-store.js";
+export * from "@remnic/core/memory-projection-store";

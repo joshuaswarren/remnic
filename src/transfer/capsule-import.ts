@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/transfer/capsule-import.js";
+export * from "@remnic/core/transfer/capsule-import";

@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/work/board.js";
+export * from "@remnic/core/work/board";

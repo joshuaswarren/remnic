@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/access-mcp.js";
+export * from "@remnic/core/access-mcp";

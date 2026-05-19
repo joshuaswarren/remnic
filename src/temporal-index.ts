@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/temporal-index.js";
+export * from "@remnic/core/temporal-index";

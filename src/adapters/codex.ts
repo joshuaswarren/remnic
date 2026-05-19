@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/adapters/codex.js";
+export * from "@remnic/core/adapters/codex";

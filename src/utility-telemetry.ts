@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/utility-telemetry.js";
+export * from "@remnic/core/utility-telemetry";

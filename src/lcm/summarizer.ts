@@ -1,1 +1,1 @@
-export * from "../../packages/remnic-core/src/lcm/summarizer.js";
+export * from "@remnic/core/lcm/summarizer";

@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/lifecycle.js";
+export * from "@remnic/core/lifecycle";

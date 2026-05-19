@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/tier-routing.js";
+export * from "@remnic/core/tier-routing";

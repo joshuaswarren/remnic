@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/relevance.js";
+export * from "@remnic/core/relevance";
