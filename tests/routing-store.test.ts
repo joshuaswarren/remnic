@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { RoutingRulesStore } from "../src/routing/store.ts";
 import type { RouteRule } from "../src/routing/engine.ts";
 
@@ -327,6 +327,54 @@ test("routing store blocks final state-file symlink escapes", async () => {
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("routing store reset rejects in-scope state-file symlinks without touching the target", async () => {
+  if (process.platform === "win32") return;
+
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-routing-store-file-symlink-inside-"));
+  try {
+    const targetFile = path.join(memoryDir, "state", "linked-target.json");
+    const statePath = path.join(memoryDir, "state", "routing-rules.json");
+    await mkdir(path.dirname(statePath), { recursive: true });
+    await writeFile(targetFile, "keep me", "utf-8");
+    await symlink(targetFile, statePath);
+
+    const store = new RoutingRulesStore(memoryDir);
+    await assert.rejects(
+      async () => store.reset(),
+      /routing rules state path must not be a symlink/,
+    );
+
+    assert.equal(await readFile(targetFile, "utf-8"), "keep me");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("routing store write rejects in-scope state-file symlinks without replacing the symlink", async () => {
+  if (process.platform === "win32") return;
+
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-routing-store-write-symlink-inside-"));
+  try {
+    const targetFile = path.join(memoryDir, "state", "linked-target.json");
+    const statePath = path.join(memoryDir, "state", "routing-rules.json");
+    await mkdir(path.dirname(statePath), { recursive: true });
+    await writeFile(targetFile, "keep me", "utf-8");
+    await symlink(targetFile, statePath);
+
+    const store = new RoutingRulesStore(memoryDir);
+    await assert.rejects(
+      async () => store.write([sampleRule()]),
+      /routing rules state path must not be a symlink/,
+    );
+
+    assert.equal(await readFile(targetFile, "utf-8"), "keep me");
+    const linkStat = await lstat(statePath);
+    assert.equal(linkStat.isSymbolicLink(), true);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
 

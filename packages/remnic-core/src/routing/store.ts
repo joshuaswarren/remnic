@@ -127,9 +127,7 @@ export class RoutingRulesStore {
 
   async reset(): Promise<void> {
     await this.withWriteLock(async () => {
-      const payload = defaultState();
-      await this.assertStatePathScoped();
-      await writeFile(this.statePath, JSON.stringify(payload, null, 2), "utf-8");
+      await this.writeState(defaultState());
     });
   }
 
@@ -188,6 +186,12 @@ export class RoutingRulesStore {
       rules: normalized,
     };
 
+    await this.writeState(payload);
+
+    return normalized;
+  }
+
+  private async writeState(payload: RoutingRulesState): Promise<void> {
     const tmpPath = `${this.statePath}.tmp-${process.pid}-${Date.now()}`;
     try {
       await this.assertStatePathScoped();
@@ -199,8 +203,6 @@ export class RoutingRulesStore {
     } finally {
       await rm(tmpPath, { force: true }).catch(() => {});
     }
-
-    return normalized;
   }
 
   private async withWriteLock<T>(op: () => Promise<T>): Promise<T> {
@@ -275,10 +277,7 @@ export class RoutingRulesStore {
     try {
       const stateStats = await lstat(this.statePath);
       if (stateStats.isSymbolicLink()) {
-        const canonicalFile = await realpath(this.statePath);
-        if (!this.isPathInside(canonicalRoot, canonicalFile)) {
-          throw new Error(`routing rules state symlink escaped memoryDir: ${canonicalFile}`);
-        }
+        throw new Error(`routing rules state path must not be a symlink: ${this.statePath}`);
       }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
