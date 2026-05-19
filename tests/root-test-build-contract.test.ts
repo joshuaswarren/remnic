@@ -13,5 +13,10 @@ test("root test script builds core before running package tests", () => {
 
   const testScript = pkg.scripts?.test ?? "";
   assert.match(testScript, /^pnpm --filter @remnic\/core build && /);
-  assert.match(testScript, /'packages\/\*\/src\/\*\*\/\*\.test\.ts'/);
+  assert.match(testScript, /"packages\/\*\/src\/\*\*\/\*\.test\.ts"/);
+  assert.doesNotMatch(
+    testScript,
+    /'[^']*\*[^']*'/,
+    "npm scripts should not use POSIX-only single quotes around glob arguments",
+  );
 });
