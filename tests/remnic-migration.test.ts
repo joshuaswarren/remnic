@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import {
   migrateFromEngram,
@@ -188,6 +188,80 @@ test("migrateFromEngram copies legacy state, rewrites tokens, updates connector 
       ["launchctl", "load", "-w", path.join(homeDir, "Library", "LaunchAgents", "ai.remnic.daemon.plist")],
     ],
   );
+});
+
+test("migrateFromEngram skips legacy file symlinks without copying external target content", {
+  skip: process.platform === "win32",
+}, async () => {
+  const homeDir = await makeTempHome("remnic-migrate-file-symlink-");
+  const legacyRoot = path.join(homeDir, ".engram");
+  const externalSecret = path.join(homeDir, "outside-secret.txt");
+  const legacyLink = path.join(legacyRoot, "copied-key");
+  const remnicLinkDestination = path.join(homeDir, ".remnic", "copied-key");
+
+  await mkdir(legacyRoot, { recursive: true });
+  await writeFile(path.join(legacyRoot, "tokens.json"), JSON.stringify({ tokens: [] }), "utf8");
+  await writeFile(externalSecret, "synthetic external secret", "utf8");
+  await symlink(externalSecret, legacyLink);
+
+  const result = await migrateFromEngram({
+    homeDir,
+    cwd: homeDir,
+    quiet: true,
+  });
+
+  assert.equal(result.status, "migrated");
+  assert.equal(existsSync(remnicLinkDestination), false);
+  assert.equal(result.copied.includes(remnicLinkDestination), false);
+});
+
+test("migrateFromEngram skips legacy directory symlinks without traversing outside the legacy root", {
+  skip: process.platform === "win32",
+}, async () => {
+  const homeDir = await makeTempHome("remnic-migrate-dir-symlink-");
+  const legacyRoot = path.join(homeDir, ".engram");
+  const externalDir = path.join(homeDir, "outside-dir");
+  const legacyLink = path.join(legacyRoot, "linked-dir");
+  const remnicLinkedFile = path.join(homeDir, ".remnic", "linked-dir", "secret.txt");
+
+  await mkdir(legacyRoot, { recursive: true });
+  await mkdir(externalDir, { recursive: true });
+  await writeFile(path.join(legacyRoot, "tokens.json"), JSON.stringify({ tokens: [] }), "utf8");
+  await writeFile(path.join(externalDir, "secret.txt"), "synthetic external directory secret", "utf8");
+  await symlink(externalDir, legacyLink, "dir");
+
+  const result = await migrateFromEngram({
+    homeDir,
+    cwd: homeDir,
+    quiet: true,
+  });
+
+  assert.equal(result.status, "migrated");
+  assert.equal(existsSync(remnicLinkedFile), false);
+  assert.equal(result.copied.includes(remnicLinkedFile), false);
+});
+
+test("migrateFromEngram rejects a symlinked legacy root before writing the marker", {
+  skip: process.platform === "win32",
+}, async () => {
+  const homeDir = await makeTempHome("remnic-migrate-root-symlink-");
+  const externalLegacyRoot = path.join(homeDir, "external-engram");
+  const legacyRoot = path.join(homeDir, ".engram");
+
+  await mkdir(externalLegacyRoot, { recursive: true });
+  await writeFile(path.join(externalLegacyRoot, "tokens.json"), JSON.stringify({ tokens: [] }), "utf8");
+  await symlink(externalLegacyRoot, legacyRoot, "dir");
+
+  await assert.rejects(
+    migrateFromEngram({
+      homeDir,
+      cwd: homeDir,
+      quiet: true,
+    }),
+    /legacy migration root must not be a symlink/,
+  );
+
+  assert.equal(existsSync(path.join(homeDir, ".remnic", ".migrated-from-engram")), false);
 });
 
 test("migrateFromEngram is idempotent after the marker is written", async () => {

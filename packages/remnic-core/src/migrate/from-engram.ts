@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   chmod,
   copyFile,
+  lstat,
   mkdir,
   open,
   readFile,
@@ -152,9 +153,30 @@ function isRemnicTokenStorePath(filePath: string, homeDir: string): boolean {
   return path.resolve(filePath) === path.resolve(path.join(remnicRoot(homeDir), "tokens.json"));
 }
 
-async function copyTreeMissing(source: string, destination: string, copied: string[]): Promise<void> {
+async function pathExistsNoFollow(filePath: string): Promise<boolean> {
+  try {
+    await lstat(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function copyTreeMissing(
+  source: string,
+  destination: string,
+  copied: string[],
+  isRoot = true,
+): Promise<void> {
   if (!existsSync(source)) return;
-  const sourceStat = await stat(source);
+  const sourceStat = await lstat(source);
+  if (sourceStat.isSymbolicLink()) {
+    if (isRoot) {
+      throw new Error(`legacy migration root must not be a symlink: ${source}`);
+    }
+    return;
+  }
   if (sourceStat.isDirectory()) {
     await mkdir(destination, { recursive: true });
     const entries = await readdir(source, { withFileTypes: true });
@@ -166,12 +188,13 @@ async function copyTreeMissing(source: string, destination: string, copied: stri
         path.join(source, entry.name),
         path.join(destination, entry.name),
         copied,
+        false,
       );
     }
     return;
   }
 
-  if (existsSync(destination)) return;
+  if (await pathExistsNoFollow(destination)) return;
   await ensureParent(destination);
   await copyFile(source, destination);
   copied.push(destination);
