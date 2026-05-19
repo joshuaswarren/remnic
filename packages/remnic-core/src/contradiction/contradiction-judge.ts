@@ -268,21 +268,32 @@ function parseJudgeResponse(
       const items = Array.isArray(parsed) ? parsed : [parsed];
       const results: ContradictionJudgeResult[] = [];
       const matchedKeys = new Set<string>();
+      let sawUnmatchedKeyedItem = false;
 
-      for (const item of items) {
+      for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
+        const item = items[itemIndex];
         if (!item || typeof item !== "object") continue;
 
         const verdict = typeof item.verdict === "string" && VALID_VERDICTS.includes(item.verdict as ContradictionVerdict)
           ? (item.verdict as ContradictionVerdict)
           : "needs-user";
 
-        const pairKeyVal = typeof item.pairKey === "string" ? item.pairKey : null;
+        const pairKeyVal = typeof item.pairKey === "string" && item.pairKey.length > 0
+          ? item.pairKey
+          : null;
         const input = pairKeyVal
           ? inputs.find((p) => pairKey(p.memoryIdA, p.memoryIdB) === pairKeyVal)
           : null;
 
-        // If we can't match the pairKey, fall back to index-based matching
-        const fallbackInput = input ?? inputs[results.length] ?? inputs[0];
+        if (pairKeyVal && !input) {
+          sawUnmatchedKeyedItem = true;
+          continue;
+        }
+
+        const fallbackInput = input ?? (sawUnmatchedKeyedItem
+          ? undefined
+          : inputs.find((inputCandidate) =>
+            !matchedKeys.has(pairKey(inputCandidate.memoryIdA, inputCandidate.memoryIdB))));
         if (!fallbackInput) continue;
 
         matchedKeys.add(pairKey(fallbackInput.memoryIdA, fallbackInput.memoryIdB));

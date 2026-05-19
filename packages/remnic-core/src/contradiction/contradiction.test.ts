@@ -1888,6 +1888,30 @@ test("needs-more-context deferral does not clear terminal resolutions", async ()
   }
 });
 
+test("resolvePair does not overwrite terminal resolutions", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair());
+    const first = resolvePair(dir, written.pairId, "keep-a");
+    assert.equal(first?.resolution, "keep-a");
+    assert.ok(first?.lastReviewedAt);
+
+    const second = resolvePair(dir, written.pairId, "keep-b");
+    assert.equal(second?.resolution, "keep-a");
+    assert.equal(second?.lastReviewedAt, first?.lastReviewedAt);
+
+    const third = resolvePair(dir, written.pairId, "merge");
+    assert.equal(third?.resolution, "keep-a");
+    assert.equal(third?.lastReviewedAt, first?.lastReviewedAt);
+
+    const stored = readPair(dir, written.pairId);
+    assert.equal(stored?.resolution, "keep-a");
+    assert.equal(stored?.lastReviewedAt, first?.lastReviewedAt);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("resolvePair returns null for nonexistent pair", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {

@@ -18,6 +18,18 @@
       "import": "./dist/cli.js",
       "types": "./dist/cli.d.ts"
     },
+    "./memory-projection-format": {
+      "import": "./dist/memory-projection-format.js",
+      "types": "./dist/memory-projection-format.d.ts"
+    },
+    "./model-registry": {
+      "import": "./dist/model-registry.js",
+      "types": "./dist/model-registry.d.ts"
+    },
+    "./orchestrator": {
+      "import": "./dist/orchestrator.js",
+      "types": "./dist/orchestrator.d.ts"
+    },
     "./connectors": {
       "import": "./dist/connectors/index.js",
       "types": "./dist/connectors/index.d.ts"
@@ -37,6 +49,14 @@
     "./connectors/codex-materialize-runner.js": {
       "import": "./dist/connectors/codex-materialize-runner.js",
       "types": "./dist/connectors/codex-materialize-runner.d.ts"
+    },
+    "./contradiction": {
+      "import": "./dist/contradiction/index.js",
+      "types": "./dist/contradiction/index.d.ts"
+    },
+    "./contradiction/index.js": {
+      "import": "./dist/contradiction/index.js",
+      "types": "./dist/contradiction/index.d.ts"
     }
   },
   "files": [

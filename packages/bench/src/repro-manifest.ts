@@ -60,6 +60,10 @@ export interface BenchmarkReproManifest {
     mode?: BenchmarkMode;
     selectedBenchmarks: string[];
     runtimeProfiles: string[];
+    selectedWorkItems: Array<{
+      benchmark: string;
+      runtimeProfile: string;
+    }>;
     limit?: number;
     seed?: number;
   };
@@ -103,6 +107,10 @@ export interface BuildBenchmarkReproManifestOptions {
   runId?: string;
   selectedBenchmarks?: string[];
   runtimeProfiles?: string[];
+  selectedWorkItems?: Array<{
+    benchmark: string;
+    runtimeProfile: string;
+  }>;
   mode?: BenchmarkMode;
   limit?: number;
   seed?: number;
@@ -229,6 +237,7 @@ function buildArtifactHashIdentity(manifest: Omit<BenchmarkReproManifest, "artif
       ...(manifest.run.mode ? { mode: manifest.run.mode } : {}),
       selectedBenchmarks: manifest.run.selectedBenchmarks,
       runtimeProfiles: manifest.run.runtimeProfiles,
+      selectedWorkItems: manifest.run.selectedWorkItems,
       ...(manifest.run.limit !== undefined ? { limit: manifest.run.limit } : {}),
       ...(manifest.run.seed !== undefined ? { seed: manifest.run.seed } : {}),
     },
@@ -485,6 +494,11 @@ export async function buildBenchmarkReproManifest(
   );
   const selectedBenchmarks = options.selectedBenchmarks ??
     [...new Set(loadedResults.map((result) => result.meta.benchmark))].sort();
+  const selectedWorkItems = options.selectedWorkItems ??
+    loadedResults.map((result) => ({
+      benchmark: result.meta.benchmark,
+      runtimeProfile: result.config.runtimeProfile ?? "unknown",
+    }));
   const datasetDirs = options.datasetDirs ?? {};
   const datasets = await Promise.all(
     selectedBenchmarks.map((benchmark) => buildDatasetManifest(benchmark, datasetDirs[benchmark])),
@@ -499,6 +513,7 @@ export async function buildBenchmarkReproManifest(
       ...(options.mode ? { mode: options.mode } : {}),
       selectedBenchmarks,
       runtimeProfiles: options.runtimeProfiles ?? [],
+      selectedWorkItems,
       ...(options.limit !== undefined ? { limit: options.limit } : {}),
       ...(options.seed !== undefined ? { seed: options.seed } : {}),
     },

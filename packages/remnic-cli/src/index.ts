@@ -177,6 +177,9 @@ import {
   type BenchAction,
   type ParsedBenchArgs,
   PUBLISHED_BENCHMARK_NAMES,
+  createBenchWorkItems,
+  deriveRuntimeProfilesFromBenchWorkItems,
+  filterBenchWorkItemsForPreviousStatus,
   parseBenchActionArgs,
   parseBenchArgs,
 } from "./bench-args.js";
@@ -561,6 +564,10 @@ type PackageBenchModule = {
     resultPaths?: string[];
     selectedBenchmarks?: string[];
     runtimeProfiles?: string[];
+    selectedWorkItems?: Array<{
+      benchmark: string;
+      runtimeProfile: string;
+    }>;
     mode?: "full" | "quick";
     limit?: number;
     seed?: number;
@@ -2511,6 +2518,7 @@ async function runBenchPublished(parsed: ParsedBenchArgs): Promise<void> {
     parsed,
     benchmarkIds: [benchmarkId],
     runtimeProfiles,
+    workItems: runtimeProfiles.map((runtimeProfile) => ({ benchmarkId, runtimeProfile })),
     resultPaths: writtenPaths,
   });
 
@@ -3132,6 +3140,10 @@ async function runCustomBenchViaPackage(parsed: ParsedBenchArgs): Promise<boolea
     parsed,
     benchmarkIds: [...new Set(customBenchmarkIds)],
     runtimeProfiles,
+    workItems: plans.map((plan, index) => ({
+      benchmarkId: customBenchmarkIds[index] ?? "custom",
+      runtimeProfile: plan.runtime.profile,
+    })),
     resultPaths: writtenPaths,
   });
 
@@ -3194,6 +3206,10 @@ async function writeBenchReproManifestForPackageRun(args: {
   parsed: ParsedBenchArgs;
   benchmarkIds: string[];
   runtimeProfiles: BenchRuntimeProfile[];
+  workItems?: Array<{
+    benchmarkId: string;
+    runtimeProfile: BenchRuntimeProfile;
+  }>;
   resultPaths: string[];
 }): Promise<void> {
   if (args.resultPaths.length === 0) {
@@ -3213,6 +3229,10 @@ async function writeBenchReproManifestForPackageRun(args: {
       resultPaths: args.resultPaths,
       selectedBenchmarks: args.benchmarkIds,
       runtimeProfiles: args.runtimeProfiles,
+      selectedWorkItems: args.workItems?.map((item) => ({
+        benchmark: item.benchmarkId,
+        runtimeProfile: item.runtimeProfile,
+      })),
       mode: args.parsed.quick ? "quick" : "full",
       ...(effectiveLimit !== undefined ? { limit: effectiveLimit } : {}),
       ...(args.parsed.publishedSeed !== undefined ? { seed: args.parsed.publishedSeed } : {}),
@@ -3356,19 +3376,25 @@ async function resolvePackageBenchRuntime(
   );
 }
 
-function resolveMemoryDir(): string {
+function normalizeMemoryDirPath(memoryDir: string): string {
+  return path.resolve(expandTilde(memoryDir));
+}
+
+export function resolveMemoryDir(): string {
   // Priority: env var > config file > auto-detect
   const configMemoryDir = (() => {
     // Env var takes top priority (deployment override)
     const envMemoryDir = readCompatEnv("REMNIC_MEMORY_DIR", "ENGRAM_MEMORY_DIR");
-    if (envMemoryDir) return envMemoryDir;
+    if (envMemoryDir) return normalizeMemoryDirPath(envMemoryDir);
     // Then config file
     const configPath = resolveConfigPath();
     const raw = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
       : {};
     const remnicCfg = raw.remnic ?? raw.engram ?? raw;
-    if (remnicCfg.memoryDir) return remnicCfg.memoryDir;
+    if (typeof remnicCfg.memoryDir === "string" && remnicCfg.memoryDir.length > 0) {
+      return normalizeMemoryDirPath(remnicCfg.memoryDir);
+    }
     // Auto-detect: prefer standalone path if it exists, fall back to OpenClaw
     const home = resolveHomeDir();
     const standalonePath = path.join(home, ".remnic", "memory");
@@ -3385,11 +3411,12 @@ function resolveMemoryDir(): string {
     try {
       const active = getActiveSpace();
       if (active?.memoryDir) {
-        if (!fs.existsSync(active.memoryDir)) {
+        const activeMemoryDir = normalizeMemoryDirPath(active.memoryDir);
+        if (!fs.existsSync(activeMemoryDir)) {
           // Recreate missing directory instead of silently falling back
-          fs.mkdirSync(active.memoryDir, { recursive: true });
+          fs.mkdirSync(activeMemoryDir, { recursive: true });
         }
-        return active.memoryDir;
+        return activeMemoryDir;
       }
       // No active space with memoryDir — fall through to config
     } catch (err: unknown) {
@@ -5342,10 +5369,21 @@ function cmdReview(action: string, rest: string[]): void {
   }
 }
 
-async function cmdSync(action: string, rest: string[], json: boolean): Promise<void> {
+export function resolveSyncSourceDir(rest: string[]): string {
   // Extract --source before positional args so that rest args can override it
   const sourceIdx = rest.indexOf("--source");
-  const sourceDir = sourceIdx >= 0 && rest[sourceIdx + 1] ? rest[sourceIdx + 1] : ".";
+  if (sourceIdx < 0) return ".";
+  const value = rest[sourceIdx + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error(
+      "--source requires a value. Provide it as `--source <dir>`, not as a bare flag.",
+    );
+  }
+  return value;
+}
+
+async function cmdSync(action: string, rest: string[], json: boolean): Promise<void> {
+  const sourceDir = resolveSyncSourceDir(rest);
   const memoryDir = resolveMemoryDir();
 
   if (action === "run") {
@@ -6351,6 +6389,7 @@ async function cmdBench(rest: string[]): Promise<void> {
   }
 
   const runtimeProfiles = resolveBenchRunProfiles(parsed);
+  let selectedWorkItems = createBenchWorkItems(selectedBenchmarks, runtimeProfiles);
 
   // Validate benchmark IDs before resume/retry-failed filtering so unknown
   // names are caught early instead of being silently dropped by the filter.
@@ -6385,67 +6424,27 @@ async function cmdBench(rest: string[]): Promise<void> {
     console.log(`  Previous run: ${prevStatus.startedAt}`);
     console.log(`  Benchmarks: ${prevStatus.benchmarks.length} total, ${completeCount} complete, ${failedCount} failed`);
 
-    const statusEntryMap = new Map(prevStatus.benchmarks.map((b) => [b.id, b.status]));
-
-    // Helper: collect all status entries relevant to a benchmark ID across
-    // profile variations. Handles all four combinations of current/previous
-    // single vs matrix runs.
-    const relevantStatuses = (benchmarkId: string): string[] => {
-      const profileEntries = runtimeProfiles.length > 1
-        ? runtimeProfiles.map((p) => `${benchmarkId} [${p}]`)
-        : [benchmarkId];
-      const statuses: string[] = [];
-      // Direct match: current profile entries against previous status entries.
-      for (const id of profileEntries) {
-        const s = statusEntryMap.get(id);
-        if (s) statuses.push(s);
-      }
-      // Bare ID from a previous single-profile run (needed for
-      // single→matrix and matrix→single transitions).
-      const bareStatus = statusEntryMap.get(benchmarkId);
-      if (bareStatus && !statuses.includes(bareStatus)) {
-        statuses.push(bareStatus);
-      }
-      // Bracket-suffixed entries ONLY for profiles in the current run.
-      // This avoids contamination from profiles not being re-run.
-      for (const p of runtimeProfiles) {
-        const entryStatus = statusEntryMap.get(`${benchmarkId} [${p}]`);
-        if (entryStatus && !statuses.includes(entryStatus)) {
-          statuses.push(entryStatus);
-        }
-      }
-      return statuses;
-    };
-
     const before = selectedBenchmarks.length;
 
     if (parsed.resume) {
-      // Skip benchmarks where ALL expected profile entries completed; re-run
-      // if any entry is pending, running, failed, or absent (new profile).
-      selectedBenchmarks = selectedBenchmarks.filter((benchmarkId) => {
-        const statuses = relevantStatuses(benchmarkId);
-        if (statuses.length === 0) return true; // not in previous run
-        // When running multiple profiles, check that each expected profile
-        // entry exists in the previous status. Missing profiles mean the
-        // benchmark hasn't been run for that profile yet.
-        if (runtimeProfiles.length > 1) {
-          for (const p of runtimeProfiles) {
-            if (!statusEntryMap.has(`${benchmarkId} [${p}]`)) return true;
-          }
-        }
-        return !statuses.every((s) => s === "complete");
-      });
+      selectedWorkItems = filterBenchWorkItemsForPreviousStatus(
+        selectedWorkItems,
+        prevStatus.benchmarks,
+        "resume",
+      );
+      selectedBenchmarks = [...new Set(selectedWorkItems.map((item) => item.benchmarkId))];
       console.log(`  Resuming: ${selectedBenchmarks.length} of ${before} benchmarks to re-run`);
     } else {
-      // --retry-failed: only re-run benchmarks that had failures.
-      selectedBenchmarks = selectedBenchmarks.filter((benchmarkId) => {
-        const statuses = relevantStatuses(benchmarkId);
-        return statuses.some((s) => s === "failed");
-      });
+      selectedWorkItems = filterBenchWorkItemsForPreviousStatus(
+        selectedWorkItems,
+        prevStatus.benchmarks,
+        "retry-failed",
+      );
+      selectedBenchmarks = [...new Set(selectedWorkItems.map((item) => item.benchmarkId))];
       console.log(`  Retrying: ${selectedBenchmarks.length} of ${before} selected benchmarks had failures`);
     }
 
-    if (selectedBenchmarks.length === 0) {
+    if (selectedWorkItems.length === 0) {
       if (parsed.retryFailed) {
         console.log("Nothing to re-run — no selected benchmarks had failures.");
       } else {
@@ -6465,20 +6464,17 @@ async function cmdBench(rest: string[]): Promise<void> {
   // When running a matrix (multiple profiles), create profile-specific status
   // entries so that a failed profile doesn't get overwritten by a later success.
   const statusEntryIds = [...new Set(
-    runtimeProfiles.length > 1
-      ? selectedBenchmarks.flatMap((benchmarkId) =>
-          runtimeProfiles.map((profile) => `${benchmarkId} [${profile}]`),
-        )
-      : selectedBenchmarks,
+    selectedWorkItems.map(({ benchmarkId, runtimeProfile }) =>
+      runtimeProfiles.length > 1 ? `${benchmarkId} [${runtimeProfile}]` : benchmarkId,
+    ),
   )];
   try { await initBenchStatus(benchStatusPath, statusEntryIds, process.pid); } catch { /* non-fatal */ }
   const writtenPaths: string[] = [];
   try {
-    for (const benchmarkId of selectedBenchmarks) {
-      for (const runtimeProfile of runtimeProfiles) {
-        const statusId = runtimeProfiles.length > 1
-          ? `${benchmarkId} [${runtimeProfile}]`
-          : benchmarkId;
+    for (const { benchmarkId, runtimeProfile } of selectedWorkItems) {
+      const statusId = runtimeProfiles.length > 1
+        ? `${benchmarkId} [${runtimeProfile}]`
+        : benchmarkId;
         try { await updateBenchmarkStarted(benchStatusPath, statusId); } catch { /* non-fatal */ }
         try {
           const handledByPackage = await runBenchViaPackage(
@@ -6502,7 +6498,6 @@ async function cmdBench(rest: string[]): Promise<void> {
           failures.add(benchmarkId);
           try { await updateBenchmarkFailed(benchStatusPath, statusId, message); } catch { /* non-fatal */ }
         }
-      }
     }
   } finally {
     try { await finalizeBenchStatus(benchStatusPath); } catch { /* non-fatal */ }
@@ -6510,7 +6505,8 @@ async function cmdBench(rest: string[]): Promise<void> {
   await writeBenchReproManifestForPackageRun({
     parsed,
     benchmarkIds: selectedBenchmarks,
-    runtimeProfiles,
+    runtimeProfiles: deriveRuntimeProfilesFromBenchWorkItems(selectedWorkItems),
+    workItems: selectedWorkItems,
     resultPaths: writtenPaths,
   });
   if (failures.size > 0) {

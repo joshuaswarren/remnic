@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/model-registry.js";
+export * from "@remnic/core/model-registry";

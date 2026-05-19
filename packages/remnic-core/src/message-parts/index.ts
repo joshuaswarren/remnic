@@ -252,13 +252,10 @@ export function parseOpenClawMessageParts(
   if (Array.isArray(content)) {
     const hasOpenAiBlocks = content.some(isOpenAiContentBlock);
     if (hasOpenAiBlocks) return parseOpenAiMessageParts(content, options);
-    const hasAnthropicBlocks = content.some(
-      (block) =>
-        block &&
-        typeof block === "object" &&
-        typeof (block as Record<string, unknown>).type === "string",
-    );
+    const hasAnthropicBlocks = content.some(isAnthropicContentBlock);
     if (hasAnthropicBlocks) return parseAnthropicMessageParts({ content }, options);
+    const piParts = parsePiMessageParts(input, { ...options, allowRenderedFallback: false });
+    if (piParts.length > 0) return piParts;
   }
 
   const toolName = asNonEmptyString(obj.toolName ?? obj.tool_name ?? obj.name);
@@ -715,6 +712,9 @@ function isLikelyFilePath(value: string): boolean {
 function hasValidFileExtension(value: string): boolean {
   const lastSlash = value.lastIndexOf("/");
   const basename = value.slice(lastSlash + 1);
+  if (isKnownExtensionlessRepositoryFile(basename)) return true;
+  if (isKnownBareDotfile(basename)) return true;
+  if (isBasenameDotfile(basename)) return isPathLikeFilePath(value);
   const dot = basename.lastIndexOf(".");
   if (dot <= 0 || dot === basename.length - 1) return false;
   const ext = basename.slice(dot + 1);
@@ -723,6 +723,22 @@ function hasValidFileExtension(value: string): boolean {
     if (!isFileExtensionChar(char)) return false;
   }
   return true;
+}
+
+function isKnownExtensionlessRepositoryFile(basename: string): boolean {
+  return /^(Dockerfile|Containerfile|Makefile|GNUmakefile|LICENSE|NOTICE|README|CHANGELOG|Procfile)$/.test(basename);
+}
+
+function isKnownBareDotfile(basename: string): boolean {
+  return /^(\.env|\.gitignore|\.gitattributes|\.npmrc|\.yarnrc|\.editorconfig|\.prettierrc|\.eslintrc)$/.test(basename);
+}
+
+function isPathLikeFilePath(value: string): boolean {
+  return value.startsWith("/") || value.startsWith("./") || value.startsWith("../") || value.startsWith("~/") || value.includes("/");
+}
+
+function isBasenameDotfile(basename: string): boolean {
+  return /^\.[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(basename);
 }
 
 function isFileExtensionChar(char: string): boolean {

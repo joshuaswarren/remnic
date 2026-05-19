@@ -111,6 +111,57 @@ export interface ParsedBenchArgs {
   retryFailed?: boolean;
 }
 
+export interface BenchWorkItem {
+  benchmarkId: string;
+  runtimeProfile: BenchRuntimeProfile;
+}
+
+export interface PreviousBenchStatusEntry {
+  id: string;
+  status: string;
+}
+
+export function createBenchWorkItems(
+  benchmarks: readonly string[],
+  runtimeProfiles: readonly BenchRuntimeProfile[],
+): BenchWorkItem[] {
+  return benchmarks.flatMap((benchmarkId) =>
+    runtimeProfiles.map((runtimeProfile) => ({ benchmarkId, runtimeProfile })),
+  );
+}
+
+export function deriveRuntimeProfilesFromBenchWorkItems(
+  workItems: readonly BenchWorkItem[],
+): BenchRuntimeProfile[] {
+  return [...new Set(workItems.map((item) => item.runtimeProfile))];
+}
+
+export function filterBenchWorkItemsForPreviousStatus(
+  workItems: readonly BenchWorkItem[],
+  previousEntries: readonly PreviousBenchStatusEntry[],
+  mode: "resume" | "retry-failed",
+): BenchWorkItem[] {
+  const statusById = new Map(previousEntries.map((entry) => [entry.id, entry.status]));
+  const hasMatrixWork = new Set(workItems.map((item) => item.benchmarkId)).size !== workItems.length;
+
+  function statusFor(item: BenchWorkItem): string | undefined {
+    const profileStatus = statusById.get(`${item.benchmarkId} [${item.runtimeProfile}]`);
+    if (profileStatus !== undefined) return profileStatus;
+    if (hasMatrixWork) {
+      return mode === "retry-failed" ? statusById.get(item.benchmarkId) : undefined;
+    }
+    return statusById.get(item.benchmarkId);
+  }
+
+  return workItems.filter((item) => {
+    const status = statusFor(item);
+    if (mode === "retry-failed") {
+      return status === "failed";
+    }
+    return status !== "complete";
+  });
+}
+
 export const PUBLISHED_BENCHMARK_NAMES = Object.freeze([
   "ama-bench",
   "memory-arena",
@@ -547,6 +598,16 @@ export function parseBenchActionArgs(argv: string[]): {
 
 export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const { action, args } = parseBenchActionArgs(argv);
+  if (args.includes("--help") || args.includes("-h")) {
+    return {
+      action: "help",
+      benchmarks: [],
+      quick: false,
+      all: false,
+      json: false,
+      detail: false,
+    };
+  }
   const baselineAction =
     action === "baseline"
       ? args[0] === "save" || args[0] === "list"

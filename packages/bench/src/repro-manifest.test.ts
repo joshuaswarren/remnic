@@ -108,6 +108,9 @@ test("buildBenchmarkReproManifest hashes datasets/results and redacts secret arg
   assert.equal(manifest.run.mode, "full");
   assert.match(manifest.run.id, /^20[0-9]{2}-/);
   assert.deepEqual(manifest.run.runtimeProfiles, ["real"]);
+  assert.deepEqual(manifest.run.selectedWorkItems, [
+    { benchmark: "longmemeval", runtimeProfile: "real" },
+  ]);
   assert.equal(manifest.run.seed, 42);
   assert.deepEqual(manifest.command.argv, [
     "bench",
@@ -260,4 +263,29 @@ test("buildBenchmarkReproManifest preserves explicitly empty result paths", asyn
 
   assert.deepEqual(manifest.results, []);
   assert.deepEqual(manifest.run.selectedBenchmarks, []);
+});
+
+test("buildBenchmarkReproManifest preserves uneven benchmark/profile work pairings", async () => {
+  const root = await createTempRoot("remnic-repro-manifest-work-items-");
+  const resultsDir = path.join(root, "results");
+  await mkdir(resultsDir, { recursive: true });
+  const resultPath = path.join(resultsDir, "longmemeval.json");
+  await writeFile(resultPath, `${JSON.stringify(buildResult(), null, 2)}\n`, "utf8");
+
+  const manifest = await buildBenchmarkReproManifest(resultsDir, {
+    resultPaths: [resultPath],
+    selectedBenchmarks: ["longmemeval", "locomo"],
+    runtimeProfiles: ["real", "baseline"],
+    selectedWorkItems: [
+      { benchmark: "longmemeval", runtimeProfile: "real" },
+      { benchmark: "locomo", runtimeProfile: "baseline" },
+    ],
+  });
+
+  assert.deepEqual(manifest.run.selectedBenchmarks, ["longmemeval", "locomo"]);
+  assert.deepEqual(manifest.run.runtimeProfiles, ["real", "baseline"]);
+  assert.deepEqual(manifest.run.selectedWorkItems, [
+    { benchmark: "longmemeval", runtimeProfile: "real" },
+    { benchmark: "locomo", runtimeProfile: "baseline" },
+  ]);
 });

@@ -12,6 +12,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
 const tsxCli = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const cliPath = join(__dirname, "cli.ts");
+const builtCliPath = join(__dirname, "..", "dist", "cli.js");
+
+function buildConnectorCli(): void {
+  const result = spawnSync("pnpm", ["--filter", "@remnic/connector-weclone", "build"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
 
 function buildCliEnv(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -40,6 +52,21 @@ function runCliWithConfig(config: unknown) {
   writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
   try {
     return spawnSync(process.execPath, [tsxCli, cliPath, "--config", configPath], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function runBuiltCliWithConfig(config: unknown) {
+  const tempDir = mkdtempSync(join(tmpdir(), "remnic-weclone-built-cli-"));
+  const configPath = join(tempDir, "weclone.json");
+  writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 });
+  try {
+    return spawnSync(process.execPath, [builtCliPath, "--config", configPath], {
       cwd: repoRoot,
       encoding: "utf8",
       timeout: 5_000,
@@ -95,6 +122,20 @@ function deferred<T = void>(): {
 }
 
 describe("remnic-weclone-proxy CLI", () => {
+  it("exercises the built package bin artifact", () => {
+    buildConnectorCli();
+
+    const result = runBuiltCliWithConfig({
+      proxyPort: 8100,
+      remnicDaemonUrl: "http://127.0.0.1:4318",
+    });
+
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Invalid config at .*weclone\.json:/);
+    assert.match(result.stderr, /wecloneApiUrl/);
+  });
+
   it("prints a controlled error for semantically invalid config", () => {
     const result = runCliWithConfig({
       proxyPort: 8100,

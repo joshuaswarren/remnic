@@ -49,6 +49,9 @@ export {
   sanitizeSessionKeyForFilename,
   defaultWorkspaceDir,
 } from "./orchestrator.js";
+export * from "./memory-projection-format.js";
+export * from "./model-registry.js";
+export * from "./contradiction/index.js";
 
 export {
   buildEvidencePack,

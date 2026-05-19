@@ -20,10 +20,19 @@ const ROOT_CONNECTOR_SHIMS = [
   ],
 ] as const;
 
+const ROOT_CORE_SOURCE_SHIMS = [
+  ["src/memory-projection-format.ts", "@remnic/core/memory-projection-format"],
+  ["src/model-registry.ts", "@remnic/core/model-registry"],
+  ["src/orchestrator.ts", "@remnic/core/orchestrator"],
+] as const;
+
 const ROOT_PACKAGE_ENTRIES = [...ROOT_CLI_SHIMS, ...ROOT_CONNECTOR_SHIMS] as const;
 
 describe("root CLI package boundaries", () => {
-  for (const [filePath, publicSpecifier] of ROOT_PACKAGE_ENTRIES) {
+  for (const [filePath, publicSpecifier] of [
+    ...ROOT_PACKAGE_ENTRIES,
+    ...ROOT_CORE_SOURCE_SHIMS,
+  ] as const) {
     it(`${filePath} uses the public @remnic/core package export`, () => {
       const source = readFileSync(resolve(filePath), "utf8");
 
@@ -114,6 +123,56 @@ describe("root CLI package boundaries", () => {
         tsupConfig.includes(`"${coreFilePath}"`) ||
           tsupConfig.includes(`'${coreFilePath}'`),
         `${coreFilePath} must be a core tsup entry so ${distPath} exists after build`,
+      );
+    }
+  });
+
+  it("core package exposes the contradiction module through public exports", () => {
+    const manifest = JSON.parse(
+      readFileSync(resolve("packages/remnic-core/package.json"), "utf8"),
+    ) as {
+      exports?: Record<string, { import?: string; types?: string }>;
+    };
+    const tsupConfig = readFileSync(resolve("packages/remnic-core/tsup.config.ts"), "utf8");
+
+    assert.equal(
+      manifest.exports?.["./contradiction"]?.import,
+      "./dist/contradiction/index.js",
+      "@remnic/core/contradiction must resolve to the built contradiction entrypoint",
+    );
+    assert.equal(
+      manifest.exports?.["./contradiction"]?.types,
+      "./dist/contradiction/index.d.ts",
+      "@remnic/core/contradiction must publish declaration files",
+    );
+    assert.ok(
+      tsupConfig.includes('"src/contradiction/index.ts"') ||
+        tsupConfig.includes("'src/contradiction/index.ts'"),
+      "src/contradiction/index.ts must be a core tsup entry so the exported subpath exists after build",
+    );
+  });
+
+  it("core package exposes root source shim dependencies through public exports", () => {
+    const manifest = JSON.parse(
+      readFileSync(resolve("packages/remnic-core/package.json"), "utf8"),
+    ) as {
+      exports?: Record<string, { import?: string; types?: string }>;
+    };
+
+    for (const [, publicSpecifier] of ROOT_CORE_SOURCE_SHIMS) {
+      const subpath = publicSpecifier.replace(/^@remnic\/core/, ".");
+      const distPath = `./dist/${subpath.replace(/^\.\//, "")}.js`;
+      const typesPath = distPath.replace(/\.js$/, ".d.ts");
+
+      assert.equal(
+        manifest.exports?.[subpath]?.import,
+        distPath,
+        `${publicSpecifier} must resolve through @remnic/core exports`,
+      );
+      assert.equal(
+        manifest.exports?.[subpath]?.types,
+        typesPath,
+        `${publicSpecifier} must publish declarations`,
       );
     }
   });

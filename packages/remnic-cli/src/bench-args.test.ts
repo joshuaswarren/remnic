@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { parseBenchArgs } from "./bench-args.js";
+import {
+  createBenchWorkItems,
+  deriveRuntimeProfilesFromBenchWorkItems,
+  filterBenchWorkItemsForPreviousStatus,
+  parseBenchArgs,
+} from "./bench-args.js";
 
 test("parseBenchArgs keeps validated matrix profiles typed and ordered", () => {
   const parsed = parseBenchArgs([
@@ -34,6 +39,89 @@ test("parseBenchArgs rejects action-incompatible bench flags", () => {
     () => parseBenchArgs(["run", "locomo", "--format", "json"]),
     /--format is not supported for bench run/,
   );
+});
+
+test("parseBenchArgs treats action help flags as help requests", () => {
+  assert.equal(parseBenchArgs(["run", "--help"]).action, "help");
+  assert.equal(parseBenchArgs(["datasets", "--help"]).action, "help");
+});
+
+test("retry-failed filters matrix work at profile granularity", () => {
+  const workItems = createBenchWorkItems(["locomo"], ["baseline", "real"]);
+  const filtered = filterBenchWorkItemsForPreviousStatus(
+    workItems,
+    [
+      { id: "locomo [baseline]", status: "complete" },
+      { id: "locomo [real]", status: "failed" },
+    ],
+    "retry-failed",
+  );
+
+  assert.deepEqual(filtered, [{ benchmarkId: "locomo", runtimeProfile: "real" }]);
+});
+
+test("retry-failed preserves prior matrix status for single-profile reruns", () => {
+  const workItems = createBenchWorkItems(["locomo"], ["baseline"]);
+  const filtered = filterBenchWorkItemsForPreviousStatus(
+    workItems,
+    [
+      { id: "locomo [baseline]", status: "failed" },
+      { id: "locomo", status: "complete" },
+    ],
+    "retry-failed",
+  );
+
+  assert.deepEqual(filtered, [{ benchmarkId: "locomo", runtimeProfile: "baseline" }]);
+});
+
+test("resume skips only completed matrix profile work", () => {
+  const workItems = createBenchWorkItems(["locomo"], ["baseline", "real"]);
+  const filtered = filterBenchWorkItemsForPreviousStatus(
+    workItems,
+    [
+      { id: "locomo [baseline]", status: "complete" },
+      { id: "locomo [real]", status: "failed" },
+    ],
+    "resume",
+  );
+
+  assert.deepEqual(filtered, [{ benchmarkId: "locomo", runtimeProfile: "real" }]);
+});
+
+test("runtime profiles for repro manifests follow filtered matrix work", () => {
+  const workItems = createBenchWorkItems(["locomo"], ["baseline", "real"]);
+  const filtered = filterBenchWorkItemsForPreviousStatus(
+    workItems,
+    [
+      { id: "locomo [baseline]", status: "complete" },
+      { id: "locomo [real]", status: "failed" },
+    ],
+    "resume",
+  );
+
+  assert.deepEqual(deriveRuntimeProfilesFromBenchWorkItems(filtered), ["real"]);
+});
+
+test("resume treats new matrix profiles as unrun when only bare status exists", () => {
+  const workItems = createBenchWorkItems(["locomo"], ["baseline", "real"]);
+  const filtered = filterBenchWorkItemsForPreviousStatus(
+    workItems,
+    [{ id: "locomo", status: "complete" }],
+    "resume",
+  );
+
+  assert.deepEqual(filtered, workItems);
+});
+
+test("retry-failed expands bare failed status across matrix profiles", () => {
+  const workItems = createBenchWorkItems(["locomo"], ["baseline", "real"]);
+  const filtered = filterBenchWorkItemsForPreviousStatus(
+    workItems,
+    [{ id: "locomo", status: "failed" }],
+    "retry-failed",
+  );
+
+  assert.deepEqual(filtered, workItems);
 });
 
 // ---------- `bench published` (issue #566 PR 4/7) ----------

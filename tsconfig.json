@@ -28,6 +28,15 @@
       "@remnic/core/cli": [
         "./packages/remnic-core/src/cli.ts"
       ],
+      "@remnic/core/memory-projection-format": [
+        "./packages/remnic-core/src/memory-projection-format.ts"
+      ],
+      "@remnic/core/model-registry": [
+        "./packages/remnic-core/src/model-registry.ts"
+      ],
+      "@remnic/core/orchestrator": [
+        "./packages/remnic-core/src/orchestrator.ts"
+      ],
       "@remnic/core/connectors": [
         "./packages/remnic-core/src/connectors/index.ts"
       ],

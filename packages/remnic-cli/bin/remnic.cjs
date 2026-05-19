@@ -13,31 +13,41 @@ const cwd = __dirname;
 const distEntry = resolve(cwd, "../dist/index.js");
 const srcEntry = resolve(cwd, "../src/index.ts");
 
-const colorEnv = {};
-if (!process.env.NO_COLOR && process.env.FORCE_COLOR === undefined) {
-  colorEnv.FORCE_COLOR = "1";
-}
-
 function exitCodeForSignal(signal) {
   const signalNumber = osConstants.signals?.[signal];
   return typeof signalNumber === "number" ? 128 + signalNumber : 1;
+}
+
+function resolveLocalTsx() {
+  const tsxCandidates = [
+    resolve(cwd, "../node_modules/.bin/tsx"),
+    resolve(cwd, "../../../node_modules/.bin/tsx"),
+  ];
+  return tsxCandidates.find((c) => existsSync(c));
 }
 
 try {
   if (existsSync(distEntry)) {
     execFileSync(process.execPath, [distEntry, ...process.argv.slice(2)], {
       stdio: "inherit",
-      env: { ...process.env, REMNIC_CLI_BIN: "1", ...colorEnv },
+      env: { ...process.env, REMNIC_CLI_BIN: "1" },
     });
   } else {
-    const tsxCandidates = [
-      resolve(cwd, "../node_modules/.bin/tsx"),
-      resolve(cwd, "../../../node_modules/.bin/tsx"),
-    ];
-    const tsxCmd = tsxCandidates.find((c) => existsSync(c)) || "tsx";
+    const hasSrcEntry = existsSync(srcEntry);
+    const tsxCmd = hasSrcEntry ? resolveLocalTsx() : undefined;
+    if (!tsxCmd) {
+      if (hasSrcEntry) {
+        throw new Error(
+          `tsx runtime is missing for source CLI entrypoint: ${srcEntry}. Install dependencies or rebuild @remnic/cli.`,
+        );
+      }
+      throw new Error(
+        `built CLI entrypoint is missing: ${distEntry}. Rebuild or reinstall @remnic/cli.`,
+      );
+    }
     execFileSync(tsxCmd, [srcEntry, ...process.argv.slice(2)], {
       stdio: "inherit",
-      env: { ...process.env, REMNIC_CLI_BIN: "1", ...colorEnv },
+      env: { ...process.env, REMNIC_CLI_BIN: "1" },
     });
   }
 } catch (err) {

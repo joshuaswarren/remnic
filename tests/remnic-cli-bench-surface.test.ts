@@ -911,7 +911,7 @@ export function ensureWecloneImportAdapterRegistered() {}
 
     const plans = await buildPackageBenchExecutionPlans(
       {
-        resolveBenchRuntimeProfile: async (options) => ({
+        resolveBenchRuntimeProfile: async (options: { runtimeProfile?: string }) => ({
           profile: options.runtimeProfile ?? "baseline",
           remnicConfig: {},
           effectiveRemnicConfig: {},

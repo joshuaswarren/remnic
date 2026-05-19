@@ -49,9 +49,9 @@ packages/import-mem0/src/client.test.ts(132,38): TS2304
 packages/import-mem0/src/client.test.ts(225,38): TS2304
 packages/import-mem0/src/client.test.ts(253,38): TS2304
 packages/import-mem0/src/client.test.ts(286,38): TS2304
-packages/remnic-cli/src/index.ts(3818,30): TS18046
-packages/remnic-cli/src/index.ts(8192,43): TS2345
-packages/remnic-cli/src/index.ts(8201,34): TS2345
+packages/remnic-cli/src/index.ts(3845,30): TS18046
+packages/remnic-cli/src/index.ts(8188,43): TS2345
+packages/remnic-cli/src/index.ts(8197,34): TS2345
 src/index.ts(2,40): TS2307
 src/index.ts(2871,38): TS2307
 src/index.ts(2922,23): TS2307
@@ -508,9 +508,6 @@ tests/recall-hardening.test.ts(796,3): TS2349
 tests/recall-hardening.test.ts(798,3): TS2349
 tests/recall-no-recall-short-circuit.test.ts(14,3): TS2740
 tests/register-multi-registry.test.ts(184,13): TS18048
-tests/remnic-cli-bench-surface.test.ts(914,44): TS7006
-tests/remnic-cli-bin-wrapper.test.ts(30,16): TS2345
-tests/remnic-cli-bin-wrapper.test.ts(31,16): TS2345
 tests/remnic-cli-service-candidates.test.ts(17,82): TS7006
 tests/remnic-plugin-register-migration.test.ts(66,12): TS2352
 tests/remnic-server-cli.test.ts(8,30): TS7016

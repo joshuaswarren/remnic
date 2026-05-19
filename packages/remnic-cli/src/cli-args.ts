@@ -14,7 +14,15 @@
  */
 export function resolveFlag(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
-  return idx !== -1 && idx + 1 < args.length ? args[idx + 1] : undefined;
+  if (idx === -1 || idx + 1 >= args.length) return undefined;
+  const value = args[idx + 1];
+  return isOptionToken(value) ? undefined : value;
+}
+
+function isOptionToken(value: string): boolean {
+  if (!value.startsWith("-")) return false;
+  if (/^-\d/.test(value) || /^-\.\d/.test(value)) return false;
+  return true;
 }
 
 /**

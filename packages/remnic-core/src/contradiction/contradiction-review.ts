@@ -462,6 +462,7 @@ export function resolvePair(
 
   const existing = readPair(memoryDir, pairId);
   if (!existing) return null;
+  if (preservesDirectResolution(existing.resolution)) return existing;
 
   const updated: ContradictionPair = {
     ...existing,

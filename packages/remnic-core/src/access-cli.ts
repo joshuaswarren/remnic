@@ -211,7 +211,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     }
 
     const next = rest[i + 1];
-    if (!next || next.startsWith("--")) {
+    if (next === undefined || next.length === 0 || next.startsWith("--")) {
       throw new UsageError("missing-option", key);
     }
     if (!options[key]) {
@@ -324,8 +324,9 @@ function buildRuntime(preferredId?: string): Runtime {
 }
 
 async function runBrowse(args: ParsedArgs, preferredId?: string): Promise<void> {
-  const request = {
+  const browseArgs = {
     namespace: getLastOption(args, "namespace"),
+    principal: getLastOption(args, "principal"),
     query: getLastOption(args, "query"),
     category: getLastOption(args, "category"),
     status: getLastOption(args, "status"),
@@ -334,10 +335,17 @@ async function runBrowse(args: ParsedArgs, preferredId?: string): Promise<void> 
     offset: parseIntegerOption(args, "offset", { min: 0 }),
   };
   const { config, service } = buildRuntime(preferredId);
-  const result = await service.memoryBrowse({
-    ...request,
-    authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
-  });
+  const request = {
+    namespace: browseArgs.namespace,
+    authenticatedPrincipal: browseArgs.principal ?? config.agentAccessHttp.principal,
+    query: browseArgs.query,
+    category: browseArgs.category,
+    status: browseArgs.status,
+    sort: browseArgs.sort,
+    limit: browseArgs.limit,
+    offset: browseArgs.offset,
+  };
+  const result = await service.memoryBrowse(request);
   console.log(JSON.stringify(result, null, 2));
 }
 
@@ -392,6 +400,13 @@ export async function main(
   await runStore(args, options.preferredId);
 }
 
+export function sanitizeAccessCliErrorMessage(message: string): string {
+  return message.replace(
+    /\b(openaiApiKey|localLlmApiKey)\b(\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}\]]+)/gi,
+    (_match, name: string, separator: string) => `${name}${separator}[redacted]`,
+  );
+}
+
 export function printUsage(): void {
   writeCliOutput(usage());
 }
@@ -410,7 +425,7 @@ export async function runCli(
       process.exit(1);
     }
 
-    console.error("access-cli failed");
+    console.error("access-cli failed: runtime error");
     process.exit(1);
   }
 }

@@ -1,1 +1,1 @@
-export * from "../packages/remnic-core/src/memory-projection-format.js";
+export * from "@remnic/core/memory-projection-format";

@@ -93,6 +93,47 @@ describe("message-parts parsers", () => {
     assert.equal(parts[2]!.filePath, ".github/workflows/ci.yml");
   });
 
+  it("extracts basename dotfiles and extensionless repository files", () => {
+    const parts = parseMessageParts([
+      { type: "output_text", text: "Updated .env." },
+      { type: "output_text", text: "Updated .gitignore." },
+      { type: "output_text", text: "Read Dockerfile." },
+      { type: "output_text", text: "Read Makefile." },
+    ]);
+
+    assert.equal(parts.length, 4);
+    assert.deepEqual(parts.map((part) => part.filePath), [
+      ".env",
+      ".gitignore",
+      "Dockerfile",
+      "Makefile",
+    ]);
+  });
+
+  it("does not treat lowercase prose as extensionless repository files", () => {
+    const parts = parseMessageParts([
+      { type: "output_text", text: "I notice this issue and will readme later." },
+      { type: "output_text", text: "Read README." },
+    ]);
+
+    assert.equal(parts.length, 2);
+    assert.equal(parts[0]!.filePath, null);
+    assert.equal(parts[1]!.filePath, "README");
+  });
+
+  it("does not treat prose dot-prefixed words as bare dotfiles", () => {
+    const parts = parseMessageParts([
+      { type: "output_text", text: "I built it in .NET." },
+      { type: "output_text", text: "Updated .env." },
+      { type: "output_text", text: "Updated ./.config." },
+    ]);
+
+    assert.equal(parts.length, 3);
+    assert.equal(parts[0]!.filePath, null);
+    assert.equal(parts[1]!.filePath, ".env");
+    assert.equal(parts[2]!.filePath, "./.config");
+  });
+
   it("routes OpenClaw OpenAI-style typed content blocks through the OpenAI parser", () => {
     const parts = parseOpenClawMessageParts({
       content: [{ type: "output_text", text: "Updated src/openclaw.ts." }],
@@ -100,6 +141,19 @@ describe("message-parts parsers", () => {
 
     assert.equal(parts.length, 1);
     assert.equal(parts[0]!.kind, "text");
+    assert.equal(parts[0]!.filePath, "src/openclaw.ts");
+  });
+
+  it("routes OpenClaw tool-call blocks through the structured tool parser", () => {
+    const parts = parseOpenClawMessageParts({
+      content: [
+        { type: "toolCall", name: "edit", arguments: { path: "src/openclaw.ts" } },
+      ],
+    });
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "file_write");
+    assert.equal(parts[0]!.toolName, "edit");
     assert.equal(parts[0]!.filePath, "src/openclaw.ts");
   });
 

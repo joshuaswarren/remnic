@@ -180,7 +180,7 @@ describe("parseImportArgs", () => {
   it("rejects stray positional arguments rather than silently dropping them", () => {
     assert.throws(
       () => parseImportArgs(["--adapter", "chatgpt", "/tmp/export.json"]),
-      /Unknown argument.*\/tmp\/export\.json/,
+      /positional argument '\/tmp\/export\.json'/,
     );
   });
 
@@ -225,6 +225,15 @@ describe("parseImportArgs", () => {
           "--dry-run",
         ]),
       /--file/,
+    );
+  });
+});
+
+describe("parseImportBundleArgs", () => {
+  it("rejects stray positional arguments after the bundle directory", () => {
+    assert.throws(
+      () => parseImportBundleArgs(["--all-from-bundle", "/bundle", "/other"]),
+      /positional argument '\/other'/,
     );
   });
 });
@@ -486,7 +495,7 @@ describe("parseImportBundleArgs", () => {
           "/tmp/bundle",
           "/tmp/other",
         ]),
-      /Unknown argument.*\/tmp\/other/,
+      /positional argument '\/tmp\/other'/,
     );
   });
 });

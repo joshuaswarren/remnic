@@ -2002,6 +2002,48 @@ test("access HTTP server binds namespace write authorization to its configured p
   }
 });
 
+test("access HTTP server binds namespace browse authorization to its configured principal", async () => {
+  let capturedNamespace: unknown;
+  let capturedPrincipal: unknown;
+  const service = {
+    ...createFakeService(),
+    memoryBrowse: async (request: Record<string, unknown>) => {
+      capturedNamespace = request.namespace;
+      capturedPrincipal = request.authenticatedPrincipal;
+      return {
+        namespace: request.namespace ?? "global",
+        sort: "updated_desc",
+        total: 0,
+        count: 0,
+        limit: request.limit,
+        offset: request.offset,
+        memories: [],
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    host: "127.0.0.1",
+    port: 0,
+    authToken: "secret-token",
+    principal: "secret-team",
+    maxBodyBytes: 1024,
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+
+  try {
+    const response = await fetch(`${base}/engram/v1/memories?namespace=secret-team&limit=3`, {
+      headers: { Authorization: "Bearer secret-token" },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(capturedNamespace, "secret-team");
+    assert.equal(capturedPrincipal, "secret-team");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("access HTTP server returns 400 for empty recall query", async () => {
   const server = new EngramAccessHttpServer({
     service: {

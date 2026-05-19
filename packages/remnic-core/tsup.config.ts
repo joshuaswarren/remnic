@@ -9,6 +9,7 @@ const srcFiles = readdirSync(join(__dirname, "src"))
   .map((f) => `src/${f}`);
 
 const connectorEntryFiles = [
+  "src/contradiction/index.ts",
   "src/connectors/index.ts",
   "src/connectors/codex-materialize.ts",
   "src/connectors/codex-materialize-runner.ts",
