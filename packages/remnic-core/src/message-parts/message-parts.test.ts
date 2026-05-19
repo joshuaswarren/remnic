@@ -80,6 +80,16 @@ describe("message-parts parsers", () => {
     assert.equal(parts[1]!.filePath, "src/session.ts");
   });
 
+  it("infers untyped OpenAI content-block wrappers", () => {
+    const parts = parseMessageParts({
+      content: [{ type: "output_text", text: "Updated src/auth.ts" }],
+    });
+
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0]!.kind, "text");
+    assert.equal(parts[0]!.filePath, "src/auth.ts");
+  });
+
   it("preserves leading dots in extracted file paths", () => {
     const parts = parseMessageParts([
       { type: "output_text", text: "Touched ./src/auth.ts." },

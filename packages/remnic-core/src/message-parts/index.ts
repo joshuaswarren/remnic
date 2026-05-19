@@ -467,6 +467,9 @@ function gatherOpenAiItems(input: unknown): Record<string, unknown>[] {
   if (!isRecord(input)) return [];
   if (Array.isArray(input.output)) return input.output.filter(isRecord);
   if (Array.isArray(input.items)) return input.items.filter(isRecord);
+  if (!isOpenAiResponseItem(input) && Array.isArray(input.content) && input.content.some(isOpenAiContentBlock)) {
+    return input.content.filter(isRecord);
+  }
   return [input];
 }
 
