@@ -140,20 +140,19 @@ test("contradiction judge does not positional-fallback after unmatched pairKey v
   assert.equal(result.results.get("c:d")?.confidence, 0);
 });
 
-test("contradiction judge fallback ignores skipped response items without shifting verdicts", async () => {
+test("contradiction judge marks pairKey-less response items as needs-user", async () => {
   const localLlm = {
     async chatCompletion() {
       return {
         content: JSON.stringify([
-          null,
           {
             verdict: "duplicates",
-            rationale: "The first requested pair is equivalent.",
+            rationale: "The first requested pair is equivalent but lacks a key.",
             confidence: 0.8,
           },
           {
             verdict: "independent",
-            rationale: "The second requested pair is unrelated.",
+            rationale: "The second requested pair is unrelated but lacks a key.",
             confidence: 0.7,
           },
         ]),
@@ -183,6 +182,8 @@ test("contradiction judge fallback ignores skipped response items without shifti
   );
 
   assert.equal(result.judged, 2);
-  assert.equal(result.results.get("a:b")?.verdict, "duplicates");
-  assert.equal(result.results.get("c:d")?.verdict, "independent");
+  assert.equal(result.results.get("a:b")?.verdict, "needs-user");
+  assert.equal(result.results.get("a:b")?.confidence, 0);
+  assert.equal(result.results.get("c:d")?.verdict, "needs-user");
+  assert.equal(result.results.get("c:d")?.confidence, 0);
 });

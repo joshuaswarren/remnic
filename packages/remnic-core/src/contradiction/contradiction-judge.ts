@@ -268,10 +268,8 @@ function parseJudgeResponse(
       const items = Array.isArray(parsed) ? parsed : [parsed];
       const results: ContradictionJudgeResult[] = [];
       const matchedKeys = new Set<string>();
-      let sawUnmatchedKeyedItem = false;
 
-      for (let itemIndex = 0; itemIndex < items.length; itemIndex += 1) {
-        const item = items[itemIndex];
+      for (const item of items) {
         if (!item || typeof item !== "object") continue;
 
         const verdict = typeof item.verdict === "string" && VALID_VERDICTS.includes(item.verdict as ContradictionVerdict)
@@ -285,26 +283,17 @@ function parseJudgeResponse(
           ? inputs.find((p) => pairKey(p.memoryIdA, p.memoryIdB) === pairKeyVal)
           : null;
 
-        if (pairKeyVal && !input) {
-          sawUnmatchedKeyedItem = true;
-          continue;
-        }
+        if (!input) continue;
 
-        const fallbackInput = input ?? (sawUnmatchedKeyedItem
-          ? undefined
-          : inputs.find((inputCandidate) =>
-            !matchedKeys.has(pairKey(inputCandidate.memoryIdA, inputCandidate.memoryIdB))));
-        if (!fallbackInput) continue;
-
-        matchedKeys.add(pairKey(fallbackInput.memoryIdA, fallbackInput.memoryIdB));
+        matchedKeys.add(pairKey(input.memoryIdA, input.memoryIdB));
 
         const confidence = typeof item.confidence === "number"
           ? Math.min(1, Math.max(0, item.confidence))
           : 0.5;
 
         results.push({
-          memoryIdA: fallbackInput.memoryIdA,
-          memoryIdB: fallbackInput.memoryIdB,
+          memoryIdA: input.memoryIdA,
+          memoryIdB: input.memoryIdB,
           verdict,
           rationale: typeof item.rationale === "string" ? item.rationale : "No rationale provided",
           confidence,
