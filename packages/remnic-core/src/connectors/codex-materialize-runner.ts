@@ -9,10 +9,11 @@
  * importance.ts — the two files Wave 1 agents are editing concurrently.
  */
 
-import path from "node:path";
 import { existsSync } from "node:fs";
 
 import { log } from "../logger.js";
+import { resolveNamespaceChildRoot } from "../namespaces/path.js";
+import { isSafeRouteNamespace } from "../routing/engine.js";
 import { StorageManager } from "../storage.js";
 import type { PluginConfig, MemoryFile } from "../types.js";
 import {
@@ -166,15 +167,15 @@ export async function runPostConsolidationMaterialize(
 
 function resolveNamespace(override: string | undefined, cfg: PluginConfig): string {
   const requested = (override ?? cfg.codexMaterializeNamespace ?? "auto").trim();
-  if (requested.length === 0 || requested === "auto") {
-    // When the caller asks for "auto", fall back to the configured default
-    // namespace (if any) so storage-root resolution lines up with what
-    // NamespaceStorageRouter would do for the same install.
-    return cfg.defaultNamespace && cfg.defaultNamespace.length > 0
-      ? cfg.defaultNamespace
-      : "default";
+  const defaultNamespace = (cfg.defaultNamespace ?? "").trim();
+  const namespace =
+    requested.length === 0 || requested === "auto"
+      ? (defaultNamespace.length > 0 ? defaultNamespace : "default")
+      : requested;
+  if (!isSafeRouteNamespace(namespace)) {
+    throw new Error(`invalid materialize namespace: ${namespace}`);
   }
-  return requested;
+  return namespace;
 }
 
 /**
@@ -197,10 +198,14 @@ function resolveNamespaceDir(
 ): string {
   if (!cfg.namespacesEnabled) return memoryDir;
 
-  const ns = namespace || cfg.defaultNamespace || "default";
-  const namespacedRoot = path.join(memoryDir, "namespaces", ns);
+  const defaultNamespace = (cfg.defaultNamespace ?? "").trim();
+  const ns = (namespace || defaultNamespace || "default").trim();
+  if (!isSafeRouteNamespace(ns)) {
+    throw new Error(`invalid materialize namespace: ${ns}`);
+  }
+  const namespacedRoot = resolveNamespaceChildRoot(memoryDir, ns, "materialize namespace path");
 
-  if (ns === cfg.defaultNamespace) {
+  if (ns === defaultNamespace) {
     return existsSync(namespacedRoot) ? namespacedRoot : memoryDir;
   }
   return namespacedRoot;

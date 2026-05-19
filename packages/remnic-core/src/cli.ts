@@ -60,6 +60,7 @@ import {
   runNamespaceMigration,
   verifyNamespaces,
 } from "./namespaces/migrate.js";
+import { resolveNamespaceChildRoot } from "./namespaces/path.js";
 import {
   runBenchmarkRecall,
   runOperatorConfigReview,
@@ -3250,14 +3251,6 @@ function assertSafeNamespaceSegment(namespace: string): void {
   }
 }
 
-function assertPathInsideRoot(root: string, candidate: string, namespace: string): void {
-  const relative = path.relative(root, candidate);
-  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
-    return;
-  }
-  throw new Error(`invalid namespace path: ${namespace}`);
-}
-
 export async function resolveMemoryDirForNamespace(
   orchestrator: Orchestrator,
   namespace?: string,
@@ -3273,9 +3266,7 @@ export async function resolveMemoryDirForNamespace(
     return orchestrator.config.memoryDir;
   }
 
-  const namespaceRoot = path.resolve(orchestrator.config.memoryDir, "namespaces");
-  const candidate = path.resolve(namespaceRoot, ns);
-  assertPathInsideRoot(namespaceRoot, candidate, ns);
+  const candidate = resolveNamespaceChildRoot(orchestrator.config.memoryDir, ns);
   if (ns === orchestrator.config.defaultNamespace) {
     return (await exists(candidate)) ? candidate : orchestrator.config.memoryDir;
   }
