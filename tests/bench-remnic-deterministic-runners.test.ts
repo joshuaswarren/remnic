@@ -142,7 +142,7 @@ test("runBenchmark executes enrichment-fidelity in quick mode", async () => {
 test("runBenchmark executes retrieval-personalization in quick mode", async () => {
   const result = await runBenchmark("retrieval-personalization", {
     mode: "quick",
-    system: adapter,
+    system: expectedPersonalizationHits(),
   });
 
   assert.equal(result.meta.benchmark, "retrieval-personalization");
@@ -221,6 +221,33 @@ test("runBenchmark records adapter-returned page order for full retrieval-tempor
     ["morgan-q3-training-plan", "morgan-coffee-preferences"],
   );
 });
+
+class RetrievalPersonalizationFixtureAdapter extends NoopMemoryAdapter {
+  override async recall(
+    sessionId: string,
+    query: string,
+    budgetChars?: number,
+    options?: BenchRecallOptions,
+  ): Promise<string> {
+    const { RETRIEVAL_PERSONALIZATION_FIXTURE } = await import(
+      "../packages/bench/src/benchmarks/remnic/retrieval-personalization/fixture.js"
+    );
+    const sampleId = sessionId.replace(/^retrieval-personalization:/, "");
+    const sample = RETRIEVAL_PERSONALIZATION_FIXTURE.find(
+      (entry) => entry.id === sampleId,
+    );
+    assert.ok(sample, `unexpected retrieval-personalization session ${sessionId}`);
+    assert.equal(query, sample.query);
+    assert.equal(budgetChars, 12_000);
+    assert.equal(options, undefined);
+
+    return sample.expectedPageIds.map((pageId) => `page_id: ${pageId}`).join("\n");
+  }
+}
+
+function expectedPersonalizationHits(): RetrievalPersonalizationFixtureAdapter {
+  return new RetrievalPersonalizationFixtureAdapter();
+}
 
 test("runBenchmark rejects overflowed timeline dates in retrieval-temporal evidence", async () => {
   const temporalCase = RETRIEVAL_TEMPORAL_FIXTURE.find((entry) => entry.id === "clean:morgan-q3-commitments");

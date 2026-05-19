@@ -9,6 +9,7 @@ import type {
   ResolvedRunBenchmarkOptions,
   TaskResult,
 } from "../../../types.js";
+import type { Message } from "../../../adapters/types.js";
 import { precisionAtK } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
 import type { SchemaTierPage } from "../../../fixtures/schema-tiers/index.js";
@@ -46,8 +47,18 @@ export async function runRetrievalPersonalizationBenchmark(
 
   for (const sample of cases) {
     const startedAt = performance.now();
-    const rankedPageIds = rankPages(sample.query, sample.pages).map((page) => page.id);
+    const sessionId = `retrieval-personalization:${sample.id}`;
+    await options.system.reset(sessionId);
+    await options.system.store(sessionId, buildPersonalizationMessages(sample.pages));
+    await options.system.drain?.();
+    const recallText = await options.system.recall(
+      sessionId,
+      sample.query,
+      12_000,
+    );
     const latencyMs = Math.round(performance.now() - startedAt);
+    const rankedPageIds = extractRankedPageIds(recallText, sample.pages);
+    const baselinePageIds = rankPages(sample.query, sample.pages).map((page) => page.id);
     const expectedJson = JSON.stringify(sample.expectedPageIds);
     const actualJson = JSON.stringify(rankedPageIds.slice(0, 5));
 
@@ -67,7 +78,9 @@ export async function runRetrievalPersonalizationBenchmark(
         tier: sample.tier,
         expectedOwner: sample.expectedOwner,
         expectedNamespace: sample.expectedNamespace,
+        recallLengthChars: recallText.length,
         retrievedPageIds: rankedPageIds.slice(0, 5),
+        baselinePageIds: baselinePageIds.slice(0, 5),
       },
     });
   }
@@ -195,4 +208,61 @@ function schemaPenalty(queryTokens: Set<string>, page: SchemaTierPage): number {
   }
 
   return penalty;
+}
+
+function buildPersonalizationMessages(pages: SchemaTierPage[]): Message[] {
+  return pages.map((page) => ({
+    role: "user",
+    timestamp: page.createdAt,
+    content: [
+      `page_id: ${page.id}`,
+      `owner: ${page.owner}`,
+      `namespace: ${page.namespace}`,
+      `title: ${page.title}`,
+      `canonical_title: ${page.canonicalTitle}`,
+      `type: ${page.type}`,
+      `created_at: ${page.createdAt}`,
+      `aliases: ${page.aliases.join(", ")}`,
+      `timeline: ${page.timeline.join(" | ")}`,
+      `see_also: ${page.seeAlso.join(", ")}`,
+      `body: ${page.body}`,
+      page.dirtySignals.length > 0
+        ? `dirty_signals: ${page.dirtySignals.join(" | ")}`
+        : undefined,
+    ].filter((line): line is string => Boolean(line)).join("\n"),
+  }));
+}
+
+function extractRankedPageIds(recallText: string, pages: SchemaTierPage[]): string[] {
+  const knownPageIds = new Map(pages.map((page) => [page.id.toLowerCase(), page.id]));
+  const matches: Array<{ id: string; index: number }> = [];
+  const seenPageIds = new Set<string>();
+  const pageIdPattern = /(?:^|[^\w-])page_id:\s*([^\s,;]+)/gi;
+
+  for (const match of recallText.matchAll(pageIdPattern)) {
+    const pageId = normalizeExtractedPageId(match[1]);
+    const canonicalPageId = pageId ? knownPageIds.get(pageId.toLowerCase()) : undefined;
+    if (!canonicalPageId || seenPageIds.has(canonicalPageId)) {
+      continue;
+    }
+    seenPageIds.add(canonicalPageId);
+    matches.push({
+      id: canonicalPageId,
+      index: match.index ?? 0,
+    });
+  }
+
+  matches.sort((left, right) => {
+    if (left.index !== right.index) {
+      return left.index - right.index;
+    }
+    return left.id.localeCompare(right.id);
+  });
+
+  return matches.map((match) => match.id);
+}
+
+function normalizeExtractedPageId(value: string | undefined): string | undefined {
+  const normalized = value?.replace(/^[`'"([{\s]+|[`'".:!?)[\]}\s]+$/g, "");
+  return normalized && normalized.length > 0 ? normalized : undefined;
 }
