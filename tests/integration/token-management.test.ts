@@ -54,7 +54,11 @@ test("tokens.ts uses remnic_ prefix convention for known connectors", () => {
 
 test("tokens.ts writes file with 0o600 permissions", () => {
   const content = fs.readFileSync(TOKENS_SRC, "utf-8");
-  assert.ok(content.includes("mode: 0o600"), "Must set file mode to 0o600 (owner-only)");
+  assert.ok(content.includes("0o600"), "Must set file mode to 0o600 (owner-only)");
+  assert.ok(
+    content.includes("fs.openSync(tmpPath") || content.includes("fs.chmodSync(p, 0o600"),
+    "Must apply owner-only permissions while writing the token store",
+  );
 });
 
 test("tokens.ts default path is ~/.remnic/tokens.json with legacy Engram fallback", () => {
@@ -84,7 +88,7 @@ test("tokens.ts handles legacy flat-map token format migration", () => {
     "Must handle legacy { connector: token } format",
   );
   assert.ok(
-    content.includes("Auto-migrate: rewrite in new format"),
+    content.includes("Auto-migrate legacy flat-map stores in new format"),
     "Must auto-migrate legacy format to new format",
   );
 });

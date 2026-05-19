@@ -7,7 +7,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { resolveHomeDir } from "./runtime/env.js";
 
 export interface TokenEntry {
@@ -58,45 +58,138 @@ function ensureDir(filePath: string): void {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function isEnoent(error: unknown): boolean {
+  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function validateTokenEntry(raw: unknown, index: number): TokenEntry {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error(`invalid token entry at index ${index}: expected object`);
+  }
+  const entry = raw as Record<string, unknown>;
+  if (typeof entry.token !== "string" || entry.token.length === 0) {
+    throw new Error(`invalid token entry at index ${index}: token must be a non-empty string`);
+  }
+  if (typeof entry.connector !== "string" || entry.connector.length === 0) {
+    throw new Error(`invalid token entry at index ${index}: connector must be a non-empty string`);
+  }
+  return {
+    token: entry.token,
+    connector: entry.connector,
+    createdAt:
+      typeof entry.createdAt === "string" && entry.createdAt.length > 0
+        ? entry.createdAt
+        : new Date(0).toISOString(),
+  };
+}
+
+function parseTokenStore(rawText: string, filePath: string): { store: TokenStore; migratedLegacy: boolean } {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(rawText);
+  } catch (error) {
+    throw new Error(
+      `failed to parse token store at ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    if (record.tokens !== undefined) {
+      if (!Array.isArray(record.tokens)) {
+        throw new Error(`invalid token store at ${filePath}: tokens must be an array`);
+      }
+      return {
+        store: {
+          tokens: record.tokens.map((entry, index) => validateTokenEntry(entry, index)),
+        },
+        migratedLegacy: false,
+      };
+    }
+
+    // Migrate legacy flat-map format: { "connector": "token_value", ... }
+    const migrated: TokenEntry[] = [];
+    for (const [key, value] of Object.entries(record)) {
+      if (typeof value === "string" && value.length > 0) {
+        migrated.push(
+          validateTokenEntry(
+            { token: value, connector: key, createdAt: new Date().toISOString() },
+            migrated.length,
+          ),
+        );
+      }
+    }
+    if (migrated.length > 0) {
+      return { store: { tokens: migrated }, migratedLegacy: true };
+    }
+  }
+
+  throw new Error(`invalid token store at ${filePath}: expected token array or legacy connector map`);
+}
+
 export function loadTokenStore(tokensPath?: string): TokenStore {
   const p = resolveReadPath(tokensPath);
   try {
-    const raw = JSON.parse(fs.readFileSync(p, "utf8"));
-    if (Array.isArray(raw.tokens)) {
-      return { tokens: raw.tokens };
-    }
-    // Migrate legacy flat-map format: { "connector": "token_value", ... }
-    if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
-      const migrated: TokenEntry[] = [];
-      for (const [key, value] of Object.entries(raw)) {
-        if (key === "tokens") continue; // skip if tokens key exists but isn't array
-        if (typeof value === "string" && value.length > 0) {
-          migrated.push({ token: value, connector: key, createdAt: new Date().toISOString() });
-        }
-      }
-      if (migrated.length > 0) {
-        const store: TokenStore = { tokens: migrated };
-        // Auto-migrate: rewrite in new format (best-effort, don't lose tokens on write failure)
-        try {
-          saveTokenStore(store, tokensPath);
-        } catch {
-          // Migration write failed (e.g., read-only fs) — still return parsed tokens
-        }
-        return store;
+    const rawText = fs.readFileSync(p, "utf8");
+    const { store, migratedLegacy } = parseTokenStore(rawText, p);
+    if (migratedLegacy) {
+      // Auto-migrate legacy flat-map stores in new format. This is best-effort:
+      // a migration write failure must not hide the successfully parsed tokens.
+      try {
+        saveTokenStore(store, tokensPath);
+      } catch {
+        // Migration write failed (e.g., read-only fs) — still return parsed tokens.
       }
     }
-    return { tokens: [] };
+    return store;
+  } catch (error) {
+    if (isEnoent(error)) {
+      return { tokens: [] };
+    }
+    throw error;
+  }
+}
+
+function fsyncDirectoryBestEffort(dirPath: string): void {
+  let dirFd: number | null = null;
+  try {
+    dirFd = fs.openSync(dirPath, "r");
+    fs.fsyncSync(dirFd);
   } catch {
-    return { tokens: [] };
+    // Directory fsync is not supported on every platform/filesystem.
+  } finally {
+    if (dirFd !== null) {
+      try { fs.closeSync(dirFd); } catch { /* ignore */ }
+    }
   }
 }
 
 export function saveTokenStore(store: TokenStore, tokensPath?: string): void {
   const p = tokensPath ?? defaultTokensPath();
   ensureDir(p);
-  fs.writeFileSync(p, JSON.stringify(store, null, 2) + "\n", { mode: 0o600 });
-  // Tighten permissions on pre-existing files (writeFileSync mode only applies to new files)
-  try { fs.chmodSync(p, 0o600); } catch { /* ignore on platforms without chmod */ }
+  const validated: TokenStore = {
+    tokens: store.tokens.map((entry, index) => validateTokenEntry(entry, index)),
+  };
+  const dir = path.dirname(p);
+  const tmpPath = path.join(dir, `.${path.basename(p)}.${process.pid}.${randomUUID()}.tmp`);
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(tmpPath, "w", 0o600);
+    fs.writeFileSync(fd, JSON.stringify(validated, null, 2) + "\n", "utf8");
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(tmpPath, p);
+    // Tighten permissions on pre-existing files after atomic replacement.
+    try { fs.chmodSync(p, 0o600); } catch { /* ignore on platforms without chmod */ }
+    fsyncDirectoryBestEffort(dir);
+  } catch (error) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+    try { fs.rmSync(tmpPath, { force: true }); } catch { /* ignore cleanup failure */ }
+    throw error;
+  }
 }
 
 /**

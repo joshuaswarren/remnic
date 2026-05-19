@@ -135,6 +135,24 @@ function withTempHome(fn: (tmpHome: string) => void): void {
   }
 }
 
+function withTokenStoreRenameFailure(tokensPath: string, fn: () => void): void {
+  const originalRename = fs.renameSync.bind(fs);
+  // saveTokenStore writes to a temp file and atomically renames over tokens.json.
+  // Mock that final replace boundary so the test remains independent of
+  // platform-specific chmod behavior.
+  fs.renameSync = ((oldPath: fs.PathLike, newPath: fs.PathLike) => {
+    if (String(newPath) === tokensPath) {
+      throw new Error("EPERM: tokens.json rename failed (simulated)");
+    }
+    return originalRename(oldPath, newPath);
+  }) as typeof fs.renameSync;
+  try {
+    fn();
+  } finally {
+    fs.renameSync = originalRename;
+  }
+}
+
 test("upsertHermesConfig creates config.yaml when profile dir exists but file does not", () => {
   withTempHome((tmpHome) => {
     const profileDir = path.join(tmpHome, ".hermes", "profiles", "default");
@@ -1773,9 +1791,7 @@ test("atomic flow: commitTokenEntry failure rolls back YAML and preserves old to
         }).tokens.find((t) => t.connector === "hermes")?.token;
         assert.ok(originalToken, "Baseline token must be present");
 
-        // Make tokens.json read-only to simulate commitTokenEntry failure.
-        fs.chmodSync(tokensPath, 0o444);
-        try {
+        withTokenStoreRenameFailure(tokensPath, () => {
           // Force reinstall — YAML write will succeed, but token commit must fail.
           const install2 = mod.installConnector({
             connectorId: "hermes",
@@ -1799,10 +1815,7 @@ test("atomic flow: commitTokenEntry failure rolls back YAML and preserves old to
             yamlBefore,
             "config.yaml must be rolled back to prior content when commitTokenEntry fails",
           );
-        } finally {
-          // Restore write permission so the temp dir can be cleaned up.
-          try { fs.chmodSync(tokensPath, 0o600); } catch { /* ignore */ }
-        }
+        });
       });
       resolve();
     } catch (err) {
@@ -2540,9 +2553,9 @@ test("atomic flow: commitTokenEntry throw during saveTokenStore still preserves 
         assert.ok(originalToken, "Initial install must produce a hermes token");
         assert.ok(originalToken.startsWith("remnic_hm_"), "Prior token must have hermes prefix");
 
-        // Step 2: Make tokens.json read-only so commitTokenEntry's saveTokenStore throws.
-        fs.chmodSync(tokensPath, 0o444);
-        try {
+        // Step 2: make the atomic token-store replacement fail so
+        // commitTokenEntry's saveTokenStore throws.
+        withTokenStoreRenameFailure(tokensPath, () => {
           const install2 = mod.installConnector({
             connectorId: "hermes",
             force: true,
@@ -2557,10 +2570,7 @@ test("atomic flow: commitTokenEntry throw during saveTokenStore still preserves 
             install2.message.toLowerCase().includes("commit"),
             `Error message must explain the commit failure, got: ${install2.message}`,
           );
-        } finally {
-          // Restore write permission before assertions.
-          try { fs.chmodSync(tokensPath, 0o600); } catch { /* ignore */ }
-        }
+        });
 
         // Step 3: The ORIGINAL hermes token must still be in tokens.json.
         // Without the UXJI fix (pre-commit snapshot), priorTokenEntry would be null

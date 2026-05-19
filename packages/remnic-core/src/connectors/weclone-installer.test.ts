@@ -650,7 +650,7 @@ test("removeConnector weclone error message reflects token-revocation status tru
       // Fail both: proxy-config unlink AND the revokeToken path (via
       // saveTokenStore throwing when it tries to persist the revocation).
       const originalUnlink = fs.unlinkSync.bind(fs);
-      const originalWrite = fs.writeFileSync.bind(fs);
+      const originalRename = fs.renameSync.bind(fs);
       const unlinkMock = t.mock.method(fs, "unlinkSync", (target: fs.PathLike) => {
         if (String(target) === proxyConfigPath) {
           throw new Error("EPERM: proxy unlink failed (simulated)");
@@ -658,16 +658,16 @@ test("removeConnector weclone error message reflects token-revocation status tru
         return originalUnlink(target);
       });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const writeMock = t.mock.method(fs, "writeFileSync", (...args: [any, any, any?]) => {
-        if (String(args[0] ?? "").endsWith("tokens.json")) {
-          throw new Error("EPERM: tokens.json write failed (simulated)");
+      const renameMock = t.mock.method(fs, "renameSync", (...args: [any, any]) => {
+        if (String(args[1] ?? "").endsWith("tokens.json")) {
+          throw new Error("EPERM: tokens.json rename failed (simulated)");
         }
-        return originalWrite(...args);
+        return originalRename(...args);
       });
 
       const removeResult = removeConnector("weclone");
       unlinkMock.mock.restore();
-      writeMock.mock.restore();
+      renameMock.mock.restore();
 
       assert.equal(removeResult.status, "error");
       // Must mention token revocation failure, not claim success.
