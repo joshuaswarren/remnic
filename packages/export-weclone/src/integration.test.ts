@@ -128,6 +128,19 @@ describe("@remnic/export-weclone — end-to-end integration", () => {
     assert.equal(looked!.fileExtension, ".json");
   });
 
+  it("can register into a caller-supplied core registry", () => {
+    const registered = new Map<string, typeof wecloneExportAdapter>();
+    const didRegister = ensureWecloneExportAdapterRegistered({
+      getTrainingExportAdapter: (name) => registered.get(name),
+      registerTrainingExportAdapter: (adapter) => {
+        registered.set(adapter.name, adapter);
+      },
+    });
+
+    assert.equal(didRegister, true);
+    assert.equal(registered.get("weclone"), wecloneExportAdapter);
+  });
+
   it("converts memoryDir → Alpaca JSON end-to-end", async () => {
     const records = await convertMemoriesToRecords({
       memoryDir: tmpDir,

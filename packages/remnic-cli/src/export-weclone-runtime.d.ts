@@ -1,5 +1,11 @@
+import type { TrainingExportAdapter } from "@remnic/core";
+
 declare module "@remnic/export-weclone" {
-  export function ensureWecloneExportAdapterRegistered(): boolean;
+  export const wecloneExportAdapter: TrainingExportAdapter;
+  export function ensureWecloneExportAdapterRegistered(registry?: {
+    getTrainingExportAdapter(name: string): unknown;
+    registerTrainingExportAdapter(adapter: TrainingExportAdapter): void;
+  }): boolean;
   export function synthesizeTrainingPairs(
     records: Array<Record<string, unknown>>,
     options?: { maxPairsPerRecord?: number; styleMarkers?: unknown },

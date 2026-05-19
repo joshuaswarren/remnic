@@ -664,7 +664,7 @@ interface CoreTrainingExportRuntime {
   convertMemoriesToRecords(
     options: TrainingExportOptions,
   ): Promise<TrainingExportRecord[]>;
-  getTrainingExportAdapter(name: string): TrainingExportAdapter | undefined;
+  getTrainingExportAdapter(name: string): TrainingExportAdapter | undefined; registerTrainingExportAdapter(adapter: TrainingExportAdapter): void;
   listTrainingExportAdapters(): string[];
   parseStrictCliDate(value: string, flag: string): Date;
 }
@@ -8097,7 +8097,7 @@ export async function runTrainingExport(
     convertMemoriesToRecords,
     getTrainingExportAdapter,
     listTrainingExportAdapters,
-    parseStrictCliDate,
+    parseStrictCliDate, registerTrainingExportAdapter,
   } = await loadTrainingExportCoreRuntime();
 
   // Resolve the adapter from the registry first. If the user picks a
@@ -8124,7 +8124,7 @@ export async function runTrainingExport(
     // surface the normal "unknown format" error below, not a weclone
     // install hint. (Codex feedback on PR #545.)
     const mod = await ensureWeclone();
-    mod.ensureWecloneExportAdapterRegistered();
+    mod.ensureWecloneExportAdapterRegistered({ getTrainingExportAdapter, registerTrainingExportAdapter });
     adapter = getTrainingExportAdapter(args.format);
   }
   if (!adapter) {

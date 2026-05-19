@@ -9,6 +9,7 @@
 import {
   getTrainingExportAdapter,
   registerTrainingExportAdapter,
+  type TrainingExportAdapter,
 } from "@remnic/core";
 
 import { wecloneExportAdapter } from "./adapter.js";
@@ -17,6 +18,11 @@ export { wecloneExportAdapter } from "./adapter.js";
 export { synthesizeTrainingPairs, type SynthesizerOptions } from "./synthesizer.js";
 export { extractStyleMarkers, type StyleMarkers } from "./style-extractor.js";
 export { sweepPii, type PrivacySweepResult } from "./privacy.js";
+
+export interface TrainingExportRegistry {
+  getTrainingExportAdapter(name: string): TrainingExportAdapter | undefined;
+  registerTrainingExportAdapter(adapter: TrainingExportAdapter): void;
+}
 
 /**
  * Idempotently register the WeClone adapter with the core training-export
@@ -27,11 +33,16 @@ export { sweepPii, type PrivacySweepResult } from "./privacy.js";
  * Returns true when the adapter was newly registered, false when an adapter
  * with the same name already exists.
  */
-export function ensureWecloneExportAdapterRegistered(): boolean {
-  if (getTrainingExportAdapter(wecloneExportAdapter.name) !== undefined) {
+export function ensureWecloneExportAdapterRegistered(
+  registry: TrainingExportRegistry = {
+    getTrainingExportAdapter,
+    registerTrainingExportAdapter,
+  },
+): boolean {
+  if (registry.getTrainingExportAdapter(wecloneExportAdapter.name) !== undefined) {
     return false;
   }
-  registerTrainingExportAdapter(wecloneExportAdapter);
+  registry.registerTrainingExportAdapter(wecloneExportAdapter);
   return true;
 }
 
