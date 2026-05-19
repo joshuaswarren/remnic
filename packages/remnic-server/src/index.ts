@@ -48,11 +48,25 @@ function parseServerPort(value: unknown, source: string): number {
   return port;
 }
 
-function resolveConfigPath(cliPath?: string): string {
-  if (cliPath) return path.resolve(cliPath);
+interface ResolvedConfigPath {
+  path: string;
+  explicit: boolean;
+  source: string;
+}
+
+function resolveUserPath(value: string): string {
+  return path.resolve(expandTildePath(value));
+}
+
+function resolveConfigPath(cliPath?: string): ResolvedConfigPath {
+  if (cliPath) {
+    return { path: resolveUserPath(cliPath), explicit: true, source: "--config" };
+  }
 
   const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
-  if (envPath) return path.resolve(envPath);
+  if (envPath) {
+    return { path: resolveUserPath(envPath), explicit: true, source: "REMNIC_CONFIG_PATH/ENGRAM_CONFIG_PATH" };
+  }
 
   const homeDir = process.env.HOME ?? "~";
   const candidates = [
@@ -62,10 +76,12 @@ function resolveConfigPath(cliPath?: string): string {
     path.join(homeDir, ".config", "engram", "config.json"),
   ];
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return { path: candidate, explicit: false, source: "auto-discovery" };
+    }
   }
 
-  return path.join(homeDir, ".config", "remnic", "config.json");
+  return { path: path.join(homeDir, ".config", "remnic", "config.json"), explicit: false, source: "auto-discovery" };
 }
 
 function loadConfigFile(configPath: string): ServerConfig {
@@ -74,6 +90,25 @@ function loadConfigFile(configPath: string): ServerConfig {
     remnic: raw.remnic ?? raw.engram ?? raw ?? {},
     server: raw.server ?? {},
   };
+}
+
+function loadResolvedConfig(resolved: ResolvedConfigPath): ServerConfig {
+  if (!fs.existsSync(resolved.path)) {
+    if (resolved.explicit) {
+      throw new Error(`Config file from ${resolved.source} not found: ${resolved.path}`);
+    }
+    return { remnic: {}, server: {} };
+  }
+
+  const stat = fs.statSync(resolved.path);
+  if (!stat.isFile()) {
+    if (!resolved.explicit) {
+      return { remnic: {}, server: {} };
+    }
+    throw new Error(`Config file from ${resolved.source} is not a regular file: ${resolved.path}`);
+  }
+
+  return loadConfigFile(resolved.path);
 }
 
 function envOverrides(): Partial<ServerConfig["server"]> & { remnic?: Record<string, unknown> } {
@@ -135,10 +170,8 @@ export async function startServer(options?: {
 }): Promise<ServerResult> {
   initLogger();
 
-  const configPath = resolveConfigPath(options?.configPath);
-  const fileConfig = fs.existsSync(configPath)
-    ? loadConfigFile(configPath)
-    : { remnic: {}, server: {} };
+  const resolvedConfigPath = resolveConfigPath(options?.configPath);
+  const fileConfig = loadResolvedConfig(resolvedConfigPath);
 
   const env = envOverrides();
   const { remnic: envRemnic, ...envServer } = env;
