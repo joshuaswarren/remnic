@@ -101,6 +101,83 @@ test("SmartBuffer clearAfterExtraction only clears the targeted logical session"
   assert.equal(buffer.getExtractionCount("thread-b"), 0);
 });
 
+test("SmartBuffer clearAfterExtraction preserves appends after queued snapshots", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "first memory"));
+  const firstSnapshot = buffer.getTurns("thread-a");
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "second memory"));
+  const overlappingSnapshot = buffer.getTurns("thread-a");
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "third memory"));
+
+  await buffer.clearAfterExtraction("thread-a", firstSnapshot);
+  assert.deepEqual(
+    buffer.getTurns("thread-a").map((turn) => turn.content),
+    ["second memory", "third memory"],
+  );
+
+  await buffer.clearAfterExtraction("thread-a", overlappingSnapshot);
+  assert.deepEqual(
+    buffer.getTurns("thread-a").map((turn) => turn.content),
+    ["third memory"],
+  );
+});
+
+test("SmartBuffer clearAfterExtraction chooses the longest queued snapshot overlap", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "repeat"));
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "middle"));
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "repeat"));
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "tail"));
+  const fullSnapshot = buffer.getTurns("thread-a");
+
+  await buffer.clearAfterExtraction("thread-a", fullSnapshot.slice(0, 2));
+  assert.deepEqual(
+    buffer.getTurns("thread-a").map((turn) => turn.content),
+    ["repeat", "tail"],
+  );
+
+  await buffer.clearAfterExtraction("thread-a", fullSnapshot);
+  assert.deepEqual(buffer.getTurns("thread-a"), []);
+});
+
+test("SmartBuffer clearAfterExtraction clears live copies of retained snapshots", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  const buffer = new SmartBuffer(parseConfig({}), storage as any);
+
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "first memory"));
+  await buffer.addTurn("thread-a", makeTurn("thread-a", "second memory"));
+  const extractionSnapshot = buffer.getTurns("thread-a");
+
+  await buffer.retainDeferredTurns("thread-a", extractionSnapshot, 2);
+  await buffer.clearAfterExtraction("thread-a", extractionSnapshot);
+
+  assert.deepEqual(
+    buffer.getTurns("thread-a").map((turn) => turn.content),
+    ["first memory", "second memory"],
+  );
+  assert.equal(
+    storage.saved?.entries?.["thread-a"]?.turns.length,
+    0,
+    "live turns must be cleared even when retained copies are preserved",
+  );
+});
+
 test("SmartBuffer read-only accessors do not persist phantom entries for unknown buffers", async () => {
   const storage = new FakeStorage({
     turns: [],

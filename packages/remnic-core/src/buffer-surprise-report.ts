@@ -74,10 +74,7 @@ export async function reportBufferSurpriseDistribution(
   readEvents: BufferSurpriseReader,
   options: BufferSurpriseReportOptions = {},
 ): Promise<BufferSurpriseDistribution> {
-  const limit =
-    typeof options.limit === "number" && options.limit > 0
-      ? Math.floor(options.limit)
-      : 200;
+  const limit = normalizeReportLimit(options.limit);
   const raw = await readEvents({ limit, since: options.since });
 
   // Filter for sanity: finite numeric scores in [0, 1], event tag match,
@@ -88,6 +85,8 @@ export async function reportBufferSurpriseDistribution(
       : Number.NaN;
   const rows = raw.filter((row): row is BufferSurpriseEvent => {
     if (!row || row.event !== "BUFFER_SURPRISE") return false;
+    const ts = Date.parse(row.timestamp);
+    if (!Number.isFinite(ts)) return false;
     if (typeof row.surpriseScore !== "number") return false;
     if (!Number.isFinite(row.surpriseScore)) return false;
     if (row.surpriseScore < 0 || row.surpriseScore > 1) return false;
@@ -98,13 +97,15 @@ export async function reportBufferSurpriseDistribution(
     // threshold from real traffic.
     if (typeof row.triggeredFlush !== "boolean") return false;
     if (Number.isFinite(sinceMs)) {
-      const ts = Date.parse(row.timestamp);
       if (!Number.isFinite(ts) || ts <= sinceMs) return false;
     }
     return true;
-  });
+  }).sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp));
 
-  if (rows.length === 0) {
+  const windowStart = Math.max(0, rows.length - limit);
+  const windowRows = rows.slice(windowStart);
+
+  if (windowRows.length === 0) {
     return {
       count: 0,
       triggeredCount: 0,
@@ -118,8 +119,8 @@ export async function reportBufferSurpriseDistribution(
     };
   }
 
-  const scores = rows.map((r) => r.surpriseScore).sort((a, b) => a - b);
-  const triggeredCount = rows.reduce(
+  const scores = windowRows.map((r) => r.surpriseScore).sort((a, b) => a - b);
+  const triggeredCount = windowRows.reduce(
     (acc, r) => acc + (r.triggeredFlush ? 1 : 0),
     0,
   );
@@ -134,7 +135,7 @@ export async function reportBufferSurpriseDistribution(
   // — not necessarily the one configured right now, but the value the
   // ledger rows were judged against. That's what operators need to reason
   // about the distribution.
-  const mostRecent = rows[rows.length - 1];
+  const mostRecent = windowRows[windowRows.length - 1];
   const currentThreshold =
     mostRecent && typeof mostRecent.threshold === "number"
       ? mostRecent.threshold
@@ -151,6 +152,13 @@ export async function reportBufferSurpriseDistribution(
     max: scores[scores.length - 1]!,
     currentThreshold,
   };
+}
+
+function normalizeReportLimit(limit: number | undefined): number {
+  if (limit === undefined) return 200;
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return 200;
+  const floored = Math.floor(limit);
+  return floored > 0 ? floored : 200;
 }
 
 /**

@@ -500,3 +500,267 @@ test("flag on: probe that never resolves is timed out, turn is still saved", asy
     if (slowTimer) clearTimeout(slowTimer);
   }
 });
+
+test("flag on: slow probe does not hold the buffer mutation queue", async () => {
+  const storage = new FakeStorage(emptyBuffer());
+  let releaseSlowProbe: (() => void) | null = null;
+  let slowProbeStarted: (() => void) | null = null;
+  const slowProbeStartedPromise = new Promise<void>((resolve) => {
+    slowProbeStarted = resolve;
+  });
+  const probe: BufferSurpriseProbe = {
+    async scoreTurn(key) {
+      if (key !== "sess-slow") return null;
+      slowProbeStarted?.();
+      return new Promise<number | null>((resolve) => {
+        releaseSlowProbe = () => resolve(null);
+      });
+    },
+  };
+  const config = parseConfig({
+    bufferSurpriseTriggerEnabled: true,
+    bufferSurpriseThreshold: 0.35,
+    bufferSurpriseProbeTimeoutMs: 1000,
+    bufferMaxTurns: 5,
+    triggerMode: "smart",
+  });
+  const buffer = new SmartBuffer(config, storage as any, probe);
+
+  const slowTurn = buffer.addTurn("sess-slow", makeTurn("sess-slow", "slow probe turn"));
+  await slowProbeStartedPromise;
+
+  const fastTurn = Promise.race([
+    buffer.addTurn("sess-fast", makeTurn("sess-fast", "fast probe turn")).then(() => "completed"),
+    new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
+  ]);
+  assert.equal(
+    await fastTurn,
+    "completed",
+    "unrelated buffer writes must not wait for a slow surprise probe",
+  );
+  assert.equal(storage.saved?.entries?.["sess-fast"]?.turns.length, 1);
+
+  assert.ok(releaseSlowProbe);
+  (releaseSlowProbe as () => void)();
+  await slowTurn;
+});
+
+test("flag on: stale slow-probe promotion is ignored after buffer changes", async () => {
+  const storage = new FakeStorage(emptyBuffer());
+  let releaseOldProbe: (() => void) | null = null;
+  let oldProbeStarted: (() => void) | null = null;
+  const oldProbeStartedPromise = new Promise<void>((resolve) => {
+    oldProbeStarted = resolve;
+  });
+  const probe: BufferSurpriseProbe = {
+    async scoreTurn(_key, turn) {
+      if (turn.content !== "old surprising turn") return null;
+      oldProbeStarted?.();
+      return new Promise<number | null>((resolve) => {
+        releaseOldProbe = () => resolve(0.99);
+      });
+    },
+  };
+  const config = parseConfig({
+    bufferSurpriseTriggerEnabled: true,
+    bufferSurpriseThreshold: 0.35,
+    bufferSurpriseProbeTimeoutMs: 1000,
+    bufferMaxTurns: 5,
+    triggerMode: "smart",
+  });
+  const buffer = new SmartBuffer(config, storage as any, probe);
+
+  const oldDecision = buffer.addTurn(
+    "sess-1",
+    makeTurn("sess-1", "old surprising turn"),
+  );
+  await oldProbeStartedPromise;
+
+  await buffer.clearAfterExtraction("sess-1");
+  const freshDecision = await buffer.addTurn(
+    "sess-1",
+    makeTurn("sess-1", "fresh post-flush turn"),
+  );
+  assert.equal(freshDecision, "keep_buffering");
+
+  assert.ok(releaseOldProbe);
+  (releaseOldProbe as () => void)();
+  assert.equal(
+    await oldDecision,
+    "keep_buffering",
+    "late surprise score for a stale buffer entry must not flush newer turns",
+  );
+  const turns = buffer.getTurns("sess-1");
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0]?.content, "fresh post-flush turn");
+});
+
+test("flag on: slow-probe promotion survives prefix clears before the scored turn", async () => {
+  const storage = new FakeStorage(emptyBuffer());
+  let releaseProbe: (() => void) | null = null;
+  let probeStarted: (() => void) | null = null;
+  const probeStartedPromise = new Promise<void>((resolve) => {
+    probeStarted = resolve;
+  });
+  const probe: BufferSurpriseProbe = {
+    async scoreTurn(_key, turn) {
+      if (turn.content !== "surprising second turn") return null;
+      probeStarted?.();
+      return new Promise<number | null>((resolve) => {
+        releaseProbe = () => resolve(0.99);
+      });
+    },
+  };
+  const config = parseConfig({
+    bufferSurpriseTriggerEnabled: true,
+    bufferSurpriseThreshold: 0.35,
+    bufferSurpriseProbeTimeoutMs: 1000,
+    bufferMaxTurns: 5,
+    triggerMode: "smart",
+  });
+  const buffer = new SmartBuffer(config, storage as any, probe);
+
+  await buffer.addTurn("sess-1", makeTurn("sess-1", "ordinary first turn"));
+  const firstSnapshot = buffer.getTurns("sess-1");
+  const secondDecision = buffer.addTurn(
+    "sess-1",
+    makeTurn("sess-1", "surprising second turn"),
+  );
+  await probeStartedPromise;
+
+  await buffer.clearAfterExtraction("sess-1", firstSnapshot);
+  assert.deepEqual(
+    buffer.getTurns("sess-1").map((turn) => turn.content),
+    ["surprising second turn"],
+  );
+
+  assert.ok(releaseProbe);
+  (releaseProbe as () => void)();
+  assert.equal(
+    await secondDecision,
+    "extract_now",
+    "prefix clears must not suppress surprise flush for a still-live turn",
+  );
+});
+
+test("flag on: slow-probe promotion survives later appends to same buffer", async () => {
+  const storage = new FakeStorage(emptyBuffer());
+  let releaseOldProbe: (() => void) | null = null;
+  let oldProbeStarted: (() => void) | null = null;
+  const oldProbeStartedPromise = new Promise<void>((resolve) => {
+    oldProbeStarted = resolve;
+  });
+  const probe: BufferSurpriseProbe = {
+    async scoreTurn(_key, turn) {
+      if (turn.content !== "old surprising turn") return null;
+      oldProbeStarted?.();
+      return new Promise<number | null>((resolve) => {
+        releaseOldProbe = () => resolve(0.99);
+      });
+    },
+  };
+  const config = parseConfig({
+    bufferSurpriseTriggerEnabled: true,
+    bufferSurpriseThreshold: 0.35,
+    bufferSurpriseProbeTimeoutMs: 1000,
+    bufferMaxTurns: 5,
+    triggerMode: "smart",
+  });
+  const buffer = new SmartBuffer(config, storage as any, probe);
+
+  const oldDecision = buffer.addTurn(
+    "sess-1",
+    makeTurn("sess-1", "old surprising turn"),
+  );
+  await oldProbeStartedPromise;
+
+  const newerDecision = await buffer.addTurn(
+    "sess-1",
+    makeTurn("sess-1", "newer ordinary turn"),
+  );
+  assert.equal(newerDecision, "keep_buffering");
+
+  assert.ok(releaseOldProbe);
+  (releaseOldProbe as () => void)();
+  assert.equal(
+    await oldDecision,
+    "extract_now",
+    "a later append must not suppress a valid surprise flush for the older turn",
+  );
+  const turns = buffer.getTurns("sess-1");
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0]?.content, "old surprising turn");
+  assert.equal(turns[1]?.content, "newer ordinary turn");
+});
+
+test("flag on: extraction clear preserves turns appended after the queued snapshot", async () => {
+  const storage = new FakeStorage(emptyBuffer());
+  let releaseOldProbe: (() => void) | null = null;
+  let oldProbeStarted: (() => void) | null = null;
+  const oldProbeStartedPromise = new Promise<void>((resolve) => {
+    oldProbeStarted = resolve;
+  });
+  const probe: BufferSurpriseProbe = {
+    async scoreTurn(_key, turn) {
+      if (turn.content !== "old surprising turn") return null;
+      oldProbeStarted?.();
+      return new Promise<number | null>((resolve) => {
+        releaseOldProbe = () => resolve(0.99);
+      });
+    },
+  };
+  const config = parseConfig({
+    bufferSurpriseTriggerEnabled: true,
+    bufferSurpriseThreshold: 0.35,
+    bufferSurpriseProbeTimeoutMs: 1000,
+    bufferMaxTurns: 5,
+    triggerMode: "smart",
+  });
+  const buffer = new SmartBuffer(config, storage as any, probe);
+
+  const oldDecision = buffer.addTurn(
+    "sess-1",
+    makeTurn("sess-1", "old surprising turn"),
+  );
+  await oldProbeStartedPromise;
+
+  await buffer.addTurn("sess-1", makeTurn("sess-1", "newer ordinary turn"));
+  assert.ok(releaseOldProbe);
+  (releaseOldProbe as () => void)();
+  assert.equal(await oldDecision, "extract_now");
+
+  const queuedSnapshot = buffer.getTurns("sess-1");
+  await buffer.addTurn("sess-1", makeTurn("sess-1", "post-queue append"));
+  await buffer.clearAfterExtraction("sess-1", queuedSnapshot);
+
+  const remainingTurns = buffer.getTurns("sess-1");
+  assert.equal(remainingTurns.length, 1);
+  assert.equal(remainingTurns[0]?.content, "post-queue append");
+});
+
+test("flag on: stale snapshot clears do not mark live turns as freshly extracted", async () => {
+  const storage = new FakeStorage(emptyBuffer());
+  const config = parseConfig({
+    bufferSurpriseTriggerEnabled: true,
+    bufferMaxTurns: 5,
+    triggerMode: "smart",
+  });
+  const buffer = new SmartBuffer(config, storage as any, fixedScoreProbe(null));
+
+  await buffer.addTurn("sess-1", makeTurn("sess-1", "processed turn"));
+  const processedSnapshot = buffer.getTurns("sess-1");
+  await buffer.clearAfterExtraction("sess-1", processedSnapshot);
+  assert.equal(buffer.getExtractionCount("sess-1"), 1);
+
+  await buffer.addTurn("sess-1", makeTurn("sess-1", "live after reset"));
+  await buffer.clearAfterExtraction("sess-1", processedSnapshot);
+
+  const remainingTurns = buffer.getTurns("sess-1");
+  assert.equal(remainingTurns.length, 1);
+  assert.equal(remainingTurns[0]?.content, "live after reset");
+  assert.equal(
+    buffer.getExtractionCount("sess-1"),
+    1,
+    "a skipped stale-snapshot clear must not advance extraction metadata",
+  );
+});

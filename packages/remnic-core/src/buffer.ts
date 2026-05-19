@@ -12,6 +12,11 @@ import type {
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
 
+export interface AddTurnOutcome {
+  decision: TriggerDecision;
+  extractionTurns?: BufferTurn[];
+}
+
 /**
  * Optional surprise probe injected into `SmartBuffer`.
  *
@@ -76,9 +81,18 @@ interface SurpriseTelemetryQueueEntry {
   threshold: number;
 }
 
+interface AddTurnMutationResult {
+  decision: TriggerDecision;
+  signalLevel: SignalLevel;
+  priorTurns: BufferTurn[];
+  turnSnapshot: BufferTurn;
+  turnCountInWindow: number;
+}
+
 export class SmartBuffer {
   private state: BufferState;
   private loaded = false;
+  private loadPromise: Promise<void> | null = null;
   private readonly surpriseProbe: BufferSurpriseProbe | null;
   private mutationChain: Promise<unknown> = Promise.resolve();
   /**
@@ -220,8 +234,17 @@ export class SmartBuffer {
 
   private async loadUnlocked(): Promise<void> {
     if (this.loaded) return;
-    this.state = this.normalizeState(await this.storage.loadBuffer());
-    this.loaded = true;
+    if (!this.loadPromise) {
+      this.loadPromise = this.storage.loadBuffer()
+        .then((state) => {
+          this.state = this.normalizeState(state);
+          this.loaded = true;
+        })
+        .finally(() => {
+          this.loadPromise = null;
+        });
+    }
+    await this.loadPromise;
   }
 
   async load(): Promise<void> {
@@ -247,19 +270,16 @@ export class SmartBuffer {
   }
 
   async addTurn(bufferKey: string, turn: BufferTurn): Promise<TriggerDecision> {
-    return this.enqueueMutation(async () => this.addTurnUnlocked(bufferKey, turn));
+    return (await this.addTurnWithOutcome(bufferKey, turn)).decision;
   }
 
-  private async addTurnUnlocked(bufferKey: string, turn: BufferTurn): Promise<TriggerDecision> {
-    await this.loadUnlocked();
-    const entry = this.entryFor(bufferKey);
-    entry.turns.push(turn);
-    if (bufferKey === "default") {
-      this.state.turns = entry.turns;
-    }
-
-    const signal = scanSignals(turn.content, this.config.highSignalPatterns);
-    let decision = this.evaluate(entry, signal.level);
+  async addTurnWithOutcome(
+    bufferKey: string,
+    turn: BufferTurn,
+  ): Promise<AddTurnOutcome> {
+    const mutation = await this.enqueueMutation(() => this.recordTurnUnlocked(bufferKey, turn));
+    let decision = mutation.decision;
+    let extractionTurns: BufferTurn[] | undefined;
 
     // Surprise-gated flush (issue #563). Additive only: if the probe is
     // disabled, unavailable, or the score is below threshold, the decision
@@ -275,16 +295,29 @@ export class SmartBuffer {
       // novelty signal that should not second-guess a high-signal hit
       // (which already flushes) or fight `every_n` / `time_based` modes.
       this.config.triggerMode === "smart" &&
-      signal.level !== "high"
+      mutation.signalLevel !== "high"
     ) {
-      const surprise = await this.computeSurpriseSafe(bufferKey, turn, entry);
+      const surprise = await this.computeSurpriseSafe(bufferKey, turn, mutation.priorTurns);
       if (surprise !== null) {
-        const triggered = surprise > this.config.bufferSurpriseThreshold;
-        if (triggered) {
-          log.debug(
-            `buffer[${bufferKey}]: surprise=${surprise.toFixed(3)} > threshold=${this.config.bufferSurpriseThreshold} → extract_now`,
+        const shouldPromote = surprise > this.config.bufferSurpriseThreshold;
+        let triggered = false;
+        if (shouldPromote) {
+          const currentTurns = await this.getExtractionTurnsIfTurnSnapshotStillCurrent(
+            bufferKey,
+            mutation.turnSnapshot,
           );
-          decision = "extract_now";
+          if (currentTurns) {
+            log.debug(
+              `buffer[${bufferKey}]: surprise=${surprise.toFixed(3)} > threshold=${this.config.bufferSurpriseThreshold} → extract_now`,
+            );
+            decision = "extract_now";
+            triggered = true;
+            extractionTurns = currentTurns;
+          } else {
+            log.debug(
+              `buffer[${bufferKey}]: surprise=${surprise.toFixed(3)} ignored because buffer changed before probe resolved`,
+            );
+          }
         }
         // Emit telemetry on every scored turn — both triggering and
         // non-triggering — so operators can fit the threshold to real
@@ -308,7 +341,7 @@ export class SmartBuffer {
             typeof turn.sessionKey === "string" ? turn.sessionKey : null,
           surpriseScore: surprise,
           triggered,
-          turnCountInWindow: entry.turns.length,
+          turnCountInWindow: mutation.turnCountInWindow,
           // Stamp at decision time so backpressure on the write chain
           // does not shift the event's apparent moment away from when
           // the turn was actually scored.
@@ -322,12 +355,51 @@ export class SmartBuffer {
     }
 
     log.debug(
-      `buffer[${bufferKey}]: ${entry.turns.length} turns, signal=${signal.level}, decision=${decision}`,
+      `buffer[${bufferKey}]: ${mutation.turnCountInWindow} turns, signal=${mutation.signalLevel}, decision=${decision}`,
     );
+    return extractionTurns ? { decision, extractionTurns } : { decision };
+  }
+
+  private async recordTurnUnlocked(bufferKey: string, turn: BufferTurn): Promise<AddTurnMutationResult> {
+    await this.loadUnlocked();
+    const entry = this.entryFor(bufferKey);
+    const priorTurns = entry.turns.slice();
+    entry.turns.push(turn);
+    const turnSnapshot = copyBufferTurn(turn);
+    if (bufferKey === "default") {
+      this.state.turns = entry.turns;
+    }
+
+    const signal = scanSignals(turn.content, this.config.highSignalPatterns);
+    const decision = this.evaluate(entry, signal.level);
+    const turnCountInWindow = entry.turns.length;
 
     this.pruneEntries([bufferKey]);
     await this.saveUnlocked();
-    return decision;
+    return {
+      decision,
+      signalLevel: signal.level,
+      priorTurns,
+      turnSnapshot,
+      turnCountInWindow,
+    };
+  }
+
+  private async getExtractionTurnsIfTurnSnapshotStillCurrent(
+    bufferKey: string,
+    turnSnapshot: BufferTurn,
+  ): Promise<BufferTurn[] | null> {
+    return this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      const entry = this.peekEntry(bufferKey);
+      if (!entry) return null;
+      const stillCurrent = entry.turns.some((turn) =>
+        bufferTurnsEqual(turn, turnSnapshot),
+      );
+      if (!stillCurrent) return null;
+      const retained = entry.retainedTurns ?? [];
+      return [...retained, ...entry.turns];
+    });
   }
 
   /**
@@ -415,14 +487,9 @@ export class SmartBuffer {
   private async computeSurpriseSafe(
     bufferKey: string,
     turn: BufferTurn,
-    entry: BufferEntryState,
+    priorTurns: readonly BufferTurn[],
   ): Promise<number | null> {
     if (!this.surpriseProbe) return null;
-    // The current turn was just pushed into entry.turns; exclude it from the
-    // corpus so the probe never compares a turn to itself.
-    const prior = entry.turns.length > 0
-      ? entry.turns.slice(0, -1)
-      : [];
     try {
       // Hard timeout around the probe so a hung embedder cannot stall
       // `addTurn()` before `save()`. A slow probe would otherwise
@@ -432,7 +499,7 @@ export class SmartBuffer {
       // "probe unavailable, fall through" rather than an error that
       // surfaces to the caller.
       const score = await probeWithTimeout(
-        this.surpriseProbe.scoreTurn(bufferKey, turn, prior),
+        this.surpriseProbe.scoreTurn(bufferKey, turn, priorTurns),
         this.config.bufferSurpriseProbeTimeoutMs,
       );
       if (score === null) return null;
@@ -611,11 +678,40 @@ export class SmartBuffer {
     return matches;
   }
 
-  async clearAfterExtraction(bufferKey = "default"): Promise<void> {
+  async clearAfterExtraction(
+    bufferKey = "default",
+    extractedTurns?: readonly BufferTurn[],
+  ): Promise<void> {
     await this.enqueueMutation(async () => {
       await this.loadUnlocked();
       const entry = this.entryFor(bufferKey);
-      entry.turns = [];
+      if (Array.isArray(extractedTurns)) {
+        const liveExtractedTurns = liveTurnsFromExtractionSnapshot(
+          entry,
+          extractedTurns,
+        );
+        let clearedLiveTurns = false;
+        if (liveExtractedTurns.length > 0) {
+          const matchedCount = matchingQueuedExtractionPrefixLength(
+            entry.turns,
+            liveExtractedTurns,
+          );
+          if (matchedCount > 0) {
+            entry.turns = entry.turns.slice(matchedCount);
+            clearedLiveTurns = true;
+          } else {
+            log.debug(
+              `buffer[${bufferKey}]: extraction clear skipped because live turns changed before clear`,
+            );
+          }
+        }
+        if (!clearedLiveTurns) {
+          await this.saveUnlocked();
+          return;
+        }
+      } else {
+        entry.turns = [];
+      }
       entry.lastExtractionAt = new Date().toISOString();
       entry.extractionCount += 1;
       if (bufferKey === "default") {
@@ -669,6 +765,101 @@ function describeError(err: unknown): string {
   } catch {
     return String(err);
   }
+}
+
+function copyBufferTurn(turn: BufferTurn): BufferTurn {
+  const copy: BufferTurn = {
+    role: turn.role,
+    content: turn.content,
+    timestamp: turn.timestamp,
+  };
+  if (typeof turn.sessionKey === "string") copy.sessionKey = turn.sessionKey;
+  if (typeof turn.logicalSessionKey === "string") {
+    copy.logicalSessionKey = turn.logicalSessionKey;
+  }
+  if (
+    turn.providerThreadId === null ||
+    typeof turn.providerThreadId === "string"
+  ) {
+    copy.providerThreadId = turn.providerThreadId;
+  }
+  if (typeof turn.turnFingerprint === "string") {
+    copy.turnFingerprint = turn.turnFingerprint;
+  }
+  if (typeof turn.persistProcessedFingerprint === "boolean") {
+    copy.persistProcessedFingerprint = turn.persistProcessedFingerprint;
+  }
+  return copy;
+}
+
+function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): boolean {
+  if (!left) return false;
+  return (
+    left.role === right.role &&
+    left.content === right.content &&
+    left.timestamp === right.timestamp &&
+    left.sessionKey === right.sessionKey &&
+    left.logicalSessionKey === right.logicalSessionKey &&
+    left.providerThreadId === right.providerThreadId &&
+    left.turnFingerprint === right.turnFingerprint &&
+    left.persistProcessedFingerprint === right.persistProcessedFingerprint
+  );
+}
+
+function liveTurnsFromExtractionSnapshot(
+  entry: BufferEntryState,
+  extractedTurns: readonly BufferTurn[],
+): readonly BufferTurn[] {
+  const retainedTurns = entry.retainedTurns ?? [];
+  if (
+    retainedTurns.length > 0 &&
+    extractedTurns.length >= retainedTurns.length &&
+    retainedTurns.every((turn, index) =>
+      bufferTurnsEqual(extractedTurns[index], turn),
+    )
+  ) {
+    const withoutRetainedPrefix = extractedTurns.slice(retainedTurns.length);
+    if (
+      withoutRetainedPrefix.length > 0 &&
+      matchingPrefixLength(entry.turns, withoutRetainedPrefix) > 0
+    ) {
+      return withoutRetainedPrefix;
+    }
+  }
+  return extractedTurns;
+}
+
+function matchingPrefixLength(
+  liveTurns: readonly BufferTurn[],
+  extractedTurns: readonly BufferTurn[],
+): number {
+  let index = 0;
+  while (
+    index < liveTurns.length &&
+    index < extractedTurns.length &&
+    bufferTurnsEqual(liveTurns[index], extractedTurns[index])
+  ) {
+    index += 1;
+  }
+  return index;
+}
+
+function matchingQueuedExtractionPrefixLength(
+  liveTurns: readonly BufferTurn[],
+  extractedTurns: readonly BufferTurn[],
+): number {
+  let bestMatchedCount = 0;
+  for (let start = 0; start < extractedTurns.length; start += 1) {
+    const matchedCount = matchingPrefixLength(
+      liveTurns,
+      extractedTurns.slice(start),
+    );
+    if (matchedCount > bestMatchedCount) {
+      bestMatchedCount = matchedCount;
+      if (bestMatchedCount === liveTurns.length) break;
+    }
+  }
+  return bestMatchedCount;
 }
 
 /**

@@ -183,6 +183,36 @@ test("processTurn honors an explicit logical buffer key and turn fingerprint", a
   assert.equal(capturedTurn?.turnFingerprint, "fp-thread-7");
 });
 
+test("processTurn queues a guarded extraction snapshot from promoted buffer outcomes", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const guardedTurns = [makeTurn("thread-a", "guarded surprising turn")];
+  const laterTurns = [makeTurn("thread-a", "post-flush turn")];
+  let queuedTurns: BufferTurn[] | undefined;
+
+  orchestrator.config = parseConfig({});
+  orchestrator.buffer = {
+    async addTurnWithOutcome() {
+      return {
+        decision: "extract_now",
+        extractionTurns: guardedTurns,
+      };
+    },
+    getTurns() {
+      return laterTurns;
+    },
+  };
+  orchestrator.queueBufferedExtraction = async (turns: BufferTurn[]) => {
+    queuedTurns = turns;
+  };
+
+  await orchestrator.processTurn("user", "guarded surprising turn", "thread-a");
+
+  assert.deepEqual(
+    queuedTurns?.map((turn) => turn.content),
+    ["guarded surprising turn"],
+  );
+});
+
 test("buildExtractionFingerprint normalizes fallback content like turn fingerprints", () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});

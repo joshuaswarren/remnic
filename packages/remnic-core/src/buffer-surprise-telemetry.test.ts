@@ -362,6 +362,49 @@ test("StorageManager.readBufferSurpriseEvents: non-positive limit returns empty"
   }
 });
 
+test("StorageManager.readBufferSurpriseEvents: sorts by event timestamp before limiting", async () => {
+  const { mkdtempSync, writeFileSync, mkdirSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { StorageManager } = await import("./storage.js");
+
+  const dir = mkdtempSync(join(tmpdir(), "remnic-buffer-surprise-order-"));
+  const stateDir = join(dir, "state");
+  mkdirSync(stateDir, { recursive: true });
+  const ledgerPath = join(stateDir, "buffer-surprise-ledger.jsonl");
+  const newer = {
+    event: "BUFFER_SURPRISE",
+    timestamp: "2026-04-20T12:00:01.000Z",
+    bufferKey: "a",
+    sessionKey: "a",
+    turnRole: "user",
+    surpriseScore: 0.8,
+    threshold: 0.35,
+    triggeredFlush: true,
+    turnCountInWindow: 2,
+  };
+  const older = {
+    event: "BUFFER_SURPRISE",
+    timestamp: "2026-04-20T12:00:00.000Z",
+    bufferKey: "a",
+    sessionKey: "a",
+    turnRole: "user",
+    surpriseScore: 0.2,
+    threshold: 0.35,
+    triggeredFlush: false,
+    turnCountInWindow: 1,
+  };
+  writeFileSync(
+    ledgerPath,
+    `${JSON.stringify(newer)}\n${JSON.stringify(older)}\n`,
+  );
+
+  const storage = new StorageManager(dir);
+  const rows = await storage.readBufferSurpriseEvents({ limit: 1 });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.timestamp, newer.timestamp);
+});
+
 // ---------------------------------------------------------------------------
 // reportBufferSurpriseDistribution
 // ---------------------------------------------------------------------------
@@ -370,6 +413,7 @@ function syntheticRow(
   score: number,
   triggered: boolean,
   ts = "2026-04-20T12:00:00.000Z",
+  threshold = 0.35,
 ): BufferSurpriseEvent {
   return {
     event: "BUFFER_SURPRISE",
@@ -378,7 +422,7 @@ function syntheticRow(
     sessionKey: "sess-x",
     turnRole: "user",
     surpriseScore: score,
-    threshold: 0.35,
+    threshold,
     triggeredFlush: triggered,
     turnCountInWindow: 1,
   };
@@ -416,6 +460,21 @@ test("report: computes mean, median, p90 over recent rows", async () => {
   assert.equal(dist.min, 0.1);
   assert.equal(dist.max, 0.9);
   assert.equal(dist.currentThreshold, 0.35);
+});
+
+test("report: sorts by event timestamp for recent window and current threshold", async () => {
+  const rows: BufferSurpriseEvent[] = [
+    syntheticRow(0.9, true, "2026-04-20T12:00:02.000Z", 0.9),
+    syntheticRow(0.1, false, "2026-04-20T12:00:00.000Z", 0.1),
+    syntheticRow(0.5, true, "2026-04-20T12:00:01.000Z", 0.5),
+  ];
+  const dist = await reportBufferSurpriseDistribution(async () => rows, {
+    limit: 2,
+  });
+  assert.equal(dist.count, 2);
+  assert.equal(dist.min, 0.5);
+  assert.equal(dist.max, 0.9);
+  assert.equal(dist.currentThreshold, 0.9);
 });
 
 test("report: skips malformed rows (wrong event tag, non-finite score, out of range)", async () => {
@@ -467,6 +526,36 @@ test("report: defaults limit to 200 when omitted", async () => {
     },
   );
   assert.equal(seen, 200);
+});
+
+test("report: invalid limits default to the documented 200 row window", async () => {
+  const rows = [syntheticRow(0.7, false), syntheticRow(0.9, true)];
+  const seen: Array<number | undefined> = [];
+  const reader = async (options: { limit?: number }) => {
+    seen.push(options.limit);
+    return rows;
+  };
+
+  for (const limit of [0, -1, 0.5, Number.NaN]) {
+    const dist = await reportBufferSurpriseDistribution(reader, { limit });
+    assert.equal(dist.count, 2, `limit=${limit} should fall back to default`);
+    assert.equal(dist.currentThreshold, 0.35);
+  }
+  assert.deepEqual(seen, [200, 200, 200, 200]);
+});
+
+test("report: positive fractional limit floors to the recent row count", async () => {
+  const dist = await reportBufferSurpriseDistribution(
+    async () => [
+      syntheticRow(0.1, false, "2026-04-20T12:00:00.000Z"),
+      syntheticRow(0.8, true, "2026-04-20T12:00:01.000Z"),
+      syntheticRow(0.9, true, "2026-04-20T12:00:02.000Z"),
+    ],
+    { limit: 1.8 },
+  );
+  assert.equal(dist.count, 1);
+  assert.equal(dist.min, 0.9);
+  assert.equal(dist.currentThreshold, 0.35);
 });
 
 test("report: single-row ledger reports that row in every percentile", async () => {

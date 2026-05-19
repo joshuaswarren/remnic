@@ -10285,11 +10285,14 @@ export class Orchestrator {
       persistProcessedFingerprint: options.persistProcessedFingerprint === true,
     };
 
-    const decision = await this.buffer.addTurn(bufferKey, turn);
+    const outcome =
+      typeof this.buffer.addTurnWithOutcome === "function"
+        ? await this.buffer.addTurnWithOutcome(bufferKey, turn)
+        : { decision: await this.buffer.addTurn(bufferKey, turn) };
 
-    if (decision === "keep_buffering") return;
+    if (outcome.decision === "keep_buffering") return;
     await this.queueBufferedExtraction(
-      this.buffer.getTurns(bufferKey),
+      outcome.extractionTurns ?? this.buffer.getTurns(bufferKey),
       "trigger_mode",
       { bufferKey },
     );
@@ -10853,7 +10856,7 @@ export class Orchestrator {
         throwIfAborted("before_clear_buffer");
       }
       if (clearBufferAfterExtraction) {
-        await this.buffer.clearAfterExtraction(bufferKey);
+        await this.buffer.clearAfterExtraction(bufferKey, turns);
       }
     };
 

@@ -4524,9 +4524,15 @@ export class StorageManager {
       }
     }
 
+    events.sort(
+      (left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp),
+    );
+
     if (effectiveLimit === null) return events;
     // Slice over VALID rows, not raw lines, so malformed tails cannot
-    // mask good data above them.
+    // mask good data above them. Sort by event timestamp before slicing
+    // so concurrent probe completion order cannot make an older scored
+    // turn look newer than a later scored turn.
     return events.slice(-effectiveLimit);
   }
 
