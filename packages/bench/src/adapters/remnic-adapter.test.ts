@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -274,6 +283,221 @@ test("direct adapter rejects unsafe caller-owned memory directories before initi
     assert.equal(await readFile(sentinelPath, "utf8"), "preserve temp root data");
   } finally {
     await rm(sentinelPath, { force: true });
+  }
+});
+
+test("direct adapter rejects symlinked caller-owned memory directories before initialization", async () => {
+  const parentDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-parent-"));
+  const protectedDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-target-"));
+  const protectedStateDir = path.join(protectedDir, "state");
+  const sentinelPath = path.join(protectedStateDir, "sentinel.txt");
+  const memoryDir = path.join(parentDir, "memory-link");
+  await mkdir(protectedStateDir);
+  await writeFile(sentinelPath, "preserve symlink target data");
+  await symlink(protectedDir, memoryDir, "dir");
+
+  try {
+    await assert.rejects(
+      () => createRemnicAdapter({ memoryDir }),
+      /must not be a symlink path/,
+    );
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve symlink target data");
+  } finally {
+    await rm(parentDir, { recursive: true, force: true });
+    await rm(protectedDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter rejects symlinked parent directories before creating state", async () => {
+  const parentDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-parent-"));
+  const protectedDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-target-"));
+  const protectedStateDir = path.join(protectedDir, "state");
+  const sentinelPath = path.join(protectedStateDir, "sentinel.txt");
+  const linkedParent = path.join(parentDir, "linked-parent");
+  const memoryDir = path.join(linkedParent, "bench-memory");
+  await mkdir(protectedStateDir);
+  await writeFile(sentinelPath, "preserve symlink parent data");
+  await symlink(protectedDir, linkedParent, "dir");
+
+  try {
+    await assert.rejects(
+      () => createRemnicAdapter({ memoryDir }),
+      /must not be a symlink path/,
+    );
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve symlink parent data");
+  } finally {
+    await rm(parentDir, { recursive: true, force: true });
+    await rm(protectedDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter allows caller-owned memory directories under macOS /tmp alias", async (t) => {
+  if (process.platform !== "darwin") {
+    t.skip("macOS-only system alias check");
+    return;
+  }
+  const memoryDir = path.join("/tmp", `remnic-bench-system-alias-${process.pid}-${Date.now()}`);
+  const adapter = await createRemnicAdapter({ memoryDir });
+
+  try {
+    await adapter.store("tmp-alias-session", [
+      {
+        role: "user",
+        content: "Remember the macOS tmp alias code is silver-94.",
+      },
+    ]);
+    await adapter.drain?.();
+    const recalled = await adapter.recall(
+      "tmp-alias-session",
+      "What is the macOS tmp alias code?",
+    );
+    assert.match(recalled, /silver-94/);
+  } finally {
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter rejects dangling symlink directories before creating state", async () => {
+  const parentDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-dangling-symlink-"));
+  const missingTarget = path.join(parentDir, "missing-target");
+  const memoryDir = path.join(parentDir, "memory-link");
+  await symlink(missingTarget, memoryDir, "dir");
+
+  try {
+    await assert.rejects(
+      () => createRemnicAdapter({ memoryDir }),
+      /must not be a symlink path/,
+    );
+  } finally {
+    await rm(parentDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter rejects symlinked caller-owned Remnic state children", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-child-"));
+  const protectedDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-target-"));
+  const sentinelPath = path.join(protectedDir, "sentinel.txt");
+  await writeFile(sentinelPath, "preserve symlink child data");
+  await symlink(protectedDir, path.join(memoryDir, "state"), "dir");
+
+  try {
+    await assert.rejects(
+      () => createRemnicAdapter({ memoryDir }),
+      /must not be a symlink path/,
+    );
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve symlink child data");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(protectedDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter rejects symlinked caller-owned search index children", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-search-"));
+  const protectedDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-target-"));
+  const sentinelPath = path.join(protectedDir, "sentinel.txt");
+  await writeFile(sentinelPath, "preserve search index symlink data");
+  await symlink(protectedDir, path.join(memoryDir, "orama"), "dir");
+
+  try {
+    await assert.rejects(
+      () => createRemnicAdapter({ memoryDir, configOverrides: { searchBackend: "orama" } }),
+      /must not be a symlink path/,
+    );
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve search index symlink data");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(protectedDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter rejects symlinked custom caller-owned search index children", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-search-"));
+  const protectedDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-target-"));
+  const indexPath = path.join(memoryDir, "custom-index");
+  const sentinelPath = path.join(protectedDir, "sentinel.txt");
+  await writeFile(sentinelPath, "preserve custom search index symlink data");
+  await symlink(protectedDir, indexPath, "dir");
+
+  try {
+    await assert.rejects(
+      () =>
+        createRemnicAdapter({
+          memoryDir,
+          configOverrides: { searchBackend: "orama", oramaDbPath: indexPath },
+        }),
+      /must not be a symlink path/,
+    );
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve custom search index symlink data");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(protectedDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter rejects custom caller-owned search index paths outside memory dir", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-search-outside-"));
+  const outsideDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-search-outside-target-"));
+
+  try {
+    await assert.rejects(
+      () =>
+        createRemnicAdapter({
+          memoryDir,
+          configOverrides: { searchBackend: "orama", oramaDbPath: outsideDir },
+        }),
+      /search index paths must stay inside memoryDir\/sandboxDir/,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter rejects custom search index paths under symlinked parents", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-search-"));
+  const protectedDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-target-"));
+  const linkedParent = path.join(memoryDir, "idx-link");
+  const indexPath = path.join(linkedParent, "orama");
+  const sentinelPath = path.join(protectedDir, "sentinel.txt");
+  await writeFile(sentinelPath, "preserve custom search parent symlink data");
+  await symlink(protectedDir, linkedParent, "dir");
+
+  try {
+    await assert.rejects(
+      () =>
+        createRemnicAdapter({
+          memoryDir,
+          configOverrides: { searchBackend: "orama", oramaDbPath: indexPath },
+        }),
+      /must not be a symlink path/,
+    );
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve custom search parent symlink data");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(protectedDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter rejects nested symlinks in caller-owned Remnic state children", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-child-"));
+  const protectedDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-symlink-target-"));
+  const factsDir = path.join(memoryDir, "facts");
+  const sentinelPath = path.join(protectedDir, "sentinel.txt");
+  await mkdir(factsDir);
+  await writeFile(sentinelPath, "preserve nested symlink data");
+  await symlink(protectedDir, path.join(factsDir, "2026-05-19"), "dir");
+
+  try {
+    await assert.rejects(
+      () => createRemnicAdapter({ memoryDir }),
+      /must not contain symlinked Remnic state children/,
+    );
+    assert.equal(await readFile(sentinelPath, "utf8"), "preserve nested symlink data");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(protectedDir, { recursive: true, force: true });
   }
 });
 

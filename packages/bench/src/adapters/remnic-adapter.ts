@@ -6,10 +6,12 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   unlink,
@@ -190,6 +192,8 @@ const BENCH_REMNIC_STATE_CHILDREN = [
   "entities",
   "facts",
   "identity",
+  "lancedb",
+  "orama",
   "profiling",
   "procedures",
   "qmd-bench",
@@ -332,10 +336,14 @@ async function createBenchOrchestrator(
   configuredMemoryDir?: string,
 ): Promise<BenchOrchestratorState> {
   const tempDir = configuredMemoryDir
-    ? assertSafeConfiguredBenchDir(configuredMemoryDir)
+    ? await assertSafeConfiguredBenchDir(configuredMemoryDir)
     : await mkdtemp(path.join(tmpdir(), `remnic-bench-${mode}-`));
   const ownsTempDir = !configuredMemoryDir;
   await mkdir(tempDir, { recursive: true });
+  await assertNoUnsafeBenchStateChildren(
+    tempDir,
+    resolveConfiguredBenchIndexDirs(tempDir, overrides),
+  );
   await mkdir(path.join(tempDir, "state"), { recursive: true });
   const qmdSandbox = await createBenchQmdSandbox(tempDir, overrides);
 
@@ -515,8 +523,16 @@ function resolveConfiguredBenchDir(options: RemnicAdapterOptions): string | unde
   return sandboxDir ?? memoryDir;
 }
 
-function assertSafeConfiguredBenchDir(configuredDir: string): string {
+async function assertSafeConfiguredBenchDir(configuredDir: string): Promise<string> {
   const resolved = path.resolve(expandTildePath(configuredDir));
+  assertSafeBenchDirPath(resolved);
+  await assertNoUnsafeSymlinkComponents(resolved);
+  await mkdir(resolved, { recursive: true });
+  assertSafeBenchDirPath(await realpath(resolved));
+  return resolved;
+}
+
+function assertSafeBenchDirPath(resolved: string): void {
   const root = path.parse(resolved).root;
   const dangerousDirs = [
     root,
@@ -532,12 +548,129 @@ function assertSafeConfiguredBenchDir(configuredDir: string): string {
       `Remnic benchmark memoryDir/sandboxDir must not be a root, home, temp, cwd, or repository ancestor path: ${resolved}`,
     );
   }
-  return resolved;
 }
 
 function isPathAncestorOf(candidate: string, child: string): boolean {
   const relative = path.relative(candidate, child);
   return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+async function assertNoUnsafeSymlinkComponents(candidate: string): Promise<void> {
+  let current = candidate;
+  while (true) {
+    try {
+      const stats = await lstat(current);
+      if (stats.isSymbolicLink()) {
+        const target = await realpath(current).catch(() => undefined);
+        if (!isAllowedSystemPathAlias(current, target)) {
+          throw new Error(
+            `Remnic benchmark memoryDir/sandboxDir must not be a symlink path or contain symlink path components: ${current}`,
+          );
+        }
+      }
+    } catch (error) {
+      if (!isErrnoCode(error, "ENOENT")) {
+        throw error;
+      }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return;
+    }
+    current = parent;
+  }
+}
+
+function isAllowedSystemPathAlias(linkPath: string, targetPath: string | undefined): boolean {
+  if (targetPath === undefined) {
+    return false;
+  }
+  return (
+    process.platform === "darwin" &&
+    (
+      (path.resolve(linkPath) === "/var" && path.resolve(targetPath) === "/private/var") ||
+      (path.resolve(linkPath) === "/tmp" && path.resolve(targetPath) === "/private/tmp")
+    )
+  );
+}
+
+async function assertNoUnsafeBenchStateChildren(
+  memoryDir: string,
+  extraStateDirs: string[] = [],
+): Promise<void> {
+  const stateDirs = new Set([
+    ...BENCH_REMNIC_STATE_CHILDREN.map((entry) => path.join(memoryDir, entry)),
+    ...extraStateDirs,
+  ]);
+  await Promise.all(
+    [...stateDirs].map(async (childPath) => {
+      try {
+        await assertNoUnsafeSymlinkComponents(childPath);
+        const stats = await lstat(childPath);
+        if (stats.isSymbolicLink()) {
+          throw new Error(
+            `Remnic benchmark memoryDir/sandboxDir must not contain symlinked Remnic state children: ${childPath}`,
+          );
+        }
+        if (stats.isDirectory()) {
+          await assertNoUnsafeSymlinksInTree(childPath);
+        }
+      } catch (error) {
+        if (!isErrnoCode(error, "ENOENT")) {
+          throw error;
+        }
+      }
+    }),
+  );
+}
+
+function resolveConfiguredBenchIndexDirs(
+  memoryDir: string,
+  overrides?: Record<string, unknown>,
+): string[] {
+  const dirs = [
+    normalizeConfiguredBenchDir(overrides?.oramaDbPath),
+    normalizeConfiguredBenchDir(overrides?.lanceDbPath),
+  ].filter((value): value is string => value !== undefined)
+    .map((value) => resolveConfiguredBenchIndexDir(memoryDir, value));
+  for (const dir of dirs) {
+    if (!isPathInsideOrEqual(memoryDir, dir)) {
+      throw new Error(
+        `Remnic benchmark search index paths must stay inside memoryDir/sandboxDir: ${dir}`,
+      );
+    }
+  }
+  return dirs;
+}
+
+function resolveConfiguredBenchIndexDir(memoryDir: string, value: string): string {
+  const expanded = expandTildePath(value);
+  return path.isAbsolute(expanded)
+    ? path.resolve(expanded)
+    : path.resolve(memoryDir, expanded);
+}
+
+function isPathInsideOrEqual(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative.length === 0 || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function assertNoUnsafeSymlinksInTree(dirPath: string): Promise<void> {
+  const entries = await readdir(dirPath, { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = path.join(dirPath, entry.name);
+      const stats = await lstat(entryPath);
+      if (stats.isSymbolicLink()) {
+        throw new Error(
+          `Remnic benchmark memoryDir/sandboxDir must not contain symlinked Remnic state children: ${entryPath}`,
+        );
+      }
+      if (stats.isDirectory()) {
+        await assertNoUnsafeSymlinksInTree(entryPath);
+      }
+    }),
+  );
 }
 
 function normalizeBenchSessionId(sessionId: string): string {
