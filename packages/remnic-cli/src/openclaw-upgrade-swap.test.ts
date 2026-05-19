@@ -67,6 +67,23 @@ test("atomicCopyFileSync preserves the target when temp copy fails", async () =>
   assert.deepEqual(await visibleEntries(path.dirname(configPath)), ["openclaw.json"]);
 });
 
+test("atomicCopyFileSync preserves backup file permissions on restore", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-openclaw-atomic-copy-mode-"));
+  const backupPath = path.join(root, "backup", "openclaw.json");
+  const configPath = path.join(root, "live", "openclaw.json");
+  await mkdir(path.dirname(backupPath), { recursive: true });
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(backupPath, '{"plugins":{"entries":{"backup":true}}}\n', "utf8");
+  await writeFile(configPath, '{"plugins":{"entries":{"live":true}}}\n', "utf8");
+  await chmod(backupPath, 0o600);
+  await chmod(configPath, 0o644);
+
+  atomicCopyFileSync(backupPath, configPath);
+
+  assert.equal(await readFile(configPath, "utf8"), '{"plugins":{"entries":{"backup":true}}}\n');
+  assert.equal((await stat(configPath)).mode & 0o777, 0o600);
+});
+
 async function visibleEntries(dir: string): Promise<string[]> {
   return (await readdir(dir)).filter((entry) => !entry.startsWith(".")).sort();
 }

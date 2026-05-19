@@ -99,10 +99,12 @@ export function atomicCopyFileSync(
   if (!fs.existsSync(sourcePath)) return;
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
   const tempPath = createSiblingTempFilePath(targetPath, "copy");
+  const mode = fs.statSync(sourcePath).mode & 0o7777;
 
   try {
     const copyTempFileSync = options.hooks?.copyTempFileSync ?? fs.copyFileSync;
     copyTempFileSync(sourcePath, tempPath);
+    fs.chmodSync(tempPath, mode);
     const renameTempFileSync = options.hooks?.renameTempFileSync ?? fs.renameSync;
     renameTempFileSync(tempPath, targetPath);
   } catch (error) {
