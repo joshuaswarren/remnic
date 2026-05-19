@@ -41,6 +41,20 @@ function hasFlag(flag: string): boolean {
   return process.argv.includes(flag);
 }
 
+function parseLimitArg(value: string | undefined, isPresent: boolean): number | undefined {
+  if (!isPresent) {
+    return undefined;
+  }
+  if (value === undefined || !/^(0|[1-9]\d*)$/.test(value)) {
+    throw new Error("--limit must be a non-negative integer (use 0 to load zero items).");
+  }
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit)) {
+    throw new Error("--limit must be a safe non-negative integer.");
+  }
+  return limit;
+}
+
 async function main(): Promise<void> {
   if (hasFlag("--help") || hasFlag("-h")) {
     console.log(`
@@ -92,7 +106,14 @@ Options:
   const mcpUrl = readArg("--mcp-url") ?? "http://localhost:18789";
   const mcpToken = readArg("--mcp-token");
   const limitStr = readArg("--limit");
-  const limit = limitStr ? parseInt(limitStr, 10) : undefined;
+  let limit: number | undefined;
+  try {
+    limit = parseLimitArg(limitStr, hasFlag("--limit"));
+  } catch (err) {
+    console.error(`ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+    return;
+  }
   const datasetDirOverride = readArg("--dataset-dir");
   const outputDir =
     readArg("--output-dir") ??
