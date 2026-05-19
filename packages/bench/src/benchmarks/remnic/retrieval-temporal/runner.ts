@@ -9,12 +9,13 @@ import type {
   ResolvedRunBenchmarkOptions,
   TaskResult,
 } from "../../../types.js";
-import type { Message } from "../../../adapters/types.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
 import type { SchemaTierPage } from "../../../fixtures/schema-tiers/index.js";
 import {
   buildTieredAggregates,
 } from "../retrieval-shared.js";
+import { extractRankedPageIds } from "../retrieval-page-ids.js";
+import { buildSchemaTierMessages } from "../retrieval-schema-messages.js";
 import {
   RETRIEVAL_TEMPORAL_FIXTURE,
   RETRIEVAL_TEMPORAL_SMOKE_FIXTURE,
@@ -49,7 +50,7 @@ export async function runRetrievalTemporalBenchmark(
     const startedAt = performance.now();
     const sessionId = `retrieval-temporal:${sample.id}`;
     await options.system.reset(sessionId);
-    await options.system.store(sessionId, buildTemporalMessages(sample.pages));
+    await options.system.store(sessionId, buildSchemaTierMessages(sample.pages));
     await options.system.drain?.();
     const recallText = await options.system.recall(
       sessionId,
@@ -276,49 +277,4 @@ function matchingPageIds(
     const page = pageById.get(pageId);
     return page ? pageQualifies(page, sample) : false;
   });
-}
-
-function buildTemporalMessages(pages: SchemaTierPage[]): Message[] {
-  return pages.map((page) => ({
-    role: "user",
-    timestamp: page.createdAt,
-    content: [
-      `page_id: ${page.id}`,
-      `owner: ${page.owner}`,
-      `namespace: ${page.namespace}`,
-      `title: ${page.title}`,
-      `canonical_title: ${page.canonicalTitle}`,
-      `type: ${page.type}`,
-      `created_at: ${page.createdAt}`,
-      `aliases: ${page.aliases.join(", ")}`,
-      `timeline: ${page.timeline.join(" | ")}`,
-      `see_also: ${page.seeAlso.join(", ")}`,
-      `body: ${page.body}`,
-      page.dirtySignals.length > 0
-        ? `dirty_signals: ${page.dirtySignals.join(" | ")}`
-        : undefined,
-    ].filter((line): line is string => Boolean(line)).join("\n"),
-  }));
-}
-
-function extractRankedPageIds(recallText: string, pages: SchemaTierPage[]): string[] {
-  const matches: Array<{ id: string; index: number }> = [];
-  const lowerRecallText = recallText.toLowerCase();
-
-  for (const page of pages) {
-    const marker = `page_id: ${page.id.toLowerCase()}`;
-    const index = lowerRecallText.indexOf(marker);
-    if (index >= 0) {
-      matches.push({ id: page.id, index });
-    }
-  }
-
-  matches.sort((left, right) => {
-    if (left.index !== right.index) {
-      return left.index - right.index;
-    }
-    return left.id.localeCompare(right.id);
-  });
-
-  return matches.map((match) => match.id);
 }

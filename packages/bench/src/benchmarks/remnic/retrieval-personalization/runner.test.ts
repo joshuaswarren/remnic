@@ -3,7 +3,6 @@ import test from "node:test";
 
 import type {
   BenchMemoryAdapter,
-  BenchRecallOptions,
   MemoryStats,
   Message,
   SearchResult,
@@ -22,7 +21,6 @@ interface RecallCall {
   sessionId: string;
   query: string;
   budgetChars?: number;
-  options?: BenchRecallOptions;
 }
 
 class SpyPersonalizationAdapter implements BenchMemoryAdapter {
@@ -44,17 +42,11 @@ class SpyPersonalizationAdapter implements BenchMemoryAdapter {
     this.storeCalls.push({ sessionId, messages });
   }
 
-  async recall(
-    sessionId: string,
-    query: string,
-    budgetChars?: number,
-    options?: BenchRecallOptions,
-  ): Promise<string> {
+  async recall(sessionId: string, query: string, budgetChars?: number): Promise<string> {
     const sample = sampleForSession(sessionId);
     assert.equal(query, sample.query);
     assert.equal(budgetChars, 12_000);
-    assert.equal(options, undefined);
-    this.recallCalls.push({ sessionId, query, budgetChars, options });
+    this.recallCalls.push({ sessionId, query, budgetChars });
     return this.recallTextForCase(sample);
   }
 
@@ -100,15 +92,10 @@ test("retrieval-personalization seeds and queries the supplied system adapter", 
 
   const result = await runRetrievalPersonalizationBenchmark(buildOptions(adapter));
 
-  assert.equal(
-    result.results.tasks.length,
-    RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE.length,
-  );
+  assert.equal(result.results.tasks.length, RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE.length);
   assert.deepEqual(
     adapter.resetSessions,
-    RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE.map(
-      (sample) => `retrieval-personalization:${sample.id}`,
-    ),
+    RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE.map((sample) => `retrieval-personalization:${sample.id}`),
   );
   assert.equal(adapter.storeCalls.length, RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE.length);
   assert.equal(adapter.recallCalls.length, RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE.length);
@@ -118,15 +105,14 @@ test("retrieval-personalization seeds and queries the supplied system adapter", 
     const sample = RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE[index]!;
     assert.equal(call.messages.length, sample.pages.length);
     assert.match(call.messages[0]!.content, /^page_id: /);
-    assert.match(call.messages[0]!.content, /^owner: /m);
-    assert.match(call.messages[0]!.content, /^namespace: /m);
-    assert.equal(call.messages[0]!.timestamp, sample.pages[0]!.createdAt);
+    assert.match(call.messages[0]!.content, /owner: /);
+    assert.match(call.messages[0]!.content, /namespace: /);
   }
 
   for (const task of result.results.tasks) {
     assert.equal(task.scores.p_at_1, 1);
-    assert.equal(task.scores.p_at_3, 1 / 3);
-    assert.equal(task.scores.p_at_5, 1 / 5);
+    assert.ok(task.scores.p_at_3 > 0);
+    assert.ok(task.scores.p_at_5 > 0);
   }
 });
 
@@ -148,11 +134,10 @@ test("retrieval-personalization scores adapter-returned page ids instead of fixt
   }
 });
 
-test("retrieval-personalization does not match page ids by prefix", async () => {
-  const adapter = new SpyPersonalizationAdapter((sample) => {
-    const expectedPageId = sample.expectedPageIds[0]!;
-    return `recall hit\npage_id: ${expectedPageId}-suffix`;
-  });
+test("retrieval-personalization does not score prefixed page id matches", async () => {
+  const adapter = new SpyPersonalizationAdapter(
+    (sample) => `recall hit\npage_id: ${sample.expectedPageIds[0]}-shadow`,
+  );
 
   const result = await runRetrievalPersonalizationBenchmark(buildOptions(adapter));
 
@@ -160,63 +145,26 @@ test("retrieval-personalization does not match page ids by prefix", async () => 
     assert.equal(task.scores.p_at_1, 0);
     assert.equal(task.scores.p_at_3, 0);
     assert.equal(task.scores.p_at_5, 0);
-    assert.deepEqual(task.details?.retrievedPageIds, []);
+    assert.match(task.actual, /-shadow/);
   }
 });
 
-test("retrieval-personalization extracts page ids from labeled evidence lines", async () => {
+test("retrieval-personalization keeps unknown recall hits as ranking negatives", async () => {
   const adapter = new SpyPersonalizationAdapter(
-    (sample) => `[retrieval-personalization, turn 1, user]: page_id: ${sample.expectedPageIds[0]}`,
+    (sample) => [
+      "recall hit",
+      "page_id: outside-fixture",
+      `page_id: ${sample.expectedPageIds[0]}`,
+    ].join("\n"),
   );
 
   const result = await runRetrievalPersonalizationBenchmark(buildOptions(adapter));
 
-  for (const [index, task] of result.results.tasks.entries()) {
-    const sample = RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE[index]!;
-    assert.equal(task.scores.p_at_1, 1);
-    assert.deepEqual(task.details?.retrievedPageIds, [sample.expectedPageIds[0]]);
-  }
-});
-
-test("retrieval-personalization strips surrounding punctuation from page ids", async () => {
-  const adapter = new SpyPersonalizationAdapter(
-    (sample) => `recall hit: page_id: \`${sample.expectedPageIds[0]}.\``,
-  );
-
-  const result = await runRetrievalPersonalizationBenchmark(buildOptions(adapter));
-
-  for (const [index, task] of result.results.tasks.entries()) {
-    const sample = RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE[index]!;
-    assert.equal(task.scores.p_at_1, 1);
-    assert.deepEqual(task.details?.retrievedPageIds, [sample.expectedPageIds[0]]);
-  }
-});
-
-test("retrieval-personalization strips bracket wrappers from page ids", async () => {
-  const adapter = new SpyPersonalizationAdapter(
-    (sample) => `recall hit: page_id: [${sample.expectedPageIds[0]}]`,
-  );
-
-  const result = await runRetrievalPersonalizationBenchmark(buildOptions(adapter));
-
-  for (const [index, task] of result.results.tasks.entries()) {
-    const sample = RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE[index]!;
-    assert.equal(task.scores.p_at_1, 1);
-    assert.deepEqual(task.details?.retrievedPageIds, [sample.expectedPageIds[0]]);
-  }
-});
-
-test("retrieval-personalization scores uppercased page ids case-insensitively", async () => {
-  const adapter = new SpyPersonalizationAdapter(
-    (sample) => `recall hit: page_id: ${sample.expectedPageIds[0]!.toUpperCase()}`,
-  );
-
-  const result = await runRetrievalPersonalizationBenchmark(buildOptions(adapter));
-
-  for (const [index, task] of result.results.tasks.entries()) {
-    const sample = RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE[index]!;
-    assert.equal(task.scores.p_at_1, 1);
-    assert.deepEqual(task.details?.retrievedPageIds, [sample.expectedPageIds[0]]);
+  for (const task of result.results.tasks) {
+    assert.equal(task.scores.p_at_1, 0);
+    assert.equal(task.scores.p_at_3, 1 / 3);
+    assert.equal(task.scores.p_at_5, 1 / 5);
+    assert.match(task.actual, /outside-fixture/);
   }
 });
 

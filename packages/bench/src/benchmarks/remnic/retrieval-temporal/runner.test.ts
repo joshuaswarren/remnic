@@ -141,6 +141,20 @@ test("retrieval-temporal scores adapter-returned page ids instead of fixture ran
   }
 });
 
+test("retrieval-temporal does not score prefixed page id matches", async () => {
+  const adapter = new SpyTemporalAdapter(
+    (sample) => `recall hit\npage_id: ${sample.expectedPageIds[0]}-shadow`,
+  );
+
+  const result = await runRetrievalTemporalBenchmark(buildOptions(adapter));
+
+  for (const task of result.results.tasks) {
+    assert.equal(task.scores.qrel_at_1, 0);
+    assert.equal(task.scores.qrel_at_3, 0);
+    assert.equal(task.scores.qrel_at_5, 0);
+  }
+});
+
 test("retrieval-temporal fails when the system adapter cannot be reset", async () => {
   const adapter = new SpyTemporalAdapter(() => "");
   adapter.reset = async () => {
