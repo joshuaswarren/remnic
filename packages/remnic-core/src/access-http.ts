@@ -89,6 +89,14 @@ function hostToUrlAuthority(host: string): string {
   return host;
 }
 
+function parseHttpServerPort(port: number | undefined): number {
+  if (port === undefined) return 0;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error("access HTTP port must be an integer from 0 to 65535");
+  }
+  return port;
+}
+
 function parseTrustZoneKindFilter(raw: string | null): TrustZoneRecordKind | undefined {
   if (raw === null) return undefined;
   if ((TRUST_ZONE_RECORD_KINDS as readonly string[]).includes(raw)) {
@@ -159,7 +167,7 @@ export class EngramAccessHttpServer {
   constructor(options: EngramAccessHttpServerOptions) {
     this.service = options.service;
     this.host = options.host?.trim() || "127.0.0.1";
-    this.requestedPort = Number.isFinite(options.port) ? Math.max(0, Math.floor(options.port ?? 0)) : 0;
+    this.requestedPort = parseHttpServerPort(options.port);
     this.authToken = options.authToken?.trim() || undefined;
     this.authTokens = (options.authTokens ?? []).map((t) => t.trim()).filter(Boolean);
     this.authTokensGetter = options.authTokensGetter;

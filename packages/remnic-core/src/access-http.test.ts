@@ -10,6 +10,24 @@ import { parseConfig } from "./config.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import type { StorageManager } from "./storage.js";
 
+test("HTTP server rejects invalid constructor ports", () => {
+  const service = {} as EngramAccessService;
+
+  for (const port of [-1, 3.7, Number.NaN, Number.POSITIVE_INFINITY, 65536]) {
+    assert.throws(
+      () =>
+        new EngramAccessHttpServer({
+          service,
+          port,
+          authToken: "test-token",
+          adminConsoleEnabled: false,
+        }),
+      /access HTTP port must be an integer from 0 to 65535/,
+      `port ${port} should be rejected`,
+    );
+  }
+});
+
 test("HTTP contradiction scan uses writable namespace resolver", async () => {
   const resolverCalls: Array<{ namespace: string | undefined; principal: string | undefined }> = [];
   const storage = {
