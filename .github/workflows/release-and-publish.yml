@@ -137,7 +137,7 @@ jobs:
               echo "bump_type=override"
             } >> "$GITHUB_OUTPUT"
             pnpm version "${OVERRIDE}" --no-git-tag-version --allow-same-version
-            git add package.json pnpm-lock.yaml package-lock.json 2>/dev/null || true
+            git add package.json pnpm-lock.yaml 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "::notice title=Release commit skipped::Version already matches v${OVERRIDE}; no package files changed."
             else
@@ -203,7 +203,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             echo "::notice title=Bootstrap release::${BOOTSTRAP_PACKAGE} is not published yet; using package.json version ${PKG_VERSION}."
             pnpm version "${PKG_VERSION}" --no-git-tag-version --allow-same-version
-            git add package.json pnpm-lock.yaml package-lock.json 2>/dev/null || true
+            git add package.json pnpm-lock.yaml 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "::notice title=Release commit skipped::Version already matches v${PKG_VERSION}; no package files changed."
             else
@@ -250,7 +250,7 @@ jobs:
             echo "new_version=${NEXT_VERSION}"
           } >> "$GITHUB_OUTPUT"
           pnpm version "${NEXT_VERSION}" --no-git-tag-version --allow-same-version
-          git add package.json pnpm-lock.yaml package-lock.json 2>/dev/null || true
+          git add package.json pnpm-lock.yaml 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "::notice title=Release commit skipped::Version already matches v${NEXT_VERSION}; no package files changed."
           else

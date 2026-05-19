@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -84,19 +84,15 @@ test("release workflow verifies the OpenClaw ClawHub packlist after build", asyn
 
 test("@remnic/server build verifies declared bin artifacts", async () => {
   const packageJson = JSON.parse(await readFile("packages/remnic-server/package.json", "utf8"));
-  const packageLock = JSON.parse(await readFile("package-lock.json", "utf8"));
 
   assert.deepEqual(packageJson.bin, {
     "remnic-server": "./bin/remnic-server.js",
     "engram-server": "./bin/engram-server.js",
   });
-  assert.deepEqual(
-    packageLock.packages?.["packages/remnic-server"]?.bin,
-    {
-      "remnic-server": "bin/remnic-server.js",
-      "engram-server": "bin/engram-server.js",
-    },
-    "package-lock.json must keep @remnic/server bin targets in sync with package.json",
+  await assert.rejects(
+    access("package-lock.json"),
+    /ENOENT/,
+    "root package-lock.json must stay absent because npm cannot resolve pnpm workspace: dependencies",
   );
   assert.ok(
     packageJson.files.includes("bin/*.js"),

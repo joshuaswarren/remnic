@@ -20,7 +20,7 @@ openclaw plugins install clawhub:@remnic/plugin-openclaw
 git clone https://github.com/joshuaswarren/remnic.git \
   ~/.openclaw/extensions/remnic
 cd ~/.openclaw/extensions/remnic
-npm ci && npm run build
+pnpm install && pnpm run build
 ```
 
 ### Option C: Standalone (no OpenClaw)
@@ -32,7 +32,7 @@ Build from source and use the standalone CLI:
 ```bash
 npm install -g tsx               # Required — CLI entry point is TypeScript
 git clone https://github.com/joshuaswarren/remnic.git
-cd remnic && npm ci && npm run build
+cd remnic && pnpm install && pnpm run build
 cd packages/remnic-cli && npm link # Makes `remnic` available on PATH
 cd ../..
 remnic init                      # Create config in current directory

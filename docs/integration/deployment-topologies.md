@@ -63,7 +63,7 @@ npm install -g tsx
 
 # Build from source (required for daemon start)
 git clone https://github.com/joshuaswarren/remnic.git
-cd remnic && npm ci && npm run build
+cd remnic && pnpm install && pnpm run build
 cd packages/remnic-cli && npm link # Makes `remnic` available on PATH
 cd ../..
 

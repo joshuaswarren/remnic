@@ -110,6 +110,10 @@ fi
 # ---- 5. Lock file sync check ----
 echo "[check] Workspace dependency consistency..."
 
+if [[ -f package-lock.json ]]; then
+  fail "package-lock.json is not supported in this pnpm workspace — remove it and keep pnpm-lock.yaml as the lockfile"
+fi
+
 if command -v pnpm &>/dev/null; then
   # Check if pnpm-lock.yaml is stale
   # Simple check: does running install change anything?

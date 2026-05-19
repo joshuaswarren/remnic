@@ -123,7 +123,7 @@ All standalone features are optional. OpenClaw users can continue using the plug
 ```bash
 # Build from source (required for daemon mode)
 git clone https://github.com/joshuaswarren/remnic.git
-cd remnic && npm ci && npm run build
+cd remnic && pnpm install && pnpm run build
 cd packages/remnic-cli && npm link    # Makes `remnic` available on PATH
 cd ../..
 ```
@@ -264,7 +264,7 @@ openclaw plugins install npm:@remnic/plugin-openclaw@<previous-version>
 ```bash
 cd remnic
 git fetch --all && git checkout <previous-version-tag>
-npm ci && npm run build
+pnpm install && pnpm run build
 cd packages/remnic-cli && npm link    # re-links the CLI binary to this version
 ```
 

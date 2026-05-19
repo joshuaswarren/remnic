@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 
 const testDir = new URL(".", import.meta.url);
@@ -60,27 +60,20 @@ test("runtime workspace packages preserve local linking in source manifests", as
   }
 });
 
-test("npm package lock keeps the Remnic server dependency beside the CLI", async () => {
-  const raw = await readFile(new URL("../package-lock.json", testDir), "utf8");
-  const lock = JSON.parse(raw) as {
-    packages?: Record<
-      string,
-      {
-        dependencies?: Record<string, string>;
-      }
-    >;
+test("pnpm workspace source must not carry a stale npm package lock", async () => {
+  const rootRaw = await readFile(new URL("../package.json", testDir), "utf8");
+  const rootPkg = JSON.parse(rootRaw) as {
+    packageManager?: string;
   };
 
-  assert.equal(
-    lock.packages?.["packages/remnic-cli"]?.dependencies?.["@remnic/server"],
-    "file:../remnic-server",
-    "package-lock should install @remnic/server beside @remnic/cli",
+  assert.match(
+    rootPkg.packageManager ?? "",
+    /^pnpm@/,
+    "workspace dependency ranges require pnpm as the root package manager",
   );
-  assert.equal(
-    lock.packages?.["packages/plugin-openclaw"]?.dependencies?.[
-      "@remnic/server"
-    ],
-    undefined,
-    "plugin-openclaw should not gain the CLI daemon server dependency",
+  await assert.rejects(
+    access(new URL("../package-lock.json", testDir)),
+    /ENOENT/,
+    "package-lock.json cannot represent pnpm workspace: dependencies and must stay absent",
   );
 });
