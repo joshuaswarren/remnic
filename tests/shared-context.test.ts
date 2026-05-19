@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { PluginConfig } from "../src/types.js";
@@ -166,4 +166,190 @@ test("v4 shared context manager bootstraps structure and writes outputs", async 
   const raw = await readFile(fp, "utf-8");
   assert.match(raw, /kind: agent_output/);
   assert.match(raw, /Hello world/);
+});
+
+test("shared context output path encodes agent ids that contain traversal", async () => {
+  const memoryDir = tmpDir("engram-sc-mem");
+  const sharedDir = tmpDir("engram-shared");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = minimalConfig(memoryDir, sharedDir);
+  const m = new SharedContextManager(cfg);
+  await m.ensureStructure();
+
+  const fp = await m.writeAgentOutput({
+    agentId: "../../escape",
+    title: "Traversal Attempt",
+    content: "Hello world",
+    createdAt: new Date("2026-05-19T10:11:12.000Z"),
+  });
+
+  const outputsRoot = path.join(sharedDir, "agent-outputs");
+  const relativePath = path.relative(outputsRoot, fp);
+  assert.equal(path.isAbsolute(relativePath), false);
+  assert.notEqual(relativePath.split(path.sep)[0], "..");
+  assert.match(relativePath, /^\.\.%2F\.\.%2Fescape\/2026-05-19\/101112-traversal-attempt\.md$/);
+
+  const raw = await readFile(fp, "utf-8");
+  assert.match(raw, /agent: "\.\.\/\.\.\/escape"/);
+});
+
+test("shared context output rejects agent ids with line breaks", async () => {
+  const memoryDir = tmpDir("engram-sc-mem");
+  const sharedDir = tmpDir("engram-shared");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = minimalConfig(memoryDir, sharedDir);
+  const m = new SharedContextManager(cfg);
+  await m.ensureStructure();
+
+  await assert.rejects(
+    () => m.writeAgentOutput({
+      agentId: "team\nred",
+      title: "Invalid Agent",
+      content: "Hello world",
+    }),
+    /agentId must not contain line breaks/,
+  );
+});
+
+test("shared context output writes do not overwrite same-second same-title files", async () => {
+  const memoryDir = tmpDir("engram-sc-mem");
+  const sharedDir = tmpDir("engram-shared");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = minimalConfig(memoryDir, sharedDir);
+  const m = new SharedContextManager(cfg);
+  await m.ensureStructure();
+  const createdAt = new Date("2026-05-19T10:11:12.000Z");
+
+  const first = await m.writeAgentOutput({
+    agentId: "generalist",
+    title: "Same Title",
+    content: "first",
+    createdAt,
+  });
+  const second = await m.writeAgentOutput({
+    agentId: "generalist",
+    title: "Same Title",
+    content: "second",
+    createdAt,
+  });
+
+  assert.notEqual(first, second);
+  assert.equal(await readFile(first, "utf-8"), [
+    "---",
+    "kind: agent_output",
+    'agent: "generalist"',
+    "createdAt: 2026-05-19T10:11:12.000Z",
+    'title: "Same Title"',
+    "---",
+    "",
+    "first",
+    "",
+  ].join("\n"));
+  assert.match(await readFile(second, "utf-8"), /\nsecond\n$/);
+
+  const files = await readdir(path.dirname(first));
+  assert.deepEqual(files.sort(), ["101112-same-title-2.md", "101112-same-title.md"]);
+});
+
+test("shared context frontmatter preserves literal quote-wrapped agent ids and titles", async () => {
+  const memoryDir = tmpDir("engram-sc-mem");
+  const sharedDir = tmpDir("engram-shared");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = minimalConfig(memoryDir, sharedDir);
+  const m = new SharedContextManager(cfg);
+  await m.ensureStructure();
+
+  const fp = await m.writeAgentOutput({
+    agentId: '"research bot"',
+    title: '"Quoted Title"',
+    content: "quote boundary topic",
+    createdAt: new Date("2026-05-19T10:11:12.000Z"),
+  });
+
+  const raw = await readFile(fp, "utf-8");
+  assert.match(raw, /agent: "\\"research bot\\""/);
+  assert.match(raw, /title: "\\"Quoted Title\\""/);
+
+  const result = await m.synthesizeCrossSignals({ date: "2026-05-19" });
+  assert.deepEqual(result.report.sources.map((source) => source.agent), ['"research bot"']);
+  assert.deepEqual(result.report.sources.map((source) => source.title), ['"Quoted Title"']);
+});
+
+test("shared context frontmatter preserves JSON-escaped control characters", async () => {
+  const memoryDir = tmpDir("engram-sc-mem");
+  const sharedDir = tmpDir("engram-shared");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = minimalConfig(memoryDir, sharedDir);
+  const m = new SharedContextManager(cfg);
+  await m.ensureStructure();
+
+  const fp = await m.writeAgentOutput({
+    agentId: "research\tbot",
+    title: "Tabbed\tTitle",
+    content: "control character topic",
+    createdAt: new Date("2026-05-19T10:11:12.000Z"),
+  });
+
+  const raw = await readFile(fp, "utf-8");
+  assert.match(raw, /agent: "research\\tbot"/);
+  assert.match(raw, /title: "Tabbed\\tTitle"/);
+
+  const result = await m.synthesizeCrossSignals({ date: "2026-05-19" });
+  assert.deepEqual(result.report.sources.map((source) => source.agent), ["research\tbot"]);
+  assert.deepEqual(result.report.sources.map((source) => source.title), ["Tabbed\tTitle"]);
+});
+
+test("cross signals preserve original agent ids from encoded output paths", async () => {
+  const memoryDir = tmpDir("engram-sc-mem");
+  const sharedDir = tmpDir("engram-shared");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = minimalConfig(memoryDir, sharedDir);
+  const m = new SharedContextManager(cfg);
+  await m.ensureStructure();
+  const createdAt = new Date("2026-05-19T10:11:12.000Z");
+
+  await m.writeAgentOutput({
+    agentId: "research bot",
+    title: "Encoded Path",
+    content: "alignment topic",
+    createdAt,
+  });
+
+  const legacyDir = path.join(sharedDir, "agent-outputs", "research bot", "2026-05-19");
+  await mkdir(legacyDir, { recursive: true });
+  await writeFile(
+    path.join(legacyDir, "101113-legacy-path.md"),
+    [
+      "---",
+      "kind: agent_output",
+      'agent: "research bot"',
+      "createdAt: 2026-05-19T10:11:13.000Z",
+      "title: Legacy Path",
+      "---",
+      "",
+      "alignment topic",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+  const encodedDir = path.join(sharedDir, "agent-outputs", "research%20bot", "2026-05-19");
+  await writeFile(
+    path.join(encodedDir, "101114-no-frontmatter.md"),
+    "agent: spoofed body value\nalignment topic\n",
+    "utf-8",
+  );
+
+  const result = await m.synthesizeCrossSignals({ date: "2026-05-19" });
+
+  assert.deepEqual(
+    result.report.sources.map((source) => source.agent).sort(),
+    ["research bot", "research bot", "research bot"],
+  );
+  assert.equal(result.report.overlaps.length, 0);
 });

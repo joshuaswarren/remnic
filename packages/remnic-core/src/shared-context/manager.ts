@@ -33,6 +33,55 @@ function safeSlug(s: string): string {
   return slug.slice(start, end).slice(0, 80) || "output";
 }
 
+function safePathSegment(s: string, label: string): string {
+  if (s.length === 0) throw new Error(`${label} must not be empty`);
+  if (/[\r\n]/.test(s)) throw new Error(`${label} must not contain line breaks`);
+  const encoded = encodeURIComponent(s);
+  if (encoded === "." || encoded === "..") {
+    return encoded.replace(/\./g, "%2E");
+  }
+  return encoded;
+}
+
+function safeDecodePathSegment(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+function normalizeFrontmatterScalar(value: string): string {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      // Fall through to the legacy partial unescape below.
+    }
+    return value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  return value;
+}
+
+function formatFrontmatterScalar(value: string): string {
+  return JSON.stringify(value);
+}
+
+function readFrontmatterScalar(raw: string, key: string): string | null {
+  const frontmatter = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+  if (!frontmatter) return null;
+  for (const line of frontmatter.split(/\r?\n/)) {
+    if (!line.startsWith(`${key}:`)) continue;
+    const value = line.slice(key.length + 1).trim();
+    return value ? normalizeFrontmatterScalar(value) : null;
+  }
+  return null;
+}
+
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
@@ -457,23 +506,34 @@ export class SharedContextManager {
     const date = ymd(createdAt);
     const time = createdAt.toISOString().slice(11, 19).replace(/:/g, "");
     const slug = safeSlug(opts.title);
+    const agentPathSegment = safePathSegment(opts.agentId, "agentId");
 
-    const dir = path.join(this.outputsDir, opts.agentId, date);
+    const dir = path.join(this.outputsDir, agentPathSegment, date);
     await mkdir(dir, { recursive: true });
-    const fp = path.join(dir, `${time}-${slug}.md`);
 
     const body =
       `---\n` +
       `kind: agent_output\n` +
-      `agent: ${opts.agentId}\n` +
+      `agent: ${formatFrontmatterScalar(opts.agentId)}\n` +
       `createdAt: ${createdAt.toISOString()}\n` +
-      `title: ${opts.title.replace(/\n/g, " ").slice(0, 200)}\n` +
+      `title: ${formatFrontmatterScalar(opts.title.replace(/\n/g, " ").slice(0, 200))}\n` +
       `---\n\n` +
       opts.content.trimEnd() +
       "\n";
 
-    await writeFile(fp, body, "utf-8");
-    return fp;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const suffix = attempt === 0 ? "" : `-${attempt + 1}`;
+      const fp = path.join(dir, `${time}-${slug}${suffix}.md`);
+      try {
+        await writeFile(fp, body, { encoding: "utf-8", flag: "wx" });
+        return fp;
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "EEXIST") continue;
+        throw error;
+      }
+    }
+
+    throw new Error(`Unable to allocate unique shared-context output path for ${opts.agentId}`);
   }
 
   async appendFeedback(entry: SharedFeedbackEntry): Promise<void> {
@@ -512,8 +572,9 @@ export class SharedContextManager {
           for (const f of files) {
             const p = path.join(dayDir, f);
             const raw = await readFile(p, "utf-8");
-            const title = (raw.match(/^title:\s*(.+)$/m)?.[1] ?? f).trim();
-            outputs.push({ agent: a.name, path: p, title, raw });
+            const title = readFrontmatterScalar(raw, "title") ?? f;
+            const agent = readFrontmatterScalar(raw, "agent") ?? safeDecodePathSegment(a.name);
+            outputs.push({ agent, path: p, title, raw });
           }
         } catch {
           // no outputs for this agent/date
