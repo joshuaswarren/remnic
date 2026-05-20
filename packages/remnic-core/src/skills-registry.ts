@@ -11,6 +11,7 @@
  */
 
 import { fileURLToPath } from "node:url";
+import { statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 /**
@@ -48,22 +49,36 @@ export function isValidSkillSlug(slug: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Built-in skill paths — resolved relative to this source file.
+// Built-in skill paths — resolved relative to this module.
 // ---------------------------------------------------------------------------
 //
 // This file lives at `packages/remnic-core/src/skills-registry.ts`.
 // After tsup build it lives at `packages/remnic-core/dist/skills-registry.js`.
-// In both cases, the shipped skill sources live four levels up at
-// `packages/plugin-codex/skills/<slug>/SKILL.md`.
+// Packaged @remnic/core artifacts ship skill sources under
+// `packages/remnic-core/skills/<slug>/SKILL.md`; source checkouts can fall back
+// to the canonical monorepo copies in `packages/plugin-codex/skills`.
 //
 // We compute the absolute path from the current module so that callers in any
 // cwd can resolve the files.
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const PACKAGED_SKILLS_DIR = resolve(HERE, "..", "skills");
 const PLUGIN_CODEX_SKILLS_DIR = resolve(HERE, "..", "..", "plugin-codex", "skills");
 
+function isDirectory(pathname: string): boolean {
+  try {
+    return statSync(pathname).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function builtinSkillsDir(): string {
+  return isDirectory(PACKAGED_SKILLS_DIR) ? PACKAGED_SKILLS_DIR : PLUGIN_CODEX_SKILLS_DIR;
+}
+
 function codexSkillPath(slug: string): string {
-  return resolve(PLUGIN_CODEX_SKILLS_DIR, slug, "SKILL.md");
+  return resolve(builtinSkillsDir(), slug, "SKILL.md");
 }
 
 /**

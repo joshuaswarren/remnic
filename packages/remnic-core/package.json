@@ -2775,6 +2775,7 @@
   "files": [
     "src",
     "dist",
+    "skills",
     "scripts/ensure-better-sqlite3.mjs",
     "scripts/faiss_index.py",
     "scripts/faiss_requirements.txt"

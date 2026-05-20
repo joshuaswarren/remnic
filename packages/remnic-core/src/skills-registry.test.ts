@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 import { BUILTIN_SKILLS, isValidSkillSlug } from "./skills-registry.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const CORE_PACKAGE_DIR = resolve(HERE, "..");
 
 // The two on-disk directories that hold authored SKILL.md folders.
 const CODEX_SKILLS_DIR = resolve(HERE, "..", "..", "plugin-codex", "skills");
 const CLAUDE_CODE_SKILLS_DIR = resolve(HERE, "..", "..", "plugin-claude-code", "skills");
+const CORE_PACKAGED_SKILLS_DIR = resolve(CORE_PACKAGE_DIR, "skills");
 
 const REQUIRED_SECTIONS = [
   "When to use",
@@ -108,6 +110,36 @@ test("each BUILTIN_SKILLS staticPath points at a real SKILL.md on disk", () => {
       basename(skill.staticPath),
       "SKILL.md",
       `${skill.slug} staticPath filename should be SKILL.md`,
+    );
+  }
+});
+
+test("@remnic/core package ships the built-in skill sources referenced by BUILTIN_SKILLS", () => {
+  const packageJson = JSON.parse(readFileSync(resolve(CORE_PACKAGE_DIR, "package.json"), "utf8")) as {
+    files?: unknown;
+  };
+  assert.ok(
+    Array.isArray(packageJson.files) && packageJson.files.includes("skills"),
+    "packages/remnic-core/package.json files must include packaged skills",
+  );
+  assert.ok(
+    statSync(CORE_PACKAGED_SKILLS_DIR).isDirectory(),
+    "packaged skills path must be a directory",
+  );
+
+  for (const skill of BUILTIN_SKILLS) {
+    const packagedPath = resolve(CORE_PACKAGED_SKILLS_DIR, skill.slug, "SKILL.md");
+    const canonicalPath = resolve(CODEX_SKILLS_DIR, skill.slug, "SKILL.md");
+    assert.ok(existsSync(packagedPath), `${skill.slug} packaged SKILL.md must exist`);
+    assert.equal(
+      readFileSync(packagedPath, "utf8"),
+      readFileSync(canonicalPath, "utf8"),
+      `${skill.slug} packaged SKILL.md must match the canonical Codex skill source`,
+    );
+    assert.equal(
+      skill.staticPath,
+      packagedPath,
+      `${skill.slug} staticPath should resolve to the packaged core skill source`,
     );
   }
 });
