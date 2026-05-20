@@ -51,6 +51,27 @@ describe("parseSupermemoryExport", () => {
     );
   });
 
+  it("throws when a memory array entry is malformed", () => {
+    assert.throws(
+      () => parseSupermemoryExport({ memories: [null, { id: "m1", content: "hello" }] }),
+      /Supermemory export entry memories\[0\] must be an object record; received null\./,
+    );
+  });
+
+  it("throws with the top-level array index for malformed top-level entries", () => {
+    assert.throws(
+      () => parseSupermemoryExport([{ id: "m1", content: "hello" }, "lost"]),
+      /Supermemory export entry \[1\] must be an object record; received string\./,
+    );
+  });
+
+  it("throws when a memory array entry is an array instead of a record", () => {
+    assert.throws(
+      () => parseSupermemoryExport({ data: [[{ id: "nested" }]] }),
+      /Supermemory export entry data\[0\] must be an object record; received array\./,
+    );
+  });
+
   it("consumes only first matching key to avoid duplicates", () => {
     const parsed = parseSupermemoryExport({
       memories: [{ id: "m1", content: "hello" }],

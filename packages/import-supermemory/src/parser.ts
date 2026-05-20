@@ -25,7 +25,7 @@ export function parseSupermemoryExport(input: unknown, filePath?: string): Parse
   const memories: SupermemoryRecord[] = [];
 
   if (Array.isArray(raw)) {
-    append(memories, raw);
+    append(memories, raw, "");
     return { memories, ...(filePath ? { importedFromPath: filePath } : {}) };
   } else if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
@@ -36,7 +36,7 @@ export function parseSupermemoryExport(input: unknown, filePath?: string): Parse
         if (!Array.isArray(obj[key])) {
           throw new Error(`Supermemory export key '${key}' must be an array.`);
         }
-        append(memories, obj[key] as unknown[]);
+        append(memories, obj[key] as unknown[], key);
         return { memories, ...(filePath ? { importedFromPath: filePath } : {}) };
       }
     }
@@ -50,9 +50,15 @@ export function parseSupermemoryExport(input: unknown, filePath?: string): Parse
   throw new Error(`Supermemory export must be a JSON array or object; received ${describeType(raw)}.`);
 }
 
-function append(dest: SupermemoryRecord[], src: unknown[]): void {
-  for (const item of src) {
-    if (item && typeof item === "object") dest.push(item as SupermemoryRecord);
+function append(dest: SupermemoryRecord[], src: unknown[], key: string): void {
+  for (const [index, item] of src.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      const location = key ? `${key}[${index}]` : `[${index}]`;
+      throw new Error(
+        `Supermemory export entry ${location} must be an object record; received ${describeType(item)}.`,
+      );
+    }
+    dest.push(item as SupermemoryRecord);
   }
 }
 
@@ -70,5 +76,6 @@ function coerceJson(input: unknown): unknown {
 
 function describeType(value: unknown): string {
   if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
   return typeof value;
 }
