@@ -105,3 +105,13 @@ test("@remnic/bench index exports provider factory and discovery helpers", async
   assert.match(source, /createProvider/);
   assert.match(source, /discoverAllProviders/);
 });
+
+test("@remnic/bench index exports mitigated ADAM security harness APIs", async () => {
+  const source = await readFile("packages/bench/src/index.ts", "utf8");
+
+  assert.match(source, /createMitigatedTarget/);
+  assert.match(source, /runMitigatedBaseline/);
+  assert.match(source, /MITIGATED_BASELINE_SCENARIOS/);
+  assert.match(source, /MitigatedBaselineConfig/);
+  assert.match(source, /MitigatedTargetConfig/);
+});

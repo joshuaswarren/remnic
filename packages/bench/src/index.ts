@@ -477,10 +477,15 @@ export type {
 // ADAM baseline runner + default scenarios (issue #565 PR 3/5).
 export {
   DEFAULT_BASELINE_SCENARIOS,
+  MITIGATED_BASELINE_SCENARIOS,
+  createMitigatedTarget,
   renderBaselineMarkdown,
   runBaseline,
+  runMitigatedBaseline,
 } from "./security/extraction-attack/index.js";
 export type {
   BaselineRow,
   BaselineScenario,
+  MitigatedBaselineConfig,
+  MitigatedTargetConfig,
 } from "./security/extraction-attack/index.js";
