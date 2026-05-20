@@ -423,6 +423,7 @@ export function migrateUnscopedPairsToNamespace(memoryDir: string, namespace: st
   if (fs.existsSync(markerPath)) return 0;
 
   let migrated = 0;
+  let hadMigrationFailure = false;
   for (const entry of fs.readdirSync(dir)) {
     if (!entry.endsWith(".json")) continue;
     const filePath = path.join(dir, entry);
@@ -437,26 +438,33 @@ export function migrateUnscopedPairsToNamespace(memoryDir: string, namespace: st
       const pairId = computePairId(pair.memoryIds[0], pair.memoryIds[1], resolvedNamespace);
       const migratedPair = { ...pair, namespace: resolvedNamespace, pairId };
       const targetPath = pairPath(memoryDir, pairId);
-      if (targetPath === filePath) {
-        writePairFile(filePath, migratedPair);
-      } else if (!fs.existsSync(targetPath)) {
-        writePairFile(targetPath, migratedPair);
-        fs.rmSync(filePath, { force: true });
-      } else {
-        const existing = readPair(memoryDir, pairId);
-        writePairFile(targetPath, existing ? mergeMigratedPair(existing, migratedPair, options) : migratedPair);
-        fs.rmSync(filePath, { force: true });
+      try {
+        if (targetPath === filePath) {
+          writePairFile(filePath, migratedPair);
+        } else if (!fs.existsSync(targetPath)) {
+          writePairFile(targetPath, migratedPair);
+          fs.rmSync(filePath, { force: true });
+        } else {
+          const existing = readPair(memoryDir, pairId);
+          writePairFile(targetPath, existing ? mergeMigratedPair(existing, migratedPair, options) : migratedPair);
+          fs.rmSync(filePath, { force: true });
+        }
+        migrated += 1;
+      } catch {
+        hadMigrationFailure = true;
+        continue;
       }
-      migrated += 1;
     } catch {
       continue;
     }
   }
 
-  try {
-    fs.writeFileSync(markerPath, `${new Date().toISOString()}\n`, { encoding: "utf-8", flag: "wx" });
-  } catch {
-    // Another caller may have completed the same one-shot migration first.
+  if (!hadMigrationFailure) {
+    try {
+      fs.writeFileSync(markerPath, `${new Date().toISOString()}\n`, { encoding: "utf-8", flag: "wx" });
+    } catch {
+      // Another caller may have completed the same one-shot migration first.
+    }
   }
 
   return migrated;

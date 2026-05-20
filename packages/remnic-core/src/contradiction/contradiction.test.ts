@@ -637,6 +637,75 @@ test("migrateUnscopedPairsToNamespace skips review directory scan after completi
   }
 });
 
+test("migrateUnscopedPairsToNamespace retries after partial migration failure", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const failingLegacy = writePair(dir, makePair({ memoryIds: ["fail-a", "fail-b"] }));
+    writePair(dir, makePair({ memoryIds: ["ok-a", "ok-b"] }));
+
+    const reviewPath = path.join(dir, ".review", "contradictions");
+    const failingPath = path.join(reviewPath, `${failingLegacy.pairId}.json`);
+    const originalRmSync = fs.rmSync;
+    const fsMutable = fs as unknown as { rmSync: typeof fs.rmSync };
+    let failedOnce = false;
+
+    try {
+      fsMutable.rmSync = ((target: fs.PathLike, options?: fs.RmOptions) => {
+        if (!failedOnce && String(target) === failingPath) {
+          failedOnce = true;
+          throw new Error("simulated legacy cleanup failure");
+        }
+        return originalRmSync(target, options);
+      }) as typeof fs.rmSync;
+
+      assert.equal(migrateUnscopedPairsToNamespace(dir, "default"), 1);
+    } finally {
+      fsMutable.rmSync = originalRmSync;
+    }
+
+    const markerEntriesAfterFailure = fs
+      .readdirSync(reviewPath)
+      .filter((entry) => entry.startsWith(".unscoped-migrated-"));
+    assert.deepEqual(
+      markerEntriesAfterFailure,
+      [],
+      "partial migration failure must not write the completion marker",
+    );
+    assert.ok(readPair(dir, failingLegacy.pairId), "failed legacy pair remains retryable");
+
+    assert.equal(migrateUnscopedPairsToNamespace(dir, "default"), 1);
+    assert.equal(readPair(dir, failingLegacy.pairId), null);
+    assert.equal(readPair(dir, computePairId("fail-a", "fail-b", "default"))?.namespace, "default");
+
+    const markerEntriesAfterRetry = fs
+      .readdirSync(reviewPath)
+      .filter((entry) => entry.startsWith(".unscoped-migrated-"));
+    assert.equal(markerEntriesAfterRetry.length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("migrateUnscopedPairsToNamespace still completes when malformed files are skipped", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const legacy = writePair(dir, makePair({ memoryIds: ["legacy-a", "legacy-b"] }));
+    const reviewPath = path.join(dir, ".review", "contradictions");
+    await writeFile(path.join(reviewPath, "malformed.json"), "{not-json", "utf-8");
+
+    assert.equal(migrateUnscopedPairsToNamespace(dir, "default"), 1);
+    assert.equal(readPair(dir, legacy.pairId), null);
+    assert.equal(readPair(dir, computePairId("legacy-a", "legacy-b", "default"))?.namespace, "default");
+
+    const markerEntries = fs
+      .readdirSync(reviewPath)
+      .filter((entry) => entry.startsWith(".unscoped-migrated-"));
+    assert.equal(markerEntries.length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("migrateUnscopedPairsToNamespace preserves legacy both-valid state on scoped collisions", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
