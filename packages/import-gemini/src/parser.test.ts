@@ -107,6 +107,62 @@ describe("parseGeminiExport", () => {
       /must be a JSON array or object/,
     );
   });
+
+  it("rejects invalid Gemini activity timestamps", () => {
+    const invalidTimes = [
+      "",
+      "not-a-date",
+      "2026-02-30T00:00:00Z",
+      "2026-13-01T00:00:00Z",
+      "2026-01-01T24:00:00Z",
+      "2026-01-01",
+      "2026-01-01T00:00:00+01:00",
+    ];
+
+    for (const time of invalidTimes) {
+      assert.throws(
+        () =>
+          parseGeminiExport([
+            {
+              header: "Gemini Apps",
+              text: "Tell me about runtime timestamp validation.",
+              time,
+            },
+          ]),
+        /Gemini activity time must be/,
+        `time should be rejected: ${time}`,
+      );
+    }
+  });
+
+  it("accepts UTC ISO activity timestamps with or without milliseconds", () => {
+    const parsed = parseGeminiExport([
+      {
+        header: "Gemini Apps",
+        text: "Tell me about validated timestamp imports.",
+        time: "2026-01-01T00:00:00Z",
+      },
+      {
+        header: "Gemini Apps",
+        text: "Tell me about millisecond timestamp imports.",
+        time: "2026-01-02T00:00:00.123Z",
+      },
+      {
+        header: "Gemini Apps",
+        text: "Tell me about zero-offset timestamp imports.",
+        time: "2026-01-03T00:00:00+00:00",
+      },
+    ]);
+
+    assert.deepEqual(
+      parsed.activities.map((activity) => activity.time),
+      [
+        "2026-01-01T00:00:00Z",
+        "2026-01-02T00:00:00.123Z",
+        "2026-01-03T00:00:00+00:00",
+      ],
+    );
+  });
 });
 
 describe("extractUserPrompt", () => {

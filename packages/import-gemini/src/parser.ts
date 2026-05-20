@@ -48,6 +48,9 @@ export interface GeminiActivityRecord {
   details?: Array<{ name?: string }>;
 }
 
+const UTC_ISO_INSTANT_RE =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?(Z|[+-]00:00)$/;
+
 export interface ParsedGeminiExport {
   /** Prompts filtered to `header === "Gemini Apps"`. */
   activities: GeminiActivityRecord[];
@@ -157,7 +160,25 @@ function appendActivities(
     }
     const record = entry as GeminiActivityRecord;
     if (!options.keepNonGemini && !isGeminiRecord(record)) continue;
+    validateGeminiTimestamp(record.time);
     dest.push(record);
+  }
+}
+
+function validateGeminiTimestamp(value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("Gemini activity time must be an ISO-8601 UTC timestamp");
+  }
+  const match = UTC_ISO_INSTANT_RE.exec(value);
+  if (!match) {
+    throw new Error("Gemini activity time must be an ISO-8601 UTC timestamp");
+  }
+  const milliseconds = (match[2] ?? "").padEnd(3, "0");
+  const canonical = `${match[1]}.${milliseconds}Z`;
+  const parsedMs = Date.parse(canonical);
+  if (!Number.isFinite(parsedMs) || new Date(parsedMs).toISOString() !== canonical) {
+    throw new Error("Gemini activity time must be a valid ISO-8601 UTC timestamp");
   }
 }
 
