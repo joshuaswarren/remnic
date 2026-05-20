@@ -49,6 +49,8 @@ const DEFAULT_BOOTSTRAP_ITERATIONS = 1_000;
 interface PerScenarioRunResult {
   seed: number;
   decision: SealedJudgeDecision;
+  agentLatencyMs: number;
+  judgeLatencyMs: number;
   latencyMs: number;
   assistantOutput: string;
 }
@@ -86,30 +88,36 @@ export async function runAssistantBenchmark(
 
     for (const seed of seeds) {
       const memoryView = renderMemoryViewForAgent(scenario.memoryGraph);
-      const { result: assistantOutput, durationMs } = await timed(() =>
-        runnerOptions.agent.respond({
-          scenarioId: scenario.id,
-          prompt: scenario.scenarioPrompt,
-          memoryView,
-        }),
-      );
+      const { result: assistantOutput, durationMs: agentLatencyMs } =
+        await timed(() =>
+          runnerOptions.agent.respond({
+            scenarioId: scenario.id,
+            prompt: scenario.scenarioPrompt,
+            memoryView,
+          }),
+        );
 
-      const decision = await runSealedJudge(
-        runnerOptions.judge,
-        rubric,
-        {
-          taskId: `${scenario.id}#seed-${seed}`,
-          scenario: scenario.scenarioPrompt,
-          memorySummary: renderMemorySummaryForJudge(scenario.memoryGraph),
-          assistantOutput,
-        },
-        { spotCheckLogger },
+      const { result: decision, durationMs: judgeLatencyMs } = await timed(
+        () =>
+          runSealedJudge(
+            runnerOptions.judge,
+            rubric,
+            {
+              taskId: `${scenario.id}#seed-${seed}`,
+              scenario: scenario.scenarioPrompt,
+              memorySummary: renderMemorySummaryForJudge(scenario.memoryGraph),
+              assistantOutput,
+            },
+            { spotCheckLogger },
+          ),
       );
 
       perSeedResults.push({
         seed,
         decision,
-        latencyMs: durationMs,
+        agentLatencyMs,
+        judgeLatencyMs,
+        latencyMs: agentLatencyMs + judgeLatencyMs,
         assistantOutput,
       });
     }
@@ -185,6 +193,8 @@ function collapseScenario(
     scores: run.decision.scores,
     parseOk: run.decision.parseOk,
     latencyMs: run.latencyMs,
+    agentLatencyMs: run.agentLatencyMs,
+    judgeLatencyMs: run.judgeLatencyMs,
     notes: run.decision.notes,
   }));
 
