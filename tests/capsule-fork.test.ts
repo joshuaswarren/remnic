@@ -19,6 +19,7 @@ import {
   readForkLineage,
   type ForkLineage,
 } from "../packages/remnic-core/src/transfer/capsule-fork.js";
+import { CapsuleParentSchema } from "../packages/remnic-core/src/transfer/types.js";
 import { parseCapsuleForkArgs } from "../packages/remnic-cli/src/index.js";
 
 // ---------------------------------------------------------------------------
@@ -615,4 +616,26 @@ test("forkCapsule: rejects symlinked forks/ directory that escapes targetRoot be
       return true;
     },
   );
+});
+
+test("CapsuleParentSchema: rejects traversal-style forkRoot values", () => {
+  const invalidForkRoots = [
+    "../parent",
+    "forks/../parent",
+    "forks/./parent",
+    "./forks/parent",
+    "forks//parent",
+    "forks/parent/",
+    "forks\\parent",
+    "/forks/parent",
+  ];
+
+  for (const forkRoot of invalidForkRoots) {
+    const parsed = CapsuleParentSchema.safeParse({
+      capsuleId: "parent",
+      version: "1.0.0",
+      forkRoot,
+    });
+    assert.equal(parsed.success, false, `forkRoot should be rejected: ${forkRoot}`);
+  }
 });

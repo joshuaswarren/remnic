@@ -76,6 +76,12 @@ const SemverLikeSchema = z
     "capsule.version must be a semver-like string (e.g. 1.0.0)",
   );
 
+function isSafePosixRelativePathPrefix(value: string): boolean {
+  if (value.startsWith("/") || value.includes("\\")) return false;
+  const segments = value.split("/");
+  return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
 export const CapsuleRetrievalPolicySchema = z.object({
   /**
    * Per-tier weight overrides applied during recall when the capsule is the
@@ -128,8 +134,9 @@ export const CapsuleParentSchema = z.object({
   forkRoot: z
     .string()
     .min(1, "capsule.parent.forkRoot must not be empty")
-    .refine((v) => !v.startsWith("/"), {
-      message: "capsule.parent.forkRoot must be a relative path (no leading slash)",
+    .refine(isSafePosixRelativePathPrefix, {
+      message:
+        "capsule.parent.forkRoot must be a normalized posix-relative path with no traversal segments",
     }),
 });
 
