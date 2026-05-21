@@ -5557,7 +5557,10 @@ function offlineEndpoint(
   pathname: string,
   params: Record<string, string | undefined> = {},
 ): string {
-  const url = new URL(pathname, `${remoteUrl}/`);
+  const url = new URL(remoteUrl);
+  const basePath = url.pathname.replace(/\/+$/, "");
+  const endpointPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
+  url.pathname = `${basePath}${endpointPath}`;
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value.length > 0) {
       url.searchParams.set(key, value);
