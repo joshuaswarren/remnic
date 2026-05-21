@@ -14,7 +14,6 @@ import {
   DEFAULT_TRANSFER_EXCLUDE_DIRS,
 } from "./transfer/exclusions.js";
 import {
-  fromPosixRelPath,
   prepareSafeArchiveRoot,
   resolveSafeArchiveTarget,
   sha256Bytes,
@@ -903,19 +902,4 @@ export function normalizeOfflineSyncState(input: unknown): OfflineSyncState {
 
 export function fileStatesFromSnapshot(snapshot: OfflineSyncSnapshot): OfflineSyncFileState[] {
   return normalizeOfflineSyncSnapshot(snapshot).files.map(toFileState).sort(compareByPath);
-}
-
-export async function readOfflineSyncFileIfExists(root: string, relPath: string): Promise<Buffer | null> {
-  const safeRoot = await prepareSafeArchiveRoot(path.resolve(root), "readOfflineSyncFileIfExists", "root");
-  const target = await resolveSafeArchiveTarget(safeRoot, relPath);
-  try {
-    return await readFile(target);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-}
-
-export function fromOfflineSyncPosixPath(root: string, relPath: string): string {
-  return path.resolve(path.resolve(root), fromPosixRelPath(validateArchiveRelativePath(relPath, "fromOfflineSyncPosixPath")));
 }
