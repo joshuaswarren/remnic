@@ -316,6 +316,44 @@ test("offline snapshot rejects transcript records when transcripts are excluded"
   }
 });
 
+test("offline payloads require explicit includeTranscripts booleans", async () => {
+  const root = await tempDir("remnic-offline-include-transcripts-invalid");
+  try {
+    await assert.rejects(
+      () =>
+        applyOfflineSyncSnapshot({
+          root,
+          snapshot: {
+            format: "remnic.offline-sync.snapshot.v1",
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            sourceId: "remote",
+            files: [],
+          },
+        }),
+      /includeTranscripts must be a boolean/,
+    );
+
+    await assert.rejects(
+      () =>
+        applyOfflineSyncChangeset({
+          root,
+          changeset: {
+            format: "remnic.offline-sync.changeset.v1",
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            sourceId: "laptop",
+            includeTranscripts: "false",
+            changes: [],
+          },
+        }),
+      /includeTranscripts must be a boolean/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline payloads reject excluded internal paths", async () => {
   const root = await tempDir("remnic-offline-internal-path-invalid");
   try {

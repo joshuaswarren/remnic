@@ -180,6 +180,13 @@ function assertNonNegativeFinite(value: unknown, field: string): number {
   return value;
 }
 
+function assertBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${field} must be a boolean`);
+  }
+  return value;
+}
+
 function normalizeSourceId(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > 512) {
     throw new Error(`${field} must be a non-empty string no longer than 512 characters`);
@@ -245,7 +252,7 @@ export function normalizeOfflineSyncSnapshot(
   }
   const createdAt = normalizeIsoString(obj.createdAt, "createdAt");
   const sourceId = normalizeSourceId(obj.sourceId, "sourceId");
-  const includeTranscripts = obj.includeTranscripts === true;
+  const includeTranscripts = assertBoolean(obj.includeTranscripts, "includeTranscripts");
   if (!Array.isArray(obj.files)) {
     throw new Error("offline sync snapshot files must be an array");
   }
@@ -289,7 +296,7 @@ export function normalizeOfflineSyncChangeset(input: unknown): OfflineSyncChange
   }
   const createdAt = normalizeIsoString(obj.createdAt, "createdAt");
   const sourceId = normalizeSourceId(obj.sourceId, "sourceId");
-  const includeTranscripts = obj.includeTranscripts === true;
+  const includeTranscripts = assertBoolean(obj.includeTranscripts, "includeTranscripts");
   if (!Array.isArray(obj.changes)) {
     throw new Error("offline sync changeset changes must be an array");
   }
@@ -980,7 +987,7 @@ export function normalizeOfflineSyncState(input: unknown): OfflineSyncState {
     version: OFFLINE_SYNC_STATE_VERSION,
     remoteId: normalizeSourceId(obj.remoteId, "remoteId"),
     ...(namespace ? { namespace } : {}),
-    includeTranscripts: obj.includeTranscripts === true,
+    includeTranscripts: assertBoolean(obj.includeTranscripts, "includeTranscripts"),
     lastSyncedAt: normalizeIsoString(obj.lastSyncedAt, "lastSyncedAt"),
     baseFiles,
   };
