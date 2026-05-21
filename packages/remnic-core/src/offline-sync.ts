@@ -250,6 +250,18 @@ export function normalizeOfflineSyncSnapshot(
       normalizeFileRecord(entry, `files[${index}]`, options.requireContent === true))
     .sort(compareByPath);
   assertUniquePaths(files, "offline sync snapshot");
+  if (!includeTranscripts) {
+    const transcriptPath = files.find((file) => file.path.split("/")[0] === "transcripts")?.path;
+    if (transcriptPath) {
+      throw new Error(
+        `offline sync snapshot includeTranscripts is false but contains transcript path: ${transcriptPath}`,
+      );
+    }
+  }
+  const excludedPath = files.find((file) => shouldExcludeRelPath(file.path, true))?.path;
+  if (excludedPath) {
+    throw new Error(`offline sync snapshot contains excluded path: ${excludedPath}`);
+  }
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
     schemaVersion: 1,
@@ -321,6 +333,10 @@ export function normalizeOfflineSyncChangeset(input: unknown): OfflineSyncChange
         `offline sync changeset includeTranscripts is false but contains transcript path: ${transcriptPath}`,
       );
     }
+  }
+  const excludedPath = changes.find((change) => shouldExcludeRelPath(change.path, true))?.path;
+  if (excludedPath) {
+    throw new Error(`offline sync changeset contains excluded path: ${excludedPath}`);
   }
   return {
     format: OFFLINE_SYNC_CHANGESET_FORMAT,

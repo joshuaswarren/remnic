@@ -285,6 +285,92 @@ test("offline changeset rejects transcript changes when transcripts are excluded
   }
 });
 
+test("offline snapshot rejects transcript records when transcripts are excluded", async () => {
+  const root = await tempDir("remnic-offline-snapshot-transcript-invalid");
+  try {
+    const transcript = Buffer.from("turn");
+    await assert.rejects(
+      () =>
+        applyOfflineSyncSnapshot({
+          root,
+          snapshot: {
+            format: "remnic.offline-sync.snapshot.v1",
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            sourceId: "remote",
+            includeTranscripts: false,
+            files: [{
+              path: "transcripts/session.jsonl",
+              sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+              bytes: transcript.byteLength,
+              mtimeMs: 0,
+              contentBase64: transcript.toString("base64"),
+            }],
+          },
+        }),
+      /offline sync snapshot includeTranscripts is false but contains transcript path/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline payloads reject excluded internal paths", async () => {
+  const root = await tempDir("remnic-offline-internal-path-invalid");
+  try {
+    const header = Buffer.from("secret");
+    await assert.rejects(
+      () =>
+        applyOfflineSyncSnapshot({
+          root,
+          snapshot: {
+            format: "remnic.offline-sync.snapshot.v1",
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            sourceId: "remote",
+            includeTranscripts: true,
+            files: [{
+              path: ".secure-store/header.json",
+              sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+              bytes: header.byteLength,
+              mtimeMs: 0,
+              contentBase64: header.toString("base64"),
+            }],
+          },
+        }),
+      /offline sync snapshot contains excluded path: \.secure-store\/header\.json/,
+    );
+
+    await assert.rejects(
+      () =>
+        applyOfflineSyncChangeset({
+          root,
+          changeset: {
+            format: "remnic.offline-sync.changeset.v1",
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            sourceId: "laptop",
+            includeTranscripts: true,
+            changes: [{
+              type: "upsert",
+              path: ".secure-store/header.json",
+              file: {
+                path: ".secure-store/header.json",
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+                bytes: header.byteLength,
+                mtimeMs: 0,
+                contentBase64: header.toString("base64"),
+              },
+            }],
+          },
+        }),
+      /offline sync changeset contains excluded path: \.secure-store\/header\.json/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline sync applies and snapshots through secure storage hooks", async () => {
   const root = await tempDir("remnic-offline-secure-store");
   const source = await tempDir("remnic-offline-secure-source");
