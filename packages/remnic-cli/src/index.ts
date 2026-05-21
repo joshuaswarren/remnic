@@ -5514,16 +5514,7 @@ function localOfflineSourceId(memoryDir: string): string {
   return `remnic-local:${host}:${dirHash}`;
 }
 
-function resolveOfflineRemoteUrl(args: string[]): string {
-  const raw =
-    resolveRequiredValueFlag(args, "--remote-url") ??
-    process.env.REMNIC_OFFLINE_REMOTE_URL ??
-    process.env.ENGRAM_OFFLINE_REMOTE_URL;
-  if (!raw || raw.trim().length === 0) {
-    throw new Error(
-      "offline mode requires --remote-url <url> or REMNIC_OFFLINE_REMOTE_URL",
-    );
-  }
+function normalizeOfflineRemoteUrl(raw: string): string {
   let parsed: URL;
   try {
     parsed = new URL(raw.trim());
@@ -5537,6 +5528,25 @@ function resolveOfflineRemoteUrl(args: string[]): string {
   parsed.search = "";
   parsed.hash = "";
   return parsed.toString().replace(/\/$/, "");
+}
+
+function resolveOptionalOfflineRemoteUrl(args: string[]): string | undefined {
+  const raw =
+    resolveRequiredValueFlag(args, "--remote-url") ??
+    process.env.REMNIC_OFFLINE_REMOTE_URL ??
+    process.env.ENGRAM_OFFLINE_REMOTE_URL;
+  if (!raw || raw.trim().length === 0) return undefined;
+  return normalizeOfflineRemoteUrl(raw);
+}
+
+function resolveOfflineRemoteUrl(args: string[]): string {
+  const parsed = resolveOptionalOfflineRemoteUrl(args);
+  if (!parsed) {
+    throw new Error(
+      "offline mode requires --remote-url <url> or REMNIC_OFFLINE_REMOTE_URL",
+    );
+  }
+  return parsed;
 }
 
 function resolveOfflineToken(args: string[]): string {
@@ -5646,6 +5656,23 @@ function parseOfflineIntervalMs(args: string[]): number {
     throw new Error("--interval-ms must be an integer >= 1000");
   }
   return parsed;
+}
+
+function waitForOfflineInterval(
+  ms: number,
+  setCancel: (cancel: (() => void) | null) => void,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      setCancel(null);
+      resolve();
+    }, ms);
+    setCancel(() => {
+      clearTimeout(timer);
+      setCancel(null);
+      resolve();
+    });
+  });
 }
 
 async function runOfflineSyncOnce(options: {
@@ -5766,17 +5793,18 @@ Environment fallbacks:
   const includeTranscripts = !hasFlag(rest, "--no-transcripts");
   const stateOverride = resolveRequiredValueFlag(rest, "--state");
   const needsRemote = action === "prepare" || action === "sync" || action === "watch";
-  const remoteUrl = needsRemote || stateOverride === undefined
+  const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
-    : undefined;
+    : resolveOptionalOfflineRemoteUrl(rest);
   const token = needsRemote ? resolveOfflineToken(rest) : undefined;
-  const statePath = path.resolve(expandTilde(
-    stateOverride ??
-      defaultOfflineSyncStatePath(memoryDir, remoteUrl ?? resolveOfflineRemoteUrl(rest), namespace),
-  ));
+  const statePath = stateOverride !== undefined
+    ? path.resolve(expandTilde(stateOverride))
+    : remoteUrl !== undefined
+      ? defaultOfflineSyncStatePath(memoryDir, remoteUrl, namespace)
+      : undefined;
 
   if (action === "prepare") {
-    if (!remoteUrl || !token) throw new Error("offline prepare requires remote URL and token");
+    if (!remoteUrl || !token || !statePath) throw new Error("offline prepare requires remote URL and token");
     fs.mkdirSync(memoryDir, { recursive: true });
     const remoteSnapshot = await fetchOfflineSnapshot({
       remoteUrl,
@@ -5818,7 +5846,7 @@ Environment fallbacks:
   }
 
   if (action === "sync") {
-    if (!remoteUrl || !token) throw new Error("offline sync requires remote URL and token");
+    if (!remoteUrl || !token || !statePath) throw new Error("offline sync requires remote URL and token");
     const result = await runOfflineSyncOnce({
       memoryDir,
       remoteUrl,
@@ -5841,8 +5869,8 @@ Environment fallbacks:
 
   if (action === "status") {
     fs.mkdirSync(memoryDir, { recursive: true });
-    const state = await readOfflineSyncState(statePath);
-    if (state && remoteUrl) {
+    const state = statePath ? await readOfflineSyncState(statePath) : null;
+    if (state && remoteUrl && statePath) {
       assertOfflineStateMatches({
         state,
         remoteUrl,
@@ -5859,10 +5887,10 @@ Environment fallbacks:
     });
     const summary = summarizeOfflineSyncChangeset(changeset);
     if (json) {
-      console.log(JSON.stringify({ statePath, state, pending: summary }, null, 2));
+      console.log(JSON.stringify({ statePath: statePath ?? null, state, pending: summary }, null, 2));
     } else {
       console.log(`Offline state: ${state ? "ready" : "not prepared"}`);
-      console.log(`State: ${statePath}`);
+      console.log(`State: ${statePath ?? "(not selected; pass --state or --remote-url to inspect a prepared remote state)"}`);
       if (state) console.log(`Last synced: ${state.lastSyncedAt}`);
       console.log(`Pending local changes: ${summary.total} (${summary.upserts} upserts, ${summary.deletes} deletes)`);
     }
@@ -5870,12 +5898,14 @@ Environment fallbacks:
   }
 
   if (action === "watch") {
-    if (!remoteUrl || !token) throw new Error("offline watch requires remote URL and token");
+    if (!remoteUrl || !token || !statePath) throw new Error("offline watch requires remote URL and token");
     const intervalMs = parseOfflineIntervalMs(rest);
     console.log(`Watching offline sync every ${intervalMs}ms. Press Ctrl+C to stop.`);
     let stopped = false;
+    let cancelSleep: (() => void) | null = null;
     process.once("SIGINT", () => {
       stopped = true;
+      cancelSleep?.();
       console.log("Stopping offline sync watcher.");
     });
     while (!stopped) {
@@ -5894,7 +5924,10 @@ Environment fallbacks:
       } catch (error) {
         console.log(`[${new Date().toISOString()}] sync waiting: ${error instanceof Error ? error.message : String(error)}`);
       }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      if (stopped) break;
+      await waitForOfflineInterval(intervalMs, (cancel) => {
+        cancelSleep = cancel;
+      });
     }
     return;
   }
