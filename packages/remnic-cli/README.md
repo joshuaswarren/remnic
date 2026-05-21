@@ -35,6 +35,7 @@ remnic query "hello" --explain  # Test query with tier breakdown
 | `remnic curate` | Interactive memory curation |
 | `remnic dedup` | Find and merge duplicate memories |
 | `remnic sync` | Diff-aware sync with external sources |
+| `remnic offline prepare/sync/status/watch` | Use a local memory cache and sync with a remote Remnic daemon |
 | `remnic spaces` | Manage memory namespaces |
 | `remnic bench list` | List published benchmark packs |
 | `remnic bench datasets status/download` | Check or download local benchmark datasets |
@@ -47,6 +48,11 @@ remnic query "hello" --explain  # Test query with tier breakdown
 | `remnic bench publish --target remnic-ai` | Build the Remnic.ai benchmark feed from stored results |
 
 Run `remnic --help` for the full command list.
+
+Offline mode is intended for laptops that need Remnic on flights, cruises, or
+other disconnected stretches. Point agents at the laptop daemon, then run
+`remnic offline watch` to sync with the home daemon whenever it is reachable.
+See [Offline Mode](../../docs/guides/offline-mode.md).
 
 ## Benchmarks
 

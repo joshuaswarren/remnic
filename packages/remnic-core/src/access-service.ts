@@ -136,6 +136,12 @@ import {
   type CapsuleListEntry,
 } from "./capsule-cli.js";
 import {
+  applyOfflineSyncChangeset,
+  buildOfflineSyncSnapshot,
+  type OfflineSyncApplyChangesetResult,
+  type OfflineSyncSnapshot,
+} from "./offline-sync.js";
+import {
   evaluateActionConfidence,
   type ActionConfidenceInput,
   type ActionConfidenceResult,
@@ -601,6 +607,27 @@ export interface EngramAccessCapsuleListResponse {
   namespace: string;
   capsulesDir: string;
   capsules: CapsuleListEntry[];
+}
+
+export interface EngramAccessOfflineSyncSnapshotRequest {
+  namespace?: string;
+  principal?: string;
+  includeTranscripts?: boolean;
+  includeContent?: boolean;
+}
+
+export interface EngramAccessOfflineSyncApplyRequest {
+  namespace?: string;
+  principal?: string;
+  changeset: unknown;
+}
+
+export interface EngramAccessOfflineSyncSnapshotResponse extends OfflineSyncSnapshot {
+  namespace: string;
+}
+
+export interface EngramAccessOfflineSyncApplyResponse extends OfflineSyncApplyChangesetResult {
+  namespace: string;
 }
 
 export type EngramAccessActionConfidenceRequest = ActionConfidenceInput;
@@ -5520,6 +5547,51 @@ export class EngramAccessService {
     }
 
     return { namespace: resolvedNamespace, capsulesDir, capsules };
+  }
+
+  async offlineSyncSnapshot(
+    options: EngramAccessOfflineSyncSnapshotRequest = {},
+  ): Promise<EngramAccessOfflineSyncSnapshotResponse> {
+    const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
+    const snapshot = await buildOfflineSyncSnapshot({
+      root: storage.dir,
+      sourceId: `remnic:${resolvedNamespace}:${storageHash}`,
+      includeContent: options.includeContent !== false,
+      includeTranscripts: options.includeTranscripts !== false,
+    });
+    return {
+      namespace: resolvedNamespace,
+      ...snapshot,
+    };
+  }
+
+  async offlineSyncApply(
+    options: EngramAccessOfflineSyncApplyRequest,
+  ): Promise<EngramAccessOfflineSyncApplyResponse> {
+    const resolvedNamespace = this.resolveWritableNamespace(
+      options.namespace,
+      undefined,
+      options.principal,
+    );
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    try {
+      const result = await applyOfflineSyncChangeset({
+        root: storage.dir,
+        changeset: options.changeset,
+      });
+      return {
+        namespace: resolvedNamespace,
+        ...result,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("offline sync")) {
+        throw new EngramAccessInputError(message);
+      }
+      throw error;
+    }
   }
 
   // ── Dreams pipeline telemetry surfaces (issue #678 PR 3+4) ──────────────

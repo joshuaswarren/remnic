@@ -588,6 +588,60 @@ export class EngramAccessHttpServer {
       return;
     }
 
+    if (
+      req.method === "GET" &&
+      (pathname === "/engram/v1/offline-sync/snapshot" || pathname === "/remnic/v1/offline-sync/snapshot")
+    ) {
+      const includeTranscriptsRaw = parsed.searchParams.get("include_transcripts");
+      const includeContentRaw = parsed.searchParams.get("content");
+      if (
+        includeTranscriptsRaw !== null &&
+        includeTranscriptsRaw !== "true" &&
+        includeTranscriptsRaw !== "false"
+      ) {
+        throw new EngramAccessInputError(
+          `include_transcripts must be one of: true, false (got: ${includeTranscriptsRaw})`,
+        );
+      }
+      if (
+        includeContentRaw !== null &&
+        includeContentRaw !== "true" &&
+        includeContentRaw !== "false"
+      ) {
+        throw new EngramAccessInputError(
+          `content must be one of: true, false (got: ${includeContentRaw})`,
+        );
+      }
+      const namespaceParam = parsed.searchParams.get("namespace");
+      const result = await this.service.offlineSyncSnapshot({
+        namespace: this.resolveNamespace(
+          req,
+          namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined,
+        ),
+        principal: this.resolveRequestPrincipal(req),
+        includeTranscripts: includeTranscriptsRaw !== "false",
+        includeContent: includeContentRaw !== "false",
+      });
+      this.respondJson(res, 200, result);
+      return;
+    }
+
+    if (
+      req.method === "POST" &&
+      (pathname === "/engram/v1/offline-sync/apply" || pathname === "/remnic/v1/offline-sync/apply")
+    ) {
+      const body = await this.readValidatedBody(req, "offlineSyncApply");
+      this.ensureWriteRateLimitAvailable();
+      const result = await this.service.offlineSyncApply({
+        namespace: this.resolveNamespace(req, body.namespace),
+        principal: this.resolveRequestPrincipal(req),
+        changeset: body.changeset,
+      });
+      this.recordWriteRateLimitHit();
+      this.respondJson(res, 200, result);
+      return;
+    }
+
     if (req.method === "POST" && pathname === "/engram/v1/recall/explain") {
       const body = await this.readValidatedBody(req, "recallExplain");
       const response = await this.service.recallExplain({

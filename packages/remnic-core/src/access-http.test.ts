@@ -223,3 +223,203 @@ test("HTTP review show hides namespace denial as pair_not_found", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("HTTP offline snapshot forwards namespace and transfer options", async () => {
+  const calls: Array<{
+    namespace: string | undefined;
+    principal: string | undefined;
+    includeTranscripts: boolean | undefined;
+    includeContent: boolean | undefined;
+  }> = [];
+  const service = {
+    offlineSyncSnapshot: async (options: {
+      namespace?: string;
+      principal?: string;
+      includeTranscripts?: boolean;
+      includeContent?: boolean;
+    }) => {
+      calls.push({
+        namespace: options.namespace,
+        principal: options.principal,
+        includeTranscripts: options.includeTranscripts,
+        includeContent: options.includeContent,
+      });
+      return {
+        namespace: options.namespace ?? "default",
+        format: "remnic.offline-sync.snapshot.v1",
+        schemaVersion: 1,
+        createdAt: new Date("2026-05-21T00:00:00Z").toISOString(),
+        sourceId: "remote:test",
+        includeTranscripts: options.includeTranscripts !== false,
+        files: [],
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "reader",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/snapshot?namespace=team&include_transcripts=false&content=false`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    const body = await response.json() as { namespace?: string; includeTranscripts?: boolean; files?: unknown[] };
+
+    assert.equal(response.status, 200);
+    assert.equal(body.namespace, "team");
+    assert.equal(body.includeTranscripts, false);
+    assert.deepEqual(body.files, []);
+    assert.deepEqual(calls, [{
+      namespace: "team",
+      principal: "reader",
+      includeTranscripts: false,
+      includeContent: false,
+    }]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP offline snapshot rejects invalid boolean query values", async () => {
+  let calls = 0;
+  const service = {
+    offlineSyncSnapshot: async () => {
+      calls += 1;
+      return {};
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "reader",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/offline-sync/snapshot?include_transcripts=maybe`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    const body = await response.json() as { error?: string; code?: string };
+
+    assert.equal(response.status, 400);
+    assert.match(body.error ?? "", /include_transcripts must be one of: true, false/);
+    assert.equal(body.code, "input_error");
+    assert.equal(calls, 0);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP offline apply validates and forwards changesets", async () => {
+  const calls: Array<{
+    namespace: string | undefined;
+    principal: string | undefined;
+    changeset: unknown;
+  }> = [];
+  const changeset = {
+    format: "remnic.offline-sync.changeset.v1",
+    schemaVersion: 1,
+    createdAt: new Date("2026-05-21T00:00:00Z").toISOString(),
+    sourceId: "laptop:test",
+    includeTranscripts: true,
+    changes: [],
+  };
+  const service = {
+    offlineSyncApply: async (options: {
+      namespace?: string;
+      principal?: string;
+      changeset: unknown;
+    }) => {
+      calls.push({
+        namespace: options.namespace,
+        principal: options.principal,
+        changeset: options.changeset,
+      });
+      return {
+        namespace: options.namespace ?? "default",
+        appliedUpserts: 0,
+        appliedDeletes: 0,
+        skipped: 0,
+        conflicts: [],
+        currentFiles: [],
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "writer",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/remnic/v1/offline-sync/apply`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ namespace: "team", changeset }),
+    });
+    const body = await response.json() as { namespace?: string; appliedUpserts?: number };
+
+    assert.equal(response.status, 200);
+    assert.equal(body.namespace, "team");
+    assert.equal(body.appliedUpserts, 0);
+    assert.deepEqual(calls, [{
+      namespace: "team",
+      principal: "writer",
+      changeset,
+    }]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP offline apply requires a changeset", async () => {
+  let calls = 0;
+  const service = {
+    offlineSyncApply: async () => {
+      calls += 1;
+      return {};
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "writer",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/offline-sync/apply`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ namespace: "team" }),
+    });
+    const body = await response.json() as { code?: string; details?: Array<{ field?: string; message?: string }> };
+
+    assert.equal(response.status, 400);
+    assert.equal(body.code, "validation_error");
+    assert.equal(body.details?.[0]?.field, "changeset");
+    assert.equal(calls, 0);
+  } finally {
+    await server.stop();
+  }
+});

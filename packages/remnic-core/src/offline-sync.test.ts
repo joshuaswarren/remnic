@@ -1,0 +1,245 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import {
+  applyOfflineSyncChangeset,
+  applyOfflineSyncSnapshot,
+  buildOfflineSyncChangeset,
+  buildOfflineSyncSnapshot,
+} from "./offline-sync.js";
+
+async function tempDir(name: string): Promise<string> {
+  return mkdtemp(path.join(os.tmpdir(), `${name}-`));
+}
+
+async function write(root: string, relPath: string, content: string | Buffer): Promise<void> {
+  const filePath = path.join(root, relPath);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, content);
+}
+
+async function readUtf8(root: string, relPath: string): Promise<string> {
+  return readFile(path.join(root, relPath), "utf-8");
+}
+
+test("offline snapshot captures source-of-truth files and excludes private/internal paths", async () => {
+  const root = await tempDir("remnic-offline-snapshot");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "transcripts/session.jsonl", "turn");
+    await write(root, "assets/blob.bin", Buffer.from([0, 1, 2, 255]));
+    await write(root, ".secure-store/header.json", "secret");
+    await write(root, ".offline-sync/state/local.json", "state");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+    });
+
+    assert.deepEqual(
+      snapshot.files.map((file) => file.path),
+      ["assets/blob.bin", "facts/a.md", "transcripts/session.jsonl"],
+    );
+    const binary = snapshot.files.find((file) => file.path === "assets/blob.bin");
+    assert.equal(Buffer.from(binary?.contentBase64 ?? "", "base64")[3], 255);
+
+    const withoutTranscripts = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: false,
+      includeTranscripts: false,
+    });
+    assert.deepEqual(
+      withoutTranscripts.files.map((file) => file.path),
+      ["assets/blob.bin", "facts/a.md"],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline changeset pushes local edits when the remote is still at the shared base", async () => {
+  const remote = await tempDir("remnic-offline-remote");
+  const local = await tempDir("remnic-offline-local");
+  try {
+    await write(remote, "facts/base.md", "base");
+    const initial = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    const pull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: initial,
+    });
+
+    await write(local, "facts/base.md", "base plus local");
+    await write(local, "facts/local-only.md", "new local fact");
+    const changeset = await buildOfflineSyncChangeset({
+      root: local,
+      sourceId: "laptop",
+      baseFiles: pull.nextBaseFiles,
+    });
+
+    assert.equal(changeset.changes.length, 2);
+    const push = await applyOfflineSyncChangeset({
+      root: remote,
+      changeset,
+    });
+
+    assert.equal(push.appliedUpserts, 2);
+    assert.equal(push.conflicts.length, 0);
+    assert.equal(await readUtf8(remote, "facts/base.md"), "base plus local");
+    assert.equal(await readUtf8(remote, "facts/local-only.md"), "new local fact");
+  } finally {
+    await rm(remote, { recursive: true, force: true });
+    await rm(local, { recursive: true, force: true });
+  }
+});
+
+test("offline pull preserves local edits when both sides changed since the base", async () => {
+  const remote = await tempDir("remnic-offline-conflict-remote");
+  const local = await tempDir("remnic-offline-conflict-local");
+  try {
+    await write(remote, "facts/shared.md", "base");
+    const initial = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    const firstPull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: initial,
+    });
+
+    await write(local, "facts/shared.md", "local edit");
+    await write(remote, "facts/shared.md", "remote edit");
+    const remoteSnapshot = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: true,
+    });
+
+    const secondPull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: remoteSnapshot,
+      baseFiles: firstPull.nextBaseFiles,
+    });
+
+    assert.equal(secondPull.conflicts.length, 1);
+    assert.equal(secondPull.conflicts[0]?.reason, "both_modified");
+    assert.equal(await readUtf8(local, "facts/shared.md"), "local edit");
+    const conflictPath = secondPull.conflicts[0]?.conflictPath;
+    assert.ok(conflictPath);
+    assert.equal(await readUtf8(local, conflictPath), "remote edit");
+  } finally {
+    await rm(remote, { recursive: true, force: true });
+    await rm(local, { recursive: true, force: true });
+  }
+});
+
+test("offline push preserves remote edits when both sides changed since the base", async () => {
+  const remote = await tempDir("remnic-offline-push-conflict-remote");
+  const local = await tempDir("remnic-offline-push-conflict-local");
+  try {
+    await write(remote, "facts/shared.md", "base");
+    const initial = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    const firstPull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: initial,
+    });
+
+    await write(local, "facts/shared.md", "local edit");
+    await write(remote, "facts/shared.md", "remote edit");
+    const changeset = await buildOfflineSyncChangeset({
+      root: local,
+      sourceId: "laptop",
+      baseFiles: firstPull.nextBaseFiles,
+    });
+
+    const push = await applyOfflineSyncChangeset({
+      root: remote,
+      changeset,
+    });
+
+    assert.equal(push.appliedUpserts, 0);
+    assert.equal(push.conflicts.length, 1);
+    assert.equal(push.conflicts[0]?.reason, "remote_changed_for_local_update");
+    assert.equal(await readUtf8(remote, "facts/shared.md"), "remote edit");
+    const conflictPath = push.conflicts[0]?.conflictPath;
+    assert.ok(conflictPath);
+    assert.equal(await readUtf8(remote, conflictPath), "local edit");
+  } finally {
+    await rm(remote, { recursive: true, force: true });
+    await rm(local, { recursive: true, force: true });
+  }
+});
+
+test("offline pull applies remote deletion when the local file is unchanged", async () => {
+  const remote = await tempDir("remnic-offline-delete-remote");
+  const local = await tempDir("remnic-offline-delete-local");
+  try {
+    await write(remote, "facts/deleted.md", "soon gone");
+    const initial = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    const firstPull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: initial,
+    });
+
+    await rm(path.join(remote, "facts/deleted.md"), { force: true });
+    const remoteSnapshot = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    const secondPull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: remoteSnapshot,
+      baseFiles: firstPull.nextBaseFiles,
+    });
+
+    assert.equal(secondPull.deleted, 1);
+    await assert.rejects(
+      () => readFile(path.join(local, "facts/deleted.md")),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(remote, { recursive: true, force: true });
+    await rm(local, { recursive: true, force: true });
+  }
+});
+
+test("offline changeset validation reports client input errors with an offline sync prefix", async () => {
+  const root = await tempDir("remnic-offline-invalid-changeset");
+  try {
+    await assert.rejects(
+      () =>
+        applyOfflineSyncChangeset({
+          root,
+          changeset: {
+            format: "remnic.offline-sync.changeset.v1",
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            sourceId: "laptop",
+            includeTranscripts: true,
+            changes: [{ type: "delete", path: "../escape", baseSha256: "nope" }],
+          },
+        }),
+      /offline sync changeset invalid:/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

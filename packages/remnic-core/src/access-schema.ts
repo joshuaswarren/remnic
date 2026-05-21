@@ -365,6 +365,20 @@ export const capsuleListRequestSchema = z
   });
 
 // ---------------------------------------------------------------------------
+// Offline sync
+// ---------------------------------------------------------------------------
+
+export const offlineSyncApplyRequestSchema = z
+  .object({
+    namespace: namespaceSchema,
+    changeset: z.unknown(),
+  })
+  .refine((value) => value.changeset !== undefined, {
+    message: "changeset is required",
+    path: ["changeset"],
+  });
+
+// ---------------------------------------------------------------------------
 // Action confidence
 // ---------------------------------------------------------------------------
 
@@ -429,6 +443,7 @@ export type DaySummaryRequest = z.infer<typeof daySummaryRequestSchema>;
 export type CapsuleExportRequest = z.infer<typeof capsuleExportRequestSchema>;
 export type CapsuleImportRequest = z.infer<typeof capsuleImportRequestSchema>;
 export type CapsuleListRequest = z.infer<typeof capsuleListRequestSchema>;
+export type OfflineSyncApplyRequest = z.infer<typeof offlineSyncApplyRequestSchema>;
 export type ActionConfidenceRequest = z.infer<typeof actionConfidenceRequestSchema>;
 
 // ---------------------------------------------------------------------------
@@ -452,6 +467,7 @@ export type SchemaName =
   | "capsuleExport"
   | "capsuleImport"
   | "capsuleList"
+  | "offlineSyncApply"
   | "actionConfidence";
 
 export type SchemaTypeFor<N extends SchemaName> =
@@ -471,6 +487,7 @@ export type SchemaTypeFor<N extends SchemaName> =
   : N extends "capsuleExport" ? CapsuleExportRequest
   : N extends "capsuleImport" ? CapsuleImportRequest
   : N extends "capsuleList" ? CapsuleListRequest
+  : N extends "offlineSyncApply" ? OfflineSyncApplyRequest
   : N extends "actionConfidence" ? ActionConfidenceRequest
   : never;
 
@@ -491,6 +508,7 @@ const schemas: Record<SchemaName, z.ZodTypeAny> = {
   capsuleExport: capsuleExportRequestSchema,
   capsuleImport: capsuleImportRequestSchema,
   capsuleList: capsuleListRequestSchema,
+  offlineSyncApply: offlineSyncApplyRequestSchema,
   actionConfidence: actionConfidenceRequestSchema,
 };
 

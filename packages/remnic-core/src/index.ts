@@ -675,6 +675,37 @@ export {
 } from "./sync/index.js";
 
 // ---------------------------------------------------------------------------
+// Offline Sync
+// ---------------------------------------------------------------------------
+
+export {
+  OFFLINE_SYNC_CHANGESET_FORMAT,
+  OFFLINE_SYNC_SNAPSHOT_FORMAT,
+  OFFLINE_SYNC_STATE_VERSION,
+  applyOfflineSyncChangeset,
+  applyOfflineSyncSnapshot,
+  buildOfflineSyncChangeset,
+  buildOfflineSyncSnapshot,
+  defaultOfflineSyncStatePath,
+  fileStatesFromSnapshot,
+  normalizeOfflineSyncChangeset,
+  normalizeOfflineSyncSnapshot,
+  offlineSyncStateFromSnapshot,
+  readOfflineSyncState,
+  summarizeOfflineSyncChangeset,
+  writeOfflineSyncState,
+  type OfflineSyncApplyChangesetResult,
+  type OfflineSyncApplySnapshotResult,
+  type OfflineSyncChange,
+  type OfflineSyncChangeset,
+  type OfflineSyncConflict,
+  type OfflineSyncFileRecord,
+  type OfflineSyncFileState,
+  type OfflineSyncSnapshot,
+  type OfflineSyncState,
+} from "./offline-sync.js";
+
+// ---------------------------------------------------------------------------
 // Memory Extension Host (#382)
 // ---------------------------------------------------------------------------
 

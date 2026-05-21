@@ -35,6 +35,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import * as childProcess from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -124,6 +125,14 @@ import {
   formatProcedureStatsText,
   parseXrayCliOptions,
   renderXray,
+  applyOfflineSyncSnapshot,
+  buildOfflineSyncChangeset,
+  buildOfflineSyncSnapshot,
+  defaultOfflineSyncStatePath,
+  offlineSyncStateFromSnapshot,
+  readOfflineSyncState,
+  summarizeOfflineSyncChangeset,
+  writeOfflineSyncState,
   buildActionConfidenceInputFromOptions,
   evaluateActionConfidence,
   renderActionConfidenceText,
@@ -330,7 +339,8 @@ type CommandName =
   | "import-lossless-claw"
   | "action-confidence"
   | "xray"
-  | "capsule";
+  | "capsule"
+  | "offline";
 
 type DaemonAction = "start" | "stop" | "restart" | "install" | "uninstall" | "status";
 type TokenAction = "generate" | "list" | "revoke";
@@ -5497,6 +5507,347 @@ async function cmdSync(action: string, rest: string[], json: boolean): Promise<v
   }
 }
 
+function localOfflineSourceId(memoryDir: string): string {
+  const host = os.hostname() || "unknown-host";
+  const dirHash = createHash("sha256").update(path.resolve(memoryDir)).digest("hex").slice(0, 16);
+  return `remnic-local:${host}:${dirHash}`;
+}
+
+function resolveOfflineRemoteUrl(args: string[]): string {
+  const raw =
+    resolveRequiredValueFlag(args, "--remote-url") ??
+    process.env.REMNIC_OFFLINE_REMOTE_URL ??
+    process.env.ENGRAM_OFFLINE_REMOTE_URL;
+  if (!raw || raw.trim().length === 0) {
+    throw new Error(
+      "offline mode requires --remote-url <url> or REMNIC_OFFLINE_REMOTE_URL",
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(raw.trim());
+  } catch {
+    throw new Error(`invalid --remote-url: ${raw}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("--remote-url must use http:// or https://");
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString().replace(/\/$/, "");
+}
+
+function resolveOfflineToken(args: string[]): string {
+  const token =
+    resolveRequiredValueFlag(args, "--token") ??
+    process.env.REMNIC_OFFLINE_TOKEN ??
+    process.env.REMNIC_AUTH_TOKEN ??
+    process.env.ENGRAM_AUTH_TOKEN;
+  if (!token || token.trim().length === 0) {
+    throw new Error(
+      "offline mode requires --token <token>, REMNIC_OFFLINE_TOKEN, or REMNIC_AUTH_TOKEN",
+    );
+  }
+  return token.trim();
+}
+
+function offlineEndpoint(
+  remoteUrl: string,
+  pathname: string,
+  params: Record<string, string | undefined> = {},
+): string {
+  const url = new URL(pathname, `${remoteUrl}/`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value.length > 0) {
+      url.searchParams.set(key, value);
+    }
+  }
+  return url.toString();
+}
+
+async function fetchOfflineJson<T>(
+  url: string,
+  token: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+      ...(init.headers ?? {}),
+    },
+  });
+  if (!response.ok) {
+    let detail = "";
+    try {
+      detail = await response.text();
+    } catch {
+      detail = "";
+    }
+    throw new Error(
+      `offline sync request failed: ${response.status} ${response.statusText}${detail ? ` - ${detail.slice(0, 500)}` : ""}`,
+    );
+  }
+  return await response.json() as T;
+}
+
+async function fetchOfflineSnapshot(args: {
+  remoteUrl: string;
+  token: string;
+  namespace?: string;
+  includeTranscripts: boolean;
+}): Promise<Awaited<ReturnType<typeof buildOfflineSyncSnapshot>> & { namespace?: string }> {
+  return fetchOfflineJson(
+    offlineEndpoint(args.remoteUrl, "/remnic/v1/offline-sync/snapshot", {
+      namespace: args.namespace,
+      include_transcripts: args.includeTranscripts ? "true" : "false",
+      content: "true",
+    }),
+    args.token,
+  );
+}
+
+async function pushOfflineChanges(args: {
+  remoteUrl: string;
+  token: string;
+  namespace?: string;
+  changeset: Awaited<ReturnType<typeof buildOfflineSyncChangeset>>;
+}): Promise<{
+  namespace: string;
+  appliedUpserts: number;
+  appliedDeletes: number;
+  skipped: number;
+  conflicts: Array<{ path: string; reason: string; conflictPath?: string }>;
+}> {
+  return fetchOfflineJson(
+    offlineEndpoint(args.remoteUrl, "/remnic/v1/offline-sync/apply"),
+    args.token,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        namespace: args.namespace,
+        changeset: args.changeset,
+      }),
+    },
+  );
+}
+
+function parseOfflineIntervalMs(args: string[]): number {
+  const raw = resolveRequiredValueFlag(args, "--interval-ms");
+  if (raw === undefined) return 60_000;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1000) {
+    throw new Error("--interval-ms must be an integer >= 1000");
+  }
+  return parsed;
+}
+
+async function runOfflineSyncOnce(options: {
+  memoryDir: string;
+  remoteUrl: string;
+  token: string;
+  namespace?: string;
+  includeTranscripts: boolean;
+  statePath: string;
+}): Promise<{
+  statePath: string;
+  prepared: boolean;
+  pushed: Awaited<ReturnType<typeof pushOfflineChanges>> | null;
+  pull: Awaited<ReturnType<typeof applyOfflineSyncSnapshot>>;
+  pendingSummary: ReturnType<typeof summarizeOfflineSyncChangeset>;
+  remoteFileCount: number;
+}> {
+  fs.mkdirSync(options.memoryDir, { recursive: true });
+  const priorState = await readOfflineSyncState(options.statePath);
+  const baseFiles = priorState?.baseFiles ?? [];
+  const changeset = await buildOfflineSyncChangeset({
+    root: options.memoryDir,
+    sourceId: localOfflineSourceId(options.memoryDir),
+    baseFiles,
+    includeTranscripts: options.includeTranscripts,
+  });
+  const pendingSummary = summarizeOfflineSyncChangeset(changeset);
+  const pushed = changeset.changes.length > 0
+    ? await pushOfflineChanges({
+        remoteUrl: options.remoteUrl,
+        token: options.token,
+        namespace: options.namespace,
+        changeset,
+      })
+    : null;
+  const remoteSnapshot = await fetchOfflineSnapshot({
+    remoteUrl: options.remoteUrl,
+    token: options.token,
+    namespace: options.namespace,
+    includeTranscripts: options.includeTranscripts,
+  });
+  const pull = await applyOfflineSyncSnapshot({
+    root: options.memoryDir,
+    snapshot: remoteSnapshot,
+    baseFiles,
+  });
+  const state = offlineSyncStateFromSnapshot({
+    remoteId: options.remoteUrl,
+    namespace: options.namespace,
+    snapshot: remoteSnapshot,
+    baseFiles: pull.nextBaseFiles,
+  });
+  await writeOfflineSyncState(options.statePath, state);
+  return {
+    statePath: options.statePath,
+    prepared: priorState === null,
+    pushed,
+    pull,
+    pendingSummary,
+    remoteFileCount: remoteSnapshot.files.length,
+  };
+}
+
+async function cmdOffline(action: string, rest: string[], json: boolean): Promise<void> {
+  if (action === "help" || action === "--help" || action === "-h" || rest.includes("--help") || rest.includes("-h")) {
+    console.log(`Usage: remnic offline <prepare|sync|status|watch> [options]
+
+Options:
+  --remote-url <url>       Remote Remnic server URL, e.g. http://home:4242
+  --token <token>          Bearer token for the remote server
+  --namespace <name>       Namespace to sync
+  --memory-dir <dir>       Local memory dir (defaults to resolved memoryDir)
+  --state <path>           Override offline sync state file
+  --no-transcripts         Exclude transcripts/ from the offline cache
+  --interval-ms <ms>       Watch interval (default 60000)
+  --json                   JSON output
+
+Environment fallbacks:
+  REMNIC_OFFLINE_REMOTE_URL, REMNIC_OFFLINE_TOKEN, REMNIC_AUTH_TOKEN`);
+    return;
+  }
+
+  const memoryDir = path.resolve(expandTilde(resolveRequiredValueFlag(rest, "--memory-dir") ?? resolveMemoryDir()));
+  const namespace = resolveRequiredValueFlag(rest, "--namespace");
+  const includeTranscripts = !hasFlag(rest, "--no-transcripts");
+  const stateOverride = resolveRequiredValueFlag(rest, "--state");
+  const needsRemote = action === "prepare" || action === "sync" || action === "watch";
+  const remoteUrl = needsRemote || stateOverride === undefined
+    ? resolveOfflineRemoteUrl(rest)
+    : undefined;
+  const token = needsRemote ? resolveOfflineToken(rest) : undefined;
+  const statePath = path.resolve(expandTilde(
+    stateOverride ??
+      defaultOfflineSyncStatePath(memoryDir, remoteUrl ?? resolveOfflineRemoteUrl(rest), namespace),
+  ));
+
+  if (action === "prepare") {
+    if (!remoteUrl || !token) throw new Error("offline prepare requires remote URL and token");
+    fs.mkdirSync(memoryDir, { recursive: true });
+    const remoteSnapshot = await fetchOfflineSnapshot({
+      remoteUrl,
+      token,
+      namespace,
+      includeTranscripts,
+    });
+    const existingState = await readOfflineSyncState(statePath);
+    const pull = await applyOfflineSyncSnapshot({
+      root: memoryDir,
+      snapshot: remoteSnapshot,
+      baseFiles: existingState?.baseFiles ?? [],
+    });
+    const state = offlineSyncStateFromSnapshot({
+      remoteId: remoteUrl,
+      namespace,
+      snapshot: remoteSnapshot,
+      baseFiles: pull.nextBaseFiles,
+    });
+    await writeOfflineSyncState(statePath, state);
+    if (json) {
+      console.log(JSON.stringify({ statePath, remoteFiles: remoteSnapshot.files.length, pull }, null, 2));
+    } else {
+      console.log(`Offline cache prepared: ${memoryDir}`);
+      console.log(`Remote files: ${remoteSnapshot.files.length}`);
+      console.log(`Pulled: ${pull.upserted} upserted, ${pull.deleted} deleted, ${pull.conflicts.length} conflicts`);
+      console.log(`State: ${statePath}`);
+    }
+    return;
+  }
+
+  if (action === "sync") {
+    if (!remoteUrl || !token) throw new Error("offline sync requires remote URL and token");
+    const result = await runOfflineSyncOnce({
+      memoryDir,
+      remoteUrl,
+      token,
+      namespace,
+      includeTranscripts,
+      statePath,
+    });
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`Offline sync complete${result.prepared ? " (initialized state)" : ""}.`);
+      console.log(`Pushed: ${result.pushed ? `${result.pushed.appliedUpserts} upserts, ${result.pushed.appliedDeletes} deletes, ${result.pushed.conflicts.length} conflicts` : "nothing pending"}`);
+      console.log(`Pulled: ${result.pull.upserted} upserts, ${result.pull.deleted} deletes, ${result.pull.conflicts.length} conflicts`);
+      console.log(`Pending local before push: ${result.pendingSummary.total}`);
+      console.log(`State: ${result.statePath}`);
+    }
+    return;
+  }
+
+  if (action === "status") {
+    fs.mkdirSync(memoryDir, { recursive: true });
+    const state = await readOfflineSyncState(statePath);
+    const changeset = await buildOfflineSyncChangeset({
+      root: memoryDir,
+      sourceId: localOfflineSourceId(memoryDir),
+      baseFiles: state?.baseFiles ?? [],
+      includeTranscripts,
+    });
+    const summary = summarizeOfflineSyncChangeset(changeset);
+    if (json) {
+      console.log(JSON.stringify({ statePath, state, pending: summary }, null, 2));
+    } else {
+      console.log(`Offline state: ${state ? "ready" : "not prepared"}`);
+      console.log(`State: ${statePath}`);
+      if (state) console.log(`Last synced: ${state.lastSyncedAt}`);
+      console.log(`Pending local changes: ${summary.total} (${summary.upserts} upserts, ${summary.deletes} deletes)`);
+    }
+    return;
+  }
+
+  if (action === "watch") {
+    if (!remoteUrl || !token) throw new Error("offline watch requires remote URL and token");
+    const intervalMs = parseOfflineIntervalMs(rest);
+    console.log(`Watching offline sync every ${intervalMs}ms. Press Ctrl+C to stop.`);
+    let stopped = false;
+    process.once("SIGINT", () => {
+      stopped = true;
+      console.log("Stopping offline sync watcher.");
+    });
+    while (!stopped) {
+      try {
+        const result = await runOfflineSyncOnce({
+          memoryDir,
+          remoteUrl,
+          token,
+          namespace,
+          includeTranscripts,
+          statePath,
+        });
+        console.log(
+          `[${new Date().toISOString()}] sync ok: pushed=${result.pushed ? result.pushed.appliedUpserts + result.pushed.appliedDeletes : 0}, pulled=${result.pull.upserted + result.pull.deleted}, conflicts=${(result.pushed?.conflicts.length ?? 0) + result.pull.conflicts.length}`,
+        );
+      } catch (error) {
+        console.log(`[${new Date().toISOString()}] sync waiting: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    return;
+  }
+
+  console.log("Usage: remnic offline <prepare|sync|status|watch> [--remote-url <url>] [--token <token>]");
+  process.exit(1);
+}
+
 function cmdDedup(json: boolean): void {
   const memoryDir = resolveMemoryDir();
   const result = findDuplicates({ memoryDir });
@@ -8603,6 +8954,13 @@ Options:
       break;
     }
 
+    case "offline": {
+      const action = rest[0] ?? "help";
+      const json = rest.includes("--json");
+      await cmdOffline(action, rest.slice(1), json);
+      break;
+    }
+
     case "dedup": {
       const json = rest.includes("--json");
       cmdDedup(json);
@@ -8967,6 +9325,7 @@ Usage:
   remnic curate <path> [--json]  Curate files into memory
   remnic review <list|approve|dismiss|flag> [id]  Review inbox
   remnic sync <run|watch> [--source <dir>] Diff-aware sync
+  remnic offline <prepare|sync|status|watch> Remote/offline memory sync
   remnic dedup [--json]             Find duplicate memories
   remnic connectors <list|install|remove|doctor|marketplace> [id]  Manage connectors
     marketplace generate    Generate marketplace.json for Codex
