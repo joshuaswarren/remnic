@@ -133,6 +133,7 @@ import {
   readOfflineSyncState,
   summarizeOfflineSyncChangeset,
   writeOfflineSyncState,
+  type OfflineSyncState,
   buildActionConfidenceInputFromOptions,
   evaluateActionConfidence,
   renderActionConfidenceText,
@@ -5664,6 +5665,14 @@ async function runOfflineSyncOnce(options: {
 }> {
   fs.mkdirSync(options.memoryDir, { recursive: true });
   const priorState = await readOfflineSyncState(options.statePath);
+  if (priorState) {
+    assertOfflineStateMatches({
+      state: priorState,
+      remoteUrl: options.remoteUrl,
+      namespace: options.namespace,
+      statePath: options.statePath,
+    });
+  }
   const baseFiles = priorState?.baseFiles ?? [];
   const changeset = await buildOfflineSyncChangeset({
     root: options.memoryDir,
@@ -5706,6 +5715,24 @@ async function runOfflineSyncOnce(options: {
     pendingSummary,
     remoteFileCount: remoteSnapshot.files.length,
   };
+}
+
+function assertOfflineStateMatches(options: {
+  state: OfflineSyncState;
+  remoteUrl: string;
+  namespace?: string;
+  statePath: string;
+}): void {
+  if (options.state.remoteId !== options.remoteUrl) {
+    throw new Error(
+      `offline state ${options.statePath} belongs to ${options.state.remoteId}; run prepare with a fresh state file before syncing ${options.remoteUrl}`,
+    );
+  }
+  if ((options.state.namespace ?? undefined) !== (options.namespace ?? undefined)) {
+    throw new Error(
+      `offline state ${options.statePath} belongs to namespace ${options.state.namespace ?? "(default)"}; run prepare with a fresh state file before syncing namespace ${options.namespace ?? "(default)"}`,
+    );
+  }
 }
 
 async function cmdOffline(action: string, rest: string[], json: boolean): Promise<void> {
@@ -5751,6 +5778,14 @@ Environment fallbacks:
       includeTranscripts,
     });
     const existingState = await readOfflineSyncState(statePath);
+    if (existingState) {
+      assertOfflineStateMatches({
+        state: existingState,
+        remoteUrl,
+        namespace,
+        statePath,
+      });
+    }
     const pull = await applyOfflineSyncSnapshot({
       root: memoryDir,
       snapshot: remoteSnapshot,
@@ -5799,6 +5834,14 @@ Environment fallbacks:
   if (action === "status") {
     fs.mkdirSync(memoryDir, { recursive: true });
     const state = await readOfflineSyncState(statePath);
+    if (state && remoteUrl) {
+      assertOfflineStateMatches({
+        state,
+        remoteUrl,
+        namespace,
+        statePath,
+      });
+    }
     const changeset = await buildOfflineSyncChangeset({
       root: memoryDir,
       sourceId: localOfflineSourceId(memoryDir),

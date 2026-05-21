@@ -2512,6 +2512,8 @@ export class StorageManager {
 
   private invalidateAfterOfflineSyncMutation(filePath: string): void {
     this.invalidateAllMemoriesCache();
+    invalidateCachedEntities(this.baseDir);
+    this.invalidateKnowledgeIndexCache();
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }

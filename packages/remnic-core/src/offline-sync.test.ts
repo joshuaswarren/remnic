@@ -248,6 +248,41 @@ test("offline changeset does not delete transcript baselines when transcripts ar
   }
 });
 
+test("offline changeset rejects transcript changes when transcripts are excluded", async () => {
+  const root = await tempDir("remnic-offline-transcript-invalid");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    const transcript = Buffer.from("turn");
+    await assert.rejects(
+      () =>
+        applyOfflineSyncChangeset({
+          root,
+          changeset: {
+            format: "remnic.offline-sync.changeset.v1",
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+            sourceId: "laptop",
+            includeTranscripts: false,
+            changes: [{
+              type: "upsert",
+              path: "transcripts/session.jsonl",
+              file: {
+                path: "transcripts/session.jsonl",
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+                bytes: transcript.byteLength,
+                mtimeMs: 0,
+                contentBase64: transcript.toString("base64"),
+              },
+            }],
+          },
+        }),
+      /offline sync changeset includeTranscripts is false but contains transcript path/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline sync applies and snapshots through secure storage hooks", async () => {
   const root = await tempDir("remnic-offline-secure-store");
   const source = await tempDir("remnic-offline-secure-source");

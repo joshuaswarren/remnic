@@ -312,6 +312,14 @@ export function normalizeOfflineSyncChangeset(input: unknown): OfflineSyncChange
     throw new Error(`changes[${index}].type must be "upsert" or "delete"`);
   });
   assertUniquePaths(changes, "offline sync changeset");
+  if (!includeTranscripts) {
+    const transcriptPath = changes.find((change) => change.path.split("/")[0] === "transcripts")?.path;
+    if (transcriptPath) {
+      throw new Error(
+        `offline sync changeset includeTranscripts is false but contains transcript path: ${transcriptPath}`,
+      );
+    }
+  }
   return {
     format: OFFLINE_SYNC_CHANGESET_FORMAT,
     schemaVersion: 1,
