@@ -5818,14 +5818,12 @@ async function runOfflineSyncOnce(options: {
         changeset,
       })
     : null;
-  const remoteSnapshot = pushed === null && namespaceProbe !== null
-    ? namespaceProbe
-    : await fetchOfflineSnapshot({
-        remoteUrl: options.remoteUrl,
-        token: options.token,
-        namespace: syncNamespace,
-        includeTranscripts: options.includeTranscripts,
-      });
+  const remoteSnapshot = await fetchOfflineSnapshot({
+    remoteUrl: options.remoteUrl,
+    token: options.token,
+    namespace: syncNamespace,
+    includeTranscripts: options.includeTranscripts,
+  });
   const resolvedNamespace = resolvedOfflineSnapshotNamespace(remoteSnapshot, syncNamespace);
   const pull = await applyOfflineSyncSnapshot({
     root: options.memoryDir,
