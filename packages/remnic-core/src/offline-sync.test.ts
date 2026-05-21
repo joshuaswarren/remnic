@@ -31,6 +31,7 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
   const root = await tempDir("remnic-offline-snapshot");
   try {
     await write(root, "facts/a.md", "alpha");
+    await write(root, "facts/fact-hashes.txt", "user-authored memory file");
     await write(root, "transcripts/session.jsonl", "turn");
     await write(root, "assets/blob.bin", Buffer.from([0, 1, 2, 255]));
     await write(root, ".secure-store/header.json", "secret");
@@ -46,7 +47,7 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
 
     assert.deepEqual(
       snapshot.files.map((file) => file.path),
-      ["assets/blob.bin", "facts/a.md", "transcripts/session.jsonl"],
+      ["assets/blob.bin", "facts/a.md", "facts/fact-hashes.txt", "transcripts/session.jsonl"],
     );
     const binary = snapshot.files.find((file) => file.path === "assets/blob.bin");
     assert.equal(Buffer.from(binary?.contentBase64 ?? "", "base64")[3], 255);
@@ -59,7 +60,7 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
     });
     assert.deepEqual(
       withoutTranscripts.files.map((file) => file.path),
-      ["assets/blob.bin", "facts/a.md"],
+      ["assets/blob.bin", "facts/a.md", "facts/fact-hashes.txt"],
     );
   } finally {
     await rm(root, { recursive: true, force: true });

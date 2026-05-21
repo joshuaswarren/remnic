@@ -29,6 +29,7 @@ export const OFFLINE_SYNC_STATE_VERSION = 1;
 export interface OfflineSyncFileState {
   path: string;
   sha256: string;
+  /** Byte length of the transferable content, after any readFile hook such as secure-store decryption. */
   bytes: number;
   mtimeMs: number;
 }
@@ -129,8 +130,11 @@ export interface OfflineSyncFileWriteTarget extends OfflineSyncFileTarget {
 const SYNC_INTERNAL_DIR = ".offline-sync";
 const EXCLUDED_FILE_NAMES = new Set([
   ".sync-state.json",
-  "fact-hashes.ready",
-  "fact-hashes.txt",
+]);
+
+const EXCLUDED_REL_PATHS = new Set([
+  "state/fact-hashes.ready",
+  "state/fact-hashes.txt",
 ]);
 
 const EXCLUDED_FILE_PREFIXES = [
@@ -381,6 +385,7 @@ function shouldExcludeRelPath(relPosix: string, includeTranscripts: boolean): bo
   const parts = relPosix.split("/");
   if (parts.some((part) => DEFAULT_TRANSFER_EXCLUDE_DIRS.has(part))) return true;
   if (parts.some((part) => part === SYNC_INTERNAL_DIR)) return true;
+  if (EXCLUDED_REL_PATHS.has(relPosix)) return true;
   if (!includeTranscripts && parts[0] === "transcripts") return true;
   const basename = parts[parts.length - 1] ?? "";
   if (EXCLUDED_FILE_NAMES.has(basename)) return true;

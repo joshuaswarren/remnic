@@ -5526,6 +5526,8 @@ function normalizeOfflineRemoteUrl(raw: string): string {
     throw new Error("--remote-url must use http:// or https://");
   }
   parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  parsed.username = "";
+  parsed.password = "";
   parsed.search = "";
   parsed.hash = "";
   return parsed.toString().replace(/\/$/, "");
@@ -5634,6 +5636,45 @@ function resolvedOfflineSnapshotNamespace(
   return resolved ?? requestedNamespace;
 }
 
+function uniqueOfflineStatePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const filePath of paths) {
+    if (seen.has(filePath)) continue;
+    seen.add(filePath);
+    out.push(filePath);
+  }
+  return out;
+}
+
+function offlineStatePathsForNamespace(options: {
+  memoryDir: string;
+  remoteUrl: string;
+  requestedNamespace?: string;
+  resolvedNamespace?: string;
+  explicitStatePath?: string;
+}): string[] {
+  if (options.explicitStatePath) return [options.explicitStatePath];
+  const primaryNamespace = options.resolvedNamespace ?? options.requestedNamespace;
+  const paths = [
+    defaultOfflineSyncStatePath(options.memoryDir, options.remoteUrl, primaryNamespace),
+  ];
+  if (options.requestedNamespace !== primaryNamespace) {
+    paths.push(defaultOfflineSyncStatePath(options.memoryDir, options.remoteUrl, options.requestedNamespace));
+  }
+  return uniqueOfflineStatePaths(paths);
+}
+
+async function readFirstOfflineSyncState(
+  paths: readonly string[],
+): Promise<{ statePath: string; state: OfflineSyncState } | null> {
+  for (const statePath of paths) {
+    const state = await readOfflineSyncState(statePath);
+    if (state) return { statePath, state };
+  }
+  return null;
+}
+
 async function pushOfflineChanges(args: {
   remoteUrl: string;
   token: string;
@@ -5714,6 +5755,7 @@ async function runOfflineSyncOnce(options: {
   namespace?: string;
   includeTranscripts: boolean;
   statePath: string;
+  statePathExplicit: boolean;
 }): Promise<{
   statePath: string;
   namespace?: string;
@@ -5724,7 +5766,8 @@ async function runOfflineSyncOnce(options: {
   remoteFileCount: number;
 }> {
   fs.mkdirSync(options.memoryDir, { recursive: true });
-  const priorState = await readOfflineSyncState(options.statePath);
+  let activeStatePath = options.statePath;
+  let priorState = await readOfflineSyncState(activeStatePath);
   let syncNamespace = options.namespace ?? priorState?.namespace;
   let namespaceProbe: Awaited<ReturnType<typeof fetchOfflineSnapshot>> | null = null;
   if (syncNamespace === undefined) {
@@ -5736,13 +5779,25 @@ async function runOfflineSyncOnce(options: {
     });
     syncNamespace = resolvedOfflineSnapshotNamespace(namespaceProbe, options.namespace);
   }
+  if (!priorState && !options.statePathExplicit && syncNamespace !== undefined) {
+    const resolvedState = await readFirstOfflineSyncState(offlineStatePathsForNamespace({
+      memoryDir: options.memoryDir,
+      remoteUrl: options.remoteUrl,
+      requestedNamespace: options.namespace,
+      resolvedNamespace: syncNamespace,
+    }));
+    if (resolvedState) {
+      activeStatePath = resolvedState.statePath;
+      priorState = resolvedState.state;
+    }
+  }
   if (priorState) {
     assertOfflineStateMatches({
       state: priorState,
       remoteUrl: options.remoteUrl,
       namespace: syncNamespace,
       includeTranscripts: options.includeTranscripts,
-      statePath: options.statePath,
+      statePath: activeStatePath,
     });
   }
   const baseFiles = priorState?.baseFiles ?? [];
@@ -5786,9 +5841,18 @@ async function runOfflineSyncOnce(options: {
     snapshot: remoteSnapshot,
     baseFiles: pull.nextBaseFiles,
   });
-  await writeOfflineSyncState(options.statePath, state);
+  const stateWritePaths = offlineStatePathsForNamespace({
+    memoryDir: options.memoryDir,
+    remoteUrl: options.remoteUrl,
+    requestedNamespace: options.namespace,
+    resolvedNamespace,
+    explicitStatePath: options.statePathExplicit ? activeStatePath : undefined,
+  });
+  for (const statePath of stateWritePaths) {
+    await writeOfflineSyncState(statePath, state);
+  }
   return {
-    statePath: options.statePath,
+    statePath: stateWritePaths[0] ?? activeStatePath,
     namespace: resolvedNamespace,
     prepared: priorState === null,
     pushed,
@@ -5845,12 +5909,13 @@ Environment fallbacks:
   const namespace = resolveRequiredValueFlag(rest, "--namespace");
   const includeTranscripts = !hasFlag(rest, "--no-transcripts");
   const stateOverride = resolveRequiredValueFlag(rest, "--state");
+  const statePathExplicit = stateOverride !== undefined;
   const needsRemote = action === "prepare" || action === "sync" || action === "watch";
   const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
     : resolveOptionalOfflineRemoteUrl(rest);
   const token = needsRemote ? resolveOfflineToken(rest) : undefined;
-  const statePath = stateOverride !== undefined
+  const statePath = statePathExplicit
     ? path.resolve(expandTilde(stateOverride))
     : remoteUrl !== undefined
       ? defaultOfflineSyncStatePath(memoryDir, remoteUrl, namespace)
@@ -5866,21 +5931,29 @@ Environment fallbacks:
       includeTranscripts,
     });
     const resolvedNamespace = resolvedOfflineSnapshotNamespace(remoteSnapshot, namespace);
-    const existingState = await readOfflineSyncState(statePath);
+    const stateWritePaths = offlineStatePathsForNamespace({
+      memoryDir,
+      remoteUrl,
+      requestedNamespace: namespace,
+      resolvedNamespace,
+      explicitStatePath: statePathExplicit ? statePath : undefined,
+    });
+    const activeStatePath = stateWritePaths[0] ?? statePath;
+    const existingState = await readFirstOfflineSyncState(stateWritePaths);
     if (existingState) {
       assertOfflineStateMatches({
-        state: existingState,
+        state: existingState.state,
         remoteUrl,
         namespace: resolvedNamespace,
         includeTranscripts,
-        statePath,
+        statePath: existingState.statePath,
       });
     }
     const storageIo = await createOfflineStorageIo(memoryDir);
     const pull = await applyOfflineSyncSnapshot({
       root: memoryDir,
       snapshot: remoteSnapshot,
-      baseFiles: existingState?.baseFiles ?? [],
+      baseFiles: existingState?.state.baseFiles ?? [],
       readFile: storageIo.readFile,
       writeFile: storageIo.writeFile,
       deleteFile: storageIo.deleteFile,
@@ -5891,15 +5964,17 @@ Environment fallbacks:
       snapshot: remoteSnapshot,
       baseFiles: pull.nextBaseFiles,
     });
-    await writeOfflineSyncState(statePath, state);
+    for (const pathToWrite of stateWritePaths) {
+      await writeOfflineSyncState(pathToWrite, state);
+    }
     if (json) {
-      console.log(JSON.stringify({ statePath, namespace: resolvedNamespace, remoteFiles: remoteSnapshot.files.length, pull }, null, 2));
+      console.log(JSON.stringify({ statePath: activeStatePath, namespace: resolvedNamespace, remoteFiles: remoteSnapshot.files.length, pull }, null, 2));
     } else {
       console.log(`Offline cache prepared: ${memoryDir}`);
       console.log(`Namespace: ${resolvedNamespace ?? "(default)"}`);
       console.log(`Remote files: ${remoteSnapshot.files.length}`);
       console.log(`Pulled: ${pull.upserted} upserted, ${pull.deleted} deleted, ${pull.conflicts.length} conflicts`);
-      console.log(`State: ${statePath}`);
+      console.log(`State: ${activeStatePath}`);
     }
     return;
   }
@@ -5913,6 +5988,7 @@ Environment fallbacks:
       namespace,
       includeTranscripts,
       statePath,
+      statePathExplicit,
     });
     if (json) {
       console.log(JSON.stringify(result, null, 2));
@@ -5979,6 +6055,7 @@ Environment fallbacks:
           namespace,
           includeTranscripts,
           statePath,
+          statePathExplicit,
         });
         console.log(
           `[${new Date().toISOString()}] sync ok: pushed=${result.pushed ? result.pushed.appliedUpserts + result.pushed.appliedDeletes : 0}, pulled=${result.pull.upserted + result.pull.deleted}, conflicts=${(result.pushed?.conflicts.length ?? 0) + result.pull.conflicts.length}`,
