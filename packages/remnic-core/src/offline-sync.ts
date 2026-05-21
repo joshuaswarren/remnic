@@ -129,6 +129,8 @@ export interface OfflineSyncFileWriteTarget extends OfflineSyncFileTarget {
 const SYNC_INTERNAL_DIR = ".offline-sync";
 const EXCLUDED_FILE_NAMES = new Set([
   ".sync-state.json",
+  "fact-hashes.ready",
+  "fact-hashes.txt",
 ]);
 
 const EXCLUDED_FILE_PREFIXES = [

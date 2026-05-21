@@ -35,6 +35,8 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
     await write(root, "assets/blob.bin", Buffer.from([0, 1, 2, 255]));
     await write(root, ".secure-store/header.json", "secret");
     await write(root, ".offline-sync/state/local.json", "state");
+    await write(root, "state/fact-hashes.txt", "derived");
+    await write(root, "state/fact-hashes.ready", "v1");
 
     const snapshot = await buildOfflineSyncSnapshot({
       root,
@@ -323,6 +325,47 @@ test("offline sync applies and snapshots through secure storage hooks", async ()
       "secret fact",
     );
     assert.equal(snapshot.files[0]?.bytes, Buffer.byteLength("secret fact"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
+  }
+});
+
+test("offline storage writes invalidate fact hash readiness for rebuild", async () => {
+  const root = await tempDir("remnic-offline-hash-index-local");
+  const source = await tempDir("remnic-offline-hash-index-source");
+  try {
+    const localStorage = new StorageManager(root);
+    await localStorage.writeMemory("fact", "alpha fact");
+    assert.equal(await localStorage.hasFactContentHash("alpha fact"), true);
+    assert.equal(await localStorage.hasFactContentHash("beta fact"), false);
+
+    const sourceStorage = new StorageManager(source);
+    await sourceStorage.writeMemory("fact", "beta fact");
+    const sourceChangeset = await buildOfflineSyncChangeset({
+      root: source,
+      sourceId: "remote",
+    });
+
+    assert.equal(
+      sourceChangeset.changes.some((change) => change.path.startsWith("state/fact-hashes")),
+      false,
+    );
+
+    const factChangeset = {
+      ...sourceChangeset,
+      changes: sourceChangeset.changes.filter((change) => change.path.startsWith("facts/")),
+    };
+    const apply = await applyOfflineSyncChangeset({
+      root,
+      changeset: factChangeset,
+      readFile: async ({ filePath }) => localStorage.readOfflineSyncFile(filePath),
+      writeFile: async ({ filePath, content }) => localStorage.writeOfflineSyncFile(filePath, content),
+      deleteFile: async ({ filePath }) => localStorage.deleteOfflineSyncFile(filePath),
+    });
+
+    assert.equal(apply.conflicts.length, 0);
+    assert.equal(await localStorage.hasFactContentHash("beta fact"), true);
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(source, { recursive: true, force: true });

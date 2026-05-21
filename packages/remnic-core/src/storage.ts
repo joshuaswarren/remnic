@@ -1059,6 +1059,14 @@ export class ContentHashIndex {
     return this.hashes.size;
   }
 
+  /** Clear all loaded hashes so the next save rewrites the index from scratch. */
+  clear(): void {
+    if (this.hashes.size > 0) {
+      this.hashes.clear();
+    }
+    this.dirty = true;
+  }
+
   /** Persist index to disk if changed. */
   async save(): Promise<void> {
     if (!this.dirty) return;
@@ -2498,7 +2506,7 @@ export class StorageManager {
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
     await writeMaybeEncryptedFile(target, content, this.resolveWriteKey(), {}, this.baseDir);
-    this.invalidateAfterOfflineSyncMutation(target);
+    await this.invalidateAfterOfflineSyncMutation(target);
   }
 
   async deleteOfflineSyncFile(filePath: string): Promise<void> {
@@ -2507,13 +2515,18 @@ export class StorageManager {
       if (isErrnoCode(error, "ENOENT")) return;
       throw error;
     });
-    this.invalidateAfterOfflineSyncMutation(target);
+    await this.invalidateAfterOfflineSyncMutation(target);
   }
 
-  private invalidateAfterOfflineSyncMutation(filePath: string): void {
+  private async invalidateAfterOfflineSyncMutation(filePath: string): Promise<void> {
     this.invalidateAllMemoriesCache();
     invalidateCachedEntities(this.baseDir);
     this.invalidateKnowledgeIndexCache();
+    this.factHashIndexAuthoritative = false;
+    await unlink(this.factHashIndexReadyPath).catch((error: unknown) => {
+      if (isErrnoCode(error, "ENOENT")) return;
+      throw error;
+    });
     if (filePath.includes(`${path.sep}cold${path.sep}`)) {
       this.invalidateColdMemoriesCache();
     }
@@ -2622,6 +2635,7 @@ export class StorageManager {
       }
 
       const factHashIndex = await this.getFactHashIndex();
+      factHashIndex.clear();
       const existing = await this.readAllMemories();
       let legacyRecovered = 0;
       for (const memory of existing) {
