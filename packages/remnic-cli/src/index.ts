@@ -5670,6 +5670,7 @@ async function runOfflineSyncOnce(options: {
       state: priorState,
       remoteUrl: options.remoteUrl,
       namespace: options.namespace,
+      includeTranscripts: options.includeTranscripts,
       statePath: options.statePath,
     });
   }
@@ -5721,6 +5722,7 @@ function assertOfflineStateMatches(options: {
   state: OfflineSyncState;
   remoteUrl: string;
   namespace?: string;
+  includeTranscripts: boolean;
   statePath: string;
 }): void {
   if (options.state.remoteId !== options.remoteUrl) {
@@ -5731,6 +5733,11 @@ function assertOfflineStateMatches(options: {
   if ((options.state.namespace ?? undefined) !== (options.namespace ?? undefined)) {
     throw new Error(
       `offline state ${options.statePath} belongs to namespace ${options.state.namespace ?? "(default)"}; run prepare with a fresh state file before syncing namespace ${options.namespace ?? "(default)"}`,
+    );
+  }
+  if (options.state.includeTranscripts !== options.includeTranscripts) {
+    throw new Error(
+      `offline state ${options.statePath} was prepared with transcripts ${options.state.includeTranscripts ? "included" : "excluded"}; run prepare with a fresh state file before syncing with transcripts ${options.includeTranscripts ? "included" : "excluded"}`,
     );
   }
 }
@@ -5783,6 +5790,7 @@ Environment fallbacks:
         state: existingState,
         remoteUrl,
         namespace,
+        includeTranscripts,
         statePath,
       });
     }
@@ -5839,6 +5847,7 @@ Environment fallbacks:
         state,
         remoteUrl,
         namespace,
+        includeTranscripts,
         statePath,
       });
     }
