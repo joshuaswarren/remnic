@@ -5624,6 +5624,16 @@ async function fetchOfflineSnapshot(args: {
   );
 }
 
+function resolvedOfflineSnapshotNamespace(
+  snapshot: { namespace?: string },
+  requestedNamespace?: string,
+): string | undefined {
+  const resolved = typeof snapshot.namespace === "string" && snapshot.namespace.trim().length > 0
+    ? snapshot.namespace.trim()
+    : undefined;
+  return resolved ?? requestedNamespace;
+}
+
 async function pushOfflineChanges(args: {
   remoteUrl: string;
   token: string;
@@ -5706,6 +5716,7 @@ async function runOfflineSyncOnce(options: {
   statePath: string;
 }): Promise<{
   statePath: string;
+  namespace?: string;
   prepared: boolean;
   pushed: Awaited<ReturnType<typeof pushOfflineChanges>> | null;
   pull: Awaited<ReturnType<typeof applyOfflineSyncSnapshot>>;
@@ -5714,11 +5725,22 @@ async function runOfflineSyncOnce(options: {
 }> {
   fs.mkdirSync(options.memoryDir, { recursive: true });
   const priorState = await readOfflineSyncState(options.statePath);
+  let syncNamespace = options.namespace ?? priorState?.namespace;
+  let namespaceProbe: Awaited<ReturnType<typeof fetchOfflineSnapshot>> | null = null;
+  if (syncNamespace === undefined) {
+    namespaceProbe = await fetchOfflineSnapshot({
+      remoteUrl: options.remoteUrl,
+      token: options.token,
+      namespace: options.namespace,
+      includeTranscripts: options.includeTranscripts,
+    });
+    syncNamespace = resolvedOfflineSnapshotNamespace(namespaceProbe, options.namespace);
+  }
   if (priorState) {
     assertOfflineStateMatches({
       state: priorState,
       remoteUrl: options.remoteUrl,
-      namespace: options.namespace,
+      namespace: syncNamespace,
       includeTranscripts: options.includeTranscripts,
       statePath: options.statePath,
     });
@@ -5737,16 +5759,19 @@ async function runOfflineSyncOnce(options: {
     ? await pushOfflineChanges({
         remoteUrl: options.remoteUrl,
         token: options.token,
-        namespace: options.namespace,
+        namespace: syncNamespace,
         changeset,
       })
     : null;
-  const remoteSnapshot = await fetchOfflineSnapshot({
-    remoteUrl: options.remoteUrl,
-    token: options.token,
-    namespace: options.namespace,
-    includeTranscripts: options.includeTranscripts,
-  });
+  const remoteSnapshot = pushed === null && namespaceProbe !== null
+    ? namespaceProbe
+    : await fetchOfflineSnapshot({
+        remoteUrl: options.remoteUrl,
+        token: options.token,
+        namespace: syncNamespace,
+        includeTranscripts: options.includeTranscripts,
+      });
+  const resolvedNamespace = resolvedOfflineSnapshotNamespace(remoteSnapshot, syncNamespace);
   const pull = await applyOfflineSyncSnapshot({
     root: options.memoryDir,
     snapshot: remoteSnapshot,
@@ -5757,13 +5782,14 @@ async function runOfflineSyncOnce(options: {
   });
   const state = offlineSyncStateFromSnapshot({
     remoteId: options.remoteUrl,
-    namespace: options.namespace,
+    namespace: resolvedNamespace,
     snapshot: remoteSnapshot,
     baseFiles: pull.nextBaseFiles,
   });
   await writeOfflineSyncState(options.statePath, state);
   return {
     statePath: options.statePath,
+    namespace: resolvedNamespace,
     prepared: priorState === null,
     pushed,
     pull,
@@ -5839,12 +5865,13 @@ Environment fallbacks:
       namespace,
       includeTranscripts,
     });
+    const resolvedNamespace = resolvedOfflineSnapshotNamespace(remoteSnapshot, namespace);
     const existingState = await readOfflineSyncState(statePath);
     if (existingState) {
       assertOfflineStateMatches({
         state: existingState,
         remoteUrl,
-        namespace,
+        namespace: resolvedNamespace,
         includeTranscripts,
         statePath,
       });
@@ -5860,15 +5887,16 @@ Environment fallbacks:
     });
     const state = offlineSyncStateFromSnapshot({
       remoteId: remoteUrl,
-      namespace,
+      namespace: resolvedNamespace,
       snapshot: remoteSnapshot,
       baseFiles: pull.nextBaseFiles,
     });
     await writeOfflineSyncState(statePath, state);
     if (json) {
-      console.log(JSON.stringify({ statePath, remoteFiles: remoteSnapshot.files.length, pull }, null, 2));
+      console.log(JSON.stringify({ statePath, namespace: resolvedNamespace, remoteFiles: remoteSnapshot.files.length, pull }, null, 2));
     } else {
       console.log(`Offline cache prepared: ${memoryDir}`);
+      console.log(`Namespace: ${resolvedNamespace ?? "(default)"}`);
       console.log(`Remote files: ${remoteSnapshot.files.length}`);
       console.log(`Pulled: ${pull.upserted} upserted, ${pull.deleted} deleted, ${pull.conflicts.length} conflicts`);
       console.log(`State: ${statePath}`);
@@ -5893,6 +5921,7 @@ Environment fallbacks:
       console.log(`Pushed: ${result.pushed ? `${result.pushed.appliedUpserts} upserts, ${result.pushed.appliedDeletes} deletes, ${result.pushed.conflicts.length} conflicts` : "nothing pending"}`);
       console.log(`Pulled: ${result.pull.upserted} upserts, ${result.pull.deleted} deletes, ${result.pull.conflicts.length} conflicts`);
       console.log(`Pending local before push: ${result.pendingSummary.total}`);
+      console.log(`Namespace: ${result.namespace ?? "(default)"}`);
       console.log(`State: ${result.statePath}`);
     }
     return;
@@ -5905,7 +5934,7 @@ Environment fallbacks:
       assertOfflineStateMatches({
         state,
         remoteUrl,
-        namespace,
+        namespace: namespace ?? state.namespace,
         includeTranscripts,
         statePath,
       });
