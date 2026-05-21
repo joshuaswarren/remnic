@@ -419,6 +419,22 @@ test("HTTP offline apply requires a changeset", async () => {
     assert.equal(body.code, "validation_error");
     assert.equal(body.details?.[0]?.field, "changeset");
     assert.equal(calls, 0);
+
+    const nullResponse = await fetch(`http://127.0.0.1:${status.port}/engram/v1/offline-sync/apply`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ namespace: "team", changeset: null }),
+    });
+    const nullBody = await nullResponse.json() as { code?: string; details?: Array<{ field?: string; message?: string }> };
+
+    assert.equal(nullResponse.status, 400);
+    assert.equal(nullBody.code, "validation_error");
+    assert.equal(nullBody.details?.[0]?.field, "changeset");
+    assert.equal(nullBody.details?.[0]?.message, "changeset is required");
+    assert.equal(calls, 0);
   } finally {
     await server.stop();
   }

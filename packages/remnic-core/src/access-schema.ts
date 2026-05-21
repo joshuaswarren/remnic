@@ -373,7 +373,7 @@ export const offlineSyncApplyRequestSchema = z
     namespace: namespaceSchema,
     changeset: z.unknown(),
   })
-  .refine((value) => value.changeset !== undefined, {
+  .refine((value) => value.changeset !== undefined && value.changeset !== null, {
     message: "changeset is required",
     path: ["changeset"],
   });
