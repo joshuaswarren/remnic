@@ -189,6 +189,7 @@ test("parseConfig exposes qmd 2.5 integration defaults and opt-in auto upgrade",
   assert.equal(defaults.qmdChunkStrategy, "auto");
   assert.equal(defaults.qmdQueryRerankEnabled, true);
   assert.equal(defaults.qmdCandidateLimit, undefined);
+  assert.equal(defaults.qmdIndexName, undefined);
 
   const configured = parseConfig({
     qmdAutoUpgradeEnabled: "true",

@@ -325,7 +325,7 @@
       },
       "qmdIndexName": {
         "type": "string",
-        "description": "Optional QMD named index forwarded as qmd --index <name> when supported"
+        "description": "Optional QMD named index forwarded as qmd --index <name> when supported. Leave unset during upgrades unless existing QMD data already lives in that named index."
       },
       "qmdForceCpu": {
         "type": "boolean",
@@ -4981,7 +4981,7 @@
     "qmdIndexName": {
       "label": "QMD Index Name",
       "advanced": true,
-      "help": "Use a named QMD index when QMD 2.5+ supports --index"
+      "help": "Use a named QMD index when QMD 2.5+ supports --index. Changing this selects a different SQLite DB; keep it unset for existing default-index installs."
     },
     "qmdForceCpu": {
       "label": "QMD Force CPU",

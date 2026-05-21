@@ -125,7 +125,7 @@ See [Search Backends](search-backends.md) for detailed configuration and compari
 | `qmdChunkStrategy` | `auto` | QMD chunk strategy to forward when the installed QMD supports it (`auto` or `regex`) |
 | `qmdCandidateLimit` | `(none)` | Optional QMD candidate limit forwarded to supported QMD query paths |
 | `qmdQueryRerankEnabled` | `true` | Set `false` to ask QMD to skip its built-in rerank step when supported |
-| `qmdIndexName` | `(none)` | Optional QMD named index forwarded as `qmd --index <name> ...` when QMD 2.5+ supports named index selection |
+| `qmdIndexName` | `(none)` | Optional QMD named index forwarded as `qmd --index <name> ...` when QMD 2.5+ supports named index selection. Leave unset during upgrades unless existing QMD data is already in that named index; QMD's default data lives in `~/.cache/qmd/index.sqlite`, and changing this can point Remnic at an empty DB. |
 | `qmdForceCpu` | `false` | Set `QMD_FORCE_CPU=1` for QMD child processes to bypass GPU probing |
 | `qmdGpuBackend` | `(none)` | Optional `QMD_LLAMA_GPU` override (`auto`, `metal`, `cuda`, `vulkan`, or `false`) |
 | `qmdEmbedParallelism` | `(none)` | Optional `QMD_EMBED_PARALLELISM` override, clamped to 1-8 |

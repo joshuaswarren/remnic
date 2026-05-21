@@ -53,7 +53,8 @@ qmd update && qmd embed
   "qmdSupportedVersion": "2.5.1",
   "qmdAutoUpgradeEnabled": false, // opt-in: npm install -g @tobilu/qmd@2.5.1
   "qmdChunkStrategy": "auto",
-  "qmdIndexName": "remnic",
+  // Leave qmdIndexName unset unless you intentionally use a separate QMD DB.
+  // Existing Remnic/OpenClaw installs usually keep data in QMD's default "index".
   "qmdForceCpu": false,
   "qmdDaemonEnabled": true,      // Keep the shared MCP session warm for fast queries
   "qmdIntentHintsEnabled": false,
@@ -69,6 +70,14 @@ overrides (`QMD_EMBED_MODEL`, `QMD_RERANK_MODEL`, `QMD_GENERATE_MODEL`,
 `QMD_FORCE_CPU`, `QMD_LLAMA_GPU`, `QMD_EMBED_PARALLELISM`), named index selection
 via `qmdIndexName`, and absolute snippet line numbers. Older QMD installs
 continue to work with unsupported flags omitted.
+
+Do not set `qmdIndexName` during upgrades unless you have confirmed the existing
+QMD data lives in that named index. QMD's default index is named `index` and is
+stored at `~/.cache/qmd/index.sqlite`; changing `qmdIndexName` to a new value
+creates or selects a different SQLite database, which can make existing memories
+appear missing even though the old QMD database is still intact. Before changing
+it, compare `qmd collection list` or inspect `~/.cache/qmd/*.sqlite` and preserve
+the index that contains the current `openclaw-engram*` collections.
 
 Auto-upgrade is intentionally disabled by default. Set
 `qmdAutoUpgradeEnabled: true` to let Remnic upgrade PATH/fallback QMD installs to
