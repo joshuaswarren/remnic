@@ -142,6 +142,7 @@ import {
   forkCapsule,
   readForkLineage,
 } from "@remnic/core";
+import { keyring, readHeader, secureStoreDir } from "@remnic/core/secure-store";
 // @remnic/export-weclone is an optional install surface (training:export
 // only uses it). Load lazily so the CLI works without it — see
 // optional-weclone-export.ts for the install-hint behaviour.
@@ -5675,6 +5676,27 @@ function waitForOfflineInterval(
   });
 }
 
+async function createOfflineStorageIo(memoryDir: string): Promise<{
+  readFile: Parameters<typeof buildOfflineSyncChangeset>[0]["readFile"];
+  writeFile: Parameters<typeof applyOfflineSyncSnapshot>[0]["writeFile"];
+  deleteFile: Parameters<typeof applyOfflineSyncSnapshot>[0]["deleteFile"];
+}> {
+  const storage = new StorageManager(memoryDir);
+  const header = await readHeader(memoryDir);
+  if (header) {
+    storage.setSecureStoreRequired(true);
+    const key = keyring.getKey(secureStoreDir(memoryDir));
+    if (key) {
+      storage.setSecureStoreKey(key);
+    }
+  }
+  return {
+    readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+    writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+    deleteFile: async ({ filePath }) => storage.deleteOfflineSyncFile(filePath),
+  };
+}
+
 async function runOfflineSyncOnce(options: {
   memoryDir: string;
   remoteUrl: string;
@@ -5702,11 +5724,13 @@ async function runOfflineSyncOnce(options: {
     });
   }
   const baseFiles = priorState?.baseFiles ?? [];
+  const storageIo = await createOfflineStorageIo(options.memoryDir);
   const changeset = await buildOfflineSyncChangeset({
     root: options.memoryDir,
     sourceId: localOfflineSourceId(options.memoryDir),
     baseFiles,
     includeTranscripts: options.includeTranscripts,
+    readFile: storageIo.readFile,
   });
   const pendingSummary = summarizeOfflineSyncChangeset(changeset);
   const pushed = changeset.changes.length > 0
@@ -5727,6 +5751,9 @@ async function runOfflineSyncOnce(options: {
     root: options.memoryDir,
     snapshot: remoteSnapshot,
     baseFiles,
+    readFile: storageIo.readFile,
+    writeFile: storageIo.writeFile,
+    deleteFile: storageIo.deleteFile,
   });
   const state = offlineSyncStateFromSnapshot({
     remoteId: options.remoteUrl,
@@ -5822,10 +5849,14 @@ Environment fallbacks:
         statePath,
       });
     }
+    const storageIo = await createOfflineStorageIo(memoryDir);
     const pull = await applyOfflineSyncSnapshot({
       root: memoryDir,
       snapshot: remoteSnapshot,
       baseFiles: existingState?.baseFiles ?? [],
+      readFile: storageIo.readFile,
+      writeFile: storageIo.writeFile,
+      deleteFile: storageIo.deleteFile,
     });
     const state = offlineSyncStateFromSnapshot({
       remoteId: remoteUrl,
@@ -5879,11 +5910,13 @@ Environment fallbacks:
         statePath,
       });
     }
+    const storageIo = await createOfflineStorageIo(memoryDir);
     const changeset = await buildOfflineSyncChangeset({
       root: memoryDir,
       sourceId: localOfflineSourceId(memoryDir),
       baseFiles: state?.baseFiles ?? [],
       includeTranscripts,
+      readFile: storageIo.readFile,
     });
     const summary = summarizeOfflineSyncChangeset(changeset);
     if (json) {
