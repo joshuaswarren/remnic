@@ -204,15 +204,15 @@ export function filePathAad(filePath: string, memoryDir?: string): Buffer {
  * @param key       32-byte AES-256 key, or null when the store is locked.
  * @param memoryDir Memory root for path-bound AAD.  Should be absolute.
  */
-export async function readMaybeEncryptedFile(
+export async function readMaybeEncryptedFileBuffer(
   filePath: string,
   key: Buffer | null,
   memoryDir?: string,
-): Promise<string> {
+): Promise<Buffer> {
   const buf = await readFile(filePath);
   if (!isEncryptedFile(buf)) {
-    // Plain UTF-8 file — legacy or unencrypted store.
-    return buf.toString("utf8");
+    // Plain file — legacy or unencrypted store.
+    return buf;
   }
   // Encrypted — key required.
   if (key === null) {
@@ -222,8 +222,15 @@ export async function readMaybeEncryptedFile(
     );
   }
   const aad = filePathAad(filePath, memoryDir);
-  const plain = decryptFileBody(buf, key, aad);
-  return plain.toString("utf8");
+  return decryptFileBody(buf, key, aad);
+}
+
+export async function readMaybeEncryptedFile(
+  filePath: string,
+  key: Buffer | null,
+  memoryDir?: string,
+): Promise<string> {
+  return (await readMaybeEncryptedFileBuffer(filePath, key, memoryDir)).toString("utf8");
 }
 
 export interface WriteMaybeEncryptedFileOptions {
@@ -251,7 +258,7 @@ export interface WriteMaybeEncryptedFileOptions {
  */
 export async function writeMaybeEncryptedFile(
   filePath: string,
-  content: string,
+  content: string | Buffer,
   key: Buffer | null,
   options: WriteMaybeEncryptedFileOptions = {},
   memoryDir?: string,

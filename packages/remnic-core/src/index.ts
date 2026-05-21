@@ -701,6 +701,8 @@ export {
   type OfflineSyncConflict,
   type OfflineSyncFileRecord,
   type OfflineSyncFileState,
+  type OfflineSyncFileTarget,
+  type OfflineSyncFileWriteTarget,
   type OfflineSyncSnapshot,
   type OfflineSyncState,
 } from "./offline-sync.js";

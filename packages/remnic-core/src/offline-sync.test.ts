@@ -10,6 +10,8 @@ import {
   buildOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
 } from "./offline-sync.js";
+import { isEncryptedFile } from "./secure-store/secure-fs.js";
+import { StorageManager } from "./storage.js";
 
 async function tempDir(name: string): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), `${name}-`));
@@ -218,6 +220,77 @@ test("offline pull applies remote deletion when the local file is unchanged", as
   } finally {
     await rm(remote, { recursive: true, force: true });
     await rm(local, { recursive: true, force: true });
+  }
+});
+
+test("offline changeset does not delete transcript baselines when transcripts are excluded", async () => {
+  const root = await tempDir("remnic-offline-transcript-mode");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "transcripts/session.jsonl", "turn");
+    const base = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+    });
+
+    await rm(path.join(root, "transcripts"), { recursive: true, force: true });
+    const changeset = await buildOfflineSyncChangeset({
+      root,
+      sourceId: "laptop",
+      baseFiles: base.files,
+      includeTranscripts: false,
+    });
+
+    assert.deepEqual(changeset.changes, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync applies and snapshots through secure storage hooks", async () => {
+  const root = await tempDir("remnic-offline-secure-store");
+  const source = await tempDir("remnic-offline-secure-source");
+  try {
+    await write(source, "facts/secure.md", "secret fact");
+    const changeset = await buildOfflineSyncChangeset({
+      root: source,
+      sourceId: "laptop",
+    });
+    const storage = new StorageManager(root);
+    storage.setSecureStoreKey(Buffer.alloc(32, 7));
+    storage.setSecureStoreRequired(true);
+
+    const apply = await applyOfflineSyncChangeset({
+      root,
+      changeset,
+      readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+      writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+      deleteFile: async ({ filePath }) => storage.deleteOfflineSyncFile(filePath),
+    });
+
+    assert.equal(apply.appliedUpserts, 1);
+    const raw = await readFile(path.join(root, "facts", "secure.md"));
+    assert.equal(isEncryptedFile(raw), true);
+    assert.equal(
+      (await storage.readOfflineSyncFile(path.join(root, "facts", "secure.md"))).toString("utf8"),
+      "secret fact",
+    );
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+      readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+    });
+    assert.equal(
+      Buffer.from(snapshot.files[0]?.contentBase64 ?? "", "base64").toString("utf8"),
+      "secret fact",
+    );
+    assert.equal(snapshot.files[0]?.bytes, Buffer.byteLength("secret fact"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(source, { recursive: true, force: true });
   }
 });
 

@@ -5560,6 +5560,7 @@ export class EngramAccessService {
       sourceId: `remnic:${resolvedNamespace}:${storageHash}`,
       includeContent: options.includeContent !== false,
       includeTranscripts: options.includeTranscripts !== false,
+      readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
     });
     return {
       namespace: resolvedNamespace,
@@ -5580,6 +5581,9 @@ export class EngramAccessService {
       const result = await applyOfflineSyncChangeset({
         root: storage.dir,
         changeset: options.changeset,
+        readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+        writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+        deleteFile: async ({ filePath }) => storage.deleteOfflineSyncFile(filePath),
       });
       return {
         namespace: resolvedNamespace,
