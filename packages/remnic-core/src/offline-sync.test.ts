@@ -135,10 +135,6 @@ test("offline sync reads bounded file content chunks with metadata", async () =>
     assert.equal(chunk.chunkBytes, 5);
     assert.equal(chunk.content.toString("utf-8"), "beta\n");
     assert.equal(chunk.bytes, Buffer.byteLength("alpha\nbeta\ngamma\n"));
-    assert.equal(
-      chunk.sha256,
-      createHash("sha256").update("alpha\nbeta\ngamma\n").digest("hex"),
-    );
 
     await assert.rejects(
       () =>

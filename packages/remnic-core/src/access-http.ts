@@ -660,11 +660,11 @@ export class EngramAccessHttpServer {
       this.respondBinary(res, 200, result.content, {
         "x-remnic-namespace": encodeURIComponent(result.namespace),
         "x-remnic-file-path": encodeURIComponent(result.path),
-        "x-remnic-file-sha256": result.sha256,
         "x-remnic-file-bytes": String(result.bytes),
         "x-remnic-file-mtime-ms": String(result.mtimeMs),
         "x-remnic-chunk-offset": String(result.offset),
         "x-remnic-chunk-bytes": String(result.chunkBytes),
+        ...(result.sha256 ? { "x-remnic-file-sha256": result.sha256 } : {}),
       });
       return;
     }

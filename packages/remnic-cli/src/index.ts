@@ -5655,7 +5655,7 @@ async function fetchOfflineFiles(args: {
 
 interface OfflineFileContentChunk {
   path: string;
-  sha256: string;
+  sha256?: string;
   bytes: number;
   mtimeMs: number;
   offset: number;
@@ -5716,12 +5716,13 @@ async function fetchOfflineFileContentChunk(args: {
   const relPath = encodedPath ? decodeURIComponent(encodedPath) : args.path;
   const content = Buffer.from(await response.arrayBuffer());
   const chunkBytes = parseOfflineHeaderNumber(response.headers, "x-remnic-chunk-bytes");
+  const sha256 = response.headers.get("x-remnic-file-sha256") ?? undefined;
   if (content.length !== chunkBytes) {
     throw new Error(`offline file content response length mismatch for ${relPath}`);
   }
   return {
     path: relPath,
-    sha256: response.headers.get("x-remnic-file-sha256") ?? "",
+    ...(sha256 ? { sha256 } : {}),
     bytes: parseOfflineHeaderNumber(response.headers, "x-remnic-file-bytes"),
     mtimeMs: parseOfflineHeaderNumber(response.headers, "x-remnic-file-mtime-ms"),
     offset: parseOfflineHeaderNumber(response.headers, "x-remnic-chunk-offset"),
@@ -5849,7 +5850,7 @@ async function fetchOfflineFileContent(args: {
     });
     if (
       chunk.path !== args.expected.path ||
-      chunk.sha256 !== args.expected.sha256 ||
+      (chunk.sha256 !== undefined && chunk.sha256 !== args.expected.sha256) ||
       chunk.bytes !== args.expected.bytes ||
       chunk.mtimeMs !== args.expected.mtimeMs ||
       chunk.offset !== offset ||
