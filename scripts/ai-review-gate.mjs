@@ -43,9 +43,7 @@ function isCurrentActivity(activity, headSha, headCommittedAt) {
   if (activity.original_commit_id && headSha) {
     return activity.original_commit_id === headSha;
   }
-  const activityTime = Date.parse(
-    activity.submitted_at ?? activity.updated_at ?? activity.created_at ?? "",
-  );
+  const activityTime = Date.parse(activity.submitted_at ?? activity.created_at ?? "");
   const headTime = Date.parse(headCommittedAt ?? "");
   return Number.isFinite(activityTime) &&
     Number.isFinite(headTime) &&
