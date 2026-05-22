@@ -179,7 +179,7 @@ jobs:
 
               for (const comment of [...issueComments, ...reviewComments]) {
                 const login = normalizeLogin(comment.user?.login);
-                if (!login || !bodyHasPositiveVerdict(comment.body)) continue;
+                if (!login || !configuredAliases.has(login) || !bodyHasPositiveVerdict(comment.body)) continue;
                 if (!isCurrentActivity(comment, headSha, headCommittedAt)) continue;
                 positiveByAlias.set(login, { alias: login, kind: 'comment', state: 'POSITIVE_COMMENT' });
               }
