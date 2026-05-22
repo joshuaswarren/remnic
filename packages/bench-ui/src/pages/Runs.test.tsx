@@ -1,3 +1,4 @@
+import * as React from "react";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -76,4 +77,3 @@ test("reconcileRunFilters resets dynamic filter values missing after payload ref
     },
   );
 });
-import * as React from "react";

@@ -1,3 +1,4 @@
+import * as React from "react";
 import type { BenchResultSummary } from "../bench-data";
 import { formatCurrency, formatDuration } from "../bench-data";
 
@@ -22,4 +23,3 @@ export function CostSummary({ summary }: { summary: BenchResultSummary }) {
     </section>
   );
 }
-import * as React from "react";

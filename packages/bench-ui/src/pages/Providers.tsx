@@ -1,3 +1,4 @@
+import * as React from "react";
 import type { BenchResultSummaryPayload } from "../bench-data";
 import {
   buildProviderRows,
@@ -65,4 +66,3 @@ export function Providers({ payload }: { payload: BenchResultSummaryPayload }) {
     </section>
   );
 }
-import * as React from "react";

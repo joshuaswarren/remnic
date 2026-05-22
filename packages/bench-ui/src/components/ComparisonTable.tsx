@@ -1,3 +1,4 @@
+import * as React from "react";
 import type { CompareMetricRow } from "../bench-data";
 import { formatMetricValue } from "../bench-data";
 
@@ -47,4 +48,3 @@ export function ComparisonTable({ rows }: { rows: CompareMetricRow[] }) {
     </div>
   );
 }
-import * as React from "react";

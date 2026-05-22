@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useEffect, useState } from "react";
 import type { BenchResultSummary, BenchResultSummaryPayload } from "../bench-data";
 import { buildCompareModel, pickDefaultCompareIds } from "../bench-data";
@@ -121,4 +122,3 @@ export function Compare({ payload }: { payload: BenchResultSummaryPayload }) {
     </section>
   );
 }
-import * as React from "react";

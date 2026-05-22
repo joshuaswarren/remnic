@@ -1,3 +1,4 @@
+import * as React from "react";
 import type { TaskDeltaRow } from "../bench-data";
 import { formatDuration, formatMetricValue } from "../bench-data";
 
@@ -43,4 +44,3 @@ export function TaskBreakdown({
     </section>
   );
 }
-import * as React from "react";

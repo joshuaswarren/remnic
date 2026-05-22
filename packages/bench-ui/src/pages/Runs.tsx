@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useState } from "react";
 import type { BenchResultSummaryPayload, RunFilters, TrendRange } from "../bench-data";
 import { filterRuns, listBenchmarks, listProviders } from "../bench-data";
@@ -133,4 +134,3 @@ export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
     </section>
   );
 }
-import * as React from "react";

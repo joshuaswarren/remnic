@@ -1,8 +1,9 @@
+import * as React from "react";
 import { Link } from "react-router-dom";
 import { useState } from "react";
 import type { BenchResultSummaryPayload, TrendRange } from "../bench-data";
 import { getBenchmarkCards, getRecentRuns, getTrendPoints } from "../bench-data";
-import { RunTable } from "../components/RunTable";
+import { benchmarkRoute, RunTable } from "../components/RunTable";
 import { ScoreCard } from "../components/ScoreCard";
 import { TrendChart } from "../components/TrendChart";
 
@@ -27,7 +28,7 @@ export function Overview({ payload }: { payload: BenchResultSummaryPayload }) {
 
       <div className="score-grid">
         {cards.map((card) => (
-          <Link key={card.benchmark} to={`/benchmark/${card.benchmark}`}>
+          <Link key={card.benchmark} to={benchmarkRoute(card.benchmark)}>
             <ScoreCard card={card} />
           </Link>
         ))}
@@ -75,4 +76,3 @@ export function Overview({ payload }: { payload: BenchResultSummaryPayload }) {
     </section>
   );
 }
-import * as React from "react";

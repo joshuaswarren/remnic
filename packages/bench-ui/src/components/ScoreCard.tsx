@@ -1,3 +1,4 @@
+import * as React from "react";
 import type { BenchmarkCard } from "../bench-data";
 import {
   deltaPolarityClass,
@@ -52,4 +53,3 @@ export function ScoreCard({ card }: { card: BenchmarkCard }) {
     </article>
   );
 }
-import * as React from "react";

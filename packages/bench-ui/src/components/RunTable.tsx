@@ -1,3 +1,4 @@
+import * as React from "react";
 import { Link } from "react-router-dom";
 import type { BenchResultSummary } from "../bench-data";
 import {
@@ -91,4 +92,3 @@ export function RunTable({
     </div>
   );
 }
-import * as React from "react";

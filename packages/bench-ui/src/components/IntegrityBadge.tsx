@@ -1,3 +1,4 @@
+import * as React from "react";
 import type { BenchIntegritySummary } from "../bench-data";
 import { describeIntegrity } from "./integrity-model";
 
@@ -27,4 +28,3 @@ export function IntegrityBadge({ summary }: { summary: BenchIntegritySummary }) 
     </span>
   );
 }
-import * as React from "react";

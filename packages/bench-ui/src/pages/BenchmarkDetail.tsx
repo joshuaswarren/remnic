@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import type { BenchResultSummary, BenchResultSummaryPayload, TaskDeltaRow } from "../bench-data";
@@ -195,4 +196,3 @@ export function BenchmarkDetail({ payload }: { payload: BenchResultSummaryPayloa
     </section>
   );
 }
-import * as React from "react";
