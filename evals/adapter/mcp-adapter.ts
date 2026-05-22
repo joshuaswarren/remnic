@@ -121,7 +121,9 @@ export async function createMcpAdapter(
       limit: number,
       sessionId?: string,
     ): Promise<SearchResult[]> {
-      const requestedLimit = Math.max(1, Math.floor(limit));
+      const requestedLimit = normalizeSearchLimit(limit);
+      if (requestedLimit <= 0) return [];
+
       const searchRunPrefix = runPrefix;
       const qualifiedSessionId =
         typeof sessionId === "string" && sessionId.length > 0
@@ -182,4 +184,9 @@ export async function createMcpAdapter(
 
 function createRunPrefix(): string {
   return `eval-${randomUUID()}`;
+}
+
+function normalizeSearchLimit(limit: number): number {
+  if (!Number.isFinite(limit)) return 0;
+  return Math.max(0, Math.floor(limit));
 }

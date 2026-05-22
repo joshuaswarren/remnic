@@ -183,6 +183,58 @@ test("MCP adapter scopes global search to current run sessions before limiting",
   }
 });
 
+test("MCP adapter preserves zero-result search requests", async () => {
+  let searchRequests = 0;
+  const server = http.createServer(async (req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.url !== "/rpc" || req.method !== "POST") {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+
+    const body = await readRequestJson(req);
+    let result: unknown = null;
+
+    if (body.method === "engram.lcm.search") {
+      searchRequests += 1;
+      result = [
+        {
+          turn_index: 0,
+          role: "user",
+          snippet: "unexpected result",
+          session_id: "eval-unscoped:session",
+        },
+      ];
+    } else if (body.method === "engram.lcm.observe") {
+      result = { accepted: 1 };
+    } else if (body.method === "engram.lcm.recall") {
+      result = "";
+    } else if (body.method === "engram.lcm.stats") {
+      result = { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id ?? 1, result }));
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const adapter = await createMcpAdapter({ baseUrl });
+
+    assert.deepEqual(await adapter.search("disabled retrieval", 0), []);
+    assert.equal(searchRequests, 0);
+
+    await adapter.destroy();
+  } finally {
+    await close(server);
+  }
+});
+
 test("MCP adapter keeps in-flight search bound to its request run prefix", async () => {
   const stored = new Map<string, Message[]>();
   const releaseSearch = createDeferredForTest();
