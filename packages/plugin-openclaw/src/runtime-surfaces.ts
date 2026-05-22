@@ -174,18 +174,6 @@ async function patchMemory(
     nextAttrs !== prevAttrs ||
     sourceChanged ||
     memoryKindChanged;
-  if (metadataChanged) {
-    if (
-      !(await storage.writeMemoryFrontmatter(memory, {
-        ...patch,
-        tags: uniqueTags(patch.tags ?? memory.frontmatter.tags ?? []),
-        updated: new Date().toISOString(),
-      }))
-    ) {
-      return false;
-    }
-    changed = true;
-  }
   const persistedContent = enrichSurfaceContent(nextContent, nextStructuredAttributes);
   const existingBody = stripSurfaceAttributeSuffix(
     memory.content,
@@ -196,10 +184,28 @@ async function patchMemory(
     memory.content.trim() !== persistedContent.trim();
   if (contentChanged) {
     if (!(await storage.updateMemory(memory.frontmatter.id, persistedContent))) {
-      if (metadataChanged) {
-        throw new Error(
-          `surface memory ${memory.frontmatter.id} frontmatter was updated but content update failed`,
+      return false;
+    }
+    changed = true;
+  }
+  if (metadataChanged) {
+    if (
+      !(await storage.writeMemoryFrontmatter(memory, {
+        ...patch,
+        tags: uniqueTags(patch.tags ?? memory.frontmatter.tags ?? []),
+        updated: new Date().toISOString(),
+      }))
+    ) {
+      if (contentChanged) {
+        const rolledBack = await storage.updateMemory(
+          memory.frontmatter.id,
+          memory.content,
         );
+        if (!rolledBack) {
+          throw new Error(
+            `surface memory ${memory.frontmatter.id} content was updated but frontmatter update failed and rollback failed`,
+          );
+        }
       }
       return false;
     }

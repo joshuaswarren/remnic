@@ -513,6 +513,81 @@ test("syncHeartbeatSurfaceEntries does not report or reindex partial metadata wr
   );
 });
 
+test("syncHeartbeatSurfaceEntries does not commit metadata when content update fails", async () => {
+  const storage = makeStorage([
+    makeMemory({
+      id: "principle-1",
+      category: "principle",
+      content: "check-test-suite\n\nRun the suite and report new failures.",
+      tags: ["ci", "tests", "heartbeat", "procedural", "check-test-suite"],
+      source: "heartbeat.md",
+      memoryKind: "procedural",
+      structuredAttributes: {
+        remnicSurfaceType: "heartbeat",
+        remnicHeartbeatEntryId: "heartbeat-a",
+        relatedHeartbeatSlug: "check-test-suite",
+        remnicHeartbeatJournalPath: "/workspace/HEARTBEAT.md",
+        remnicHeartbeatSourceOffset: "20",
+        remnicHeartbeatSchedule: "hourly",
+      },
+    }),
+  ]);
+  let contentWrites = 0;
+  let frontmatterWrites = 0;
+  storage.updateMemory = async () => {
+    contentWrites += 1;
+    return false;
+  };
+  storage.writeMemoryFrontmatter = async () => {
+    frontmatterWrites += 1;
+    return true;
+  };
+  const reindexed: string[] = [];
+
+  const result = await syncHeartbeatSurfaceEntries({
+    storage,
+    entries: [
+      {
+        id: "heartbeat-a",
+        slug: "check-test-suite",
+        title: "check-test-suite",
+        body: "Run the suite, compare to the last run, and report new failures.",
+        schedule: "every 2 hours",
+        tags: ["ci", "tests", "diff"],
+        sourceOffset: 48,
+      },
+    ],
+    journalPath: "/workspace/HEARTBEAT.md",
+    reindexMemory: async (id) => {
+      reindexed.push(id);
+    },
+  });
+
+  assert.deepEqual(result, { created: 0, updated: 0, linked: 0 });
+  assert.equal(contentWrites, 1);
+  assert.equal(frontmatterWrites, 0);
+  assert.deepEqual(reindexed, []);
+  assert.equal(
+    storage.memories[0]?.content,
+    enrichStoredContent("check-test-suite\n\nRun the suite and report new failures.", {
+      remnicSurfaceType: "heartbeat",
+      remnicHeartbeatEntryId: "heartbeat-a",
+      relatedHeartbeatSlug: "check-test-suite",
+      remnicHeartbeatJournalPath: "/workspace/HEARTBEAT.md",
+      remnicHeartbeatSourceOffset: "20",
+      remnicHeartbeatSchedule: "hourly",
+    }),
+  );
+  assert.equal(
+    storage.memories[0]?.frontmatter.structuredAttributes?.remnicHeartbeatSourceOffset,
+    "20",
+  );
+  assert.equal(
+    storage.memories[0]?.frontmatter.structuredAttributes?.remnicHeartbeatSchedule,
+    "hourly",
+  );
+});
+
 test("syncHeartbeatSurfaceEntries prefers stable heartbeat entry ids over matching stale slugs", async () => {
   const storage = makeStorage([
     makeMemory({
