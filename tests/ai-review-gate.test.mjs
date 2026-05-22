@@ -58,7 +58,7 @@ test("AI review gate ignores failed check runs from non-reviewer apps", () => {
   assert.deepEqual(result.blockers, []);
 });
 
-test("AI review gate fails on neutral review-bot check runs", () => {
+test("AI review gate accepts neutral review-bot check runs as current-head review activity", () => {
   const result = evaluateAiReviewGate({
     groups,
     headSha,
@@ -69,8 +69,56 @@ test("AI review gate fails on neutral review-bot check runs", () => {
     ],
   });
 
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+  assert.equal(result.present[0]?.state, "neutral");
+});
+
+test("AI review gate uses the latest current-head check run per reviewer alias and check name", () => {
+  const result = evaluateAiReviewGate({
+    groups,
+    headSha,
+    headCommittedAt,
+    checkRuns: [
+      {
+        name: "Cursor Bugbot",
+        app: { slug: "cursor" },
+        conclusion: "failure",
+        head_sha: headSha,
+        completed_at: "2026-05-21T12:00:01.000Z",
+      },
+      {
+        name: "Cursor Bugbot",
+        app: { slug: "cursor" },
+        conclusion: "success",
+        head_sha: headSha,
+        completed_at: "2026-05-21T12:00:02.000Z",
+      },
+      { app: { slug: "codex" }, conclusion: "success", head_sha: headSha },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});
+
+test("AI review gate rejects negative comments that contain positive tokens", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("codex"),
+    headSha,
+    headCommittedAt,
+    issueComments: [
+      {
+        user: { login: "codex" },
+        body: `not approved for ${headSha}`,
+        created_at: "2026-05-21T12:00:01.000Z",
+        updated_at: "2026-05-21T12:00:01.000Z",
+      },
+    ],
+  });
+
   assert.equal(result.ok, false);
-  assert.equal(result.blockers[0]?.state, "neutral");
+  assert.match(result.reason, /Missing required positive AI review groups/);
 });
 
 test("AI review gate fails when a required group is missing", () => {

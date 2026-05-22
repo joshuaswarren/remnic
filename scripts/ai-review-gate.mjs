@@ -2,11 +2,14 @@ const BAD_CHECK_CONCLUSIONS = new Set([
   "action_required",
   "cancelled",
   "failure",
-  "neutral",
   "skipped",
   "stale",
   "timed_out",
 ]);
+const POSITIVE_CHECK_CONCLUSIONS = new Set(["success", "neutral"]);
+const NEGATIVE_VERDICT_PATTERN =
+  /\b(?:changes\s+requested|do\s+not\s+merge|fail(?:ed|ing|ure)?|block(?:ed|ing|er)?|reject(?:ed|ing)?|(?:not|no|never|cannot|can['’]?t|isn['’]?t)\s+(?:a\s+)?(?:pass|approved|lgtm))\b/i;
+const POSITIVE_VERDICT_PATTERN = /\b(?:PASS|APPROVED|LGTM)\b/i;
 
 function normalizeLogin(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -14,7 +17,18 @@ function normalizeLogin(value) {
 
 function bodyHasPositiveVerdict(body) {
   if (typeof body !== "string") return false;
-  return /\b(PASS|APPROVED|LGTM)\b/i.test(body);
+  return !NEGATIVE_VERDICT_PATTERN.test(body) && POSITIVE_VERDICT_PATTERN.test(body);
+}
+
+function checkRunTime(checkRun) {
+  const parsed = Date.parse(
+    checkRun.completed_at ??
+      checkRun.updated_at ??
+      checkRun.started_at ??
+      checkRun.created_at ??
+      "",
+  );
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function isCurrentActivity(activity, headSha, headCommittedAt) {
@@ -105,18 +119,29 @@ export function evaluateAiReviewGate({
     positiveByAlias.set(login, { alias: login, kind: "comment", state: "POSITIVE_COMMENT" });
   }
 
+  const latestCheckRuns = new Map();
   for (const checkRun of checkRuns) {
     if (!isCurrentCheckRun(checkRun, headSha, headCommittedAt)) continue;
-    const conclusion = normalizeLogin(checkRun.conclusion);
+    const checkName = normalizeLogin(checkRun.name) || "unnamed-check";
     const aliases = [checkRun.app?.slug, checkRun.app?.name]
       .map(normalizeLogin)
       .filter((alias) => alias && configuredAliases.has(alias));
     for (const alias of aliases) {
-      if (BAD_CHECK_CONCLUSIONS.has(conclusion)) {
-        blockers.push({ alias, kind: "check_run", state: conclusion || "unknown" });
-      } else if (conclusion === "success") {
-        positiveByAlias.set(alias, { alias, kind: "check_run", state: "success" });
+      const key = `${alias}\0${checkName}`;
+      const previous = latestCheckRuns.get(key);
+      if (!previous || checkRunTime(checkRun) >= checkRunTime(previous)) {
+        latestCheckRuns.set(key, { ...checkRun, alias });
       }
+    }
+  }
+
+  for (const checkRun of latestCheckRuns.values()) {
+    const conclusion = normalizeLogin(checkRun.conclusion);
+    const alias = checkRun.alias;
+    if (BAD_CHECK_CONCLUSIONS.has(conclusion)) {
+      blockers.push({ alias, kind: "check_run", state: conclusion || "unknown" });
+    } else if (POSITIVE_CHECK_CONCLUSIONS.has(conclusion)) {
+      positiveByAlias.set(alias, { alias, kind: "check_run", state: conclusion });
     }
   }
 
