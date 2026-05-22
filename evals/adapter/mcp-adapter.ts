@@ -72,6 +72,7 @@ export async function createMcpAdapter(
   const { baseUrl, authToken, timeoutMs } = options;
   const rpcOpts = { authToken, timeoutMs };
   let runPrefix = createRunPrefix();
+  let currentRunSessions = new Set<string>();
   const qualifySessionId = (sessionId: string): string => `${runPrefix}:${sessionId}`;
   const stripRunPrefix = (sessionId: string): string =>
     sessionId.startsWith(`${runPrefix}:`)
@@ -96,10 +97,12 @@ export async function createMcpAdapter(
 
   return {
     async store(sessionId: string, messages: Message[]): Promise<void> {
+      const qualifiedSessionId = qualifySessionId(sessionId);
+      currentRunSessions.add(qualifiedSessionId);
       await mcpRequest(
         baseUrl,
         "engram.lcm.observe",
-        { sessionId: qualifySessionId(sessionId), messages },
+        { sessionId: qualifiedSessionId, messages },
         rpcOpts,
       );
     },
@@ -124,25 +127,34 @@ export async function createMcpAdapter(
         typeof sessionId === "string" && sessionId.length > 0
           ? qualifySessionId(sessionId)
           : undefined;
-      const result = await mcpRequest(
-        baseUrl,
-        "engram.lcm.search",
-        {
-          query,
-          limit: qualifiedSessionId ? requestedLimit : Math.max(requestedLimit, 100),
-          sessionId: qualifiedSessionId,
-        },
-        rpcOpts,
+
+      const sessionIds = qualifiedSessionId
+        ? [qualifiedSessionId]
+        : [...currentRunSessions].sort();
+      const results = await Promise.all(
+        sessionIds.map((targetSessionId) =>
+          mcpRequest(
+            baseUrl,
+            "engram.lcm.search",
+            {
+              query,
+              limit: requestedLimit,
+              sessionId: targetSessionId,
+            },
+            rpcOpts,
+          ),
+        ),
       );
-      if (!Array.isArray(result)) return [];
-      return (result as Array<Record<string, unknown>>)
+
+      return results
+        .flatMap((result) => (Array.isArray(result) ? result as Array<Record<string, unknown>> : []))
         .map((r) => ({
           turnIndex: typeof r.turn_index === "number" ? r.turn_index : 0,
           role: typeof r.role === "string" ? r.role : "unknown",
           snippet: typeof r.snippet === "string" ? r.snippet : "",
           sessionId: typeof r.session_id === "string" ? r.session_id : "",
         }))
-        .filter((entry) => isCurrentRunSession(entry.sessionId))
+        .filter((entry) => sessionIds.includes(entry.sessionId) && isCurrentRunSession(entry.sessionId))
         .slice(0, requestedLimit)
         .map((entry) => ({
           ...entry,
@@ -152,6 +164,7 @@ export async function createMcpAdapter(
 
     async reset(): Promise<void> {
       runPrefix = createRunPrefix();
+      currentRunSessions = new Set<string>();
     },
 
     async getStats(sessionId?: string): Promise<MemoryStats> {

@@ -29,6 +29,10 @@ test("MCP adapter reset isolates later searches from prior run sessions", async 
       result = { accepted: (params.messages as Message[]).length };
     } else if (body.method === "engram.lcm.search") {
       const query = String(params.query ?? "");
+      const limit =
+        typeof params.limit === "number" && Number.isFinite(params.limit)
+          ? Math.max(1, Math.floor(params.limit))
+          : 10;
       const sessionId =
         typeof params.sessionId === "string" ? params.sessionId : undefined;
       const rows = [...stored.entries()]
@@ -43,7 +47,7 @@ test("MCP adapter reset isolates later searches from prior run sessions", async 
               session_id: storedSessionId,
             })),
         );
-      result = rows;
+      result = rows.slice(0, limit);
     } else if (body.method === "engram.lcm.recall") {
       const sessionId = String(params.sessionId ?? "");
       const query = String(params.query ?? "");
@@ -78,6 +82,87 @@ test("MCP adapter reset isolates later searches from prior run sessions", async 
     const currentResults = await adapter.search("new unique marker", 10);
     assert.equal(currentResults.length, 1);
     assert.equal(currentResults[0]?.sessionId, "shared-session");
+
+    await adapter.destroy();
+  } finally {
+    await close(server);
+  }
+});
+
+test("MCP adapter scopes global search to current run sessions before limiting", async () => {
+  const stored = new Map<string, Message[]>();
+  const requestedSessionIds: string[] = [];
+  const server = http.createServer(async (req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.url !== "/rpc" || req.method !== "POST") {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+
+    const body = await readRequestJson(req);
+    const params = (body.params ?? {}) as Record<string, unknown>;
+    let result: unknown = null;
+
+    if (body.method === "engram.lcm.observe") {
+      const sessionId = String(params.sessionId ?? "");
+      stored.set(sessionId, params.messages as Message[]);
+      result = { accepted: (params.messages as Message[]).length };
+    } else if (body.method === "engram.lcm.search") {
+      const query = String(params.query ?? "");
+      const limit =
+        typeof params.limit === "number" && Number.isFinite(params.limit)
+          ? Math.max(1, Math.floor(params.limit))
+          : 10;
+      const sessionId =
+        typeof params.sessionId === "string" ? params.sessionId : undefined;
+      requestedSessionIds.push(sessionId ?? "");
+      const rows = [...stored.entries()]
+        .filter(([storedSessionId]) => !sessionId || storedSessionId === sessionId)
+        .flatMap(([storedSessionId, messages]) =>
+          messages
+            .filter((message) => message.content.includes(query))
+            .map((message, index) => ({
+              turn_index: index,
+              role: message.role,
+              snippet: message.content,
+              session_id: storedSessionId,
+            })),
+        );
+      result = rows.slice(0, limit);
+    } else if (body.method === "engram.lcm.recall") {
+      result = "";
+    } else if (body.method === "engram.lcm.stats") {
+      result = { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id ?? 1, result }));
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const adapter = await createMcpAdapter({ baseUrl });
+
+    for (let i = 0; i < 150; i += 1) {
+      await adapter.store(`old-${i}`, [
+        { role: "user", content: "shared marker from old run" },
+      ]);
+    }
+    await adapter.reset();
+    await adapter.store("current", [
+      { role: "user", content: "shared marker from current run" },
+    ]);
+
+    const results = await adapter.search("shared marker", 10);
+
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.sessionId, "current");
+    assert.ok(requestedSessionIds.every((sessionId) => sessionId !== ""));
 
     await adapter.destroy();
   } finally {
