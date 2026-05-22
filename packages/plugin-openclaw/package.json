@@ -77,7 +77,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@remnic/core": "^1.1.12",
+    "@remnic/core": "workspace:^",
     "openai": "^6.0.0"
   },
   "peerDependencies": {

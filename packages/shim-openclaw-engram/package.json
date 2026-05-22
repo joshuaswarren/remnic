@@ -59,7 +59,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@remnic/core": "^1.1.12",
+    "@remnic/core": "^1.1.20",
     "@remnic/plugin-openclaw": "^1.0.36"
   },
   "peerDependencies": {

@@ -24,7 +24,7 @@
     "provenance": true
   },
   "dependencies": {
-    "@remnic/core": "^1.1.12"
+    "@remnic/core": "^1.1.20"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

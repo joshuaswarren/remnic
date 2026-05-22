@@ -3349,7 +3349,7 @@ test("access service maps invalid trust-zone demo seed requests to input errors"
       () => service.trustZoneDemoSeed({ recordedAt: "2026-03-30Tbad" }),
       (err: unknown) =>
         err instanceof EngramAccessInputError &&
-        err.message === "recordedAt must be a valid ISO timestamp",
+        err.message === "recordedAt must be an ISO timestamp",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

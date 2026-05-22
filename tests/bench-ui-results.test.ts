@@ -669,7 +669,7 @@ test("compare helpers constrain candidate options to the selected benchmark", ()
 
   assert.deepEqual(
     filterComparableCandidateRuns(payload, baselineSummary).map((summary) => summary.id),
-    ["baseline-run", "candidate-run"],
+    ["candidate-run"],
   );
   assert.equal(canCompareBenchRuns(baselineSummary, candidateSummary), true);
   assert.equal(canCompareBenchRuns(baselineSummary, otherSummary), false);

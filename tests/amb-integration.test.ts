@@ -515,8 +515,7 @@ test("AMB installer registers Remnic provider and bridge commands", {
   assert.match(patchedJudge, /from \.llm\.base import LLM, LLMConfig, Schema/);
   assert.match(patchedModesInit, /getattr\(cls\.__init__, "__code__", None\)/);
   assert.match(patchedAgenticMode, /get_answer_llm/);
-  assert.match(patchedAgenticMode, /RAGMode\(llm=self\._llm\)/);
-  assert.doesNotMatch(patchedAgenticMode, /RAGMode\(llm=self\._llm, k=k\)/);
+  assert.match(patchedAgenticMode, /RAGMode\(llm=self\._llm, k=k\)/);
   assert.match(patchedRunner, /Remnic patch: save batch results incrementally/);
   assert.match(patchedRunner, /save_lock = asyncio\.Lock\(\)/);
   assert.match(patchedRunner, /async with save_lock/);

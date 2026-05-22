@@ -24,7 +24,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^1.1.12"
+    "@remnic/core": "^1.1.20"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",

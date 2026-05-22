@@ -278,8 +278,8 @@ importers:
   packages/import-weclone:
     dependencies:
       '@remnic/core':
-        specifier: ^1.1.12
-        version: 1.1.15
+        specifier: ^1.1.20
+        version: 1.1.20
     devDependencies:
       tsup:
         specifier: ^8.0.0
@@ -296,14 +296,14 @@ importers:
   packages/plugin-codex:
     dependencies:
       '@remnic/core':
-        specifier: ^1.1.12
-        version: 1.1.15
+        specifier: ^1.1.20
+        version: 1.1.20
 
   packages/plugin-openclaw:
     dependencies:
       '@remnic/core':
-        specifier: ^1.1.12
-        version: 1.1.15
+        specifier: workspace:^
+        version: link:../remnic-core
       openai:
         specifier: ^6.0.0
         version: 6.33.0(zod@4.0.0)
@@ -324,8 +324,8 @@ importers:
   packages/plugin-pi:
     dependencies:
       '@remnic/core':
-        specifier: ^1.1.12
-        version: 1.1.15
+        specifier: ^1.1.20
+        version: 1.1.20
       '@sinclair/typebox':
         specifier: ^0.34.0
         version: 0.34.49
@@ -349,8 +349,8 @@ importers:
         specifier: ^1.0.0
         version: 1.0.0
       '@remnic/server':
-        specifier: ^1.0.5
-        version: 1.0.5
+        specifier: workspace:^
+        version: link:../remnic-server
       yaml:
         specifier: ^2.4.2
         version: 2.8.3
@@ -467,8 +467,8 @@ importers:
   packages/shim-openclaw-engram:
     dependencies:
       '@remnic/core':
-        specifier: ^1.1.12
-        version: 1.1.15
+        specifier: ^1.1.20
+        version: 1.1.20
       '@remnic/plugin-openclaw':
         specifier: ^1.0.36
         version: 1.0.39(zod@4.0.0)
@@ -974,8 +974,8 @@ packages:
   '@orama/plugin-data-persistence@3.1.18':
     resolution: {integrity: sha512-pfBbpK96VRW/7IkdMHn2HaW3/+4k2C9Uwyup0IONNuz5bG3L1orCNFZPBmu+zcokOU2YH+IAVuQz6MlvqOe3iw==}
 
-  '@remnic/core@1.1.15':
-    resolution: {integrity: sha512-YcujmPvRcQkWxM34VHTDYvVZeRZFO3jfNE+hdVvyzC1czAMi/a3aA42JFLiCkgAtxbBpHfa+OMtBWXDGXI69lQ==}
+  '@remnic/core@1.1.20':
+    resolution: {integrity: sha512-vC/QwCZBcKp/efHYLtF2Mgwzt90vVbftPXp++YeffW0kVsUjiSwK1EMHUj5a1t83sQWX/GRcbGzEKEw7uPk58w==}
 
   '@remnic/plugin-openclaw@1.0.39':
     resolution: {integrity: sha512-DSILueFFJLsgyi7GjExcq0LPAlVwglyjf6OrvxqMq1nZjBpaNp8EUw9X/vZELoP59QfFkXeGWbPWITOtCCxtAg==}
@@ -989,10 +989,6 @@ packages:
     peerDependenciesMeta:
       '@earendil-works/pi-coding-agent':
         optional: true
-
-  '@remnic/server@1.0.5':
-    resolution: {integrity: sha512-U6VLLXvplhGwxO4djDGSOXZYKwwpTKejOEanTmoIZ3txjW0C8Id8ZOrPEysRGeQCUEdGqDK9I9s4uLxEGGACYw==}
-    hasBin: true
 
   '@rolldown/pluginutils@1.0.0-rc.3':
     resolution: {integrity: sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q==}
@@ -2289,7 +2285,7 @@ snapshots:
       dpack: 0.6.22
       seqproto: 0.2.3
 
-  '@remnic/core@1.1.15':
+  '@remnic/core@1.1.20':
     dependencies:
       '@honcho-ai/sdk': 2.1.0
       '@lancedb/lancedb': 0.26.2(apache-arrow@18.1.0)
@@ -2312,7 +2308,7 @@ snapshots:
 
   '@remnic/plugin-openclaw@1.0.39(zod@4.0.0)':
     dependencies:
-      '@remnic/core': 1.1.15
+      '@remnic/core': 1.1.20
       openai: 6.33.0(zod@4.0.0)
     transitivePeerDependencies:
       - ws
@@ -2320,14 +2316,8 @@ snapshots:
 
   '@remnic/plugin-pi@1.0.0':
     dependencies:
-      '@remnic/core': 1.1.15
+      '@remnic/core': 1.1.20
       '@sinclair/typebox': 0.34.49
-    transitivePeerDependencies:
-      - ws
-
-  '@remnic/server@1.0.5':
-    dependencies:
-      '@remnic/core': 1.1.15
     transitivePeerDependencies:
       - ws
 

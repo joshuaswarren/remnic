@@ -538,23 +538,8 @@ export function buildHistogram(summary: BenchResultSummary): HistogramBucket[] {
 
 export function buildProviderRows(payload: BenchResultSummaryPayload): ProviderRow[] {
   const grouped = new Map<string, ProviderRow>();
-  const benchmarkScoreBuckets = new Map<string, Map<string, number[]>>();
 
   for (const summary of payload.summaries) {
-    let providerBenchmarkScores = benchmarkScoreBuckets.get(summary.providerKey);
-    if (!providerBenchmarkScores) {
-      providerBenchmarkScores = new Map();
-      benchmarkScoreBuckets.set(summary.providerKey, providerBenchmarkScores);
-    }
-    let benchmarkScores = providerBenchmarkScores.get(summary.benchmark);
-    if (!benchmarkScores) {
-      benchmarkScores = [];
-      providerBenchmarkScores.set(summary.benchmark, benchmarkScores);
-    }
-    if (summary.primaryScore !== null) {
-      benchmarkScores.push(summary.primaryScore);
-    }
-
     const existing = grouped.get(summary.providerKey);
     if (existing) {
       existing.runCount += 1;
@@ -588,12 +573,12 @@ export function buildProviderRows(payload: BenchResultSummaryPayload): ProviderR
         .map((summary) => summary.estimatedCostUsd)
         .filter((value): value is number => value !== null);
       const perBenchmarkScores: Record<string, number | null> = {};
-      const providerBenchmarkScores =
-        benchmarkScoreBuckets.get(row.providerKey) ?? new Map<string, number[]>();
       for (const benchmark of row.benchmarks) {
-        const values = providerBenchmarkScores.get(benchmark) ?? [];
-        perBenchmarkScores[benchmark] =
-          values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+        const latest = payload.summaries
+          .filter((summary) => summary.providerKey === row.providerKey && summary.benchmark === benchmark)
+          .slice()
+          .sort(compareTimestampedRuns)[0];
+        perBenchmarkScores[benchmark] = latest?.primaryScore ?? null;
       }
 
       return {

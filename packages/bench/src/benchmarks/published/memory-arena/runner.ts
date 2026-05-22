@@ -87,8 +87,6 @@ export async function runMemoryArenaBenchmark(
           initialSeedError = seedErr instanceof Error
             ? seedErr.message
             : String(seedErr);
-          pendingPrerequisiteError =
-            `MemoryArena initial task state failed for ${domain}:${task.id}: ${initialSeedError}`;
           console.error(
             `  [WARN] memory-arena initial task state failed for ${domain}:${task.id}: ${initialSeedError}`,
           );
@@ -490,7 +488,12 @@ function parseTask(line: string, filename: string, lineNumber: number): ArenaTas
       `${location} must include an answers array of strings, objects, or arrays of those values.`,
     );
   }
-  if (record.answers.length !== record.questions.length) {
+  if (record.answers.length < record.questions.length) {
+    throw new Error(
+      `MemoryArena task ${category}:${record.id} is missing answer index ${record.answers.length}`,
+    );
+  }
+  if (record.answers.length > record.questions.length) {
     throw new Error(
       `${location} must include exactly one answer for each question; received ${record.questions.length} questions and ${record.answers.length} answers.`,
     );

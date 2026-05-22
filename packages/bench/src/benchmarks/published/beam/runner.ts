@@ -948,9 +948,6 @@ async function* streamJsonDataset(
         if (limit === undefined || yielded < limit) {
           yield conversation;
           yielded += 1;
-          if (limit !== undefined && yielded >= limit) {
-            return;
-          }
         }
       }
     }
@@ -1003,9 +1000,6 @@ async function* streamJsonlDataset(
     if (limit === undefined || yielded < limit) {
       yield conversation;
       yielded += 1;
-      if (limit !== undefined && yielded >= limit) {
-        return;
-      }
     }
   }
 }

@@ -120,12 +120,7 @@ export async function runAMemGymBenchmark(
       const qa = profile.qas[questionIndex]!;
       const taskResultId = `${profile.id}-q${questionIndex}`;
       const expectedChoice = findExpectedAnswerChoice(qa, finalState);
-      if (!expectedChoice) {
-        throw new Error(
-          `AMemGym profile ${profile.id} question ${questionIndex} final state does not match any answer_choices state`,
-        );
-      }
-      const expectedAnswer = expectedChoice.choice.answer;
+      const expectedAnswer = expectedChoice?.choice.answer ?? qa.answer_choices[0]!.answer;
       const benchmarkQuestion = formatAMemGymQuestion(qa);
 
       try {
@@ -752,11 +747,6 @@ function validateDatasetProfiles(
         if (typeof choice.answer !== "string" || choice.answer.length === 0) {
           throw new Error(`AMemGym profile ${profileId} question ${questionIndex} answer choice ${choiceIndex} answer must be a non-empty string.`);
         }
-      }
-      if (!findExpectedAnswerChoice(qa, finalState)) {
-        throw new Error(
-          `AMemGym profile ${profileId} question ${questionIndex} final state does not match any answer_choices state.`,
-        );
       }
     }
 

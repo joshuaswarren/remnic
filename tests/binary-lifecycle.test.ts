@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
 
 import {
@@ -57,6 +58,10 @@ const noopLog = {
   warn: (_msg: string) => {},
   error: (_msg: string) => {},
 };
+
+function sha256(content: string | Buffer): string {
+  return crypto.createHash("sha256").update(content).digest("hex");
+}
 
 // ---------------------------------------------------------------------------
 // matchesPatterns
@@ -106,7 +111,7 @@ test("scanner skips files already tracked in manifest", async () => {
         {
           originalPath: "screenshot.png",
           mirroredPath: "screenshot.png",
-          contentHash: "abc123",
+          contentHash: sha256(Buffer.alloc(100)),
           sizeBytes: 100,
           mimeType: "image/png",
           mirroredAt: new Date().toISOString(),
@@ -595,7 +600,7 @@ test("dry-run mode preserves existing manifest lifecycle state", async () => {
         {
           originalPath: "image.png",
           mirroredPath: "remote/image.png",
-          contentHash: "image-hash",
+          contentHash: sha256(Buffer.alloc(64)),
           sizeBytes: 64,
           mimeType: "image/png",
           mirroredAt: "2026-01-01T00:00:00.000Z",
@@ -604,7 +609,7 @@ test("dry-run mode preserves existing manifest lifecycle state", async () => {
         {
           originalPath: "old.png",
           mirroredPath: "remote/old.png",
-          contentHash: "old-hash",
+          contentHash: sha256(Buffer.alloc(64)),
           sizeBytes: 64,
           mimeType: "image/png",
           mirroredAt: "2026-01-01T00:00:00.000Z",
