@@ -186,9 +186,21 @@ function parseStringArray(val: string | undefined): string[] {
   } catch {
     // Fall back to the legacy comma-split parser below.
   }
-  const m = val.match(/\[(.*)]/);
-  if (!m) return [];
-  return m[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
+  const start = val.indexOf("[");
+  const end = val.lastIndexOf("]");
+  if (start === -1 || end <= start) return [];
+  return val
+    .slice(start + 1, end)
+    .split(",")
+    .map((s) => stripLegacyQuotes(s.trim()))
+    .filter(Boolean);
+}
+
+function stripLegacyQuotes(value: string): string {
+  if (value.length >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
+    return value.slice(1, -1);
+  }
+  return value;
 }
 
 function serializeBoxFrontmatter(fm: BoxFrontmatter): string {

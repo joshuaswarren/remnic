@@ -258,6 +258,25 @@ test("BoxBuilder frontmatter arrays round-trip values with punctuation", async (
   }
 });
 
+test("parseBoxFrontmatter parses legacy bracket arrays without regex matching", () => {
+  const parsed = parseBoxFrontmatter([
+    "---",
+    "id: legacy-box",
+    "memoryKind: box",
+    "createdAt: 2026-04-01T00:00:00Z",
+    "sealedAt: 2026-04-01T00:01:00Z",
+    "sealReason: forced",
+    "topics: [alpha, \"beta\"]",
+    "memoryIds: [mem-1, \"mem-2\"]",
+    "---",
+    "",
+  ].join("\n"));
+
+  assert.ok(parsed);
+  assert.deepEqual(parsed.topics, ["alpha", "beta"]);
+  assert.deepEqual(parsed.memoryIds, ["mem-1", "mem-2"]);
+});
+
 // ── Trace Weaving ─────────────────────────────────────────────────────────
 
 test("TraceWeaver assigns same traceId to boxes with overlapping topics", async () => {

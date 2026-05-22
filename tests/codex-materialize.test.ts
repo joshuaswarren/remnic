@@ -475,6 +475,31 @@ test("deduplicates rollouts whose slugs sanitize to the same filename", () => {
   }
 });
 
+test("rollout slug sanitization trims hyphen edges without regex matching", () => {
+  const { root, memoriesDir } = makeTempCodexHome();
+  try {
+    ensureSentinel(memoriesDir, "slug-trim-ns");
+    const result = materializeForNamespace("slug-trim-ns", {
+      memories: [makeMemory({ content: "synthetic slug trim anchor" })],
+      codexHome: root,
+      rolloutSummaries: [
+        {
+          slug: "---Session Trim---",
+          updatedAt: "2026-04-01T00:00:00Z",
+          body: "synthetic slug trim recap.",
+        },
+      ],
+      now: new Date("2026-04-02T00:00:00Z"),
+    });
+
+    assert.equal(result.wrote, true);
+    assert.ok(result.filesWritten.some((f) => f.endsWith("session-trim.md")));
+    assert.ok(existsSync(path.join(memoriesDir, "rollout_summaries", "session-trim.md")));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("does not overwrite a corrupted sentinel silently", () => {
   const { root, memoriesDir } = makeTempCodexHome();
   try {

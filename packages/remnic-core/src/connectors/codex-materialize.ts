@@ -970,12 +970,20 @@ function pruneRollouts(
 }
 
 function sanitizeSlug(slug: string): string {
-  return slug
+  const sanitized = slug
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/gu, "-")
-    .replace(/^-+|-+$/gu, "")
-    .slice(0, 96)
-    || "rollout";
+    .slice(0, 96);
+  const trimmed = trimHyphenEdges(sanitized);
+  return trimmed || "rollout";
+}
+
+function trimHyphenEdges(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === "-") start += 1;
+  while (end > start && value[end - 1] === "-") end -= 1;
+  return value.slice(start, end);
 }
 
 /**
