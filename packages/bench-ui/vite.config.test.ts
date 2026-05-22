@@ -70,14 +70,28 @@ test("bench results handler serves JSON for dev and preview middleware", async (
     const plugin = benchResultsApi();
     const devRoutes: string[] = [];
     const previewRoutes: string[] = [];
+    const devHandlers: unknown[] = [];
+    const previewHandlers: unknown[] = [];
     plugin.configureServer({
-      middlewares: { use: (route) => devRoutes.push(route) },
+      middlewares: {
+        use: (route, handler) => {
+          devRoutes.push(route);
+          devHandlers.push(handler);
+        },
+      },
     });
     plugin.configurePreviewServer({
-      middlewares: { use: (route) => previewRoutes.push(route) },
+      middlewares: {
+        use: (route, handler) => {
+          previewRoutes.push(route);
+          previewHandlers.push(handler);
+        },
+      },
     });
     assert.deepEqual(devRoutes, ["/api/results"]);
     assert.deepEqual(previewRoutes, ["/api/results"]);
+    assert.equal(typeof devHandlers[0], "function");
+    assert.equal(typeof previewHandlers[0], "function");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
