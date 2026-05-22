@@ -27,9 +27,6 @@ export function resolvePluginEntry(
 
   const allowedIds = new Set(options.candidateIds);
   const slotId = options.getSlotId?.(root);
-  if (typeof slotId === "string" && !allowedIds.has(slotId)) {
-    return undefined;
-  }
   const activeId =
     typeof slotId === "string" && allowedIds.has(slotId)
       ? slotId
