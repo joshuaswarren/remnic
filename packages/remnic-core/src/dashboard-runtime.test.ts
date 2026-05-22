@@ -64,6 +64,7 @@ test("dashboard WebSocket upgrade requires configured auth token", async () => {
 
 async function rawWebSocketUpgrade(port: number, requestPath: string): Promise<string> {
   return await new Promise((resolve, reject) => {
+    const websocketKey = Buffer.from("remnic-test-key!").toString("base64");
     const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
       socket.write(
         [
@@ -71,7 +72,7 @@ async function rawWebSocketUpgrade(port: number, requestPath: string): Promise<s
           `Host: 127.0.0.1:${port}`,
           "Upgrade: websocket",
           "Connection: Upgrade",
-          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+          `Sec-WebSocket-Key: ${websocketKey}`,
           "Sec-WebSocket-Version: 13",
           `Origin: http://127.0.0.1:${port}`,
           "",

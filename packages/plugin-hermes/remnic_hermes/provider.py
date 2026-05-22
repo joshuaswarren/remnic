@@ -9,7 +9,7 @@ import uuid
 from collections import OrderedDict
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from time import monotonic
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
 from remnic_hermes.client import RemnicClient
 from remnic_hermes.config import RemnicHermesConfig
@@ -246,7 +246,7 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
                 if cache_key.startswith(prefix):
                     self._prefetch_cache.pop(cache_key, None)
 
-    async def _client_call(self, operation: Callable[[RemnicClient], Awaitable[Any]]) -> Any:
+    async def _client_call(self, operation: Callable[[RemnicClient], Awaitable[Any]]) -> dict[str, Any]:
         client = self._client
         if not client:
             return {"error": "Not connected to Remnic"}
@@ -260,10 +260,10 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         except RuntimeError:
             running_loop = None
         if running_loop is provider_loop:
-            return await call()
+            return cast(dict[str, Any], await call())
 
         future = asyncio.run_coroutine_threadsafe(call(), provider_loop)
-        return await asyncio.wrap_future(future)
+        return cast(dict[str, Any], await asyncio.wrap_future(future))
 
     def _queue_prefetch_locked(self, cache_key: str, query: str, session_key: str) -> Future[Any]:
         self._prefetch_inflight.add(cache_key)
