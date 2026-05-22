@@ -126,18 +126,44 @@ async function readManifest(
   pagePath: string,
 ): Promise<VersionHistory> {
   const mp = manifestPath(memoryDir, sidecar, pagePath);
+  if (!(await fileExists(mp))) {
+    return { pagePath, versions: [], currentVersion: "0" };
+  }
   try {
     const raw = await readFile(mp, "utf-8");
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) {
-      return { pagePath, versions: [], currentVersion: "0" };
+      throw new Error("manifest root must be an object");
     }
     const obj = parsed as Record<string, unknown>;
-    const versions = Array.isArray(obj.versions) ? (obj.versions as PageVersion[]) : [];
-    const currentVersion = typeof obj.currentVersion === "string" ? obj.currentVersion : "0";
+    if (!Array.isArray(obj.versions)) {
+      throw new Error("manifest versions must be an array");
+    }
+    const versions = obj.versions.map((entry, index) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error(`manifest version ${index} must be an object`);
+      }
+      const version = entry as Record<string, unknown>;
+      if (
+        typeof version.versionId !== "string" ||
+        !/^\d+$/.test(version.versionId) ||
+        typeof version.timestamp !== "string" ||
+        typeof version.contentHash !== "string" ||
+        typeof version.sizeBytes !== "number" ||
+        !Number.isFinite(version.sizeBytes) ||
+        !["write", "consolidation", "revert", "manual"].includes(String(version.trigger))
+      ) {
+        throw new Error(`manifest version ${index} has invalid shape`);
+      }
+      return version as unknown as PageVersion;
+    });
+    if (typeof obj.currentVersion !== "string" || !/^\d+$/.test(obj.currentVersion)) {
+      throw new Error("manifest currentVersion must be a numeric string");
+    }
+    const currentVersion = obj.currentVersion;
     return { pagePath: typeof obj.pagePath === "string" ? obj.pagePath : pagePath, versions, currentVersion };
-  } catch {
-    return { pagePath, versions: [], currentVersion: "0" };
+  } catch (error) {
+    throw new Error(`page-versioning: invalid manifest ${mp}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

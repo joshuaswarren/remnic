@@ -134,6 +134,7 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
 
   // Determine targets
   const targets = resolveTargets(targetPath);
+  const provenanceRoot = resolveProvenanceRoot(targetPath);
 
   // Load existing memories for dedup/contradiction checks
   const existingMemories = checkDuplicates || checkContradictions
@@ -159,7 +160,7 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
     const fileStatements = extractStatements(
       content,
       filePath,
-      targetPath,
+      provenanceRoot,
       source,
       sourceFileHash,
       categoryOverride,
@@ -191,14 +192,12 @@ export async function curate(options: CurateOptions): Promise<CurateResult> {
       // Write to memory
       if (write) {
         const writtenPath = writeStatement(stmt, memoryDir);
-        if (writtenPath) {
-          written.push(writtenPath);
-          existingMemories.set(stmt.contentHash, {
-            id: stmt.id,
-            content: stmt.content,
-            category: stmt.category,
-          });
-        }
+        written.push(writtenPath);
+        existingMemories.set(stmt.contentHash, {
+          id: stmt.id,
+          content: stmt.content,
+          category: stmt.category,
+        });
       }
     }
   }
@@ -241,6 +240,12 @@ function resolveTargets(targetPath: string): string[] {
   return results;
 }
 
+function resolveProvenanceRoot(targetPath: string): string {
+  const resolvedTarget = path.resolve(targetPath);
+  const stat = fs.statSync(resolvedTarget);
+  return stat.isFile() ? path.dirname(resolvedTarget) : resolvedTarget;
+}
+
 // ── Statement extraction ─────────────────────────────────────────────────────
 
 function extractStatements(
@@ -254,7 +259,7 @@ function extractStatements(
   entityRef: string | undefined,
   tags: string[],
 ): CuratedStatement[] {
-  const relativePath = path.relative(projectRoot, filePath);
+  const relativePath = path.relative(projectRoot, path.resolve(filePath)) || path.basename(filePath);
   const statements: CuratedStatement[] = [];
   const now = new Date().toISOString();
 
@@ -434,7 +439,7 @@ function loadExistingMemories(memoryDir: string): Map<string, ExistingMemory> {
 
 // ── Writing ──────────────────────────────────────────────────────────────────
 
-function writeStatement(stmt: CuratedStatement, memoryDir: string): string | null {
+function writeStatement(stmt: CuratedStatement, memoryDir: string): string {
   const now = new Date();
   const dateDir = now.toISOString().split("T")[0];
   const categoryDir = getCategoryDir(memoryDir, stmt.category);
@@ -465,12 +470,8 @@ function writeStatement(stmt: CuratedStatement, memoryDir: string): string | nul
 
   const body = `${frontmatter}\n\n${stmt.content}\n`;
 
-  try {
-    fs.writeFileSync(filePath, body);
-    return filePath;
-  } catch {
-    return null;
-  }
+  fs.writeFileSync(filePath, body);
+  return filePath;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

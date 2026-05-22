@@ -369,6 +369,72 @@ test("new SDK before_prompt_build hook uses configured initGateTimeoutMs", async
   }
 });
 
+test("new SDK runtime loader expands tilde in explicit OpenClaw config path", async () => {
+  resetGlobals();
+  const previousDisableMigration = disableRegisterMigrationForTest();
+  const previousOpenClawConfigPath = process.env.OPENCLAW_CONFIG_PATH;
+  const previousLegacyConfigPath = process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+  const previousHome = process.env.HOME;
+  const tmpRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-openclaw-config-home-"));
+
+  try {
+    const memoryDir = path.join(tmpRoot, "memory");
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    await mkdir(memoryDir, { recursive: true });
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(
+      path.join(tmpRoot, "openclaw.json"),
+      JSON.stringify({
+        plugins: {
+          entries: {
+            "openclaw-remnic": {
+              config: {
+                initGateTimeoutMs: 47_000,
+                memoryDir,
+                workspaceDir,
+              },
+            },
+          },
+        },
+      }),
+      "utf8",
+    );
+    process.env.HOME = tmpRoot;
+    process.env.OPENCLAW_CONFIG_PATH = "~/openclaw.json";
+    delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+
+    const { default: plugin } = await import("../src/index.js");
+    const api = buildNewSdkApi("tilde-config-path");
+    plugin.register(api as any);
+
+    assert.deepEqual(
+      api._hookOptions.get("before_prompt_build"),
+      { timeoutMs: 47_000 },
+      "file-backed plugin config should load through a tilde-expanded OPENCLAW_CONFIG_PATH",
+    );
+  } finally {
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    if (previousOpenClawConfigPath === undefined) {
+      delete process.env.OPENCLAW_CONFIG_PATH;
+    } else {
+      process.env.OPENCLAW_CONFIG_PATH = previousOpenClawConfigPath;
+    }
+    if (previousLegacyConfigPath === undefined) {
+      delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    } else {
+      process.env.OPENCLAW_ENGRAM_CONFIG_PATH = previousLegacyConfigPath;
+    }
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+    await rm(tmpRoot, { recursive: true, force: true });
+    resetGlobals();
+  }
+});
+
 test("slot mismatch warn mode suppresses hook registration but still registers tools and service", async () => {
   resetGlobals();
   const previousDisableMigration = disableRegisterMigrationForTest();
@@ -420,7 +486,7 @@ test("new SDK tolerates unbound register(api) calls from cli metadata loaders", 
 
     assert.doesNotThrow(
       () => unboundRegister(api as any),
-      "register(api) should tolerate an unbound call and fall back to PLUGIN_ID",
+      "register(api) should tolerate an unbound call and fall back to the canonical OpenClaw plugin id",
     );
     assert.ok(
       api._memoryPromptSectionRegistered,
@@ -871,6 +937,41 @@ test("capability-only SDK with allowPromptInjection=false skips recall hook regi
       cap.publicArtifacts,
       "publicArtifacts must still be registered — policy only gates prompt injection",
     );
+  } finally {
+    await fixture.cleanup();
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    resetGlobals();
+  }
+});
+
+test("capability-only SDK treats string allowPromptInjection=false as disabled", async () => {
+  resetGlobals();
+  const previousDisableMigration = disableRegisterMigrationForTest();
+  const fixture = await makeMemoryFixture();
+  try {
+    const { default: plugin } = await import("../src/index.js");
+
+    const api = buildNewSdkApi("capability-only-string-policy-off");
+    api.pluginConfig = { memoryDir: fixture.memoryDir, workspaceDir: fixture.workspaceDir };
+    delete api.registerMemoryPromptSection;
+    api.registerMemoryCapability = (spec: any) => {
+      api._registeredMemoryCapability = spec;
+    };
+    api.config = {
+      plugins: {
+        entries: {
+          "openclaw-remnic": { hooks: { allowPromptInjection: "false" } },
+        },
+      },
+    };
+
+    plugin.register(api as any);
+
+    assert.equal(api._registeredHooks.includes("before_prompt_build"), false);
+    assert.equal(api._registeredHooks.includes("before_agent_start"), false);
+    assert.ok(api._registeredMemoryCapability);
+    assert.equal(api._registeredMemoryCapability.promptBuilder, undefined);
   } finally {
     await fixture.cleanup();
     await awaitPendingMigration();

@@ -64,6 +64,37 @@ test("duplicate correction signals dedupe by memory id + signal hash", () => {
   assert.equal(deduped.length, 1);
 });
 
+test("duplicate signal dedupe preserves namespace-distinct memories", () => {
+  const signalHash = buildBehaviorSignalHash("preference", "Same preference content");
+  const deduped = dedupeBehaviorSignalsByMemoryAndHash([
+    {
+      timestamp: "2026-02-28T00:00:00.000Z",
+      namespace: "default",
+      memoryId: "preference-1",
+      category: "preference",
+      signalType: "preference_affinity",
+      direction: "positive",
+      confidence: 0.8,
+      signalHash,
+      source: "extraction",
+    },
+    {
+      timestamp: "2026-02-28T00:01:00.000Z",
+      namespace: "shared",
+      memoryId: "preference-1",
+      category: "preference",
+      signalType: "preference_affinity",
+      direction: "positive",
+      confidence: 0.8,
+      signalHash,
+      source: "extraction",
+    },
+  ]);
+
+  assert.equal(deduped.length, 2);
+  assert.deepEqual(deduped.map((signal) => signal.namespace), ["default", "shared"]);
+});
+
 test("signals are namespace-safe and timestamped", () => {
   const signals = buildBehaviorSignalsForMemory({
     memoryId: "preference-2",

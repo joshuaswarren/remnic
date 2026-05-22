@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { runMemoryGovernance, restoreMemoryGovernanceRun } from "../src/maintenance/memory-governance.ts";
+import { RULE_VERSION, runMemoryGovernance, restoreMemoryGovernanceRun } from "../src/maintenance/memory-governance.ts";
 import { StorageManager } from "../src/storage.ts";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
@@ -55,6 +55,12 @@ function memoryDoc(options: {
     "",
   ].join("\n");
 }
+
+test("operations docs publish the current governance rule version", async () => {
+  const operations = await readFile(new URL("../docs/operations.md", import.meta.url), "utf-8");
+
+  assert.match(operations, new RegExp(`rule set is versioned as \`${RULE_VERSION}\``));
+});
 
 test("shadow governance run writes review artifacts without mutating memory files", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-governance-shadow-"));
@@ -1315,6 +1321,51 @@ test("bounded governance apply reloads the latest on-disk memory before mutating
     assert.equal(refreshedMemory?.frontmatter.status, "quarantined");
   } finally {
     StorageManager.prototype.readMemoryByPath = originalReadMemoryByPath;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("governance apply marks restore entry applied before status mutation", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-governance-apply-premark-"));
+  const originalWriteMemoryFrontmatter = StorageManager.prototype.writeMemoryFrontmatter;
+  const now = new Date("2026-03-10T12:00:00.000Z");
+  const runId = "gov-2026-03-10T12-00-00-000Z";
+  let sawPremarkedRestore = false;
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-10/fact-1.md",
+      memoryDoc({
+        id: "fact-1",
+        content: "Disputed memory.",
+        created: "2026-03-10T00:00:00.000Z",
+        updated: "2026-03-10T00:00:00.000Z",
+        confidence: 0.2,
+        confidenceTier: "speculative",
+        verificationState: "disputed",
+      }),
+    );
+
+    StorageManager.prototype.writeMemoryFrontmatter = async function writeMemoryFrontmatterWithRestoreCheck(...args) {
+      const restorePath = path.join(memoryDir, "state", "memory-governance", "runs", runId, "restore.json");
+      const restoreRaw = await readFile(restorePath, "utf-8");
+      const restore = JSON.parse(restoreRaw) as { entries: Array<{ memoryId: string; applied: boolean }> };
+      sawPremarkedRestore = restore.entries.some((entry) => entry.memoryId === "fact-1" && entry.applied === true);
+      return originalWriteMemoryFrontmatter.apply(this, args);
+    };
+
+    await runMemoryGovernance({
+      memoryDir,
+      mode: "apply",
+      now,
+      recentDays: 2,
+      maxMemories: 10,
+      batchSize: 1,
+    });
+
+    assert.equal(sawPremarkedRestore, true);
+  } finally {
+    StorageManager.prototype.writeMemoryFrontmatter = originalWriteMemoryFrontmatter;
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

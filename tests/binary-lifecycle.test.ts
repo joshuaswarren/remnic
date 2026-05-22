@@ -190,6 +190,38 @@ test("FilesystemBackend.delete is idempotent (ENOENT ignored)", async () => {
   }
 });
 
+test("FilesystemBackend rejects remote paths outside its base directory", async () => {
+  const srcDir = await mkdtemp(tmpPrefix());
+  const destDir = await mkdtemp(tmpPrefix());
+  const outsideDir = await mkdtemp(tmpPrefix());
+  try {
+    const srcFile = path.join(srcDir, "test.png");
+    const outsideFile = path.join(outsideDir, "escape.png");
+    await writeFile(srcFile, Buffer.from("PNG_DATA"));
+    await writeFile(outsideFile, Buffer.from("KEEP"));
+
+    const backend = new FilesystemBackend(destDir);
+    const escapePath = path.relative(destDir, outsideFile);
+    await assert.rejects(
+      () => backend.upload(srcFile, escapePath),
+      /escapes basePath/,
+    );
+    await assert.rejects(
+      () => backend.exists(escapePath),
+      /escapes basePath/,
+    );
+    await assert.rejects(
+      () => backend.delete(escapePath),
+      /escapes basePath/,
+    );
+    assert.equal(await readFile(outsideFile, "utf-8"), "KEEP");
+  } finally {
+    await rm(srcDir, { recursive: true, force: true });
+    await rm(destDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // None backend
 // ---------------------------------------------------------------------------
@@ -470,6 +502,47 @@ test("clean stage does NOT delete before grace period", async () => {
   }
 });
 
+test("pipeline rejects invalid gracePeriodDays before cleanup can delete files", async () => {
+  for (const gracePeriodDays of [-1, NaN]) {
+    const dir = await mkdtemp(tmpPrefix());
+    try {
+      await writeFile(path.join(dir, "recent.png"), Buffer.alloc(64));
+      await writeManifest(dir, {
+        version: 1,
+        assets: [
+          {
+            originalPath: "recent.png",
+            mirroredPath: "remote/recent.png",
+            contentHash: "abc123",
+            sizeBytes: 64,
+            mimeType: "image/png",
+            mirroredAt: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+            redirectedAt: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+            status: "redirected",
+          },
+        ],
+      });
+
+      await assert.rejects(
+        () =>
+          runBinaryLifecyclePipeline(
+            dir,
+            makeConfig({ gracePeriodDays }),
+            new NoneBackend(),
+            noopLog,
+          ),
+        /gracePeriodDays/,
+      );
+
+      assert.equal(fs.existsSync(path.join(dir, "recent.png")), true);
+      const manifest = await readManifest(dir);
+      assert.equal(manifest.assets[0]?.status, "redirected");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Dry-run mode
 // ---------------------------------------------------------------------------
@@ -501,6 +574,65 @@ test("dry-run mode reports actions but makes no changes", async () => {
     // Backend should not have the file.
     const backendFile = path.join(backendDir, "test.png");
     assert.equal(fs.existsSync(backendFile), false, "backend should not receive file in dry-run");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(backendDir, { recursive: true, force: true });
+  }
+});
+
+test("dry-run mode preserves existing manifest lifecycle state", async () => {
+  const dir = await mkdtemp(tmpPrefix());
+  const backendDir = await mkdtemp(tmpPrefix());
+  try {
+    await writeFile(path.join(dir, "image.png"), Buffer.alloc(64));
+    await writeFile(path.join(dir, "old.png"), Buffer.alloc(64));
+    await writeFile(path.join(dir, "notes.md"), "![img](./image.png)");
+
+    const originalManifest: BinaryLifecycleManifest = {
+      version: 1,
+      lastScanAt: "2026-01-01T00:00:00.000Z",
+      assets: [
+        {
+          originalPath: "image.png",
+          mirroredPath: "remote/image.png",
+          contentHash: "image-hash",
+          sizeBytes: 64,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          status: "mirrored",
+        },
+        {
+          originalPath: "old.png",
+          mirroredPath: "remote/old.png",
+          contentHash: "old-hash",
+          sizeBytes: 64,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          redirectedAt: "2026-01-01T01:00:00.000Z",
+          status: "redirected",
+        },
+      ],
+    };
+    await writeManifest(dir, originalManifest);
+
+    const config = makeConfig({
+      backend: { type: "filesystem", basePath: backendDir },
+      gracePeriodDays: 0,
+    });
+    const backend = createBackend(config.backend);
+
+    const result = await runBinaryLifecyclePipeline(
+      dir, config, backend, noopLog, { dryRun: true },
+    );
+
+    assert.equal(result.dryRun, true);
+    assert.equal(result.mirrored, 0);
+    assert.equal(result.redirected, 1);
+    assert.equal(result.cleaned, 1);
+    assert.deepEqual(await readManifest(dir), originalManifest);
+    assert.equal(await readFile(path.join(dir, "notes.md"), "utf-8"), "![img](./image.png)");
+    assert.equal(fs.existsSync(path.join(dir, "image.png")), true);
+    assert.equal(fs.existsSync(path.join(dir, "old.png")), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(backendDir, { recursive: true, force: true });

@@ -14,16 +14,23 @@ export interface WeCloneConnectorConfig {
   wecloneApiUrl: string;
   wecloneModelName?: string;
   proxyPort: number;
+  proxyBindHost?: string;
+  allowPublicBind?: boolean;
   remnicDaemonUrl: string;
   remnicAuthToken?: string;
   sessionStrategy: "caller-id" | "single";
   memoryInjection: MemoryInjectionConfig;
+  maxRequestBytes?: number;
+  maxResponseBytes?: number;
+  streamObservationMaxBytes?: number;
 }
 
 export const DEFAULT_CONFIG: WeCloneConnectorConfig = {
   wecloneApiUrl: "http://localhost:8000/v1",
   wecloneModelName: "weclone-avatar",
   proxyPort: 8100,
+  proxyBindHost: "127.0.0.1",
+  allowPublicBind: false,
   remnicDaemonUrl: "http://localhost:4318",
   sessionStrategy: "single",
   memoryInjection: {
@@ -35,6 +42,19 @@ export const DEFAULT_CONFIG: WeCloneConnectorConfig = {
 
 const VALID_SESSION_STRATEGIES = ["caller-id", "single"] as const;
 const VALID_POSITIONS = ["system-append", "system-prepend"] as const;
+const PUBLIC_BIND_HOSTS = new Set(["0.0.0.0", "::"]);
+
+function parseOptionalPositiveInteger(
+  obj: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = obj[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`Config '${key}' must be a positive integer when provided`);
+  }
+  return value;
+}
 
 /**
  * Parse and validate a raw config object into a WeCloneConnectorConfig.
@@ -89,6 +109,20 @@ export function parseConfig(raw: unknown): WeCloneConnectorConfig {
       ? String(obj.wecloneModelName)
       : DEFAULT_CONFIG.wecloneModelName;
 
+  const proxyBindHost =
+    obj.proxyBindHost !== undefined
+      ? String(obj.proxyBindHost).trim()
+      : DEFAULT_CONFIG.proxyBindHost;
+  if (!proxyBindHost) {
+    throw new Error("Config 'proxyBindHost' must be a non-empty string when provided");
+  }
+  const allowPublicBind = obj.allowPublicBind === true;
+  if (PUBLIC_BIND_HOSTS.has(proxyBindHost) && !allowPublicBind) {
+    throw new Error(
+      "Config 'proxyBindHost' cannot bind to all interfaces unless allowPublicBind is true",
+    );
+  }
+
   let sessionStrategy = DEFAULT_CONFIG.sessionStrategy;
   if (obj.sessionStrategy !== undefined) {
     if (!VALID_SESSION_STRATEGIES.includes(obj.sessionStrategy as typeof VALID_SESSION_STRATEGIES[number])) {
@@ -141,9 +175,14 @@ export function parseConfig(raw: unknown): WeCloneConnectorConfig {
     wecloneApiUrl: obj.wecloneApiUrl,
     wecloneModelName,
     proxyPort: obj.proxyPort,
+    proxyBindHost,
+    allowPublicBind,
     remnicDaemonUrl: obj.remnicDaemonUrl,
     remnicAuthToken,
     sessionStrategy,
     memoryInjection,
+    maxRequestBytes: parseOptionalPositiveInteger(obj, "maxRequestBytes"),
+    maxResponseBytes: parseOptionalPositiveInteger(obj, "maxResponseBytes"),
+    streamObservationMaxBytes: parseOptionalPositiveInteger(obj, "streamObservationMaxBytes"),
   };
 }

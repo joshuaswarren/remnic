@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { writeFixtureMemoryDir, writeSensitiveTransferFixtureEntries } from "./transfer-fixtures.js";
@@ -57,6 +57,25 @@ test("v2.3 sqlite export/import round-trips basic files", async () => {
 
   const importedProfile = await readFile(path.join(targetDir, "profile.md"), "utf-8");
   assert.match(importedProfile, /Profile/);
+});
+
+test("sqlite re-export to an existing archive removes stale rows", async () => {
+  const memDir = await mkdtemp(path.join(os.tmpdir(), "engram-mem-"));
+  await writeFile(path.join(memDir, "a.md"), "alpha\n", "utf-8");
+  await writeFile(path.join(memDir, "b.md"), "bravo\n", "utf-8");
+
+  const outDir = await mkdtemp(path.join(os.tmpdir(), "engram-sqlite-"));
+  const sqliteFile = path.join(outDir, "export.sqlite");
+
+  await exportSqlite({ memoryDir: memDir, outFile: sqliteFile, pluginVersion: "2.2.3" });
+  await rm(path.join(memDir, "b.md"));
+  await exportSqlite({ memoryDir: memDir, outFile: sqliteFile, pluginVersion: "2.2.3" });
+
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "engram-import-"));
+  const res = await importSqlite({ targetMemoryDir: targetDir, fromFile: sqliteFile });
+  assert.equal(res.written, 1);
+  assert.equal(await readFile(path.join(targetDir, "a.md"), "utf-8"), "alpha\n");
+  await assertPathMissing(path.join(targetDir, "b.md"));
 });
 
 test("sqlite export rejects non-UTF8 files instead of emitting unverifiable v1 checksums", async () => {
@@ -118,6 +137,27 @@ test("sqlite export excludes secure store, capsules, VCS, and dependencies", asy
     assert.equal(paths.some((row) => row.path_rel.startsWith(".git/")), false);
     assert.equal(paths.some((row) => row.path_rel.startsWith("node_modules/")), false);
     assert.ok(paths.some((row) => row.path_rel === "facts/2026-02-11/fact-1.md"));
+  } finally {
+    db.close();
+  }
+});
+
+test("sqlite export excludes stale output sidecars inside memory dir", async () => {
+  const memDir = await mkdtemp(path.join(os.tmpdir(), "engram-mem-"));
+  await writeFile(path.join(memDir, "profile.md"), "Profile\n", "utf-8");
+  const sqliteFile = path.join(memDir, "snapshot.sqlite");
+  await writeFile(`${sqliteFile}-wal`, Buffer.from([0xff, 0xfe, 0xfd]));
+  await writeFile(`${sqliteFile}-shm`, Buffer.from([0xff, 0xfe, 0xfd]));
+
+  await exportSqlite({ memoryDir: memDir, outFile: sqliteFile, pluginVersion: "2.2.3" });
+
+  const db = openBetterSqlite3(sqliteFile);
+  try {
+    const paths = db.prepare("SELECT path_rel FROM files ORDER BY path_rel").all() as Array<{ path_rel: string }>;
+    assert.deepEqual(
+      paths.map((row) => row.path_rel),
+      ["profile.md"],
+    );
   } finally {
     db.close();
   }

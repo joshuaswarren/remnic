@@ -161,16 +161,11 @@ function buildSyntheticEmailGraph(files: SourceFile[]): MemoryGraph {
       sourceFile: sourceFileForEntity(files, entity.name, entity.aliases) ?? sourceFile,
     }));
   const entityNames = new Set(entities.map((entity) => entity.name));
-  const entityIds = new Set(
-    EMAIL_GOLD_GRAPH.entities
-      .filter((entity) => entityNames.has(entity.name))
-      .map((entity) => entity.id),
-  );
 
   return {
     entities,
     links: EMAIL_GOLD_GRAPH.links
-      .filter((link) => entityIds.has(link.source) && entityIds.has(link.target))
+      .filter((link) => entityNames.has(link.source) && entityNames.has(link.target))
       .map((link): ExtractedLink => ({
         source: link.source,
         target: link.target,
@@ -196,6 +191,7 @@ function buildSyntheticEmailGraph(files: SourceFile[]): MemoryGraph {
       },
       hasExecSummary: page.expectExecSummary,
       hasTimeline: page.expectTimeline,
+      sourceRefs: sourceRefsForPage(files, page.title),
       seeAlso: page.expectSeeAlso,
       content: buildPageContent(page.title, corpus),
     })),
@@ -220,8 +216,30 @@ function sourceFileForEntity(
   )?.relativePath;
 }
 
+function sourceRefsForPage(files: SourceFile[], title: string): string[] {
+  const matching = files
+    .filter((file) => includesText(file.content, title))
+    .map((file) => file.relativePath);
+  return matching.length > 0
+    ? matching
+    : files.map((file) => file.relativePath);
+}
+
 function includesText(corpus: string, value: string): boolean {
-  return corpus.toLowerCase().includes(value.toLowerCase());
+  const phrase = value.trim();
+  if (phrase.length === 0) {
+    return false;
+  }
+  const escaped = escapeRegExp(phrase).replace(/\s+/g, "\\s+");
+  const pattern = new RegExp(
+    `(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_])`,
+    "iu",
+  );
+  return pattern.test(corpus);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function buildExecutiveSummary(title: string): string {
@@ -291,6 +309,7 @@ function cloneGraph(graph: MemoryGraph): MemoryGraph {
     pages: graph.pages.map((page) => ({
       ...page,
       frontmatter: cloneRecord(page.frontmatter),
+      sourceRefs: page.sourceRefs ? [...page.sourceRefs] : undefined,
       seeAlso: [...page.seeAlso],
     })),
   };

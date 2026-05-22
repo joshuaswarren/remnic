@@ -215,38 +215,53 @@ export class SessionObserverState {
 
   async save(): Promise<void> {
     await this.withSaveLock(async () => {
-      const merged = new Map<string, SessionObserverCursor>();
-      const persisted = await this.readPersistedState();
-      if (persisted) {
-        for (const [key, value] of this.normalizePersistedSessions(persisted.sessions).entries()) {
-          merged.set(key, value);
-        }
-      }
-      for (const [key, current] of this.sessions.entries()) {
-        const existing = merged.get(key);
-        if (!existing) {
-          merged.set(key, current);
-          continue;
-        }
-        merged.set(key, mergeSessionCursor(existing, current));
-      }
+      const merged = await this.readMergedSessions();
       this.sessions = merged;
 
-      const sessions: Record<string, SessionObserverCursor> = {};
-      for (const [key, value] of merged.entries()) {
-        sessions[key] = value;
-      }
-      const payload: SessionObserverPersistedState = { version: 1, sessions };
-      await mkdir(path.dirname(this.statePath), { recursive: true });
-      await writeFile(this.statePath, JSON.stringify(payload, null, 2), "utf-8");
+      await this.writeSessions(merged);
     });
   }
 
-  private enqueueSave(): Promise<void> {
-    this.saveQueue = this.saveQueue
+  private async readMergedSessions(): Promise<Map<string, SessionObserverCursor>> {
+    const merged = new Map<string, SessionObserverCursor>();
+    const persisted = await this.readPersistedState();
+    if (persisted) {
+      for (const [key, value] of this.normalizePersistedSessions(persisted.sessions).entries()) {
+        merged.set(key, value);
+      }
+    }
+    for (const [key, current] of this.sessions.entries()) {
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, current);
+        continue;
+      }
+      merged.set(key, mergeSessionCursor(existing, current));
+    }
+    return merged;
+  }
+
+  private async writeSessions(sessionsMap: Map<string, SessionObserverCursor>): Promise<void> {
+    const sessions: Record<string, SessionObserverCursor> = {};
+    for (const [key, value] of sessionsMap.entries()) {
+      sessions[key] = value;
+    }
+    const payload: SessionObserverPersistedState = { version: 1, sessions };
+    await mkdir(path.dirname(this.statePath), { recursive: true });
+    await writeFile(this.statePath, JSON.stringify(payload, null, 2), "utf-8");
+  }
+
+  private enqueueObservation(
+    input: SessionObservationInput,
+  ): Promise<SessionObservationDecision> {
+    const operation = this.saveQueue
       .catch(() => undefined)
-      .then(() => this.save());
-    return this.saveQueue;
+      .then(() => this.observeWithSaveLock(input));
+    this.saveQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   }
 
   private bandForTotalBytes(totalBytes: number): SessionObserverBandConfig {
@@ -258,20 +273,48 @@ export class SessionObserverState {
   }
 
   async observe(input: SessionObservationInput): Promise<SessionObservationDecision> {
+    return this.enqueueObservation(input);
+  }
+
+  private async observeWithSaveLock(
+    input: SessionObservationInput,
+  ): Promise<SessionObservationDecision> {
+    let decision: SessionObservationDecision | undefined;
+    await this.withSaveLock(async () => {
+      const localExisting = this.sessions.get(input.sessionKey);
+      const sessions = await this.readMergedSessions();
+      decision = await this.observeMerged(
+        input,
+        sessions,
+        localExisting ? { ...localExisting } : undefined,
+      );
+    });
+    if (!decision) {
+      throw new Error("session observer decision was not computed");
+    }
+    return decision;
+  }
+
+  private async observeMerged(
+    input: SessionObservationInput,
+    sessions: Map<string, SessionObserverCursor>,
+    localExisting?: SessionObserverCursor,
+  ): Promise<SessionObservationDecision> {
     const nowIso = input.observedAt ?? new Date().toISOString();
     const totalBytes = sanitizeNonNegativeInt(input.totalBytes);
     const totalTokens = sanitizeNonNegativeInt(input.totalTokens);
     const band = this.bandForTotalBytes(totalBytes);
 
-    const existing = this.sessions.get(input.sessionKey);
+    const existing = sessions.get(input.sessionKey);
     if (!existing) {
-      this.sessions.set(input.sessionKey, {
+      sessions.set(input.sessionKey, {
         sessionKey: input.sessionKey,
         cursorBytes: totalBytes,
         cursorTokens: totalTokens,
         lastObservedAt: nowIso,
       });
-      await this.enqueueSave();
+      this.sessions = sessions;
+      await this.writeSessions(sessions);
       return {
         triggered: false,
         deltaBytes: 0,
@@ -282,13 +325,32 @@ export class SessionObserverState {
     }
 
     const session = { ...existing };
+    const observedMs = parseIsoMs(nowIso);
+    const existingObservedMs = parseIsoMs(session.lastObservedAt);
+    const existingResetMs = parseIsoMs(session.lastResetAt);
+    if (existingResetMs > 0 && observedMs < existingResetMs) {
+      this.sessions = sessions;
+      return { triggered: false, deltaBytes: 0, deltaTokens: 0, band, reason: "baseline" };
+    }
+
     if (totalBytes < session.cursorBytes || totalTokens < session.cursorTokens) {
-      session.cursorBytes = totalBytes;
-      session.cursorTokens = totalTokens;
-      session.lastObservedAt = nowIso;
-      session.lastResetAt = nowIso;
-      this.sessions.set(input.sessionKey, session);
-      await this.enqueueSave();
+      const localSawReset =
+        localExisting !== undefined
+        && (totalBytes < sanitizeNonNegativeInt(localExisting.cursorBytes)
+          || totalTokens < sanitizeNonNegativeInt(localExisting.cursorTokens));
+      const canApplyReset = localSawReset && observedMs >= existingObservedMs;
+
+      if (canApplyReset) {
+        session.cursorBytes = totalBytes;
+        session.cursorTokens = totalTokens;
+        session.lastObservedAt = nowIso;
+        session.lastResetAt = nowIso;
+      } else if (observedMs >= existingObservedMs) {
+        session.lastObservedAt = nowIso;
+      }
+      sessions.set(input.sessionKey, session);
+      this.sessions = sessions;
+      await this.writeSessions(sessions);
       return { triggered: false, deltaBytes: 0, deltaTokens: 0, band, reason: "baseline" };
     }
 
@@ -302,8 +364,11 @@ export class SessionObserverState {
     if (!crossedThreshold) {
       const unchanged = deltaBytes === 0 && deltaTokens === 0;
       if (!unchanged) {
-        this.sessions.set(input.sessionKey, session);
-        await this.enqueueSave();
+        sessions.set(input.sessionKey, session);
+        this.sessions = sessions;
+        await this.writeSessions(sessions);
+      } else {
+        this.sessions = sessions;
       }
       return {
         triggered: false,
@@ -319,8 +384,9 @@ export class SessionObserverState {
       Number.isFinite(lastTriggeredMs) && nowMs - lastTriggeredMs < this.debounceMs;
 
     if (withinDebounce) {
-      this.sessions.set(input.sessionKey, session);
-      await this.enqueueSave();
+      sessions.set(input.sessionKey, session);
+      this.sessions = sessions;
+      await this.writeSessions(sessions);
       return {
         triggered: false,
         deltaBytes,
@@ -333,8 +399,9 @@ export class SessionObserverState {
     session.lastTriggeredAt = nowIso;
     session.cursorBytes = totalBytes;
     session.cursorTokens = totalTokens;
-    this.sessions.set(input.sessionKey, session);
-    await this.enqueueSave();
+    sessions.set(input.sessionKey, session);
+    this.sessions = sessions;
+    await this.writeSessions(sessions);
     return {
       triggered: true,
       deltaBytes,

@@ -4,7 +4,7 @@ import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./confi
 import { RemnicClient, type McpTool, type ObserveMessage } from "./client.js";
 import {
   hashObservedMessage,
-  latestUserQuery,
+  latestUserRecallTarget,
   observedMessageDedupeKey,
   sessionKeyFromContext,
   summarizeMessages,
@@ -28,11 +28,12 @@ const MAX_OBSERVED_HASHES = 2000;
 const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
 const TRUNCATION_NOTICE = "\n\n[Remnic context truncated]";
+const SESSION_OWNED_FIELDS = new Set(["sessionKey", "namespace", "cwd"]);
 
 type PiSessionState = {
   observedHashes: Set<string>;
   liveObservedReplayKeys: Map<string, number>;
-  lastInjectedQuery: string;
+  lastInjectedRecallKey: string;
 };
 
 export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) {
@@ -50,22 +51,24 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
 
     pi.on("context", async (event, ctx) => {
       if (!config.recallEnabled || !config.authToken) return;
-      const query = latestUserQuery(Array.isArray(event.messages) ? event.messages : []);
-      if (!query) return;
+      const recallTarget = latestUserRecallTarget(Array.isArray(event.messages) ? event.messages : []);
+      if (!recallTarget) return;
+      const { query } = recallTarget;
       const sessionKey = sessionKeyFromContext(ctx);
       const { state } = getSessionState(ctx, sessionStates);
-      if (query === state.lastInjectedQuery) return;
+      if (recallTarget.dedupeKey === state.lastInjectedRecallKey) return;
 
       try {
         const recalled = await client.recall(query, sessionKey, ctx.cwd);
         const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
         if (!context) return;
-        state.lastInjectedQuery = query;
+        state.lastInjectedRecallKey = recallTarget.dedupeKey;
         return {
           messages: [
             {
               role: "user",
               content: [{ type: "text", text: `Remnic recalled context for this turn:\n\n${context}` }],
+              remnicInjected: true,
               timestamp: Date.now(),
             },
             ...event.messages,
@@ -112,13 +115,22 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         return;
       }
 
-      const summary = buildCompactionSummary(preparation);
-      if (!summary.trim()) return;
-      void client.contextCheckpoint(sessionKey, summary).catch(() => undefined);
       const tokensBefore = finiteTokenCount(preparation.tokensBefore);
       const tokensAfter = finiteTokenCount(preparation.tokensAfter);
       if (tokensBefore !== null && tokensAfter !== null) {
-        void client.lcmCompactionRecord(sessionKey, tokensBefore, tokensAfter).catch(() => undefined);
+        try {
+          await client.lcmCompactionRecord(sessionKey, tokensBefore, tokensAfter);
+        } catch (err) {
+          notify(ctx, `Remnic LCM compaction token record failed: ${errorMessage(err)}`, "warning");
+        }
+      }
+
+      const summary = buildCompactionSummary(preparation);
+      if (!summary.trim()) return;
+      try {
+        await client.contextCheckpoint(sessionKey, summary);
+      } catch (err) {
+        notify(ctx, `Remnic context checkpoint failed: ${errorMessage(err)}`, "warning");
       }
       const details = fileDetailsFromPreparation(preparation);
       return {
@@ -237,12 +249,7 @@ async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicP
       parameters: toPiToolParametersSchema(tool.inputSchema),
       async execute(_toolCallId: string, params: Record<string, unknown>, _signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
         const sessionKey = sessionKeyFromContext(ctx);
-        const {
-          sessionKey: _ignoredSessionKey,
-          namespace: _ignoredNamespace,
-          cwd: _ignoredCwd,
-          ...safeParams
-        } = params ?? {};
+        const safeParams = stripSessionOwnedRuntimeFields(params ?? {}) as Record<string, unknown>;
         const result = await client.mcpTool(tool.name, {
           ...safeParams,
           sessionKey,
@@ -266,20 +273,56 @@ export function stripSessionOwnedSchemaFields(inputSchema: unknown): Record<stri
   if (!isRecord(inputSchema)) {
     return { type: "object", properties: {}, additionalProperties: true };
   }
-  const schema: Record<string, unknown> = { ...inputSchema };
-  const properties = isRecord(inputSchema.properties)
-    ? { ...inputSchema.properties }
-    : {};
-  delete properties.sessionKey;
-  delete properties.namespace;
-  delete properties.cwd;
-  schema.properties = properties;
-  if (Array.isArray(inputSchema.required)) {
-    schema.required = inputSchema.required.filter(
-      (field) => field !== "sessionKey" && field !== "namespace" && field !== "cwd",
+  return stripSessionOwnedSchemaNode(inputSchema) as Record<string, unknown>;
+}
+
+function stripSessionOwnedSchemaNode(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripSessionOwnedSchemaNode(entry));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  const schema: Record<string, unknown> = { ...value };
+  if (isRecord(value.properties)) {
+    const properties: Record<string, unknown> = {};
+    for (const [key, property] of Object.entries(value.properties)) {
+      if (SESSION_OWNED_FIELDS.has(key)) continue;
+      properties[key] = stripSessionOwnedSchemaNode(property);
+    }
+    schema.properties = properties;
+  }
+  if (Array.isArray(value.required)) {
+    schema.required = value.required.filter(
+      (field) => typeof field !== "string" || !SESSION_OWNED_FIELDS.has(field),
     );
   }
+  for (const key of ["items", "additionalProperties", "not"] as const) {
+    if (isRecord(value[key])) {
+      schema[key] = stripSessionOwnedSchemaNode(value[key]);
+    }
+  }
+  for (const key of ["oneOf", "anyOf", "allOf"] as const) {
+    if (Array.isArray(value[key])) {
+      schema[key] = value[key].map((entry) => stripSessionOwnedSchemaNode(entry));
+    }
+  }
   return schema;
+}
+
+export function stripSessionOwnedRuntimeFields(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => stripSessionOwnedRuntimeFields(entry));
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (SESSION_OWNED_FIELDS.has(key)) continue;
+    sanitized[key] = stripSessionOwnedRuntimeFields(child);
+  }
+  return sanitized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -297,7 +340,7 @@ function getSessionState(ctx: any, states: Map<string, PiSessionState>): { sessi
     state = {
       observedHashes: new Set<string>(),
       liveObservedReplayKeys: new Map<string, number>(),
-      lastInjectedQuery: "",
+      lastInjectedRecallKey: "",
     };
     states.set(sessionKey, state);
     pruneSessionStates(states);

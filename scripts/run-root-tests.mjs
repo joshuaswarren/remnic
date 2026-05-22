@@ -11,6 +11,7 @@ const testArgs = [
   "--test",
   "tests/**/*.test.ts",
   "packages/*/src/**/*.test.ts",
+  "packages/*/src/**/*.test.tsx",
   "dashboard/lib/*.test.ts",
   "integrations/amb/*.test.mjs",
 ];

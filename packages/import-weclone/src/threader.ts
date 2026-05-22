@@ -60,6 +60,21 @@ export function groupIntoThreads(
       `gapThresholdMs must be positive, received ${gapMs}`,
     );
   }
+  if (options?.gapThresholdMs !== undefined && (!Number.isFinite(gapMs) || !Number.isInteger(gapMs))) {
+    throw new Error(
+      `gapThresholdMs must be a finite integer, received ${gapMs}`,
+    );
+  }
+  if (options?.minThreadSize !== undefined && (!Number.isFinite(minSize) || !Number.isInteger(minSize))) {
+    throw new Error(
+      `minThreadSize must be a finite integer, received ${minSize}`,
+    );
+  }
+  if (options?.minThreadSize !== undefined && minSize <= 0) {
+    throw new Error(
+      `minThreadSize must be positive, received ${minSize}`,
+    );
+  }
 
   // Sort by timestamp (stable)
   const sorted = [...turns].sort((a, b) => {

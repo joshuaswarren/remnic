@@ -5,6 +5,7 @@ import json
 import time
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from remnic_hermes import EngramMemoryProvider
@@ -144,6 +145,41 @@ class TestPreLlmCall:
 
             _, kwargs = instance.recall.call_args
             assert "mode" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_real_client_recall_stays_on_provider_loop_from_caller_loop(self):
+        """A client initialized by initialize() must not be awaited on the caller's event loop."""
+        caller_loop_id = id(asyncio.get_running_loop())
+        request_loop_ids: list[int] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            request_loop_ids.append(id(asyncio.get_running_loop()))
+            if request.url.path.endswith("/health"):
+                return httpx.Response(200, json={"ok": True})
+            if request.url.path.endswith("/recall"):
+                return httpx.Response(200, json={"context": "prior memories", "count": 1})
+            return httpx.Response(404, json={"error": "not found"})
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        with patch("remnic_hermes.client.httpx.AsyncClient") as MockAsyncClient:
+            MockAsyncClient.side_effect = lambda **kwargs: real_async_client(
+                **kwargs,
+                transport=transport,
+            )
+            provider = RemnicMemoryProvider({"host": "127.0.0.1", "port": 4318, "token": "test-token"})
+            provider.initialize("test-session")
+
+            result = await provider.pre_llm_call(
+                [{"role": "user", "content": "what did we decide last week"}]
+            )
+            provider.shutdown()
+
+        assert "prior memories" in result
+        assert len(request_loop_ids) == 2
+        assert set(request_loop_ids) != {caller_loop_id}
+        assert len(set(request_loop_ids)) == 1
 
 
 class TestPrefetch:

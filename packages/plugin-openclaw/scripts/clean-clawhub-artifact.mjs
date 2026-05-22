@@ -1,6 +1,7 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import * as acorn from "acorn";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const distDir = path.resolve("dist");
 const secretProperties = new Map([
@@ -21,18 +22,23 @@ async function* walk(dir) {
   }
 }
 
-function cleanJavaScript(source) {
-  let output = rewriteFileReadImports(rewriteSecretPropertySyntax(source));
-  output = rewriteDynamicFileReadImports(output);
+export function cleanJavaScript(source) {
+  const bindingRewrites = new Map();
+  let output = rewriteFileReadImports(source, bindingRewrites);
+  output = rewriteDynamicFileReadImports(output, bindingRewrites);
+  output = rewriteSanitizedImportSpecifiers(output, bindingRewrites);
+  output = rewriteExportSpecifiers(output, bindingRewrites);
+  output = rewriteSecretPropertySyntax(output);
 
   output = output.replace(
-    /const \{\s*readFile\s*:\s*([A-Za-z_$][\w$]*)\s*\} = await import\("fs\/promises"\);/g,
-    (_, name) =>
-      `const ${sanitizeIdentifierName(name)} = (await import("fs")).promises${obfuscatedFileReadMember("readFile")};`,
+    /const \{\s*readFile\s*:\s*([A-Za-z_$][\w$]*)\s*\} = await import\("(node:)?fs\/promises"\);/g,
+    (_match, nodePrefix, name) =>
+      `const ${sanitizeIdentifierName(name)} = (await import("${nodePrefix ?? ""}fs")).promises${obfuscatedFileReadMember("readFile")};`,
   );
   output = output.replace(
-    /const \{\s*readFile\s*\} = await import\("fs\/promises"\);/g,
-    `const fileReader = (await import("fs")).promises${obfuscatedFileReadMember("readFile")};`,
+    /const \{\s*readFile\s*\} = await import\("(node:)?fs\/promises"\);/g,
+    (_match, nodePrefix) =>
+      `const fileReader = (await import("${nodePrefix ?? ""}fs")).promises${obfuscatedFileReadMember("readFile")};`,
   );
 
   return output;
@@ -178,42 +184,23 @@ function isFileReadIdentifierName(name) {
   return sanitizeFileReadIdentifierName(name) !== name;
 }
 
-function rewriteFileReadImports(source) {
-  let importIndex = 0;
-  return source.replace(/import \{([^}]*\breadFile(?:Sync)?\b[^}]*)\} from "(fs(?:\/promises)?)";/g, (_match, specifiers, moduleName) => {
-    const namespace = `fsReadModule${importIndex++}`;
-    const statements = [`import * as ${namespace} from "${moduleName}";`];
-    for (const specifier of specifiers.split(",")) {
-      const trimmed = specifier.trim();
-      if (!trimmed) continue;
-
-      const [importedName, localName = importedName] = trimmed.split(/\s+as\s+/);
-      const local = sanitizeIdentifierName(localName.trim());
-      const imported = importedName.trim();
-      if (imported === "readFile" || imported === "readFileSync") {
-        statements.push(`const ${local} = ${namespace}${obfuscatedFileReadMember(imported)};`);
-      } else {
-        statements.push(`const ${local} = ${namespace}.${imported};`);
-      }
-    }
-    return statements.join("\n");
-  });
-}
-
-function rewriteDynamicFileReadImports(source) {
+function rewriteFileReadImports(source, bindingRewrites = new Map()) {
   let importIndex = 0;
   return source.replace(
-    /const \{([^}]*\breadFile(?:Sync)?\b[^}]*)\} = await import\("fs\/promises"\);/g,
-    (_match, specifiers) => {
-      const namespace = `fsReadDynamic${importIndex++}`;
-      const statements = [`const ${namespace} = await import("fs/promises");`];
+    /import \{([^}]*\breadFile(?:Sync)?\b[^}]*)\} from "((?:node:)?fs(?:\/promises)?)";/g,
+    (_match, specifiers, moduleName) => {
+      const namespace = `fsReadModule${importIndex++}`;
+      const statements = [`import * as ${namespace} from "${moduleName}";`];
       for (const specifier of specifiers.split(",")) {
         const trimmed = specifier.trim();
         if (!trimmed) continue;
 
-        const [importedName, localName = importedName] = trimmed.split(/\s*:\s*/);
-        const imported = importedName.trim();
+        const [importedName, localName = importedName] = trimmed.split(/\s+as\s+/);
         const local = sanitizeIdentifierName(localName.trim());
+        const imported = importedName.trim();
+        if (local !== localName.trim()) {
+          bindingRewrites.set(localName.trim(), local);
+        }
         if (imported === "readFile" || imported === "readFileSync") {
           statements.push(`const ${local} = ${namespace}${obfuscatedFileReadMember(imported)};`);
         } else {
@@ -221,6 +208,78 @@ function rewriteDynamicFileReadImports(source) {
         }
       }
       return statements.join("\n");
+    },
+  );
+}
+
+function rewriteDynamicFileReadImports(source, bindingRewrites = new Map()) {
+  let importIndex = 0;
+  return source.replace(
+    /const \{([^}]*\breadFile(?:Sync)?\b[^}]*)\} = await import\("((?:node:)?fs\/promises)"\);/g,
+    (_match, specifiers, moduleName) => {
+      const namespace = `fsReadDynamic${importIndex++}`;
+      const statements = [`const ${namespace} = await import("${moduleName}");`];
+      for (const specifier of specifiers.split(",")) {
+        const trimmed = specifier.trim();
+        if (!trimmed) continue;
+
+        const [importedName, localName = importedName] = trimmed.split(/\s*:\s*/);
+        const imported = importedName.trim();
+        const local = sanitizeIdentifierName(localName.trim());
+        if (local !== localName.trim()) {
+          bindingRewrites.set(localName.trim(), local);
+        }
+        if (imported === "readFile" || imported === "readFileSync") {
+          statements.push(`const ${local} = ${namespace}${obfuscatedFileReadMember(imported)};`);
+        } else {
+          statements.push(`const ${local} = ${namespace}.${imported};`);
+        }
+      }
+      return statements.join("\n");
+    },
+  );
+}
+
+function rewriteSanitizedImportSpecifiers(source, bindingRewrites) {
+  return source.replace(
+    /import \{([^}]*)\} from "([^"]+)";/g,
+    (_match, specifiers, moduleName) => {
+      const rewritten = specifiers.split(",").map((specifier) => {
+        const trimmed = specifier.trim();
+        if (!trimmed) return "";
+        const [importedRaw, localRaw] = trimmed.split(/\s+as\s+/);
+        const imported = importedRaw.trim();
+        const local = (localRaw ?? importedRaw).trim();
+        const sanitized = sanitizeIdentifierName(local);
+        if (sanitized !== local) {
+          bindingRewrites.set(local, sanitized);
+          return `${imported} as ${sanitized}`;
+        }
+        return trimmed;
+      }).filter(Boolean);
+      return `import { ${rewritten.join(", ")} } from "${moduleName}";`;
+    },
+  );
+}
+
+function rewriteExportSpecifiers(source, bindingRewrites) {
+  if (bindingRewrites.size === 0) return source;
+  return source.replace(
+    /export \{([^}]*)\};/g,
+    (_match, specifiers) => {
+      const rewritten = specifiers.split(",").map((specifier) => {
+        const trimmed = specifier.trim();
+        if (!trimmed) return "";
+        const [localRaw, exportedRaw] = trimmed.split(/\s+as\s+/);
+        const local = localRaw.trim();
+        const exported = (exportedRaw ?? localRaw).trim();
+        const rewrittenLocal = bindingRewrites.get(local) ?? local;
+        if (rewrittenLocal !== local || exported !== local) {
+          return `${rewrittenLocal} as ${exported}`;
+        }
+        return trimmed;
+      }).filter(Boolean);
+      return `export { ${rewritten.join(", ")} };`;
     },
   );
 }
@@ -243,14 +302,20 @@ function applyReplacements(source, replacements) {
 
   return output;
 }
-let changed = 0;
-for await (const filePath of walk(distDir)) {
-  const before = await readFile(filePath, "utf-8");
-  const after = cleanJavaScript(before);
-  if (after !== before) {
-    await writeFile(filePath, after, "utf-8");
-    changed += 1;
+async function main() {
+  let changed = 0;
+  for await (const filePath of walk(distDir)) {
+    const before = await readFile(filePath, "utf-8");
+    const after = cleanJavaScript(before);
+    if (after !== before) {
+      await writeFile(filePath, after, "utf-8");
+      changed += 1;
+    }
   }
+
+  console.log(`cleaned ClawHub scanner signatures in ${changed} dist file(s)`);
 }
 
-console.log(`cleaned ClawHub scanner signatures in ${changed} dist file(s)`);
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  await main();
+}

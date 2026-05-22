@@ -66,16 +66,19 @@ function extractFromMapping(conversation: Record<string, unknown>): Array<Record
 export const chatgptReplayNormalizer: ReplayNormalizer = {
   source: "chatgpt",
   parse(input: unknown, options: ReplayParseOptions = {}): ReplayParseResult {
+    const warnings: ReplayParseResult["warnings"] = [];
     let parsedInput = input;
     if (typeof input === "string") {
       try {
         parsedInput = JSON.parse(input);
-      } catch {
+      } catch (error) {
+        const message = `Invalid ChatGPT replay JSON: ${error instanceof Error ? error.message : String(error)}`;
+        if (options.strict) throw new Error(message);
+        warnings.push({ code: "replay.chatgpt.json.invalid", message });
         parsedInput = [];
       }
     }
 
-    const warnings: ReplayParseResult["warnings"] = [];
     const turns: ReplayTurn[] = [];
 
     const conversations = gatherConversations(parsedInput);
@@ -88,11 +91,18 @@ export const chatgptReplayNormalizer: ReplayNormalizer = {
       const fallbackSessionKey = options.defaultSessionKey?.trim() || sessionKey;
 
       const messageRows = Array.isArray(conversation.messages)
-        ? conversation.messages.filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+        ? conversation.messages
         : extractFromMapping(conversation);
 
       for (let j = 0; j < messageRows.length; j += 1) {
-        const row = messageRows[j];
+        const rawRow = messageRows[j];
+        if (!rawRow || typeof rawRow !== "object") {
+          const message = `Skipping malformed ChatGPT replay message at conversation ${i + 1}, index ${j}.`;
+          if (options.strict) throw new Error(message);
+          warnings.push({ code: "replay.chatgpt.message.invalid", message, index: j });
+          continue;
+        }
+        const row = rawRow as Record<string, unknown>;
         const role = normalizeReplayRole(
           (row.author as Record<string, unknown> | undefined)?.role ?? row.role,
         );

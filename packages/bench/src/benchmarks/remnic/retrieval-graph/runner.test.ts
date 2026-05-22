@@ -53,6 +53,18 @@ test("runRetrievalGraphBenchmark graph-on beats or ties graph-off on the fixture
   );
 });
 
+test("runRetrievalGraphBenchmark branching supersession case reaches both branch tips and canonical predecessor", async () => {
+  const result = await runRetrievalGraphBenchmark(buildOptions({ mode: "full" }));
+  const task = result.results.tasks.find((entry) => entry.taskId === "supersession-branches");
+  assert.ok(task);
+
+  const actual = JSON.parse(task.actual) as string[];
+  assert.equal(actual.includes("update-1"), true);
+  assert.equal(actual.includes("update-2"), true);
+  assert.equal(actual.includes("canonical"), true);
+  assert.equal(task.scores.p_at_3_on, 1);
+});
+
 test("runRetrievalGraphBenchmark quick mode runs the smoke subset", async () => {
   const full = await runRetrievalGraphBenchmark(buildOptions({ mode: "full" }));
   const quick = await runRetrievalGraphBenchmark(buildOptions({ mode: "quick" }));

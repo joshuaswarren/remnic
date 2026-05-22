@@ -40,6 +40,22 @@ describe("parseMem0Export", () => {
     assert.equal(parsed.memories.length, 0);
   });
 
+  it("rejects primitive and null replay payloads in non-strict mode", () => {
+    for (const payload of ["123", "true", "null"]) {
+      assert.throws(
+        () => parseMem0Export(payload, { filePath: "/tmp/mem0.json" }),
+        /mem0 export must be an array or recognized object/,
+      );
+    }
+  });
+
+  it("rejects unrecognized top-level object replay payloads", () => {
+    assert.throws(
+      () => parseMem0Export(JSON.stringify({ foo: [] })),
+      /must contain a results, memories, all_pages, or pages array/,
+    );
+  });
+
   it("strict mode rejects entries without id", () => {
     assert.throws(
       () =>

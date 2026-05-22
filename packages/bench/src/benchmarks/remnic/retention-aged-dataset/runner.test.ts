@@ -99,6 +99,22 @@ test("aged-dataset bench applies options.limit to fixture queries", async () => 
   assert.equal(limited.results.tasks.length, 1);
 });
 
+test("aged-dataset bench reports task completion callbacks", async () => {
+  const calls: Array<{ taskId: string; completed: number; total: number }> = [];
+  const result = await runRetentionAgedDatasetBenchmark(options({
+    limit: 2,
+    onTaskComplete(task, completedCount, totalCount) {
+      calls.push({ taskId: task.taskId, completed: completedCount, total: totalCount });
+    },
+  }));
+
+  assert.equal(result.results.tasks.length, 2);
+  assert.deepEqual(
+    calls.map((call) => [call.taskId, call.completed, call.total]),
+    result.results.tasks.map((task, index) => [task.taskId, index + 1, 2]),
+  );
+});
+
 test("aged-dataset bench threads options.seed into the generator", async () => {
   const a = await runRetentionAgedDatasetBenchmark(options({ seed: 1234 }));
   const b = await runRetentionAgedDatasetBenchmark(options({ seed: 5678 }));
@@ -114,6 +130,31 @@ test("aged-dataset bench threads options.seed into the generator", async () => {
   // hardcoded baseOptions seed).
   assert.deepEqual(a.meta.seeds, [1234]);
   assert.deepEqual(b.meta.seeds, [5678]);
+});
+
+test("aged-dataset fixture rejects seeds the PRNG would truncate", () => {
+  const baseOptions = {
+    size: 10,
+    horizonDays: 365,
+    topicCount: 4,
+    paretoAlpha: 1.16,
+    ageSkew: 1.5,
+    nowIso: "2026-04-25T12:00:00.000Z",
+  };
+
+  for (const seed of [-1, 1.5, Number.NaN, 0x1_0000_0000]) {
+    assert.throws(
+      () => generateAgedDataset({ ...baseOptions, seed }),
+      /seed must be an integer in \[0, 4294967295\]/,
+    );
+  }
+});
+
+test("aged-dataset bench rejects invalid run seeds before reporting metadata", async () => {
+  await assert.rejects(
+    () => runRetentionAgedDatasetBenchmark(options({ seed: 1.5 })),
+    /seed must be an integer in \[0, 4294967295\]/,
+  );
 });
 
 test("aged-dataset bench produces non-empty aggregates", async () => {

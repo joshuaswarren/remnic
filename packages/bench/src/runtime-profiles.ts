@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 
 import {
   type FallbackLlmRuntimeContext,
-  resolveRemnicPluginEntry,
+  resolvePluginEntry,
   setCodexCliFallbackRunnerForProcess,
   type GatewayConfig,
   type CodexCliFallbackRunner,
@@ -31,6 +31,41 @@ import { createProvider } from "./providers/factory.js";
 import { isSecretKey } from "./security/secret-keys.js";
 import type { BenchRuntimeProfile, BuiltInProvider, ProviderConfig } from "./types.js";
 export type BenchModelSource = "plugin" | "gateway";
+
+const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
+
+function getOpenClawPluginEntries(raw: Record<string, unknown>): Record<string, unknown> | undefined {
+  const plugins =
+    raw["plugins"] && typeof raw["plugins"] === "object" && !Array.isArray(raw["plugins"])
+      ? (raw["plugins"] as Record<string, unknown>)
+      : undefined;
+  const entries =
+    plugins && plugins["entries"] && typeof plugins["entries"] === "object" && !Array.isArray(plugins["entries"])
+      ? (plugins["entries"] as Record<string, unknown>)
+      : undefined;
+  return entries;
+}
+
+function getOpenClawMemorySlotId(raw: Record<string, unknown>): string | undefined {
+  const plugins =
+    raw["plugins"] && typeof raw["plugins"] === "object" && !Array.isArray(raw["plugins"])
+      ? (raw["plugins"] as Record<string, unknown>)
+      : undefined;
+  const slots =
+    plugins && plugins["slots"] && typeof plugins["slots"] === "object" && !Array.isArray(plugins["slots"])
+      ? (plugins["slots"] as Record<string, unknown>)
+      : undefined;
+  const slotId = slots?.["memory"];
+  return typeof slotId === "string" ? slotId : undefined;
+}
+
+function resolveOpenClawRemnicPluginEntry(raw: unknown): Record<string, unknown> | undefined {
+  return resolvePluginEntry(raw, {
+    candidateIds: OPENCLAW_REMNIC_PLUGIN_IDS,
+    getEntries: getOpenClawPluginEntries,
+    getSlotId: getOpenClawMemorySlotId,
+  });
+}
 
 export interface ResolveBenchRuntimeProfileOptions {
   runtimeProfile?: BenchRuntimeProfile;
@@ -320,7 +355,7 @@ async function loadOpenclawRuntimeConfig(
   }
 
   const parsed = await loadJsonObject(filePath, "OpenClaw config");
-  const entry = resolveRemnicPluginEntry(parsed);
+  const entry = resolveOpenClawRemnicPluginEntry(parsed);
   const remnicConfig =
     isPlainObject(entry?.config) ? { ...entry.config } : {};
 

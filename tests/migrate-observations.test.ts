@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { migrateObservations } from "../src/maintenance/migrate-observations.js";
+import { backupAndWriteRebuiltObservations } from "../src/maintenance/observation-ledger-utils.js";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);
@@ -161,6 +162,57 @@ test("migrateObservations enforces backup-first when backup write fails", async 
       now,
     }),
   );
+});
+
+test("backupAndWriteRebuiltObservations keeps active ledger unchanged when replacement write fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-migrate-observations-output-fail-"));
+  const outputPath = path.join(memoryDir, "state", "observation-ledger", "rebuilt-observations.jsonl");
+  await writeText(memoryDir, "state/observation-ledger/rebuilt-observations.jsonl", "{\"legacy\":true}\n");
+
+  const now = new Date("2026-02-26T12:00:00.000Z");
+  await assert.rejects(
+    () =>
+      backupAndWriteRebuiltObservations({
+        memoryDir,
+        outputPath,
+        rows: [
+          {
+            sessionKey: "agent:main:default",
+            hour: "2026-02-25T10:00:00.000Z",
+            turnCount: 1,
+            userTurns: 1,
+            assistantTurns: 0,
+          },
+        ],
+        now,
+        atomicWrite: async (filePath, content) => {
+          if (filePath === outputPath) {
+            throw new Error("simulated replacement failure");
+          }
+          await mkdir(path.dirname(filePath), { recursive: true });
+          await writeFile(filePath, content, "utf-8");
+        },
+      }),
+    /simulated replacement failure/,
+  );
+
+  const activeRaw = await readFile(outputPath, "utf-8");
+  assert.equal(activeRaw, "{\"legacy\":true}\n");
+
+  const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const archivedRaw = await readFile(
+    path.join(
+      memoryDir,
+      "archive",
+      "observations",
+      stamp,
+      "state",
+      "observation-ledger",
+      "rebuilt-observations.jsonl",
+    ),
+    "utf-8",
+  );
+  assert.equal(archivedRaw, "{\"legacy\":true}\n");
 });
 
 test("migrateObservations live mode is no-op when no legacy files exist", async () => {

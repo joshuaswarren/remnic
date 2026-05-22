@@ -1,5 +1,4 @@
-import type { StorageManager } from "../../remnic-core/src/storage.js";
-import type { PluginConfig } from "../../remnic-core/src/types.js";
+import type { PluginConfig, StorageManager } from "@remnic/core";
 
 type RuntimeSurfaceNamespaceConfig = Pick<
   PluginConfig,

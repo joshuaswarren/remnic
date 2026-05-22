@@ -244,6 +244,11 @@ test("Pi publisher fails closed when existing config cannot be parsed", async (t
     () => publisher.publish({
       config: { memoryDir: path.join(root, "memory") },
       skillsRoot: path.join(root, "memory", "skills"),
+      rollbackTokenEntry: {
+        connector: "pi",
+        token: "old-token",
+        createdAt: "2026-05-09T00:00:00.000Z",
+      },
       log: { info: () => undefined, warn: () => undefined, error: () => undefined },
     }),
     /Failed to load existing Remnic Pi config/,
@@ -252,4 +257,57 @@ test("Pi publisher fails closed when existing config cannot be parsed", async (t
   assert.equal(fs.readFileSync(configPath, "utf8"), "{bad-json");
   assert.equal(fs.existsSync(path.join(extensionRoot, "index.ts")), false);
   assert.equal(fs.existsSync(path.join(extensionRoot, "README.md")), false);
+  assert.deepEqual(loadTokenStore().tokens, [
+    {
+      connector: "pi",
+      token: "old-token",
+      createdAt: "2026-05-09T00:00:00.000Z",
+    },
+  ]);
+});
+
+test("Pi publisher refuses a symlinked extension root", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-publisher-symlink-"));
+  const home = path.join(root, "home");
+  const piAgentHome = path.join(root, "pi-agent");
+  const extensionsDir = path.join(piAgentHome, "extensions");
+  const extensionRoot = path.join(extensionsDir, "remnic");
+  const targetDir = path.join(root, "symlink-target");
+  fs.mkdirSync(extensionsDir, { recursive: true });
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  fs.symlinkSync(targetDir, extensionRoot, "dir");
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousPiAgentHome = process.env.PI_AGENT_HOME;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  process.env.PI_AGENT_HOME = piAgentHome;
+  t.after(() => {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+    if (previousPiAgentHome === undefined) delete process.env.PI_AGENT_HOME;
+    else process.env.PI_AGENT_HOME = previousPiAgentHome;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "pi", token: "new-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  const publisher = new PiMemoryExtensionPublisher();
+  await assert.rejects(
+    () => publisher.publish({
+      config: { memoryDir: path.join(root, "memory") },
+      skillsRoot: path.join(root, "memory", "skills"),
+      log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+    }),
+    /must not be a symlink/,
+  );
+
+  assert.equal(fs.existsSync(path.join(targetDir, "remnic.config.json")), false);
+  assert.equal(fs.existsSync(path.join(targetDir, "index.ts")), false);
 });

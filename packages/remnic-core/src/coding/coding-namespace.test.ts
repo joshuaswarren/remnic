@@ -12,6 +12,7 @@ import test from "node:test";
 import {
   branchNamespaceName,
   combineNamespaces,
+  projectTagProjectId,
   projectNamespaceName,
   resolveCodingNamespaceOverlay,
 } from "./coding-namespace.js";
@@ -54,6 +55,12 @@ test("projectNamespaceName: lowercases and strips unsafe characters", () => {
 test("projectNamespaceName: empty input falls back to 'unknown'", () => {
   assert.equal(projectNamespaceName(""), "project-unknown");
   assert.equal(projectNamespaceName("   "), "project-unknown");
+});
+
+test("projectTagProjectId: lossy tags get hash disambiguators", () => {
+  assert.equal(projectTagProjectId("blend-supply"), "tag:blend-supply");
+  assert.notEqual(projectTagProjectId("blend/supply"), projectTagProjectId("blend-supply"));
+  assert.match(projectTagProjectId("blend/supply"), /^tag:blend-supply-[0-9a-f]{8}$/);
 });
 
 test("projectNamespaceName: length-capped to 64 chars, no trailing dash", () => {

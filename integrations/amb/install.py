@@ -517,7 +517,7 @@ def patch_mode_llm_imports(amb_root: Path) -> None:
             "    def __init__(self, llm: LLM | None = None, k: int = 10):\n"
             "        from ..llm import get_answer_llm\n"
             "        self._llm = llm or get_answer_llm()\n"
-            "        self._rag = RAGMode(llm=self._llm)\n",
+            "        self._rag = RAGMode(llm=self._llm, k=k)\n",
         )
         agentic_path.write_text(text)
 

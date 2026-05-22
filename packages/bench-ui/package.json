@@ -6,8 +6,9 @@
   "description": "Minimal local UI shell for browsing Remnic benchmark result summaries.",
   "scripts": {
     "dev": "vite",
+    "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "check-types": "tsc --noEmit",
-    "build": "vite build"
+    "build": "pnpm run check-types && vite build"
   },
   "dependencies": {
     "react-router-dom": "^7.9.4",

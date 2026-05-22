@@ -1,6 +1,7 @@
 import type { PluginConfig, QmdSearchResult } from "../types.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
 import { createSearchBackend } from "../search/factory.js";
+import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
 
 export function namespaceCollectionName(
   baseCollection: string,
@@ -10,8 +11,8 @@ export function namespaceCollectionName(
     useLegacyDefaultCollection?: boolean;
   },
 ): string {
-  const trimmed = namespace.trim();
-  const defaultNamespace = options?.defaultNamespace?.trim() || "default";
+  const trimmed = normalizeNamespaceIdentity(namespace);
+  const defaultNamespace = normalizeNamespaceIdentity(options?.defaultNamespace ?? "") || "default";
   if (
     options?.useLegacyDefaultCollection === true &&
     trimmed === defaultNamespace
@@ -19,15 +20,7 @@ export function namespaceCollectionName(
     return baseCollection;
   }
 
-  const normalized = trimmed
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-");
-  let start = 0;
-  let end = normalized.length;
-  while (start < end && normalized[start] === "-") start += 1;
-  while (end > start && normalized[end - 1] === "-") end -= 1;
-  const token = normalized.slice(start, end) || defaultNamespace;
-  return `${baseCollection}--ns--${token}`;
+  return `${baseCollection}--${namespaceIdentityToken(trimmed || defaultNamespace)}`;
 }
 
 type StorageRouterLike = {
@@ -75,23 +68,31 @@ export class NamespaceSearchRouter {
     const resultsByNamespace = await Promise.all(
       namespaces.map(async (namespace) => {
         const record = await this.backendRecordFor(namespace);
-        if (!record.available || record.collectionState === "missing") return [] as QmdSearchResult[];
+        if (!record.available || record.collectionState === "missing") {
+          return { namespace, results: [] as QmdSearchResult[] };
+        }
+        let results: QmdSearchResult[];
         switch (method) {
           case "hybrid":
-            return await record.backend.hybridSearch(query, undefined, maxResults, options.execution);
+            results = await record.backend.hybridSearch(query, record.collection, maxResults, options.execution);
+            break;
           case "bm25":
-            return await record.backend.bm25Search(query, undefined, maxResults, options.execution);
+            results = await record.backend.bm25Search(query, record.collection, maxResults, options.execution);
+            break;
           case "vector":
-            return await record.backend.vectorSearch(query, undefined, maxResults, options.execution);
+            results = await record.backend.vectorSearch(query, record.collection, maxResults, options.execution);
+            break;
           default:
-            return await record.backend.search(
+            results = await record.backend.search(
               query,
-              undefined,
+              record.collection,
               maxResults,
               options.searchOptions,
               options.execution,
             );
+            break;
         }
+        return { namespace, results };
       }),
     );
 
@@ -205,14 +206,14 @@ export class NamespaceSearchRouter {
 }
 
 function mergeNamespaceSearchResults(
-  lists: QmdSearchResult[][],
+  lists: Array<{ namespace: string; results: QmdSearchResult[] }>,
   maxResults: number,
 ): QmdSearchResult[] {
   const merged = new Map<string, QmdSearchResult>();
 
-  for (const list of lists) {
-    for (const result of list) {
-      const key = result.path || result.docid;
+  for (const { namespace, results } of lists) {
+    for (const result of results) {
+      const key = `${namespace}\0${result.path || result.docid}`;
       const existing = merged.get(key);
       if (!existing) {
         merged.set(key, result);

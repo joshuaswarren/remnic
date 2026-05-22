@@ -63,6 +63,17 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function validateBinaryLifecycleConfig(config: BinaryLifecycleConfig): void {
+  if (
+    typeof config.gracePeriodDays !== "number" ||
+    !Number.isFinite(config.gracePeriodDays) ||
+    !Number.isInteger(config.gracePeriodDays) ||
+    config.gracePeriodDays < 0
+  ) {
+    throw new Error("binary lifecycle gracePeriodDays must be a finite non-negative integer");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline stages
 // ---------------------------------------------------------------------------
@@ -102,7 +113,13 @@ async function stageMirror(
         status: "mirrored",
       };
 
-      assets.push(record);
+      if (!dryRun) {
+        const existingIndex = assets.findIndex((asset) => asset.originalPath === relPath);
+        if (existingIndex >= 0) {
+          assets.splice(existingIndex, 1);
+        }
+        assets.push(record);
+      }
       mirrored++;
       log.info(`[binary-lifecycle] mirrored: ${relPath} (${stat.size} bytes)${dryRun ? " [dry-run]" : ""}`);
     } catch (err) {
@@ -181,17 +198,22 @@ async function stageRedirect(
     // Only transition to "redirected" when at least one reference was found
     // AND all matched files were rewritten successfully.
     if (matchCount > 0 && writeFailCount === 0) {
-      asset.status = "redirected";
-      asset.redirectedAt = new Date().toISOString();
+      if (!dryRun) {
+        asset.status = "redirected";
+        asset.redirectedAt = new Date().toISOString();
+      }
       redirected++;
       log.info(`[binary-lifecycle] redirected: ${asset.originalPath}${dryRun ? " [dry-run]" : ""}`);
     } else if (matchCount > 0 && writeFailCount > 0) {
       // Some rewrites failed — set error status so the asset is not cleaned
       // prematurely. It can be retried on the next pipeline run.
-      asset.status = "error";
+      if (!dryRun) {
+        asset.status = "error";
+      }
       log.warn(
         `[binary-lifecycle] redirect partial failure for ${asset.originalPath}: ` +
-          `${matchCount} match(es), ${writeFailCount} write failure(s) — status set to error`,
+          `${matchCount} match(es), ${writeFailCount} write failure(s)` +
+          `${dryRun ? "" : " — status set to error"}`,
       );
     }
   }
@@ -230,11 +252,18 @@ async function stageClean(
 
     const fullPath = path.join(memoryDir, asset.originalPath);
     try {
+      const currentHash = await hashFile(fullPath);
+      if (currentHash !== asset.contentHash) {
+        const msg = `clean blocked for ${asset.originalPath}: local content hash does not match manifest`;
+        log.warn(`[binary-lifecycle] ${msg}`);
+        errors.push(msg);
+        continue;
+      }
       if (!dryRun) {
         await fsp.unlink(fullPath);
+        asset.status = "cleaned";
+        asset.cleanedAt = new Date().toISOString();
       }
-      asset.status = "cleaned";
-      asset.cleanedAt = new Date().toISOString();
       cleaned++;
       log.info(`[binary-lifecycle] cleaned: ${asset.originalPath}${dryRun ? " [dry-run]" : ""}`);
     } catch (err) {
@@ -297,8 +326,21 @@ export async function runBinaryLifecyclePipeline(
   log: PipelineLogger,
   opts?: PipelineOptions,
 ): Promise<PipelineResult> {
+  validateBinaryLifecycleConfig(config);
+
   const dryRun = opts?.dryRun ?? false;
   const forceClean = opts?.forceClean ?? false;
+
+  if (config.enabled === false) {
+    return {
+      scanned: 0,
+      mirrored: 0,
+      redirected: 0,
+      cleaned: 0,
+      errors: [],
+      dryRun,
+    };
+  }
 
   const manifest = await readManifest(memoryDir);
 

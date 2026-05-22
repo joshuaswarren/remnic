@@ -61,6 +61,13 @@ import path from "node:path";
 import { open, seal } from "../secure-store/cipher.js";
 import * as keyring from "../secure-store/keyring.js";
 import { readHeader, secureStoreDir } from "../secure-store/header.js";
+import {
+  deriveKey,
+  KDF_SALT_LENGTH,
+  type Argon2idParams,
+  type KdfAlgorithm,
+  type ScryptParams,
+} from "../secure-store/kdf.js";
 
 // ---------------------------------------------------------------------------
 // On-disk magic
@@ -125,9 +132,17 @@ export interface DecryptCapsuleOptions {
 
   /**
    * Absolute path to the memory directory whose secure-store keyring will
-   * be queried for the master key.
+   * be queried for the master key when no passphrase is supplied. Required
+   * for v1 archives, optional for v2 passphrase-based restores.
    */
-  memoryDir: string;
+  memoryDir?: string;
+
+  /**
+   * Original secure-store passphrase. For format-v2 archives this is used
+   * with the embedded KDF params to restore on a machine that does not have
+   * the source memory directory's unlocked keyring entry.
+   */
+  passphrase?: string;
 
   /**
    * Destination path for the decrypted output. If omitted, defaults to
@@ -235,14 +250,13 @@ export async function encryptCapsuleFile(
  * decryption. Throws with a clear message on:
  *   - non-enc file / wrong magic
  *   - unsupported format version
- *   - locked/uninitialized secure-store (when keyring is not unlocked and no passphrase)
+   *   - locked/uninitialized secure-store (when keyring is not unlocked and no passphrase)
  *   - wrong key / tampered ciphertext (AES-GCM auth failure)
  *
- * Format v2 archives carry embedded KDF params. If a `passphrase` is
- * provided in `opts.memoryDir`-less scenarios, the key is re-derived from
- * the passphrase + embedded KDF params (cross-machine restore). If the
- * keyring is unlocked the keyring key is used directly (faster, no
- * passphrase prompt needed).
+   * Format v2 archives carry embedded KDF params. If a `passphrase` is
+   * provided, the key is re-derived from the passphrase + embedded KDF params
+   * for cross-machine restore. Without a passphrase, an unlocked keyring key
+   * from `memoryDir` is used directly.
  */
 export async function decryptCapsuleFile(
   opts: DecryptCapsuleOptions,
@@ -273,7 +287,14 @@ export async function decryptCapsuleFile(
   }
 
   // Resolve the decryption key and the envelope offset.
-  const { key, envelopeOffset } = resolveKeyAndOffset(buf, version, opts.memoryDir, "decryptCapsuleFile", opts.encPath);
+  const { key, envelopeOffset } = resolveKeyAndOffset(
+    buf,
+    version,
+    opts.memoryDir,
+    "decryptCapsuleFile",
+    opts.encPath,
+    opts.passphrase,
+  );
 
   // The sealed envelope starts at `envelopeOffset`.
   const envelope = buf.subarray(envelopeOffset);
@@ -312,7 +333,8 @@ export async function decryptCapsuleFile(
  */
 export async function decryptCapsuleFileInMemory(
   encPath: string,
-  memoryDir: string,
+  memoryDir?: string,
+  options: { passphrase?: string } = {},
 ): Promise<Buffer> {
   const buf = await readFile(encPath);
 
@@ -335,7 +357,14 @@ export async function decryptCapsuleFileInMemory(
     );
   }
 
-  const { key, envelopeOffset } = resolveKeyAndOffset(buf, version, memoryDir, "decryptCapsuleFileInMemory", encPath);
+  const { key, envelopeOffset } = resolveKeyAndOffset(
+    buf,
+    version,
+    memoryDir,
+    "decryptCapsuleFileInMemory",
+    encPath,
+    options.passphrase,
+  );
   const envelope = buf.subarray(envelopeOffset);
 
   const basename = path.basename(encPath);
@@ -367,6 +396,12 @@ interface KdfSection {
   /** Compact JSON string embedded in the archive header. */
   json: string;
   /** Decoded salt bytes (same value as the `salt` field in `json`). */
+  salt: Buffer;
+}
+
+interface ParsedKdfSection {
+  algorithm: KdfAlgorithm;
+  params: ScryptParams | Argon2idParams;
   salt: Buffer;
 }
 
@@ -419,14 +454,20 @@ async function loadKdfSection(memoryDir: string): Promise<KdfSection> {
  * Rule 51: never silently default when the user's intent is clear but the
  * precondition (unlocked keyring) is not met.
  */
-function getKeyOrThrow(memoryDir: string, action: string): Buffer {
+function getKeyOrThrow(memoryDir: string | undefined, action: string): Buffer {
+  if (!memoryDir) {
+    throw new Error(
+      `Secure-store memoryDir is required — cannot ${action} without either an unlocked keyring or a format-v2 passphrase.`,
+    );
+  }
   const storeId = secureStoreDir(memoryDir);
   const key = keyring.getKey(storeId);
   if (key === null) {
     throw new Error(
       `Secure-store is locked or not initialized — cannot ${action}. ` +
-        `Run \`remnic secure-store unlock\` first, or \`remnic secure-store init\` ` +
-        `if the store has never been initialized.`,
+        `Run \`remnic secure-store unlock\` first, provide the original passphrase for ` +
+        `a format-v2 archive restore, or run \`remnic secure-store init\` if the store ` +
+        `has never been initialized.`,
     );
   }
   return key;
@@ -437,11 +478,9 @@ function getKeyOrThrow(memoryDir: string, action: string): Buffer {
  * within `buf`, handling both format v1 (no KDF section) and format v2
  * (embedded KDF params for cross-machine restore).
  *
- * For v2 archives: the keyring is tried first (fast path, no re-derivation).
- * If the keyring is locked/unavailable and the archive carries KDF params,
- * the caller must supply a passphrase separately (not yet wired to the
- * public API — this is the foundation). For now, locked keyring still
- * throws the same clear error as v1.
+ * For v2 archives: a caller-supplied passphrase is derived against the
+ * embedded KDF section for cross-machine restore. Without a passphrase, the
+ * keyring is used as the fast local path.
  *
  * The KDF-params section serves two roles:
  *   1. Documents what algorithm was used so cross-machine tooling knows
@@ -453,9 +492,10 @@ function getKeyOrThrow(memoryDir: string, action: string): Buffer {
 function resolveKeyAndOffset(
   buf: Buffer,
   version: number,
-  memoryDir: string,
+  memoryDir: string | undefined,
   caller: string,
   encPath: string,
+  passphrase?: string,
 ): { key: Buffer; envelopeOffset: number } {
   if (version === 1) {
     // v1: envelope starts immediately after magic (11) + version (1).
@@ -477,9 +517,53 @@ function resolveKeyAndOffset(
       `${caller}: file too short for format v2 KDF params section (expected ${kdfLen} bytes): ${encPath}`,
     );
   }
+  if (kdfLen <= 0) {
+    throw new Error(`${caller}: format v2 KDF params section is empty: ${encPath}`);
+  }
+  const kdfJson = buf.subarray(kdfJsonOffset, kdfJsonOffset + kdfLen).toString("utf-8");
+  const kdf = parseEmbeddedKdfSection(kdfJson, caller, encPath);
   const envelopeOffset = kdfJsonOffset + kdfLen;
 
-  // Prefer the in-memory keyring key (no re-derivation needed).
+  if (passphrase !== undefined) {
+    if (passphrase.length === 0) {
+      throw new Error(`${caller}: passphrase must not be empty for format v2 archive restore`);
+    }
+    const key = deriveKey(kdf.algorithm, passphrase, kdf.salt, kdf.params);
+    return { key, envelopeOffset };
+  }
+
   const key = getKeyOrThrow(memoryDir, "decrypt capsule");
   return { key, envelopeOffset };
+}
+
+function parseEmbeddedKdfSection(json: string, caller: string, encPath: string): ParsedKdfSection {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch (cause) {
+    throw new Error(`${caller}: format v2 KDF params are not valid JSON: ${encPath}`, { cause: cause as Error });
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${caller}: format v2 KDF params must be a JSON object: ${encPath}`);
+  }
+  const obj = parsed as Record<string, unknown>;
+  const algorithm = obj.algorithm;
+  if (algorithm !== "scrypt" && algorithm !== "argon2id") {
+    throw new Error(`${caller}: unsupported format v2 KDF algorithm ${String(algorithm)}: ${encPath}`);
+  }
+  if (typeof obj.params !== "object" || obj.params === null || Array.isArray(obj.params)) {
+    throw new Error(`${caller}: format v2 KDF params.params must be an object: ${encPath}`);
+  }
+  if (typeof obj.salt !== "string" || !/^[0-9a-fA-F]+$/.test(obj.salt) || obj.salt.length % 2 !== 0) {
+    throw new Error(`${caller}: format v2 KDF salt must be an even-length hex string: ${encPath}`);
+  }
+  const salt = Buffer.from(obj.salt, "hex");
+  if (salt.length !== KDF_SALT_LENGTH) {
+    throw new Error(`${caller}: format v2 KDF salt decoded to ${salt.length} bytes, expected ${KDF_SALT_LENGTH}: ${encPath}`);
+  }
+  return {
+    algorithm,
+    params: obj.params as ScryptParams | Argon2idParams,
+    salt,
+  };
 }

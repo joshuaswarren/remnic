@@ -13,7 +13,7 @@ import type {
 } from "../../../types.js";
 import type { ExtractedPage } from "../../../ingestion-types.js";
 import type { BenchJudge } from "../../../adapters/types.js";
-import { aggregateTaskScores, llmJudgeScore, timed } from "../../../scorer.js";
+import { aggregateTaskScores, llmJudgeScoreDetailed, timed } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
 import { emailFixture } from "../../../fixtures/inbox/email.js";
 
@@ -62,8 +62,8 @@ function extractClaimContext(fullText: string, sentence: string): string {
 
 function extractClaims(
   pages: ExtractedPage[],
-): Array<{ claim: string; claimContext: string; pageRef: string; seeAlso: string[] }> {
-  const claims: Array<{ claim: string; claimContext: string; pageRef: string; seeAlso: string[] }> = [];
+): Array<{ claim: string; claimContext: string; pageRef: string; sourceRefs?: string[]; seeAlso: string[] }> {
+  const claims: Array<{ claim: string; claimContext: string; pageRef: string; sourceRefs?: string[]; seeAlso: string[] }> = [];
   for (const page of pages) {
     if (!page.content) continue;
     const sentences = page.content
@@ -75,6 +75,7 @@ function extractClaims(
         claim: sentence,
         claimContext: extractClaimContext(page.content, sentence),
         pageRef: page.path,
+        sourceRefs: page.sourceRefs,
         seeAlso: page.seeAlso,
       });
     }
@@ -83,22 +84,42 @@ function extractClaims(
 }
 
 /**
- * Build the cited source content for a claim by resolving its page's seeAlso
- * references against the fixture file map. Non-empty unresolved seeAlso values
- * are treated as unresolved citation metadata rather than as permission to
- * search the full fixture corpus. Empty citation metadata still falls back to a
- * basename match and then to all sources for legacy adapters that do not expose
- * source references yet.
+ * Build the cited source content for a claim by resolving dedicated source
+ * references against the fixture file map. Legacy adapters that do not expose
+ * sourceRefs can still use seeAlso as citation metadata, but adapters that
+ * provide sourceRefs keep page backlinks separate from source-file citations.
+ * Non-empty unresolved citation metadata is treated as unresolved rather than
+ * as permission to search the full fixture corpus.
  */
 function resolveCitedSources(
+  sourceRefs: string[] | undefined,
   seeAlso: string[],
   pageRef: string,
   sourceContentMap: Map<string, string>,
 ): string {
   const resolved: string[] = [];
+  const hasExplicitSourceRefs = sourceRefs !== undefined;
+  const citationRefs = hasExplicitSourceRefs ? sourceRefs : seeAlso;
+  const normalizedRefs: string[] = [];
 
-  for (const ref of seeAlso) {
+  for (const ref of citationRefs) {
+    if (typeof ref !== "string") {
+      return "";
+    }
+    const normalizedRef = ref.trim();
+    if (!normalizedRef) {
+      return "";
+    }
+    normalizedRefs.push(normalizedRef);
+  }
+
+  if (hasExplicitSourceRefs && normalizedRefs.length === 0) {
+    return "";
+  }
+
+  for (const ref of normalizedRefs) {
     const refBase = path.basename(ref).toLowerCase();
+    let matched = false;
     for (const [relativePath, content] of sourceContentMap) {
       if (
         relativePath === ref ||
@@ -106,8 +127,12 @@ function resolveCitedSources(
         path.basename(relativePath).toLowerCase() === refBase
       ) {
         resolved.push(content);
+        matched = true;
         break;
       }
+    }
+    if (hasExplicitSourceRefs && !matched) {
+      return "";
     }
   }
 
@@ -115,7 +140,7 @@ function resolveCitedSources(
     return resolved.join("\n\n---\n\n");
   }
 
-  if (seeAlso.length > 0) {
+  if (normalizedRefs.length > 0) {
     return "";
   }
 
@@ -156,6 +181,81 @@ export async function runIngestionCitationAccuracyBenchmark(
       options.ingestionAdapter!.ingest(await realpath(fixtureDir)),
     );
 
+    if (ingestionLog.errors.length > 0) {
+      const durationMs = Math.round(performance.now() - benchmarkStart);
+      const message = ingestionLog.errors.join("; ");
+      const tasks = [
+        {
+          taskId: `citation-accuracy-${fixture.id}`,
+          question: `Verify citation accuracy for ${fixture.id} fixture`,
+          expected: `All claims cite valid source chunks`,
+          actual: `(ingestion error: ${message})`,
+          scores: {
+            total_claims: 0,
+            valid_citations: 0,
+            citation_accuracy: -1,
+          },
+          latencyMs: durationMs,
+          tokens: { input: 0, output: 0 },
+          details: {
+            fixtureId: fixture.id,
+            totalClaims: 0,
+            scoredClaims: 0,
+            validCitations: 0,
+            citationAccuracy: -1,
+            judgeAvailable: options.system?.judge !== undefined,
+            judgeLatencyMs: 0,
+            judgeModels: [],
+            ingestionDurationMs,
+            ingestionErrors: ingestionLog.errors,
+            commandsIssued: ingestionLog.commandsIssued,
+            promptsShown: ingestionLog.promptsShown,
+            claimOutcomes: [],
+          },
+        },
+      ];
+      options.onTaskComplete?.(tasks[0]!, 1, 1);
+
+      const remnicVersion = await getRemnicVersion();
+      return {
+        meta: {
+          id: randomUUID(),
+          benchmark: options.benchmark.id,
+          benchmarkTier: options.benchmark.tier,
+          version: options.benchmark.meta.version,
+          remnicVersion,
+          gitSha: getGitSha(),
+          timestamp: new Date().toISOString(),
+          mode: options.mode,
+          runCount: 1,
+          seeds: [options.seed ?? 0],
+        },
+        config: {
+          systemProvider: options.systemProvider ?? null,
+          judgeProvider: options.judgeProvider ?? null,
+          adapterMode: options.adapterMode ?? "direct",
+          remnicConfig: options.remnicConfig ?? {},
+        },
+        cost: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          estimatedCostUsd: 0,
+          totalLatencyMs: durationMs,
+          meanQueryLatencyMs: durationMs,
+        },
+        results: {
+          tasks,
+          aggregates: aggregateTaskScores(tasks.map((t) => t.scores)),
+        },
+        environment: {
+          os: process.platform,
+          nodeVersion: process.version,
+          hardware: process.arch,
+        },
+      };
+    }
+
     const graph = await options.ingestionAdapter.getMemoryGraph();
     const claims = extractClaims(graph.pages);
 
@@ -168,17 +268,28 @@ export async function runIngestionCitationAccuracyBenchmark(
 
     let validCitations = 0;
     let scoredClaims = 0;
+    let judgeInputTokens = 0;
+    let judgeOutputTokens = 0;
+    let judgeLatencyMs = 0;
+    const judgeModels = new Set<string>();
     const claimOutcomes: CitationClaimOutcome[] = [];
 
     if (claims.length > 0) {
-      for (const { claim, claimContext, pageRef, seeAlso } of claims) {
-        const citedSources = resolveCitedSources(seeAlso, pageRef, sourceContentMap);
-        const score = await llmJudgeScore(
+      for (const { claim, claimContext, pageRef, sourceRefs, seeAlso } of claims) {
+        const citedSources = resolveCitedSources(sourceRefs, seeAlso, pageRef, sourceContentMap);
+        const judgeResult = await llmJudgeScoreDetailed(
           judge,
           `Does the cited source content support this claim? Claim: "${claim}"`,
           claimContext,
           citedSources,
         );
+        judgeInputTokens += judgeResult.tokens.input;
+        judgeOutputTokens += judgeResult.tokens.output;
+        judgeLatencyMs += judgeResult.latencyMs;
+        if (judgeResult.model !== undefined) {
+          judgeModels.add(judgeResult.model);
+        }
+        const score = judgeResult.score;
         const deterministicSupport = citationSupportScore(claim, citedSources);
         if (score >= 0) {
           scoredClaims += 1;
@@ -220,7 +331,7 @@ export async function runIngestionCitationAccuracyBenchmark(
           : `No judge available; ${claims.length} claims extracted`,
         scores,
         latencyMs: totalDurationMs,
-        tokens: { input: 0, output: 0 },
+        tokens: { input: judgeInputTokens, output: judgeOutputTokens },
         details: {
           fixtureId: fixture.id,
           totalClaims: claims.length,
@@ -228,6 +339,8 @@ export async function runIngestionCitationAccuracyBenchmark(
           validCitations,
           citationAccuracy,
           judgeAvailable: judge !== undefined,
+          judgeLatencyMs,
+          judgeModels: [...judgeModels],
           ingestionDurationMs,
           ingestionErrors: ingestionLog.errors,
           claimOutcomes,
@@ -256,9 +369,9 @@ export async function runIngestionCitationAccuracyBenchmark(
         remnicConfig: options.remnicConfig ?? {},
       },
       cost: {
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
+        totalTokens: judgeInputTokens + judgeOutputTokens,
+        inputTokens: judgeInputTokens,
+        outputTokens: judgeOutputTokens,
         estimatedCostUsd: 0,
         totalLatencyMs: totalDurationMs,
         meanQueryLatencyMs: totalDurationMs,

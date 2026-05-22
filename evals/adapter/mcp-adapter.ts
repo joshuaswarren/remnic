@@ -4,6 +4,7 @@
  * Activated via --mcp flag.
  */
 
+import { randomUUID } from "node:crypto";
 import type {
   MemorySystem,
   Message,
@@ -70,6 +71,14 @@ export async function createMcpAdapter(
 ): Promise<MemorySystem> {
   const { baseUrl, authToken, timeoutMs } = options;
   const rpcOpts = { authToken, timeoutMs };
+  let runPrefix = createRunPrefix();
+  const qualifySessionId = (sessionId: string): string => `${runPrefix}:${sessionId}`;
+  const stripRunPrefix = (sessionId: string): string =>
+    sessionId.startsWith(`${runPrefix}:`)
+      ? sessionId.slice(runPrefix.length + 1)
+      : sessionId;
+  const isCurrentRunSession = (sessionId: string): boolean =>
+    sessionId.startsWith(`${runPrefix}:`);
 
   // Health check
   try {
@@ -87,14 +96,19 @@ export async function createMcpAdapter(
 
   return {
     async store(sessionId: string, messages: Message[]): Promise<void> {
-      await mcpRequest(baseUrl, "engram.lcm.observe", { sessionId, messages }, rpcOpts);
+      await mcpRequest(
+        baseUrl,
+        "engram.lcm.observe",
+        { sessionId: qualifySessionId(sessionId), messages },
+        rpcOpts,
+      );
     },
 
     async recall(sessionId: string, query: string, budgetChars?: number): Promise<string> {
       const result = await mcpRequest(
         baseUrl,
         "engram.lcm.recall",
-        { sessionId, query, budgetChars: budgetChars ?? 32000 },
+        { sessionId: qualifySessionId(sessionId), query, budgetChars: budgetChars ?? 32000 },
         rpcOpts,
       );
       return typeof result === "string" ? result : JSON.stringify(result);
@@ -105,32 +119,46 @@ export async function createMcpAdapter(
       limit: number,
       sessionId?: string,
     ): Promise<SearchResult[]> {
+      const requestedLimit = Math.max(1, Math.floor(limit));
+      const qualifiedSessionId =
+        typeof sessionId === "string" && sessionId.length > 0
+          ? qualifySessionId(sessionId)
+          : undefined;
       const result = await mcpRequest(
         baseUrl,
         "engram.lcm.search",
-        { query, limit, sessionId },
+        {
+          query,
+          limit: qualifiedSessionId ? requestedLimit : Math.max(requestedLimit, 100),
+          sessionId: qualifiedSessionId,
+        },
         rpcOpts,
       );
       if (!Array.isArray(result)) return [];
-      return (result as Array<Record<string, unknown>>).map((r) => ({
-        turnIndex: typeof r.turn_index === "number" ? r.turn_index : 0,
-        role: typeof r.role === "string" ? r.role : "unknown",
-        snippet: typeof r.snippet === "string" ? r.snippet : "",
-        sessionId: typeof r.session_id === "string" ? r.session_id : "",
-      }));
+      return (result as Array<Record<string, unknown>>)
+        .map((r) => ({
+          turnIndex: typeof r.turn_index === "number" ? r.turn_index : 0,
+          role: typeof r.role === "string" ? r.role : "unknown",
+          snippet: typeof r.snippet === "string" ? r.snippet : "",
+          sessionId: typeof r.session_id === "string" ? r.session_id : "",
+        }))
+        .filter((entry) => isCurrentRunSession(entry.sessionId))
+        .slice(0, requestedLimit)
+        .map((entry) => ({
+          ...entry,
+          sessionId: stripRunPrefix(entry.sessionId),
+        }));
     },
 
-    async reset(_sessionId?: string): Promise<void> {
-      // MCP adapter can't easily reset server state.
-      // Log a warning — benchmark should use unique session IDs instead.
-      console.warn("[mcp-adapter] reset() is a no-op in MCP mode; use unique session IDs per run");
+    async reset(): Promise<void> {
+      runPrefix = createRunPrefix();
     },
 
     async getStats(sessionId?: string): Promise<MemoryStats> {
       const result = await mcpRequest(
         baseUrl,
         "engram.lcm.stats",
-        { sessionId },
+        { sessionId: sessionId ? qualifySessionId(sessionId) : undefined },
         rpcOpts,
       );
       const r = result as Record<string, unknown> | null;
@@ -145,4 +173,8 @@ export async function createMcpAdapter(
       // Nothing to clean up for HTTP adapter
     },
   };
+}
+
+function createRunPrefix(): string {
+  return `eval-${randomUUID()}`;
 }

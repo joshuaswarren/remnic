@@ -1810,9 +1810,10 @@ export class QmdClient implements SearchBackend {
     options?: SearchQueryOptions,
     execution?: SearchExecutionOptions,
   ): Promise<QmdSearchResult[]> {
-    if (!this.isAvailable()) return [];
     const trimmed = query.trim();
     if (!trimmed) return [];
+    await this.maybeProbeDaemon();
+    if (!this.isAvailable()) return [];
 
     const col = collection ?? this.collection;
     const n = maxResults ?? this.maxResults;
@@ -1830,7 +1831,6 @@ export class QmdClient implements SearchBackend {
     }
 
     // Try daemon first (bypasses QMD_MUTEX — daemon handles its own concurrency)
-    await this.maybeProbeDaemon();
     if (this.daemonAvailable) {
       let results: QmdSearchResult[] | null;
       try {
@@ -1880,15 +1880,15 @@ export class QmdClient implements SearchBackend {
     maxResults?: number,
     execution?: SearchExecutionOptions,
   ): Promise<QmdSearchResult[]> {
-    if (!this.isAvailable()) return [];
     const trimmed = query.trim();
     if (!trimmed) return [];
+    await this.maybeProbeDaemon();
+    if (!this.isAvailable()) return [];
 
     const n = maxResults ?? 6;
     const searchOptions = this.resolveSearchOptions();
 
     // Try daemon first
-    await this.maybeProbeDaemon();
     if (this.daemonAvailable) {
       // Global search: no collection filter
       let results: QmdSearchResult[] | null;
@@ -1930,14 +1930,14 @@ export class QmdClient implements SearchBackend {
     maxResults?: number,
     execution?: SearchExecutionOptions,
   ): Promise<QmdSearchResult[]> {
-    if (!this.isAvailable()) return [];
     const trimmed = query.trim();
     if (!trimmed) return [];
+    await this.maybeProbeDaemon();
+    if (!this.isAvailable()) return [];
     const col = collection ?? this.collection;
     const n = maxResults ?? this.maxResults;
 
     // Try daemon first — BM25 via daemon is much faster than subprocess.
-    await this.maybeProbeDaemon();
     if (this.daemonAvailable && this.daemonSession) {
       let results: QmdSearchResult[] | null;
       try {
@@ -1975,14 +1975,14 @@ export class QmdClient implements SearchBackend {
     maxResults?: number,
     execution?: SearchExecutionOptions,
   ): Promise<QmdSearchResult[]> {
-    if (!this.isAvailable()) return [];
     const trimmed = query.trim();
     if (!trimmed) return [];
+    await this.maybeProbeDaemon();
+    if (!this.isAvailable()) return [];
     const col = collection ?? this.collection;
     const n = maxResults ?? this.maxResults;
 
     // Try daemon first — keeps models warm, avoids cold subprocess loads.
-    await this.maybeProbeDaemon();
     if (this.daemonAvailable && this.daemonSession) {
       let results: QmdSearchResult[] | null;
       try {

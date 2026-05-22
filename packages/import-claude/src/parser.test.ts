@@ -94,6 +94,31 @@ describe("parseClaudeExport", () => {
     assert.equal(parsed.projects.length, 0);
   });
 
+  it("strict mode rejects malformed known object sections even when another section is valid", () => {
+    assert.throws(
+      () =>
+        parseClaudeExport(
+          {
+            projects: [{ prompt_template: "keep" }],
+            conversations: { bad: true },
+          },
+          { strict: true },
+        ),
+      /conversations section must be an array/,
+    );
+    assert.throws(
+      () =>
+        parseClaudeExport(
+          {
+            conversations: [{ chat_messages: [] }],
+            projects: { bad: true },
+          },
+          { strict: true },
+        ),
+      /projects section must be an array/,
+    );
+  });
+
   // Codex review on PR #598 — when `--file` is omitted, the parser receives
   // `undefined`; we must throw a user-facing hint instead of returning an
   // empty result that looks like a successful zero-memory import.

@@ -84,6 +84,29 @@ export interface CorrectionMemory {
   tags: string[];
 }
 
+const CALIBRATION_RULE_TYPES = new Set([
+  "model_tendency",
+  "user_expectation",
+  "scope_boundary",
+  "verification_required",
+]);
+
+function parseConfidence(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.max(0, Math.min(1, value));
+}
+
+function parseEvidenceIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 /**
  * Exported for entity-contamination R-11 regression coverage (#682
  * PR 2/3 — codex review).  Tests can drive the real correction-reading
@@ -235,21 +258,42 @@ export async function synthesizeCalibrationRules(
     if (!Array.isArray(parsed.rules)) return [];
 
     const now = new Date().toISOString();
-    return parsed.rules
-      .filter((r: any) => r.condition && r.calibration && r.modelTendency)
-      .map((r: any) => ({
-        id: `cal-${createHash("sha256").update(r.condition + r.calibration).digest("hex").slice(0, 12)}`,
-        ruleType: r.ruleType ?? "model_tendency",
-        condition: String(r.condition),
-        modelTendency: String(r.modelTendency),
-        userExpectation: String(r.userExpectation ?? ""),
-        calibration: String(r.calibration),
-        confidence: typeof r.confidence === "number" ? r.confidence : 0.7,
-        evidenceCount: Array.isArray(r.evidenceIds) ? r.evidenceIds.length : 1,
-        evidenceCorrectionIds: Array.isArray(r.evidenceIds) ? r.evidenceIds : [],
+    const rawRules: unknown[] = Array.isArray(parsed.rules) ? parsed.rules : [];
+    return rawRules
+      .map((r: unknown): CalibrationRule | undefined => {
+        if (!r || typeof r !== "object" || Array.isArray(r)) return undefined;
+        const raw = r as Record<string, unknown>;
+        const ruleType = nonEmptyString(raw.ruleType);
+        const condition = nonEmptyString(raw.condition);
+        const modelTendency = nonEmptyString(raw.modelTendency);
+        const calibration = nonEmptyString(raw.calibration);
+        const confidence = parseConfidence(raw.confidence);
+        if (
+          !ruleType ||
+          !CALIBRATION_RULE_TYPES.has(ruleType) ||
+          !condition ||
+          !modelTendency ||
+          !calibration ||
+          confidence === undefined
+        ) {
+          return undefined;
+        }
+        const evidenceCorrectionIds = parseEvidenceIds(raw.evidenceIds);
+        return {
+          id: `cal-${createHash("sha256").update(condition + calibration).digest("hex").slice(0, 12)}`,
+          ruleType: ruleType as CalibrationRule["ruleType"],
+          condition,
+          modelTendency,
+          userExpectation: nonEmptyString(raw.userExpectation) ?? "",
+          calibration,
+          confidence,
+          evidenceCount: evidenceCorrectionIds.length,
+          evidenceCorrectionIds,
         createdAt: now,
         lastReinforcedAt: now,
-      }));
+        };
+      })
+      .filter((rule): rule is CalibrationRule => !!rule);
   } catch {
     log.warn("[calibration] failed to parse LLM response");
     return [];

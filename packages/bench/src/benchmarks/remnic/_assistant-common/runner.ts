@@ -82,11 +82,12 @@ export async function runAssistantBenchmark(
   });
 
   const tasks: TaskResult[] = [];
+  const perScenarioRuns: PerScenarioRunResult[][] = [];
 
   for (const scenario of scenarios) {
     const perSeedResults: PerScenarioRunResult[] = [];
 
-    for (const seed of seeds) {
+    for (const [runIndex, seed] of seeds.entries()) {
       const memoryView = renderMemoryViewForAgent(scenario.memoryGraph);
       const { result: assistantOutput, durationMs: agentLatencyMs } =
         await timed(() =>
@@ -94,6 +95,9 @@ export async function runAssistantBenchmark(
             scenarioId: scenario.id,
             prompt: scenario.scenarioPrompt,
             memoryView,
+            seed,
+            runIndex,
+            runCount,
           }),
         );
 
@@ -122,11 +126,12 @@ export async function runAssistantBenchmark(
       });
     }
 
+    perScenarioRuns.push(perSeedResults);
     tasks.push(collapseScenario(scenario, perSeedResults, rubric));
   }
 
   const aggregates = buildAggregates(tasks);
-  const statistics = buildStatistics(tasks, runnerOptions.random);
+  const statistics = buildStatistics(perScenarioRuns, runnerOptions.random);
 
   const remnicVersion = await getRemnicVersion();
   // `task.latencyMs` now holds the summed per-seed wall-clock for that
@@ -267,15 +272,13 @@ function buildAggregates(tasks: TaskResult[]): AggregateMetrics {
 }
 
 function buildStatistics(
-  tasks: TaskResult[],
+  perScenarioRuns: PerScenarioRunResult[][],
   random: (() => number) | undefined,
 ): StatisticalReport {
   const confidenceIntervals: Record<string, ConfidenceInterval> = {};
 
   for (const dimension of ASSISTANT_RUBRIC_DIMENSIONS) {
-    const values = tasks
-      .map((task) => task.scores[dimension])
-      .filter((value): value is number => typeof value === "number");
+    const values = perSeedDimensionScores(perScenarioRuns, dimension);
     if (values.length === 0) continue;
     confidenceIntervals[dimension] = bootstrapMeanConfidenceInterval(values, {
       iterations: DEFAULT_BOOTSTRAP_ITERATIONS,
@@ -283,9 +286,7 @@ function buildStatistics(
     });
   }
 
-  const overallValues = tasks
-    .map((task) => task.scores.overall)
-    .filter((value): value is number => typeof value === "number");
+  const overallValues = perSeedOverallScores(perScenarioRuns);
   if (overallValues.length > 0) {
     confidenceIntervals.overall = bootstrapMeanConfidenceInterval(
       overallValues,
@@ -297,6 +298,46 @@ function buildStatistics(
     confidenceIntervals,
     bootstrapSamples: DEFAULT_BOOTSTRAP_ITERATIONS,
   };
+}
+
+function perSeedDimensionScores(
+  perScenarioRuns: PerScenarioRunResult[][],
+  dimension: AssistantRubricDimension,
+): number[] {
+  const maxRunCount = Math.max(0, ...perScenarioRuns.map((runs) => runs.length));
+  const values: number[] = [];
+  for (let runIndex = 0; runIndex < maxRunCount; runIndex += 1) {
+    const runScores = perScenarioRuns
+      .map((runs) => runs[runIndex]?.decision.scores[dimension])
+      .filter((score): score is number => typeof score === "number");
+    if (runScores.length > 0) {
+      values.push(runScores.reduce((sum, score) => sum + score, 0) / runScores.length);
+    }
+  }
+  return values;
+}
+
+function perSeedOverallScores(
+  perScenarioRuns: PerScenarioRunResult[][],
+): number[] {
+  const maxRunCount = Math.max(0, ...perScenarioRuns.map((runs) => runs.length));
+  const values: number[] = [];
+  for (let runIndex = 0; runIndex < maxRunCount; runIndex += 1) {
+    const runScores = perScenarioRuns
+      .map((runs) => {
+        const run = runs[runIndex];
+        if (!run) return undefined;
+        return ASSISTANT_RUBRIC_DIMENSIONS.reduce(
+          (sum, dimension) => sum + run.decision.scores[dimension],
+          0,
+        ) / ASSISTANT_RUBRIC_DIMENSIONS.length;
+      })
+      .filter((score): score is number => typeof score === "number");
+    if (runScores.length > 0) {
+      values.push(runScores.reduce((sum, score) => sum + score, 0) / runScores.length);
+    }
+  }
+  return values;
 }
 
 function resolveSeeds(
@@ -323,6 +364,9 @@ function buildRunId(benchmarkId: string): string {
 function renderMemoryViewForAgent(graph: AssistantMemoryGraph): string {
   const lines: string[] = [];
   lines.push(`You are assisting ${graph.userHandle}, ${graph.userRole}.`);
+  if (graph.currentDate) {
+    lines.push(`Current date: ${graph.currentDate}.`);
+  }
   lines.push("");
   lines.push("Recent memory items:");
   for (const fact of graph.facts) {
@@ -352,8 +396,16 @@ function renderMemorySummaryForJudge(
   sections.push(
     `USER: ${graph.userHandle} (${graph.userRole})`,
   );
+  if (graph.currentDate) {
+    sections.push(`CURRENT_DATE: ${graph.currentDate}`);
+  }
   const facts = graph.facts
-    .map((fact) => `  - ${fact.id}: ${fact.summary}`)
+    .map((fact) => {
+      const tags = Array.isArray(fact.tags) && fact.tags.length > 0
+        ? ` [tags: ${fact.tags.join(", ")}]`
+        : "";
+      return `  - ${fact.id}: ${fact.summary}${tags}`;
+    })
     .join("\n");
   if (facts.length > 0) sections.push(`FACTS:\n${facts}`);
   if (graph.stances.length > 0) {

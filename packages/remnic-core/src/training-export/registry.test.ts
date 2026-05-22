@@ -71,6 +71,23 @@ describe("TrainingExportAdapter registry", () => {
     );
   });
 
+  it("rejects malformed adapters without mutating the registry", () => {
+    assert.throws(
+      () => registerTrainingExportAdapter({ name: "no-format" } as unknown as TrainingExportAdapter),
+      /formatRecords must be a function/,
+    );
+    assert.throws(
+      () => registerTrainingExportAdapter({
+        name: "bad-ext",
+        formatRecords: () => "",
+        fileExtension: "",
+      } as unknown as TrainingExportAdapter),
+      /fileExtension must be a non-empty extension/,
+    );
+
+    assert.deepEqual(listTrainingExportAdapters(), []);
+  });
+
   it("trims adapter name on lookup", () => {
     registerTrainingExportAdapter(makeAdapter("axolotl"));
     assert.ok(getTrainingExportAdapter("  axolotl  "));

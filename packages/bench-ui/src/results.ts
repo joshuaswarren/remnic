@@ -305,11 +305,13 @@ export async function loadBenchResultSummaries(
     return {
       resultsDir,
       summaries: [],
+      skippedFiles: [],
     };
   }
 
   const entries = await readdir(resultsDir, { withFileTypes: true });
   const summaries: BenchResultSummary[] = [];
+  const skippedFiles: BenchResultSummaryPayload["skippedFiles"] = [];
 
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) {
@@ -323,9 +325,14 @@ export async function loadBenchResultSummaries(
       const summary = summarizeBenchmarkResult(JSON.parse(raw) as unknown, filePath);
       if (summary) {
         summaries.push(summary);
+      } else {
+        skippedFiles.push({ filePath, reason: "missing required benchmark result fields" });
       }
-    } catch {
-      continue;
+    } catch (error) {
+      skippedFiles.push({
+        filePath,
+        reason: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -334,5 +341,6 @@ export async function loadBenchResultSummaries(
   return {
     resultsDir,
     summaries,
+    skippedFiles,
   };
 }

@@ -20,6 +20,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildConnectorRowsFromDefinitions,
   parseConnectorsFormat,
   parseConnectorsListOptions,
   parseConnectorsRunName,
@@ -29,7 +30,13 @@ import {
   type ConnectorRow,
   type ConnectorRunResult,
 } from "../../packages/remnic-core/src/connectors-cli.js";
-import type { ConnectorState } from "../../packages/remnic-core/src/connectors/live/index.js";
+import {
+  GITHUB_CONNECTOR_ID,
+  GMAIL_CONNECTOR_ID,
+  GOOGLE_DRIVE_CONNECTOR_ID,
+  NOTION_CONNECTOR_ID,
+  type ConnectorState,
+} from "../../packages/remnic-core/src/connectors/live/index.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fixtures
@@ -327,6 +334,41 @@ test("renderConnectorsList: multiple connectors sorted by id are all rendered", 
   const out = renderConnectorsList(rows, "text");
   assert.ok(out.includes("notion"));
   assert.ok(out.includes("google-drive"));
+});
+
+test("buildConnectorRowsFromDefinitions includes Drive, Notion, Gmail, and GitHub rows", () => {
+  const rows = buildConnectorRowsFromDefinitions(
+    [
+      { id: GOOGLE_DRIVE_CONNECTOR_ID, displayName: "Google Drive", enabled: true },
+      { id: NOTION_CONNECTOR_ID, displayName: "Notion", enabled: true },
+      { id: GMAIL_CONNECTOR_ID, displayName: "Gmail", enabled: true },
+      { id: GITHUB_CONNECTOR_ID, displayName: "GitHub", enabled: true },
+    ],
+    [
+      makeState({
+        id: GMAIL_CONNECTOR_ID,
+        totalDocsImported: 7,
+      }),
+    ],
+  );
+
+  assert.deepEqual(rows.map((row) => row.id), [
+    GOOGLE_DRIVE_CONNECTOR_ID,
+    NOTION_CONNECTOR_ID,
+    GMAIL_CONNECTOR_ID,
+    GITHUB_CONNECTOR_ID,
+  ]);
+  assert.equal(rows.find((row) => row.id === GMAIL_CONNECTOR_ID)?.state?.totalDocsImported, 7);
+
+  const json = JSON.parse(renderConnectorsList(rows, "json")) as Array<{ id: string }>;
+  assert.deepEqual(json.map((row) => row.id), [
+    GOOGLE_DRIVE_CONNECTOR_ID,
+    NOTION_CONNECTOR_ID,
+    GMAIL_CONNECTOR_ID,
+    GITHUB_CONNECTOR_ID,
+  ]);
+  assert.equal(parseConnectorsRunName(GMAIL_CONNECTOR_ID), GMAIL_CONNECTOR_ID);
+  assert.equal(parseConnectorsRunName(GITHUB_CONNECTOR_ID), GITHUB_CONNECTOR_ID);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

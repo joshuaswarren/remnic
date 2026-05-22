@@ -4,7 +4,7 @@ import { access, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:
 import { lintWorkspaceFiles } from "./hygiene.js";
 import { parseConfig } from "./config.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
-import { resolveRemnicPluginEntry } from "./plugin-id.js";
+import { resolvePluginEntry } from "./plugin-entry-resolver.js";
 import {
   resolveCuratedIncludeFilesStatePath,
   resolveNativeKnowledgeStatePath,
@@ -48,6 +48,41 @@ import type {
 } from "./types.js";
 import { reportBufferSurpriseDistribution } from "./buffer-surprise-report.js";
 import { readJudgeVerdictStats } from "./extraction-judge-telemetry.js";
+
+const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
+
+function getOpenClawPluginEntries(raw: Record<string, unknown>): Record<string, unknown> | undefined {
+  const plugins =
+    raw["plugins"] && typeof raw["plugins"] === "object" && !Array.isArray(raw["plugins"])
+      ? (raw["plugins"] as Record<string, unknown>)
+      : undefined;
+  const entries =
+    plugins && plugins["entries"] && typeof plugins["entries"] === "object" && !Array.isArray(plugins["entries"])
+      ? (plugins["entries"] as Record<string, unknown>)
+      : undefined;
+  return entries;
+}
+
+function getOpenClawMemorySlotId(raw: Record<string, unknown>): string | undefined {
+  const plugins =
+    raw["plugins"] && typeof raw["plugins"] === "object" && !Array.isArray(raw["plugins"])
+      ? (raw["plugins"] as Record<string, unknown>)
+      : undefined;
+  const slots =
+    plugins && plugins["slots"] && typeof plugins["slots"] === "object" && !Array.isArray(plugins["slots"])
+      ? (plugins["slots"] as Record<string, unknown>)
+      : undefined;
+  const slotId = slots?.["memory"];
+  return typeof slotId === "string" ? slotId : undefined;
+}
+
+function resolveOpenClawRemnicPluginEntry(raw: unknown): Record<string, unknown> | undefined {
+  return resolvePluginEntry(raw, {
+    candidateIds: OPENCLAW_REMNIC_PLUGIN_IDS,
+    getEntries: getOpenClawPluginEntries,
+    getSlotId: getOpenClawMemorySlotId,
+  });
+}
 
 interface QmdRuntimeLike {
   probe(): Promise<boolean>;
@@ -394,9 +429,9 @@ async function loadCliPluginConfig(configPath?: string): Promise<OperatorConfigL
   const resolvedPath = resolveConfigPath(configPath);
   try {
     const raw = JSON.parse(await readFile(resolvedPath, "utf-8")) as Record<string, unknown>;
-    // Delegate slot → PLUGIN_ID → LEGACY_PLUGIN_ID resolution to the shared
-    // helper so all config loaders stay in sync (#403).
-    const entry = resolveRemnicPluginEntry(raw);
+    // Delegate slot → canonical → legacy resolution to the generic helper so
+    // all config loaders stay in sync (#403).
+    const entry = resolveOpenClawRemnicPluginEntry(raw);
     const parsedConfig = parseConfig(
       entry && typeof entry === "object"
         ? ((entry["config"] as Record<string, unknown> | undefined) ?? {})

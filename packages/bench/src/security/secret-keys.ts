@@ -16,13 +16,17 @@ const SECRET_KEY_SEGMENT_SUFFIXES: ReadonlySet<string> = new Set([
   "privatekey",
 ] as const);
 
-export function isSecretKey(key: string): boolean {
-  const segments = key
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .split(/[^a-z0-9]+/i)
-    .map((segment) => segment.trim().toLowerCase())
-    .filter(Boolean);
+const SECRET_MATERIAL_DESCRIPTORS: ReadonlySet<string> = new Set([
+  "credential",
+  "credentials",
+  "header",
+  "material",
+  "pem",
+  "plaintext",
+  "value",
+] as const);
 
+function isSecretSegments(segments: readonly string[]): boolean {
   if (segments.length === 0) {
     return false;
   }
@@ -49,4 +53,32 @@ export function isSecretKey(key: string): boolean {
   }
 
   return false;
+}
+
+export function isSecretKey(key: string): boolean {
+  const segments = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^a-z0-9]+/i)
+    .map((segment) => segment.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (segments.length === 0) {
+    return false;
+  }
+
+  if (isSecretSegments(segments)) {
+    return true;
+  }
+
+  const withoutMaterialDescriptors = [...segments];
+  while (
+    withoutMaterialDescriptors.length > 1 &&
+    SECRET_MATERIAL_DESCRIPTORS.has(withoutMaterialDescriptors.at(-1)!)
+  ) {
+    withoutMaterialDescriptors.pop();
+  }
+
+  return withoutMaterialDescriptors.length !== segments.length
+    ? isSecretSegments(withoutMaterialDescriptors)
+    : false;
 }

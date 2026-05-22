@@ -74,6 +74,33 @@ describe("transformChatGPTExport", () => {
     );
   });
 
+  it("uses conversation timestamps when user messages have no timestamps", () => {
+    const parsed = parseChatGPTExport({
+      conversations: [
+        {
+          id: "c1",
+          create_time: 1737763200,
+          mapping: {
+            a: {
+              id: "a",
+              message: {
+                author: { role: "user" },
+                content: { parts: ["hello from the timestamp fallback"] },
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    const memories = transformChatGPTExport(parsed, {
+      includeConversations: true,
+    });
+
+    assert.equal(memories.length, 1);
+    assert.equal(memories[0].sourceTimestamp, "2025-01-25T00:00:00.000Z");
+  });
+
   it("respects maxConversationSummaryChars truncation", () => {
     // Build a synthetic parsed shape with a long user turn.
     const longTurn = "x".repeat(5000);
@@ -112,6 +139,37 @@ describe("transformChatGPTExport", () => {
     assert.equal(memories.length, 1);
   });
 
+  it("normalizes saved-memory timestamps and omits invalid values", () => {
+    const parsed = parseChatGPTExport({
+      memory: [
+        {
+          id: "valid",
+          content: "Valid timestamp memory",
+          updated_at: 1737763200,
+        },
+        {
+          id: "invalid",
+          content: "Invalid timestamp memory",
+          updated_at: "not-a-date",
+          created_at: "also-not-a-date",
+        },
+        {
+          id: "fallback",
+          content: "Fallback timestamp memory",
+          updated_at: "not-a-date",
+          created_at: "2025-01-25T00:00:00.000Z",
+        },
+      ],
+    });
+
+    const memories = transformChatGPTExport(parsed);
+
+    assert.equal(memories.length, 3);
+    assert.equal(memories[0].sourceTimestamp, "2025-01-25T00:00:00.000Z");
+    assert.equal(memories[1].sourceTimestamp, undefined);
+    assert.equal(memories[2].sourceTimestamp, "2025-01-25T00:00:00.000Z");
+  });
+
   // Cursor review on PR #595 — when the title alone is longer than maxChars,
   // the previous truncation logic produced content that exceeded the cap.
   it("truncation never exceeds maxConversationSummaryChars even with a long title", () => {
@@ -144,5 +202,37 @@ describe("transformChatGPTExport", () => {
       `content length ${memories[0].content.length} must be <= 100, got: ${memories[0].content.slice(0, 50)}...`,
     );
     assert.ok(memories[0].content.endsWith("..."));
+  });
+
+  it("truncation never exceeds tiny maxConversationSummaryChars caps", () => {
+    const parsed = parseChatGPTExport({
+      conversations: [
+        {
+          id: "tiny-cap",
+          mapping: {
+            a: {
+              id: "a",
+              message: {
+                author: { role: "user" },
+                content: { parts: ["hello"] },
+                create_time: 1737763200,
+              },
+            },
+          },
+        },
+      ],
+    });
+
+    for (const cap of [0, 1, 2]) {
+      const memories = transformChatGPTExport(parsed, {
+        includeConversations: true,
+        maxConversationSummaryChars: cap,
+      });
+      assert.equal(memories.length, 1);
+      assert.ok(
+        memories[0].content.length <= cap,
+        `content length ${memories[0].content.length} must be <= ${cap}`,
+      );
+    }
   });
 });

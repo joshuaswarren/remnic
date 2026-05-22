@@ -118,6 +118,38 @@ describe("parseWeCloneExport", () => {
     assert.equal(result.turns[1].role, "assistant");
   });
 
+  it("rejects malformed assistantSenders option before role inference", () => {
+    const input = {
+      platform: "telegram",
+      messages: [makeMsg("Alice", "hi", T1)],
+    };
+
+    assert.throws(
+      () => parseWeCloneExport(input, { assistantSenders: 1 as never }),
+      /invalid option assistantSenders: expected an array of non-empty strings/,
+    );
+    assert.throws(
+      () => parseWeCloneExport(input, { assistantSenders: ["Bot", 3 as never] }),
+      /invalid option assistantSenders\[1\]: expected a non-empty string/,
+    );
+  });
+
+  it("rejects malformed selfSender option before role inference", () => {
+    const input = {
+      platform: "telegram",
+      messages: [makeMsg("Alice", "hi", T1)],
+    };
+
+    assert.throws(
+      () => parseWeCloneExport(input, { selfSender: 42 as never }),
+      /invalid option selfSender: expected a non-empty string/,
+    );
+    assert.throws(
+      () => parseWeCloneExport(input, { selfSender: "" }),
+      /invalid option selfSender: expected a non-empty string/,
+    );
+  });
+
   it("maps reply_to_id to replyToId", () => {
     const input = {
       platform: "telegram",

@@ -72,6 +72,27 @@ function isPlainRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"];
+
+function getOpenClawPluginEntries(raw) {
+  const plugins = isPlainRecord(raw.plugins) ? raw.plugins : undefined;
+  return plugins && isPlainRecord(plugins.entries) ? plugins.entries : undefined;
+}
+
+function getOpenClawMemorySlotId(raw) {
+  const plugins = isPlainRecord(raw.plugins) ? raw.plugins : undefined;
+  const slots = plugins && isPlainRecord(plugins.slots) ? plugins.slots : undefined;
+  return typeof slots?.memory === "string" ? slots.memory : undefined;
+}
+
+function resolveOpenClawRemnicPluginEntry(raw, resolveEntry) {
+  return resolveEntry(raw, {
+    candidateIds: OPENCLAW_REMNIC_PLUGIN_IDS,
+    getEntries: getOpenClawPluginEntries,
+    getSlotId: getOpenClawMemorySlotId,
+  });
+}
+
 class MaterializeConfigError extends Error {
   constructor(message) {
     super(message);
@@ -82,6 +103,15 @@ class MaterializeConfigError extends Error {
 function envValue(env, key) {
   const value = env[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function expandConfigPathForEnv(filePath, home) {
+  if (filePath === undefined) return undefined;
+  if (filePath === "~") return home.length > 0 ? home : filePath;
+  if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
+    return home.length > 0 ? path.join(home, filePath.slice(2)) : filePath;
+  }
+  return filePath;
 }
 
 function safeErrorDetail(error) {
@@ -104,9 +134,12 @@ function configCandidates(env = process.env) {
     envValue(env, "OPENCLAW_ENGRAM_CONFIG_PATH") ||
     path.join(home, ".openclaw", "openclaw.json");
   return [
-    { path: envValue(env, "REMNIC_CONFIG"), label: "REMNIC_CONFIG" },
     {
-      path: openclawConfigPath,
+      path: expandConfigPathForEnv(envValue(env, "REMNIC_CONFIG"), home),
+      label: "REMNIC_CONFIG",
+    },
+    {
+      path: expandConfigPathForEnv(openclawConfigPath, home),
       label:
         envValue(env, "OPENCLAW_CONFIG_PATH") !== undefined
           ? "OPENCLAW_CONFIG_PATH"
@@ -130,7 +163,7 @@ function configCandidates(env = process.env) {
 }
 
 function extractRemnicConfigFromRaw(raw, resolveEntry) {
-  const entry = resolveEntry(raw);
+  const entry = resolveOpenClawRemnicPluginEntry(raw, resolveEntry);
   if (isPlainRecord(entry)) {
     return isPlainRecord(entry.config) ? entry.config : entry;
   }
@@ -145,11 +178,10 @@ function extractRemnicConfigFromRaw(raw, resolveEntry) {
 /**
  * Load the Remnic plugin config block from the first matching config file.
  *
- * Entry resolution is delegated to `resolveRemnicPluginEntry` from
- * `@remnic/core` so the slot → PLUGIN_ID → LEGACY_PLUGIN_ID logic lives
- * in exactly one place across all five config-loader sites (#403).
+ * Entry resolution is delegated to the generic plugin-entry resolver from
+ * `@remnic/core` with OpenClaw ids supplied by this adapter wrapper.
  *
- * @param {Function} resolveEntry - resolveRemnicPluginEntry from @remnic/core
+ * @param {Function} resolveEntry - resolvePluginEntry from @remnic/core
  * @param {NodeJS.ProcessEnv} env - environment override for tests
  */
 function loadRawConfig(resolveEntry, env = process.env) {
@@ -203,20 +235,20 @@ async function main() {
 
   // Dynamic import because @remnic/core is ESM-only.
   const core = await import("@remnic/core");
-  const { parseConfig, runCodexMaterialize, resolveRemnicPluginEntry } = core;
+  const { parseConfig, runCodexMaterialize, resolvePluginEntry } = core;
   if (
     typeof parseConfig !== "function" ||
     typeof runCodexMaterialize !== "function" ||
-    typeof resolveRemnicPluginEntry !== "function"
+    typeof resolvePluginEntry !== "function"
   ) {
     throw new Error(
-      "codex-materialize: @remnic/core is missing expected exports (parseConfig, runCodexMaterialize, resolveRemnicPluginEntry)",
+      "codex-materialize: @remnic/core is missing expected exports (parseConfig, runCodexMaterialize, resolvePluginEntry)",
     );
   }
 
-  // Pass the shared resolver so loadRawConfig uses the same slot → id lookup
-  // logic as all other config-loader sites (#403).
-  const rawConfig = loadRawConfig(resolveRemnicPluginEntry);
+  // Pass the generic resolver so loadRawConfig uses the same slot → id lookup
+  // semantics as the other OpenClaw config-loader sites (#403).
+  const rawConfig = loadRawConfig(resolvePluginEntry);
   let config;
   try {
     config = parseConfig(rawConfig);

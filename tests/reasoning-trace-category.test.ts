@@ -97,8 +97,26 @@ describe("reasoning_trace category", () => {
       content: "Tried A, fell back to B when A timed out; documented why.",
       confidence: 0.85,
       tags: ["reasoning"],
+      reasoningTrace: {
+        steps: [
+          { order: 1, description: "Tried A and observed the timeout." },
+          { order: 2, description: "Fell back to B and checked the result." },
+        ],
+        final_answer: "B was the reliable option.",
+        observed_outcome: "The fallback completed successfully.",
+      },
     });
     assert.equal(parsed.success, true);
+  });
+
+  it("requires reasoningTrace payload for ExtractedFactSchema reasoning_trace facts", () => {
+    const parsed = ExtractedFactSchema.safeParse({
+      category: "reasoning_trace",
+      content: "Tried A, fell back to B when A timed out; documented why.",
+      confidence: 0.85,
+      tags: ["reasoning"],
+    });
+    assert.equal(parsed.success, false);
   });
 
   it("is accepted by memoryStoreRequestSchema (zod)", () => {

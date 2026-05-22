@@ -10,6 +10,7 @@ import {
 } from "../packages/remnic-core/src/live-connectors-runner.js";
 import {
   readConnectorState,
+  withConnectorStateLock,
   writeConnectorState,
   type ConnectorConfig,
   type ConnectorCursor,
@@ -375,6 +376,55 @@ test("runLiveConnectorsOnce force bypasses the not-due gate", async () => {
     const state = await readConnectorState(memoryDir, "test-connector");
     assert.equal(state?.cursor?.value, "forced");
     assert.equal(state?.totalDocsImported, 7);
+  });
+});
+
+test("runLiveConnectorsOnce rechecks due state after waiting for connector lock", async () => {
+  await withMemoryDir(async (memoryDir) => {
+    await writeConnectorState(memoryDir, "test-connector", {
+      id: "test-connector",
+      cursor: makeCursor("prior"),
+      lastSyncAt: "2026-04-28T11:58:00.000Z",
+      lastSyncStatus: "success",
+      totalDocsImported: 7,
+    });
+
+    let releaseLock!: () => void;
+    const lockCanFinish = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const lockHolder = withConnectorStateLock(memoryDir, "test-connector", async () => {
+      await lockCanFinish;
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+    const seenCursors: Array<ConnectorCursor | null> = [];
+    const run = runLiveConnectorsOnce({
+      memoryDir,
+      connectors: defaultConnectorsConfig(),
+      ingestDocuments: async () => {
+        throw new Error("locked not-due connector should not ingest");
+      },
+      now: new Date("2026-04-28T12:00:00.000Z"),
+      definitions: [makeDefinition({ pollIntervalMs: 60_000, seenCursors })],
+    });
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    await writeConnectorState(memoryDir, "test-connector", {
+      id: "test-connector",
+      cursor: makeCursor("advanced"),
+      lastSyncAt: "2026-04-28T11:59:30.000Z",
+      lastSyncStatus: "success",
+      totalDocsImported: 9,
+    });
+    releaseLock();
+    await lockHolder;
+
+    const summary = await run;
+    assert.equal(summary.ranCount, 0);
+    assert.equal(summary.skippedCount, 1);
+    assert.equal(summary.results[0].skippedReason, "not_due");
+    assert.deepEqual(seenCursors, []);
   });
 });
 

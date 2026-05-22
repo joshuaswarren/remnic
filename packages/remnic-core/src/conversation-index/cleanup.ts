@@ -1,4 +1,4 @@
-import { readdir, rm } from "node:fs/promises";
+import { lstat, readdir, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
 
@@ -19,10 +19,11 @@ export async function cleanupConversationChunks(
   const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
 
   try {
+    const root = await assertCleanupRoot(rootDir);
     const sessions = await readdir(rootDir, { withFileTypes: true });
     for (const s of sessions) {
       if (!s.isDirectory()) continue;
-      const sessionDir = path.join(rootDir, s.name);
+      const sessionDir = await assertCleanupChild(root, path.join(rootDir, s.name));
       const dayDirs = await readdir(sessionDir, { withFileTypes: true });
 
       for (const d of dayDirs) {
@@ -32,7 +33,7 @@ export async function cleanupConversationChunks(
         const dayMs = new Date(d.name + "T00:00:00.000Z").getTime();
         if (!Number.isFinite(dayMs)) continue;
         if (dayMs < cutoffMs) {
-          await rm(path.join(sessionDir, d.name), { recursive: true, force: true });
+          await rm(await assertCleanupChild(root, path.join(sessionDir, d.name)), { recursive: true, force: true });
         }
       }
 
@@ -40,7 +41,7 @@ export async function cleanupConversationChunks(
       try {
         const remaining = await readdir(sessionDir);
         if (remaining.length === 0) {
-          await rm(sessionDir, { recursive: true, force: true });
+          await rm(await assertCleanupChild(root, sessionDir), { recursive: true, force: true });
         }
       } catch {
         // ignore
@@ -51,3 +52,23 @@ export async function cleanupConversationChunks(
   }
 }
 
+async function assertCleanupRoot(rootDir: string): Promise<string> {
+  const stat = await lstat(rootDir);
+  if (stat.isSymbolicLink()) {
+    throw new Error("conversation chunk cleanup root must not be a symlink");
+  }
+  return realpath(rootDir);
+}
+
+async function assertCleanupChild(rootReal: string, candidate: string): Promise<string> {
+  const stat = await lstat(candidate);
+  if (stat.isSymbolicLink()) {
+    throw new Error("conversation chunk cleanup path must not contain symlinks");
+  }
+  const real = await realpath(candidate);
+  const relative = path.relative(rootReal, real);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return real;
+  }
+  throw new Error("conversation chunk cleanup path escapes index root");
+}

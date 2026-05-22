@@ -3,10 +3,11 @@ import path from "node:path";
 import type { CompatCheckOptions, CompatCheckResult, CompatReport, CompatRunner } from "./types.js";
 import { compareVersions } from "../version-utils.js";
 import { launchProcess } from "../runtime/child-process.js";
-import { PLUGIN_ID, LEGACY_PLUGIN_ID } from "../plugin-id.js";
 
 const REQUIRED_HOOKS_LEGACY = ["before_agent_start", "agent_end"];
 const REQUIRED_HOOKS_NEW = ["before_prompt_build", "agent_end"];
+const OPENCLAW_REMNIC_PLUGIN_ID = "openclaw-remnic";
+const OPENCLAW_REMNIC_LEGACY_PLUGIN_ID = "openclaw-engram";
 
 function isSafeCommandToken(command: string): boolean {
   return /^[a-zA-Z0-9._-]+$/.test(command);
@@ -178,7 +179,66 @@ function parseHookRegistrations(source: string): Set<string> {
 }
 
 function hasServiceStartRegistration(source: string): boolean {
-  return /api\.registerService\s*\(\s*\{[\s\S]*?\bstart\s*(?::|\()/m.test(source);
+  let i = 0;
+  while (i < source.length) {
+    const callIndex = source.indexOf("api.registerService", i);
+    if (callIndex === -1) return false;
+    if (callIndex > 0 && /[a-zA-Z0-9_$\.]/.test(source[callIndex - 1])) {
+      i = callIndex + 1;
+      continue;
+    }
+
+    let cursor = callIndex + "api.registerService".length;
+    while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+    if (source[cursor] !== "(") {
+      i = callIndex + 1;
+      continue;
+    }
+
+    cursor += 1;
+    while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+    if (source[cursor] !== "{") {
+      i = callIndex + 1;
+      continue;
+    }
+
+    if (objectLiteralHasTopLevelStart(source, cursor)) return true;
+    i = cursor + 1;
+  }
+  return false;
+}
+
+function objectLiteralHasTopLevelStart(source: string, objectStart: number): boolean {
+  let depth = 0;
+  let i = objectStart;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === "{") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return false;
+      i += 1;
+      continue;
+    }
+    if (depth === 1 && source.startsWith("start", i)) {
+      const before = source[i - 1];
+      const after = source[i + "start".length];
+      if (
+        (!before || !/[a-zA-Z0-9_$]/.test(before)) &&
+        (!after || !/[a-zA-Z0-9_$]/.test(after))
+      ) {
+        let cursor = i + "start".length;
+        while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+        if (source[cursor] === ":" || source[cursor] === "(") return true;
+      }
+    }
+    i += 1;
+  }
+  return false;
 }
 
 function hasCliRegistration(source: string): boolean {
@@ -523,7 +583,7 @@ export async function runCompatChecks(options: CompatCheckOptions): Promise<Comp
   if (pluginManifestPresent) {
     try {
       const plugin = JSON.parse(pluginRaw) as { id?: string; kind?: string };
-      const isValidId = plugin.id === PLUGIN_ID || plugin.id === LEGACY_PLUGIN_ID;
+      const isValidId = plugin.id === OPENCLAW_REMNIC_PLUGIN_ID || plugin.id === OPENCLAW_REMNIC_LEGACY_PLUGIN_ID;
       if (isValidId && plugin.kind === "memory") {
         checks.push({
           id: "plugin-manifest-shape",
@@ -537,7 +597,7 @@ export async function runCompatChecks(options: CompatCheckOptions): Promise<Comp
           title: "Plugin manifest ID and kind",
           level: "error",
           message: `Unexpected manifest values (id=${String(plugin.id)}, kind=${String(plugin.kind)})`,
-          remediation: `Set manifest id=${PLUGIN_ID} (or ${LEGACY_PLUGIN_ID} for the shim) and kind=memory.`,
+          remediation: `Set manifest id=${OPENCLAW_REMNIC_PLUGIN_ID} (or ${OPENCLAW_REMNIC_LEGACY_PLUGIN_ID} for the shim) and kind=memory.`,
         });
       }
     } catch {

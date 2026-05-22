@@ -146,9 +146,21 @@ export class RemnicClient {
         signal: controller.signal,
       });
       const text = await response.text();
-      const payload = text ? JSON.parse(text) : {};
+      let payload: unknown = {};
+      let parseError: unknown;
+      if (text) {
+        try {
+          payload = JSON.parse(text);
+        } catch (err) {
+          parseError = err;
+        }
+      }
       if (!response.ok) {
-        throw new RemnicHttpError(response.status, typeof payload?.error === "string" ? payload.error : response.statusText);
+        throw new RemnicHttpError(response.status, responseErrorMessage(response, text, payload, parseError));
+      }
+      if (parseError) {
+        const reason = parseError instanceof Error ? parseError.message : String(parseError);
+        throw new Error(`Invalid JSON response from Remnic daemon (${response.status} ${response.statusText || "OK"}): ${reason}`);
       }
       return payload as T;
     } catch (err) {
@@ -182,4 +194,23 @@ function isMcpTool(value: unknown): value is McpTool {
 
 function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === "AbortError" || err.message === "This operation was aborted");
+}
+
+function responseErrorMessage(response: Response, text: string, payload: unknown, parseError: unknown): string {
+  if (!parseError && payload && typeof payload === "object") {
+    const error = (payload as { error?: unknown }).error;
+    if (typeof error === "string" && error.trim().length > 0) {
+      return error;
+    }
+    const message = (payload as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim().length > 0) {
+      return message;
+    }
+  }
+
+  const snippet = text.trim().replace(/\s+/g, " ").slice(0, 200);
+  if (snippet.length > 0) {
+    return response.statusText ? `${response.statusText}: ${snippet}` : snippet;
+  }
+  return response.statusText || `HTTP ${response.status}`;
 }

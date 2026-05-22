@@ -14,7 +14,6 @@ import type {
   BenchmarkResult,
   ResolvedRunBenchmarkOptions,
 } from "../../../types.js";
-import type { IngestionBenchAdapter } from "../../../ingestion-types.js";
 import { aggregateTaskScores, timed } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
 import { emailFixture } from "../../../fixtures/inbox/email.js";
@@ -41,8 +40,11 @@ export const ingestionSetupFrictionDefinition: BenchmarkDefinition = {
 };
 
 export async function runIngestionSetupFrictionBenchmark(
-  options: ResolvedRunBenchmarkOptions & { ingestionAdapter: IngestionBenchAdapter },
+  options: ResolvedRunBenchmarkOptions,
 ): Promise<BenchmarkResult> {
+  if (!options.ingestionAdapter) {
+    throw new Error("ingestionAdapter is required for ingestion benchmarks");
+  }
   const fixture = emailFixture.generate();
 
   const fixtureDir = await mkdtemp(path.join(tmpdir(), "bench-friction-"));

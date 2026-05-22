@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmod,
   mkdir,
@@ -22,6 +22,7 @@ import {
   createLightweightAdapter,
   createRemnicAdapter,
 } from "./remnic-adapter.ts";
+import { createTimeoutGuardedAdapter } from "./timeout-guard.ts";
 
 const BASE_CONFIG = {
   memoryDir: "/tmp/remnic-bench-memory",
@@ -212,6 +213,166 @@ test("direct adapter can use a caller-owned memory directory", async () => {
     assert.equal((await stat(memoryDir)).isDirectory(), true);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter observes timeout guard abort control before storing messages", async () => {
+  const adapter = await createRemnicAdapter({
+    configOverrides: {
+      extractionMinUserTurns: 999,
+    },
+  });
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "remnic-abort-test",
+    timeoutMs: 1_000,
+  });
+  const controller = new AbortController();
+  controller.abort(new Error("caller aborted remnic store"));
+
+  try {
+    await assert.rejects(
+      () => guarded.store(
+        "abort-store-session",
+        [
+          {
+            role: "user",
+            content: "Remember the aborted adapter code is orange-41.",
+          },
+        ],
+        { signal: controller.signal },
+      ),
+      /caller aborted remnic store/,
+    );
+
+    await adapter.drain?.();
+    const recalled = await adapter.recall(
+      "abort-store-session",
+      "What is the aborted adapter code?",
+    );
+    assert.doesNotMatch(recalled, /orange-41/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("direct adapter cleans up late replay writes after timeout abort", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-abort-replay-"));
+  const preservedSessionId = "abort-replay-preserved-session";
+  const sessionId = "abort-replay-session";
+  const releaseReplay = createDeferredForTest();
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+  let lateWriteFinished = false;
+
+  Orchestrator.prototype.ingestReplayBatch = async function patchedIngestReplayBatch(
+    this: Orchestrator,
+    turns: Parameters<Orchestrator["ingestReplayBatch"]>[0],
+    options?: Parameters<Orchestrator["ingestReplayBatch"]>[1],
+  ): Promise<void> {
+    if (turns[0]?.sessionKey !== sessionId) {
+      return originalIngestReplayBatch.call(this, turns, options);
+    }
+    assert.ok(options?.abortSignal, "adapter must pass replay abort signal into core");
+    await releaseReplay.promise;
+    await this.storage.writeMemory(
+      "fact",
+      "Remember the aborted late replay code is garnet-99.",
+      { source: "aborted-replay-test", sessionKey },
+    );
+    lateWriteFinished = true;
+  };
+
+  const adapter = await createRemnicAdapter({
+    memoryDir,
+    replayExtractionMode: "await",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 0,
+    },
+  });
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "remnic-abort-replay-test",
+    timeoutMs: 5,
+  });
+
+  try {
+    await adapter.store(preservedSessionId, [
+      {
+        role: "user",
+        content: "Remember the preserved replay code is cobalt-71.",
+      },
+    ]);
+    await adapter.drain?.();
+    assert.match(
+      await adapter.recall(preservedSessionId, "What is the preserved replay code?"),
+      /cobalt-71/,
+    );
+
+    await assert.rejects(
+      () => guarded.store(sessionId, [
+        {
+          role: "user",
+          content: "Remember the aborted late replay code is garnet-99.",
+        },
+      ]),
+      /benchmark phase timed out after 5ms: remnic-abort-replay-test:store session=abort-replay-session messages=1/,
+    );
+
+    releaseReplay.resolve();
+    for (let i = 0; i < 50; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      StorageManager.clearAllStaticCaches();
+      const memories = await new StorageManager(memoryDir).readAllMemories();
+      const preservedRecall = await adapter.recall(
+        preservedSessionId,
+        "What is the preserved replay code?",
+      );
+      if (
+        lateWriteFinished &&
+        memories.every((memory) => !memory.content.includes("garnet-99")) &&
+        /cobalt-71/.test(preservedRecall)
+      ) {
+        return;
+      }
+    }
+
+    StorageManager.clearAllStaticCaches();
+    const memories = await new StorageManager(memoryDir).readAllMemories();
+    assert.deepEqual(
+      memories.map((memory) => memory.content).filter((content) => content.includes("garnet-99")),
+      [],
+    );
+    assert.match(
+      await adapter.recall(preservedSessionId, "What is the preserved replay code?"),
+      /cobalt-71/,
+    );
+  } finally {
+    releaseReplay.resolve();
+    await adapter.destroy();
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct adapter observes timeout guard abort control before drain work", async () => {
+  const adapter = await createRemnicAdapter({
+    configOverrides: {
+      extractionMinUserTurns: 999,
+    },
+  });
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "remnic-abort-test",
+    timeoutMs: 1_000,
+  });
+  const controller = new AbortController();
+  controller.abort(new Error("caller aborted remnic drain"));
+
+  try {
+    await assert.rejects(
+      () => guarded.drain?.({ signal: controller.signal }),
+      /caller aborted remnic drain/,
+    );
+  } finally {
+    await adapter.destroy();
   }
 });
 
@@ -1631,6 +1792,48 @@ test("AMB bridge rejects non-object config JSON", () => {
     payload.error,
     /REMNIC_AMB_CONFIG_JSON must be valid JSON: must be a JSON object/,
   );
+});
+
+test("AMB bridge flushes cleanup acknowledgement before exit", async () => {
+  const child = spawn(
+    process.execPath,
+    ["packages/bench/scripts/amb-remnic-bridge.mjs"],
+    {
+      cwd: path.resolve(import.meta.dirname, "../../../.."),
+      env: {
+        ...process.env,
+        REMNIC_AMB_TEST_STUB_ADAPTER: "1",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+
+  const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    },
+  );
+
+  child.stdin.end(`${JSON.stringify({ command: "cleanup" })}\n`);
+
+  const result = await exit;
+  assert.equal(result.code, 0, stderr);
+  assert.equal(result.signal, null);
+  const lines = stdout.trim().split("\n").filter(Boolean);
+  assert.equal(lines.length, 1, stdout);
+  assert.deepEqual(JSON.parse(lines[0]!), { ok: true });
 });
 
 test("lightweight adapter keeps smoke-run guardrails even when overrides conflict", () => {

@@ -62,7 +62,7 @@ function inDateRange(turn: ReplayTurn, fromTs: number | null, toTs: number | nul
   const turnTs = parseIsoTimestamp(turn.timestamp);
   if (turnTs === null) return false;
   if (fromTs !== null && turnTs < fromTs) return false;
-  if (toTs !== null && turnTs > toTs) return false;
+  if (toTs !== null && turnTs >= toTs) return false;
   return true;
 }
 

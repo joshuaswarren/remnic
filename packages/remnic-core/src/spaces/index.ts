@@ -124,6 +124,10 @@ export interface AuditEntry {
 
 const MANIFEST_VERSION = 1;
 
+function normalizeSpaceMemoryDir(memoryDir: string): string {
+  return path.resolve(memoryDir);
+}
+
 export function getSpacesDir(baseDir?: string): string {
   const homeDir = baseDir ?? resolveHomeDir();
   return path.join(homeDir, ".config", "engram", "spaces");
@@ -160,14 +164,16 @@ export function saveManifest(manifest: SpaceManifest, baseDir?: string): void {
 
 function createPersonalSpace(baseDir?: string, memoryDirOverride?: string): Space {
   const homeDir = baseDir ?? resolveHomeDir();
-  // Priority: override > env var > existing standalone dir > existing OpenClaw dir > new standalone dir
+  // Priority: override > REMNIC_MEMORY_DIR > ENGRAM_MEMORY_DIR > existing standalone dir > existing OpenClaw dir > new standalone dir
   const standalonePath = path.join(homeDir, ".engram", "memory");
   const openclawPath = path.join(homeDir, ".openclaw", "workspace", "memory", "local");
   const memoryDir = memoryDirOverride
+    ?? readEnvVar("REMNIC_MEMORY_DIR")
     ?? readEnvVar("ENGRAM_MEMORY_DIR")
     ?? (fs.existsSync(standalonePath) ? standalonePath
       : fs.existsSync(openclawPath) ? openclawPath
       : standalonePath);
+  const normalizedMemoryDir = normalizeSpaceMemoryDir(memoryDir);
   const now = new Date().toISOString();
 
   return {
@@ -175,7 +181,7 @@ function createPersonalSpace(baseDir?: string, memoryDirOverride?: string): Spac
     name: "Personal",
     kind: "personal",
     description: "Default personal memory space",
-    memoryDir,
+    memoryDir: normalizedMemoryDir,
     createdAt: now,
     updatedAt: now,
     owner: readEnvVar("USER"),
@@ -217,10 +223,12 @@ export function createSpace(options: {
   }
 
   const now = new Date().toISOString();
-  const memoryDir = options.memoryDir ?? path.join(
-    getSpacesDir(options.baseDir),
-    id,
-    "memory",
+  const memoryDir = normalizeSpaceMemoryDir(
+    options.memoryDir ?? path.join(
+      getSpacesDir(options.baseDir),
+      id,
+      "memory",
+    ),
   );
 
   const space: Space = {
@@ -534,13 +542,29 @@ function copyMemories(
     return { merged: 0, conflicts: [], skipped: 0 };
   }
 
+  const sourceRoot = fs.realpathSync(sourceDir);
   fs.mkdirSync(targetDir, { recursive: true });
+  const targetRoot = fs.realpathSync(targetDir);
 
-  const sourceFiles = walkMd(sourceDir);
+  const sourceFiles = walkMd(sourceRoot);
   for (const sourcePath of sourceFiles) {
+    const sourceRealPath = safeRealpath(sourcePath);
+    if (!sourceRealPath || !isPathInsideRoot(sourceRealPath, sourceRoot)) {
+      skipped++;
+      continue;
+    }
+    const sourceStat = safeLstat(sourcePath);
+    if (!sourceStat?.isFile()) {
+      skipped++;
+      continue;
+    }
     const content = fs.readFileSync(sourcePath, "utf8");
-    const relativePath = path.relative(sourceDir, sourcePath);
-    const targetPath = path.join(targetDir, relativePath);
+    const relativePath = path.relative(sourceRoot, sourceRealPath);
+    const targetPath = path.resolve(targetRoot, relativePath);
+    if (!isPathInsideRoot(targetPath, targetRoot)) {
+      skipped++;
+      continue;
+    }
 
     const sourceHash = hashContent(content);
 
@@ -554,6 +578,19 @@ function copyMemories(
     }
 
     // Check for conflict
+    if (fs.existsSync(targetPath)) {
+      const targetStat = safeLstat(targetPath);
+      if (!targetStat?.isFile() || targetStat.isSymbolicLink()) {
+        skipped++;
+        continue;
+      }
+      const targetRealPath = safeRealpath(targetPath);
+      if (!targetRealPath || !isPathInsideRoot(targetRealPath, targetRoot)) {
+        skipped++;
+        continue;
+      }
+    }
+
     if (fs.existsSync(targetPath) && !options?.force) {
       const targetContent = fs.readFileSync(targetPath, "utf8");
       const targetHash = hashContent(targetContent);
@@ -577,6 +614,11 @@ function copyMemories(
 
     // Copy file
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    const targetParentRealPath = safeRealpath(path.dirname(targetPath));
+    if (!targetParentRealPath || !isPathInsideRoot(targetParentRealPath, targetRoot)) {
+      skipped++;
+      continue;
+    }
     fs.writeFileSync(targetPath, content);
     merged++;
   }
@@ -594,6 +636,9 @@ function walkMd(dir: string): string[] {
   function walk(d: string): void {
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
       const fullPath = path.join(d, entry.name);
+      if (entry.isSymbolicLink()) {
+        continue;
+      }
       if (entry.isDirectory()) {
         walk(fullPath);
       } else if (entry.name.endsWith(".md")) {
@@ -604,6 +649,27 @@ function walkMd(dir: string): string[] {
 
   walk(dir);
   return results;
+}
+
+function safeLstat(filePath: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function safeRealpath(filePath: string): string | null {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return null;
+  }
+}
+
+function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 interface SimpleFrontmatter {

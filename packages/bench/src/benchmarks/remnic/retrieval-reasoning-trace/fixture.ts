@@ -7,8 +7,8 @@
  *   reasoning_trace chains (under reasoning-traces/) and the rest are
  *   ordinary facts/decisions/entities.
  * - A new query that may or may not match the semantics of a trace.
- * - An expected winner id (the reasoning-trace we want boosted to rank 1
- *   on problem-solving asks) and an expected verdict for the heuristic.
+ * - An expected winner id after boost for positive cases, plus an
+ *   expected verdict for the heuristic.
  *
  * Cases are split by expected behavior so the scorer can measure:
  * - recall@1 gain on positive problem-solving queries,
@@ -31,19 +31,15 @@ export interface ReasoningTraceBenchCase {
   query: string;
   candidates: ReasoningTraceBenchCandidate[];
   /**
-   * When true, the boost must promote a reasoning_trace memory (any) to
-   * rank 1. When false, the boost must NOT change the top result
+   * When true, the boost must promote the case's expected reasoning_trace
+   * memory to rank 1. When false, the boost must NOT change the top result
    * (false-positive guard cases).
-   *
-   * We measure "any reasoning trace at rank 1" rather than a specific
-   * docid because the shipped boost is uniform across the category — if
-   * two traces share the boosted tier the higher-scored one wins, which
-   * is the intended behavior. Bench cases intentionally share a pool so
-   * the retrieval comparison stays apples-to-apples across queries.
    */
   expectsTraceTopAfterBoost: boolean;
   /** Expected top docid when the boost is off (baseline). */
   expectedTopWithoutBoost: string;
+  /** Expected top docid when the boost is on for positive cases. */
+  expectedTopWithBoost?: string;
   /**
    * Whether the query should be classified as problem-solving by the
    * shipped heuristic. Used by the scorer to verify classification.
@@ -82,7 +78,9 @@ function fact(
  * reuses this pool (cloned) with a relevant query so retrieval quality
  * comparisons share a consistent baseline.
  */
-function seedPool(): ReasoningTraceBenchCandidate[] {
+function seedPool(
+  expectedTrace: "trace-latency" | "trace-oauth-loop" = "trace-latency",
+): ReasoningTraceBenchCandidate[] {
   // Scores mirror a realistic QMD hybrid-rank distribution where reasoning
   // traces have non-trivial topical relevance (same keywords as the query)
   // but sit just under the top fact until the boost fires. A default boost
@@ -90,13 +88,19 @@ function seedPool(): ReasoningTraceBenchCandidate[] {
   // to measure. Listed in descending-score order so the "baseline" (boost
   // disabled) passes through the helper unchanged and rank 1 reflects the
   // fact-pg-15 top expected by every case below.
+  const firstTrace = expectedTrace === "trace-latency"
+    ? trace("trace-latency", 0.72, "How I debugged the staging latency spike")
+    : trace("trace-oauth-loop", 0.72, "How I untangled the OAuth redirect loop");
+  const secondTrace = expectedTrace === "trace-latency"
+    ? trace("trace-oauth-loop", 0.68, "How I untangled the OAuth redirect loop")
+    : trace("trace-latency", 0.68, "How I debugged the staging latency spike");
   return [
     fact("fact-pg-15", 0.81, "remnic runs on Postgres 15"),
     fact("fact-node-22", 0.78, "remnic requires Node 22.12 or newer"),
     fact("fact-qmd", 0.74, "remnic uses qmd for hybrid retrieval"),
-    trace("trace-latency", 0.72, "How I debugged the staging latency spike"),
+    firstTrace,
     fact("fact-pnpm", 0.70, "remnic uses pnpm as the package manager"),
-    trace("trace-oauth-loop", 0.68, "How I untangled the OAuth redirect loop"),
+    secondTrace,
     fact("fact-monorepo", 0.67, "remnic lives in a pnpm workspace monorepo"),
     fact("fact-tsx", 0.60, "tests run under tsx --test"),
     fact("fact-release", 0.57, "release-please drives the release workflow"),
@@ -118,22 +122,25 @@ export const REASONING_TRACE_BENCH_FIXTURE: ReasoningTraceBenchCase[] = [
     candidates: seedPool(),
     expectsTraceTopAfterBoost: true,
     expectedTopWithoutBoost: "fact-pg-15",
+    expectedTopWithBoost: "trace-latency",
     expectedProblemSolving: true,
   },
   {
     id: "pos-oauth-step-by-step",
     query: "walk me through fixing an OAuth redirect loop step by step",
-    candidates: seedPool(),
+    candidates: seedPool("trace-oauth-loop"),
     expectsTraceTopAfterBoost: true,
     expectedTopWithoutBoost: "fact-pg-15",
+    expectedTopWithBoost: "trace-oauth-loop",
     expectedProblemSolving: true,
   },
   {
     id: "pos-troubleshoot-oauth",
     query: "troubleshoot the OAuth loop we hit last quarter",
-    candidates: seedPool(),
+    candidates: seedPool("trace-oauth-loop"),
     expectsTraceTopAfterBoost: true,
     expectedTopWithoutBoost: "fact-pg-15",
+    expectedTopWithBoost: "trace-oauth-loop",
     expectedProblemSolving: true,
   },
   {
@@ -142,6 +149,7 @@ export const REASONING_TRACE_BENCH_FIXTURE: ReasoningTraceBenchCase[] = [
     candidates: seedPool(),
     expectsTraceTopAfterBoost: true,
     expectedTopWithoutBoost: "fact-pg-15",
+    expectedTopWithBoost: "trace-latency",
     expectedProblemSolving: true,
   },
   {
@@ -150,6 +158,7 @@ export const REASONING_TRACE_BENCH_FIXTURE: ReasoningTraceBenchCase[] = [
     candidates: seedPool(),
     expectsTraceTopAfterBoost: true,
     expectedTopWithoutBoost: "fact-pg-15",
+    expectedTopWithBoost: "trace-latency",
     expectedProblemSolving: true,
   },
   // Negative / guard cases: query is an ordinary lookup. The boost must be

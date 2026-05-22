@@ -1,3 +1,5 @@
+import * as React from "react";
+
 import type { BenchResultSummary } from "../bench-data";
 import { flattenAssistantSpotChecks } from "../bench-data";
 

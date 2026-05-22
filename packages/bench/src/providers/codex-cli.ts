@@ -730,7 +730,7 @@ async function startCodexCliDiagnostics(args: {
   }
 
   try {
-    await mkdir(diagnosticsDir, { recursive: true });
+    await mkdir(diagnosticsDir, { recursive: true, mode: 0o700 });
     const id = `${Date.now()}-${process.pid}-${randomUUID()}`;
     const promptStats = inspectCodexCompletionPrompt(args.request.input);
     const mode = resolveCodexCliDiagnosticsMode(args.config);
@@ -813,7 +813,10 @@ async function writeCodexCliDiagnosticRecord(
   filePath: string,
   record: CodexCliDiagnosticRecord,
 ): Promise<void> {
-  await writeFile(filePath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+  await writeFile(filePath, `${JSON.stringify(record, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
 }
 
 function resolveCodexCliDiagnosticsDir(

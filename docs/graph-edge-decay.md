@@ -29,9 +29,9 @@ twice with the same timestamp is a no-op.
 
 When an edge is observed during extraction (e.g., two memories share a named
 entity), the reinforcement primitive resets `lastReinforcedAt` to `now` and
-returns the edge with `confidence` unchanged (reinforcement does not inflate
-confidence above its last-decayed value). This prevents repeated co-occurrence
-from driving confidence upward beyond what was initially established.
+bumps `confidence` by the default reinforcement delta (`0.05`), capped at
+`1.0`. Repeated co-occurrence can recover confidence that previously decayed,
+but it cannot push an edge above the confidence ceiling.
 
 **Confidence floor** — edges whose confidence drops to or below the configured
 `graphEdgeDecayFloor` are never decayed further. They remain in the graph but

@@ -23,9 +23,10 @@
  * }
  * ```
  *
- * `sealHash` is computed over the canonical JSON of `envelope` so two qrels
- * files encrypted with the same key produce distinct `sealHash` values only
- * when their plaintext differs.
+ * `sealHash` is computed over the canonical JSON of `envelope`, including the
+ * random IV and ciphertext. It identifies the sealed envelope artifact, not
+ * the plaintext qrels content. Use `envelope.plaintextHash` when stable
+ * plaintext identity is required across independently sealed artifacts.
  */
 
 import { readFile } from "node:fs/promises";

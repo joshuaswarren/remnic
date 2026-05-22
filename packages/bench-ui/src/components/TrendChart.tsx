@@ -1,3 +1,6 @@
+import * as React from "react";
+import { useId } from "react";
+
 import type { TrendPoint } from "../bench-data";
 import { formatMetricValue } from "../bench-data";
 
@@ -21,6 +24,8 @@ function pathForPoints(points: TrendPoint[], width: number, height: number): str
 }
 
 export function TrendChart({ points }: { points: TrendPoint[] }) {
+  const gradientId = `trend-stroke-${useId().replace(/:/g, "")}`;
+
   if (points.length === 0) {
     return (
       <div className="panel panel--empty">
@@ -49,14 +54,19 @@ export function TrendChart({ points }: { points: TrendPoint[] }) {
         </span>
       </div>
 
-      <svg viewBox={`0 0 ${width} ${height}`} className="trend-chart__canvas" role="img">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="trend-chart__canvas"
+        role="img"
+        aria-label="Benchmark score trend over time"
+      >
         <defs>
-          <linearGradient id="trendStroke" x1="0%" x2="100%" y1="0%" y2="0%">
+          <linearGradient id={gradientId} x1="0%" x2="100%" y1="0%" y2="0%">
             <stop offset="0%" stopColor="#8fd6ff" />
             <stop offset="100%" stopColor="#ffab78" />
           </linearGradient>
         </defs>
-        <path d={path} fill="none" stroke="url(#trendStroke)" strokeWidth="4" />
+        <path d={path} fill="none" stroke={`url(#${gradientId})`} strokeWidth="4" />
         {points.map((point, index) => {
           const x = (index / Math.max(points.length - 1, 1)) * width;
           const normalized = (point.score - min) / span;

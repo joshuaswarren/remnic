@@ -23,6 +23,7 @@ export interface RebuildObservationsOptions {
   memoryDir: string;
   dryRun?: boolean;
   now?: Date;
+  readTranscriptFile?: (file: string) => Promise<string>;
 }
 
 export interface RebuildObservationsResult {
@@ -147,11 +148,14 @@ export async function rebuildObservations(
 
   const transcriptFiles = await listTranscriptFiles(transcriptsRoot);
   const contents: string[] = [];
+  const readTranscriptFile =
+    options.readTranscriptFile ?? ((file: string) => readFile(file, "utf-8"));
   for (const file of transcriptFiles) {
     try {
-      contents.push(await readFile(file, "utf-8"));
-    } catch {
-      // Fail-open: skip unreadable shards and continue rebuilding from healthy files.
+      contents.push(await readTranscriptFile(file));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to read transcript file ${file}: ${message}`);
     }
   }
   const { aggregates, parsedTurns, malformedLines } = buildLedgerRows(contents);

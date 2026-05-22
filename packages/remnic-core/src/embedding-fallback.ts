@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { PluginConfig } from "./types.js";
@@ -132,6 +132,7 @@ export type EmbedMode = "lookup" | "index";
 export class EmbeddingFallback {
   private readonly indexPath: string;
   private loaded: EmbeddingIndexFile | null = null;
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly config: PluginConfig) {
     this.indexPath = path.join(config.memoryDir, "state", "embeddings.json");
@@ -291,23 +292,36 @@ export class EmbeddingFallback {
     const vector = await this.embed(content, provider, { mode: "index" });
     if (!vector) return;
 
-    const index = await this.loadIndex(provider);
-    const relPath = toMemoryRelativePath(this.config.memoryDir, filePath);
-    index.entries[memoryId] = {
-      vector,
-      path: relPath,
-    };
-    await this.saveIndex(index);
+    await this.enqueueIndexMutation(async () => {
+      const index = await this.loadIndex(provider);
+      const relPath = toMemoryRelativePath(this.config.memoryDir, filePath);
+      index.entries[memoryId] = {
+        vector,
+        path: relPath,
+      };
+      await this.saveIndex(index);
+    });
   }
 
   async removeFromIndex(memoryId: string): Promise<void> {
     const provider = await this.resolveProvider();
     if (!provider) return;
 
-    const index = await this.loadIndex(provider);
-    if (!index.entries[memoryId]) return;
-    delete index.entries[memoryId];
-    await this.saveIndex(index);
+    await this.enqueueIndexMutation(async () => {
+      const index = await this.loadIndex(provider);
+      if (!index.entries[memoryId]) return;
+      delete index.entries[memoryId];
+      await this.saveIndex(index);
+    });
+  }
+
+  private enqueueIndexMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    const run = this.mutationQueue.catch(() => undefined).then(mutation);
+    this.mutationQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   private async resolveProvider(): Promise<ProviderConfig | null> {
@@ -473,7 +487,14 @@ export class EmbeddingFallback {
     try {
       const raw = await readFile(this.indexPath, "utf-8");
       const parsed = JSON.parse(raw) as EmbeddingIndexFile;
-      if (parsed && parsed.version === 1 && parsed.entries && typeof parsed.entries === "object") {
+      if (
+        parsed &&
+        parsed.version === 1 &&
+        parsed.provider === provider.type &&
+        parsed.model === provider.model &&
+        parsed.entries &&
+        typeof parsed.entries === "object"
+      ) {
         this.loaded = {
           version: 1,
           provider: provider.type,
@@ -496,8 +517,19 @@ export class EmbeddingFallback {
   }
 
   private async saveIndex(index: EmbeddingIndexFile): Promise<void> {
-    await mkdir(path.dirname(this.indexPath), { recursive: true });
-    await writeFile(this.indexPath, JSON.stringify(index), "utf-8");
+    const dir = path.dirname(this.indexPath);
+    await mkdir(dir, { recursive: true });
+    const tempPath = path.join(
+      dir,
+      `.embeddings.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+    );
+    try {
+      await writeFile(tempPath, JSON.stringify(index), "utf-8");
+      await rename(tempPath, this.indexPath);
+    } catch (err) {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+      throw err;
+    }
     this.loaded = index;
   }
 }

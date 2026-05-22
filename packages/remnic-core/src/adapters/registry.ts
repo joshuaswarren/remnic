@@ -31,6 +31,16 @@ export class AdapterRegistry {
         return adapter.resolveIdentity(context);
       }
     }
+    const namespace = context.namespace?.trim();
+    const principal = context.principal?.trim();
+    if (namespace && principal) {
+      return {
+        namespace,
+        principal,
+        sessionKey: context.sessionKey,
+        adapterId: "explicit",
+      };
+    }
     return null;
   }
 

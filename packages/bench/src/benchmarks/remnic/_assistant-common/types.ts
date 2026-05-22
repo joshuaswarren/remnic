@@ -36,6 +36,8 @@ export interface AssistantStance {
 export interface AssistantMemoryGraph {
   userHandle: string;
   userRole: string;
+  /** Fixed scenario date shown to the agent and judge for reproducible temporal reasoning. */
+  currentDate?: string;
   facts: AssistantMemoryFact[];
   stances: AssistantStance[];
   openThreads: string[];
@@ -64,6 +66,9 @@ export interface AssistantAgent {
     scenarioId: string;
     prompt: string;
     memoryView: string;
+    seed: number;
+    runIndex: number;
+    runCount: number;
   }): Promise<string>;
 }
 

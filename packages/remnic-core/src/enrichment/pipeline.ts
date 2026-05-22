@@ -30,16 +30,17 @@ interface RateLimitBucket {
   dayReset: number;
 }
 
+const rateBuckets = new Map<string, RateLimitBucket>();
+
 function isRateLimited(
   provider: EnrichmentProvider,
   config: EnrichmentPipelineConfig,
-  buckets: Map<string, RateLimitBucket>,
 ): boolean {
   const providerCfg = config.providers.find((p) => p.id === provider.id);
   if (!providerCfg?.rateLimit) return false;
 
   const now = Date.now();
-  let bucket = buckets.get(provider.id);
+  let bucket = rateBuckets.get(provider.id);
   if (!bucket) {
     bucket = {
       minuteCount: 0,
@@ -47,7 +48,7 @@ function isRateLimited(
       dayCount: 0,
       dayReset: now + 86_400_000,
     };
-    buckets.set(provider.id, bucket);
+    rateBuckets.set(provider.id, bucket);
   }
 
   // Reset windows if expired
@@ -66,9 +67,8 @@ function isRateLimited(
 
 function recordCall(
   providerId: string,
-  buckets: Map<string, RateLimitBucket>,
 ): void {
-  const bucket = buckets.get(providerId);
+  const bucket = rateBuckets.get(providerId);
   if (bucket) {
     bucket.minuteCount += 1;
     bucket.dayCount += 1;
@@ -88,13 +88,21 @@ export async function runEnrichmentPipeline(
   if (!config.enabled) return [];
   if (entities.length === 0) return [];
 
-  const rateBuckets = new Map<string, RateLimitBucket>();
   const results: EnrichmentResult[] = [];
 
   for (const entity of entities) {
     const providers = registry.getForImportance(entity.importanceLevel, config);
+    const maxCandidates = config.maxCandidatesPerEntity;
+    const hasPositiveCandidateBudget = maxCandidates > 0;
+    let remainingCandidateBudget = hasPositiveCandidateBudget
+      ? maxCandidates
+      : Number.POSITIVE_INFINITY;
 
     for (const provider of providers) {
+      if (hasPositiveCandidateBudget && remainingCandidateBudget <= 0) {
+        break;
+      }
+
       const start = Date.now();
 
       // Check availability
@@ -122,7 +130,7 @@ export async function runEnrichmentPipeline(
       }
 
       // Check rate limit
-      if (isRateLimited(provider, config, rateBuckets)) {
+      if (isRateLimited(provider, config)) {
         log.debug?.(
           `enrichment: skipping provider ${provider.id} for ${entity.name} — rate limited`,
         );
@@ -146,7 +154,7 @@ export async function runEnrichmentPipeline(
       try {
         candidates = await provider.enrich(entity);
       } catch (err) {
-        recordCall(provider.id, rateBuckets);
+        recordCall(provider.id);
         log.error?.(
           `enrichment: provider ${provider.id} failed for ${entity.name}: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -161,21 +169,21 @@ export async function runEnrichmentPipeline(
         });
         continue;
       }
-      recordCall(provider.id, rateBuckets);
+      recordCall(provider.id);
 
       // Tag each candidate with provider id
       for (const candidate of candidates) {
         candidate.source = provider.id;
       }
 
-      // Cap at maxCandidatesPerEntity.
+      // Cap at maxCandidatesPerEntity across all providers for this entity.
       // 0 means "accept none"; undefined/negative means "no cap".
-      const maxCandidates = config.maxCandidatesPerEntity;
       let accepted: EnrichmentCandidate[];
       if (maxCandidates === 0) {
         accepted = [];
-      } else if (maxCandidates > 0 && candidates.length > maxCandidates) {
-        accepted = candidates.slice(0, maxCandidates);
+      } else if (hasPositiveCandidateBudget) {
+        accepted = candidates.slice(0, remainingCandidateBudget);
+        remainingCandidateBudget -= accepted.length;
       } else {
         accepted = candidates;
       }

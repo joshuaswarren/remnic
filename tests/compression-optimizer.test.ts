@@ -90,6 +90,33 @@ test("computeCompressionGuidelineCandidate emits bounded deltas", () => {
   assert.equal(storeRule?.direction, "decrease");
 });
 
+test("computeCompressionGuidelineCandidate classifies recall quality reason boundaries", () => {
+  const reasons = [
+    "unresolved",
+    "resolved",
+    "not resolved",
+    "never resolved",
+    "not yet resolved",
+    "recall improved after compression",
+    "missed relevant context",
+    "irrelevant recall",
+  ];
+  const events: MemoryActionEvent[] = reasons.map((reason, index) => ({
+    timestamp: `2026-02-27T00:${String(index).padStart(2, "0")}:00.000Z`,
+    action: "summarize_node",
+    outcome: "skipped",
+    reason,
+  }));
+
+  const candidate = computeCompressionGuidelineCandidate(events, {
+    generatedAtIso: "2026-02-27T01:00:00.000Z",
+  });
+
+  const summary = candidate.actionSummaries[0]!;
+  assert.deepEqual(summary.quality, { good: 2, poor: 6, unknown: 0 });
+  assert.equal(candidate.ruleUpdates[0]?.direction, "decrease");
+});
+
 test("computeCompressionGuidelineCandidate notes never contradict direction", () => {
   const events: MemoryActionEvent[] = [
     { timestamp: "2026-02-27T00:00:00.000Z", action: "summarize_node", outcome: "applied", reason: "recall_good" },

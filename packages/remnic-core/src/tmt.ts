@@ -109,11 +109,29 @@ export function serialiseTmtNode(fm: TmtNodeFrontmatter, summary: string): strin
 }
 
 export function parseIsoDate(iso: string): string {
-  return iso.slice(0, 10); // YYYY-MM-DD
+  return parseTmtInstant(iso)?.date ?? "";
 }
 
 export function parseIsoHour(iso: string): string {
-  return iso.slice(11, 13); // HH
+  return parseTmtInstant(iso)?.hour ?? "";
+}
+
+function parseTmtInstant(iso: string): { date: string; hour: string; dateValue: Date } | null {
+  if (typeof iso !== "string") return null;
+  const value = iso.trim();
+  if (
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+  ) {
+    return null;
+  }
+  const dateValue = new Date(value);
+  if (!Number.isFinite(dateValue.getTime())) return null;
+  const utc = dateValue.toISOString();
+  return {
+    date: utc.slice(0, 10),
+    hour: utc.slice(11, 13),
+    dateValue,
+  };
 }
 
 // Returns ISO week key: YYYY-WW
@@ -162,8 +180,9 @@ export class TmtBuilder {
     // Group by date+hour
     const byHour = new Map<string, MemoryEntry[]>();
     for (const m of memories) {
-      const date = parseIsoDate(m.created);
-      const hour = parseIsoHour(m.created);
+      const instant = parseTmtInstant(m.created);
+      if (!instant) continue;
+      const { date, hour } = instant;
       const key = `${date}::${hour}`;
       if (!byHour.has(key)) byHour.set(key, []);
       byHour.get(key)!.push(m);
@@ -180,8 +199,8 @@ export class TmtBuilder {
         try {
           const existing = await readFile(nodePath, "utf8");
           const countMatch = existing.match(/memoryCount: (\d+)/);
-          if (!countMatch || parseInt(countMatch[1], 10) < entries.length) {
-            shouldBuild = true; // more memories now — rebuild
+          if (!countMatch || parseInt(countMatch[1], 10) !== entries.length) {
+            shouldBuild = true; // active memory set changed — rebuild
           }
         } catch { shouldBuild = true; }
       }
@@ -212,7 +231,9 @@ export class TmtBuilder {
     // Group by date
     const byDate = new Map<string, MemoryEntry[]>();
     for (const m of memories) {
-      const date = parseIsoDate(m.created);
+      const instant = parseTmtInstant(m.created);
+      if (!instant) continue;
+      const { date } = instant;
       if (!byDate.has(date)) byDate.set(date, []);
       byDate.get(date)!.push(m);
     }
@@ -225,8 +246,8 @@ export class TmtBuilder {
         try {
           const existing = await readFile(nodePath, "utf8");
           const countMatch = existing.match(/memoryCount: (\d+)/);
-          if (!countMatch || parseInt(countMatch[1], 10) < entries.length) {
-            shouldBuild = true; // more memories now — rebuild
+          if (!countMatch || parseInt(countMatch[1], 10) !== entries.length) {
+            shouldBuild = true; // active memory set changed — rebuild
           }
         } catch { shouldBuild = true; }
       }
@@ -237,6 +258,7 @@ export class TmtBuilder {
       const hourToEntries = new Map<string, MemoryEntry[]>();
       for (const e of entries) {
         const h = parseIsoHour(e.created);
+        if (!h) continue;
         if (!hourToEntries.has(h)) hourToEntries.set(h, []);
         hourToEntries.get(h)!.push(e);
       }
@@ -284,7 +306,9 @@ export class TmtBuilder {
     // Determine which ISO weeks appear in this memory batch
     const weekToEntries = new Map<string, MemoryEntry[]>();
     for (const m of memories) {
-      const week = isoWeekKey(new Date(m.created));
+      const instant = parseTmtInstant(m.created);
+      if (!instant) continue;
+      const week = isoWeekKey(instant.dateValue);
       if (!weekToEntries.has(week)) weekToEntries.set(week, []);
       weekToEntries.get(week)!.push(m);
     }
@@ -298,7 +322,7 @@ export class TmtBuilder {
         try {
           const existing = await readFile(nodePath, "utf8");
           const countMatch = existing.match(/memoryCount: (\d+)/);
-          if (!countMatch || parseInt(countMatch[1], 10) < entries.length) {
+          if (!countMatch || parseInt(countMatch[1], 10) !== entries.length) {
             shouldBuild = true;
           }
         } catch { shouldBuild = true; }

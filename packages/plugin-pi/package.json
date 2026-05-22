@@ -44,7 +44,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@remnic/core": "workspace:^",
+    "@remnic/core": "^1.1.12",
     "@sinclair/typebox": "^0.34.0"
   },
   "peerDependencies": {

@@ -136,6 +136,14 @@ export function projectNamespaceName(projectId: string): string {
   return capLength(`project-${frag || "unknown"}`);
 }
 
+export function projectTagProjectId(projectTag: string): string {
+  const trimmed = projectTag.trim();
+  const frag = sanitizeFragment(trimmed);
+  const disambig = trimmed.length > 0 && frag !== trimmed;
+  const suffix = disambig ? `-${stableHash(trimmed)}` : "";
+  return `tag:${frag || "unknown"}${suffix}`;
+}
+
 /**
  * Preserve case when sanitizing a principal-derived base namespace. The
  * router's `isSafeRouteNamespace` check accepts `[A-Za-z0-9._-]{1,64}`, so

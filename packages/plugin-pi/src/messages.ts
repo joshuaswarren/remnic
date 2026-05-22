@@ -26,7 +26,7 @@ export function textFromMessage(message: unknown): string {
 export function latestUserQuery(messages: unknown[]): string {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index] as PiMessage;
-    if (isExcludedFromContext(message)) continue;
+    if (isExcludedFromContext(message) || isRemnicInjected(message)) continue;
     if (message?.role === "user") {
       const text = textFromMessage(message);
       if (text.length > 0) return text;
@@ -35,10 +35,28 @@ export function latestUserQuery(messages: unknown[]): string {
   return "";
 }
 
+export function latestUserRecallTarget(
+  messages: unknown[],
+): { query: string; dedupeKey: string } | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index] as PiMessage;
+    if (isExcludedFromContext(message) || isRemnicInjected(message)) continue;
+    if (message?.role !== "user") continue;
+    const query = textFromMessage(message);
+    if (query.length === 0) continue;
+    const identity = stableObservedMessageIdentity(message);
+    return {
+      query,
+      dedupeKey: identity ? `message:${identity}:${query}` : `query:${query}`,
+    };
+  }
+  return null;
+}
+
 export function toObserveMessage(message: unknown): ObserveMessage | null {
   if (!message || typeof message !== "object") return null;
   const obj = message as PiMessage;
-  if (isExcludedFromContext(obj)) return null;
+  if (isExcludedFromContext(obj) || isRemnicInjected(obj)) return null;
   const role = obj.role === "user" || obj.role === "bashExecution" ? "user" : "assistant";
   const content = textFromMessage(obj);
   if (content.length === 0) return null;
@@ -75,7 +93,7 @@ export function summarizeMessages(messages: unknown[], maxChars: number): string
   const chunks: string[] = [];
   let used = 0;
   for (const message of messages) {
-    if (isExcludedFromContext(message)) continue;
+    if (isExcludedFromContext(message) || isRemnicInjected(message)) continue;
     const text = textFromMessage(message);
     if (!text) continue;
     const role = typeof (message as PiMessage)?.role === "string" ? (message as PiMessage).role : "message";
@@ -93,6 +111,10 @@ export function summarizeMessages(messages: unknown[], maxChars: number): string
 
 export function isExcludedFromContext(message: unknown): boolean {
   return !!message && typeof message === "object" && (message as PiMessage).excludeFromContext === true;
+}
+
+export function isRemnicInjected(message: unknown): boolean {
+  return !!message && typeof message === "object" && (message as PiMessage).remnicInjected === true;
 }
 
 function textFromContent(content: unknown): string {

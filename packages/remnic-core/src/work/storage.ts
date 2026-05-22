@@ -22,6 +22,8 @@ const TASK_TRANSITIONS: Record<WorkTaskStatus, Set<WorkTaskStatus>> = {
   cancelled: new Set(),
 };
 
+const PROJECT_MUTATION_CHAINS = new Map<string, Promise<unknown>>();
+
 function serializeFrontmatter(values: object): string {
   const lines = Object.entries(values).map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
   return `---\n${lines.join("\n")}\n---`;
@@ -145,6 +147,10 @@ export class WorkStorage {
     }
   }
 
+  private async writeTaskRecord(task: WorkTask): Promise<void> {
+    await writeFile(this.taskPath(task.id), this.serializeTask(task), "utf-8");
+  }
+
   private async writeNewProject(project: WorkProject): Promise<void> {
     try {
       await writeFile(this.projectPath(project.id), this.serializeProject(project), { encoding: "utf-8", flag: "wx" });
@@ -154,6 +160,23 @@ export class WorkStorage {
       }
       throw error;
     }
+  }
+
+  private async writeProjectRecord(project: WorkProject): Promise<void> {
+    await writeFile(this.projectPath(project.id), this.serializeProject(project), "utf-8");
+  }
+
+  private async enqueueProjectMutation<T>(projectId: string, op: () => Promise<T>): Promise<T> {
+    const mutationKey = this.projectPath(projectId);
+    const previous = PROJECT_MUTATION_CHAINS.get(mutationKey) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(op);
+    const cleanup = run.then(() => undefined, () => undefined).then(() => {
+      if (PROJECT_MUTATION_CHAINS.get(mutationKey) === cleanup) {
+        PROJECT_MUTATION_CHAINS.delete(mutationKey);
+      }
+    });
+    PROJECT_MUTATION_CHAINS.set(mutationKey, cleanup);
+    return run;
   }
 
   private parseTask(raw: string): WorkTask | null {
@@ -218,10 +241,20 @@ export class WorkStorage {
       }
     }
 
-    await this.writeNewTask(task);
-
     if (task.projectId) {
-      await this.addTaskIdToProject(task.projectId, task.id, now);
+      let taskFileCreated = false;
+      try {
+        await this.writeNewTask(task);
+        taskFileCreated = true;
+        await this.addTaskIdToProject(task.projectId, task.id, now);
+      } catch (error) {
+        if (taskFileCreated) {
+          await rm(this.taskPath(task.id), { force: true }).catch(() => undefined);
+        }
+        throw error;
+      }
+    } else {
+      await this.writeNewTask(task);
     }
 
     return task;
@@ -285,15 +318,6 @@ export class WorkStorage {
       }
     }
 
-    if (projectIdPatched && existing.projectId !== nextProjectId) {
-      if (existing.projectId) {
-        await this.removeTaskIdFromProject(existing.projectId, id, now);
-      }
-      if (nextProjectId) {
-        await this.addTaskIdToProject(nextProjectId, id, now);
-      }
-    }
-
     const next: WorkTask = {
       ...existing,
       ...patch,
@@ -301,7 +325,26 @@ export class WorkStorage {
       tags: patch.tags ?? existing.tags,
       updatedAt: now.toISOString(),
     };
-    await writeFile(this.taskPath(id), this.serializeTask(next), "utf-8");
+    await this.writeTaskRecord(next);
+    if (projectIdPatched && existing.projectId !== nextProjectId) {
+      try {
+        if (nextProjectId) {
+          await this.addTaskIdToProject(nextProjectId, id, now);
+        }
+        if (existing.projectId) {
+          await this.removeTaskIdFromProject(existing.projectId, id, now);
+        }
+      } catch (error) {
+        await this.writeTaskRecord(existing);
+        if (nextProjectId) {
+          await this.removeTaskIdFromProject(nextProjectId, id, now).catch(() => undefined);
+        }
+        if (existing.projectId) {
+          await this.addTaskIdToProject(existing.projectId, id, now).catch(() => undefined);
+        }
+        throw error;
+      }
+    }
     return next;
   }
 
@@ -318,15 +361,22 @@ export class WorkStorage {
   }
 
   async deleteTask(id: string): Promise<boolean> {
+    const existing = await this.getTask(id);
+    if (!existing) return false;
+    let removedProjectLink = false;
+    if (existing.projectId) {
+      await this.removeTaskIdFromProject(existing.projectId, id);
+      removedProjectLink = true;
+    }
     try {
-      const existing = await this.getTask(id);
       await rm(this.taskPath(id));
-      if (existing?.projectId) {
-        await this.removeTaskIdFromProject(existing.projectId, id);
-      }
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if (removedProjectLink && existing.projectId) {
+        await this.addTaskIdToProject(existing.projectId, id).catch(() => undefined);
+      }
+      if (isErrnoCode(error, "ENOENT")) return false;
+      throw error;
     }
   }
 
@@ -372,6 +422,10 @@ export class WorkStorage {
   }
 
   async updateProject(id: string, patch: UpdateWorkProjectInput, now = new Date()): Promise<WorkProject | null> {
+    return this.enqueueProjectMutation(id, async () => this.updateProjectUnlocked(id, patch, now));
+  }
+
+  private async updateProjectUnlocked(id: string, patch: UpdateWorkProjectInput, now = new Date()): Promise<WorkProject | null> {
     const existing = await this.getProject(id);
     if (!existing) return null;
     const next: WorkProject = {
@@ -381,22 +435,38 @@ export class WorkStorage {
       taskIds: patch.taskIds ? [...patch.taskIds].sort() : existing.taskIds,
       updatedAt: now.toISOString(),
     };
-    await writeFile(this.projectPath(id), this.serializeProject(next), "utf-8");
+    await this.writeProjectRecord(next);
     return next;
   }
 
   async deleteProject(id: string): Promise<boolean> {
+    const existing = await this.getProject(id);
+    if (!existing) return false;
+    const unlinkedTasks: WorkTask[] = [];
     try {
-      const existing = await this.getProject(id);
-      if (existing) {
-        for (const taskId of existing.taskIds) {
-          await this.updateTask(taskId, { projectId: null });
-        }
+      for (const taskId of existing.taskIds) {
+        const task = await this.getTask(taskId);
+        if (!task || task.projectId !== id) continue;
+        const next: WorkTask = {
+          ...task,
+          projectId: null,
+          updatedAt: new Date().toISOString(),
+        };
+        await this.writeTaskRecord(next);
+        unlinkedTasks.push(task);
       }
       await rm(this.projectPath(id));
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      for (const task of unlinkedTasks.reverse()) {
+        try {
+          await this.writeTaskRecord(task);
+        } catch {
+          // Preserve the original relationship failure for callers.
+        }
+      }
+      if (isErrnoCode(error, "ENOENT")) return false;
+      throw error;
     }
   }
 
@@ -416,21 +486,25 @@ export class WorkStorage {
   }
 
   private async removeTaskIdFromProject(projectId: string, taskId: string, now = new Date()): Promise<void> {
-    const project = await this.getProject(projectId);
-    if (!project) return;
+    await this.enqueueProjectMutation(projectId, async () => {
+      const project = await this.getProject(projectId);
+      if (!project) return;
 
-    const filtered = project.taskIds.filter((id) => id !== taskId);
-    if (filtered.length === project.taskIds.length) return;
+      const filtered = project.taskIds.filter((id) => id !== taskId);
+      if (filtered.length === project.taskIds.length) return;
 
-    await this.updateProject(projectId, { taskIds: filtered }, now);
+      await this.updateProjectUnlocked(projectId, { taskIds: filtered }, now);
+    });
   }
 
   private async addTaskIdToProject(projectId: string, taskId: string, now = new Date()): Promise<void> {
-    const project = await this.getProject(projectId);
-    if (!project) return;
+    await this.enqueueProjectMutation(projectId, async () => {
+      const project = await this.getProject(projectId);
+      if (!project) throw new Error(`project not found: ${projectId}`);
 
-    const taskIds = new Set(project.taskIds);
-    taskIds.add(taskId);
-    await this.updateProject(projectId, { taskIds: Array.from(taskIds) }, now);
+      const taskIds = new Set(project.taskIds);
+      taskIds.add(taskId);
+      await this.updateProjectUnlocked(projectId, { taskIds: Array.from(taskIds) }, now);
+    });
   }
 }

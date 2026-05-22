@@ -3,7 +3,12 @@ import { runBenchmarkStoredBaselineCiGateCliCommand } from "../src/cli.js";
 function readArg(flag: string): string | undefined {
   const idx = process.argv.indexOf(flag);
   if (idx === -1) return undefined;
-  return process.argv[idx + 1];
+  const value = process.argv[idx + 1];
+  if (!value || value.startsWith("-")) {
+    console.error(`${flag} requires a value`);
+    process.exit(1);
+  }
+  return value;
 }
 
 const base = readArg("--base");

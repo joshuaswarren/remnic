@@ -41,11 +41,23 @@ export class FilesystemBackend implements BinaryStorageBackend {
     if (!basePath || basePath.trim().length === 0) {
       throw new Error("FilesystemBackend requires a non-empty basePath");
     }
-    this.basePath = basePath;
+    this.basePath = path.resolve(basePath);
+  }
+
+  private resolveRemotePath(remotePath: string): string {
+    if (path.isAbsolute(remotePath)) {
+      throw new Error(`FilesystemBackend remotePath must be relative: ${JSON.stringify(remotePath)}`);
+    }
+    const resolved = path.resolve(this.basePath, remotePath);
+    const relative = path.relative(this.basePath, resolved);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`FilesystemBackend remotePath escapes basePath: ${JSON.stringify(remotePath)}`);
+    }
+    return resolved;
   }
 
   async upload(localPath: string, remotePath: string): Promise<string> {
-    const dest = path.join(this.basePath, remotePath);
+    const dest = this.resolveRemotePath(remotePath);
     const destDir = path.dirname(dest);
     await fsp.mkdir(destDir, { recursive: true });
     await fsp.copyFile(localPath, dest);
@@ -53,7 +65,7 @@ export class FilesystemBackend implements BinaryStorageBackend {
   }
 
   async exists(remotePath: string): Promise<boolean> {
-    const dest = path.join(this.basePath, remotePath);
+    const dest = this.resolveRemotePath(remotePath);
     try {
       await fsp.access(dest, fs.constants.F_OK);
       return true;
@@ -63,7 +75,7 @@ export class FilesystemBackend implements BinaryStorageBackend {
   }
 
   async delete(remotePath: string): Promise<void> {
-    const dest = path.join(this.basePath, remotePath);
+    const dest = this.resolveRemotePath(remotePath);
     try {
       await fsp.unlink(dest);
     } catch (err: unknown) {

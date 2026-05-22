@@ -22,6 +22,7 @@
  */
 
 import { promises as fs } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
 
 import { expandTildePath } from "../../utils/path.js";
@@ -66,7 +67,11 @@ export interface ConnectorState {
 
 const STATE_DIR_NAME = "state";
 const CONNECTORS_DIR_NAME = "connectors";
+const CONNECTOR_LOCKS_DIR_NAME = "connector-locks";
 const MAX_ERROR_LENGTH = 1024;
+const CONNECTOR_LOCK_STALE_MS = 10 * 60 * 1000;
+const CONNECTOR_LOCK_TIMEOUT_MS = 60 * 1000;
+const CONNECTOR_LOCK_RETRY_MS = 50;
 const VALID_SYNC_STATUSES: ReadonlySet<ConnectorSyncStatus> = new Set([
   "success",
   "error",
@@ -96,6 +101,13 @@ function resolveConnectorsDir(memoryDir: string): string {
   return path.join(expandTildePath(memoryDir), STATE_DIR_NAME, CONNECTORS_DIR_NAME);
 }
 
+function resolveConnectorLocksDir(memoryDir: string): string {
+  if (typeof memoryDir !== "string" || memoryDir.length === 0) {
+    throw new TypeError("memoryDir must be a non-empty string");
+  }
+  return path.join(expandTildePath(memoryDir), STATE_DIR_NAME, CONNECTOR_LOCKS_DIR_NAME);
+}
+
 /**
  * Resolve the state file path for a single connector. Throws on invalid id
  * to prevent path traversal via crafted ids.
@@ -107,6 +119,15 @@ function resolveConnectorStatePath(memoryDir: string, id: string): string {
     );
   }
   return path.join(resolveConnectorsDir(memoryDir), `${id}.json`);
+}
+
+function resolveConnectorLockPath(memoryDir: string, id: string): string {
+  if (!isValidConnectorId(id)) {
+    throw new TypeError(
+      `invalid connector id ${JSON.stringify(id)} — must match /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/`,
+    );
+  }
+  return path.join(resolveConnectorLocksDir(memoryDir), `${id}.lock`);
 }
 
 /**
@@ -187,6 +208,76 @@ async function assertNoSymlinkOnPath(memoryDir: string, filePath: string): Promi
       throw new Error(
         `connector state path component ${component} is a symlink; refusing to follow`,
       );
+    }
+  }
+}
+
+async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<string | null> {
+  const dir = resolveConnectorLocksDir(memoryDir);
+  const lockPath = resolveConnectorLockPath(memoryDir, id);
+  await assertNoSymlinkOnPath(memoryDir, lockPath);
+  await fs.mkdir(dir, { recursive: true });
+  try {
+    const handle = await fs.open(lockPath, "wx", 0o600);
+    await handle.writeFile(
+      JSON.stringify({
+        pid: process.pid,
+        createdAt: new Date().toISOString(),
+      }),
+      "utf8",
+    );
+    await handle.close();
+    return lockPath;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw err;
+    }
+    let stat: import("node:fs").Stats;
+    try {
+      stat = await fs.lstat(lockPath);
+    } catch (statErr) {
+      if ((statErr as NodeJS.ErrnoException).code === "ENOENT") {
+        return null;
+      }
+      throw statErr;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(
+        `connector state path component ${lockPath} is a symlink; refusing to follow`,
+      );
+    }
+    if (Date.now() - stat.mtimeMs > CONNECTOR_LOCK_STALE_MS) {
+      await fs.unlink(lockPath);
+      return null;
+    }
+    return null;
+  }
+}
+
+export async function withConnectorStateLock<T>(
+  memoryDir: string,
+  id: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const deadline = Date.now() + CONNECTOR_LOCK_TIMEOUT_MS;
+  let lockPath: string | null = null;
+  while (lockPath === null) {
+    lockPath = await tryAcquireConnectorLock(memoryDir, id);
+    if (lockPath !== null) break;
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for connector "${id}" state lock`);
+    }
+    await delay(CONNECTOR_LOCK_RETRY_MS);
+  }
+  try {
+    return await run();
+  } finally {
+    try {
+      await fs.unlink(lockPath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw err;
+      }
     }
   }
 }

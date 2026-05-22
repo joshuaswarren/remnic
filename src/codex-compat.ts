@@ -72,6 +72,14 @@ export function extractCodexThreadId(
   return typeof threadId === "string" && threadId.length > 0 ? threadId : null;
 }
 
+function extractDirectCodexThreadId(
+  source: Record<string, unknown> | undefined,
+): string | null {
+  if (!source || typeof source !== "object") return null;
+  const threadId = source.codexThreadId;
+  return typeof threadId === "string" && threadId.length > 0 ? threadId : null;
+}
+
 export function codexLogicalSessionKey(providerThreadId: string): string {
   return `${CODEX_THREAD_KEY_PREFIX}${providerThreadId}`;
 }
@@ -117,11 +125,15 @@ export function resolveCodexSessionIdentity(input: {
   const event = input.event ?? undefined;
   const ctx = input.ctx ?? undefined;
   const compat = input.codexCompat;
-  const codex =
-    compat?.enabled === true && (isCodexProvider(ctx) || isCodexProvider(event));
+  const ctxIsCodex = isCodexProvider(ctx);
+  const eventIsCodex = isCodexProvider(event);
+  const codex = compat?.enabled === true && (ctxIsCodex || eventIsCodex);
   const extractedThreadId =
     compat?.enabled === true
-      ? extractCodexThreadId(ctx) ?? extractCodexThreadId(event)
+      ? extractDirectCodexThreadId(event) ??
+        extractDirectCodexThreadId(ctx) ??
+        (ctxIsCodex ? extractCodexThreadId(ctx) : null) ??
+        (eventIsCodex ? extractCodexThreadId(event) : null)
       : null;
   const providerThreadId =
     codex && typeof extractedThreadId === "string" ? extractedThreadId : null;

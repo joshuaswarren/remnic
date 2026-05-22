@@ -74,6 +74,37 @@ test("createMitigatedTarget treats missing namespace as budget-eligible (fail-cl
   assert.equal(denied.length, 0, "should return empty after budget exhausted with no namespace");
 });
 
+test("createMitigatedTarget expires budget entries at the window boundary", async () => {
+  const rawTarget = createSyntheticTarget({
+    memories: [
+      { id: "tm-boundary", content: "alpha beta gamma", category: "fact", tokens: ["alpha"], namespace: "other" },
+    ],
+    disclosesMemoryIds: true,
+  });
+
+  const originalNow = Date.now;
+  let now = 0;
+  Date.now = () => now;
+
+  try {
+    const mitigated = createMitigatedTarget({
+      target: rawTarget,
+      budgetHardLimit: 1,
+      budgetWindowMs: 1_000,
+      principalNamespace: "default",
+    });
+
+    const first = await mitigated.recall("alpha", { namespace: "other" });
+    assert.ok(first.length > 0, "first cross-namespace query should be allowed");
+
+    now = 1_000;
+    const second = await mitigated.recall("alpha", { namespace: "other" });
+    assert.ok(second.length > 0, "query at exactly the budget window boundary should be allowed");
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("runMitigatedBaseline returns mitigated rows", async () => {
   const rows = await runMitigatedBaseline();
   assert.ok(rows.length > 0, "should return at least one row");

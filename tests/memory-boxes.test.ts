@@ -3,7 +3,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { BoxBuilder, topicOverlapScore, parseBoxFrontmatter, BOX_DIR } from "../src/boxes.js";
@@ -222,6 +222,42 @@ test("BoxBuilder writes valid frontmatter when sealing", async () => {
   }
 });
 
+test("BoxBuilder frontmatter arrays round-trip values with punctuation", async () => {
+  const dir = await makeTmp();
+  try {
+    const builder = new BoxBuilder(dir, {
+      memoryBoxesEnabled: true,
+      traceWeaverEnabled: false,
+      boxTopicShiftThreshold: 0.3,
+      boxTimeGapMs: 60 * 60 * 1000,
+      boxMaxMemories: 100,
+      traceWeaverLookbackDays: 7,
+      traceWeaverOverlapThreshold: 0.4,
+    });
+
+    const topics = ["api, auth", 'quote "topic"', "path\\topic"];
+    const memoryIds = ["mem,1", 'mem"2', "mem\\3"];
+    const toolsUsed = ["tool,one", 'tool"two', "tool\\three"];
+    await builder.onExtraction({
+      topics,
+      memoryIds,
+      toolsUsed,
+      timestamp: new Date().toISOString(),
+    });
+    await builder.sealCurrent("forced");
+
+    const allBoxes = await collectAllBoxFiles(path.join(dir, BOX_DIR));
+    assert.equal(allBoxes.length, 1);
+    const parsed = parseBoxFrontmatter(await readFile(allBoxes[0]!, "utf-8"));
+    assert.ok(parsed);
+    assert.deepEqual(parsed.topics, topics);
+    assert.deepEqual(parsed.memoryIds, memoryIds);
+    assert.deepEqual(parsed.toolsUsed, toolsUsed);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
 // ── Trace Weaving ─────────────────────────────────────────────────────────
 
 test("TraceWeaver assigns same traceId to boxes with overlapping topics", async () => {
@@ -303,6 +339,105 @@ test("TraceWeaver assigns different traceIds to disjoint topics", async () => {
     if (traceIds.length > 1) {
       assert.ok(uniqueTraceIds.size > 1, "disjoint topic boxes should have different trace IDs");
     }
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("TraceWeaver omits traceId when trace index persistence fails", async () => {
+  const dir = await makeTmp();
+  try {
+    const builder = new BoxBuilder(dir, {
+      memoryBoxesEnabled: true,
+      traceWeaverEnabled: true,
+      boxTopicShiftThreshold: 0.3,
+      boxTimeGapMs: 60 * 60 * 1000,
+      boxMaxMemories: 100,
+      traceWeaverLookbackDays: 7,
+      traceWeaverOverlapThreshold: 0.4,
+    });
+
+    await builder.onExtraction({
+      topics: ["database", "postgresql"],
+      memoryIds: ["m1"],
+      timestamp: new Date().toISOString(),
+    });
+    await mkdir(path.join(dir, "state", "traces.json"), { recursive: true });
+
+    const boxId = await builder.sealCurrent("forced");
+    assert.ok(boxId);
+
+    const allBoxes = await collectAllBoxFiles(path.join(dir, BOX_DIR));
+    assert.equal(allBoxes.length, 1);
+    const parsed = parseBoxFrontmatter(await readFile(allBoxes[0]!, "utf-8"));
+    assert.ok(parsed);
+    assert.equal(parsed.traceId, undefined);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("BoxBuilder keeps open box when clearing persisted state fails during seal", async () => {
+  const dir = await makeTmp();
+  try {
+    const builder = new BoxBuilder(dir, {
+      memoryBoxesEnabled: true,
+      traceWeaverEnabled: false,
+      boxTopicShiftThreshold: 0.3,
+      boxTimeGapMs: 60 * 60 * 1000,
+      boxMaxMemories: 100,
+      traceWeaverLookbackDays: 7,
+      traceWeaverOverlapThreshold: 0.4,
+    });
+
+    await builder.onExtraction({
+      topics: ["database"],
+      memoryIds: ["m1"],
+      timestamp: new Date().toISOString(),
+    });
+
+    const openBoxPath = path.join(dir, "state", "open-box.json");
+    await rm(openBoxPath, { recursive: true, force: true });
+    await mkdir(openBoxPath, { recursive: true });
+
+    await assert.rejects(() => builder.sealCurrent("forced"));
+
+    await rm(openBoxPath, { recursive: true, force: true });
+    const boxId = await builder.sealCurrent("forced");
+    assert.ok(boxId);
+
+    const allBoxes = await collectAllBoxFiles(path.join(dir, BOX_DIR));
+    assert.equal(allBoxes.length, 1);
+    const parsed = parseBoxFrontmatter(await readFile(allBoxes[0]!, "utf-8"));
+    assert.deepEqual(parsed?.memoryIds, ["m1"]);
+  } finally {
+    await cleanup(dir);
+  }
+});
+
+test("TraceWeaver ignores malformed trace index state", async () => {
+  const dir = await makeTmp();
+  try {
+    const builder = new BoxBuilder(dir, {
+      memoryBoxesEnabled: true,
+      traceWeaverEnabled: true,
+      boxTopicShiftThreshold: 0.3,
+      boxTimeGapMs: 60 * 60 * 1000,
+      boxMaxMemories: 100,
+      traceWeaverLookbackDays: 7,
+      traceWeaverOverlapThreshold: 0.4,
+    });
+
+    await mkdir(path.join(dir, "state"), { recursive: true });
+    await writeFile(path.join(dir, "state", "traces.json"), JSON.stringify({ traces: [] }), "utf-8");
+    await builder.onExtraction({
+      topics: ["database"],
+      memoryIds: ["m1"],
+      timestamp: new Date().toISOString(),
+    });
+
+    const boxId = await builder.sealCurrent("forced");
+    assert.ok(boxId);
   } finally {
     await cleanup(dir);
   }

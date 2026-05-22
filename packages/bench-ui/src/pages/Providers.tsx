@@ -65,3 +65,4 @@ export function Providers({ payload }: { payload: BenchResultSummaryPayload }) {
     </section>
   );
 }
+import * as React from "react";

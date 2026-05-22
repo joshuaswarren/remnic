@@ -287,7 +287,7 @@ test("recordDreamsPhaseRun writes scheduled ledger entries", async () => {
   assert.equal(entries[0]?.durationMs, 3000);
 });
 
-test("runDreamsPhase lightSleep counts recent observation ts entries only", async () => {
+test("runDreamsPhase lightSleep counts recent observation ledger timestamps", async () => {
   const memoryDir = await makeTmpDir();
   const ledgerPath = path.join(
     memoryDir,
@@ -297,10 +297,21 @@ test("runDreamsPhase lightSleep counts recent observation ts entries only", asyn
   );
   await mkdir(path.dirname(ledgerPath), { recursive: true });
   const recentTs = new Date().toISOString();
+  const recentHourDate = new Date(Date.now() - 60 * 60 * 1000);
+  recentHourDate.setUTCMinutes(0, 0, 0);
+  const recentHour = recentHourDate.toISOString();
   const oldTs = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
   await writeFile(
     ledgerPath,
     [
+      JSON.stringify({
+        sessionKey: "s1",
+        hour: recentHour,
+        turnCount: 2,
+        userTurns: 1,
+        assistantTurns: 1,
+        rebuiltAt: recentTs,
+      }),
       JSON.stringify({ ts: recentTs, memoryId: "recent" }),
       JSON.stringify({ ts: oldTs, memoryId: "old" }),
       JSON.stringify({ timestamp: oldTs, memoryId: "legacy-old" }),
@@ -315,7 +326,7 @@ test("runDreamsPhase lightSleep counts recent observation ts entries only", asyn
     dryRun: true,
   });
 
-  assert.equal(result.itemsProcessed, 1);
+  assert.equal(result.itemsProcessed, 2);
   assert.equal(result.durationMs, result.ledgerEntry?.durationMs);
 });
 

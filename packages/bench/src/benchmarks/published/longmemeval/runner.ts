@@ -228,7 +228,9 @@ async function searchLongMemEvalEvidence(
   question: string,
   sessionIds: string[],
 ): Promise<SearchResult[]> {
-  const globalResults = await options.system.search(question, 10);
+  const globalResults = await options.system
+    .search(question, 10)
+    .catch(() => []);
   if (globalResults.length > 0) {
     return globalResults;
   }

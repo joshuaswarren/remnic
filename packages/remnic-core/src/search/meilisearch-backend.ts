@@ -1,6 +1,7 @@
 import { log } from "../logger.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
 import { scanMemoryDir } from "./document-scanner.js";
+import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
 
 export interface MeilisearchBackendOptions {
   host: string;
@@ -63,23 +64,27 @@ export class MeilisearchBackend implements SearchBackend {
     collection?: string,
     maxResults?: number,
     _options?: SearchQueryOptions,
-    _execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions,
   ): Promise<SearchResult[]> {
+    if (isSearchAborted(execution)) return [];
     // Try hybrid first; fall back to plain FTS only if hybrid throws (e.g. no embedder configured)
     try {
-      return await this.doSearch(query, maxResults ?? 10, { hybrid: { semanticRatio: 0.5, embedder: "default" } }, collection, true);
+      return await this.doSearch(query, maxResults ?? 10, { hybrid: { semanticRatio: 0.5, embedder: "default" } }, collection, true, execution);
     } catch {
-      return this.bm25Search(query, collection, maxResults);
+      if (isSearchAborted(execution)) return [];
+      return this.bm25Search(query, collection, maxResults, execution);
     }
   }
 
-  async searchGlobal(query: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+  async searchGlobal(query: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
     const limit = maxResults ?? 10;
     if (!this.available) return [];
 
     try {
+      throwIfSearchAborted(execution, "MeilisearchBackend global search aborted");
       const client = await this.ensureClient();
       const indexes = await client.getIndexes();
+      throwIfSearchAborted(execution, "MeilisearchBackend global search aborted");
       const queries = (indexes.results ?? []).map((idx: any) => ({
         indexUid: idx.uid,
         q: query,
@@ -89,6 +94,7 @@ export class MeilisearchBackend implements SearchBackend {
       if (queries.length === 0) return [];
 
       const multiResult = await client.multiSearch({ queries });
+      throwIfSearchAborted(execution, "MeilisearchBackend global search aborted");
       const allResults: SearchResult[] = [];
       for (const result of multiResult.results ?? []) {
         allResults.push(...this.mapHits(result.hits ?? []));
@@ -101,29 +107,32 @@ export class MeilisearchBackend implements SearchBackend {
     }
   }
 
-  async bm25Search(query: string, collection?: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
-    return this.doSearch(query, maxResults ?? 10, undefined, collection);
+  async bm25Search(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+    return this.doSearch(query, maxResults ?? 10, undefined, collection, false, execution);
   }
 
-  async vectorSearch(query: string, collection?: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
-    return this.doSearch(query, maxResults ?? 10, { hybrid: { semanticRatio: 1.0, embedder: "default" } }, collection);
+  async vectorSearch(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+    return this.doSearch(query, maxResults ?? 10, { hybrid: { semanticRatio: 1.0, embedder: "default" } }, collection, false, execution);
   }
 
-  async hybridSearch(query: string, collection?: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
-    return this.doSearch(query, maxResults ?? 10, { hybrid: { semanticRatio: 0.5, embedder: "default" } }, collection);
+  async hybridSearch(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+    return this.doSearch(query, maxResults ?? 10, { hybrid: { semanticRatio: 0.5, embedder: "default" } }, collection, false, execution);
   }
 
   async update(execution?: SearchExecutionOptions): Promise<void> {
     await this.updateCollection(this.collection, execution);
   }
 
-  async updateCollection(collection: string, _execution?: SearchExecutionOptions): Promise<void> {
+  async updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void> {
     if (!this.autoIndex || !this.memoryDir) return;
     if (!this.available) return;
+    if (isSearchAborted(execution)) return;
 
     try {
       const client = await this.ensureClient();
+      if (isSearchAborted(execution)) return;
       const docs = await scanMemoryDir(this.memoryDir);
+      if (isSearchAborted(execution)) return;
       const index = client.index(collection);
 
       const meilDocs = docs.map((d) => ({
@@ -134,8 +143,10 @@ export class MeilisearchBackend implements SearchBackend {
       }));
 
       // Upsert current docs and wait for the task to complete
+      if (isSearchAborted(execution)) return;
       const addTask = await index.addDocuments(meilDocs, { primaryKey: "id" });
       await client.waitForTask(addTask.taskUid, { timeOutMs: this.timeoutMs });
+      if (isSearchAborted(execution)) return;
 
       // Remove docs that no longer exist on disk (paginated to handle large indexes)
       const currentIds = new Set(docs.map((d) => d.docid));
@@ -145,6 +156,7 @@ export class MeilisearchBackend implements SearchBackend {
         let staleIds: string[] = [];
         let hasMore = true;
         while (hasMore) {
+          if (isSearchAborted(execution)) return;
           const page = await index.getDocuments({ limit: PAGE_SIZE, offset, fields: ["id"] });
           const results = page.results ?? [];
           for (const doc of results) {
@@ -155,6 +167,7 @@ export class MeilisearchBackend implements SearchBackend {
           hasMore = results.length === PAGE_SIZE;
         }
         if (staleIds.length > 0) {
+          if (isSearchAborted(execution)) return;
           const delTask = await index.deleteDocuments(staleIds);
           await client.waitForTask(delTask.taskUid, { timeOutMs: this.timeoutMs });
         }
@@ -207,12 +220,22 @@ export class MeilisearchBackend implements SearchBackend {
     return this.client;
   }
 
-  private async doSearch(query: string, limit: number, extra?: Record<string, unknown>, collection?: string, rethrow = false): Promise<SearchResult[]> {
+  private async doSearch(
+    query: string,
+    limit: number,
+    extra?: Record<string, unknown>,
+    collection?: string,
+    rethrow = false,
+    execution?: SearchExecutionOptions,
+  ): Promise<SearchResult[]> {
     if (!this.available) return [];
+    if (isSearchAborted(execution)) return [];
     try {
       const client = await this.ensureClient();
+      throwIfSearchAborted(execution, "MeilisearchBackend search aborted");
       const index = client.index(collection ?? this.collection);
       const result = await index.search(query, { limit, showRankingScore: true, ...extra });
+      throwIfSearchAborted(execution, "MeilisearchBackend search aborted");
       return this.mapHits(result.hits ?? []);
     } catch (err) {
       log.debug(`MeilisearchBackend search failed: ${err}`);

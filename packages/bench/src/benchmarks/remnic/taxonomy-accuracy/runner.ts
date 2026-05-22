@@ -44,7 +44,7 @@ export async function runTaxonomyAccuracyBenchmark(
     );
     const latencyMs = Math.round(performance.now() - startedAt);
 
-    tasks.push({
+    const task: TaskResult = {
       taskId: sample.id,
       question: sample.content,
       expected: sample.expectedCategoryId,
@@ -60,7 +60,9 @@ export async function runTaxonomyAccuracyBenchmark(
         reason: decision.reason,
         alternatives: decision.alternatives,
       },
-    });
+    };
+    tasks.push(task);
+    options.onTaskComplete?.(task, tasks.length, cases.length);
   }
 
   const remnicVersion = await getRemnicVersion();

@@ -72,13 +72,18 @@ export function buildChatGptMemoryInspectorActionRequest(
   recall: EngramAccessRecallResponse,
   xray: RecallXraySnapshot | null,
 ): ActionConfidenceRequest {
-  const provenances = (xray?.results ?? [])
-    .map((result) => result.provenance ?? missingProvenance(result));
+  const provenances = xray === null
+    ? recall.results.map(missingRecallProvenance)
+    : xray.results.map((result) => result.provenance ?? missingProvenance(result));
+  const hasUnsafeOrMissingProvenance = provenances.some(
+    (provenance) => provenance.safeToUse === false || provenance.safety === "blocked",
+  ) || provenances.length < recall.count;
 
   const request: ActionConfidenceRequest = {
     intendedAction: `Use Remnic memory to answer: ${input.query}`,
     risk: "medium",
-    contextReadiness: recall.count > 0 ? "sufficient" : "partial",
+    contextReadiness:
+      recall.count > 0 && !hasUnsafeOrMissingProvenance ? "sufficient" : "partial",
     retrievedMemories: provenances.map((provenance) => ({
       source: provenance.source,
       created: provenance.created,
@@ -383,6 +388,24 @@ function missingProvenance(result: RecallXrayResult): RetrievedMemoryProvenance 
     safeToUse: false,
     safety: "blocked",
     safetyReasons: ["X-ray provenance was missing for this memory."],
+  };
+}
+
+function missingRecallProvenance(
+  summary: EngramAccessRecallResponse["results"][number],
+): RetrievedMemoryProvenance {
+  return {
+    source: "unknown",
+    scope: "unknown",
+    userContextScopes: [],
+    retrievalReason: `X-ray provenance unavailable for ${summary.id || summary.path}`,
+    confidence: 0,
+    stale: false,
+    corrected: false,
+    correctionState: "none",
+    safeToUse: false,
+    safety: "blocked",
+    safetyReasons: ["X-ray provenance was unavailable for this recall."],
   };
 }
 

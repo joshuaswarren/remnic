@@ -231,20 +231,90 @@ function stripDiffPathPrefix(raw: string): string {
   // `"a` and the prefix is never recognized.
   let s = raw;
   if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') {
-    s = s.slice(1, -1);
-    // Git octal-escapes non-ASCII and escapes inner backslashes/quotes via
-    // the C-quoted path form. We handle the common cases (`\"`, `\\`) so
-    // the rest of the pipeline gets the raw filename. Octal escapes for
-    // non-ASCII are left as-is here — they are extremely rare and the
-    // touched-file set is only used for lexical matches against
-    // entityRefs, where matching either form produces the same hit.
-    s = s.replace(/\\(["\\])/g, "$1");
+    const decoded = decodeGitCQuotedPath(s.slice(1, -1));
+    if (decoded === null) {
+      return raw;
+    }
+    s = decoded;
   }
   // Normalize Windows-style backslashes. Must happen AFTER quote stripping
-  // so that the `\"` and `\\` escape pairs above aren't corrupted.
+  // so that C-quote escape pairs are decoded before path separators are
+  // normalized.
   s = s.replace(/\\/g, "/");
   if (s.startsWith("a/") || s.startsWith("b/")) s = s.slice(2);
   return s;
+}
+
+function decodeGitCQuotedPath(value: string): string | null {
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  const appendText = (text: string) => {
+    bytes.push(...encoder.encode(text));
+  };
+
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (char !== "\\") {
+      appendText(char);
+      continue;
+    }
+
+    if (index + 1 >= value.length) {
+      appendText("\\");
+      continue;
+    }
+
+    const next = value[index + 1]!;
+    if (next >= "0" && next <= "7") {
+      let octal = next;
+      let cursor = index + 2;
+      while (cursor < value.length && octal.length < 3) {
+        const digit = value[cursor]!;
+        if (digit < "0" || digit > "7") break;
+        octal += digit;
+        cursor += 1;
+      }
+      bytes.push(Number.parseInt(octal, 8));
+      index = cursor - 1;
+      continue;
+    }
+
+    const escaped = cEscapeValue(next);
+    if (escaped !== null) {
+      appendText(escaped);
+      index += 1;
+      continue;
+    }
+
+    appendText(`\\${next}`);
+    index += 1;
+  }
+
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+  } catch {
+    return null;
+  }
+}
+
+function cEscapeValue(value: string): string | null {
+  switch (value) {
+    case "n":
+      return "\n";
+    case "t":
+      return "\t";
+    case "r":
+      return "\r";
+    case "b":
+      return "\b";
+    case "f":
+      return "\f";
+    case "\\":
+    case '"':
+      return value;
+    default:
+      return null;
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

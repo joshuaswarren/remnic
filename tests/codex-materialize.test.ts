@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync } from "node:fs";
+import fs, { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -199,6 +199,101 @@ test("rollout_summaries/ GC still runs when caller supplies an empty rolloutSumm
   }
 });
 
+test("rollout_summaries/ GC surfaces stale-file prune failures", () => {
+  const { root, memoriesDir } = makeTempCodexHome();
+  const originalUnlinkSync = fs.unlinkSync;
+  try {
+    ensureSentinel(memoriesDir, "rollout-gc-fail-ns");
+    materializeForNamespace("rollout-gc-fail-ns", {
+      memories: [makeMemory({ content: "synthetic gc failure payload round 1" })],
+      codexHome: root,
+      rolloutSummaries: [
+        { slug: "stale-session", updatedAt: "2026-04-01T00:00:00Z", body: "stale synthetic recap." },
+      ],
+      now: new Date("2026-04-02T00:00:00Z"),
+    });
+
+    fs.unlinkSync = ((target: fs.PathLike) => {
+      if (path.basename(String(target)) === "stale-session.md") {
+        throw new Error("synthetic unlink failure");
+      }
+      return originalUnlinkSync(target);
+    }) as typeof fs.unlinkSync;
+
+    assert.throws(
+      () => materializeForNamespace("rollout-gc-fail-ns", {
+        memories: [makeMemory({ content: "synthetic gc failure payload round 2" })],
+        codexHome: root,
+        rolloutSummaries: [],
+        now: new Date("2026-04-03T00:00:00Z"),
+      }),
+      /failed to prune stale rollout summary stale-session\.md: synthetic unlink failure/,
+    );
+  } finally {
+    fs.unlinkSync = originalUnlinkSync;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rollout_summaries/ rejects symlinked destination directory", () => {
+  const { root, memoriesDir } = makeTempCodexHome();
+  try {
+    ensureSentinel(memoriesDir, "rollout-symlink-ns");
+    const outsideDir = path.join(root, "outside-rollouts");
+    mkdirSync(outsideDir, { recursive: true });
+    const outsideFile = path.join(outsideDir, "must-survive.md");
+    writeFileSync(outsideFile, "# outside synthetic recap\n");
+    fs.symlinkSync(outsideDir, path.join(memoriesDir, "rollout_summaries"), "dir");
+
+    assert.throws(
+      () => materializeForNamespace("rollout-symlink-ns", {
+        memories: [makeMemory({ content: "synthetic symlink payload" })],
+        codexHome: root,
+        rolloutSummaries: [
+          { slug: "new-session", updatedAt: "2026-04-01T00:00:00Z", body: "new recap." },
+        ],
+        now: new Date("2026-04-03T00:00:00Z"),
+      }),
+      /unsafe rollout_summaries directory .*symbolic link/,
+    );
+    assert.equal(readFileSync(outsideFile, "utf8"), "# outside synthetic recap\n");
+    assert.equal(existsSync(path.join(outsideDir, "new-session.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("idempotent guard does not skip stale rollout cleanup for authoritative empty rollout set", () => {
+  const { root, memoriesDir } = makeTempCodexHome();
+  try {
+    ensureSentinel(memoriesDir, "rollout-idem-gc-ns");
+    const memories = [makeMemory({ content: "synthetic idempotent rollout gc payload" })];
+
+    const first = materializeForNamespace("rollout-idem-gc-ns", {
+      memories,
+      codexHome: root,
+      rolloutSummaries: [],
+      now: new Date("2026-04-02T00:00:00Z"),
+    });
+    assert.equal(first.wrote, true);
+
+    const stalePath = path.join(memoriesDir, "rollout_summaries", "old.md");
+    writeFileSync(stalePath, "# stale synthetic recap\n");
+
+    const second = materializeForNamespace("rollout-idem-gc-ns", {
+      memories,
+      codexHome: root,
+      rolloutSummaries: [],
+      now: new Date("2026-04-03T00:00:00Z"),
+    });
+    assert.equal(second.skippedIdempotent, false);
+    assert.equal(second.wrote, true);
+    assert.equal(existsSync(stalePath), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("idempotent no-op when nothing changed since last run", () => {
   const { root, memoriesDir } = makeTempCodexHome();
   try {
@@ -380,18 +475,21 @@ test("deduplicates rollouts whose slugs sanitize to the same filename", () => {
   }
 });
 
-test("does not overwrite a corrupted sentinel silently (treats as missing)", () => {
+test("does not overwrite a corrupted sentinel silently", () => {
   const { root, memoriesDir } = makeTempCodexHome();
   try {
-    // Write a junk sentinel → readSentinel() returns null → skip with warning.
+    // Write a junk sentinel. The materializer must fail closed and preserve it
+    // instead of treating corruption as a missing opt-in sentinel.
     writeFileSync(path.join(memoriesDir, SENTINEL_FILE), "not-json");
-    const result = materializeForNamespace("corrupt-ns", {
-      memories: [makeMemory({ content: "synthetic corrupt" })],
-      codexHome: root,
-      now: new Date("2026-04-02T00:00:00Z"),
-    });
-    assert.equal(result.skippedNoSentinel, true);
-    assert.equal(result.wrote, false);
+    assert.throws(
+      () => materializeForNamespace("corrupt-ns", {
+        memories: [makeMemory({ content: "synthetic corrupt" })],
+        codexHome: root,
+        now: new Date("2026-04-02T00:00:00Z"),
+      }),
+      /corrupt \.remnic-managed sentinel/,
+    );
+    assert.equal(readFileSync(path.join(memoriesDir, SENTINEL_FILE), "utf8"), "not-json");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

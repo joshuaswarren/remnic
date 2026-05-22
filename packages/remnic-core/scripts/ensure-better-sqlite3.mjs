@@ -28,7 +28,7 @@ if (!rebuild.ok) {
   console.error("[remnic] better-sqlite3 native rebuild failed.");
   if (rebuild.output) console.error(rebuild.output);
   console.error(
-    `[remnic] Try manually from this install directory: npx node-gyp rebuild --directory=${packageDir}`,
+    "[remnic] Install the package dependencies so node-gyp is available locally, then retry installation.",
   );
   process.exit(rebuild.status ?? 1);
 }
@@ -69,12 +69,13 @@ function rebuildBetterSqlite3(cwd) {
     return runRebuild(process.execPath, [localNodeGyp, "rebuild", "--release"], cwd);
   }
 
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  return runRebuild(
-    npm,
-    ["exec", "--yes", "node-gyp", "--", "rebuild", "--release"],
-    cwd,
-  );
+  return {
+    ok: false,
+    status: 1,
+    output:
+      "[remnic] Could not resolve local node-gyp/bin/node-gyp.js. " +
+      "Refusing to fetch and execute an unpinned node-gyp during postinstall.",
+  };
 }
 
 function resolveOptional(specifier) {

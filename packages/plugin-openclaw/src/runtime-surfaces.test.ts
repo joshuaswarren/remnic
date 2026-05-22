@@ -14,6 +14,24 @@ import {
   syncHeartbeatSurfaceEntries,
 } from "./runtime-surfaces.js";
 
+function normalizeAttributePairs(pairs: Record<string, string>): string {
+  return Object.entries(pairs)
+    .map(([key, value]) => [key.trim().toLowerCase(), value.trim()] as [string, string])
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("; ");
+}
+
+function enrichStoredContent(
+  content: string,
+  structuredAttributes: Record<string, string> | undefined,
+): string {
+  if (!structuredAttributes || Object.keys(structuredAttributes).length === 0) {
+    return content;
+  }
+  return `${content}\n[Attributes: ${normalizeAttributePairs(structuredAttributes)}]`;
+}
+
 function makeMemory(params: {
   id: string;
   category?: MemoryFrontmatter["category"];
@@ -27,7 +45,7 @@ function makeMemory(params: {
 }): MemoryFile {
   return {
     path: `/tmp/${params.id}.md`,
-    content: params.content,
+    content: enrichStoredContent(params.content, params.structuredAttributes),
     frontmatter: {
       id: params.id,
       category: params.category ?? "fact",
@@ -157,6 +175,7 @@ test("syncDreamSurfaceEntries imports dream entries once and updates existing me
 
   assert.deepEqual(rerun, { created: 0, updated: 0, linked: 0 });
   assert.equal(storage.memories.length, 1);
+  assert.match(storage.memories[0]?.content ?? "", /\[Attributes: /);
 });
 
 test("syncDreamSurfaceEntries updates an edited dream entry instead of duplicating it when the stable id is unchanged", async () => {
@@ -429,6 +448,71 @@ test("syncHeartbeatSurfaceEntries preserves the stored heartbeat entry id across
   assert.match(storage.memories[0]?.content ?? "", /compare to the last run/);
 });
 
+test("syncHeartbeatSurfaceEntries does not report or reindex partial metadata write failures", async () => {
+  const storage = makeStorage([
+    makeMemory({
+      id: "principle-1",
+      category: "principle",
+      content: "check-test-suite\n\nRun the suite and report new failures.",
+      tags: ["ci", "tests", "heartbeat", "procedural", "check-test-suite"],
+      source: "heartbeat.md",
+      memoryKind: "procedural",
+      structuredAttributes: {
+        remnicSurfaceType: "heartbeat",
+        remnicHeartbeatEntryId: "heartbeat-a",
+        relatedHeartbeatSlug: "check-test-suite",
+        remnicHeartbeatJournalPath: "/workspace/HEARTBEAT.md",
+        remnicHeartbeatSourceOffset: "20",
+        remnicHeartbeatSchedule: "hourly",
+      },
+    }),
+  ]);
+  let frontmatterWrites = 0;
+  storage.writeMemoryFrontmatter = async () => {
+    frontmatterWrites += 1;
+    return false;
+  };
+  const reindexed: string[] = [];
+
+  const result = await syncHeartbeatSurfaceEntries({
+    storage,
+    entries: [
+      {
+        id: "heartbeat-a",
+        slug: "check-test-suite",
+        title: "check-test-suite",
+        body: "Run the suite, compare to the last run, and report new failures.",
+        schedule: "every 2 hours",
+        tags: ["ci", "tests", "diff"],
+        sourceOffset: 48,
+      },
+    ],
+    journalPath: "/workspace/HEARTBEAT.md",
+    reindexMemory: async (id) => {
+      reindexed.push(id);
+    },
+  });
+
+  assert.deepEqual(result, { created: 0, updated: 0, linked: 0 });
+  assert.equal(frontmatterWrites, 1);
+  assert.deepEqual(reindexed, []);
+  assert.equal(
+    storage.memories[0]?.content,
+    enrichStoredContent("check-test-suite\n\nRun the suite and report new failures.", {
+      remnicSurfaceType: "heartbeat",
+      remnicHeartbeatEntryId: "heartbeat-a",
+      relatedHeartbeatSlug: "check-test-suite",
+      remnicHeartbeatJournalPath: "/workspace/HEARTBEAT.md",
+      remnicHeartbeatSourceOffset: "20",
+      remnicHeartbeatSchedule: "hourly",
+    }),
+  );
+  assert.equal(
+    storage.memories[0]?.frontmatter.structuredAttributes?.remnicHeartbeatSourceOffset,
+    "20",
+  );
+});
+
 test("syncHeartbeatSurfaceEntries prefers stable heartbeat entry ids over matching stale slugs", async () => {
   const storage = makeStorage([
     makeMemory({
@@ -481,7 +565,7 @@ test("syncHeartbeatSurfaceEntries prefers stable heartbeat entry ids over matchi
     storage.memories[1]?.frontmatter.structuredAttributes?.relatedHeartbeatSlug,
     "check-test-suite",
   );
-  assert.equal(storage.memories[0]?.content, "Old heartbeat body.");
+  assert.match(storage.memories[0]?.content ?? "", /^Old heartbeat body\./);
 });
 
 test("syncHeartbeatSurfaceEntries updates the existing memory when a heartbeat title rename changes the slug but not the entry id", async () => {
@@ -560,7 +644,10 @@ test("syncHeartbeatSurfaceEntries never overwrites non-surface memories through 
 
   assert.deepEqual(result, { created: 1, updated: 0, linked: 0 });
   assert.equal(storage.memories.length, 2);
-  assert.equal(storage.memories[0]?.content, "A regular fact linked to check-test-suite.");
+  assert.match(
+    storage.memories[0]?.content ?? "",
+    /^A regular fact linked to check-test-suite\./,
+  );
   assert.equal(storage.memories[0]?.frontmatter.structuredAttributes?.remnicSurfaceType, undefined);
   assert.equal(
     storage.memories[1]?.frontmatter.structuredAttributes?.remnicSurfaceType,

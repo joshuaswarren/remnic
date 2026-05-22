@@ -47,6 +47,7 @@ import path from "node:path";
 import { log } from "../logger.js";
 import { readEnvVar, resolveHomeDir } from "../runtime/env.js";
 import type { MemoryFile } from "../types.js";
+import { expandTildePath } from "../utils/path.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -292,6 +293,8 @@ export function materializeForNamespace(
     name: `${sanitizeSlug(r.slug)}.md`,
     body: renderRolloutSummary(r),
   }));
+  const destRolloutsDir = path.join(memoriesDir, ROLLOUT_SUBDIR);
+  const retainedRolloutNames = new Set(rolloutFiles.map((r) => r.name));
 
   // ── Idempotence check ──────────────────────────────────────────────────
   const hash = computeContentHash({
@@ -316,7 +319,13 @@ export function materializeForNamespace(
       ...rolloutFiles.map((r) => path.join(memoriesDir, ROLLOUT_SUBDIR, r.name)),
     ];
     const allPresent = requiredFiles.every((f) => fs.existsSync(f));
-    if (allPresent) {
+    const rolloutsClean =
+      !rolloutsSupplied ||
+      rolloutDirectoryMatchesRetainedSet(
+        ensureSafeRolloutsDir(memoriesDir, destRolloutsDir),
+        retainedRolloutNames,
+      );
+    if (allPresent && rolloutsClean) {
       logger.debug?.(`no-op materialization for namespace=${namespace} (hash unchanged)`);
       return {
         namespace,
@@ -329,7 +338,7 @@ export function materializeForNamespace(
       };
     }
     logger.debug?.(
-      `hash unchanged for namespace=${namespace} but managed file missing — forcing rewrite`,
+      `hash unchanged for namespace=${namespace} but managed files need refresh — forcing rewrite`,
     );
   }
 
@@ -402,8 +411,7 @@ export function materializeForNamespace(
     fs.renameSync(src, dest);
   }
 
-  const destRolloutsDir = path.join(memoriesDir, ROLLOUT_SUBDIR);
-  fs.mkdirSync(destRolloutsDir, { recursive: true });
+  const safeDestRolloutsDir = ensureSafeRolloutsDir(memoriesDir, destRolloutsDir);
   // Only garbage-collect rollout files when the caller actually supplied a
   // `rolloutSummaries` array — otherwise we'd wipe legitimately
   // user/Codex-created recap files on every session-end run, since those
@@ -411,26 +419,30 @@ export function materializeForNamespace(
   // supplied (even as an empty array — meaning "we own this dir and it
   // should be empty"), we clear the stale files we previously owned.
   if (rolloutsSupplied) {
-    const retainedRolloutNames = new Set(rolloutFiles.map((r) => r.name));
+    let existingRollouts: fs.Dirent[];
     try {
-      for (const entry of fs.readdirSync(destRolloutsDir, { withFileTypes: true })) {
-        if (!entry.isFile()) continue;
-        if (!entry.name.endsWith(".md")) continue;
-        if (retainedRolloutNames.has(entry.name)) continue;
-        try {
-          fs.unlinkSync(path.join(destRolloutsDir, entry.name));
-        } catch {
-          // ignore
-        }
+      existingRollouts = fs.readdirSync(safeDestRolloutsDir, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      existingRollouts = [];
+    }
+    for (const entry of existingRollouts) {
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith(".md")) continue;
+      if (retainedRolloutNames.has(entry.name)) continue;
+      try {
+        fs.unlinkSync(path.join(safeDestRolloutsDir, entry.name));
+      } catch (err) {
+        throw new Error(
+          `codex-materialize: failed to prune stale rollout summary ${entry.name}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
-    } catch {
-      // ignore — directory may not exist yet
     }
   }
 
   for (const rollout of rolloutFiles) {
     const src = path.join(tmpDir, ROLLOUT_SUBDIR, rollout.name);
-    const dest = path.join(destRolloutsDir, rollout.name);
+    const dest = path.join(safeDestRolloutsDir, rollout.name);
     fs.renameSync(src, dest);
   }
 
@@ -441,7 +453,7 @@ export function materializeForNamespace(
     updated_at: now.toISOString(),
     content_hash: hash,
   };
-  fs.writeFileSync(sentinelPath, `${JSON.stringify(sentinel, null, 2)}\n`);
+  writeSentinelAtomically(sentinelPath, sentinel);
 
   try {
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -472,14 +484,17 @@ export function materializeForNamespace(
 export function ensureSentinel(memoriesDir: string, namespace: string, now: Date = new Date()): void {
   fs.mkdirSync(memoriesDir, { recursive: true });
   const sentinelPath = path.join(memoriesDir, SENTINEL_FILE);
-  if (fs.existsSync(sentinelPath)) return;
+  if (fs.existsSync(sentinelPath)) {
+    readSentinel(sentinelPath);
+    return;
+  }
   const sentinel: SentinelFile = {
     version: MATERIALIZE_VERSION,
     namespace,
     updated_at: now.toISOString(),
     content_hash: "",
   };
-  fs.writeFileSync(sentinelPath, `${JSON.stringify(sentinel, null, 2)}\n`);
+  writeSentinelAtomically(sentinelPath, sentinel);
 }
 
 // ─── Rendering ─────────────────────────────────────────────────────────────
@@ -748,10 +763,14 @@ export function validateMemoryMd(content: string): MemoryMdValidation {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function resolveCodexHome(override?: string): string {
-  if (override && override.trim().length > 0) return override;
+  if (override && override.trim().length > 0) {
+    return path.resolve(expandTildePath(override.trim()));
+  }
   const fromEnv = readEnvVar("CODEX_HOME");
-  if (fromEnv && fromEnv.trim().length > 0) return fromEnv;
-  return path.join(resolveHomeDir(), ".codex");
+  if (fromEnv && fromEnv.trim().length > 0) {
+    return path.resolve(expandTildePath(fromEnv.trim()));
+  }
+  return path.resolve(resolveHomeDir(), ".codex");
 }
 
 export function resolveCodexMemoriesDir(codexHome?: string): string {
@@ -762,20 +781,108 @@ export function hasCodexMaterializeSentinel(codexHome?: string): boolean {
   return readSentinel(path.join(resolveCodexMemoriesDir(codexHome), SENTINEL_FILE)) !== null;
 }
 
+function rolloutDirectoryMatchesRetainedSet(
+  rolloutsDir: string,
+  retainedNames: Set<string>,
+): boolean {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(rolloutsDir, { withFileTypes: true });
+  } catch {
+    return retainedNames.size === 0;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith(".md")) continue;
+    if (!retainedNames.has(entry.name)) return false;
+  }
+  return true;
+}
+
+function isPathInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function ensureSafeRolloutsDir(memoriesDir: string, rolloutsDir: string): string {
+  const memoriesReal = fs.realpathSync(memoriesDir);
+
+  try {
+    const stat = fs.lstatSync(rolloutsDir);
+    if (stat.isSymbolicLink()) {
+      throw new Error("is a symbolic link");
+    }
+    if (!stat.isDirectory()) {
+      throw new Error("is not a directory");
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error(
+        `codex-materialize: unsafe ${ROLLOUT_SUBDIR} directory at ${rolloutsDir}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    fs.mkdirSync(rolloutsDir, { recursive: true });
+  }
+
+  const rolloutsReal = fs.realpathSync(rolloutsDir);
+  if (!isPathInside(memoriesReal, rolloutsReal)) {
+    throw new Error(
+      `codex-materialize: unsafe ${ROLLOUT_SUBDIR} directory at ${rolloutsDir}: resolves outside ${memoriesDir}`,
+    );
+  }
+
+  return rolloutsDir;
+}
+
 function readSentinel(sentinelPath: string): SentinelFile | null {
   if (!fs.existsSync(sentinelPath)) return null;
   try {
     const raw = fs.readFileSync(sentinelPath, "utf-8");
     const parsed = JSON.parse(raw) as Partial<SentinelFile>;
-    if (typeof parsed !== "object" || parsed === null) return null;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof parsed.version !== "number" ||
+      typeof parsed.namespace !== "string" ||
+      typeof parsed.updated_at !== "string" ||
+      typeof parsed.content_hash !== "string"
+    ) {
+      throw new Error("invalid sentinel schema");
+    }
     return {
-      version: typeof parsed.version === "number" ? parsed.version : MATERIALIZE_VERSION,
-      namespace: typeof parsed.namespace === "string" ? parsed.namespace : "",
-      updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : "",
-      content_hash: typeof parsed.content_hash === "string" ? parsed.content_hash : "",
+      version: parsed.version,
+      namespace: parsed.namespace,
+      updated_at: parsed.updated_at,
+      content_hash: parsed.content_hash,
     };
-  } catch {
-    return null;
+  } catch (err) {
+    throw new Error(
+      `codex-materialize: corrupt ${SENTINEL_FILE} sentinel at ${sentinelPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+function writeSentinelAtomically(
+  sentinelPath: string,
+  sentinel: SentinelFile,
+): void {
+  const tmpPath = `${sentinelPath}.${process.pid}.${Date.now()}.${Math.random()
+    .toString(16)
+    .slice(2)}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, `${JSON.stringify(sentinel, null, 2)}\n`, {
+      flag: "wx",
+    });
+    fs.renameSync(tmpPath, sentinelPath);
+  } catch (err) {
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      // ignore cleanup failures; preserve the original write/rename error
+    }
+    throw err;
   }
 }
 

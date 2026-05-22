@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { resolveContainedPath, sanitizeFilenameSegment } from "./filename-safety.js";
 import type { BenchmarkResult, TaskResult } from "./types.js";
 
 export interface LeaderboardArtifactWrite {
@@ -28,10 +29,11 @@ export async function writeLeaderboardArtifactsForResult(
     return [];
   }
 
-  const leaderboardDir = path.join(outputDir, "leaderboard");
+  const outputRoot = path.resolve(outputDir);
+  const leaderboardDir = resolveContainedPath(outputRoot, "leaderboard");
   await mkdir(leaderboardDir, { recursive: true });
-  const timestamp = result.meta.timestamp.replace(/[:.]/g, "-");
-  const filePath = path.join(
+  const timestamp = sanitizeFilenameSegment(result.meta.timestamp.replace(/[:.]/g, "-"));
+  const filePath = resolveContainedPath(
     leaderboardDir,
     `ama-bench-${timestamp}-answers.jsonl`,
   );

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { access, mkdir, readdir, rename } from "node:fs/promises";
+import { access, lstat, mkdir, readdir, realpath, rename, rmdir } from "node:fs/promises";
 import type { PluginConfig } from "../types.js";
 import { NamespaceStorageRouter } from "./storage.js";
 import { namespaceCollectionName } from "./search.js";
@@ -144,6 +144,7 @@ export async function runNamespaceMigration(options: {
   config: PluginConfig;
   to: string;
   dryRun?: boolean;
+  renameFn?: typeof rename;
 }): Promise<NamespaceMigrationReport> {
   if (!options.config.namespacesEnabled) {
     throw new Error("Namespaces are disabled.");
@@ -156,6 +157,7 @@ export async function runNamespaceMigration(options: {
 
   const targetRoot = path.join(options.config.memoryDir, "namespaces", targetNamespace);
   const moved: NamespaceMigrationMove[] = [];
+  const renamePath = options.renameFn ?? rename;
 
   for (const child of LEGACY_NAMESPACE_CHILDREN) {
     const from = path.join(options.config.memoryDir, child);
@@ -164,13 +166,45 @@ export async function runNamespaceMigration(options: {
     if (await exists(to)) {
       throw new Error(`Target already contains ${child}: ${to}`);
     }
+    const sourceStat = await lstat(from);
+    if (sourceStat.isSymbolicLink()) {
+      throw new Error(`Refusing to migrate symlinked legacy path: ${from}`);
+    }
     moved.push({ from, to });
   }
 
   if (!options.dryRun && moved.length > 0) {
+    await assertSafeNamespaceTarget(options.config.memoryDir, targetRoot);
     await mkdir(targetRoot, { recursive: true });
-    for (const move of moved) {
-      await rename(move.from, move.to);
+    await assertSafeNamespaceTarget(options.config.memoryDir, targetRoot);
+    const completed: NamespaceMigrationMove[] = [];
+    try {
+      for (const move of moved) {
+        await renamePath(move.from, move.to);
+        completed.push(move);
+      }
+    } catch (cause) {
+      const rollbackErrors: string[] = [];
+      for (const move of completed.reverse()) {
+        try {
+          if (!(await exists(move.from)) && (await exists(move.to))) {
+            await rename(move.to, move.from);
+          }
+        } catch (rollbackCause) {
+          rollbackErrors.push(rollbackCause instanceof Error ? rollbackCause.message : String(rollbackCause));
+        }
+      }
+      try {
+        await rmdir(targetRoot);
+      } catch {
+        // Target may predate migration or still contain unrelated files.
+      }
+      const message = cause instanceof Error ? cause.message : String(cause);
+      throw new Error(
+        `Namespace migration failed and was rolled back: ${message}` +
+          (rollbackErrors.length > 0 ? `; rollback errors: ${rollbackErrors.join("; ")}` : ""),
+        { cause },
+      );
     }
   }
 
@@ -184,4 +218,34 @@ export async function runNamespaceMigration(options: {
       useLegacyDefaultCollection: false,
     }),
   };
+}
+
+async function assertSafeNamespaceTarget(memoryDir: string, targetRoot: string): Promise<void> {
+  const memoryReal = await realpath(memoryDir);
+  const namespacesDir = path.join(memoryDir, "namespaces");
+  if (await exists(namespacesDir)) {
+    const namespacesStat = await lstat(namespacesDir);
+    if (namespacesStat.isSymbolicLink()) {
+      throw new Error(`Refusing to migrate through symlinked namespaces directory: ${namespacesDir}`);
+    }
+    const namespacesReal = await realpath(namespacesDir);
+    if (!isPathInside(memoryReal, namespacesReal)) {
+      throw new Error(`Refusing to migrate through namespaces directory outside memoryDir: ${namespacesDir}`);
+    }
+  }
+  if (await exists(targetRoot)) {
+    const targetStat = await lstat(targetRoot);
+    if (targetStat.isSymbolicLink()) {
+      throw new Error(`Refusing to migrate into symlinked namespace root: ${targetRoot}`);
+    }
+    const targetReal = await realpath(targetRoot);
+    if (!isPathInside(memoryReal, targetReal)) {
+      throw new Error(`Refusing to migrate into namespace root outside memoryDir: ${targetRoot}`);
+    }
+  }
+}
+
+function isPathInside(root: string, child: string): boolean {
+  const relative = path.relative(root, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }

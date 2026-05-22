@@ -710,6 +710,11 @@ test("ChatGPT Apps inspector withholds previews when X-ray provenance is unavail
     sourcesUsed: ["memories"],
     disclosure: "chunk",
   };
+  const actionRequest = buildChatGptMemoryInspectorActionRequest(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    null,
+  );
   const result = buildChatGptMemoryInspectorResult(
     { query: "show preferences", namespace: "work" },
     recall,
@@ -734,6 +739,14 @@ test("ChatGPT Apps inspector withholds previews when X-ray provenance is unavail
     },
   );
 
+  assert.equal(actionRequest.contextReadiness, "partial");
+  assert.equal(actionRequest.retrievedMemories?.length, 1);
+  assert.equal(actionRequest.retrievedMemories?.[0]?.safety, "blocked");
+  assert.equal(actionRequest.retrievedMemories?.[0]?.safeToUse, false);
+  assert.match(
+    actionRequest.retrievedMemories?.[0]?.safetyReasons?.[0] ?? "",
+    /provenance was unavailable/,
+  );
   assert.match(result.safeRecallPreview, /X-ray provenance was unavailable/);
   assert.doesNotMatch(result.safeRecallPreview, /unverified memory detail/);
   assert.match(result.memories[0]?.preview ?? "", /Preview withheld/);

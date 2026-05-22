@@ -96,6 +96,25 @@ test("Codex publisher: resolveExtensionRoot uses CODEX_HOME env", async () => {
   assert.equal(root, path.join("/custom/codex", "memories_extensions", "remnic"));
 });
 
+test("Codex publisher: resolveExtensionRoot normalizes relative CODEX_HOME to an absolute path", async () => {
+  const pub = new CodexMemoryExtensionPublisher();
+  const root = await pub.resolveExtensionRoot({
+    HOME: "/home/test",
+    CODEX_HOME: "relative-codex",
+  });
+  assert.equal(path.isAbsolute(root), true);
+  assert.equal(root, path.join(path.resolve("relative-codex"), "memories_extensions", "remnic"));
+});
+
+test("Codex publisher: resolveExtensionRoot expands tilde CODEX_HOME with injected home", async () => {
+  const pub = new CodexMemoryExtensionPublisher();
+  const root = await pub.resolveExtensionRoot({
+    HOME: "/home/test",
+    CODEX_HOME: "~/custom-codex",
+  });
+  assert.equal(root, path.join("/home/test", "custom-codex", "memories_extensions", "remnic"));
+});
+
 test("Codex publisher: resolveExtensionRoot falls back to ~/.codex", async () => {
   const pub = new CodexMemoryExtensionPublisher();
   const root = await pub.resolveExtensionRoot({ HOME: "/home/test" });
@@ -146,6 +165,16 @@ test("Codex publisher: publish writes instructions.md to tmp dir", async () => {
     const instructionsPath = result.filesWritten.find((f) => f.endsWith("instructions.md"));
     assert.ok(instructionsPath, "expected instructions.md in filesWritten");
     assert.ok(fs.existsSync(instructionsPath), "instructions.md should exist on disk");
+    assert.deepEqual(
+      result.filesWritten.filter((f) => f.includes(`${path.sep}skills${path.sep}`)),
+      [],
+      "publisher must not report skills files unless skillsFolder is supported",
+    );
+    assert.equal(
+      fs.existsSync(path.join(result.extensionRoot, "skills")),
+      false,
+      "publisher must not create a skills folder while skillsFolder capability is false",
+    );
 
     const content = fs.readFileSync(instructionsPath, "utf-8");
     assert.ok(content.includes("Remnic Memory Extension"), "should contain title");
@@ -218,7 +247,7 @@ test("Codex publisher: unpublish removes the extension folder", async () => {
 
 test("Codex publisher: capabilities are set correctly", () => {
   assert.equal(CodexMemoryExtensionPublisher.capabilities.instructionsMd, true);
-  assert.equal(CodexMemoryExtensionPublisher.capabilities.skillsFolder, true);
+  assert.equal(CodexMemoryExtensionPublisher.capabilities.skillsFolder, false);
   assert.equal(CodexMemoryExtensionPublisher.capabilities.citationFormat, true);
   assert.equal(CodexMemoryExtensionPublisher.capabilities.readPathTemplate, true);
 });

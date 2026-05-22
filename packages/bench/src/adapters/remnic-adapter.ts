@@ -35,6 +35,7 @@ import {
 } from "@remnic/core";
 import type { EntityStructuredSection, MemoryFile } from "@remnic/core";
 import type {
+  BenchPhaseControl,
   BenchJudge,
   BenchMemoryAdapter,
   BenchRecallOptions,
@@ -1583,21 +1584,70 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       coreSessionMemoryIds.clear();
     };
 
+    const cleanupAfterAbortedReplay = (
+      sessionId: string,
+      replayExtraction: Promise<void>,
+      replayCompletion: () => Promise<void> | undefined,
+      replayBaselineCoreMemoryIds: () => Set<string> | undefined,
+    ): void => {
+      void Promise.all([
+        replayExtraction.catch(() => undefined),
+        replayCompletion()?.catch(() => undefined) ?? Promise.resolve(),
+      ])
+        .catch(() => undefined)
+        .then(async () => {
+          const engine = getEngine();
+          if (typeof engine.clearSession === "function") {
+            await engine.clearSession(sessionId).catch(() => undefined);
+          }
+          const trackedIds = new Set(coreSessionMemoryIds.get(sessionId) ?? []);
+          const baselineIds = replayBaselineCoreMemoryIds();
+          if (baselineIds) {
+            for (const memoryId of await readBenchCoreMemoryIds(state.orchestrator)) {
+              if (!baselineIds.has(memoryId)) trackedIds.add(memoryId);
+            }
+          }
+          await clearBenchCoreSessionMemories(
+            state.orchestrator,
+            sessionId,
+            trackedIds,
+            state.qmdSandbox.coldCollection,
+          );
+          coreSessionMemoryIds.delete(sessionId);
+          await Promise.all([
+            clearBenchTranscriptSession(state.tempDir, sessionId),
+            clearBenchSummarySession(state.tempDir, sessionId),
+          ]);
+          sessionTurnCounters.delete(sessionId);
+        })
+        .catch(() => undefined);
+    };
+
     return {
-      async store(sessionId: string, messages: Message[]): Promise<void> {
+      async store(
+        sessionId: string,
+        messages: Message[],
+        control?: BenchPhaseControl,
+      ): Promise<void> {
+        throwIfBenchPhaseAborted(control, "store");
         sessionId = normalizeBenchSessionId(sessionId);
         const timestampedMessages = messages.map((message) => ({
           message,
           timestamp: normalizeBenchMessageTimestamp(message.timestamp),
         }));
 
-        await getEngine().observeMessages(
-          sessionId,
-          timestampedMessages.map((entry) => ({
-            role: entry.message.role,
-            content: entry.message.content,
-          })),
+        await withBenchPhaseAbort(
+          getEngine().observeMessages(
+            sessionId,
+            timestampedMessages.map((entry) => ({
+              role: entry.message.role,
+              content: entry.message.content,
+            })),
+          ),
+          control,
+          "store",
         );
+        throwIfBenchPhaseAborted(control, "store");
 
         if (
           !useCoreMemoryPipeline ||
@@ -1631,44 +1681,77 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }));
 
         for (const turn of replayTurns) {
+          throwIfBenchPhaseAborted(control, "store");
           const turnId = nextBenchTranscriptTurnId(
             sessionTurnCounters,
             sessionId,
             turn,
           );
-          await replayOrchestrator.transcript.append({
-            timestamp: turn.timestamp,
-            role: turn.role,
-            content: turn.content,
-            sessionKey: sessionId,
-            turnId,
-          });
+          await withBenchPhaseAbort(
+            replayOrchestrator.transcript.append({
+              timestamp: turn.timestamp,
+              role: turn.role,
+              content: turn.content,
+              sessionKey: sessionId,
+              turnId,
+            }),
+            control,
+            "store",
+          );
         }
 
+        let replayIngestion: Promise<void> | undefined;
+        let replayBaselineCoreMemoryIds: Set<string> | undefined;
         const replayExtraction = queueBenchCoreReplay(sessionId, async () => {
-          const beforeCoreMemoryIds = await readBenchCoreMemoryIds(replayOrchestrator);
+          throwIfBenchPhaseAborted(control, "store");
+          const beforeCoreMemoryIds = await withBenchPhaseAbort(
+            readBenchCoreMemoryIds(replayOrchestrator),
+            control,
+            "store",
+          );
+          replayBaselineCoreMemoryIds = beforeCoreMemoryIds;
           try {
-            await withBenchEntityStructuredFactCapture(
+            replayIngestion = withBenchEntityStructuredFactCapture(
               replayOrchestrator,
               sessionId,
               () => replayOrchestrator.ingestReplayBatch(replayTurns, {
                 archiveLcm: false,
+                abortSignal: control?.signal,
               }),
             );
-          } finally {
-            await rememberNewBenchCoreMemories(
-              replayOrchestrator,
-              coreSessionMemoryIds,
-              sessionId,
-              beforeCoreMemoryIds,
+            await withBenchPhaseAbort(
+              replayIngestion,
+              control,
+              "store",
             );
+          } finally {
+            if (!isBenchPhaseAborted(control)) {
+              await rememberNewBenchCoreMemories(
+                replayOrchestrator,
+                coreSessionMemoryIds,
+                sessionId,
+                beforeCoreMemoryIds,
+              );
+            }
           }
         });
         if (replayExtractionMode === "background") {
           void replayExtraction.catch(() => undefined);
           return;
         }
-        await replayExtraction;
+        try {
+          await withBenchPhaseAbort(replayExtraction, control, "store");
+        } catch (error) {
+          if (isBenchPhaseAborted(control)) {
+            cleanupAfterAbortedReplay(
+              sessionId,
+              replayExtraction,
+              () => replayIngestion,
+              () => replayBaselineCoreMemoryIds,
+            );
+          }
+          throw error;
+        }
       },
 
       async recall(
@@ -1676,7 +1759,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         query: string,
         budgetChars?: number,
         recallOptions: BenchRecallOptions = {},
+        control?: BenchPhaseControl,
       ): Promise<string> {
+        throwIfBenchPhaseAborted(control, "recall");
+        const waitForRecall = <T>(promise: Promise<T>): Promise<T> =>
+          withBenchPhaseAbort(promise, control, "recall");
         sessionId = normalizeBenchSessionId(sessionId);
         const engine = getEngine();
         const budget = budgetChars ?? DEFAULT_BENCH_RECALL_BUDGET_CHARS;
@@ -1727,12 +1814,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
         if (requireTemporalIntervalEvidence) {
           const temporalIntervalEvidence =
-            await buildTemporalIntervalEvidenceSection({
+            await waitForRecall(buildTemporalIntervalEvidenceSection({
               engine,
               sessionId,
               query,
               maxChars: Math.min(3_500, Math.floor(budget * 0.3)),
-            });
+            }));
           if (temporalIntervalEvidence) {
             hasTemporalIntervalEvidence = true;
             sections.push(temporalIntervalEvidence);
@@ -1742,11 +1829,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
         if (requireDependencyVersionEvidence) {
           const dependencyVersionEvidence =
-            await buildDependencyVersionEvidenceSection({
+            await waitForRecall(buildDependencyVersionEvidenceSection({
               engine,
               sessionId,
               maxChars: Math.min(3_000, Math.floor(budget * 0.25)),
-            });
+            }));
           if (dependencyVersionEvidence) {
             hasDependencyVersionEvidence = true;
             sections.push(dependencyVersionEvidence);
@@ -1756,12 +1843,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
         if (requireLatestQuantitativeEvidence) {
           const latestQuantitativeEvidence =
-            await buildLatestQuantitativeEvidenceSection({
+            await waitForRecall(buildLatestQuantitativeEvidenceSection({
               engine,
               sessionId,
               query,
               maxChars: Math.min(3_000, Math.floor(budget * 0.25)),
-            });
+            }));
           if (latestQuantitativeEvidence) {
             sections.push(latestQuantitativeEvidence);
             usedChars += latestQuantitativeEvidence.length;
@@ -1770,11 +1857,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
         if (requireUserImplementationTargetEvidence) {
           const userImplementationTargetEvidence =
-            await buildUserImplementationTargetEvidenceSection({
+            await waitForRecall(buildUserImplementationTargetEvidenceSection({
               engine,
               sessionId,
               maxChars: Math.min(3_500, Math.floor(budget * 0.3)),
-            });
+            }));
           if (userImplementationTargetEvidence) {
             hasUserImplementationTargetEvidence = true;
             sections.push(userImplementationTargetEvidence);
@@ -1785,7 +1872,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         const exactReferenceEvidence =
           historicalRecall || hasDependencyVersionEvidence
             ? ""
-            : await buildExplicitCueRecallSection({
+            : await waitForRecall(buildExplicitCueRecallSection({
               engine,
               sessionId,
               query,
@@ -1794,14 +1881,14 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               maxReferences: CORE_EXPLICIT_CUE_MAX_REFERENCES,
               includeBenchmarkAnchorCues: sessionId.startsWith("beam-"),
               includeStructuredPlanCues: sessionId.startsWith("arena-"),
-            });
+            }));
         if (exactReferenceEvidence) {
           sections.push(exactReferenceEvidence);
           usedChars += exactReferenceEvidence.length;
         }
 
         const trajectoryAnalysisEvidence = !historicalRecall && sessionId.startsWith("ama-")
-          ? await buildTrajectoryAnalysisRecallSection({
+          ? await waitForRecall(buildTrajectoryAnalysisRecallSection({
               engine,
               sessionId,
               query,
@@ -1809,7 +1896,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 CORE_TRAJECTORY_ANALYSIS_MAX_CHARS,
                 Math.max(0, Math.floor((budget - usedChars) * 0.55)),
               ),
-            })
+            }))
           : "";
         if (trajectoryAnalysisEvidence) {
           sections.push(trajectoryAnalysisEvidence);
@@ -1835,11 +1922,13 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                   ),
                 ),
               );
-          const coreRecall = await state.orchestrator.recall(query, sessionId, {
-            budgetCharsOverride: coreBudget,
-            mode: "full",
-            ...(recallAsOf ? { asOf: recallAsOf } : {}),
-          });
+          const coreRecall = await waitForRecall(
+            state.orchestrator.recall(query, sessionId, {
+              budgetCharsOverride: coreBudget,
+              mode: "full",
+              ...(recallAsOf ? { asOf: recallAsOf } : {}),
+            }),
+          );
           if (coreRecall.trim().length > 0) {
             const section = `## Remnic recall pipeline\n${coreRecall.trim()}`;
             sections.push(section);
@@ -1848,7 +1937,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
 
         if (historicalRecall && sections.length === 0) {
-          const stats = await engine.getStats(sessionId);
+          const stats = await waitForRecall(engine.getStats(sessionId));
           if (stats.totalMessages > 0) {
             const section = [
               "## Remnic historical recall",
@@ -1880,10 +1969,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             ? Math.max(0, Math.floor(remainingAfterCore * 0.75))
             : Math.max(0, Math.floor(remainingAfterCore * 0.7));
           const searchLimit = Math.max(6, Math.min(18, Math.floor(budget / 2_000)));
-          const searchResults = await engine.searchContextFull(
-            query,
-            searchLimit,
-            sessionId,
+          const searchResults = await waitForRecall(
+            engine.searchContextFull(
+              query,
+              searchLimit,
+              sessionId,
+            ),
           );
           if (searchResults.length > 0) {
             const evidenceItems: Array<{
@@ -1906,6 +1997,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             const directTemporalTurnIds = new Set<string>();
 
             for (const result of searchResults) {
+              throwIfBenchPhaseAborted(control, "recall");
               const windowRadius = preferFocusedExplicitContext
                 ? 2
                 : useCoreMemoryPipeline
@@ -1913,11 +2005,13 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                   : 1;
               const fromTurn = Math.max(0, result.turn_index - windowRadius);
               const toTurn = result.turn_index + windowRadius;
-              const expanded = await engine.expandContext(
-                result.session_id,
-                fromTurn,
-                toTurn,
-                useCoreMemoryPipeline ? 1_600 : 600,
+              const expanded = await waitForRecall(
+                engine.expandContext(
+                  result.session_id,
+                  fromTurn,
+                  toTurn,
+                  useCoreMemoryPipeline ? 1_600 : 600,
+                ),
               );
 
               if (expanded.length === 0) {
@@ -2066,7 +2160,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
 
         if (requireDirectPersonalHistoryEvidence && sections.length === 0) {
-          const stats = await engine.getStats(sessionId);
+          const stats = await waitForRecall(engine.getStats(sessionId));
           if (stats.totalMessages > 0) {
             const section = [
               "## Remnic recall sufficiency",
@@ -2079,21 +2173,25 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
         if (!suppressBroadSummary) {
           const summaryBudget = Math.max(0, budget - usedChars - 4);
-          const recallText = await engine.assembleRecall(sessionId, summaryBudget);
+          const recallText = await waitForRecall(
+            engine.assembleRecall(sessionId, summaryBudget),
+          );
           if (recallText) {
             sections.push(recallText);
           }
         }
 
         if (!historicalRecall && sections.length === 0) {
-          const stats = await engine.getStats(sessionId);
+          const stats = await waitForRecall(engine.getStats(sessionId));
           if (stats.totalMessages > 0) {
             const toTurn = normalizeTurnExpansionEnd(stats);
-            const expanded = await engine.expandContext(
-              sessionId,
-              0,
-              toTurn,
-              Math.floor(budget / 4),
+            const expanded = await waitForRecall(
+              engine.expandContext(
+                sessionId,
+                0,
+                toTurn,
+                Math.floor(budget / 4),
+              ),
             );
             if (expanded.length > 0) {
               sections.push(
@@ -2109,9 +2207,19 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         return joined.length > budget ? joined.slice(0, budget) : joined;
       },
 
-      async search(query: string, limit: number, sessionId?: string): Promise<SearchResult[]> {
+      async search(
+        query: string,
+        limit: number,
+        sessionId?: string,
+        control?: BenchPhaseControl,
+      ): Promise<SearchResult[]> {
+        throwIfBenchPhaseAborted(control, "search");
         const normalizedSessionId = normalizeOptionalBenchSessionId(sessionId);
-        const results = await getEngine().searchContext(query, limit, normalizedSessionId);
+        const results = await withBenchPhaseAbort(
+          getEngine().searchContext(query, limit, normalizedSessionId),
+          control,
+          "search",
+        );
         return results.map((result) => ({
           turnIndex: result.turn_index,
           role: result.role,
@@ -2120,42 +2228,71 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }));
       },
 
-      async reset(sessionId?: string): Promise<void> {
+      async reset(
+        sessionId?: string,
+        control?: BenchPhaseControl,
+      ): Promise<void> {
+        throwIfBenchPhaseAborted(control, "reset");
         const normalizedSessionId = normalizeOptionalBenchSessionId(sessionId);
         if (normalizedSessionId !== undefined) {
           if (useCoreMemoryPipeline) {
             resolveBenchSummarySessionPaths(state.tempDir, normalizedSessionId);
           }
           if (useCoreMemoryPipeline && replayExtractionMode !== "skip") {
-            await waitForBenchCoreReplaySession(normalizedSessionId);
+            await withBenchPhaseAbort(
+              waitForBenchCoreReplaySession(normalizedSessionId),
+              control,
+              "reset",
+            );
           }
           const engine = getEngine();
           if (typeof engine.clearSession !== "function") {
             throw new Error("Remnic benchmark adapter does not support session-scoped reset for this engine.");
           }
-          await engine.clearSession(normalizedSessionId);
+          await withBenchPhaseAbort(
+            engine.clearSession(normalizedSessionId),
+            control,
+            "reset",
+          );
+          throwIfBenchPhaseAborted(control, "reset");
           if (useCoreMemoryPipeline) {
-            await clearBenchCoreSessionMemories(
-              state.orchestrator,
-              normalizedSessionId,
-              coreSessionMemoryIds.get(normalizedSessionId),
-              state.qmdSandbox.coldCollection,
+            await withBenchPhaseAbort(
+              clearBenchCoreSessionMemories(
+                state.orchestrator,
+                normalizedSessionId,
+                coreSessionMemoryIds.get(normalizedSessionId),
+                state.qmdSandbox.coldCollection,
+              ),
+              control,
+              "reset",
             );
             coreSessionMemoryIds.delete(normalizedSessionId);
-            await clearBenchTranscriptSession(state.tempDir, normalizedSessionId);
-            await clearBenchSummarySession(state.tempDir, normalizedSessionId);
+            await withBenchPhaseAbort(
+              clearBenchTranscriptSession(state.tempDir, normalizedSessionId),
+              control,
+              "reset",
+            );
+            await withBenchPhaseAbort(
+              clearBenchSummarySession(state.tempDir, normalizedSessionId),
+              control,
+              "reset",
+            );
           }
           sessionTurnCounters.delete(normalizedSessionId);
           return;
         }
 
         if (state.ownsTempDir) {
-          await rebuild();
+          await withBenchPhaseAbort(rebuild(), control, "reset");
           return;
         }
 
         if (useCoreMemoryPipeline) {
-          await rebuild({ clearCallerOwnedBenchState: true });
+          await withBenchPhaseAbort(
+            rebuild({ clearCallerOwnedBenchState: true }),
+            control,
+            "reset",
+          );
           return;
         }
 
@@ -2163,11 +2300,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         if (typeof engine.clearAll !== "function") {
           throw new Error("Remnic benchmark adapter cannot safely reset a caller-owned memory directory.");
         }
-        await engine.clearAll();
+        await withBenchPhaseAbort(engine.clearAll(), control, "reset");
         sessionTurnCounters.clear();
       },
 
-      async drain(): Promise<void> {
+      async drain(control?: BenchPhaseControl): Promise<void> {
+        throwIfBenchPhaseAborted(control, "drain");
         const engine = getEngine();
         const abortController = new AbortController();
         let timer: ReturnType<typeof setTimeout> | undefined;
@@ -2184,17 +2322,33 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         try {
           await Promise.race([
             (async () => {
-              await engine.waitForObserveQueueIdle();
-              await waitForAllBenchCoreReplay();
+              await withBenchPhaseAbort(
+                engine.waitForObserveQueueIdle(),
+                control,
+                "drain",
+              );
+              await withBenchPhaseAbort(
+                waitForAllBenchCoreReplay(),
+                control,
+                "drain",
+              );
               const extractionIdle =
-                await state.orchestrator.waitForExtractionIdle(drainTimeoutMs);
+                await withBenchPhaseAbort(
+                  state.orchestrator.waitForExtractionIdle(drainTimeoutMs),
+                  control,
+                  "drain",
+                );
               if (!extractionIdle) {
                 throw new Error(
                   `drain() timed out waiting for extraction idle (${describeDrainState(state.orchestrator)})`,
                 );
               }
               const consolidationIdle =
-                await state.orchestrator.waitForConsolidationIdle(drainTimeoutMs);
+                await withBenchPhaseAbort(
+                  state.orchestrator.waitForConsolidationIdle(drainTimeoutMs),
+                  control,
+                  "drain",
+                );
               if (!consolidationIdle) {
                 throw new Error(
                   `drain() timed out waiting for consolidation idle (${describeDrainState(state.orchestrator)})`,
@@ -2211,8 +2365,16 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
       },
 
-      async getStats(sessionId?: string): Promise<MemoryStats> {
-        return getEngine().getStats(normalizeOptionalBenchSessionId(sessionId));
+      async getStats(
+        sessionId?: string,
+        control?: BenchPhaseControl,
+      ): Promise<MemoryStats> {
+        throwIfBenchPhaseAborted(control, "stats");
+        return withBenchPhaseAbort(
+          getEngine().getStats(normalizeOptionalBenchSessionId(sessionId)),
+          control,
+          "stats",
+        );
       },
 
       async destroy(): Promise<void> {
@@ -2227,6 +2389,53 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
 export const createLightweightAdapter = createAdapterFactory("lightweight");
 export const createRemnicAdapter = createAdapterFactory("direct");
+
+function isBenchPhaseAborted(control: BenchPhaseControl | undefined): boolean {
+  return control?.signal?.aborted === true;
+}
+
+function throwIfBenchPhaseAborted(
+  control: BenchPhaseControl | undefined,
+  phase: string,
+): void {
+  const signal = control?.signal;
+  if (!signal?.aborted) return;
+  throw benchPhaseAbortError(signal, phase);
+}
+
+async function withBenchPhaseAbort<T>(
+  promise: Promise<T>,
+  control: BenchPhaseControl | undefined,
+  phase: string,
+): Promise<T> {
+  const signal = control?.signal;
+  if (!signal) return promise;
+  if (signal.aborted) {
+    throw benchPhaseAbortError(signal, phase);
+  }
+
+  let abortHandler: (() => void) | undefined;
+  const abortPromise = new Promise<never>((_, reject) => {
+    abortHandler = () => reject(benchPhaseAbortError(signal, phase));
+    signal.addEventListener("abort", abortHandler, { once: true });
+  });
+  try {
+    return await Promise.race([promise, abortPromise]);
+  } finally {
+    if (abortHandler) {
+      signal.removeEventListener("abort", abortHandler);
+    }
+  }
+}
+
+function benchPhaseAbortError(signal: AbortSignal, phase: string): Error {
+  if (signal.reason instanceof Error) {
+    return signal.reason;
+  }
+  const suffix =
+    signal.reason === undefined ? "" : `: ${String(signal.reason)}`;
+  return new Error(`Remnic benchmark ${phase} aborted${suffix}`);
+}
 
 function describeDrainState(orchestrator: Orchestrator): string {
   const view = orchestrator as unknown as OrchestratorDrainDiagnosticsView;

@@ -18,6 +18,9 @@
       "@remnic/core": [
         "./packages/remnic-core/src/index.ts"
       ],
+      "@remnic/core/*": [
+        "./packages/remnic-core/src/*"
+      ],
       "@remnic/core/access-cli": [
         "./packages/remnic-core/src/access-cli.ts"
       ],

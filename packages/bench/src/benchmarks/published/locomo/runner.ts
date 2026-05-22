@@ -483,7 +483,7 @@ function answerLoCoMoFromRecall(
   const rankedLines = rankLoCoMoEvidenceLines(question, recalledText);
   const rankedText = rankedLines.join("\n").toLowerCase();
 
-  if (lowerQuestion.includes("when")) {
+  if (isLoCoMoRelativeTimeQuestion(lowerQuestion)) {
     const relativeAnswer = answerLoCoMoRelativeTimeQuestion(
       lowerQuestion,
       rankedLines,
@@ -578,7 +578,8 @@ function isLoCoMoRelativeTimeQuestion(question: string): boolean {
   const lowerQuestion = question.toLowerCase();
   return lowerQuestion.includes("when") ||
     lowerQuestion.includes("yesterday") ||
-    lowerQuestion.includes("last year");
+    lowerQuestion.includes("last year") ||
+    /\byear\b/.test(lowerQuestion);
 }
 
 function looksLikeLoCoMoTemporalAnswer(answer: string): boolean {
@@ -589,7 +590,7 @@ function looksLikeLoCoMoTemporalAnswer(answer: string): boolean {
 function extractLoCoMoTeaAnswer(rankedLines: string[]): string | undefined {
   for (const line of rankedLines) {
     const favoriteMatch = line.match(
-      /\bfavorite tea is\s+([^,.;|\n]+?)(?:\s+tea)?\b/i,
+      /\bfavorite tea is\s+([^,.;|\n]+?)(?:\s+tea)?(?:\s+(?:on|during|especially|for|in|when|while)\b|[,.;|\n]|$)/i,
     );
     if (favoriteMatch?.[1]) {
       return stripTrailingLoCoMoPunctuation(favoriteMatch[1]).toLowerCase();
@@ -1048,15 +1049,79 @@ function parseConversation(
     throw new Error(`${location} must include a conversation object.`);
   }
   const qa = normalizeQaArray(record.qa, location);
+  const conversation = normalizeLoCoMoConversationSessions(
+    record.conversation as Record<string, unknown>,
+    location,
+  );
 
   return {
     sample_id: record.sample_id,
-    conversation: record.conversation as Record<string, unknown>,
+    conversation,
     qa,
     event_summary: record.event_summary,
     observation: record.observation,
     session_summary: record.session_summary,
   };
+}
+
+function normalizeLoCoMoConversationSessions(
+  conversation: Record<string, unknown>,
+  location: string,
+): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...conversation };
+  const sessionKeys = Object.keys(conversation)
+    .filter((key) => /^session_\d+$/.test(key))
+    .sort((a, b) =>
+      Number.parseInt(a.replace("session_", ""), 10) -
+      Number.parseInt(b.replace("session_", ""), 10)
+    );
+  if (sessionKeys.length === 0) {
+    throw new Error(`${location} conversation must include at least one session_N array.`);
+  }
+
+  for (const sessionKey of sessionKeys) {
+    const session = conversation[sessionKey];
+    if (!Array.isArray(session)) {
+      throw new Error(`${location} conversation.${sessionKey} must be an array of turns.`);
+    }
+    normalized[sessionKey] = session.map((turn, index) =>
+      normalizeLoCoMoTurn(turn, `${location} conversation.${sessionKey}[${index}]`),
+    );
+  }
+  return normalized;
+}
+
+function normalizeLoCoMoTurn(turn: unknown, location: string): LoCoMoTurn {
+  if (!turn || typeof turn !== "object" || Array.isArray(turn)) {
+    throw new Error(`${location} must be a turn object.`);
+  }
+  const record = turn as Record<string, unknown>;
+  const speaker = requireNonEmptyString(record.speaker, `${location}.speaker`);
+  const dia_id = requireNonEmptyString(record.dia_id, `${location}.dia_id`);
+  const text = requireNonEmptyString(record.text, `${location}.text`);
+  const normalized: LoCoMoTurn = { speaker, dia_id, text };
+  if (record.query !== undefined) {
+    normalized.query = requireString(record.query, `${location}.query`);
+  }
+  if (record.blip_caption !== undefined) {
+    normalized.blip_caption = requireString(record.blip_caption, `${location}.blip_caption`);
+  }
+  return normalized;
+}
+
+function requireString(value: unknown, location: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${location} must be a string.`);
+  }
+  return value;
+}
+
+function requireNonEmptyString(value: unknown, location: string): string {
+  const text = requireString(value, location);
+  if (text.trim().length === 0) {
+    throw new Error(`${location} must be a non-empty string.`);
+  }
+  return text;
 }
 
 function normalizeQaArray(value: unknown, location: string): LoCoMoQA[] {

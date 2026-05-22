@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readFile, readdir, unlink, writeFile } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, unlink, writeFile } from "node:fs/promises";
 import type { Checkpoint, TranscriptEntry } from "./types.js";
 
 export type SessionIntegrityIssueCode =
@@ -70,6 +70,7 @@ export interface SessionRepairAction {
 export interface SessionRepairPlan {
   generatedAt: string;
   dryRun: boolean;
+  memoryDir: string;
   allowSessionFileRepair: boolean;
   actions: SessionRepairAction[];
 }
@@ -487,6 +488,7 @@ export function planSessionRepair(options: PlanSessionRepairOptions): SessionRep
   return {
     generatedAt: new Date().toISOString(),
     dryRun: options.dryRun,
+    memoryDir: options.report.memoryDir,
     allowSessionFileRepair: options.allowSessionFileRepair === true,
     actions,
   };
@@ -535,11 +537,13 @@ export async function applySessionRepair(
   for (const action of plan.actions) {
     try {
       if (action.kind === "rewrite_transcript") {
+        await assertRepairTargetAllowed(plan.memoryDir, action);
         await rewriteTranscriptFile(action.targetPath);
         actionsApplied += 1;
         continue;
       }
       if (action.kind === "remove_checkpoint") {
+        await assertRepairTargetAllowed(plan.memoryDir, action);
         try {
           await unlink(action.targetPath);
         } catch (err) {
@@ -566,4 +570,49 @@ export async function applySessionRepair(
     actionsApplied,
     errors,
   };
+}
+
+async function assertRepairTargetAllowed(memoryDir: string, action: SessionRepairAction): Promise<void> {
+  const root = path.resolve(memoryDir);
+  const target = path.resolve(action.targetPath);
+  if (action.kind === "rewrite_transcript") {
+    const transcriptsRoot = path.join(root, "transcripts");
+    if (!target.endsWith(".jsonl")) {
+      throw new Error("transcript repair target must end in .jsonl");
+    }
+    await assertNoSymlinkPath(transcriptsRoot, target);
+    return;
+  }
+  if (action.kind === "remove_checkpoint") {
+    const checkpointPath = path.join(root, "state", "checkpoint.json");
+    if (target !== checkpointPath) {
+      throw new Error("checkpoint repair target must be the configured checkpoint.json");
+    }
+    await assertNoSymlinkPath(root, target);
+  }
+}
+
+async function assertNoSymlinkPath(root: string, target: string): Promise<void> {
+  const rootReal = await realpath(root);
+  const targetDir = path.dirname(target);
+  const targetDirReal = await realpath(targetDir);
+  const relative = path.relative(rootReal, targetDirReal);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    let current = rootReal;
+    for (const segment of path.relative(rootReal, target).split(path.sep)) {
+      if (!segment) continue;
+      current = path.join(current, segment);
+      try {
+        const stat = await lstat(current);
+        if (stat.isSymbolicLink()) {
+          throw new Error(`repair target crosses symlink: ${current}`);
+        }
+      } catch (err) {
+        const code = typeof err === "object" && err && "code" in err ? String((err as { code?: unknown }).code ?? "") : "";
+        if (code !== "ENOENT") throw err;
+      }
+    }
+    return;
+  }
+  throw new Error("repair target escapes configured memoryDir");
 }

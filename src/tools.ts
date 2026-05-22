@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { Type } from "@sinclair/typebox";
-import type { Orchestrator } from "./orchestrator.js";
+import type { Orchestrator } from "@remnic/core/orchestrator";
 import type {
   ContinuityImprovementLoop,
   MemoryActionEligibilityContext,
@@ -17,12 +17,12 @@ import {
   validateExplicitCaptureInput,
 } from "./explicit-capture.js";
 import { log } from "./logger.js";
-import { WorkStorage } from "./work/storage.js";
-import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "./work/board.js";
-import { wrapWorkLayerContext } from "./work/boundary.js";
+import { WorkStorage } from "@remnic/core/work/storage";
+import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "@remnic/core/work/board";
+import { wrapWorkLayerContext } from "@remnic/core/work/boundary";
 import { VALID_MEMORY_CATEGORIES } from "./config.js";
 import { formatProfileTraceAscii } from "./profiling.js";
-import { runMemoryGovernance } from "./maintenance/memory-governance.js";
+import { runMemoryGovernance } from "@remnic/core/maintenance/memory-governance";
 
 interface ToolApi {
   registerTool(
@@ -72,6 +72,14 @@ function clampUnitInterval(value: unknown, fallback: number): number {
   if (value < 0) return 0;
   if (value > 1) return 1;
   return value;
+}
+
+function normalizeProfilingReportLimit(value: unknown): number {
+  if (value === undefined) return 5;
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
+    return 5;
+  }
+  return Math.min(Math.max(value, 1), 20);
 }
 
 function normalizeMemoryActionEligibilitySource(value: unknown): MemoryActionEligibilitySource {
@@ -131,6 +139,9 @@ async function readReferencedMemoryForPolicyEligibility(
 const WORK_TASK_STATUSES = new Set(["todo", "in_progress", "blocked", "done", "cancelled"]);
 const WORK_TASK_PRIORITIES = new Set(["low", "medium", "high"]);
 const WORK_PROJECT_STATUSES = new Set(["active", "on_hold", "completed", "archived"]);
+type TaskStatus = "todo" | "in_progress" | "blocked" | "done" | "cancelled";
+type TaskPriority = "low" | "medium" | "high";
+type ProjectStatus = "active" | "on_hold" | "completed" | "archived";
 function asTaskStatus(value: unknown): "todo" | "in_progress" | "blocked" | "done" | "cancelled" | undefined {
   const normalized = asNonEmptyString(value);
   if (!normalized || !WORK_TASK_STATUSES.has(normalized)) return undefined;
@@ -147,6 +158,21 @@ function asProjectStatus(value: unknown): "active" | "on_hold" | "completed" | "
   const normalized = asNonEmptyString(value);
   if (!normalized || !WORK_PROJECT_STATUSES.has(normalized)) return undefined;
   return normalized as "active" | "on_hold" | "completed" | "archived";
+}
+
+function parseEnumParam<T extends string>(
+  params: Record<string, unknown>,
+  key: string,
+  allowed: ReadonlySet<string>,
+): { ok: true; value: T | undefined } | { ok: false; message: string } {
+  if (!Object.prototype.hasOwnProperty.call(params, key) || params[key] === undefined) {
+    return { ok: true, value: undefined };
+  }
+  const normalized = asNonEmptyString(params[key]);
+  if (!normalized || !allowed.has(normalized)) {
+    return { ok: false, message: `invalid \`${key}\`: expected one of ${[...allowed].join(", ")}.` };
+  }
+  return { ok: true, value: normalized as T };
 }
 
 function asNullablePatchString(params: Record<string, unknown>, key: string): string | null | undefined {
@@ -457,14 +483,8 @@ Best for:
 
         const namespaceFilter = namespace && namespace.length > 0 ? namespace : undefined;
         const filtered =
-          collection === "global"
-            ? (await orchestrator.qmd.searchGlobal(query, maxResults)).filter((result) =>
-              namespaceFilter
-                ? result.path.includes(`/namespaces/${namespaceFilter}/`) ||
-                  (!result.path.includes("/namespaces/") &&
-                    namespaceFilter === orchestrator.config.defaultNamespace)
-                : true,
-            )
+          collection === "global" && !namespaceFilter
+            ? await orchestrator.qmd.searchGlobal(query, maxResults)
             : await orchestrator.searchAcrossNamespaces({
               query,
               namespaces: namespaceFilter ? [namespaceFilter] : undefined,
@@ -2567,11 +2587,15 @@ Best for:
             if (typeof p.title !== "string" || p.title.trim().length === 0) {
               return workLayerTextResult("work_task.create requires non-empty `title`.");
             }
+            const status = parseEnumParam<TaskStatus>(p, "status", WORK_TASK_STATUSES);
+            if (!status.ok) return workLayerTextResult(`work_task.create received ${status.message}`);
+            const priority = parseEnumParam<TaskPriority>(p, "priority", WORK_TASK_PRIORITIES);
+            if (!priority.ok) return workLayerTextResult(`work_task.create received ${priority.message}`);
             const created = await storage.createTask({
               title: p.title,
               description: typeof p.description === "string" ? p.description : undefined,
-              status: asTaskStatus(p.status),
-              priority: asTaskPriority(p.priority),
+              status: status.value,
+              priority: priority.value,
               owner: asNonEmptyString(p.owner),
               assignee: asNonEmptyString(p.assignee),
               projectId: asNonEmptyString(p.projectId),
@@ -2591,8 +2615,10 @@ Best for:
           }
 
           if (action === "list") {
+            const status = parseEnumParam<TaskStatus>(p, "status", WORK_TASK_STATUSES);
+            if (!status.ok) return workLayerTextResult(`work_task.list received ${status.message}`);
             const tasks = await storage.listTasks({
-              status: asTaskStatus(p.status),
+              status: status.value,
               owner: asNonEmptyString(p.owner),
               assignee: asNonEmptyString(p.assignee),
               projectId: asNonEmptyString(p.projectId),
@@ -2608,10 +2634,12 @@ Best for:
             const patch: Record<string, unknown> = {};
             if (typeof p.title === "string") patch.title = p.title;
             if (typeof p.description === "string") patch.description = p.description;
-            const status = asTaskStatus(p.status);
-            if (status) patch.status = status;
-            const priority = asTaskPriority(p.priority);
-            if (priority) patch.priority = priority;
+            const status = parseEnumParam<TaskStatus>(p, "status", WORK_TASK_STATUSES);
+            if (!status.ok) return workLayerTextResult(`work_task.update received ${status.message}`);
+            if (status.value) patch.status = status.value;
+            const priority = parseEnumParam<TaskPriority>(p, "priority", WORK_TASK_PRIORITIES);
+            if (!priority.ok) return workLayerTextResult(`work_task.update received ${priority.message}`);
+            if (priority.value) patch.priority = priority.value;
             const owner = asNullablePatchString(p, "owner");
             if (owner !== undefined) patch.owner = owner;
             const assignee = asNullablePatchString(p, "assignee");
@@ -2687,10 +2715,12 @@ Best for:
             if (typeof p.name !== "string" || p.name.trim().length === 0) {
               return workLayerTextResult("work_project.create requires non-empty `name`.");
             }
+            const status = parseEnumParam<ProjectStatus>(p, "status", WORK_PROJECT_STATUSES);
+            if (!status.ok) return workLayerTextResult(`work_project.create received ${status.message}`);
             const project = await storage.createProject({
               name: p.name,
               description: typeof p.description === "string" ? p.description : undefined,
-              status: asProjectStatus(p.status),
+              status: status.value,
               owner: asNonEmptyString(p.owner),
               tags: Array.isArray(p.tags) ? p.tags.filter((x): x is string => typeof x === "string") : undefined,
             });
@@ -2719,8 +2749,9 @@ Best for:
             const patch: Record<string, unknown> = {};
             if (typeof p.name === "string") patch.name = p.name;
             if (typeof p.description === "string") patch.description = p.description;
-            const status = asProjectStatus(p.status);
-            if (status) patch.status = status;
+            const status = parseEnumParam<ProjectStatus>(p, "status", WORK_PROJECT_STATUSES);
+            if (!status.ok) return workLayerTextResult(`work_project.update received ${status.message}`);
+            if (status.value) patch.status = status.value;
             const owner = asNullablePatchString(p, "owner");
             if (owner !== undefined) patch.owner = owner;
             if (Array.isArray(p.tags)) patch.tags = p.tags.filter((x): x is string => typeof x === "string");
@@ -3080,7 +3111,7 @@ Returns: Performance trace data with timing breakdown`,
         }
 
         const format = asNonEmptyString(params.format) ?? "ascii";
-        const limit = Math.min(typeof params.limit === "number" ? params.limit : 5, 20);
+        const limit = normalizeProfilingReportLimit(params.limit);
         const traces = profiler.getRecentTraces(limit);
         const stats = profiler.getStats();
         const bottleneck = profiler.identifyBottleneck();
@@ -3161,7 +3192,7 @@ Returns: Performance trace data with timing breakdown`,
         }
 
         const format = asNonEmptyString(params.format) ?? "ascii";
-        const limit = Math.min(typeof params.limit === "number" ? params.limit : 5, 20);
+        const limit = normalizeProfilingReportLimit(params.limit);
         const traces = profiler.getRecentTraces(limit);
         const stats = profiler.getStats();
         const bottleneck = profiler.identifyBottleneck();

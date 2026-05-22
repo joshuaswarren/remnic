@@ -1010,6 +1010,73 @@ test("applyTemporalSupersession: hot→cold migration race — cold copy is proc
   }
 });
 
+test("applyTemporalSupersession: stale superseded hot copy does not block active cold copy", async () => {
+  const { storage, cleanup } = await makeStorage("engram-temporal-stale-hot-cold-");
+  try {
+    const oldId = await writeFact(
+      storage,
+      "entity lives in Austin — cold copy",
+      TEST_ENTITY,
+      { city: "Austin" },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const coldPath = await migrateFactToCold(storage, oldId);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const newId = await writeFact(
+      storage,
+      "entity moved to NYC",
+      TEST_ENTITY,
+      { city: "NYC" },
+    );
+
+    storage.invalidateAllMemoriesCacheForDir();
+    const hotMemories = await storage.readAllMemories();
+    const coldMemories = await storage.readAllColdMemories();
+    const newEntry = hotMemories.find((m) => m.frontmatter.id === newId);
+    const coldEntry = coldMemories.find((m) => m.frontmatter.id === oldId);
+    assert.ok(newEntry, "new entry must exist in hot tier");
+    assert.ok(coldEntry, "cold entry must exist in cold tier");
+    assert.equal(coldEntry.frontmatter.status ?? "active", "active");
+
+    const staleHotEntry = {
+      path: coldPath.replace(/\.md$/, "-stale-hot.md"),
+      frontmatter: {
+        ...coldEntry.frontmatter,
+        status: "superseded",
+        supersededBy: "previous-newer-fact",
+      },
+      content: coldEntry.content,
+    };
+
+    const originalReadAll = storage.readAllMemories.bind(storage);
+    (storage as unknown as { readAllMemories: () => Promise<unknown> }).readAllMemories =
+      async () => [staleHotEntry, newEntry];
+
+    try {
+      const result = await applyTemporalSupersession({
+        storage,
+        newMemoryId: newId,
+        entityRef: TEST_ENTITY,
+        structuredAttributes: { city: "NYC" },
+        createdAt: new Date().toISOString(),
+        enabled: true,
+      });
+
+      assert.deepEqual(result.supersededIds, [oldId]);
+    } finally {
+      (storage as unknown as { readAllMemories: typeof originalReadAll }).readAllMemories =
+        originalReadAll;
+    }
+
+    const coldMem = await storage.readMemoryByPath(coldPath);
+    assert.ok(coldMem, "cold memory file must still exist");
+    assert.equal(coldMem!.frontmatter.status, "superseded");
+    assert.equal(coldMem!.frontmatter.supersededBy, newId);
+  } finally {
+    await cleanup();
+  }
+});
+
 // ─── Regression: round-6 Findings 2+3 — kill switch in recent-scan prefilter ─
 
 test("shouldFilterSupersededFromRecall: kill switch off (enabled=false) never filters superseded", () => {

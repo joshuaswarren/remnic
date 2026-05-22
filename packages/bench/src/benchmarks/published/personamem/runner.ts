@@ -98,7 +98,8 @@ export async function runPersonaMemBenchmark(
       try {
         await options.system.drain?.();
       } catch (drainErr) {
-        console.error(`  [WARN] personamem drain failed for ${taskId}: ${drainErr instanceof Error ? drainErr.message : String(drainErr)}`);
+        const message = drainErr instanceof Error ? drainErr.message : String(drainErr);
+        throw new Error(`personamem drain failed for ${taskId}: ${message}`, { cause: drainErr });
       }
 
       const recallQuery = buildPersonaMemRecallQuery(sample.userQuery);
@@ -141,9 +142,9 @@ export async function runPersonaMemBenchmark(
           });
       const finalAnswer = refinedAnswer ?? answered.finalAnswer;
       const predictedMcqOption = mcq
-        ? extractMcqFinalAnswer(finalAnswer)
+        ? resolveMcqOption(finalAnswer, mcq)
         : undefined;
-      const scoredAnswer = mcq && predictedMcqOption && mcq.options[predictedMcqOption]
+      const scoredAnswer = mcq && predictedMcqOption
         ? mcq.options[predictedMcqOption]
         : finalAnswer;
       const judgeResult = await llmJudgeScoreDetailed(
@@ -214,12 +215,21 @@ export async function runPersonaMemBenchmark(
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`  [WARN] personamem task ${taskId} failed: ${message}`);
+      const scores: Record<string, number> = {
+        f1: -1,
+        contains_answer: -1,
+        search_hits: -1,
+        llm_judge: -1,
+      };
+      if (sample.incorrectAnswers && sample.incorrectAnswers.length > 0) {
+        scores.mcq_accuracy = -1;
+      }
       tasks.push({
         taskId,
         question: sample.userQuery,
         expected: sample.correctAnswer,
         actual: `(error: ${message})`,
-        scores: { f1: -1, contains_answer: -1, search_hits: -1, llm_judge: -1 },
+        scores,
         latencyMs: 0,
         tokens: { input: 0, output: 0 },
         details: { error: message },
@@ -295,8 +305,17 @@ async function loadDataset(
     const datasetErrors: string[] = [];
     for (const relativePath of DATASET_FILE_CANDIDATES) {
       const datasetPath = path.join(datasetDir, relativePath);
+      let raw: string;
       try {
-        const raw = await readFile(datasetPath, "utf8");
+        raw = await readFile(datasetPath, "utf8");
+      } catch (error) {
+        datasetErrors.push(
+          `${relativePath}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+
+      try {
         const rows = parseCsvRows(raw, relativePath, normalizedLimit);
         const samples: PersonaMemSample[] = [];
 
@@ -306,8 +325,9 @@ async function loadDataset(
 
         return ensureDatasetSamples(samples);
       } catch (error) {
-        datasetErrors.push(
-          `${relativePath}: ${error instanceof Error ? error.message : String(error)}`,
+        throw new Error(
+          `PersonaMem-v2 dataset file ${relativePath} under ${datasetDir} is invalid: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
         );
       }
     }
@@ -731,6 +751,38 @@ function extractMcqFinalAnswer(response: string): string | undefined {
   }
 
   return undefined;
+}
+
+function normalizeMcqAnswerText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function resolveMcqOption(
+  response: string,
+  mcq: PersonaMemMcqPrompt,
+): string | undefined {
+  const extractedLetter = extractMcqFinalAnswer(response);
+  if (extractedLetter && mcq.options[extractedLetter]) {
+    return extractedLetter;
+  }
+
+  const normalizedResponses = [
+    response,
+    response.replace(/^\s*final answer\s*:\s*/i, ""),
+  ]
+    .map(normalizeMcqAnswerText)
+    .filter((value, index, values) => value && values.indexOf(value) === index);
+  if (normalizedResponses.length === 0) {
+    return undefined;
+  }
+
+  return Object.entries(mcq.options).find(
+    ([, optionText]) => normalizedResponses.includes(normalizeMcqAnswerText(optionText)),
+  )?.[0];
 }
 
 function parseChatHistory(

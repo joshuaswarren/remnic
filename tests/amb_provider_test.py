@@ -28,6 +28,15 @@ class MemoryProvider:
 
 def load_provider_module() -> Any:
     repo_root = Path(__file__).resolve().parents[1]
+    module_keys = [
+        "memory_bench",
+        "memory_bench.memory",
+        "memory_bench.models",
+        "memory_bench.memory.base",
+        "memory_bench.memory.remnic",
+    ]
+    missing = object()
+    previous_modules = {key: sys.modules.get(key, missing) for key in module_keys}
     memory_bench = types.ModuleType("memory_bench")
     memory_bench.__path__ = []
     memory = types.ModuleType("memory_bench.memory")
@@ -40,17 +49,23 @@ def load_provider_module() -> Any:
     sys.modules["memory_bench.memory"] = memory
     sys.modules["memory_bench.models"] = models
     sys.modules["memory_bench.memory.base"] = base
-
-    spec = importlib.util.spec_from_file_location(
-        "memory_bench.memory.remnic",
-        repo_root / "integrations" / "amb" / "remnic_provider.py",
-    )
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["memory_bench.memory.remnic"] = module
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "memory_bench.memory.remnic",
+            repo_root / "integrations" / "amb" / "remnic_provider.py",
+        )
+        assert spec is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["memory_bench.memory.remnic"] = module
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for key, value in previous_modules.items():
+            if value is missing:
+                sys.modules.pop(key, None)
+            else:
+                sys.modules[key] = value
 
 
 class FakeProc:
@@ -275,6 +290,27 @@ class RemnicProviderPerUnitTests(unittest.TestCase):
                 clear=False,
             ):
                 self.assertEqual(provider._repo_root(), str(repo.resolve()))
+
+    def test_load_provider_module_restores_existing_module_stubs(self) -> None:
+        sentinel_modules = {
+            key: types.ModuleType(f"sentinel.{key}")
+            for key in [
+                "memory_bench",
+                "memory_bench.memory",
+                "memory_bench.models",
+                "memory_bench.memory.base",
+            ]
+        }
+
+        with patch.dict(sys.modules, sentinel_modules, clear=False):
+            sys.modules.pop("memory_bench.memory.remnic", None)
+
+            module = load_provider_module()
+
+            self.assertTrue(hasattr(module, "RemnicMemoryProvider"))
+            for key, sentinel in sentinel_modules.items():
+                self.assertIs(sys.modules.get(key), sentinel)
+            self.assertNotIn("memory_bench.memory.remnic", sys.modules)
 
 
 if __name__ == "__main__":

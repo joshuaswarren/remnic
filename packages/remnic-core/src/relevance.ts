@@ -1,16 +1,25 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { log } from "./logger.js";
+import { writeFileAtomically } from "./maintenance/atomic-file.js";
 import type { RelevanceFeedback } from "./types.js";
 
 type RelevanceState = Record<string, RelevanceFeedback>;
+type StateFileWriter = (filePath: string, content: string) => Promise<void>;
 
 export class RelevanceStore {
   private readonly statePath: string;
+  private readonly writeStateFile: StateFileWriter;
   private state: RelevanceState = {};
+  private stateWriteChain: Promise<void> = Promise.resolve();
 
-  constructor(memoryDir: string) {
+  constructor(memoryDir: string, options: { writeStateFile?: StateFileWriter } = {}) {
     this.statePath = path.join(memoryDir, "state", "relevance.json");
+    this.writeStateFile =
+      options.writeStateFile ??
+      (async (filePath, content) => {
+        await writeFileAtomically(filePath, content);
+      });
   }
 
   async load(): Promise<void> {
@@ -41,8 +50,7 @@ export class RelevanceStore {
     this.state[memoryId] = next;
 
     try {
-      await mkdir(path.dirname(this.statePath), { recursive: true });
-      await writeFile(this.statePath, JSON.stringify(this.state, null, 2), "utf-8");
+      await this.flushState();
     } catch (err) {
       log.debug(`relevance store write failed: ${err}`);
     }
@@ -63,5 +71,16 @@ export class RelevanceStore {
     // Typical QMD scores are around 0-1; keep adjustments small.
     return up * 0.05 - down * 0.10; // max +0.15, min -0.30
   }
-}
 
+  private flushState(): Promise<void> {
+    const run = this.stateWriteChain.catch(() => undefined).then(async () => {
+      await mkdir(path.dirname(this.statePath), { recursive: true });
+      await this.writeStateFile(this.statePath, JSON.stringify(this.state, null, 2));
+    });
+    this.stateWriteChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+}

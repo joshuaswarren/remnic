@@ -261,6 +261,7 @@ import {
   inspectLaunchdPlist,
   launchdLoadPlist,
   launchdUnloadPlist,
+  readVerifiedDaemonPid,
   resolveServerBin,
   resolveServerBinDetails,
 } from "./daemon-service.js";
@@ -1821,6 +1822,7 @@ export const __benchDatasetTestHooks = {
       benchmarkOptions,
     );
   },
+  printBenchStatusLineForTest: printBenchStatusLine,
 };
 
 function printBenchPackageSummary(
@@ -1839,6 +1841,14 @@ function printBenchPackageSummary(
     console.log(`  ${metric.padEnd(20)} ${aggregate.mean.toFixed(4)}`);
   }
   console.log(`${outputLabel}: ${outputPath}`);
+}
+
+function printBenchStatusLine(jsonMode: boolean, message: string): void {
+  if (jsonMode) {
+    console.error(message);
+  } else {
+    console.log(message);
+  }
 }
 
 function printStoredBenchResultSummary(
@@ -2916,7 +2926,8 @@ async function runBenchViaPackage(
         if (completed % 50 === 0 || completed === total) {
           const elapsed = Math.round((Date.now() - benchStartTime) / 1000);
           const remaining = total && elapsed > 0 ? Math.round((total - completed) / (completed / elapsed)) : "?";
-          console.log(
+          printBenchStatusLine(
+            parsed.json,
             `  [${benchmarkId}] ${completed}/${total ?? "?"} tasks (${elapsed}s elapsed, ~${remaining}s remaining)`,
           );
         }
@@ -8338,6 +8349,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     const remnicCfg = raw.remnic ?? raw.engram ?? raw;
     const config = parseConfig(remnicCfg);
     const orchestrator = new Orchestrator(config);
+    try {
     await orchestrator.initialize();
     await orchestrator.deferredReady;
 
@@ -8451,6 +8463,9 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       process.exitCode = 1;
     } else {
       console.log(output);
+    }
+    } finally {
+      await orchestrator.destroy();
     }
   } else {
     console.log("Usage: remnic connectors <list|install|remove|doctor|marketplace|status|run> [id]");
@@ -8795,7 +8810,7 @@ async function cmdLegacyBenchmark(action: string, rest: string[], json: boolean)
   } else if (action === "report") {
     const reportPath = benchConfig.reportPath;
     const suite = await runBenchSuite(service, { ...benchConfig, reportPath });
-    console.log(`Report saved to ${reportPath ?? "benchmarks/report.json"}`);
+    printBenchStatusLine(json, `Report saved to ${reportPath ?? "benchmarks/report.json"}`);
     if (json) {
       console.log(JSON.stringify(suite.report, null, 2));
     }
@@ -8957,9 +8972,9 @@ async function cmdBench(rest: string[]): Promise<void> {
 
     const completeCount = prevStatus.benchmarks.filter((b) => b.status === "complete").length;
     const failedCount = prevStatus.benchmarks.filter((b) => b.status === "failed").length;
-    console.log(`Resuming from: ${path.basename(latestStatusPath)}`);
-    console.log(`  Previous run: ${prevStatus.startedAt}`);
-    console.log(`  Benchmarks: ${prevStatus.benchmarks.length} total, ${completeCount} complete, ${failedCount} failed`);
+    printBenchStatusLine(parsed.json, `Resuming from: ${path.basename(latestStatusPath)}`);
+    printBenchStatusLine(parsed.json, `  Previous run: ${prevStatus.startedAt}`);
+    printBenchStatusLine(parsed.json, `  Benchmarks: ${prevStatus.benchmarks.length} total, ${completeCount} complete, ${failedCount} failed`);
 
     const before = selectedBenchmarks.length;
 
@@ -8970,7 +8985,7 @@ async function cmdBench(rest: string[]): Promise<void> {
         "resume",
       );
       selectedBenchmarks = [...new Set(selectedWorkItems.map((item) => item.benchmarkId))];
-      console.log(`  Resuming: ${selectedBenchmarks.length} of ${before} benchmarks to re-run`);
+      printBenchStatusLine(parsed.json, `  Resuming: ${selectedBenchmarks.length} of ${before} benchmarks to re-run`);
     } else {
       selectedWorkItems = filterBenchWorkItemsForPreviousStatus(
         selectedWorkItems,
@@ -8978,14 +8993,15 @@ async function cmdBench(rest: string[]): Promise<void> {
         "retry-failed",
       );
       selectedBenchmarks = [...new Set(selectedWorkItems.map((item) => item.benchmarkId))];
-      console.log(`  Retrying: ${selectedBenchmarks.length} of ${before} selected benchmarks had failures`);
+      printBenchStatusLine(parsed.json, `  Retrying: ${selectedBenchmarks.length} of ${before} selected benchmarks had failures`);
     }
 
     if (selectedWorkItems.length === 0) {
       if (parsed.retryFailed) {
-        console.log("Nothing to re-run — no selected benchmarks had failures.");
+        printBenchStatusLine(parsed.json, "Nothing to re-run — no selected benchmarks had failures.");
       } else {
-        console.log(
+        printBenchStatusLine(
+          parsed.json,
           "Nothing to re-run — all selected benchmarks completed successfully in the previous run.",
         );
       }
@@ -9027,6 +9043,7 @@ async function cmdBench(rest: string[]): Promise<void> {
             try { await updateBenchmarkCompleted(benchStatusPath, statusId, handledByPackage.writtenPath ?? ""); } catch { /* non-fatal */ }
           } else {
             const fallbackResultPath = await runBenchViaFallback(parsed, benchmarkId, runtimeProfile);
+            writtenPaths.push(fallbackResultPath);
             try { await updateBenchmarkCompleted(benchStatusPath, statusId, fallbackResultPath); } catch { /* non-fatal */ }
           }
         } catch (err) {
@@ -9164,14 +9181,10 @@ const [SYSTEMD_UNIT_PATH] = SYSTEMD_UNIT_PATHS;
 
 
 function readPid(): number | undefined {
-  for (const file of [PID_FILE, LEGACY_PID_FILE]) {
-    try {
-      return parseInt(fs.readFileSync(file, "utf8").trim(), 10);
-    } catch {
-      // Try next candidate
-    }
-  }
-  return undefined;
+  return readVerifiedDaemonPid({
+    pidFiles: [PID_FILE, LEGACY_PID_FILE],
+    expectedServerBin: resolveServerBin(),
+  });
 }
 
 function inferPort(): number {
@@ -9208,6 +9221,40 @@ function isStandaloneServiceInstalled(): boolean {
   if (isMacOS()) return anyFileExists(LAUNCHD_PLIST_PATHS);
   if (isLinux()) return anyFileExists(SYSTEMD_UNIT_PATHS);
   return false;
+}
+
+function commandFailureDetail(error: unknown): string {
+  if (error && typeof error === "object") {
+    const maybe = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+    const stderr = maybe.stderr ? String(maybe.stderr).trim() : "";
+    if (stderr) return stderr;
+    const stdout = maybe.stdout ? String(maybe.stdout).trim() : "";
+    if (stdout) return stdout;
+    if (maybe.message) return maybe.message;
+  }
+  return String(error);
+}
+
+function failDaemonInstall(command: string, error: unknown): never {
+  console.error(`Error: daemon install failed while running ${command}.`);
+  console.error(`  ${commandFailureDetail(error)}`);
+  process.exit(1);
+}
+
+function isLaunchdServiceLoaded(): boolean {
+  return firstSuccessfulResult(LAUNCHD_LABEL_CANDIDATES, (label) => {
+    childProcess.execSync(`launchctl list ${label} 2>/dev/null`, { stdio: "pipe" });
+    return true;
+  }) === true;
+}
+
+function isSystemdServiceActive(): boolean {
+  return firstSuccessfulResult(SYSTEMD_SERVICE_CANDIDATES, (serviceName) => {
+    const out = childProcess.execSync(`systemctl --user is-active ${serviceName} 2>/dev/null`, {
+      encoding: "utf8",
+    }).trim();
+    return out === "active" ? true : undefined;
+  }) === true;
 }
 
 function selectLaunchdInspection(openclawPluginModeConfigured: boolean): {
@@ -9277,8 +9324,13 @@ function daemonInstall(): void {
     fs.writeFileSync(LAUNCHD_PLIST_PATH, plist);
     try {
       launchdLoadPlist(LAUNCHD_PLIST_PATH);
-    } catch {
-      // May already be loaded
+    } catch (err) {
+      if (!isLaunchdServiceLoaded()) {
+        failDaemonInstall(`launchctl load -w ${LAUNCHD_PLIST_PATH}`, err);
+      }
+    }
+    if (!isLaunchdServiceLoaded()) {
+      failDaemonInstall(`launchctl list ${LAUNCHD_LABEL}`, new Error("service was not loaded after install"));
     }
     console.log(`Installed launchd service: ${LAUNCHD_PLIST_PATH}`);
     console.log(`  Label: ${LAUNCHD_LABEL}`);
@@ -9293,10 +9345,21 @@ function daemonInstall(): void {
     try {
 
       childProcess.execSync("systemctl --user daemon-reload", { stdio: "pipe" });
+    } catch (err) {
+      failDaemonInstall("systemctl --user daemon-reload", err);
+    }
+    try {
       childProcess.execSync(`systemctl --user enable ${SYSTEMD_SERVICE}`, { stdio: "pipe" });
+    } catch (err) {
+      failDaemonInstall(`systemctl --user enable ${SYSTEMD_SERVICE}`, err);
+    }
+    try {
       childProcess.execSync(`systemctl --user start ${SYSTEMD_SERVICE}`, { stdio: "pipe" });
-    } catch {
-      // May fail if systemd not available
+    } catch (err) {
+      failDaemonInstall(`systemctl --user start ${SYSTEMD_SERVICE}`, err);
+    }
+    if (!isSystemdServiceActive()) {
+      failDaemonInstall(`systemctl --user is-active ${SYSTEMD_SERVICE}`, new Error("service is not active after install"));
     }
     console.log(`Installed systemd user service: ${SYSTEMD_UNIT_PATH}`);
     console.log(`  Restart: on-failure, WantedBy: default.target`);

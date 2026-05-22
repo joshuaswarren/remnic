@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { useState } from "react";
 import type { BenchResultSummaryPayload, TrendRange } from "../bench-data";
-import { getBenchmarkCards, getTrendPoints } from "../bench-data";
+import { getBenchmarkCards, getRecentRuns, getTrendPoints } from "../bench-data";
 import { RunTable } from "../components/RunTable";
 import { ScoreCard } from "../components/ScoreCard";
 import { TrendChart } from "../components/TrendChart";
@@ -13,10 +13,7 @@ export function Overview({ payload }: { payload: BenchResultSummaryPayload }) {
   const [range, setRange] = useState<TrendRange>("30d");
   const [benchmark, setBenchmark] = useState<string>("all");
   const trendPoints = getTrendPoints(payload, benchmark, range);
-  const recentRuns = cards
-    .map((card) => ({ ...card.latest, delta: card.delta }))
-    .sort((left, right) => right.timestamp.localeCompare(left.timestamp))
-    .slice(0, 6);
+  const recentRuns = getRecentRuns(payload);
 
   return (
     <section className="page">
@@ -78,3 +75,4 @@ export function Overview({ payload }: { payload: BenchResultSummaryPayload }) {
     </section>
   );
 }
+import * as React from "react";

@@ -353,3 +353,65 @@ test("cross signals preserve original agent ids from encoded output paths", asyn
   );
   assert.equal(result.report.overlaps.length, 0);
 });
+
+test("cross signals collapse feedback markdown control text to one rendered line", async () => {
+  const memoryDir = tmpDir("engram-sc-mem");
+  const sharedDir = tmpDir("engram-shared");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = minimalConfig(memoryDir, sharedDir);
+  const m = new SharedContextManager(cfg);
+  await m.ensureStructure();
+
+  await m.appendFeedback({
+    agent: "reviewer\n## injected-agent",
+    decision: "rejected",
+    reason: "bad output\n## injected-heading\n- injected-list",
+    date: "2026-05-19T12:00:00.000Z",
+    refs: ["file-a.md\n- injected-ref"],
+    severity: "high",
+  });
+
+  const result = await m.synthesizeCrossSignals({ date: "2026-05-19" });
+  const markdown = await readFile(result.crossSignalsMarkdownPath, "utf-8");
+
+  assert.doesNotMatch(markdown, /^## injected/m);
+  assert.doesNotMatch(markdown, /^- injected/m);
+  assert.match(
+    markdown,
+    /\[reviewer ## injected-agent\] rejected: bad output ## injected-heading - injected-list/,
+  );
+  assert.match(markdown, /refs: file-a\.md - injected-ref/);
+});
+
+test("cross signals process agent outputs in stable agent/path order", async () => {
+  const memoryDir = tmpDir("engram-sc-mem");
+  const sharedDir = tmpDir("engram-shared");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = minimalConfig(memoryDir, sharedDir);
+  cfg.sharedCrossSignalSemanticEnabled = true;
+  cfg.sharedCrossSignalSemanticMaxCandidates = 4;
+  const m = new SharedContextManager(cfg);
+  await m.ensureStructure();
+  const createdAt = new Date("2026-05-19T10:11:12.000Z");
+
+  await m.writeAgentOutput({
+    agentId: "zeta",
+    title: "Output",
+    content: "planning",
+    createdAt,
+  });
+  await m.writeAgentOutput({
+    agentId: "alpha",
+    title: "Output",
+    content: "planner",
+    createdAt,
+  });
+
+  const result = await m.synthesizeCrossSignals({ date: "2026-05-19" });
+
+  assert.deepEqual(result.report.sources.map((source) => source.agent), ["alpha", "zeta"]);
+  assert.ok(result.report.semantic.candidateCount <= 4);
+  assert.ok(result.report.overlaps.some((overlap) => overlap.token.startsWith("semantic:")));
+});

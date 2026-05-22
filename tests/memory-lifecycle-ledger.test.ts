@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { appendFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
-import { rebuildMemoryLifecycleLedger } from "../src/maintenance/rebuild-memory-lifecycle-ledger.ts";
+import {
+  backupExistingLedger,
+  rebuildMemoryLifecycleLedger,
+} from "../src/maintenance/rebuild-memory-lifecycle-ledger.ts";
 
 async function writeText(baseDir: string, relPath: string, content: string): Promise<void> {
   const full = path.join(baseDir, relPath);
@@ -271,6 +274,72 @@ beta
   await assert.rejects(() => stat(result.outputPath));
 });
 
+test("rebuildMemoryLifecycleLedger includes hot cold and archived memories", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-memory-lifecycle-cold-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-hot.md",
+      `---
+id: fact-hot
+category: fact
+created: 2026-03-08T00:00:00.000Z
+updated: 2026-03-08T01:00:00.000Z
+source: test
+confidence: 0.8
+confidenceTier: implied
+tags: ["hot"]
+---
+
+hot
+`,
+    );
+    await writeText(
+      memoryDir,
+      "cold/facts/2026-03-08/fact-cold.md",
+      `---
+id: fact-cold
+category: fact
+created: 2026-03-08T02:00:00.000Z
+updated: 2026-03-08T03:00:00.000Z
+source: test
+confidence: 0.8
+confidenceTier: implied
+tags: ["cold"]
+---
+
+cold
+`,
+    );
+    await writeText(
+      memoryDir,
+      "archive/2026-03-08/fact-archived.md",
+      `---
+id: fact-archived
+category: fact
+created: 2026-03-08T04:00:00.000Z
+updated: 2026-03-08T05:00:00.000Z
+source: test
+confidence: 0.8
+confidenceTier: implied
+tags: ["archived"]
+status: archived
+archivedAt: 2026-03-08T06:00:00.000Z
+---
+
+archived
+`,
+    );
+
+    const result = await rebuildMemoryLifecycleLedger({ memoryDir });
+
+    assert.equal(result.scannedMemories, 3);
+    assert.equal(result.rebuiltRows, 7);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("rebuildMemoryLifecycleLedger writes deterministic ledger and backs up existing file", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-memory-lifecycle-live-"));
   await writeText(
@@ -314,6 +383,69 @@ alpha
   assert.deepEqual(rows.map((row) => row.eventType), ["created", "updated"]);
   assert.equal(rows[0]?.memoryId, "fact-1");
 } );
+
+test("backupExistingLedger rethrows non-missing stat failures", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-memory-lifecycle-stat-failure-"));
+  try {
+    await writeFile(path.join(memoryDir, "state"), "not-a-directory", "utf-8");
+
+    await assert.rejects(
+      () => backupExistingLedger(
+        memoryDir,
+        path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl"),
+        new Date("2026-03-08T12:00:00.000Z"),
+      ),
+      /ENOTDIR|not a directory/i,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryLifecycleLedger preserves active ledger when atomic replacement fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-memory-lifecycle-fail-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-1.md",
+      `---
+id: fact-1
+category: fact
+created: 2026-03-08T00:00:00.000Z
+updated: 2026-03-08T01:00:00.000Z
+source: test
+confidence: 0.8
+confidenceTier: implied
+tags: ["alpha"]
+---
+
+alpha
+`,
+    );
+    const originalLedger = "{\"legacy\":true}\n";
+    await writeText(memoryDir, "state/memory-lifecycle-ledger.jsonl", originalLedger);
+    await writeText(
+      memoryDir,
+      "archive/memory-lifecycle-ledger/20260308T120000Z/state",
+      "not-a-directory",
+    );
+
+    await assert.rejects(
+      () => rebuildMemoryLifecycleLedger({
+        memoryDir,
+        dryRun: false,
+        now: new Date("2026-03-08T12:00:00.000Z"),
+      }),
+    );
+
+    assert.equal(
+      await readFile(path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl"), "utf-8"),
+      originalLedger,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
 
 test("rebuildMemoryLifecycleLedger uses semantic event ordering for timestamp ties", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-memory-lifecycle-tie-order-"));

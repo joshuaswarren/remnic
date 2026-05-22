@@ -209,6 +209,43 @@ test("normalizers honor defaultSessionKey when source session identifiers are ab
   assert.equal(chatgpt.turns[0].sessionKey, "replay:default:session");
 });
 
+test("normalizers preserve text object blocks inside content arrays", async () => {
+  const openclaw = await openclawReplayNormalizer.parse(
+    [
+      {
+        timestamp: "2026-02-25T03:00:00.000Z",
+        role: "user",
+        content: [
+          { text: "hello" },
+          { type: "image", source: { url: "ignored" } },
+          "world",
+          { parts: ["nested"] },
+        ],
+      },
+    ],
+    {},
+  );
+  const claude = await claudeReplayNormalizer.parse(
+    {
+      chat_messages: [
+        {
+          sender: "human",
+          content: [{ text: "hello" }, { content: "world" }],
+          created_at: "2026-02-25T03:01:00.000Z",
+        },
+      ],
+    },
+    {},
+  );
+
+  assert.equal(openclaw.turns.length, 1);
+  assert.equal(openclaw.turns[0]?.content, "hello\nworld\nnested");
+  assert.equal(openclaw.warnings.length, 0);
+  assert.equal(claude.turns.length, 1);
+  assert.equal(claude.turns[0]?.content, "hello\nworld");
+  assert.equal(claude.warnings.length, 0);
+});
+
 test("defaultSessionKey is fallback-only when conversation identifiers exist", async () => {
   const claude = await claudeReplayNormalizer.parse(
     {

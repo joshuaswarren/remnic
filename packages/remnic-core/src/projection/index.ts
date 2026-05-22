@@ -10,6 +10,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { getCategoryDir, ALL_CATEGORY_KEYS } from "../utils/category-dir.js";
 
+const VALID_PROJECTION_CATEGORIES = new Set(ALL_CATEGORY_KEYS);
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface TreeNode {
@@ -85,19 +87,27 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
   let nodesGenerated = 0;
   let nodesSkipped = 0;
   const categoryCounts: Record<string, number> = {};
+  const resolvedMemoryDir = path.resolve(memoryDir);
+  const resolvedOutputDir = path.resolve(outputDir);
+  const requestedCategories = validateProjectionCategories(filterCategories);
+  const realMemoryDir = fs.realpathSync(resolvedMemoryDir);
 
   // Ensure output directory exists
-  fs.mkdirSync(outputDir, { recursive: true });
+  assertNotSymlink(resolvedOutputDir, "context tree outputDir");
+  fs.mkdirSync(resolvedOutputDir, { recursive: true });
+  const realOutputDir = fs.realpathSync(resolvedOutputDir);
 
   // Process each category (exclude 'question' — handled by separate includeQuestions pass)
-  const allCategories = filterCategories ?? ALL_CATEGORY_KEYS.filter((c) => c !== "question");
+  const allCategories = (requestedCategories ?? ALL_CATEGORY_KEYS)
+    .filter((c) => c !== "question");
 
   for (const category of allCategories) {
     const categoryDir = getCategoryDir(memoryDir, category);
     if (!fs.existsSync(categoryDir)) continue;
+    assertSafeInputRoot(realMemoryDir, categoryDir, `${category} memory category`);
 
     categoryCounts[category] = 0;
-    const files = walkR(categoryDir);
+    const files = walkR(categoryDir, realMemoryDir);
     let count = 0;
 
     for (const filePath of files) {
@@ -120,9 +130,8 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
       }
 
       // Write node to output
-      const outputPath = path.join(outputDir, node.path);
-      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-      fs.writeFileSync(outputPath, node.content);
+      const outputPath = resolveContainedOutputPath(realOutputDir, node.path);
+      writeProjectedContent(realOutputDir, outputPath, node.content);
 
       nodesGenerated++;
       categoryCounts[category] = (categoryCounts[category] ?? 0) + 1;
@@ -134,8 +143,9 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
   if (includeEntities) {
     const entitiesDir = path.join(memoryDir, "entities");
     if (fs.existsSync(entitiesDir)) {
+      assertSafeInputRoot(realMemoryDir, entitiesDir, "entities root");
       categoryCounts["entity"] = 0;
-      const entityFiles = walkR(entitiesDir);
+      const entityFiles = walkR(entitiesDir, realMemoryDir);
       let count = 0;
 
       for (const filePath of entityFiles) {
@@ -148,9 +158,8 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
         const fileName = path.basename(filePath, ".md");
         const node = projectEntityNode(fileName, content);
 
-        const outputPath = path.join(outputDir, "entities", `${fileName}.md`);
-        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-        fs.writeFileSync(outputPath, node.content);
+        const outputPath = resolveContainedOutputPath(realOutputDir, "entities", `${fileName}.md`);
+        writeProjectedContent(realOutputDir, outputPath, node.content);
 
         nodesGenerated++;
         categoryCounts["entity"] = (categoryCounts["entity"] ?? 0) + 1;
@@ -160,11 +169,15 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
   }
 
   // Process questions
-  if (includeQuestions) {
+  const shouldIncludeQuestions =
+    includeQuestions &&
+    (requestedCategories === undefined || requestedCategories.includes("question"));
+  if (shouldIncludeQuestions) {
     const questionsDir = path.join(memoryDir, "questions");
     if (fs.existsSync(questionsDir)) {
+      assertSafeInputRoot(realMemoryDir, questionsDir, "questions root");
       categoryCounts["question"] = 0;
-      const qFiles = walkR(questionsDir);
+      const qFiles = walkR(questionsDir, realMemoryDir);
       let count = 0;
 
       for (const filePath of qFiles) {
@@ -186,9 +199,8 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
           continue;
         }
 
-        const outputPath = path.join(outputDir, node.path);
-        fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-        fs.writeFileSync(outputPath, node.content);
+        const outputPath = resolveContainedOutputPath(realOutputDir, node.path);
+        writeProjectedContent(realOutputDir, outputPath, node.content);
 
         nodesGenerated++;
         categoryCounts["question"] = (categoryCounts["question"] ?? 0) + 1;
@@ -198,8 +210,8 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
   }
 
   // Write index
-  const index = generateIndex(categoryCounts, outputDir);
-  fs.writeFileSync(path.join(outputDir, "INDEX.md"), index);
+  const index = generateIndex(categoryCounts, resolvedOutputDir);
+  writeProjectedContent(realOutputDir, resolveContainedOutputPath(realOutputDir, "INDEX.md"), index);
 
   return {
     nodesGenerated,
@@ -212,15 +224,144 @@ export async function generateContextTree(options: GenerateOptions): Promise<Gen
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
 
-function walkR(dir: string): string[] {
+function assertNotSymlink(targetPath: string, label: string): void {
+  try {
+    if (fs.lstatSync(targetPath).isSymbolicLink()) {
+      throw new Error(`${label} must not be a symlink: ${targetPath}`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+}
+
+function assertSafeInputRoot(realMemoryDir: string, targetPath: string, label: string): void {
+  const stat = fs.lstatSync(targetPath);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`${label} must not be a symlink: ${targetPath}`);
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`${label} must be a directory: ${targetPath}`);
+  }
+  const realTarget = fs.realpathSync(targetPath);
+  if (!isPathInside(realMemoryDir, realTarget)) {
+    throw new Error(`${label} escapes memoryDir: ${targetPath}`);
+  }
+}
+
+function assertSafeOutputTarget(realOutputDir: string, outputPath: string): void {
+  let current = realOutputDir;
+  const relative = path.relative(realOutputDir, outputPath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`context tree output path escapes outputDir: ${outputPath}`);
+  }
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    try {
+      const stat = fs.lstatSync(current);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`context tree output path contains symlink: ${current}`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        break;
+      }
+      throw err;
+    }
+  }
+}
+
+function validateProjectionCategories(categories: string[] | undefined): string[] | undefined {
+  if (categories === undefined) {
+    return undefined;
+  }
+  const validated: string[] = [];
+  for (const category of categories) {
+    if (typeof category !== "string" || !VALID_PROJECTION_CATEGORIES.has(category)) {
+      throw new Error(`invalid context tree category: ${String(category)}`);
+    }
+    if (!validated.includes(category)) {
+      validated.push(category);
+    }
+  }
+  return validated;
+}
+
+function resolveContainedOutputPath(outputRoot: string, ...segments: string[]): string {
+  const resolved = path.resolve(outputRoot, ...segments);
+  const relative = path.relative(outputRoot, resolved);
+  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    return resolved;
+  }
+  throw new Error(`context tree output path escapes outputDir: ${segments.join("/")}`);
+}
+
+function writeProjectedContent(realOutputDir: string, outputPath: string, generatedContent: string): void {
+  assertSafeOutputTarget(realOutputDir, outputPath);
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  const realParent = fs.realpathSync(path.dirname(outputPath));
+  if (!isPathInside(realOutputDir, realParent)) {
+    throw new Error(`context tree output path escapes outputDir: ${outputPath}`);
+  }
+  const existingContent = fs.existsSync(outputPath)
+    ? fs.readFileSync(outputPath, "utf8")
+    : "";
+  fs.writeFileSync(
+    outputPath,
+    preserveManualFencedBlocks(generatedContent, existingContent),
+  );
+}
+
+function preserveManualFencedBlocks(
+  generatedContent: string,
+  existingContent: string,
+): string {
+  const manualBlocks = extractManualFencedBlocks(existingContent)
+    .filter((block) => !generatedContent.includes(block));
+  if (manualBlocks.length === 0) {
+    return generatedContent;
+  }
+  return `${generatedContent.trimEnd()}\n\n## Manual Edits\n\n${manualBlocks.join("\n\n")}\n`;
+}
+
+function extractManualFencedBlocks(content: string): string[] {
+  const blocks: string[] = [];
+  const seen = new Set<string>();
+  const fencePattern = /(?:^|\n)([`~]{3,})[^\n]*\bmanual\b[^\n]*\n[\s\S]*?\n\1[ \t]*(?=\n|$)/gi;
+  for (const match of content.matchAll(fencePattern)) {
+    const block = match[0].trim();
+    if (!seen.has(block)) {
+      seen.add(block);
+      blocks.push(block);
+    }
+  }
+  return blocks;
+}
+
+function walkR(dir: string, realMemoryDir: string): string[] {
   const results: string[] = [];
   function walk(directory: string): void {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     const fullPath = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw new Error(`context tree input path contains symlink: ${fullPath}`);
+    }
     if (entry.isDirectory()) {
+      const realDir = fs.realpathSync(fullPath);
+      if (!isPathInside(realMemoryDir, realDir)) {
+        throw new Error(`context tree input path escapes memoryDir: ${fullPath}`);
+      }
       walk(fullPath);
     } else if (entry.name.endsWith(".md")) {
+      const realFile = fs.realpathSync(fullPath);
+      if (!isPathInside(realMemoryDir, realFile)) {
+        throw new Error(`context tree input path escapes memoryDir: ${fullPath}`);
+      }
       results.push(fullPath);
     }
   }

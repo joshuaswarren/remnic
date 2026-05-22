@@ -125,32 +125,115 @@ function isBenchmarkMode(value: unknown): value is BenchmarkMode {
   return value === "quick" || value === "full";
 }
 
-function isBenchmarkResult(value: unknown): value is BenchmarkResult {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
 
-  const meta = (value as { meta?: Record<string, unknown> }).meta;
-  if (!meta || typeof meta !== "object") {
-    return false;
-  }
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
 
+function isProviderConfigLike(value: unknown): boolean {
+  if (value === null) {
+    return true;
+  }
   return (
+    isObjectRecord(value) &&
+    typeof value.provider === "string" &&
+    typeof value.model === "string"
+  );
+}
+
+function isBenchmarkResult(value: unknown): value is BenchmarkResult {
+  if (!isObjectRecord(value)) {
+    return false;
+  }
+
+  const meta = value.meta;
+  if (!isObjectRecord(meta)) {
+    return false;
+  }
+
+  const hasValidMeta =
     typeof meta.id === "string" &&
     typeof meta.benchmark === "string" &&
+    (meta.benchmarkTier === "published" ||
+      meta.benchmarkTier === "remnic" ||
+      meta.benchmarkTier === "custom") &&
+    typeof meta.version === "string" &&
+    typeof meta.remnicVersion === "string" &&
+    typeof meta.gitSha === "string" &&
     typeof meta.timestamp === "string" &&
     isBenchmarkMode(meta.mode) &&
-    typeof (value as { config?: unknown }).config === "object" &&
-    (value as { config?: unknown }).config !== null &&
-    typeof (value as { cost?: unknown }).cost === "object" &&
-    (value as { cost?: unknown }).cost !== null &&
-    typeof (value as { environment?: unknown }).environment === "object" &&
-    (value as { environment?: unknown }).environment !== null &&
-    typeof (value as { results?: { tasks?: unknown; aggregates?: unknown } }).results === "object" &&
-    (value as { results?: unknown }).results !== null &&
-    Array.isArray((value as { results?: { tasks?: unknown } }).results?.tasks) &&
-    typeof (value as { results?: { aggregates?: unknown } }).results?.aggregates === "object" &&
-    (value as { results?: { aggregates?: unknown } }).results?.aggregates !== null
+    isFiniteNumber(meta.runCount) &&
+    Array.isArray(meta.seeds) &&
+    meta.seeds.every(isFiniteNumber);
+  if (!hasValidMeta) {
+    return false;
+  }
+
+  const config = value.config;
+  if (
+    !isObjectRecord(config) ||
+    !isProviderConfigLike(config.systemProvider) ||
+    !isProviderConfigLike(config.judgeProvider) ||
+    (config.internalProvider !== undefined &&
+      !isProviderConfigLike(config.internalProvider)) ||
+    typeof config.adapterMode !== "string" ||
+    !isObjectRecord(config.remnicConfig)
+  ) {
+    return false;
+  }
+
+  const cost = value.cost;
+  if (
+    !isObjectRecord(cost) ||
+    !isFiniteNumber(cost.totalTokens) ||
+    !isFiniteNumber(cost.inputTokens) ||
+    !isFiniteNumber(cost.outputTokens) ||
+    !isFiniteNumber(cost.estimatedCostUsd) ||
+    !isFiniteNumber(cost.totalLatencyMs) ||
+    !isFiniteNumber(cost.meanQueryLatencyMs)
+  ) {
+    return false;
+  }
+
+  const results = value.results;
+  if (
+    !isObjectRecord(results) ||
+    !Array.isArray(results.tasks) ||
+    !results.tasks.every(isTaskResultLike) ||
+    !isObjectRecord(results.aggregates)
+  ) {
+    return false;
+  }
+
+  const environment = value.environment;
+  return (
+    isObjectRecord(environment) &&
+    typeof environment.os === "string" &&
+    typeof environment.nodeVersion === "string" &&
+    (environment.hardware === undefined ||
+      typeof environment.hardware === "string")
+  );
+}
+
+function isTaskResultLike(value: unknown): boolean {
+  if (!isObjectRecord(value)) {
+    return false;
+  }
+  const tokens = value.tokens;
+  return (
+    typeof value.taskId === "string" &&
+    typeof value.question === "string" &&
+    typeof value.expected === "string" &&
+    typeof value.actual === "string" &&
+    isObjectRecord(value.scores) &&
+    Object.values(value.scores).every(isFiniteNumber) &&
+    isFiniteNumber(value.latencyMs) &&
+    isObjectRecord(tokens) &&
+    isFiniteNumber(tokens.input) &&
+    isFiniteNumber(tokens.output)
   );
 }
 

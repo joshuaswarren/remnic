@@ -227,9 +227,7 @@ async function executeCase(
         const history = await listVersions(pagePath, config, tmpDir);
         const pageContent = await readFile(pagePath, "utf-8");
         const diff = await diffVersions(pagePath, "1", "2", config, tmpDir);
-        const observedLines = ["-line 2", "+line 2 changed", "+line 4"]
-          .filter((line) => diff.includes(line))
-          .join("|");
+        const observedLines = normalizeDiffChangedLines(diff);
         return {
           versionIds: history.versions.map((version) => version.versionId),
           currentVersion: history.currentVersion,
@@ -241,6 +239,19 @@ async function executeCase(
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
+}
+
+export function normalizeDiffChangedLines(diff: string): string {
+  return diff
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => {
+      if (line.startsWith("--- version ")) return false;
+      if (line.startsWith("+++ version ")) return false;
+      return line.startsWith("-") || line.startsWith("+");
+    })
+    .join("|");
 }
 
 function versioningConfig(

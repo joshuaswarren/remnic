@@ -110,7 +110,34 @@ test("@remnic/server build verifies declared bin artifacts", async () => {
     /node scripts\/verify-bin\.mjs/,
     "@remnic/server build must verify the generated bin files before publish",
   );
+  assert.match(
+    packageJson.scripts.build,
+    /^npm run check-types && tsup\b/,
+    "@remnic/server build must typecheck before transpiling for publish",
+  );
   assert.equal(packageJson.scripts["verify:bin"], "node scripts/verify-bin.mjs");
+  assert.equal(packageJson.scripts.prepublishOnly, "npm run build");
+});
+
+test("@remnic/server bin wrapper help includes the CLI environment contract", async () => {
+  const { runServerBin } = await import("../packages/remnic-server/bin/server-bin.js") as {
+    runServerBin: (
+      commandName: string,
+      options: { argv: string[]; stdout: (text: string) => void },
+    ) => Promise<void>;
+  };
+  const output: string[] = [];
+
+  await runServerBin("remnic-server", {
+    argv: ["--help"],
+    stdout: (text) => output.push(text),
+  });
+
+  const help = output.join("");
+  assert.match(help, /Environment:/);
+  assert.match(help, /REMNIC_CONFIG_PATH/);
+  assert.match(help, /REMNIC_MEMORY_DIR/);
+  assert.match(help, /OPENAI_API_KEY/);
 });
 
 test("legacy OpenClaw Engram shim package ships its postinstall script", async () => {

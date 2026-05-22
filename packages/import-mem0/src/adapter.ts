@@ -82,6 +82,11 @@ export const adapter: ImporterAdapter<ParsedMem0Export> = {
     // without patching. Codex review on PR #602.
     const listPath =
       overrideClientOptionsForTesting?.listPath ?? process.env.MEM0_LIST_PATH;
+    const legacyGet =
+      overrideClientOptionsForTesting?.legacyGet ??
+      parseBooleanEnv(process.env.MEM0_LEGACY_GET);
+    const filters =
+      overrideClientOptionsForTesting?.filters ?? parseJsonObjectEnv("MEM0_FILTERS", process.env.MEM0_FILTERS);
     const importedFromPath = baseUrl ?? "https://api.mem0.ai";
     // Forward the validated CLI `--rate-limit` (now carried through
     // ImporterParseOptions.rateLimit by runImporter) into the fetch client
@@ -93,6 +98,8 @@ export const adapter: ImporterAdapter<ParsedMem0Export> = {
       apiKey,
       ...(baseUrl !== undefined ? { baseUrl } : {}),
       ...(listPath !== undefined ? { listPath } : {}),
+      ...(legacyGet !== undefined ? { legacyGet } : {}),
+      ...(filters !== undefined ? { filters } : {}),
       ...(rateLimit !== undefined ? { rateLimit } : {}),
       ...(overrideClientOptionsForTesting?.fetchImpl
         ? { fetchImpl: overrideClientOptionsForTesting.fetchImpl }
@@ -126,3 +133,25 @@ export const adapter: ImporterAdapter<ParsedMem0Export> = {
 
 /** Alias kept for symmetry with other @remnic/import-* packages. */
 export const mem0Adapter = adapter;
+
+function parseBooleanEnv(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`MEM0_LEGACY_GET must be a boolean-like value, got ${value}`);
+}
+
+function parseJsonObjectEnv(name: string, value: string | undefined): Record<string, unknown> | undefined {
+  if (value === undefined || value.trim().length === 0) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (err) {
+    throw new Error(`${name} must be valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${name} must be a JSON object`);
+  }
+  return parsed as Record<string, unknown>;
+}

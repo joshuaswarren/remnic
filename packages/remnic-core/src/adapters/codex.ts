@@ -11,7 +11,11 @@ import { headerValue, type AdapterContext, type EngramAdapter, type ResolvedIden
  * http_headers in ~/.codex/config.toml:
  *   [mcp_servers.engram]
  *   url = "http://localhost:4318/mcp"
- *   http_headers = { "X-Engram-Namespace" = "my-project", "X-Engram-Principal" = "codex-agent" }
+ *   http_headers = { "X-Engram-Namespace" = "my-project" }
+ *
+ * Principal overrides are intentionally handled only by the HTTP server's
+ * trustPrincipalHeader gate. Adapters must not independently trust
+ * X-Engram-Principal.
  *
  * Codex also sends a custom "sandbox_state" RPC notification after
  * init with sandbox policy info (read-only/writable paths).
@@ -38,20 +42,15 @@ export class CodexAdapter implements EngramAdapter {
     // MCP session ID (standard MCP header, server-assigned)
     const mcpSessionId = headerValue(context.headers, "mcp-session-id");
 
-    // Principal: explicit header > default
-    const principal = headerValue(context.headers, "x-engram-principal")
-      || "codex";
-
     // Namespace: explicit header > default
     const namespace = headerValue(context.headers, "x-engram-namespace")
       || "codex";
 
     return {
       namespace,
-      principal,
+      principal: "codex",
       sessionKey: mcpSessionId ?? context.sessionKey,
       adapterId: this.id,
     };
   }
 }
-

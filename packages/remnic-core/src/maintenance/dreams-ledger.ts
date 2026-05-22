@@ -346,18 +346,25 @@ export async function runDreamsPhase(
           // No ledger yet — zero items.
         }
         const lines = raw.split("\n").filter((l) => l.trim().length > 0);
-        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+        const nowMs = Date.now();
+        const cutoff = nowMs - 24 * 60 * 60 * 1000;
         itemsProcessed = lines.filter((line) => {
           try {
-            const obj = JSON.parse(line) as { timestamp?: string; ts?: string };
-            const timestamp = typeof obj.ts === "string"
-              ? obj.ts
-              : typeof obj.timestamp === "string"
-                ? obj.timestamp
-                : null;
+            const obj = JSON.parse(line) as {
+              hour?: string;
+              timestamp?: string;
+              ts?: string;
+            };
+            const timestamp = typeof obj.hour === "string"
+              ? obj.hour
+              : typeof obj.ts === "string"
+                ? obj.ts
+                : typeof obj.timestamp === "string"
+                  ? obj.timestamp
+                  : null;
             if (!timestamp) return false;
             const ms = Date.parse(timestamp);
-            return Number.isFinite(ms) && ms >= cutoff;
+            return Number.isFinite(ms) && ms >= cutoff && ms < nowMs;
           } catch {
             return false;
           }

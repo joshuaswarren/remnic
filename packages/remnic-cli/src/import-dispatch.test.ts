@@ -338,6 +338,31 @@ describe("runImportCommand — slice 1 integration", () => {
     // Install-hint miss must happen before any write target is requested.
     assert.equal(writeTargetCalls, 0);
   });
+
+  it("rejects ZIP --file inputs instead of decoding binary archives as UTF-8 text", async () => {
+    const { target } = makeTarget();
+    const adapter = makeFakeAdapter([]);
+    const { io } = makeIo({ adapter, target });
+
+    await assert.rejects(
+      () =>
+        runImportCommand(
+          {
+            adapter: "chatgpt",
+            file: "/tmp/export.ZIP",
+            dryRun: true,
+            includeConversations: false,
+          },
+          {
+            ...io,
+            readFile: async () => {
+              throw new Error("ZIP path should be rejected before reading");
+            },
+          },
+        ),
+      /ZIP imports are not supported by --file yet/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

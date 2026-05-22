@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { log } from "./logger.js";
 import { LocalLlmClient } from "./local-llm.js";
-import { FallbackLlmClient } from "./fallback-llm.js";
+import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig } from "./fallback-llm.js";
 import { ModelRegistry } from "./model-registry.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import type { HourlySummary, TranscriptEntry, PluginConfig, GatewayConfig } from "./types.js";
@@ -20,7 +20,8 @@ import {
 // Schema for LLM summary output
 const HourlySummarySchema = z.object({
   bullets: z
-    .array(z.string())
+    .array(z.string().trim().min(1))
+    .min(1)
     .describe("3-5 bullet points summarizing the hour's activity"),
 });
 
@@ -42,6 +43,10 @@ type HourlySummaryExtendedMeta = {
   toolCounts: Record<string, number>;
 };
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export class HourlySummarizer {
   private summariesDir: string;
   private config: PluginConfig;
@@ -60,9 +65,10 @@ export class HourlySummarizer {
     this.localLlm = new LocalLlmClient(config, this.modelRegistry);
 
     // Initialize fallback client with gateway config
-    this.fallbackLlm = new FallbackLlmClient(gatewayConfig, {
-      workspaceDir: config.workspaceDir,
-    });
+    this.fallbackLlm = new FallbackLlmClient(
+      gatewayConfig,
+      fallbackLlmRuntimeContextFromConfig(config),
+    );
 
     if (!gatewayConfig?.agents?.defaults?.model?.primary && !config.localLlmEnabled && config.modelSource !== "gateway") {
       log.warn("no gateway default AI and local LLM disabled — hourly summarization disabled");
@@ -380,9 +386,7 @@ Respond with valid JSON matching this schema:
       for (const candidate of extractJsonCandidates(content)) {
         try {
           const parsed = JSON.parse(candidate);
-          return {
-            bullets: Array.isArray((parsed as any).bullets) ? (parsed as any).bullets : [],
-          };
+          return HourlySummarySchema.parse(parsed);
         } catch {
           // keep trying candidates
         }
@@ -421,17 +425,19 @@ Respond with valid JSON matching this schema:
     const hourHeader = `## ${hourStr}:00`;
     if (existingContent.includes(hourHeader)) {
       // Replace existing hour section
-      const beforeHour = existingContent.split(hourHeader)[0];
-      const afterMatch = existingContent.split(hourHeader)[1];
-      const afterHour = afterMatch ? afterMatch.split("\n## ")[1] : undefined;
-
+      const headerMatch = new RegExp(`(^|\\n)${escapeRegExp(hourHeader)}\\n`).exec(existingContent);
+      const sectionStart = headerMatch
+        ? headerMatch.index + headerMatch[1].length
+        : existingContent.indexOf(hourHeader);
+      const nextHeaderPattern = /\n## \d{2}:00\n/g;
+      nextHeaderPattern.lastIndex = sectionStart + hourHeader.length;
+      const nextHeader = nextHeaderPattern.exec(existingContent);
+      const beforeHour = existingContent.slice(0, sectionStart);
+      const afterHour = nextHeader
+        ? existingContent.slice(nextHeader.index + 1)
+        : "";
       const newSection = this.formatHourSection(summary, hourHeader);
-
-      if (afterHour) {
-        existingContent = beforeHour + newSection + "\n## " + afterHour;
-      } else {
-        existingContent = beforeHour + newSection;
-      }
+      existingContent = beforeHour + newSection.trimEnd() + (afterHour ? "\n\n" + afterHour : "\n");
 
       await writeFile(filePath, existingContent, "utf-8");
       log.debug(`updated hourly summary for ${summary.sessionKey} at ${hourStr}:00`);

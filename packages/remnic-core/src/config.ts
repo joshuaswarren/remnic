@@ -28,6 +28,7 @@ import { log } from "./logger.js";
 import { cloneDefaultSessionObserverBands } from "./session-observer-bands.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { normalizeEntitySchemas } from "./entity-schema.js";
+import { expandTildePath } from "./utils/path.js";
 // Finding 4 (#394): use the shared coerce helper instead of inlining the same
 // boolean-coercion logic that connectors/index.ts already exports. The helper
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
@@ -165,6 +166,46 @@ function parseIntegerAtLeast(
   return coerced;
 }
 
+function parseOptionalIntegerAtLeast(
+  value: unknown,
+  min: number,
+  keyName: string,
+): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const coerced = coerceNumber(value);
+  if (
+    coerced === undefined ||
+    !Number.isFinite(coerced) ||
+    !Number.isInteger(coerced) ||
+    coerced < min
+  ) {
+    throw new Error(
+      `${keyName} must be an integer greater than or equal to ${min}; got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
+}
+
+function parsePortNumber(
+  value: unknown,
+  fallback: number,
+  keyName: string,
+): number {
+  if (value === undefined || value === null) return fallback;
+  const coerced = coerceNumber(value);
+  if (
+    coerced === undefined ||
+    !Number.isInteger(coerced) ||
+    coerced < 0 ||
+    coerced > 65535
+  ) {
+    throw new Error(
+      `${keyName} must be an integer from 0 to 65535; got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
+}
+
 // Coerce common string/number representations of a boolean to a real boolean.
 // Returns `undefined` when the value cannot be interpreted, so callers can
 // fall back to their own default. Guards against the "string `false` is
@@ -231,6 +272,17 @@ function parseAgentAccessAuthToken(raw: unknown): import("./types.js").AgentAcce
     "unsupported SecretRef shape for agentAccessHttp.authToken — " +
       "expected a string or an object with a non-empty `source` field " +
       "(see https://github.com/joshuaswarren/remnic/issues/757)",
+  );
+}
+
+function parseAgentAccessPrincipal(raw: unknown): string | undefined {
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    return resolveEnvVars(raw);
+  }
+  return (
+    readEnvVar("OPENCLAW_REMNIC_ACCESS_PRINCIPAL")?.trim() ||
+    readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() ||
+    undefined
   );
 }
 
@@ -957,7 +1009,7 @@ export function parseConfig(raw: unknown): PluginConfig {
 
   const memoryDir =
     typeof cfg.memoryDir === "string" && cfg.memoryDir.length > 0
-      ? cfg.memoryDir
+      ? expandTildePath(cfg.memoryDir)
       : DEFAULT_MEMORY_DIR;
   const rawIdentityInjectionMode = cfg.identityInjectionMode as string | undefined;
   const identityInjectionMode: IdentityInjectionMode =
@@ -1204,15 +1256,9 @@ export function parseConfig(raw: unknown): PluginConfig {
       typeof rawAgentAccessHttp?.host === "string" && rawAgentAccessHttp.host.trim().length > 0
         ? rawAgentAccessHttp.host.trim()
         : "127.0.0.1",
-    port:
-      typeof rawAgentAccessHttp?.port === "number"
-        ? Math.max(0, Math.floor(rawAgentAccessHttp.port))
-        : 4318,
+    port: parsePortNumber(rawAgentAccessHttp?.port, 4318, "agentAccessHttp.port"),
     [["auth", "Token"].join("")]: agentAccessAuthToken,
-    principal:
-      typeof rawAgentAccessHttp?.principal === "string" && rawAgentAccessHttp.principal.trim().length > 0
-        ? resolveEnvVars(rawAgentAccessHttp.principal)
-        : readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() || undefined,
+    principal: parseAgentAccessPrincipal(rawAgentAccessHttp?.principal),
     maxBodyBytes:
       typeof rawAgentAccessHttp?.maxBodyBytes === "number"
         ? Math.max(1, Math.floor(rawAgentAccessHttp.maxBodyBytes))
@@ -1389,7 +1435,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     ),
     workspaceDir:
       typeof cfg.workspaceDir === "string" && cfg.workspaceDir.length > 0
-        ? cfg.workspaceDir
+        ? expandTildePath(cfg.workspaceDir)
         : DEFAULT_WORKSPACE_DIR,
     captureMode,
     fileHygiene,
@@ -2152,7 +2198,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     localLlmTimeoutMs:
       parseBoundedIntegerMs(cfg.localLlmTimeoutMs, 180_000, 1, 86_400_000),
     localLlmMaxContext:
-      typeof cfg.localLlmMaxContext === "number" ? cfg.localLlmMaxContext : undefined,
+      parseOptionalIntegerAtLeast(cfg.localLlmMaxContext, 1024, "localLlmMaxContext"),
     // Observability (disabled by default to avoid log spam)
     slowLogEnabled: cfg.slowLogEnabled === true,
     slowLogThresholdMs:
@@ -3376,7 +3422,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     memoryExtensionsEnabled: cfg.memoryExtensionsEnabled !== false,
     memoryExtensionsRoot:
       typeof cfg.memoryExtensionsRoot === "string" && cfg.memoryExtensionsRoot.trim().length > 0
-        ? cfg.memoryExtensionsRoot.trim()
+        ? expandTildePath(cfg.memoryExtensionsRoot.trim())
         : "",
   };
 }

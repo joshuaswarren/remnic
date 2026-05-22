@@ -123,6 +123,33 @@ test("coding-recall: quick task caps still exercise workflow coverage", async ()
   assert.equal(task!.scores.workflow_coverage, 1);
 });
 
+test("coding-recall emits task completion callbacks in full mode", async () => {
+  const completed: Array<{ taskId: string; completedCount: number; totalCount?: number }> = [];
+
+  const result = await runCodingRecallBenchmark({
+    benchmark: codingRecallDefinition,
+    mode: "full",
+    seed: 0,
+    onTaskComplete(task, completedCount, totalCount) {
+      completed.push({ taskId: task.taskId, completedCount, totalCount });
+    },
+  } as unknown as Parameters<typeof runCodingRecallBenchmark>[0]);
+
+  assert.equal(result.results.tasks.length, 5);
+  assert.deepEqual(
+    completed.map((entry) => entry.taskId),
+    result.results.tasks.map((task) => task.taskId),
+  );
+  assert.deepEqual(
+    completed.map((entry) => entry.completedCount),
+    [1, 2, 3, 4, 5],
+  );
+  assert.deepEqual(
+    completed.map((entry) => entry.totalCount),
+    [5, 5, 5, 5, 5],
+  );
+});
+
 test("coding-recall: aggregates include all metrics", async () => {
   const result = await runCodingRecallBenchmark({
     benchmark: codingRecallDefinition,

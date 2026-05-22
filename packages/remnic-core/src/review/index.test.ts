@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import fs from "node:fs";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -46,6 +47,37 @@ test("listReviewItems applies reason filtering before enforcing the limit", asyn
 
   assert.deepEqual(result.items.map((item) => item.id), ["matching-review"]);
   assert.equal(result.total, 1);
+});
+
+test("listReviewItems stops reading review files after satisfying the limit", async (t) => {
+  const memoryDir = await makeMemoryDir(t);
+  const suggestionsDir = path.join(memoryDir, "suggestions");
+  await mkdir(suggestionsDir, { recursive: true });
+  await writeFile(path.join(suggestionsDir, "001.md"), reviewMarkdown("suggestion-1", "suggestion"), "utf8");
+  await writeFile(path.join(suggestionsDir, "002.md"), reviewMarkdown("suggestion-2", "suggestion"), "utf8");
+  await writeFile(path.join(suggestionsDir, "003.md"), reviewMarkdown("suggestion-3", "suggestion"), "utf8");
+
+  const originalReadFileSync = fs.readFileSync;
+  let reviewFileReads = 0;
+  fs.readFileSync = function readFileSyncWithCount(
+    filePath: fs.PathOrFileDescriptor,
+    options?: BufferEncoding | { encoding?: BufferEncoding | null; flag?: string } | null,
+  ) {
+    if (typeof filePath === "string" && filePath.startsWith(suggestionsDir) && filePath.endsWith(".md")) {
+      reviewFileReads += 1;
+    }
+    return originalReadFileSync.call(fs, filePath, options as never);
+  } as typeof fs.readFileSync;
+
+  try {
+    const result = listReviewItems({ memoryDir, limit: 1 });
+
+    assert.equal(result.items.length, 1);
+    assert.equal(result.total, 1);
+    assert.equal(reviewFileReads, 1);
+  } finally {
+    fs.readFileSync = originalReadFileSync;
+  }
 });
 
 test("flag updates low-confidence category items returned by listReviewItems", async (t) => {
@@ -122,6 +154,48 @@ Reviewed memory.`;
 
   assert.equal(result.message, "Item not found");
   assert.equal(await readFile(memoryPath, "utf8"), original);
+});
+
+test("review listing and actions ignore symlinked review roots", async (t) => {
+  const memoryDir = await makeMemoryDir(t);
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-review-outside-"));
+  t.after(() => rm(outsideDir, { recursive: true, force: true }));
+  const outsidePath = path.join(outsideDir, "victim.md");
+  await writeFile(outsidePath, reviewMarkdown("victim"), "utf8");
+
+  try {
+    await symlink(outsideDir, path.join(memoryDir, "review"), "dir");
+  } catch {
+    return;
+  }
+
+  assert.deepEqual(listReviewItems({ memoryDir }).items, []);
+  const result = performReview(memoryDir, "victim", "dismiss");
+
+  assert.equal(result.message, "Item not found");
+  assert.equal(await readFile(outsidePath, "utf8"), reviewMarkdown("victim"));
+});
+
+test("review listing and actions ignore symlinked category roots", async (t) => {
+  const memoryDir = await makeMemoryDir(t);
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-review-category-outside-"));
+  t.after(() => rm(outsideDir, { recursive: true, force: true }));
+  const outsideDateDir = path.join(outsideDir, "2026-05-17");
+  await mkdir(outsideDateDir, { recursive: true });
+  const outsidePath = path.join(outsideDateDir, "victim.md");
+  await writeFile(outsidePath, reviewMarkdown("category-victim"), "utf8");
+
+  try {
+    await symlink(outsideDir, path.join(memoryDir, "facts"), "dir");
+  } catch {
+    return;
+  }
+
+  assert.deepEqual(listReviewItems({ memoryDir }).items, []);
+  const result = performReview(memoryDir, "category-victim", "flag");
+
+  assert.equal(result.message, "Item not found");
+  assert.equal(await readFile(outsidePath, "utf8"), reviewMarkdown("category-victim"));
 });
 
 test("review actions can use the same custom confidence threshold as listReviewItems", async (t) => {

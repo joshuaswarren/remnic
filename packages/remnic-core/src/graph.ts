@@ -144,13 +144,16 @@ function isNodeError(err: unknown): err is NodeJS.ErrnoException {
   return typeof err === "object" && err !== null && "code" in err;
 }
 
-function parseEdgesJsonl(raw: string): GraphEdge[] {
+function parseEdgesJsonl(raw: string, expectedType: GraphType): GraphEdge[] {
   const edges: GraphEdge[] = [];
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      edges.push(JSON.parse(trimmed) as GraphEdge);
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (isValidGraphEdge(parsed, expectedType)) {
+        edges.push(parsed);
+      }
     } catch {
       // skip corrupt lines — fail-open for partial JSONL recovery
     }
@@ -171,7 +174,7 @@ export async function readEdges(memoryDir: string, type: GraphType): Promise<Gra
   const filePath = graphFilePath(memoryDir, type);
   try {
     const raw = await readFile(filePath, "utf8");
-    return parseEdgesJsonl(raw);
+    return parseEdgesJsonl(raw, type);
   } catch {
     return [];
   }
@@ -188,7 +191,7 @@ export async function readEdgesStrict(memoryDir: string, type: GraphType): Promi
   const filePath = graphFilePath(memoryDir, type);
   try {
     const raw = await readFile(filePath, "utf8");
-    return parseEdgesJsonl(raw);
+    return parseEdgesJsonl(raw, type);
   } catch (err) {
     if (isNodeError(err) && err.code === "ENOENT") {
       return [];

@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { AccessIdempotencyStore, setAccessIdempotencyTestHooks } from "../src/access-idempotency.js";
 
 test("access idempotency store refreshes when another process writes a key", async () => {
@@ -223,6 +224,84 @@ test("access idempotency key locks stay live while the guarded callback is still
 
       releaseFirstCallback?.();
       await Promise.all([firstLock, secondLock]);
+    } finally {
+      setAccessIdempotencyTestHooks(null);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("access idempotency stale lock cleanup does not delete a fresh contender lock", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-idempotency-stale-owner-"));
+  try {
+    const storeA = new AccessIdempotencyStore(memoryDir);
+    const storeB = new AccessIdempotencyStore(memoryDir);
+    const key = "shared-key";
+    const keyHash = createHash("sha256").update(key).digest("hex");
+    const lockDir = path.join(memoryDir, "state", "access-idempotency-locks");
+    const lockPath = path.join(lockDir, `${keyHash}.lock`);
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(lockPath, "stale-owner", "utf-8");
+    const staleTime = new Date(Date.now() - 10_000);
+    await utimes(lockPath, staleTime, staleTime);
+
+    let releaseFirstCleanup: (() => void) | null = null;
+    const firstCleanupPaused = new Promise<void>((resolve) => {
+      releaseFirstCleanup = resolve;
+    });
+    let firstCleanupEnteredResolve: (() => void) | null = null;
+    const firstCleanupEntered = new Promise<void>((resolve) => {
+      firstCleanupEnteredResolve = resolve;
+    });
+    let staleCleanupCalls = 0;
+
+    let releaseSecondCallback: (() => void) | null = null;
+    const secondCallbackPaused = new Promise<void>((resolve) => {
+      releaseSecondCallback = resolve;
+    });
+    let secondCallbackEnteredResolve: (() => void) | null = null;
+    const secondCallbackEntered = new Promise<void>((resolve) => {
+      secondCallbackEnteredResolve = resolve;
+    });
+    let firstCallbackEntered = false;
+
+    setAccessIdempotencyTestHooks({
+      lockTimeoutMs: 1_000,
+      staleLockMs: 100,
+      lockHeartbeatMs: 20,
+      beforeStaleLockUnlink: async () => {
+        staleCleanupCalls += 1;
+        if (staleCleanupCalls === 1) {
+          firstCleanupEnteredResolve?.();
+          await firstCleanupPaused;
+        }
+      },
+    });
+
+    try {
+      const firstLock = storeA.withKeyLock(key, async () => {
+        firstCallbackEntered = true;
+      });
+      await firstCleanupEntered;
+
+      const secondLock = storeB.withKeyLock(key, async () => {
+        secondCallbackEnteredResolve?.();
+        await secondCallbackPaused;
+      });
+      await secondCallbackEntered;
+
+      releaseFirstCleanup?.();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      assert.equal(
+        firstCallbackEntered,
+        false,
+        "first contender must not enter while the second contender holds the fresh lock",
+      );
+
+      releaseSecondCallback?.();
+      await Promise.all([firstLock, secondLock]);
+      assert.equal(firstCallbackEntered, true);
     } finally {
       setAccessIdempotencyTestHooks(null);
     }

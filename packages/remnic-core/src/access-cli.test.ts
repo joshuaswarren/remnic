@@ -6,7 +6,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { main, runCli, sanitizeAccessCliErrorMessage } from "./access-cli.js";
-import { PLUGIN_ID } from "./plugin-id.js";
+
+const OPENCLAW_REMNIC_PLUGIN_ID = "openclaw-remnic";
 
 async function rejectsUsage(argv: string[]): Promise<void> {
   await assert.rejects(
@@ -83,7 +84,7 @@ function writeOpenClawConfig(configPath: string, config: Record<string, unknown>
     JSON.stringify({
       plugins: {
         entries: {
-          [PLUGIN_ID]: { config },
+          [OPENCLAW_REMNIC_PLUGIN_ID]: { config },
         },
       },
     }),
@@ -274,6 +275,90 @@ test("access-cli browse uses OPENCLAW_CONFIG_PATH before legacy config path", as
       },
       async () => {
         await main(["browse", "--namespace", "team", "--limit", "1"]);
+      },
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("access-cli rejects OpenClaw configs without a Remnic plugin entry", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-access-cli-"));
+  try {
+    const configPath = path.join(tempDir, "openclaw.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: {
+          entries: {
+            "other-memory": {
+              config: {
+                memoryDir: path.join(tempDir, "foreign-memory"),
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    await withPatchedEnv(
+      {
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_ENGRAM_CONFIG_PATH: undefined,
+      },
+      async () => {
+        await assert.rejects(
+          async () => {
+            await main(["browse", "--limit", "1"]);
+          },
+          /does not contain an allowed Remnic plugin entry/,
+        );
+      },
+    );
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("access-cli rejects foreign OpenClaw memory slots even when Remnic is installed", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-access-cli-"));
+  try {
+    const configPath = path.join(tempDir, "openclaw.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        plugins: {
+          slots: {
+            memory: "other-memory",
+          },
+          entries: {
+            [OPENCLAW_REMNIC_PLUGIN_ID]: {
+              config: {
+                memoryDir: path.join(tempDir, "remnic-memory"),
+              },
+            },
+            "other-memory": {
+              config: {
+                memoryDir: path.join(tempDir, "foreign-memory"),
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    await withPatchedEnv(
+      {
+        OPENCLAW_CONFIG_PATH: configPath,
+        OPENCLAW_ENGRAM_CONFIG_PATH: undefined,
+      },
+      async () => {
+        await assert.rejects(
+          async () => {
+            await main(["browse", "--limit", "1"]);
+          },
+          /memory slot points to non-Remnic plugin "other-memory"/,
+        );
       },
     );
   } finally {

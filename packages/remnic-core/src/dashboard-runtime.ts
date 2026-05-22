@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { watch, type FSWatcher } from "node:fs";
+import { mkdirSync, watch, type FSWatcher } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -13,6 +13,7 @@ export interface DashboardServerOptions {
   port?: number;
   publicDir?: string;
   watchDebounceMs?: number;
+  authToken?: string;
 }
 
 export interface DashboardStatus {
@@ -37,6 +38,25 @@ function normalizeOriginHostname(hostname: string): string {
     return hostname.slice(1, -1);
   }
   return hostname;
+}
+
+function isLoopbackBindHost(host: string): boolean {
+  return LOOPBACK_HOSTS.has(normalizeOriginHostname(host.trim().toLowerCase()));
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  const aBuffer = Buffer.from(a);
+  const bBuffer = Buffer.from(b);
+  if (aBuffer.length !== bBuffer.length) return false;
+  return timingSafeEqual(aBuffer, bBuffer);
+}
+
+function parseDashboardPort(port: number | undefined): number {
+  if (port === undefined) return 0;
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error("dashboard port must be an integer from 0 to 65535");
+  }
+  return port;
 }
 
 function websocketAcceptKey(clientKey: string): string {
@@ -67,6 +87,7 @@ export class GraphDashboardServer {
   private readonly requestedPort: number;
   private readonly publicDir: string;
   private readonly watchDebounceMs: number;
+  private readonly authToken: string | null;
   private server: ReturnType<typeof createServer> | null = null;
   private watcher: FSWatcher | null = null;
   private clients = new Map<string, WsClient>();
@@ -83,14 +104,19 @@ export class GraphDashboardServer {
   constructor(options: DashboardServerOptions) {
     this.memoryDir = options.memoryDir;
     this.host = options.host?.trim() || "127.0.0.1";
-    this.requestedPort = Number.isFinite(options.port) ? Math.max(0, Math.floor(options.port ?? 0)) : 0;
+    this.requestedPort = parseDashboardPort(options.port);
     this.publicDir = options.publicDir ?? path.join(process.cwd(), "dashboard", "public");
     this.watchDebounceMs = Math.max(50, Math.floor(options.watchDebounceMs ?? 300));
+    const authToken = options.authToken?.trim();
+    this.authToken = authToken && authToken.length > 0 ? authToken : null;
   }
 
   async start(): Promise<DashboardStatus> {
     if (this.server) {
       return this.status();
+    }
+    if (!isLoopbackBindHost(this.host) && !this.authToken) {
+      throw new Error("dashboard auth token is required when binding to a non-loopback host");
     }
 
     await this.rebuildSnapshot();
@@ -177,6 +203,7 @@ export class GraphDashboardServer {
   private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = req.url ?? "/";
     if (req.method === "GET" && url === "/api/health") {
+      if (!this.authorizeHttpApi(req, res)) return;
       this.respondJson(res, 200, {
         ok: true,
         running: this.server !== null,
@@ -188,6 +215,7 @@ export class GraphDashboardServer {
       return;
     }
     if (req.method === "GET" && url === "/api/graph") {
+      if (!this.authorizeHttpApi(req, res)) return;
       this.respondJson(res, 200, this.graphSnapshot);
       return;
     }
@@ -208,6 +236,22 @@ export class GraphDashboardServer {
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("content-length", String(Buffer.byteLength(body)));
     res.end(body);
+  }
+
+  private authorizeHttpApi(req: IncomingMessage, res: ServerResponse): boolean {
+    if (!this.authToken) return true;
+    const header = req.headers.authorization;
+    const value = Array.isArray(header) ? header[0] : header;
+    const prefix = "Bearer ";
+    if (typeof value === "string" && value.startsWith(prefix)) {
+      const supplied = value.slice(prefix.length);
+      if (constantTimeEquals(supplied, this.authToken)) {
+        return true;
+      }
+    }
+    res.setHeader("www-authenticate", "Bearer");
+    this.respondJson(res, 401, { error: "Unauthorized" });
+    return false;
   }
 
   private async respondStatic(res: ServerResponse, filePath: string, contentType: string): Promise<void> {
@@ -233,6 +277,11 @@ export class GraphDashboardServer {
     }
     if (!this.isAllowedOrigin(origin)) {
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    if (!this.authorizeWebSocketUpgrade(req)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\n\r\n");
       socket.destroy();
       return;
     }
@@ -277,6 +326,39 @@ export class GraphDashboardServer {
     }
   }
 
+  private authorizeWebSocketUpgrade(req: IncomingMessage): boolean {
+    if (!this.authToken) return true;
+    const supplied = this.webSocketTokenFromUrl(req.url) ?? this.webSocketTokenFromProtocol(req);
+    return typeof supplied === "string" && constantTimeEquals(supplied, this.authToken);
+  }
+
+  private webSocketTokenFromUrl(rawUrl: string | undefined): string | null {
+    if (!rawUrl) return null;
+    try {
+      const parsed = new URL(rawUrl, `http://${this.host}:${this.boundPort}`);
+      const token = parsed.searchParams.get("token");
+      return token && token.length > 0 ? token : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private webSocketTokenFromProtocol(req: IncomingMessage): string | null {
+    const raw = req.headers["sec-websocket-protocol"];
+    const values = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(",") : [];
+    for (const value of values) {
+      const trimmed = value.trim();
+      const prefix = "remnic-token.";
+      if (!trimmed.startsWith(prefix)) continue;
+      try {
+        return Buffer.from(trimmed.slice(prefix.length), "base64url").toString("utf8");
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   private broadcast(payload: unknown): void {
     const frame = encodeTextFrame(JSON.stringify(payload));
     for (const [id, client] of this.clients.entries()) {
@@ -291,6 +373,7 @@ export class GraphDashboardServer {
   private startWatcher(): void {
     const graphDir = path.join(this.memoryDir, "state", "graphs");
     try {
+      mkdirSync(graphDir, { recursive: true });
       this.watcher = watch(graphDir, { persistent: false }, () => {
         this.scheduleRebuild();
       });
@@ -315,7 +398,13 @@ export class GraphDashboardServer {
     const previous = this.graphSnapshot;
     await this.rebuildSnapshot();
     const patch = diffGraphSnapshots(previous, this.graphSnapshot);
-    if (patch.addedEdges.length === 0 && patch.removedEdges.length === 0 && patch.addedNodes.length === 0 && patch.removedNodes.length === 0) {
+    if (
+      patch.addedEdges.length === 0 &&
+      patch.removedEdges.length === 0 &&
+      patch.updatedEdges.length === 0 &&
+      patch.addedNodes.length === 0 &&
+      patch.removedNodes.length === 0
+    ) {
       return;
     }
     this.broadcast({

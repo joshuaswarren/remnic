@@ -36,7 +36,10 @@ export const PROCEDURAL_RECALL_INTENT_FIXTURE: ProceduralRecallIntentCase[] = [
   { id: "explain", prompt: "Explain the difference between a fact and a principle memory", expectTaskInit: false },
 ];
 
-export const PROCEDURAL_RECALL_INTENT_SMOKE_FIXTURE = PROCEDURAL_RECALL_INTENT_FIXTURE.slice(0, 6);
+export const PROCEDURAL_RECALL_INTENT_SMOKE_FIXTURE = [
+  PROCEDURAL_RECALL_INTENT_FIXTURE.find((sample) => sample.id === "deploy-gateway")!,
+  PROCEDURAL_RECALL_INTENT_FIXTURE.find((sample) => sample.id === "memory-question")!,
+];
 
 export const PROCEDURAL_RECALL_E2E_FIXTURE: ProceduralRecallE2eCase[] = [
   {
@@ -77,4 +80,8 @@ export const PROCEDURAL_RECALL_E2E_FIXTURE: ProceduralRecallE2eCase[] = [
   },
 ];
 
-export const PROCEDURAL_RECALL_E2E_SMOKE_FIXTURE = PROCEDURAL_RECALL_E2E_FIXTURE.slice(0, 1);
+export const PROCEDURAL_RECALL_E2E_SMOKE_FIXTURE = [
+  PROCEDURAL_RECALL_E2E_FIXTURE.find((sample) => sample.id === "ranked-deploy")!,
+  PROCEDURAL_RECALL_E2E_FIXTURE.find((sample) => sample.id === "no-task-init")!,
+  PROCEDURAL_RECALL_E2E_FIXTURE.find((sample) => sample.id === "disabled-gate")!,
+];

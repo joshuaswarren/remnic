@@ -69,6 +69,118 @@ test("MemoryArena derives missing categories from the source filename", async ()
   }
 });
 
+test("MemoryArena rejects dataset tasks with no questions", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-memory-arena-"));
+  const datasetPath = path.join(tempDir, "shopping.jsonl");
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify({
+        id: 1,
+        category: "shopping",
+        questions: [],
+        answers: [],
+      }) + "\n",
+      "utf8",
+    );
+
+    await assert.rejects(
+      runMemoryArenaBenchmark({
+        benchmark: memoryArenaDefinition,
+        mode: "full",
+        datasetDir: tempDir,
+        system: {
+          async store() {},
+          async recall() {
+            return "";
+          },
+          async search() {
+            return [];
+          },
+          async reset() {},
+          async destroy() {},
+          async getStats() {
+            return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+          },
+          judge: {
+            async score() {
+              return 0;
+            },
+            async scoreWithMetrics() {
+              return {
+                score: 0,
+                tokens: { input: 0, output: 0 },
+                latencyMs: 0,
+                model: "judge-smoke",
+              };
+            },
+          },
+        },
+      }),
+      /MemoryArena dataset file shopping\.jsonl line 1 must include at least one question/,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("MemoryArena rejects dataset tasks with partial answer cardinality", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-memory-arena-"));
+  const datasetPath = path.join(tempDir, "shopping.jsonl");
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify({
+        id: 2,
+        category: "shopping",
+        questions: ["Which snack?", "Which drink?"],
+        answers: ["trail mix"],
+      }) + "\n",
+      "utf8",
+    );
+
+    await assert.rejects(
+      runMemoryArenaBenchmark({
+        benchmark: memoryArenaDefinition,
+        mode: "full",
+        datasetDir: tempDir,
+        system: {
+          async store() {},
+          async recall() {
+            return "";
+          },
+          async search() {
+            return [];
+          },
+          async reset() {},
+          async destroy() {},
+          async getStats() {
+            return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+          },
+          judge: {
+            async score() {
+              return 0;
+            },
+            async scoreWithMetrics() {
+              return {
+                score: 0,
+                tokens: { input: 0, output: 0 },
+                latencyMs: 0,
+                model: "judge-smoke",
+              };
+            },
+          },
+        },
+      }),
+      /MemoryArena dataset file shopping\.jsonl line 1 must include exactly one answer for each question; received 2 questions and 1 answers/,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("MemoryArena stored-line parser only maps selected-item markers to selected-item lines", () => {
   const { extractMemoryArenaStoredLineValue } = __memoryArenaTestHooks;
 
@@ -252,6 +364,135 @@ test("MemoryArena reports prerequisite drain failures before scoring follow-ups"
   assert.equal(task.scores.llm_judge, -1);
   assert.equal(task.scores.process_score, 0);
   assert.equal(task.details?.error, "MemoryArena prerequisite failed before bundled_shopping-t1-q1: MemoryArena drain failed after completed subtask 1: drain timed out");
+});
+
+test("MemoryArena reports group-travel initial seed failures before scoring", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-memory-arena-"));
+  const datasetPath = path.join(tempDir, "group_travel_planner.jsonl");
+  const completedCounts: number[] = [];
+  let recallCalls = 0;
+  let responderCalls = 0;
+  let judgeCalls = 0;
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify({
+        id: 31,
+        category: "group_travel_planner",
+        base_person: {
+          name: "Avery",
+          query: "Plan a base trip.",
+          daily_plans: {
+            days: "1",
+            current_city: "Paris",
+            transportation: "Train A",
+            breakfast: "Cafe Base",
+            attraction: "Museum Base",
+            lunch: "Bistro Base",
+            dinner: "Dinner Base",
+            accommodation: "Hotel Base",
+          },
+        },
+        questions: [
+          "Create the joined traveler plan using Avery's base trip.",
+        ],
+        answers: [
+          {
+            days: "1",
+            current_city: "Paris",
+            transportation: "Train A",
+            breakfast: "Cafe Base",
+            attraction: "Museum Base",
+            lunch: "Bistro Base",
+            dinner: "Dinner Base",
+            accommodation: "Hotel Base",
+          },
+        ],
+      }) + "\n",
+      "utf8",
+    );
+
+    const result = await runMemoryArenaBenchmark({
+      benchmark: memoryArenaDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          recallCalls += 1;
+          return "";
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async drain() {
+          throw new Error("initial drain timeout");
+        },
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond() {
+            responderCalls += 1;
+            return {
+              text: "should not be called",
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "memory-arena-test-responder",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            judgeCalls += 1;
+            return 0;
+          },
+          async scoreWithMetrics() {
+            judgeCalls += 1;
+            return {
+              score: 0,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "judge-smoke",
+            };
+          },
+        },
+      },
+      onTaskComplete(_task, completed) {
+        completedCounts.push(completed);
+      },
+    });
+
+    assert.equal(recallCalls, 0);
+    assert.equal(responderCalls, 0);
+    assert.equal(judgeCalls, 0);
+    assert.deepEqual(completedCounts, [1]);
+    assert.equal(result.results.tasks.length, 1);
+
+    const task = result.results.tasks[0]!;
+    assert.match(
+      task.actual,
+      /MemoryArena prerequisite failed before group_travel_planner-t31-q0/,
+    );
+    assert.match(task.actual, /MemoryArena initial task state failed/);
+    assert.match(task.actual, /initial drain timeout/);
+    assert.equal(task.scores.f1, -1);
+    assert.equal(task.scores.contains_answer, -1);
+    assert.equal(task.scores.llm_judge, -1);
+    assert.equal(task.scores.process_score, 0);
+    assert.equal(task.scores.task_success_rate, 0);
+    assert.equal(task.scores.plan_field_recall, 0);
+    assert.equal(task.scores.soft_process_score, 0);
+    assert.equal(
+      task.details?.initialSeedError,
+      "MemoryArena drain failed after initial task state: initial drain timeout",
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("MemoryArena accepts optional string-array backgrounds from dataset files", async () => {
@@ -771,6 +1012,87 @@ test("MemoryArena matches WebShop sidecar observations for ASIN-only options", a
       process.env.REMNIC_BENCH_MEMORY_ARENA_WEBSHOP_PRODUCTS =
         previousSidecarPath;
     }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("MemoryArena rejects longer ASIN-like sibling selections", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-memory-arena-"));
+  const datasetPath = path.join(tempDir, "bundled_shopping.jsonl");
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify({
+        id: 18,
+        category: "bundled_shopping",
+        questions: [
+          [
+            "Product 1:",
+            "### Select Sprinkles",
+            "**Goal:** Buy the dessert rose sprinkle mix.",
+            "**Available Options:**",
+            "- B08957C9ZH",
+            "- B08957C9ZHX",
+          ].join("\n"),
+        ],
+        answers: [
+          {
+            target_asin: "B08957C9ZH",
+            attributes: ["dessert rose", "sprinkle mix"],
+          },
+        ],
+      }) + "\n",
+      "utf8",
+    );
+
+    const result = await runMemoryArenaBenchmark({
+      benchmark: memoryArenaDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          return "";
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async drain() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond() {
+            return {
+              text: "target_asin: B08957C9ZHX; attributes: dessert rose, sprinkle mix",
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "responder-smoke",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 0;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 0,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "judge-smoke",
+            };
+          },
+        },
+      },
+    });
+
+    assert.equal(result.results.tasks[0]?.scores.item_selection_match, 0);
+    assert.equal(result.results.tasks[0]?.scores.process_score, 0);
+  } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
 });

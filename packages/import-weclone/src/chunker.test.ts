@@ -138,6 +138,16 @@ describe("chunkThreads", () => {
     );
   });
 
+  it("throws on non-finite or fractional maxTurnsPerChunk", () => {
+    const threads = [makeThread(5)];
+    for (const maxTurnsPerChunk of [Number.NaN, Number.POSITIVE_INFINITY, 2.5]) {
+      assert.throws(
+        () => chunkThreads(threads, { maxTurnsPerChunk }),
+        /maxTurnsPerChunk must be a finite integer/,
+      );
+    }
+  });
+
   it("throws on negative overlapTurns", () => {
     const threads = [makeThread(5)];
     assert.throws(
@@ -152,6 +162,16 @@ describe("chunkThreads", () => {
       () => chunkThreads(threads, { maxTurnsPerChunk: 5, overlapTurns: -100 }),
       /overlapTurns must be non-negative, received -100/,
     );
+  });
+
+  it("throws on non-finite or fractional overlapTurns", () => {
+    const threads = [makeThread(5)];
+    for (const overlapTurns of [Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      assert.throws(
+        () => chunkThreads(threads, { maxTurnsPerChunk: 5, overlapTurns }),
+        /overlapTurns must be a finite integer/,
+      );
+    }
   });
 
   it("throws when overlapTurns equals maxTurnsPerChunk", () => {

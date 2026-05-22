@@ -39,10 +39,10 @@ export interface ChatGPTSavedMemory {
   id?: string;
   /** The memory body. Required. */
   content: string;
-  /** ISO 8601 create timestamp. */
-  created_at?: string;
-  /** ISO 8601 last-update timestamp, if different from created_at. */
-  updated_at?: string;
+  /** ISO 8601 or epoch create timestamp. */
+  created_at?: string | number;
+  /** ISO 8601 or epoch last-update timestamp, if different from created_at. */
+  updated_at?: string | number;
   /** Soft-delete flag seen in 2025+ exports. When true, we skip the record. */
   deleted?: boolean;
   /** Whether the memory is pinned / manually curated. */
@@ -304,14 +304,18 @@ function normalizeSavedMemory(
   const normalized: ChatGPTSavedMemory = {
     content: content.trim(),
     ...(typeof v.id === "string" ? { id: v.id } : {}),
-    ...(typeof v.created_at === "string" ? { created_at: v.created_at } : {}),
-    ...(typeof v.updated_at === "string" ? { updated_at: v.updated_at } : {}),
+    ...(isRawChatGPTTimestamp(v.created_at) ? { created_at: v.created_at } : {}),
+    ...(isRawChatGPTTimestamp(v.updated_at) ? { updated_at: v.updated_at } : {}),
     ...(v.pinned === true ? { pinned: true } : {}),
     ...(Array.isArray(v.tags)
       ? { tags: v.tags.filter((t): t is string => typeof t === "string") }
       : {}),
   };
   return normalized;
+}
+
+function isRawChatGPTTimestamp(value: unknown): value is string | number {
+  return typeof value === "string" || typeof value === "number";
 }
 
 /**
@@ -330,8 +334,8 @@ export function collectUserTurnsFromConversation(
       if (text) {
         collected.push({
           content: text,
-          ...(asIsoString(msg.create_time ?? msg.update_time) !== undefined
-            ? { createdAt: asIsoString(msg.create_time ?? msg.update_time) as string }
+          ...(normalizeChatGPTTimestamp(msg.create_time ?? msg.update_time) !== undefined
+            ? { createdAt: normalizeChatGPTTimestamp(msg.create_time ?? msg.update_time) as string }
             : {}),
         });
       }
@@ -371,8 +375,8 @@ export function collectUserTurnsFromConversation(
       if (text) {
         collected.push({
           content: text,
-          ...(asIsoString(msg.create_time ?? msg.update_time) !== undefined
-            ? { createdAt: asIsoString(msg.create_time ?? msg.update_time) as string }
+          ...(normalizeChatGPTTimestamp(msg.create_time ?? msg.update_time) !== undefined
+            ? { createdAt: normalizeChatGPTTimestamp(msg.create_time ?? msg.update_time) as string }
             : {}),
         });
       }
@@ -410,7 +414,13 @@ function followCurrentNodeChain(
       return [];
     }
     chain.push(node);
-    cursor = node.parent ?? null;
+    const messageParent: string | null | undefined = node.message?.parent;
+    cursor =
+      typeof node.parent === "string" && node.parent.length > 0
+        ? node.parent
+        : typeof messageParent === "string" && messageParent.length > 0
+          ? messageParent
+          : null;
   }
   return chain.reverse();
 }
@@ -441,7 +451,7 @@ function toNumericTime(value: number | string | null | undefined): number {
   return 0;
 }
 
-function asIsoString(value: number | string | null | undefined): string | undefined {
+export function normalizeChatGPTTimestamp(value: number | string | null | undefined): string | undefined {
   if (value === null || value === undefined) return undefined;
   if (typeof value === "string") {
     // Already ISO? Accept.

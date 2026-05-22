@@ -800,7 +800,7 @@ let graphSim = null;
 /**
  * Run a Verlet-style force simulation on `nodes` / `edges`.
  * Mutates `nodes` in-place; every element gains `.x`, `.y`, `.vx`, `.vy`.
- * Returns a handle with `.stop()` and `.restart()`.
+ * Returns a handle with `.stop()`, `.restart()`, and `.reheat()`.
  */
 function createForceSimulation(nodes, edges, width, height) {
   const REPULSION = 6000;
@@ -894,6 +894,14 @@ function createForceSimulation(nodes, edges, width, height) {
     restart(drawFn) {
       this.stop();
       this.start(drawFn);
+    },
+    reheat(drawFn) {
+      if (drawFn) onDraw = drawFn;
+      if (!running) {
+        this.start(onDraw);
+        return;
+      }
+      if (onDraw) onDraw();
     },
   };
 }

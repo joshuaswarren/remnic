@@ -227,6 +227,7 @@ import {
   parseConnectorsListOptions,
   parseConnectorsRunName,
   parseConnectorsStatusOptions,
+  buildConnectorRowsFromDefinitions,
   renderConnectorsList,
   renderConnectorsRunResult,
   runConnectorPollOnce,
@@ -238,10 +239,21 @@ import {
   listConnectorStates,
   GOOGLE_DRIVE_CONNECTOR_ID,
   NOTION_CONNECTOR_ID,
+  GMAIL_CONNECTOR_ID,
+  GITHUB_CONNECTOR_ID,
   createGoogleDriveConnector,
   validateGoogleDriveConfig,
   createNotionConnector,
   validateNotionConfig,
+  createGmailConnector,
+  validateGmailConfig,
+  createGitHubConnector,
+  validateGitHubConfig,
+  type ConnectorConfig,
+  type ConnectorCursor,
+  type ConnectorDocument,
+  type ConnectorSyncStatus,
+  type LiveConnector,
 } from "./connectors/live/index.js";
 
 interface CliApi {
@@ -759,11 +771,13 @@ export interface DashboardStartCliCommandOptions {
   host?: string;
   port?: number;
   publicDir?: string;
+  authToken?: string;
   createServer?: (options: {
     memoryDir: string;
     host?: string;
     port?: number;
     publicDir?: string;
+    authToken?: string;
   }) => DashboardServerLike;
 }
 
@@ -821,6 +835,17 @@ let activeDashboardServer: DashboardServerLike | null = null;
 let dashboardOperationChain: Promise<void> = Promise.resolve();
 let activeAccessHttpServer: AccessHttpServerLike | null = null;
 let accessHttpOperationChain: Promise<void> = Promise.resolve();
+
+function parseDashboardPort(value: unknown, fallback = 4319): number {
+  if (value === undefined || value === null || String(value).trim().length === 0) {
+    return fallback;
+  }
+  const port = Number(String(value).trim());
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error("dashboard port must be an integer from 0 to 65535");
+  }
+  return port;
+}
 
 async function withWebDavLock<T>(operation: () => Promise<T>): Promise<T> {
   const run = webDavOperationChain.then(operation, operation);
@@ -2637,6 +2662,7 @@ export async function runDashboardStartCliCommand(
   options: DashboardStartCliCommandOptions,
 ): Promise<DashboardStatus> {
   return withDashboardLock(async () => {
+    const port = parseDashboardPort(options.port, 4319);
     if (activeDashboardServer) {
       const status = activeDashboardServer.status();
       if (status.running) return status;
@@ -2646,11 +2672,12 @@ export async function runDashboardStartCliCommand(
       new GraphDashboardServer({
         memoryDir: opts.memoryDir,
         host: opts.host,
-        port: opts.port,
+        port,
         publicDir: opts.publicDir,
+        authToken: opts.authToken,
       }));
 
-    const server = createServer(options);
+    const server = createServer({ ...options, port });
     activeDashboardServer = server;
     try {
       return await server.start();
@@ -4329,13 +4356,14 @@ export function registerCli(
       capsuleCmd
         .command("import")
         .description(
-          "Import a capsule archive into the memory directory. " +
+            "Import a capsule archive into the memory directory. " +
             "Auto-detects encrypted archives (REMNIC-ENC header); " +
-            "requires --encrypt-key-dir or the memory dir to have an unlocked secure-store.",
+            "requires the original passphrase or an unlocked secure-store.",
         )
         .argument("<archive>", "Path to the .capsule.json.gz (or .enc) archive")
         .option("--mode <mode>", "Conflict mode: skip (default), overwrite, fork", "skip")
         .option("--namespace <ns>", "Target namespace (v3.0+, default: config defaultNamespace)", "")
+        .option("--passphrase <passphrase>", "Original secure-store passphrase for encrypted format-v2 archive restore")
         .action(async (...args: unknown[]) => {
           const archivePath = args[0] ? String(args[0]) : "";
           const options = (args[1] ?? {}) as Record<string, unknown>;
@@ -4351,6 +4379,7 @@ export function registerCli(
             return;
           }
           const namespace = options.namespace ? String(options.namespace) : "";
+          const passphrase = typeof options.passphrase === "string" ? options.passphrase : undefined;
           const memoryDir = await resolveMemoryDirForNamespace(orchestrator, namespace, {
             rejectUnsupportedOverride: true,
           });
@@ -4361,6 +4390,7 @@ export function registerCli(
             root: memoryDir,
             mode: mode as "skip" | "overwrite" | "fork",
             memoryDir,
+            passphrase,
           });
           console.log(`Imported: ${result.imported.length} record(s)`);
           if (result.skipped.length > 0) {
@@ -5439,6 +5469,52 @@ export function registerCli(
       // orchestrator (CLAUDE.md rules 14 + 51).  Connector state is read from
       // `<memoryDir>/state/connectors/<id>.json` via `listConnectorStates`.
       {
+        function builtInConnectorDefinitions() {
+          const cfg = orchestrator.config.connectors;
+          return [
+            {
+              id: GOOGLE_DRIVE_CONNECTOR_ID,
+              displayName: "Google Drive",
+              enabled: cfg.googleDrive.enabled,
+              rawConfig: cfg.googleDrive,
+              enabledConfigPath: "connectors.googleDrive.enabled",
+              createConnector: () => createGoogleDriveConnector() as LiveConnector,
+              validateConfig: (raw: unknown) =>
+                validateGoogleDriveConfig(raw) as unknown as ConnectorConfig,
+            },
+            {
+              id: NOTION_CONNECTOR_ID,
+              displayName: "Notion",
+              enabled: cfg.notion.enabled,
+              rawConfig: cfg.notion,
+              enabledConfigPath: "connectors.notion.enabled",
+              createConnector: () => createNotionConnector() as LiveConnector,
+              validateConfig: (raw: unknown) =>
+                validateNotionConfig(raw) as unknown as ConnectorConfig,
+            },
+            {
+              id: GMAIL_CONNECTOR_ID,
+              displayName: "Gmail",
+              enabled: cfg.gmail.enabled,
+              rawConfig: cfg.gmail,
+              enabledConfigPath: "connectors.gmail.enabled",
+              createConnector: () => createGmailConnector() as LiveConnector,
+              validateConfig: (raw: unknown) =>
+                validateGmailConfig(raw) as unknown as ConnectorConfig,
+            },
+            {
+              id: GITHUB_CONNECTOR_ID,
+              displayName: "GitHub",
+              enabled: cfg.github.enabled,
+              rawConfig: cfg.github,
+              enabledConfigPath: "connectors.github.enabled",
+              createConnector: () => createGitHubConnector() as LiveConnector,
+              validateConfig: (raw: unknown) =>
+                validateGitHubConfig(raw) as unknown as ConnectorConfig,
+            },
+          ];
+        }
+
         /**
          * Build the list of known connector rows from parsed config +
          * persisted state.  Adding a new built-in connector here is a
@@ -5449,29 +5525,10 @@ export function registerCli(
           const states = await listConnectorStates(
             orchestrator.config.memoryDir,
           );
-          const stateMap = new Map(states.map((s) => [s.id, s]));
-          const builtIn: Array<{
-            id: string;
-            displayName: string;
-            enabled: boolean;
-          }> = [
-            {
-              id: GOOGLE_DRIVE_CONNECTOR_ID,
-              displayName: "Google Drive",
-              enabled: orchestrator.config.connectors.googleDrive.enabled,
-            },
-            {
-              id: NOTION_CONNECTOR_ID,
-              displayName: "Notion",
-              enabled: orchestrator.config.connectors.notion.enabled,
-            },
-          ];
-          return builtIn.map((c) => ({
-            id: c.id,
-            displayName: c.displayName,
-            enabled: c.enabled,
-            state: stateMap.get(c.id) ?? null,
-          }));
+          return buildConnectorRowsFromDefinitions(
+            builtInConnectorDefinitions(),
+            states,
+          );
         }
 
         const connectorsCmd = cmd
@@ -5573,9 +5630,7 @@ export function registerCli(
             // + config validator) differs.  Extract both as local closures so
             // adding a new connector is a one-liner (Cursor thread
             // PRRT_kwDORJXyws59slAJ — DRY the per-connector scaffolding).
-            const cfg = orchestrator.config.connectors;
-
-            const { readConnectorState, writeConnectorState } = await import(
+            const { readConnectorState, withConnectorStateLock, writeConnectorState } = await import(
               "./connectors/live/state-store.js"
             );
 
@@ -5585,7 +5640,7 @@ export function registerCli(
              * distil it into memories.  The title (when present) is prepended
              * as a Markdown heading to give the extractor extra context.
              */
-            const sharedIngestFn = async (docs: import("./connectors/live/index.js").ConnectorDocument[]) => {
+            const sharedIngestFn = async (docs: ConnectorDocument[]) => {
               const fetchedAt = new Date().toISOString();
               const turns = docs.map((doc) => ({
                 role: "assistant" as const,
@@ -5611,8 +5666,8 @@ export function registerCli(
                 lastSyncError,
                 totalDocsImported,
               }: {
-                cursor: import("./connectors/live/index.js").ConnectorCursor | null;
-                lastSyncStatus: import("./connectors/live/index.js").ConnectorSyncStatus;
+                cursor: ConnectorCursor | null;
+                lastSyncStatus: ConnectorSyncStatus;
                 lastSyncError?: string;
                 totalDocsImported: number;
               }) => {
@@ -5631,17 +5686,22 @@ export function registerCli(
               };
 
             let runResult: ConnectorRunResult;
-            if (name === GOOGLE_DRIVE_CONNECTOR_ID) {
-              if (!cfg.googleDrive.enabled) {
+            const connectorDefinition = builtInConnectorDefinitions().find(
+              (definition) => definition.id === name,
+            );
+            if (connectorDefinition) {
+              if (!connectorDefinition.enabled) {
                 process.stderr.write(
-                  `connectors run: connector "${name}" is disabled. Set connectors.googleDrive.enabled=true in config.\n`,
+                  `connectors run: connector "${name}" is disabled. Set ${connectorDefinition.enabledConfigPath}=true in config.\n`,
                 );
                 process.exitCode = 1;
                 return;
               }
               let validatedCfg;
               try {
-                validatedCfg = validateGoogleDriveConfig(cfg.googleDrive);
+                validatedCfg = connectorDefinition.validateConfig(
+                  connectorDefinition.rawConfig,
+                );
               } catch (err) {
                 process.stderr.write(
                   `connectors run: invalid config for "${name}": ${err instanceof Error ? err.message : String(err)}\n`,
@@ -5649,72 +5709,30 @@ export function registerCli(
                 process.exitCode = 1;
                 return;
               }
-              const connector = createGoogleDriveConnector();
-              const state = await readConnectorState(
-                orchestrator.config.memoryDir,
-                name,
-              );
-              // runConnectorPollOnce enforces: ingest docs BEFORE advancing the
-              // cursor (CLAUDE.md gotcha #25 + #43).  If ingestFn throws, the
-              // catch branch in runConnectorPollOnce writes the OLD cursor so
-              // the next poll re-fetches the same document window.
-              runResult = await runConnectorPollOnce({
-                connectorId: name,
-                priorState: state,
-                syncFn: (cursor) =>
-                  connector.syncIncremental({
-                    cursor,
-                    // GoogleDriveConnectorConfig is narrower than ConnectorConfig
-                    // (no index signature) but is structurally compatible at
-                    // runtime. Double-cast via unknown to satisfy the interface.
-                    config: validatedCfg as unknown as Record<string, unknown>,
-                  }),
-                ingestFn: sharedIngestFn,
-                writeCursorFn: makeWriteCursorFn(name),
-              });
-            } else if (name === NOTION_CONNECTOR_ID) {
-              if (!cfg.notion.enabled) {
-                process.stderr.write(
-                  `connectors run: connector "${name}" is disabled. Set connectors.notion.enabled=true in config.\n`,
+              const connector = connectorDefinition.createConnector();
+              runResult = await withConnectorStateLock(orchestrator.config.memoryDir, name, async () => {
+                const state = await readConnectorState(
+                  orchestrator.config.memoryDir,
+                  name,
                 );
-                process.exitCode = 1;
-                return;
-              }
-              let validatedCfg;
-              try {
-                validatedCfg = validateNotionConfig(cfg.notion);
-              } catch (err) {
-                process.stderr.write(
-                  `connectors run: invalid config for "${name}": ${err instanceof Error ? err.message : String(err)}\n`,
-                );
-                process.exitCode = 1;
-                return;
-              }
-              const connector = createNotionConnector();
-              const state = await readConnectorState(
-                orchestrator.config.memoryDir,
-                name,
-              );
-              // runConnectorPollOnce enforces: ingest docs BEFORE advancing the
-              // cursor (CLAUDE.md gotcha #25 + #43).  Same guarantee as the
-              // Drive block above — if ingestFn throws, old cursor is kept.
-              runResult = await runConnectorPollOnce({
-                connectorId: name,
-                priorState: state,
-                syncFn: (cursor) =>
-                  connector.syncIncremental({
-                    cursor,
-                    // NotionConnectorConfig is narrower than ConnectorConfig (no
-                    // index signature) but is structurally compatible at runtime.
-                    // Double-cast via unknown to satisfy the interface boundary.
-                    config: validatedCfg as unknown as Record<string, unknown>,
-                  }),
-                ingestFn: sharedIngestFn,
-                writeCursorFn: makeWriteCursorFn(name),
+                return runConnectorPollOnce({
+                  connectorId: name,
+                  priorState: state,
+                  syncFn: (cursor) =>
+                    connector.syncIncremental({
+                      cursor,
+                      config: validatedCfg,
+                    }),
+                  ingestFn: sharedIngestFn,
+                  writeCursorFn: makeWriteCursorFn(name),
+                });
               });
             } else {
+              const known = builtInConnectorDefinitions()
+                .map((definition) => definition.id)
+                .join(", ");
               process.stderr.write(
-                `connectors run: unknown connector "${name}". Known connectors: ${GOOGLE_DRIVE_CONNECTOR_ID}, ${NOTION_CONNECTOR_ID}.\n`,
+                `connectors run: unknown connector "${name}". Known connectors: ${known}.\n`,
               );
               process.exitCode = 1;
               return;
@@ -6838,14 +6856,15 @@ export function registerCli(
         .option("--host <host>", "Bind host", "127.0.0.1")
         .option("--port <n>", "Bind port", "4319")
         .option("--public-dir <path>", "Override static dashboard assets path")
+        .option("--token <token>", "Bearer token required for non-loopback dashboard API access")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
-          const portRaw = parseInt(String(options.port ?? "4319"), 10);
           const status = await runDashboardStartCliCommand({
             memoryDir: orchestrator.config.memoryDir,
             host: typeof options.host === "string" ? options.host : "127.0.0.1",
-            port: Number.isFinite(portRaw) ? portRaw : 4319,
+            port: parseDashboardPort(options.port, 4319),
             publicDir: typeof options.publicDir === "string" ? options.publicDir : undefined,
+            authToken: typeof options.token === "string" ? options.token : undefined,
           });
           console.log(JSON.stringify(status, null, 2));
           console.log("OK");
@@ -8770,7 +8789,7 @@ export function registerCli(
       const secureStoreCmd = cmd
         .command("secure-store")
         .description(
-          "At-rest encryption keyring (issue #690). Manage the secure-store header and the in-memory master key used by the running daemon.",
+          "At-rest encryption keyring (issue #690). Manage the secure-store header and the process-local in-memory master key.",
         );
 
       secureStoreCmd
@@ -8811,7 +8830,7 @@ export function registerCli(
       secureStoreCmd
         .command("unlock")
         .description(
-          "Unlock the secure-store. Prompts for the passphrase, validates it against the header verifier, and registers the master key in the daemon's in-memory keyring. The key is cleared on `lock`, daemon restart, or process exit.",
+          "Unlock the secure-store for this Remnic process. Prompts for the passphrase, validates it against the header verifier, and registers the master key in this process-local keyring. The key is cleared on `lock`, process restart, or process exit.",
         )
         .option("--json", "Emit machine-readable JSON only")
         .action(async (...args: unknown[]) => {
@@ -8839,7 +8858,7 @@ export function registerCli(
       secureStoreCmd
         .command("lock")
         .description(
-          "Lock the secure-store. Clears the master key from the daemon's in-memory keyring. Idempotent — succeeds even if the store is already locked.",
+          "Lock the secure-store in this Remnic process. Clears the master key from the process-local in-memory keyring. Idempotent — succeeds even if this process is already locked.",
         )
         .option("--json", "Emit machine-readable JSON only")
         .action(async (...args: unknown[]) => {
@@ -8864,11 +8883,14 @@ export function registerCli(
         .option("--json", "Emit machine-readable JSON only")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
-          const { runSecureStoreMigrate, renderMigrateReport } = await import(
+          const { runSecureStoreMigrate, renderMigrateReport, createPassphraseReader } = await import(
             "./secure-store/index.js"
           );
           const memoryDir = expandTildePath(orchestrator.config.memoryDir);
-          const report = await runSecureStoreMigrate({ memoryDir });
+          const report = await runSecureStoreMigrate({
+            memoryDir,
+            readPassphrase: createPassphraseReader(),
+          });
           if (options.json === true) {
             console.log(JSON.stringify(report, null, 2));
           } else {
@@ -8880,11 +8902,14 @@ export function registerCli(
         });
 
       async function runSecureStoreDisableCommand(options: Record<string, unknown>): Promise<void> {
-        const { runSecureStoreDisable, renderDisableReport } = await import(
+        const { runSecureStoreDisable, renderDisableReport, createPassphraseReader } = await import(
           "./secure-store/index.js"
         );
         const memoryDir = expandTildePath(orchestrator.config.memoryDir);
-        const report = await runSecureStoreDisable({ memoryDir });
+        const report = await runSecureStoreDisable({
+          memoryDir,
+          readPassphrase: createPassphraseReader(),
+        });
         if (options.json === true) {
           console.log(JSON.stringify(report, null, 2));
         } else {
@@ -8918,7 +8943,7 @@ export function registerCli(
       secureStoreCmd
         .command("status")
         .description(
-          "Report secure-store status: whether a header exists, whether the daemon currently holds the key, KDF parameters, and last-unlock timestamp.",
+          "Report secure-store status: whether a header exists, whether this Remnic process currently holds the key, KDF parameters, and last-unlock timestamp.",
         )
         .option("--json", "Emit machine-readable JSON only")
         .action(async (...args: unknown[]) => {

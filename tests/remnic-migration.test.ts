@@ -305,6 +305,78 @@ test("migrateFromEngram rejects a symlinked legacy root before writing the marke
   assert.equal(existsSync(path.join(homeDir, ".remnic", ".migrated-from-engram")), false);
 });
 
+test("migrateFromEngram skips symlinked connector configs without rewriting the target", {
+  skip: process.platform === "win32",
+}, async () => {
+  const homeDir = await makeTempHome("remnic-migrate-connector-config-symlink-");
+  const legacyRoot = path.join(homeDir, ".engram");
+  const outsideConfig = path.join(homeDir, "outside-connector.json");
+  const connectorLink = path.join(homeDir, ".claude.json");
+
+  await mkdir(legacyRoot, { recursive: true });
+  await writeFile(path.join(legacyRoot, "tokens.json"), JSON.stringify({ tokens: [] }), "utf8");
+  await writeFile(
+    outsideConfig,
+    JSON.stringify({ mcpServers: { engram: { command: "engram" } } }, null, 2),
+    "utf8",
+  );
+  await symlink(outsideConfig, connectorLink);
+
+  const result = await migrateFromEngram({
+    homeDir,
+    cwd: homeDir,
+    quiet: true,
+    connectorConfigPaths: [connectorLink],
+  });
+
+  assert.equal(result.status, "migrated");
+  const outside = JSON.parse(await readFile(outsideConfig, "utf8")) as {
+    mcpServers: Record<string, unknown>;
+  };
+  assert.ok(outside.mcpServers.engram);
+  assert.equal(outside.mcpServers.remnic, undefined);
+});
+
+test("migrateFromEngram skips symlinked legacy config copies", {
+  skip: process.platform === "win32",
+}, async () => {
+  const homeDir = await makeTempHome("remnic-migrate-legacy-config-symlink-");
+  const legacyRoot = path.join(homeDir, ".engram");
+  const legacyConfig = path.join(homeDir, ".config", "engram", "config.json");
+  const outsideConfig = path.join(homeDir, "outside-config.json");
+  const remnicConfig = path.join(homeDir, ".config", "remnic", "config.json");
+
+  await mkdir(legacyRoot, { recursive: true });
+  await mkdir(path.dirname(legacyConfig), { recursive: true });
+  await writeFile(path.join(legacyRoot, "tokens.json"), JSON.stringify({ tokens: [] }), "utf8");
+  await writeFile(outsideConfig, JSON.stringify({ engram: { memoryDir: "/outside" } }), "utf8");
+  await symlink(outsideConfig, legacyConfig);
+
+  const result = await migrateFromEngram({ homeDir, cwd: homeDir, quiet: true });
+
+  assert.equal(result.status, "migrated");
+  assert.equal(existsSync(remnicConfig), false);
+  assert.equal(result.copied.includes(remnicConfig), false);
+});
+
+test("migrateFromEngram rejects symlinked legacy token stores before marker write", {
+  skip: process.platform === "win32",
+}, async () => {
+  const homeDir = await makeTempHome("remnic-migrate-token-symlink-");
+  const legacyRoot = path.join(homeDir, ".engram");
+  const outsideTokens = path.join(homeDir, "outside-tokens.json");
+
+  await mkdir(legacyRoot, { recursive: true });
+  await writeFile(outsideTokens, JSON.stringify({ tokens: [] }), "utf8");
+  await symlink(outsideTokens, path.join(legacyRoot, "tokens.json"));
+
+  await assert.rejects(
+    migrateFromEngram({ homeDir, cwd: homeDir, quiet: true }),
+    /legacy Engram token store must not be a symlink/,
+  );
+  assert.equal(existsSync(path.join(homeDir, ".remnic", ".migrated-from-engram")), false);
+});
+
 test("migrateFromEngram is idempotent after the marker is written", async () => {
   const homeDir = await makeTempHome("remnic-migrate-idempotent-");
 
@@ -528,6 +600,45 @@ test("migrateFromEngram recovers from a malformed remnic token store by rebuildi
     { connector: "codex", token: "remnic_cx_legacy" },
   ]);
   await assertOwnerOnlyMode(remnicTokensPath);
+});
+
+test("migrateFromEngram rejects existing remnic token-store symlinks", async () => {
+  const homeDir = await makeTempHome("remnic-migrate-token-symlink-");
+  const legacyRoot = path.join(homeDir, ".engram");
+  const remnicRoot = path.join(homeDir, ".remnic");
+  const remnicTokensPath = path.join(remnicRoot, "tokens.json");
+  const externalTokensPath = path.join(homeDir, "external-tokens.json");
+  const externalOriginal = JSON.stringify({ tokens: [{ connector: "external", token: "keep", createdAt: "2026-04-08T00:00:00.000Z" }] });
+
+  await mkdir(legacyRoot, { recursive: true });
+  await mkdir(remnicRoot, { recursive: true });
+  await writeFile(
+    path.join(legacyRoot, "tokens.json"),
+    JSON.stringify({
+      tokens: [
+        { connector: "codex", token: "engram_cx_legacy", createdAt: "2026-04-08T00:00:00.000Z" },
+      ],
+    }),
+    "utf8",
+  );
+  await writeFile(externalTokensPath, externalOriginal, "utf8");
+  try {
+    await symlink(externalTokensPath, remnicTokensPath);
+  } catch {
+    return;
+  }
+
+  await assert.rejects(
+    () => migrateFromEngram({
+      homeDir,
+      cwd: homeDir,
+      quiet: true,
+    }),
+    /Remnic token store must not be a symlink/,
+  );
+
+  assert.equal(await readFile(externalTokensPath, "utf8"), externalOriginal);
+  assert.equal(existsSync(path.join(homeDir, ".remnic", ".migrated-from-engram")), false);
 });
 
 test("migrateFromEngram clears malformed migration locks before acquiring a fresh lock", async () => {
@@ -800,6 +911,64 @@ test("rollbackFromEngramMigration removes files created from first-run legacy co
   assert.equal(existsSync(remnicLogPath), false);
   assert.equal(existsSync(remnicConfig), false);
   assert.equal(existsSync(path.join(homeDir, ".remnic", ".migrated-from-engram")), false);
+});
+
+test("migration retry preserves rollback entries created before a failed first run", async () => {
+  const homeDir = await makeTempHome("remnic-migrate-retry-manifest-");
+  const legacyRoot = path.join(homeDir, ".engram");
+  const remnicTokensPath = path.join(homeDir, ".remnic", "tokens.json");
+  const remnicLogPath = path.join(homeDir, ".remnic", "logs", "daemon.log");
+  const badConnectorPath = path.join(homeDir, "bad-connector-config");
+
+  await mkdir(path.join(legacyRoot, "logs"), { recursive: true });
+  await writeFile(path.join(legacyRoot, "tokens.json"), JSON.stringify({ tokens: [] }), "utf8");
+  await writeFile(path.join(legacyRoot, "logs", "daemon.log"), "legacy log\n", "utf8");
+  await mkdir(badConnectorPath, { recursive: true });
+
+  await assert.rejects(
+    () => migrateFromEngram({
+      homeDir,
+      cwd: homeDir,
+      quiet: true,
+      connectorConfigPaths: [badConnectorPath],
+    }),
+    (err: unknown) => (err as NodeJS.ErrnoException).code === "EISDIR",
+  );
+
+  assert.equal(existsSync(remnicTokensPath), true);
+  assert.equal(existsSync(remnicLogPath), true);
+  assert.equal(existsSync(path.join(homeDir, ".remnic", ".rollback.json")), true);
+  assert.equal(existsSync(path.join(homeDir, ".remnic", ".migrated-from-engram")), false);
+
+  const result = await migrateFromEngram({
+    homeDir,
+    cwd: homeDir,
+    quiet: true,
+    connectorConfigPaths: [],
+  });
+  assert.equal(result.status, "migrated");
+
+  const manifest = JSON.parse(await readFile(path.join(homeDir, ".remnic", ".rollback.json"), "utf8")) as {
+    entries: Array<{ targetPath: string; createdByMigration?: boolean }>;
+  };
+  const createdTargets = new Set(
+    manifest.entries
+      .filter((entry) => entry.createdByMigration)
+      .map((entry) => entry.targetPath),
+  );
+  assert.ok(createdTargets.has(remnicTokensPath), "expected retry manifest to retain token store");
+  assert.ok(createdTargets.has(remnicLogPath), "expected retry manifest to retain copied log");
+
+  const rollback = await rollbackFromEngramMigration({
+    homeDir,
+    cwd: homeDir,
+    quiet: true,
+  });
+
+  assert.ok(rollback.removed.includes(remnicTokensPath));
+  assert.ok(rollback.removed.includes(remnicLogPath));
+  assert.equal(existsSync(remnicTokensPath), false);
+  assert.equal(existsSync(remnicLogPath), false);
 });
 
 test("rollbackFromEngramMigration reloads systemd after removing migrated unit files", async () => {

@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { exportJsonBundle } from "../src/transfer/export-json.js";
 import { importJsonBundle } from "../src/transfer/import-json.js";
-import { sha256String } from "../src/transfer/fs-utils.js";
+import {
+  prepareSafeArchiveRoot,
+  resolveSafeArchiveTarget,
+  sha256String,
+  writeSafeArchiveTarget,
+} from "../src/transfer/fs-utils.js";
 import { writeFixtureMemoryDir, writeSensitiveTransferFixtureEntries } from "./transfer-fixtures.js";
 
 async function assertPathMissing(filePath: string): Promise<void> {
@@ -270,4 +275,49 @@ test("json import rejects paths whose existing parent is a symlink", async (t) =
     /symlink/i,
   );
   await assertPathMissing(outsidePath);
+});
+
+test("safe archive writes revalidate target symlinks after earlier path resolution", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("file symlink setup is platform-specific");
+    return;
+  }
+
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "engram-import-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "engram-outside-"));
+  const outsidePath = path.join(outsideDir, "outside.md");
+  await writeFile(outsidePath, "external original\n", "utf-8");
+
+  const root = await prepareSafeArchiveRoot(
+    targetDir,
+    "importJsonBundle",
+    "targetMemoryDir",
+  );
+  await resolveSafeArchiveTarget(root, "profile.md");
+  await symlink(outsidePath, path.join(targetDir, "profile.md"), "file");
+
+  await assert.rejects(
+    writeSafeArchiveTarget(root, "profile.md", "incoming profile\n"),
+    /targets a symlink/i,
+  );
+  assert.equal(await readFile(outsidePath, "utf-8"), "external original\n");
+});
+
+test("safe archive write failures remove temporary import files", async () => {
+  const targetDir = await mkdtemp(path.join(os.tmpdir(), "engram-import-"));
+  await mkdir(path.join(targetDir, "profile.md"));
+
+  const root = await prepareSafeArchiveRoot(
+    targetDir,
+    "importJsonBundle",
+    "targetMemoryDir",
+  );
+
+  await assert.rejects(
+    writeSafeArchiveTarget(root, "profile.md", "incoming profile\n"),
+  );
+  const leftovers = (await readdir(targetDir)).filter((entry) =>
+    entry.startsWith(".remnic-import-") && entry.endsWith(".tmp"),
+  );
+  assert.deepEqual(leftovers, []);
 });

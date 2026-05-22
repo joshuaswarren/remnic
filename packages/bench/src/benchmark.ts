@@ -208,26 +208,60 @@ function benchmarkDefinition(id: string): BenchmarkDefinition {
 
 export function loadBaseline(baselinePath?: string): SavedBaseline | undefined {
   const resolvedPath = baselinePath ?? DEFAULT_BASELINE_PATH;
-  if (!fs.existsSync(resolvedPath)) {
-    return undefined;
+  let rawText: string;
+  try {
+    rawText = fs.readFileSync(resolvedPath, "utf8");
+  } catch (err) {
+    if (isNodeError(err) && err.code === "ENOENT") {
+      return undefined;
+    }
+    throw err;
   }
 
+  let raw: unknown;
   try {
-    const raw = JSON.parse(fs.readFileSync(resolvedPath, "utf8"));
-    if (raw.version !== BASELINE_VERSION) {
-      console.warn(
-        `Baseline version mismatch: expected ${BASELINE_VERSION}, got ${raw.version}`,
-      );
-    }
-    return raw as SavedBaseline;
-  } catch {
-    return undefined;
+    raw = JSON.parse(rawText);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse benchmark baseline at ${resolvedPath}: ${reason}`);
   }
+
+  if (!isSavedBaseline(raw)) {
+    throw new Error(`Invalid benchmark baseline shape at ${resolvedPath}`);
+  }
+
+  if (raw.version !== BASELINE_VERSION) {
+    console.warn(
+      `Baseline version mismatch: expected ${BASELINE_VERSION}, got ${raw.version}`,
+    );
+  }
+  return raw;
 }
 
 export function saveBaseline(baselinePath: string, baseline: SavedBaseline): void {
   fs.mkdirSync(path.dirname(baselinePath), { recursive: true });
   fs.writeFileSync(baselinePath, `${JSON.stringify(baseline, null, 2)}\n`);
+}
+
+function isSavedBaseline(value: unknown): value is SavedBaseline {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Partial<SavedBaseline>;
+  if (!Number.isFinite(candidate.version)) {
+    return false;
+  }
+  if (typeof candidate.timestamp !== "string") {
+    return false;
+  }
+  if (!candidate.metrics || typeof candidate.metrics !== "object" || Array.isArray(candidate.metrics)) {
+    return false;
+  }
+  return Object.values(candidate.metrics).every((metric) => Number.isFinite(metric));
+}
+
+function isNodeError(err: unknown): err is NodeJS.ErrnoException {
+  return typeof err === "object" && err !== null && "code" in err;
 }
 
 async function recallWithTiers(
@@ -357,7 +391,7 @@ export async function runExplain(
     query,
     tiersUsed: tiers,
     tierResults: tierDetails,
-    durationMs: tierDetails[0]?.latencyMs ?? totalDurationMs,
+    durationMs: totalDurationMs,
     totalDurationMs,
   };
 }
@@ -398,7 +432,7 @@ export async function runBenchSuite(
       const explained = await runExplain(service, query);
       results.push({
         query: explained.query,
-        latencyMs: explained.durationMs,
+        latencyMs: explained.totalDurationMs,
         tiersUsed: explained.tiersUsed,
         throughput: explained.totalDurationMs > 0 ? 1 / (explained.totalDurationMs / 1_000) : 0,
         resultsCount: explained.tierResults.reduce(
@@ -455,17 +489,16 @@ export function checkRegression(
       continue;
     }
 
-    const changePercent =
-      baselineValue > 0
-        ? ((currentValue - baselineValue) / baselineValue) * 100
-        : 0;
+    const passed = baselineValue === 0
+      ? currentValue <= 0
+      : ((currentValue - baselineValue) / baselineValue) * 100 <= tolerance;
 
     regressions.push({
       metric,
       currentValue,
       baselineValue,
       tolerance,
-      passed: changePercent <= tolerance,
+      passed,
     });
   }
 

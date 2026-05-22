@@ -110,7 +110,86 @@ function makeTraceId(topics: string[]): string {
   return `trace-${createHash("sha256").update(key).digest("hex").slice(0, 8)}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function isStringArrayRecord(value: unknown): value is Record<string, string[]> {
+  return isRecord(value) && Object.values(value).every(isStringArray);
+}
+
+function parseOpenBoxState(value: unknown): OpenBoxState | null {
+  if (value === null) return null;
+  if (!isRecord(value)) return null;
+  if (
+    typeof value.id !== "string" ||
+    typeof value.createdAt !== "string" ||
+    typeof value.lastActivityAt !== "string" ||
+    !isStringArray(value.topics) ||
+    !isStringArray(value.memoryIds)
+  ) {
+    return null;
+  }
+  if (value.goal !== undefined && typeof value.goal !== "string") return null;
+  if (value.toolsUsed !== undefined && !isStringArray(value.toolsUsed)) return null;
+  return {
+    id: value.id,
+    createdAt: value.createdAt,
+    lastActivityAt: value.lastActivityAt,
+    topics: value.topics,
+    memoryIds: value.memoryIds,
+    goal: value.goal,
+    toolsUsed: value.toolsUsed,
+  };
+}
+
+function parseTraceIndex(value: unknown): TraceIndex | null {
+  if (!isRecord(value)) return null;
+  if (
+    !isStringArrayRecord(value.traces) ||
+    !isStringRecord(value.boxToTrace) ||
+    !isStringArrayRecord(value.traceTopics)
+  ) {
+    return null;
+  }
+  const traceLastSeen = value.traceLastSeen ?? {};
+  if (!isStringRecord(traceLastSeen)) return null;
+  return {
+    traces: value.traces,
+    boxToTrace: value.boxToTrace,
+    traceTopics: value.traceTopics,
+    traceLastSeen,
+  };
+}
+
 // ── Frontmatter serialization ──────────────────────────────────────────────
+
+function serializeStringArray(values: string[]): string {
+  return JSON.stringify(values);
+}
+
+function parseStringArray(val: string | undefined): string[] {
+  if (!val) return [];
+  try {
+    const parsed = JSON.parse(val);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((entry): entry is string => typeof entry === "string");
+    }
+  } catch {
+    // Fall back to the legacy comma-split parser below.
+  }
+  const m = val.match(/\[(.*)]/);
+  if (!m) return [];
+  return m[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
+}
 
 function serializeBoxFrontmatter(fm: BoxFrontmatter): string {
   const lines = [
@@ -120,13 +199,13 @@ function serializeBoxFrontmatter(fm: BoxFrontmatter): string {
     `createdAt: ${fm.createdAt}`,
     `sealedAt: ${fm.sealedAt}`,
     `sealReason: ${fm.sealReason}`,
-    `topics: [${fm.topics.map((t) => `"${t}"`).join(", ")}]`,
-    `memoryIds: [${fm.memoryIds.map((m) => `"${m}"`).join(", ")}]`,
+    `topics: ${serializeStringArray(fm.topics)}`,
+    `memoryIds: ${serializeStringArray(fm.memoryIds)}`,
   ];
   if (fm.sessionKey) lines.push(`sessionKey: ${fm.sessionKey}`);
   if (fm.traceId) lines.push(`traceId: ${fm.traceId}`);
   if (fm.goal) lines.push(`goal: ${fm.goal.replace(/[\r\n]+/g, " ")}`);
-  if (fm.toolsUsed?.length) lines.push(`toolsUsed: [${fm.toolsUsed.map((t) => `"${t}"`).join(", ")}]`);
+  if (fm.toolsUsed?.length) lines.push(`toolsUsed: ${serializeStringArray(fm.toolsUsed)}`);
   if (fm.outcome) lines.push(`outcome: ${fm.outcome}`);
   lines.push("---");
   return lines.join("\n");
@@ -144,13 +223,6 @@ export function parseBoxFrontmatter(raw: string): BoxFrontmatter | null {
     fm[line.slice(0, colonIdx).trim()] = line.slice(colonIdx + 1).trim();
   }
 
-  const parseArray = (val: string | undefined): string[] => {
-    if (!val) return [];
-    const m = val.match(/\[(.*)]/);
-    if (!m) return [];
-    return m[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
-  };
-
   const outcome = fm.outcome as BoxFrontmatter["outcome"];
   return {
     id: fm.id ?? "",
@@ -159,11 +231,11 @@ export function parseBoxFrontmatter(raw: string): BoxFrontmatter | null {
     sealedAt: fm.sealedAt ?? "",
     sealReason: (fm.sealReason ?? "forced") as SealReason,
     sessionKey: fm.sessionKey,
-    topics: parseArray(fm.topics),
-    memoryIds: parseArray(fm.memoryIds),
+    topics: parseStringArray(fm.topics),
+    memoryIds: parseStringArray(fm.memoryIds),
     traceId: fm.traceId,
     goal: fm.goal || undefined,
-    toolsUsed: fm.toolsUsed ? parseArray(fm.toolsUsed) : undefined,
+    toolsUsed: fm.toolsUsed ? parseStringArray(fm.toolsUsed) : undefined,
     outcome: outcome && ["success", "failure", "partial", "unknown"].includes(outcome) ? outcome : undefined,
   };
 }
@@ -218,40 +290,43 @@ export class BoxBuilder {
     this.stateLoaded = true;
     try {
       const raw = await readFile(this.openBoxStatePath, "utf-8");
-      this.openBox = JSON.parse(raw) as OpenBoxState;
+      this.openBox = parseOpenBoxState(JSON.parse(raw));
     } catch {
       this.openBox = null;
     }
   }
 
-  private async saveOpenBox(): Promise<void> {
+  private async writeOpenBoxState(state: OpenBoxState | null): Promise<void> {
     await mkdir(this.stateDir, { recursive: true });
-    if (this.openBox) {
-      await writeFile(this.openBoxStatePath, JSON.stringify(this.openBox, null, 2), "utf-8");
-    } else {
-      // Clear open box state
-      try { await writeFile(this.openBoxStatePath, "null", "utf-8"); } catch { /* ok */ }
-    }
+    await writeFile(this.openBoxStatePath, JSON.stringify(state, null, 2), "utf-8");
+  }
+
+  private async saveOpenBox(): Promise<void> {
+    await this.writeOpenBoxState(this.openBox);
   }
 
   private async loadTraceIndex(): Promise<TraceIndex> {
     try {
       const raw = await readFile(this.tracesPath, "utf-8");
-      const parsed = JSON.parse(raw) as TraceIndex;
-      // Backfill missing field for indexes written before this field was added
-      parsed.traceLastSeen ??= {};
+      const parsed = parseTraceIndex(JSON.parse(raw));
+      if (!parsed) {
+        log.warn("[engram/boxes] Ignoring invalid trace index state");
+        return { traces: {}, boxToTrace: {}, traceTopics: {}, traceLastSeen: {} };
+      }
       return parsed;
     } catch {
       return { traces: {}, boxToTrace: {}, traceTopics: {}, traceLastSeen: {} };
     }
   }
 
-  private async saveTraceIndex(idx: TraceIndex): Promise<void> {
+  private async saveTraceIndex(idx: TraceIndex): Promise<boolean> {
     try {
       await mkdir(this.stateDir, { recursive: true });
       await writeFile(this.tracesPath, JSON.stringify(idx, null, 2), "utf-8");
+      return true;
     } catch (err) {
       log.warn(`[engram/boxes] Failed to save trace index: ${(err as Error).message}`);
+      return false;
     }
   }
 
@@ -353,10 +428,10 @@ export class BoxBuilder {
     if (!this.openBox) return null;
 
     const box = this.openBox;
-    this.openBox = null;
 
     if (box.memoryIds.length === 0 && box.topics.length === 0) {
-      await this.saveOpenBox();
+      await this.writeOpenBoxState(null);
+      this.openBox = null;
       return null;
     }
 
@@ -389,7 +464,8 @@ export class BoxBuilder {
     await writeFile(filePath, content, "utf-8");
     log.debug(`[boxes] sealed box ${box.id} (${reason}): ${box.memoryIds.length} memories, topics=[${box.topics.join(",")}]`);
 
-    await this.saveOpenBox();
+    await this.writeOpenBoxState(null);
+    this.openBox = null;
     return box.id;
   }
 
@@ -399,11 +475,11 @@ export class BoxBuilder {
    * Find an existing trace that matches box topics, or create a new trace.
    * Returns the traceId to assign to this box.
    */
-  private async resolveTrace(boxId: string, topics: string[]): Promise<string> {
+  private async resolveTrace(boxId: string, topics: string[]): Promise<string | undefined> {
     return this.enqueueTraceMutation(async () => this.resolveTraceUnlocked(boxId, topics));
   }
 
-  private async resolveTraceUnlocked(boxId: string, topics: string[]): Promise<string> {
+  private async resolveTraceUnlocked(boxId: string, topics: string[]): Promise<string | undefined> {
     const idx = await this.loadTraceIndex();
 
     // Filter to traces active within the lookback window
@@ -440,8 +516,7 @@ export class BoxBuilder {
       idx.traceTopics[traceId] = [...topics];
     }
 
-    await this.saveTraceIndex(idx);
-    return traceId;
+    return (await this.saveTraceIndex(idx)) ? traceId : undefined;
   }
 
   // ── Recall ────────────────────────────────────────────────────────────────

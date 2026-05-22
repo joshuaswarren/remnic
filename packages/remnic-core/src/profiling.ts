@@ -293,7 +293,16 @@ export class ProfilingCollector {
   // ---- Query methods -----------------------------------------------------
 
   getRecentTraces(limit?: number): ProfileTrace[] {
-    const n = limit ?? this.traces.length;
+    if (limit === undefined || limit === Infinity) {
+      return [...this.traces];
+    }
+    if (!Number.isFinite(limit)) {
+      return [];
+    }
+    const n = Math.floor(limit);
+    if (n <= 0) {
+      return [];
+    }
     return this.traces.slice(-n);
   }
 

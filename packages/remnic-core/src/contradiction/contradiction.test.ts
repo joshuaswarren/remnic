@@ -90,6 +90,7 @@ function makeResolutionStorage(options: {
   failSupersedeFor?: string;
   failRollbackFor?: string;
   partialSupersedeBeforeFailureFor?: string;
+  onSupersede?: (oldId: string, newId: string) => void;
 } = {}) {
   const memories = new Map<string, MemoryFile>([
     ["mem-a-001", makeMemory("mem-a-001")],
@@ -132,6 +133,7 @@ function makeResolutionStorage(options: {
     },
     async supersedeMemory(oldId: string, newId: string, reason: string) {
       supersedeCalls.push({ oldId, newId, reason });
+      options.onSupersede?.(oldId, newId);
       if (oldId === options.failSupersedeFor) return false;
       const memory = memories.get(oldId);
       if (!memory) return false;
@@ -992,6 +994,50 @@ test("runContradictionScan caps candidates during generation and preserves strat
   }
 });
 
+test("runContradictionScan pairs topic-overlap memories with different entity refs", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const apples = makeMemory("topic-apples");
+    apples.frontmatter.entityRef = "entity:apples";
+    apples.frontmatter.tags = ["pricing"];
+    apples.content = "Apples should be priced at $2 per pound.";
+
+    const oranges = makeMemory("topic-oranges");
+    oranges.frontmatter.entityRef = "entity:oranges";
+    oranges.frontmatter.tags = ["pricing"];
+    oranges.content = "Oranges should be priced at $3 per pound.";
+
+    const storage = makeScanStorage([oranges, apples]);
+    const config = parseConfig({
+      memoryDir: dir,
+      contradictionScan: {
+        enabled: true,
+        maxPairsPerRun: 10,
+        topicOverlapFloor: 0.5,
+        similarityFloor: 0.9,
+      },
+    });
+
+    const result = await runContradictionScan({
+      storage,
+      config,
+      memoryDir: dir,
+      localLlm: null,
+      fallbackLlm: null,
+    });
+
+    assert.equal(result.candidates, 1);
+    assert.equal(result.judged, 1);
+    assert.equal(result.queued, 1);
+
+    const queued = listPairs(dir, { filter: "all" }).pairs;
+    assert.equal(queued.length, 1);
+    assert.deepEqual([...queued[0]!.memoryIds].sort(), ["topic-apples", "topic-oranges"]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("runContradictionScan resolves default namespace scans through namespace storage resolver", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
@@ -1257,6 +1303,83 @@ test("runContradictionScan rejudges cooling pairs when referenced memory content
       "default-a": currentAHash,
       "default-b": currentBHash,
     });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("runContradictionScan finds cooling pairs beyond the review list page limit", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const defaultA = makeMemory("default-a");
+    defaultA.frontmatter.entityRef = "entity:shared";
+    const defaultB = makeMemory("default-b");
+    defaultB.frontmatter.entityRef = "entity:shared";
+    const targetPairId = computePairId("default-a", "default-b");
+    const reviewPath = path.join(dir, ".review", "contradictions");
+    fs.mkdirSync(reviewPath, { recursive: true });
+
+    const dummyEntries: string[] = [];
+    for (let i = 0; i < 10_000; i++) {
+      const memoryIds: [string, string] = [`dummy-a-${i}`, `dummy-b-${i}`];
+      const pairId = computePairId(memoryIds[0], memoryIds[1]);
+      dummyEntries.push(`${pairId}.json`);
+      fs.writeFileSync(
+        path.join(reviewPath, `${pairId}.json`),
+        JSON.stringify({
+          ...makePair({ memoryIds, verdict: "independent", lastReviewedAt: new Date().toISOString() }),
+          pairId,
+        }),
+        "utf-8",
+      );
+    }
+
+    const targetPair: ContradictionPair = {
+      ...makePair({
+        memoryIds: ["default-a", "default-b"],
+        verdict: "independent",
+        lastReviewedAt: new Date().toISOString(),
+      }),
+      pairId: targetPairId,
+    };
+    fs.writeFileSync(path.join(reviewPath, `${targetPairId}.json`), JSON.stringify(targetPair), "utf-8");
+
+    const originalReaddirSync = fs.readdirSync;
+    const fsMutable = fs as unknown as { readdirSync: typeof fs.readdirSync };
+    try {
+      fsMutable.readdirSync = ((target: fs.PathLike, options?: BufferEncoding | { encoding?: BufferEncoding | null; withFileTypes?: false }) => {
+        if (String(target) === reviewPath) {
+          return [...dummyEntries, `${targetPairId}.json`];
+        }
+        return originalReaddirSync(target, options as never);
+      }) as typeof fs.readdirSync;
+
+      const storage = makeScanStorage([defaultA, defaultB]);
+      const config = parseConfig({
+        memoryDir: dir,
+        contradictionScan: {
+          enabled: true,
+          cooldownDays: 14,
+          maxPairsPerRun: 10,
+          topicOverlapFloor: 0,
+          similarityFloor: 0,
+        },
+      });
+
+      const result = await runContradictionScan({
+        storage,
+        config,
+        memoryDir: dir,
+        localLlm: null,
+        fallbackLlm: null,
+      });
+
+      assert.equal(result.cooledDown, 1);
+      assert.equal(result.judged, 0);
+      assert.equal(result.queued, 0);
+    } finally {
+      fsMutable.readdirSync = originalReaddirSync;
+    }
   } finally {
     await cleanup();
   }
@@ -1639,9 +1762,33 @@ test("executeResolution merge can create and verify a merged memory from content
     assert.ok(mergedId);
     assert.deepEqual(result.affectedIds, ["mem-a-001", "mem-b-002"]);
     assert.equal(storage.memories.get(mergedId)?.content, "merged canonical fact");
-    assert.deepEqual(storage.memories.get(mergedId)?.frontmatter.derived_from, ["mem-a-001", "mem-b-002"]);
+    assert.deepEqual(storage.memories.get(mergedId)?.frontmatter.lineage, ["mem-a-001", "mem-b-002"]);
+    assert.equal(storage.memories.get(mergedId)?.frontmatter.derived_from, undefined);
     assert.equal(storage.memories.get(mergedId)?.frontmatter.derived_via, "merge");
     assert.equal(readPair(dir, written.pairId)?.resolution, "merge");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("executeResolution rolls back memory changes when pair resolution persistence fails", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair());
+    const pairFile = path.join(dir, ".review", "contradictions", `${written.pairId}.json`);
+    const storage = makeResolutionStorage({
+      onSupersede: () => {
+        fs.rmSync(pairFile, { force: true });
+      },
+    });
+
+    const result = await executeResolution(dir, storage, written.pairId, "keep-a");
+
+    assert.match(result.message, /Resolution persistence failed; rolled back memory changes/);
+    assert.deepEqual(result.affectedIds, []);
+    assert.equal(storage.memories.get("mem-b-002")?.frontmatter.status, undefined);
+    assert.equal(storage.memories.get("mem-b-002")?.frontmatter.supersededBy, undefined);
+    assert.equal(readPair(dir, written.pairId), null);
   } finally {
     await cleanup();
   }
@@ -2068,6 +2215,75 @@ test("expired needs-more-context deferral returns to unresolved and can be refre
   }
 });
 
+test("writePair refreshes active needs-more-context deferrals when memory content changed", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const staleAHash = computeMemoryContentHash("old content for mem-a-001", "fact");
+    const currentAHash = computeMemoryContentHash("new content for mem-a-001", "fact");
+    const bHash = computeMemoryContentHash("content for mem-b-002", "fact");
+    const written = writePair(dir, makePair({
+      confidence: 0.95,
+      memoryContentHashes: {
+        "mem-a-001": staleAHash,
+        "mem-b-002": bHash,
+      },
+    }));
+    const deferred = resolvePair(dir, written.pairId, "needs-more-context");
+    assert.ok(deferred?.deferredUntil);
+
+    const refreshed = writePair(dir, makePair({
+      confidence: 0.5,
+      verdict: "duplicates",
+      rationale: "Fresh judge result after source memory changed",
+      memoryContentHashes: {
+        "mem-a-001": currentAHash,
+        "mem-b-002": bHash,
+      },
+    }));
+
+    assert.equal(refreshed.pairId, written.pairId);
+    assert.equal(refreshed.verdict, "duplicates");
+    assert.equal(refreshed.confidence, 0.5);
+    assert.equal(refreshed.resolution, undefined);
+    assert.equal(refreshed.deferredUntil, undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("writePair refreshes unresolved higher-confidence entries when memory content changed", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const staleAHash = computeMemoryContentHash("old content for mem-a-001", "fact");
+    const currentAHash = computeMemoryContentHash("new content for mem-a-001", "fact");
+    const bHash = computeMemoryContentHash("content for mem-b-002", "fact");
+    const written = writePair(dir, makePair({
+      confidence: 0.95,
+      memoryContentHashes: {
+        "mem-a-001": staleAHash,
+        "mem-b-002": bHash,
+      },
+    }));
+
+    const refreshed = writePair(dir, makePair({
+      confidence: 0.5,
+      verdict: "duplicates",
+      rationale: "Fresh lower-confidence result after source memory changed",
+      memoryContentHashes: {
+        "mem-a-001": currentAHash,
+        "mem-b-002": bHash,
+      },
+    }));
+
+    assert.equal(refreshed.pairId, written.pairId);
+    assert.equal(refreshed.verdict, "duplicates");
+    assert.equal(refreshed.confidence, 0.5);
+    assert.equal(refreshed.rationale, "Fresh lower-confidence result after source memory changed");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("legacy needs-more-context resolutions honor cooldown before returning to unresolved", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
@@ -2200,6 +2416,26 @@ test("contentHash is deterministic", () => {
 test("contentHash differs for different content", () => {
   const a = { memoryIdA: "1", memoryIdB: "2", textA: "hello", textB: "world" };
   const b = { memoryIdA: "1", memoryIdB: "2", textA: "goodbye", textB: "world" };
+  assert.notEqual(_contentHash(a), _contentHash(b));
+});
+
+test("contentHash does not collide when text and category contain delimiters", () => {
+  const a = {
+    memoryIdA: "1",
+    memoryIdB: "2",
+    textA: "alpha|fact",
+    categoryA: "beta",
+    textB: "gamma",
+    categoryB: "delta",
+  };
+  const b = {
+    memoryIdA: "1",
+    memoryIdB: "2",
+    textA: "alpha",
+    categoryA: "fact|beta",
+    textB: "gamma",
+    categoryB: "delta",
+  };
   assert.notEqual(_contentHash(a), _contentHash(b));
 });
 

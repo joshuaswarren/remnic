@@ -6,6 +6,7 @@ import type {
 const CORE_GRAPH: AssistantMemoryGraph = {
   userHandle: "Alex Rivera",
   userRole: "staff engineer, tech-lead of Project Atlas",
+  currentDate: "Monday, May 18, 2026",
   facts: [
     {
       id: "fact-rollback-runbook-half",
@@ -16,13 +17,13 @@ const CORE_GRAPH: AssistantMemoryGraph = {
     {
       id: "fact-pr-481-blocking",
       summary:
-        "Remnic PR #481 has been waiting on Alex's review for 48 hours and blocks Jordan's next task.",
+        "Remnic PR #481 has been waiting on Alex's review since Saturday, May 16, 2026, and blocks Jordan's next task.",
       tags: ["action-candidate", "blocking"],
     },
     {
       id: "fact-aurora-commit",
       summary:
-        "Alex committed to Priya yesterday to send a written latency-target commitment by EOD Thursday.",
+        "On Sunday, May 17, 2026, Alex committed to Priya to send a written latency-target commitment by EOD Thursday, May 21, 2026.",
       tags: ["commitment"],
     },
     {
@@ -43,7 +44,7 @@ const CORE_GRAPH: AssistantMemoryGraph = {
     },
   ],
   openThreads: [
-    "Rollback runbook is required before the Atlas soft-launch next Tuesday.",
+    "Rollback runbook is required before the Atlas soft-launch on Tuesday, May 26, 2026.",
   ],
 };
 

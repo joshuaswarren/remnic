@@ -1,8 +1,9 @@
 import path from "node:path";
-import { mkdir, rename, stat, writeFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { StorageManager } from "../storage.js";
 import type { MemoryLifecycleEvent } from "../types.js";
 import { toBackupStamp } from "./backup-stamp.js";
+import { writeFileAtomically } from "./atomic-file.js";
 import {
   buildLifecycleEventsForMemory,
   sortMemoryLifecycleEvents,
@@ -22,15 +23,22 @@ export interface RebuildMemoryLifecycleLedgerResult {
   backupPath?: string;
 }
 
-async function backupExistingLedger(
+function isNodeError(err: unknown): err is NodeJS.ErrnoException {
+  return typeof err === "object" && err !== null && "code" in err;
+}
+
+export async function backupExistingLedger(
   memoryDir: string,
   outputPath: string,
   now: Date,
 ): Promise<string | undefined> {
   try {
     await stat(outputPath);
-  } catch {
-    return undefined;
+  } catch (err) {
+    if (isNodeError(err) && err.code === "ENOENT") {
+      return undefined;
+    }
+    throw err;
   }
 
   const backupPath = path.join(
@@ -41,8 +49,6 @@ async function backupExistingLedger(
     "state",
     "memory-lifecycle-ledger.jsonl",
   );
-  await mkdir(path.dirname(backupPath), { recursive: true });
-  await rename(outputPath, backupPath);
   return backupPath;
 }
 
@@ -53,7 +59,11 @@ export async function rebuildMemoryLifecycleLedger(
   const now = options.now ?? new Date();
   const outputPath = path.join(options.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
   const storage = new StorageManager(options.memoryDir);
-  const allMemories = [...await storage.readAllMemories(), ...await storage.readArchivedMemories()]
+  const allMemories = [
+    ...await storage.readAllMemories(),
+    ...await storage.readAllColdMemories(),
+    ...await storage.readArchivedMemories(),
+  ]
     .sort((a, b) => a.frontmatter.id.localeCompare(b.frontmatter.id));
 
   const events: MemoryLifecycleEvent[] = sortMemoryLifecycleEvents(
@@ -63,9 +73,12 @@ export async function rebuildMemoryLifecycleLedger(
   let backupPath: string | undefined;
   if (!dryRun) {
     backupPath = await backupExistingLedger(options.memoryDir, outputPath, now);
-    await mkdir(path.dirname(outputPath), { recursive: true });
     const payload = events.map((event) => JSON.stringify(event)).join("\n");
-    await writeFile(outputPath, payload.length > 0 ? `${payload}\n` : "", "utf-8");
+    backupPath = await writeFileAtomically(
+      outputPath,
+      payload.length > 0 ? `${payload}\n` : "",
+      backupPath,
+    );
   }
 
   return {

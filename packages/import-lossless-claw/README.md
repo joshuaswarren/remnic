@@ -62,8 +62,12 @@ destDb.close();
 
 ## Idempotency
 
-Re-running the importer inserts zero new rows. Messages dedupe on
-`(session_id, turn_index)`; summary nodes dedupe on `id`.
+Re-running the importer inserts zero new rows. Messages dedupe on the
+source identity stored in metadata: `(session_id, conversation_id,
+source_seq)`. Destination `turn_index` values are assigned
+session-globally as rows are appended, so they remain stable for already
+imported source messages but are not the dedupe key. Summary nodes dedupe
+on `id`.
 
 ## What's lossy
 

@@ -851,6 +851,17 @@ function sanitizeLogField(value: string): string {
   return value.replace(/[\r\n\t]+/g, " ").trim();
 }
 
+function isCanonicalIsoTimestamp(value: string): boolean {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) && new Date(ms).toISOString() === value;
+}
+
+function assertCanonicalIsoTimestamp(value: string, field: string): void {
+  if (!isCanonicalIsoTimestamp(value)) {
+    throw new Error(`${field} must be a canonical ISO-8601 timestamp`);
+  }
+}
+
 function formatLogEntry(entry: PeerInteractionLogEntry): string {
   // One line per entry. We use a leading bullet so the file remains
   // readable as ordinary markdown. Order: timestamp, kind, optional
@@ -899,6 +910,7 @@ export async function appendInteractionLog(
   if (typeof entry.timestamp !== "string" || entry.timestamp.trim() === "") {
     throw new Error("interaction entry must have a non-whitespace timestamp");
   }
+  assertCanonicalIsoTimestamp(entry.timestamp.trim(), "interaction entry timestamp");
   if (typeof entry.kind !== "string" || entry.kind.trim() === "") {
     throw new Error("interaction entry must have a non-whitespace kind");
   }
@@ -1245,6 +1257,7 @@ function parseLogLine(line: string): PeerInteractionLogEntry | null {
   if (tsClose === -1) return null;
   const timestamp = line.slice(3, tsClose).trim();
   if (timestamp === "") return null;
+  if (!isCanonicalIsoTimestamp(timestamp)) return null;
   // Skip optional whitespace between `]` and `(`.
   let cursor = tsClose + 1;
   while (cursor < line.length && line[cursor] === " ") cursor += 1;
@@ -1337,6 +1350,7 @@ export async function readPeerInteractionLog(
   let filtered = entries;
   if (typeof options.afterTimestamp === "string" && options.afterTimestamp.length > 0) {
     const cutoff = options.afterTimestamp;
+    assertCanonicalIsoTimestamp(cutoff, "afterTimestamp");
     filtered = filtered.filter((e) => e.timestamp > cutoff);
   }
   // Gotcha #27: guard slice(-n) against n === 0 — `slice(-0)` returns

@@ -13,6 +13,39 @@ function percentChange(candidateValue: number, baselineValue: number): number {
   return (candidateValue - baselineValue) / baselineValue;
 }
 
+function hasMetricScore(
+  scores: Record<string, number>,
+  metricName: string,
+): boolean {
+  return Object.prototype.hasOwnProperty.call(scores, metricName);
+}
+
+function pairedScoresForMetric(
+  baseline: BenchmarkResult,
+  candidate: BenchmarkResult,
+  metricName: string,
+): { baselineScores: number[]; candidateScores: number[] } {
+  const baselineByTaskId = new Map(
+    baseline.results.tasks.map((task) => [task.taskId, task]),
+  );
+  const baselineScores: number[] = [];
+  const candidateScores: number[] = [];
+
+  for (const candidateTask of candidate.results.tasks) {
+    if (!hasMetricScore(candidateTask.scores, metricName)) {
+      continue;
+    }
+    const baselineTask = baselineByTaskId.get(candidateTask.taskId);
+    if (!baselineTask || !hasMetricScore(baselineTask.scores, metricName)) {
+      continue;
+    }
+    candidateScores.push(candidateTask.scores[metricName]!);
+    baselineScores.push(baselineTask.scores[metricName]!);
+  }
+
+  return { baselineScores, candidateScores };
+}
+
 function verdictFromMetricDeltas(
   metricDeltas: Record<string, ComparisonMetricDelta>,
   threshold: number,
@@ -53,11 +86,10 @@ export function compareResults(
       continue;
     }
 
-    const baselineScores = baseline.results.tasks.map(
-      (task) => task.scores[metricName] ?? 0,
-    );
-    const candidateScores = candidate.results.tasks.map(
-      (task) => task.scores[metricName] ?? 0,
+    const { baselineScores, candidateScores } = pairedScoresForMetric(
+      baseline,
+      candidate,
+      metricName,
     );
 
     const delta = aggregate.mean - baselineAggregate.mean;
@@ -72,13 +104,15 @@ export function compareResults(
       },
     };
 
-    const effectSizeValue = cohensD(candidateScores, baselineScores);
-    metricDelta.effectSize = {
-      cohensD: effectSizeValue,
-      interpretation: interpretEffectSize(effectSizeValue),
-    };
+    if (candidateScores.length > 0) {
+      const effectSizeValue = cohensD(candidateScores, baselineScores);
+      metricDelta.effectSize = {
+        cohensD: effectSizeValue,
+        interpretation: interpretEffectSize(effectSizeValue),
+      };
+    }
 
-    if (candidateScores.length === baselineScores.length && candidateScores.length > 0) {
+    if (candidateScores.length > 0) {
       metricDelta.ciOnDelta = pairedDeltaConfidenceInterval(
         candidateScores,
         baselineScores,

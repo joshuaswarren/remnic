@@ -127,14 +127,12 @@ export class SmartBuffer {
   }
 
   private entryFor(key: string): BufferEntryState {
-    this.state.entries ??= {};
-    // Reject prototype-polluting keys outright so no downstream
-    // assignment can mutate Object.prototype.
-    if (key === "__proto__" || key === "constructor" || key === "prototype") {
-      key = `__safe_${key}`;
+    if (!this.state.entries) {
+      this.state.entries = Object.create(null) as NonNullable<BufferState["entries"]>;
     }
-    if (Object.hasOwn(this.state.entries, key)) {
-      const stored = this.state.entries[key];
+    const entries = this.state.entries as NonNullable<BufferState["entries"]>;
+    if (Object.hasOwn(entries, key)) {
+      const stored = entries[key];
       // Guard against corrupted state/buffer.json — if the stored entry
       // is not a valid object shape, discard it and recreate.
       if (stored && typeof stored === "object" && Array.isArray(stored.turns)) {
@@ -147,16 +145,11 @@ export class SmartBuffer {
       lastExtractionAt: null,
       extractionCount: 0,
     };
-    this.state.entries[key] = created;
+    entries[key] = created;
     return created;
   }
 
   private peekEntry(key: string): BufferEntryState | null {
-    // Apply the same prototype-pollution guard as entryFor so reads and
-    // writes use the same key namespace for dangerous keys.
-    if (key === "__proto__" || key === "constructor" || key === "prototype") {
-      key = `__safe_${key}`;
-    }
     const existing = this.state.entries?.[key];
     if (existing) return existing;
     if (key !== "default") return null;
@@ -169,7 +162,10 @@ export class SmartBuffer {
   }
 
   private normalizeState(state: BufferState): BufferState {
-    const entries = state.entries ?? {};
+    const entries = Object.assign(
+      Object.create(null),
+      state.entries ?? {},
+    ) as NonNullable<BufferState["entries"]>;
     if (!entries.default) {
       entries.default = {
         turns: Array.isArray(state.turns) ? [...state.turns] : [],

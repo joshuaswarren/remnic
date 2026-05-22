@@ -1,10 +1,6 @@
 import os from "node:os";
 
 type EnvMap = Record<string, string | undefined>;
-const REMNIC_ENGRAM_PREFIX_PAIRS: Array<[string, string]> = [
-  ["REMNIC_", "ENGRAM_"],
-  ["ENGRAM_", "REMNIC_"],
-];
 
 function getEnvMap(): EnvMap | undefined {
   const runtimeProcess = globalThis.process as { env?: EnvMap } | undefined;
@@ -12,13 +8,13 @@ function getEnvMap(): EnvMap | undefined {
 }
 
 function legacyEnvCandidates(name: string): string[] {
-  const candidates = [name];
-  for (const [primary, legacy] of REMNIC_ENGRAM_PREFIX_PAIRS) {
-    if (name.startsWith(primary)) {
-      candidates.push(`${legacy}${name.slice(primary.length)}`);
-    }
+  if (name.startsWith("REMNIC_")) {
+    return [name, `ENGRAM_${name.slice("REMNIC_".length)}`];
   }
-  return candidates;
+  if (name.startsWith("ENGRAM_")) {
+    return [`REMNIC_${name.slice("ENGRAM_".length)}`, name];
+  }
+  return [name];
 }
 
 export function readEnvVar(name: string): string | undefined {

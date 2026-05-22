@@ -76,6 +76,10 @@ select {
   color: #a9b4c3;
 }
 
+.warning-copy {
+  color: #ffcf8a;
+}
+
 .brand-kicker,
 .section-kicker,
 .status-chip {

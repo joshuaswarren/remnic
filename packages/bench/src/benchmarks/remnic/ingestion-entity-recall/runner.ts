@@ -10,6 +10,7 @@ import type {
   BenchmarkDefinition,
   BenchmarkResult,
   ResolvedRunBenchmarkOptions,
+  TaskResult,
 } from "../../../types.js";
 import { entityRecall } from "../../../ingestion-scorer.js";
 import { aggregateTaskScores, timed } from "../../../scorer.js";
@@ -52,6 +53,32 @@ export async function runIngestionEntityRecallBenchmark(
       options.ingestionAdapter!.ingest(await realpath(fixtureDir)),
     );
 
+    if (ingestionLog.errors.length > 0) {
+      const message = ingestionLog.errors.join(" | ");
+      const tasks: TaskResult[] = [
+        {
+          taskId: `entity-recall-${fixture.id}`,
+          question: `Extract entities from ${fixture.id} fixture`,
+          expected: `${fixture.goldGraph.entities.length} entities`,
+          actual: `(ingestion error: ${message})`,
+          scores: {
+            entity_recall: -1,
+          },
+          latencyMs: durationMs,
+          tokens: { input: 0, output: 0 },
+          details: {
+            fixtureId: fixture.id,
+            goldEntityCount: fixture.goldGraph.entities.length,
+            ingestionErrors: ingestionLog.errors,
+            commandsIssued: ingestionLog.commandsIssued,
+            promptsShown: ingestionLog.promptsShown,
+          },
+        },
+      ];
+
+      return buildResult(options, tasks, durationMs);
+    }
+
     const graph = await options.ingestionAdapter.getMemoryGraph();
     const { overall, byType } = entityRecall(graph.entities, fixture.goldGraph.entities);
 
@@ -60,7 +87,7 @@ export async function runIngestionEntityRecallBenchmark(
       ...byType,
     };
 
-    const tasks = [
+    const tasks: TaskResult[] = [
       {
         taskId: `entity-recall-${fixture.id}`,
         question: `Extract entities from ${fixture.id} fixture`,
@@ -78,45 +105,53 @@ export async function runIngestionEntityRecallBenchmark(
       },
     ];
 
-    const remnicVersion = await getRemnicVersion();
-    return {
-      meta: {
-        id: randomUUID(),
-        benchmark: options.benchmark.id,
-        benchmarkTier: options.benchmark.tier,
-        version: options.benchmark.meta.version,
-        remnicVersion,
-        gitSha: getGitSha(),
-        timestamp: new Date().toISOString(),
-        mode: options.mode,
-        runCount: 1,
-        seeds: [options.seed ?? 0],
-      },
-      config: {
-        systemProvider: options.systemProvider ?? null,
-        judgeProvider: options.judgeProvider ?? null,
-        adapterMode: options.adapterMode ?? "direct",
-        remnicConfig: options.remnicConfig ?? {},
-      },
-      cost: {
-        totalTokens: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        estimatedCostUsd: 0,
-        totalLatencyMs: durationMs,
-        meanQueryLatencyMs: durationMs,
-      },
-      results: {
-        tasks,
-        aggregates: aggregateTaskScores(tasks.map((t) => t.scores)),
-      },
-      environment: {
-        os: process.platform,
-        nodeVersion: process.version,
-        hardware: process.arch,
-      },
-    };
+    return buildResult(options, tasks, durationMs);
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
   }
+}
+
+async function buildResult(
+  options: ResolvedRunBenchmarkOptions,
+  tasks: TaskResult[],
+  totalLatencyMs: number,
+): Promise<BenchmarkResult> {
+  const remnicVersion = await getRemnicVersion();
+  return {
+    meta: {
+      id: randomUUID(),
+      benchmark: options.benchmark.id,
+      benchmarkTier: options.benchmark.tier,
+      version: options.benchmark.meta.version,
+      remnicVersion,
+      gitSha: getGitSha(),
+      timestamp: new Date().toISOString(),
+      mode: options.mode,
+      runCount: 1,
+      seeds: [options.seed ?? 0],
+    },
+    config: {
+      systemProvider: options.systemProvider ?? null,
+      judgeProvider: options.judgeProvider ?? null,
+      adapterMode: options.adapterMode ?? "direct",
+      remnicConfig: options.remnicConfig ?? {},
+    },
+    cost: {
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedCostUsd: 0,
+      totalLatencyMs,
+      meanQueryLatencyMs: totalLatencyMs,
+    },
+    results: {
+      tasks,
+      aggregates: aggregateTaskScores(tasks.map((t) => t.scores)),
+    },
+    environment: {
+      os: process.platform,
+      nodeVersion: process.version,
+      hardware: process.arch,
+    },
+  };
 }

@@ -19,6 +19,19 @@ export interface SessionMapper {
   ): string;
 }
 
+function headerValue(
+  headers: Record<string, string | string[] | undefined>,
+  key: string
+): string | undefined {
+  const normalizedKey = key.toLowerCase();
+  for (const [headerKey, raw] of Object.entries(headers)) {
+    if (headerKey.toLowerCase() !== normalizedKey) continue;
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    return typeof value === "string" ? value : undefined;
+  }
+  return undefined;
+}
+
 /**
  * Returns a fixed session key for single-user setups.
  */
@@ -56,9 +69,9 @@ export class CallerIdSessionMapper implements SessionMapper {
     headers: Record<string, string | string[] | undefined>,
     body: ChatCompletionRequest
   ): string {
-    const headerValue = headers["x-caller-id"];
-    if (typeof headerValue === "string" && headerValue.length > 0) {
-      return headerValue;
+    const callerId = headerValue(headers, "x-caller-id");
+    if (callerId && callerId.length > 0) {
+      return callerId;
     }
 
     if (typeof body.user === "string" && body.user.length > 0) {

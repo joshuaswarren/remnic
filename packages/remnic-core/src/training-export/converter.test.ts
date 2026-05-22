@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { link, mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { convertMemoriesToRecords } from "./converter.js";
+import { convertMemoriesToRecords, readContainedMarkdownFile } from "./converter.js";
 
 // ---------------------------------------------------------------------------
 // Helper: create a synthetic memory file
@@ -206,6 +206,22 @@ describe("convertMemoriesToRecords", () => {
     assert.equal(noFilter.length, 2);
   });
 
+  it("excludes memories with overflowed calendar dates when date filters are active", async () => {
+    const dir = await makeTmpDir();
+    await writeSyntheticMemory(dir, "facts", "overflow.md", {
+      id: "overflow",
+      created: "2026-02-31T00:00:00Z",
+      content: "Memory with an overflowed date.",
+    });
+
+    const records = await convertMemoriesToRecords({
+      memoryDir: dir,
+      since: new Date("2026-03-01T00:00:00.000Z"),
+    });
+
+    assert.deepEqual(records, []);
+  });
+
   it("handles empty memory directory", async () => {
     const dir = await makeTmpDir();
     // Don't create any subdirectories
@@ -325,6 +341,43 @@ describe("convertMemoriesToRecords", () => {
     for (const r of records) {
       assert.doesNotMatch(r.output, /EXFILTRATED/);
     }
+  });
+
+  it("refuses to open a symlink swapped into a previously validated markdown path", async () => {
+    const dir = await makeTmpDir();
+    await writeSyntheticMemory(dir, "facts", "race.md", {
+      id: "race",
+      content: "Original memory.",
+    });
+    const filePath = path.join(dir, "facts", "race.md");
+    const containmentRoot = await realpath(dir);
+
+    const outsideDir = await makeTmpDir();
+    const secretPath = path.join(outsideDir, "secret.md");
+    await writeFile(
+      secretPath,
+      [
+        "---",
+        "id: secret",
+        "category: fact",
+        "confidence: 0.99",
+        "tags: []",
+        "---",
+        "",
+        "EXFILTRATED SECRET CONTENT",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    try {
+      await rm(filePath);
+      await symlink(secretPath, filePath);
+    } catch {
+      return; // symlinks unavailable
+    }
+
+    const raw = await readContainedMarkdownFile(filePath, containmentRoot);
+    assert.equal(raw, null);
   });
 
   it("refuses to descend into directory symlinks that escape memoryDir", async () => {

@@ -74,25 +74,37 @@ export function applyWorkExtractionBoundary(conversation: string): string {
   let strippedUnterminated = bounded;
   const opener = "[WORK_LAYER_CONTEXT";
   const closer = "[/WORK_LAYER_CONTEXT]";
-  const lastOpenerIdx = bounded.lastIndexOf(opener);
-  if (lastOpenerIdx >= 0) {
-    // Require line-start: either position 0 or preceded by \n
-    const isLineStart = lastOpenerIdx === 0 || bounded[lastOpenerIdx - 1] === "\n";
-    if (isLineStart) {
-      const afterOpener = bounded.indexOf("]", lastOpenerIdx);
-      if (afterOpener >= 0) {
-        const closerAfter = bounded.indexOf(closer, afterOpener);
-        if (closerAfter < 0) {
-          // Unterminated — only strip if it has real metadata attributes
-          const bracketContent = bounded.substring(lastOpenerIdx, afterOpener + 1);
-          if (bracketContent.includes("link_to_memory=") || bracketContent.includes("encoding=")) {
-            strippedUnterminated = lastOpenerIdx > 0
-              ? bounded.substring(0, lastOpenerIdx - 1)  // exclude the preceding \n
-              : "";
-          }
-        }
-      }
+  let unterminatedSearchFrom = 0;
+  while (true) {
+    const openerIdx = bounded.indexOf(opener, unterminatedSearchFrom);
+    if (openerIdx < 0) break;
+
+    const isLineStart = openerIdx === 0 || bounded[openerIdx - 1] === "\n";
+    if (!isLineStart) {
+      unterminatedSearchFrom = openerIdx + opener.length;
+      continue;
     }
+
+    const afterOpener = bounded.indexOf("]", openerIdx);
+    const bracketContent = afterOpener >= 0
+      ? bounded.substring(openerIdx, afterOpener + 1)
+      : bounded.substring(openerIdx);
+    const hasWrapperMetadata =
+      bracketContent.includes("link_to_memory=") || bracketContent.includes("encoding=");
+    if (!hasWrapperMetadata) {
+      unterminatedSearchFrom = openerIdx + opener.length;
+      continue;
+    }
+
+    const closerAfter = afterOpener >= 0 ? bounded.indexOf(closer, afterOpener) : -1;
+    if (closerAfter < 0) {
+      strippedUnterminated = openerIdx > 0
+        ? bounded.substring(0, openerIdx - 1)  // exclude the preceding \n
+        : "";
+      break;
+    }
+
+    unterminatedSearchFrom = closerAfter + closer.length;
   }
 
   const restoredEscapes = strippedUnterminated

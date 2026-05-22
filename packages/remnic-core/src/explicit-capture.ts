@@ -205,6 +205,15 @@ function parseExplicitCaptureTtl(ttl: string | undefined): string | undefined {
   return new Date(Date.now() + amount * multiplier).toISOString();
 }
 
+function parseInlineConfidence(value: string): number {
+  const trimmed = value.trim();
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(trimmed)) {
+    return Number.NaN;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
 function parseInlineNote(block: string): ExplicitCaptureInput | null {
   const lines = block.replace(/\r/g, "").split("\n");
   const note: Partial<ExplicitCaptureInput> = {};
@@ -248,7 +257,7 @@ function parseInlineNote(block: string): ExplicitCaptureInput | null {
         note.category = value;
         break;
       case "confidence":
-        note.confidence = Number.parseFloat(value);
+        note.confidence = parseInlineConfidence(value);
         break;
       case "namespace":
         note.namespace = value;
@@ -326,7 +335,10 @@ export function validateExplicitCaptureInput(
   assertNoSecretLikeMetadata("ttl", input.ttl);
   assertNoSecretLikeMetadataList("tags", input.tags);
 
-  const confidence = Number.isFinite(input.confidence) ? Number(input.confidence) : 0.95;
+  if (input.confidence !== undefined && !Number.isFinite(input.confidence)) {
+    throw new Error("confidence must be a finite number");
+  }
+  const confidence = input.confidence === undefined ? 0.95 : Number(input.confidence);
   if (confidence < 0 || confidence > 1) {
     throw new Error("confidence must be between 0 and 1");
   }

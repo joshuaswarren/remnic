@@ -85,9 +85,31 @@ export interface ContradictionPair {
 
 // ── Main functions ───────────────────────────────────────────────────────────
 
+const DEFAULT_DEDUP_THRESHOLD = 0.85;
+const DEFAULT_MAX_LOAD = 10000;
+
+function normalizeThreshold(value: number | undefined, defaultValue: number): number {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 1
+    ? value
+    : defaultValue;
+}
+
+function normalizeMaxLoad(value: number | undefined, defaultValue: number): number {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0
+    ? value
+    : defaultValue;
+}
+
 export function findDuplicates(options: DedupOptions): DedupResult {
   const startTime = Date.now();
-  const { memoryDir, threshold = 0.85, maxLoad = 10000 } = options;
+  const { memoryDir } = options;
+  const threshold = normalizeThreshold(options.threshold, DEFAULT_DEDUP_THRESHOLD);
+  const maxLoad = normalizeMaxLoad(options.maxLoad, DEFAULT_MAX_LOAD);
 
   const memories = loadMemories(memoryDir, options.categories, maxLoad);
   const duplicates: DuplicatePair[] = [];
@@ -116,7 +138,8 @@ export function findDuplicates(options: DedupOptions): DedupResult {
 
 export function findContradictions(options: ContradictionOptions): ContradictionResult {
   const startTime = Date.now();
-  const { memoryDir, maxLoad = 10000 } = options;
+  const { memoryDir } = options;
+  const maxLoad = normalizeMaxLoad(options.maxLoad, DEFAULT_MAX_LOAD);
 
   const memories = loadMemories(memoryDir, options.categories, maxLoad);
   const contradictions: ContradictionPair[] = [];
@@ -178,7 +201,7 @@ function normalize(text: string): string {
 // ── Contradiction detection ──────────────────────────────────────────────────
 
 const NEGATION_WORDS = new Set([
-  "not", "don't", "doesn't", "isn't", "aren't", "won't", "can't",
+  "not", "don't", "doesn't", "isn't", "aren't", "won't", "can't", "cannot",
   "never", "no", "none", "neither", "nor", "nothing", "nowhere",
 ]);
 
@@ -241,7 +264,7 @@ function containsNegation(text: string): boolean {
 
 function stripNegation(text: string): string {
   return text
-    .replace(/\b(not|don't|doesn't|isn't|aren't|won't|can't|never|no|none|neither|nor|nothing|nowhere)\b/gi, "")
+    .replace(/\b(not|don't|doesn't|isn't|aren't|won't|can't|cannot|never|no|none|neither|nor|nothing|nowhere)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -255,17 +278,26 @@ function loadMemories(
 ): MemoryEntry[] {
   const result: MemoryEntry[] = [];
   const allCategories = categories ?? ALL_CATEGORY_DIRS;
+  if (!fs.existsSync(memoryDir)) return result;
+  const memoryRootReal = fs.realpathSync(memoryDir);
 
   for (const category of allCategories) {
     if (result.length >= maxLoad) break;
 
     const dir = path.join(memoryDir, category);
     if (!fs.existsSync(dir)) continue;
+    const categoryStat = fs.lstatSync(dir);
+    if (categoryStat.isSymbolicLink()) {
+      throw new Error(`Refusing to scan symlinked memory category directory: ${dir}`);
+    }
+    if (!categoryStat.isDirectory()) continue;
+    const categoryRootReal = fs.realpathSync(dir);
+    assertPathInsideRoot(memoryRootReal, categoryRootReal, dir);
 
-    walkMdFiles(dir, (filePath) => {
+    walkMdFiles(dir, memoryRootReal, categoryRootReal, (filePath) => {
       if (result.length >= maxLoad) return;
 
-      const content = readFileSafe(filePath);
+      const content = readFileSafe(filePath, memoryRootReal, categoryRootReal);
       if (!content) return;
 
       const fm = parseFrontmatter(content);
@@ -290,8 +322,19 @@ function hashContent(content: string): string {
   return crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
 }
 
-function readFileSafe(filePath: string): string | null {
+function readFileSafe(
+  filePath: string,
+  memoryRootReal: string,
+  categoryRootReal: string,
+): string | null {
   try {
+    const fileStat = fs.lstatSync(filePath);
+    if (fileStat.isSymbolicLink()) {
+      throw new Error(`Refusing to read symlinked memory file: ${filePath}`);
+    }
+    const fileReal = fs.realpathSync(filePath);
+    assertPathInsideRoot(memoryRootReal, fileReal, filePath);
+    assertPathInsideRoot(categoryRootReal, fileReal, filePath);
     return fs.readFileSync(filePath, "utf8");
   } catch {
     return null;
@@ -318,11 +361,31 @@ function extractBody(content: string): string {
   return match ? match[1].trim() : content.trim();
 }
 
-function walkMdFiles(dir: string, callback: (filePath: string) => void): void {
+function assertPathInsideRoot(rootReal: string, targetReal: string, sourcePath: string): void {
+  const rel = path.relative(rootReal, targetReal);
+  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) {
+    return;
+  }
+  throw new Error(`Refusing to scan memory path outside root: ${sourcePath}`);
+}
+
+function walkMdFiles(
+  dir: string,
+  memoryRootReal: string,
+  categoryRootReal: string,
+  callback: (filePath: string) => void,
+): void {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      walkMdFiles(fullPath, callback);
+    const entryStat = fs.lstatSync(fullPath);
+    if (entryStat.isSymbolicLink()) {
+      throw new Error(`Refusing to scan symlinked memory path: ${fullPath}`);
+    }
+    const entryReal = fs.realpathSync(fullPath);
+    assertPathInsideRoot(memoryRootReal, entryReal, fullPath);
+    assertPathInsideRoot(categoryRootReal, entryReal, fullPath);
+    if (entryStat.isDirectory()) {
+      walkMdFiles(fullPath, memoryRootReal, categoryRootReal, callback);
     } else if (entry.name.endsWith(".md")) {
       callback(fullPath);
     }

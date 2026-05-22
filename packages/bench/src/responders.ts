@@ -703,7 +703,11 @@ export function createGatewayResponder(
     ?? new FallbackLlmClient(options.gatewayConfig, runtimeContext);
 
   return {
-    async respond(question: string, recalledText: string): Promise<BenchResponse> {
+    async respond(
+      question: string,
+      recalledText: string,
+      control,
+    ): Promise<BenchResponse> {
       const startedAt = performance.now();
       const response = await llm.chatCompletion(
         [
@@ -725,6 +729,7 @@ export function createGatewayResponder(
         {
           temperature: 0,
           agentId: options.agentId,
+          signal: control?.signal,
         },
       );
 
@@ -756,6 +761,45 @@ function validateProviderConfig(
 
 function parseScalarJudgeScore(raw: string): number {
   const trimmed = raw.trim();
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const score = (parsed as { score?: unknown }).score;
+      if (typeof score === "number" && isPlausibleScalarScore(score)) {
+        return clampNormalizedScore(score);
+      }
+    }
+  } catch {
+    // Fall through to text parsing.
+  }
+
+  const scoreCueMatches = [
+    ...trimmed.matchAll(
+      /\b(?:final\s+score|score|rating)\b\s*[:=]\s*(-?\d+(?:\.\d+)?)(?:\s*(%|\/\s*(-?\d+(?:\.\d+)?)))?/gi,
+    ),
+  ];
+  for (const match of scoreCueMatches.reverse()) {
+    const numerator = Number.parseFloat(match[1]);
+    const suffix = match[2];
+    const denominatorRaw = match[3];
+    if (suffix === "%") {
+      if (Number.isFinite(numerator)) {
+        return clampNormalizedScore(numerator / 100);
+      }
+      continue;
+    }
+    if (denominatorRaw !== undefined) {
+      const denominator = Number.parseFloat(denominatorRaw);
+      if (isPlausibleScoreFraction(numerator, denominator)) {
+        return clampNormalizedScore(numerator / denominator);
+      }
+      continue;
+    }
+    if (isPlausibleScalarScore(numerator)) {
+      return clampNormalizedScore(numerator);
+    }
+  }
 
   const fractionMatches = [
     ...trimmed.matchAll(/(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)/g),

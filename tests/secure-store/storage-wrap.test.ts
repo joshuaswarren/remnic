@@ -14,7 +14,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, readFile, writeFile, mkdir, symlink } from "node:fs/promises";
+import { mkdtemp, readdir, rm, readFile, writeFile, mkdir, symlink } from "node:fs/promises";
 
 import {
   MAGIC_BYTES,
@@ -233,6 +233,37 @@ test("writeMaybeEncryptedFile — overwrites existing file with new encrypted co
     await writeMaybeEncryptedFile(filePath, "content-second", key, {}, dir);
     const result = await readMaybeEncryptedFile(filePath, key, dir);
     assert.strictEqual(result, "content-second");
+  });
+});
+
+test("writeMaybeEncryptedFile — concurrent atomic writes use unique temp paths", async () => {
+  await withTempDir(async (dir) => {
+    const key = makeKey();
+    const filePath = path.join(dir, "fact.md");
+    const originalNow = Date.now;
+    Date.now = () => 1_234_567_890;
+    try {
+      const results = await Promise.allSettled([
+        writeMaybeEncryptedFile(filePath, "content-alpha", key, {}, dir),
+        writeMaybeEncryptedFile(filePath, "content-beta", key, {}, dir),
+      ]);
+
+      assert.deepEqual(
+        results.map((result) => result.status),
+        ["fulfilled", "fulfilled"],
+      );
+      const finalContent = await readMaybeEncryptedFile(filePath, key, dir);
+      assert.ok(
+        finalContent === "content-alpha" || finalContent === "content-beta",
+        `unexpected final content: ${finalContent}`,
+      );
+      const tempArtifacts = (await readdir(dir)).filter((name) =>
+        name.includes(".tmp-"),
+      );
+      assert.deepEqual(tempArtifacts, []);
+    } finally {
+      Date.now = originalNow;
+    }
   });
 });
 

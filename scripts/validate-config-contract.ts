@@ -167,9 +167,17 @@ function main() {
   const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, "utf8"));
   const schemaKeys = new Set<string>(Object.keys(pluginJson?.configSchema?.properties ?? {}));
 
-  const expectedSchemaMissing = new Set(["gatewayConfig", "dreamsPhases"]);
+  const expectedSchemaMissing = new Set([
+    "gatewayConfig",
+    "dreamsPhases",
+    "providerApiKeyResolver",
+    "runtimeAuthForModelResolver",
+  ]);
   const expectedSchemaExtra = new Set(["dreams"]);
-  const expectedParseMissing = new Set<string>([]);
+  const expectedParseMissing = new Set<string>([
+    "providerApiKeyResolver",
+    "runtimeAuthForModelResolver",
+  ]);
 
   const failures: Failure[] = [];
 

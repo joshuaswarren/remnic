@@ -132,6 +132,12 @@ function effectiveConfig(
   return out;
 }
 
+function normalizeClock(now: number | undefined): number {
+  if (now === undefined) return Date.now();
+  if (Number.isFinite(now)) return Math.floor(now);
+  return 0;
+}
+
 /**
  * In-process cross-namespace budget limiter. Instantiate once per
  * orchestrator / access-service.
@@ -164,7 +170,8 @@ export class CrossNamespaceBudget {
    * @param now Epoch-ms clock read. Defaults to `Date.now()`; tests pass a
    *   fixed value to step time deterministically.
    */
-  record(principal: string, now: number = Date.now()): BudgetDecision {
+  record(principal: string, now?: number): BudgetDecision {
+    const normalizedNow = normalizeClock(now);
     const { enabled, windowMs, softLimit, hardLimit } = this.config;
     const limit = { softLimit, hardLimit, windowMs };
 
@@ -186,7 +193,7 @@ export class CrossNamespaceBudget {
     }
 
     const bucket = this.buckets.get(principal) ?? { timestamps: [] };
-    const cutoff = now - windowMs;
+    const cutoff = normalizedNow - windowMs;
     // Drop timestamps that slid out of the window.
     while (bucket.timestamps.length > 0 && bucket.timestamps[0]! < cutoff) {
       bucket.timestamps.shift();
@@ -196,7 +203,7 @@ export class CrossNamespaceBudget {
     // that crosses the deny threshold should itself be denied, not the
     // next one. This is what the threat model calls "fail at the Nth,
     // not the (N+1)th".
-    bucket.timestamps.push(now);
+    bucket.timestamps.push(normalizedNow);
     this.buckets.set(principal, bucket);
     const count = bucket.timestamps.length;
 
@@ -275,7 +282,7 @@ export class CrossNamespaceBudget {
     if (typeof principal !== "string" || principal.length === 0) {
       principal = "__anonymous__";
     }
-    const now = args.now ?? Date.now();
+    const now = normalizeClock(args.now);
     const bucket = this.buckets.get(principal) ?? { timestamps: [] };
     const cutoff = now - windowMs;
     let liveCount = 0;
@@ -325,7 +332,7 @@ export class CrossNamespaceBudget {
         },
       };
     }
-    return this.record(args.principal, args.now ?? Date.now());
+    return this.record(args.principal, args.now);
   }
 
   /**
@@ -343,8 +350,9 @@ export class CrossNamespaceBudget {
    * many transient principals. Safe to call at any time; returns the
    * number of buckets evicted.
    */
-  gc(now: number = Date.now()): number {
-    const cutoff = now - this.config.windowMs;
+  gc(now?: number): number {
+    const normalizedNow = normalizeClock(now);
+    const cutoff = normalizedNow - this.config.windowMs;
     let evicted = 0;
     for (const [principal, bucket] of this.buckets.entries()) {
       while (bucket.timestamps.length > 0 && bucket.timestamps[0]! < cutoff) {

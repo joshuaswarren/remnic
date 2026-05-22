@@ -9,9 +9,11 @@
  * The `input` field is empty string (synthesis is left to adapters).
  */
 
-import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 
+import { parseStrictCliDate } from "./date-parse.js";
 import type { TrainingExportOptions, TrainingExportRecord } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -83,6 +85,10 @@ async function safeRealpath(p: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function isContainedPath(real: string, containmentRoot: string): boolean {
+  return real === containmentRoot || real.startsWith(containmentRoot + path.sep);
 }
 
 /**
@@ -157,7 +163,7 @@ async function collectMarkdownFiles(
 
         const real = await safeRealpath(full);
         if (!real) continue;
-        if (real !== containmentRoot && !real.startsWith(containmentRoot + path.sep)) {
+        if (!isContainedPath(real, containmentRoot)) {
           continue;
         }
         files.push(full);
@@ -170,6 +176,27 @@ async function collectMarkdownFiles(
   // Final stable sort of the absolute paths guarantees order regardless of
   // directory traversal quirks.
   return files.sort((a, b) => a.localeCompare(b));
+}
+
+export async function readContainedMarkdownFile(
+  filePath: string,
+  containmentRoot: string,
+): Promise<string | null> {
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const st = await handle.stat();
+    if (!st.isFile() || st.nlink > 1) return null;
+
+    const real = await safeRealpath(filePath);
+    if (!real || !isContainedPath(real, containmentRoot)) return null;
+
+    return await handle.readFile("utf-8");
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -214,8 +241,11 @@ function buildInstruction(category: string, tags: string[]): string {
 
 function parseIsoDate(isoStr: string): Date | null {
   if (!isoStr) return null;
-  const d = new Date(isoStr);
-  return Number.isFinite(d.getTime()) ? d : null;
+  try {
+    return parseStrictCliDate(isoStr, "memory created timestamp");
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -254,12 +284,8 @@ export async function convertMemoriesToRecords(
   const records: TrainingExportRecord[] = [];
 
   for (const filePath of allFiles) {
-    let raw: string;
-    try {
-      raw = await readFile(filePath, "utf-8");
-    } catch {
-      continue; // skip unreadable files
-    }
+    const raw = await readContainedMarkdownFile(filePath, containmentRoot);
+    if (raw === null) continue; // skip unreadable files
 
     const parsed = parseFrontmatter(raw);
     if (!parsed) continue; // skip malformed files

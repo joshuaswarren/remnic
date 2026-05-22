@@ -28,6 +28,23 @@ import { readEnvVar, resolveHomeDir } from "../runtime/env.js";
 /** Folder name Remnic installs its extension under inside memories_extensions/. */
 const REMNIC_EXTENSION_DIR_NAME = "remnic";
 
+function resolveEnvHome(env?: NodeJS.ProcessEnv): string {
+  if (env === undefined) return resolveHomeDir();
+  return env.HOME?.trim() || env.USERPROFILE?.trim() || os.homedir();
+}
+
+function expandTildeWithHome(input: string, homeDir: string): string {
+  if (input === "~") return homeDir;
+  if (input.startsWith("~/") || input.startsWith("~\\")) {
+    return path.join(homeDir, input.slice(2));
+  }
+  return input;
+}
+
+function normalizeHostRoot(input: string, homeDir: string): string {
+  return path.resolve(expandTildeWithHome(input.trim(), homeDir));
+}
+
 /**
  * Codex-specific publisher that knows the Codex extension layout:
  *   ~/.codex/memories_extensions/remnic/instructions.md
@@ -37,7 +54,7 @@ export class CodexMemoryExtensionPublisher implements MemoryExtensionPublisher {
 
   static readonly capabilities: PublisherCapabilities = {
     instructionsMd: true,
-    skillsFolder: true,
+    skillsFolder: false,
     citationFormat: true,
     readPathTemplate: true,
   };
@@ -45,9 +62,13 @@ export class CodexMemoryExtensionPublisher implements MemoryExtensionPublisher {
   async resolveExtensionRoot(
     env?: NodeJS.ProcessEnv,
   ): Promise<string> {
-    const codexHome = env === undefined
-      ? readEnvVar("CODEX_HOME")?.trim() || path.join(resolveHomeDir(), ".codex")
-      : env.CODEX_HOME?.trim() || path.join(env.HOME ?? env.USERPROFILE ?? os.homedir(), ".codex");
+    const homeDir = resolveEnvHome(env);
+    const codexHomeInput = env === undefined
+      ? readEnvVar("CODEX_HOME")?.trim()
+      : env.CODEX_HOME?.trim();
+    const codexHome = codexHomeInput
+      ? normalizeHostRoot(codexHomeInput, homeDir)
+      : path.resolve(homeDir, ".codex");
     return path.join(codexHome, "memories_extensions", REMNIC_EXTENSION_DIR_NAME);
   }
 

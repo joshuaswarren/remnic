@@ -11,9 +11,15 @@ export * from "@remnic/plugin-openclaw";
 // *is* the legacy alias — the string is its identity, not a shared constant.
 import remnicPluginDefinition from "@remnic/plugin-openclaw";
 
+type RemnicPluginDefinition = typeof remnicPluginDefinition;
+type RemnicRegisterApi = Parameters<RemnicPluginDefinition["register"]>[0];
+
 const shimPluginDefinition = {
   ...remnicPluginDefinition,
   id: "openclaw-engram" as const,
+  register(api: RemnicRegisterApi) {
+    return remnicPluginDefinition.register.call(shimPluginDefinition, api);
+  },
 };
 
 export default shimPluginDefinition;

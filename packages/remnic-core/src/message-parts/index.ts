@@ -245,6 +245,7 @@ export function parseOpenClawMessageParts(
 ): LcmMessagePartInput[] {
   const explicit = normalizeExplicitParts(input);
   if (explicit.length > 0) return explicit;
+  if (Array.isArray(input)) return parseOpenClawContentArray(input, options);
   if (!input || typeof input !== "object") return [];
   const obj = input as Record<string, unknown>;
 
@@ -281,46 +282,53 @@ export function parsePiMessageParts(
 ): LcmMessagePartInput[] {
   const explicit = normalizeExplicitParts(input);
   if (explicit.length > 0) return explicit;
-  if (!isRecord(input)) return renderedFallbackParts(options);
+  const inputRecord = isRecord(input) ? input : null;
+  if (!inputRecord && !Array.isArray(input)) return renderedFallbackParts(options);
 
-  if (input.role === "bashExecution") {
-    const command = asNonEmptyString(input.command);
-    const output = asNonEmptyString(input.output);
+  if (inputRecord?.role === "bashExecution") {
+    const command = asNonEmptyString(inputRecord.command);
+    const output = asNonEmptyString(inputRecord.output);
     const rendered = [command ? `Ran ${command}` : null, output].filter(Boolean).join("\n");
     return withOrdinals([
       makePart("tool_result", {
         role: "bashExecution",
         command,
         output,
-        exitCode: input.exitCode ?? input.exit_code,
+        exitCode: inputRecord.exitCode ?? inputRecord.exit_code,
       }, {
         toolName: "bashExecution",
-        filePath: firstFilePathFromObject(input) ?? firstFilePath(rendered),
+        filePath: firstFilePathFromObject(inputRecord) ?? firstFilePath(rendered),
       }),
     ]);
   }
 
-  const topLevelType = asNonEmptyString(input.type ?? input.kind ?? input.role);
+  const topLevelType = inputRecord
+    ? asNonEmptyString(inputRecord.type ?? inputRecord.kind ?? inputRecord.role)
+    : null;
   if (topLevelType === "toolResult" || topLevelType === "tool_result") {
-    const toolName = asNonEmptyString(input.name ?? input.toolName ?? input.tool_name);
-    const output = input.output ?? input.result ?? input.content;
-    const rendered = renderUnknownContent(output ?? input);
+    const toolName = asNonEmptyString(inputRecord?.name ?? inputRecord?.toolName ?? inputRecord?.tool_name);
+    const output = inputRecord?.output ?? inputRecord?.result ?? inputRecord?.content;
+    const rendered = renderUnknownContent(output ?? inputRecord);
     return withOrdinals([
       makePart("tool_result", {
-        id: input.id ?? input.toolCallId ?? input.tool_call_id,
+        id: inputRecord?.id ?? inputRecord?.toolCallId ?? inputRecord?.tool_call_id,
         name: toolName,
         output: sanitizePayload(output),
-        ...(typeof input.isError === "boolean" ? { isError: input.isError } : {}),
-        ...(typeof input.is_error === "boolean" ? { is_error: input.is_error } : {}),
+        ...(typeof inputRecord?.isError === "boolean" ? { isError: inputRecord.isError } : {}),
+        ...(typeof inputRecord?.is_error === "boolean" ? { is_error: inputRecord.is_error } : {}),
       }, {
         toolName,
-        filePath: firstFilePathFromObject(input) ?? firstFilePath(rendered),
+        filePath: firstFilePathFromObject(inputRecord) ?? firstFilePath(rendered),
       }),
     ]);
   }
 
-  const content = input.content;
-  const blocks = Array.isArray(content) ? content.filter(isRecord) : [];
+  const content = inputRecord?.content;
+  const blocks = Array.isArray(input)
+    ? input.filter(isRecord)
+    : Array.isArray(content)
+      ? content.filter(isRecord)
+      : [];
   const parts: LcmMessagePartInput[] = [];
 
   if (typeof content === "string") {
@@ -362,12 +370,12 @@ export function parsePiMessageParts(
     }
   });
 
-  const toolName = asNonEmptyString(input.toolName ?? input.tool_name ?? input.name);
+  const toolName = asNonEmptyString(inputRecord?.toolName ?? inputRecord?.tool_name ?? inputRecord?.name);
   if (parts.length === 0 && toolName) {
     parts.push(classifyToolPart(toolName, {
       name: toolName,
-      arguments: sanitizePayload(input.arguments ?? input.args ?? input.input ?? input.params),
-      output: sanitizePayload(input.output ?? input.result),
+      arguments: sanitizePayload(inputRecord?.arguments ?? inputRecord?.args ?? inputRecord?.input ?? inputRecord?.params),
+      output: sanitizePayload(inputRecord?.output ?? inputRecord?.result),
     }));
   }
 
@@ -398,24 +406,31 @@ function inferSourceFormat(input: unknown): MessagePartSourceFormat | undefined 
     }
     if (Array.isArray(obj.output)) return "openai";
     if (isOpenAiResponseItem(obj)) return "openai";
-    if (
-      Array.isArray(obj.content) &&
-      obj.content.some(isOpenAiContentBlock) &&
-      obj.content.some(isPiToolContentBlock)
-    ) {
-      return "openclaw";
+    if (Array.isArray(obj.content)) {
+      const hasOpenAiBlocks = obj.content.some(isOpenAiContentBlock);
+      const hasAnthropicBlocks = obj.content.some(isAnthropicContentBlock);
+      const hasPiToolBlocks = obj.content.some(isPiToolContentBlock);
+      if (hasOpenAiBlocks && (hasAnthropicBlocks || hasPiToolBlocks)) {
+        return "openclaw";
+      }
+      if (hasOpenAiBlocks) return "openai";
     }
-    if (Array.isArray(obj.content) && obj.content.some(isOpenAiContentBlock)) return "openai";
     if (isAnthropicMessageObject(obj)) return "anthropic";
     if (isPiMessageObject(obj)) return "pi";
     if (Array.isArray(obj.content)) return "anthropic";
   }
   if (Array.isArray(input)) {
-    return input.some((item) =>
+    const records = input.filter(isRecord);
+    const hasOpenAiBlocks = records.some((item) =>
       isRecord(item) && (isOpenAiResponseItem(item) || isOpenAiContentBlock(item))
-    )
-      ? "openai"
-      : "anthropic";
+    );
+    const hasAnthropicBlocks = records.some(isAnthropicContentBlock);
+    const hasPiToolBlocks = records.some(isPiToolContentBlock);
+    if (hasOpenAiBlocks && (hasAnthropicBlocks || hasPiToolBlocks)) return "openclaw";
+    if (hasOpenAiBlocks) return "openai";
+    if (hasAnthropicBlocks) return "anthropic";
+    if (hasPiToolBlocks) return "pi";
+    return "anthropic";
   }
   return undefined;
 }
@@ -640,7 +655,7 @@ function renderUnknownContent(value: unknown): string {
 
 function firstFilePathFromObject(value: unknown): string | null {
   if (!isRecord(value)) return null;
-  const keys = ["file_path", "filePath", "path", "filename", "cwd"];
+  const keys = ["file_path", "filePath", "path", "filename"];
   for (const key of keys) {
     const candidate = asNonEmptyString(value[key]);
     if (candidate) return candidate;

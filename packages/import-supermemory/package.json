@@ -13,10 +13,10 @@
   },
   "files": ["dist"],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup src/index.ts --format esm --dts --clean",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "test": "tsx --test src/parser.test.ts src/transform.test.ts src/adapter.test.ts",
+    "test": "tsx --test src/parser.test.ts src/transform.test.ts src/adapter.test.ts src/build-script.test.ts",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {

@@ -195,6 +195,22 @@ test("set_coding_context with projectTag creates tag-based context", async () =>
   assert.equal(calls[0]!.ctx?.defaultBranch, null);
 });
 
+test("set_coding_context with projectTag disambiguates lossy tags", async () => {
+  const { mcp, calls } = makeMcp();
+  await call(mcp, "engram.set_coding_context", {
+    sessionKey: "session-A",
+    projectTag: "blend/supply",
+  });
+  await call(mcp, "engram.set_coding_context", {
+    sessionKey: "session-B",
+    projectTag: "blend-supply",
+  });
+
+  assert.notEqual(calls[0]!.ctx?.projectId, calls[1]!.ctx?.projectId);
+  assert.match(calls[0]!.ctx?.projectId ?? "", /^tag:blend-supply-[0-9a-f]{8}$/);
+  assert.equal(calls[1]!.ctx?.projectId, "tag:blend-supply");
+});
+
 test("set_coding_context with codingContext takes precedence over projectTag", async () => {
   const { mcp, calls } = makeMcp();
   await call(mcp, "engram.set_coding_context", {

@@ -11,6 +11,7 @@ export function canCompareBenchRuns(
   return (
     baselineSummary !== null &&
     candidateSummary !== null &&
+    baselineSummary.id !== candidateSummary.id &&
     baselineSummary.benchmark === candidateSummary.benchmark
   );
 }
@@ -24,7 +25,9 @@ export function filterComparableCandidateRuns(
   }
 
   return payload.summaries.filter(
-    (summary) => summary.benchmark === baselineSummary.benchmark,
+    (summary) =>
+      summary.benchmark === baselineSummary.benchmark &&
+      summary.id !== baselineSummary.id,
   );
 }
 
@@ -118,3 +121,4 @@ export function Compare({ payload }: { payload: BenchResultSummaryPayload }) {
     </section>
   );
 }
+import * as React from "react";

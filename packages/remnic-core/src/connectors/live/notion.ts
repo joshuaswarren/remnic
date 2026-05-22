@@ -838,7 +838,6 @@ async function incrementalSync(
       let cutoffMidPage = false;
       for (const notionPage of pageResp.results ?? []) {
         throwIfAborted(signal);
-        totalConsumed++;
 
         const pageId = notionPage.id;
         const lastEdited = notionPage.last_edited_time;
@@ -849,8 +848,17 @@ async function incrementalSync(
         const knownRevision = payload.pages[pageId];
         if (knownRevision && knownRevision >= lastEdited) {
           skippedUnchanged++;
+          if (!latestInDb || lastEdited > latestInDb) {
+            latestInDb = lastEdited;
+          }
           continue;
         }
+
+        if (totalConsumed >= MAX_PAGES_PER_PASS) {
+          cutoffMidPage = true;
+          break;
+        }
+        totalConsumed++;
 
         // Fetch and build the document.
         const doc = await fetchPageDocument(
@@ -868,11 +876,17 @@ async function incrementalSync(
           // below the limit on a future edit, `last_edited_time` will
           // advance and the watermark check above will let it through.
           updatedPages[pageId] = lastEdited;
+          if (!latestInDb || lastEdited > latestInDb) {
+            latestInDb = lastEdited;
+          }
         } else if (doc === "empty") {
           skippedEmpty++;
           // Codex review P2: same reasoning as too-large — record the
           // revision so we don't re-fetch an empty page indefinitely.
           updatedPages[pageId] = lastEdited;
+          if (!latestInDb || lastEdited > latestInDb) {
+            latestInDb = lastEdited;
+          }
         } else if (doc !== null) {
           newDocs.push(doc);
           // Advance watermarks.
@@ -884,6 +898,9 @@ async function incrementalSync(
           // null = terminal skip (404/403). Record the version so we
           // don't repeatedly attempt a permanently-inaccessible page.
           updatedPages[pageId] = lastEdited;
+          if (!latestInDb || lastEdited > latestInDb) {
+            latestInDb = lastEdited;
+          }
         }
 
         if (totalConsumed >= MAX_PAGES_PER_PASS) {

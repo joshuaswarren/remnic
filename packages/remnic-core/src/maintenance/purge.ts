@@ -213,11 +213,21 @@ export async function purgeMemories(
   try {
     await logPurgeAudit(storage, candidates, now, "PURGE_DELETE_INTENT");
   } catch (auditErr) {
-    errors.push({
+    const auditError = {
       id: "(purge-audit)",
       path: path.join(storage.dir, "state", "observation-ledger", "purge-audit.jsonl"),
       error: auditErr instanceof Error ? auditErr.message : String(auditErr),
-    });
+    };
+    return {
+      dryRun: false,
+      tier,
+      olderThanMs,
+      candidates,
+      purgedCount: 0,
+      alreadyAbsentCount: 0,
+      errorCount: 1,
+      errors: [auditError],
+    };
   }
 
   const actuallyPurged: PurgeCandidate[] = [];

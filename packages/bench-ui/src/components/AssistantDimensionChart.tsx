@@ -1,3 +1,5 @@
+import * as React from "react";
+
 import type { AssistantDimensionBar } from "../bench-data";
 
 const MAX_SCORE = 5;

@@ -4611,13 +4611,8 @@ export class EngramAccessService {
     const resolvedNs = this.resolveReadableNamespace(namespace, principal);
     const namespaceFilter = resolvedNs !== this.orchestrator.config.defaultNamespace ? resolvedNs : undefined;
 
-    const results = collection === "global"
-      ? (await this.orchestrator.qmd.searchGlobal(query, maxResults)).filter((r) =>
-          namespaceFilter
-            ? r.path.includes(`/namespaces/${namespaceFilter}/`) ||
-              (!r.path.includes("/namespaces/") && namespaceFilter === this.orchestrator.config.defaultNamespace)
-            : true,
-        )
+    const results = collection === "global" && !namespaceFilter
+      ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
       : await this.orchestrator.searchAcrossNamespaces({
           query,
           namespaces: namespaceFilter ? [namespaceFilter] : undefined,

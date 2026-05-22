@@ -10,6 +10,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   CONFIDENCE_CEILING,
   DEFAULT_DECAY_FLOOR,
@@ -75,6 +76,12 @@ test("reinforceEdge bumps confidence by default delta and stamps lastReinforcedA
   // Input is not mutated.
   assert.equal(edge.confidence, 0.5);
   assert.equal(edge.lastReinforcedAt, undefined);
+});
+
+test("graph edge decay docs describe the default reinforcement bump", async () => {
+  const docs = await readFile(new URL("../docs/graph-edge-decay.md", import.meta.url), "utf8");
+  assert.match(docs, /bumps `confidence` by the default reinforcement delta \(`0\.05`\)/);
+  assert.match(docs, /capped at\s+`1\.0`/);
 });
 
 test("reinforceEdge round-trip: legacy edge (missing confidence) starts at 1.0 and stays capped", () => {

@@ -99,7 +99,8 @@ Usage:
 
 Required:
   --adapter <name>            One of: ${SUPPORTED_IMPORTERS.join(" | ")}
-  --file <path>               Path to the source export (JSON or ZIP). May be
+  --file <path>               Path to a text/JSON source export. ZIP archives
+                              are not accepted by this single-file path yet. May be
                               omitted for API-only adapters (mem0).
 
 Options:
@@ -229,6 +230,12 @@ export async function runImportCommand(
   args: ImportDispatchArgs,
   io: ImportDispatchIO,
 ): Promise<RunImporterResult> {
+  if (args.file && isZipFilePath(args.file)) {
+    throw new Error(
+      `ZIP imports are not supported by --file yet: '${args.file}'. ` +
+        "Extract the archive first or use --all-from-bundle for supported bundle layouts.",
+    );
+  }
   const adapter = await io.loadAdapter(args.adapter);
 
   // Shape inputs the adapter understands. Adapters that accept raw file
@@ -301,6 +308,18 @@ export async function runImportCommand(
     );
   }
   return result;
+}
+
+function isZipFilePath(filePath: string): boolean {
+  return pathExtension(filePath) === ".zip";
+}
+
+function pathExtension(filePath: string): string {
+  const normalized = filePath.trim().toLowerCase();
+  const lastSlash = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  const base = normalized.slice(lastSlash + 1);
+  const dot = base.lastIndexOf(".");
+  return dot >= 0 ? base.slice(dot) : "";
 }
 
 // ---------------------------------------------------------------------------

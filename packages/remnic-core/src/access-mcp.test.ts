@@ -30,6 +30,24 @@ function makeMockService(briefingFn?: () => Promise<unknown>): EngramAccessServi
     recallExplain: () => Promise.resolve(null),
     store: () => Promise.resolve({ id: "synthetic-id", stored: true }),
     suggest: () => Promise.resolve({ id: "synthetic-id" }),
+    memoryStore: () => Promise.resolve({
+      schemaVersion: 1,
+      operation: "memory_store",
+      namespace: "default",
+      dryRun: true,
+      accepted: true,
+      queued: false,
+      status: "validated",
+    }),
+    suggestionSubmit: () => Promise.resolve({
+      schemaVersion: 1,
+      operation: "suggestion_submit",
+      namespace: "default",
+      dryRun: true,
+      accepted: true,
+      queued: false,
+      status: "validated",
+    }),
     daySum: () => Promise.resolve({ summary: "" }),
     memoryGet: () => Promise.resolve(null),
     memoryTimeline: () => Promise.resolve([]),
@@ -179,6 +197,69 @@ test("MCP maintenance: hourly summarization dispatches to the access service", a
 
   assert.equal(called, true, "memorySummarizeHourly should be dispatched");
   assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+});
+
+test("MCP memory write tools reject malformed arguments before dispatch", async () => {
+  for (const toolName of ["engram.memory_store", "engram.suggestion_submit"]) {
+    for (const badArgs of [
+      {
+        content: "valid durable content",
+        category: "fact",
+        confidence: "0.9",
+        dryRun: true,
+      },
+      {
+        content: "valid durable content",
+        category: "fact",
+        tags: ["project", 123],
+        dryRun: true,
+      },
+      {
+        content: "valid durable content",
+        category: "fact",
+        dryRun: true,
+        unknownField: "must be rejected",
+      },
+    ]) {
+      let dispatched = false;
+      const service = {
+        ...makeMockService(),
+        memoryStore: async () => {
+          dispatched = true;
+          return {
+            schemaVersion: 1,
+            operation: "memory_store",
+            namespace: "default",
+            dryRun: true,
+            accepted: true,
+            queued: false,
+            status: "validated",
+          };
+        },
+        suggestionSubmit: async () => {
+          dispatched = true;
+          return {
+            schemaVersion: 1,
+            operation: "suggestion_submit",
+            namespace: "default",
+            dryRun: true,
+            accepted: true,
+            queued: false,
+            status: "validated",
+          };
+        },
+      } as unknown as EngramAccessService;
+      const server = new EngramMcpServer(service);
+
+      const response = await server.handleRequest(makeToolRequest(toolName, badArgs));
+      const result = (response as Record<string, unknown> & {
+        result?: { isError?: boolean; content?: Array<{ text?: string }> };
+      }).result;
+
+      assert.equal(result?.isError, true, `${toolName} should reject ${JSON.stringify(badArgs)}`);
+      assert.equal(dispatched, false, `${toolName} should not dispatch malformed writes`);
+    }
+  }
 });
 
 test("MCP contradiction scan uses writable namespace resolver", async () => {

@@ -17,8 +17,7 @@ import {
 import { extractRankedPageIds } from "../retrieval-page-ids.js";
 import { buildSchemaTierMessages } from "../retrieval-schema-messages.js";
 import {
-  RETRIEVAL_PERSONALIZATION_FIXTURE,
-  RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE,
+  selectRetrievalPersonalizationCases,
   type RetrievalPersonalizationCase,
 } from "./fixture.js";
 
@@ -57,7 +56,7 @@ export async function runRetrievalPersonalizationBenchmark(
     const expectedJson = JSON.stringify(sample.expectedPageIds);
     const actualJson = JSON.stringify(topRetrievedPageIds);
 
-    tasks.push({
+    const task: TaskResult = {
       taskId: sample.id,
       question: sample.title,
       expected: expectedJson,
@@ -76,7 +75,9 @@ export async function runRetrievalPersonalizationBenchmark(
         recallLengthChars: recallText.length,
         retrievedPageIds: topRetrievedPageIds,
       },
-    });
+    };
+    tasks.push(task);
+    options.onTaskComplete?.(task, tasks.length, cases.length);
   }
 
   const remnicVersion = await getRemnicVersion();
@@ -125,19 +126,11 @@ function loadCases(
   mode: "quick" | "full",
   limit?: number,
 ): RetrievalPersonalizationCase[] {
-  const baseCases = mode === "quick"
-    ? RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE
-    : RETRIEVAL_PERSONALIZATION_FIXTURE;
-
-  if (limit === undefined) {
-    return baseCases;
-  }
-
-  if (!Number.isInteger(limit) || limit <= 0) {
+  if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
     throw new Error("retrieval-personalization limit must be a positive integer");
   }
 
-  const limited = baseCases.slice(0, limit);
+  const limited = selectRetrievalPersonalizationCases(mode, limit);
   if (limited.length === 0) {
     throw new Error("retrieval-personalization fixture is empty after applying the requested limit.");
   }

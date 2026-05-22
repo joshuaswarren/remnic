@@ -1,6 +1,6 @@
-import { lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { log } from "../logger.js";
 import { validateRouteTarget, type RouteRule, type RoutingEngineOptions } from "./engine.js";
 
@@ -41,7 +41,6 @@ function resolveStatePath(memoryDir: string, stateFile: string): string {
 
 function normalizeRule(rule: RouteRule, options?: RoutingEngineOptions): RouteRule | null {
   if (!rule || typeof rule !== "object") return null;
-  if (rule.enabled === false) return null;
   if (rule.patternType !== "keyword" && rule.patternType !== "regex") return null;
   if (typeof rule.pattern !== "string" || rule.pattern.trim().length === 0) return null;
   if (typeof rule.priority !== "number" || !Number.isFinite(rule.priority)) return null;
@@ -65,7 +64,7 @@ function normalizeRule(rule: RouteRule, options?: RoutingEngineOptions): RouteRu
     pattern: rule.pattern.trim(),
     priority: normalizedPriority,
     target: normalizedTarget,
-    enabled: true,
+    enabled: rule.enabled === false ? false : true,
   };
 }
 
@@ -233,9 +232,15 @@ export class RoutingRulesStore {
     while (Date.now() - start < timeoutMs) {
       try {
         await mkdir(this.lockPath);
+        const ownerPath = path.join(this.lockPath, "owner");
+        const ownerToken = `${process.pid}:${randomUUID()}`;
+        await writeFile(ownerPath, ownerToken, "utf-8");
         return async () => {
           try {
-            await rm(this.lockPath, { recursive: true, force: true });
+            const currentOwner = await readFile(ownerPath, "utf-8").catch(() => "");
+            if (currentOwner === ownerToken) {
+              await rm(this.lockPath, { recursive: true, force: true });
+            }
           } catch {
             // Fail-open: lock cleanup should not fail writes.
           }
@@ -249,7 +254,7 @@ export class RoutingRulesStore {
         try {
           const lockStat = await stat(this.lockPath);
           if (Date.now() - lockStat.mtimeMs > staleMs) {
-            await rm(this.lockPath, { recursive: true, force: true });
+            await this.removeStaleLock(lockStat);
             continue;
           }
         } catch {
@@ -263,6 +268,31 @@ export class RoutingRulesStore {
       throw unexpectedLockError;
     }
     throw new Error(`routing rules lock acquisition timed out after ${timeoutMs}ms`);
+  }
+
+  private async removeStaleLock(observedStat: Awaited<ReturnType<typeof stat>>): Promise<void> {
+    const currentStat = await stat(this.lockPath);
+    if (!this.sameLockStat(observedStat, currentStat)) return;
+
+    try {
+      await rmdir(this.lockPath);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "ENOTEMPTY" && code !== "EEXIST") {
+        throw err;
+      }
+    }
+
+    const quarantinePath = `${this.lockPath}.stale-${process.pid}-${Date.now()}-${randomUUID()}`;
+    await rename(this.lockPath, quarantinePath);
+    await rm(quarantinePath, { recursive: true, force: true });
+  }
+
+  private sameLockStat(left: Awaited<ReturnType<typeof stat>>, right: Awaited<ReturnType<typeof stat>>): boolean {
+    if (left.mtimeMs !== right.mtimeMs || left.size !== right.size) return false;
+    if (left.ino && right.ino && left.ino !== right.ino) return false;
+    return true;
   }
 
   private async assertStatePathScoped(): Promise<void> {

@@ -94,7 +94,7 @@ export async function runCodingRecallBenchmark(
       details.missingWorkflowFacets = missingWorkflowFacets;
     }
 
-    tasks.push({
+    const task: TaskResult = {
       taskId: sample.id,
       question: sample.title,
       expected: expectedJson,
@@ -103,7 +103,9 @@ export async function runCodingRecallBenchmark(
       latencyMs,
       tokens: { input: 0, output: 0 },
       details,
-    });
+    };
+    tasks.push(task);
+    options.onTaskComplete?.(task, tasks.length, cases.length);
   }
 
   const remnicVersion = await getRemnicVersion();

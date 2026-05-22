@@ -184,6 +184,30 @@ test("replayTrace skips malformed lines without crashing", async () => {
   });
 });
 
+test("replayTrace skips partial snapshot objects the renderer cannot handle", async () => {
+  await withTempDir(async (dir) => {
+    const tracePath = path.join(dir, "trace.jsonl");
+    const valid = JSON.stringify(
+      makeSnapshot({ capturedAt: "2026-04-26T00:00:00.000Z" }),
+    );
+    const partial = JSON.stringify({
+      capturedAt: "2026-04-26T00:00:01.000Z",
+    });
+    await fs.writeFile(tracePath, `${valid}\n${partial}\n`, "utf-8");
+
+    const stream = new CaptureStream();
+    const result = await replayTrace(tracePath, {
+      output: stream,
+      sleep: () => Promise.resolve(),
+      manageCursor: false,
+    });
+
+    assert.equal(result.framesRendered, 1);
+    assert.equal(result.framesSkipped, 1);
+    assert.doesNotMatch(stream.textPlain(), /render failed/);
+  });
+});
+
 test("replayTrace --speed 2 halves the inter-frame delay vs --speed 1", async () => {
   await withTempDir(async (dir) => {
     const tracePath = path.join(dir, "trace.jsonl");
@@ -255,6 +279,10 @@ test("parseSnapshotLine handles all the JSON edge cases", () => {
   assert.equal(parseSnapshotLine("null"), null);
   assert.equal(parseSnapshotLine("[1,2,3]"), null);
   assert.equal(parseSnapshotLine("42"), null);
+  assert.equal(
+    parseSnapshotLine(JSON.stringify({ capturedAt: "2026-04-26T00:00:00.000Z" })),
+    null,
+  );
   const snap = makeSnapshot();
   const parsed = parseSnapshotLine(JSON.stringify(snap));
   assert.ok(parsed);

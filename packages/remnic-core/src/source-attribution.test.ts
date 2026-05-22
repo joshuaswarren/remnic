@@ -16,6 +16,7 @@ import {
   parseAllCitations,
   parseCitation,
   stripCitation,
+  stripCitationForTemplate,
 } from "./source-attribution.js";
 
 test("formatCitation emits the default template with provided fields", () => {
@@ -736,6 +737,13 @@ test("hasCitationForTemplate (Finding 1): bracket-wrapped compact template is ac
     hasCitationForTemplate("Fact body. [agent-abc123]", "{agent}-{sessionId}"),
     true,
     "bracket-wrapped compact token at end of fact must be recognised",
+  );
+});
+
+test("stripCitationForTemplate removes bracket-wrapped compact citations", () => {
+  assert.equal(
+    stripCitationForTemplate("Fact body. [agent-abc123]", "{agent}-{sessionId}"),
+    "Fact body.",
   );
 });
 

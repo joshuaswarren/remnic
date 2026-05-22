@@ -436,13 +436,17 @@ export function createActiveRecallEngine(
         transcriptPath: null,
       };
       if (config.persistTranscripts) {
-        result.transcriptPath = await appendActiveRecallTranscript(
-          config.transcriptDir,
-          input,
-          config,
-          result,
-          queryBundle,
-        );
+        try {
+          result.transcriptPath = await appendActiveRecallTranscript(
+            config.transcriptDir,
+            input,
+            config,
+            result,
+            queryBundle,
+          );
+        } catch {
+          result.transcriptPath = null;
+        }
       }
 
       if (cacheEnabled) {

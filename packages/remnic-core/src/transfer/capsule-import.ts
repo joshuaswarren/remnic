@@ -84,6 +84,12 @@ export interface ImportCapsuleOptions {
    * When provided and the archive is NOT encrypted, the value is ignored.
    */
   memoryDir?: string;
+  /**
+   * Original secure-store passphrase for encrypted format-v2 archives. When
+   * supplied, the importer derives the archive key from the embedded KDF
+   * header, enabling restore without the source machine's unlocked keyring.
+   */
+  passphrase?: string;
 }
 
 export interface ImportCapsuleSkippedRecord {
@@ -167,14 +173,17 @@ export async function importCapsule(
   const encrypted = await isEncryptedCapsuleFile(archiveAbs);
   let raw: Buffer;
   if (encrypted) {
-    if (!opts.memoryDir) {
+    if (!opts.memoryDir && !opts.passphrase) {
       throw new Error(
         `importCapsule: archive is encrypted but 'memoryDir' was not provided. ` +
           `Pass the memory directory so the secure-store key can be retrieved, ` +
+          `provide the original passphrase for a format-v2 archive restore, ` +
           `or run \`remnic secure-store unlock\` before importing.`,
       );
     }
-    raw = await decryptCapsuleFileInMemory(archiveAbs, opts.memoryDir);
+    raw = await decryptCapsuleFileInMemory(archiveAbs, opts.memoryDir, {
+      passphrase: opts.passphrase,
+    });
   } else {
     raw = await readFile(archiveAbs);
   }

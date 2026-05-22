@@ -147,6 +147,57 @@ test("runner reads namespaced memories from memoryDir/namespaces/<ns> (P1 fix)",
   }
 });
 
+test("runner honors configured codex.codexHome when no runtime override is supplied", async () => {
+  const memoryDir = makeTempDir("codex-materialize-runner-config-home-memdir-");
+  const workspaceDir = makeTempDir("codex-materialize-runner-config-home-workspace-");
+  const { root: codexHome, memoriesDir } = makeCodexHome();
+
+  try {
+    ensureSentinel(memoriesDir, "configured-home-ns", new Date("2026-04-02T00:00:00Z"));
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir,
+      qmdEnabled: false,
+      codexMaterializeMemories: true,
+      codex: {
+        codexHome,
+      },
+    });
+
+    const result = await runCodexMaterialize({
+      config,
+      namespace: "configured-home-ns",
+      memories: [
+        {
+          path: path.join(memoryDir, "synthetic.md"),
+          frontmatter: {
+            id: "configured-home-memory",
+            category: "fact",
+            created: "2026-04-01T00:00:00Z",
+            updated: "2026-04-01T00:00:00Z",
+            source: "synthetic-test",
+            confidence: 0.8,
+            tags: [],
+          } as any,
+          content: "synthetic configured Codex home memory",
+        },
+      ],
+      reason: "manual",
+      now: new Date("2026-04-02T00:00:00Z"),
+    });
+
+    assert.ok(result, "runner should use config.codex.codexHome instead of default Codex home");
+    assert.equal(result!.wrote, true);
+    assert.ok(existsSync(path.join(memoriesDir, "MEMORY.md")));
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("runner rejects unsafe materialize namespaces before resolving storage paths", async () => {
   const memoryDir = makeTempDir("codex-materialize-runner-unsafe-ns-memdir-");
   const workspaceDir = makeTempDir("codex-materialize-runner-unsafe-ns-workspace-");

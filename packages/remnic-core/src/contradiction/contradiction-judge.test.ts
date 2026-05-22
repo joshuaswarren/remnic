@@ -140,6 +140,55 @@ test("contradiction judge does not positional-fallback after unmatched pairKey v
   assert.equal(result.results.get("c:d")?.confidence, 0);
 });
 
+test("contradiction judge continues past unmatched JSON candidates to a later valid answer", async () => {
+  const localLlm = {
+    async chatCompletion() {
+      return {
+        content: [
+          "Draft:",
+          JSON.stringify([
+            {
+              pairKey: "x:y",
+              verdict: "contradicts",
+              rationale: "This pair is not in the request.",
+              confidence: 0.9,
+            },
+          ]),
+          "Final:",
+          JSON.stringify([
+            {
+              pairKey: "a:b",
+              verdict: "contradicts",
+              rationale: "The package manager claims conflict.",
+              confidence: 0.8,
+            },
+          ]),
+        ].join("\n"),
+      };
+    },
+  } as unknown as LocalLlmClient;
+
+  const result = await judgeContradictionPairs(
+    [
+      {
+        memoryIdA: "a",
+        memoryIdB: "b",
+        textA: "Joshua uses pnpm",
+        textB: "Joshua uses npm",
+      },
+    ],
+    {} as PluginConfig,
+    localLlm,
+    null,
+    new Map(),
+  );
+
+  assert.equal(result.judged, 1);
+  assert.equal(result.results.get("a:b")?.verdict, "contradicts");
+  assert.equal(result.results.get("a:b")?.confidence, 0.8);
+  assert.equal(result.results.has("x:y"), false);
+});
+
 test("contradiction judge marks pairKey-less response items as needs-user", async () => {
   const localLlm = {
     async chatCompletion() {

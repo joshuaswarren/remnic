@@ -69,6 +69,30 @@ describe("gemini adapter shape", () => {
     }
   });
 
+  it("passes Gemini-specific transform options through runImporter", async () => {
+    const { target, received } = makeTarget();
+    const result = await runImporter(
+      adapter,
+      JSON.stringify([
+        {
+          header: "Gemini Apps",
+          text: "ok",
+          time: "2026-01-01T00:00:00Z",
+        },
+      ]),
+      target,
+      {
+        transformOptions: {
+          minPromptLength: 1,
+        },
+      },
+    );
+
+    assert.equal(result.memoriesPlanned, 1);
+    assert.equal(result.memoriesWritten, 1);
+    assert.equal(received.flat()[0]?.content, "ok");
+  });
+
   it("dry-run does not hit the target", async () => {
     const { target, received } = makeTarget();
     const result = await runImporter(

@@ -31,6 +31,13 @@ export function isTransferPathExcluded(relPosix: string, options: TransferPathEx
   if (outputRelPosix !== null) {
     if (outputRelPosix === ".") return true;
     if (relPosix === outputRelPosix || relPosix.startsWith(`${outputRelPosix}/`)) return true;
+    if (
+      relPosix === `${outputRelPosix}-wal` ||
+      relPosix === `${outputRelPosix}-shm` ||
+      relPosix === `${outputRelPosix}-journal`
+    ) {
+      return true;
+    }
   }
 
   return false;

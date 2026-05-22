@@ -18,6 +18,21 @@ const MAX_SLUG_LENGTH = 32;
 
 /** Regex for valid slug: lowercase letters, digits, hyphens */
 const SLUG_RE = /^[a-z][a-z0-9-]*$/;
+const VALID_MEMORY_CATEGORIES = new Set([
+  "fact",
+  "preference",
+  "correction",
+  "entity",
+  "decision",
+  "relationship",
+  "principle",
+  "commitment",
+  "moment",
+  "skill",
+  "rule",
+  "procedure",
+  "reasoning_trace",
+]);
 
 /**
  * Validate a taxonomy category slug.
@@ -68,11 +83,30 @@ export function validateTaxonomy(taxonomy: Taxonomy): void {
     if (!Array.isArray(cat.filingRules)) {
       throw new Error(`Taxonomy category "${cat.id}" filingRules must be an array`);
     }
+    for (const [index, rule] of cat.filingRules.entries()) {
+      if (typeof rule !== "string" || rule.trim().length === 0) {
+        throw new Error(
+          `Taxonomy category "${cat.id}" filingRules[${index}] must be a non-empty string`,
+        );
+      }
+    }
     if (typeof cat.priority !== "number" || !Number.isFinite(cat.priority)) {
       throw new Error(`Taxonomy category "${cat.id}" must have a finite numeric priority`);
     }
     if (!Array.isArray(cat.memoryCategories)) {
       throw new Error(`Taxonomy category "${cat.id}" memoryCategories must be an array`);
+    }
+    for (const [index, memoryCategory] of cat.memoryCategories.entries()) {
+      if (typeof memoryCategory !== "string" || memoryCategory.trim().length === 0) {
+        throw new Error(
+          `Taxonomy category "${cat.id}" memoryCategories[${index}] must be a non-empty string`,
+        );
+      }
+      if (!VALID_MEMORY_CATEGORIES.has(memoryCategory)) {
+        throw new Error(
+          `Taxonomy category "${cat.id}" memoryCategories[${index}] is unknown: "${memoryCategory}"`,
+        );
+      }
     }
     if (cat.parentId !== undefined) {
       if (typeof cat.parentId !== "string") {
@@ -117,10 +151,15 @@ export async function loadTaxonomy(memoryDir: string): Promise<Taxonomy> {
   }
 
   const obj = parsed as Record<string, unknown>;
-  const userVersion = typeof obj.version === "number" ? obj.version : DEFAULT_TAXONOMY.version;
-  const userCategories = Array.isArray(obj.categories)
-    ? (obj.categories as TaxonomyCategory[])
-    : [];
+  if (typeof obj.version !== "number") {
+    throw new Error("taxonomy.json version must be a number");
+  }
+  if (!Array.isArray(obj.categories)) {
+    throw new Error("taxonomy.json categories must be an array");
+  }
+
+  const userVersion = obj.version;
+  const userCategories = obj.categories as TaxonomyCategory[];
 
   // Validate: reject duplicate IDs in user categories before merging.
   // Without this check, duplicates are silently collapsed with last-write-wins

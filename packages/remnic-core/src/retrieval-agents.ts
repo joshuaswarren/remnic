@@ -18,11 +18,12 @@
  */
 
 import path from "node:path";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { log } from "./logger.js";
 import type { QmdSearchResult } from "./types.js";
 import type { QmdClient } from "./qmd.js";
 import { isTemporalQuery, recencyWindowBoundsFromPrompt } from "./temporal-index.js";
+import { isAbortError } from "./abort-error.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -88,6 +89,28 @@ function overlapScore(queryTokens: string[], candidateTokens: string[]): number 
   return hits / Math.max(queryTokens.length, candidateTokens.length);
 }
 
+async function resolveContainedRegularFile(
+  memoryDir: string,
+  candidatePath: string,
+  canonicalRoot?: string,
+): Promise<string | null> {
+  try {
+    const root = canonicalRoot ?? await realpath(memoryDir);
+    const absolute = path.isAbsolute(candidatePath)
+      ? path.resolve(candidatePath)
+      : path.resolve(memoryDir, candidatePath);
+    const entryStat = await lstat(absolute);
+    if (entryStat.isSymbolicLink()) return null;
+    const fileStat = await stat(absolute);
+    if (!fileStat.isFile()) return null;
+    const canonical = await realpath(absolute);
+    if (canonical !== root && !canonical.startsWith(root + path.sep)) return null;
+    return absolute;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Agent 1: Direct Facts ───────────────────────────────────────────────────
 
 /**
@@ -106,6 +129,7 @@ export async function runDirectAgent(
   maxResults = 10,
 ): Promise<ParallelSearchResult[]> {
   try {
+    const canonicalRoot = await realpath(memoryDir);
     const entitiesDir = path.join(memoryDir, "entities");
     let entries: string[];
     try {
@@ -128,9 +152,13 @@ export async function runDirectAgent(
       const score = overlapScore(queryTokens, entityTokens);
       if (score <= 0) continue;
 
+      const fullPath = path.join(entitiesDir, entry);
+      const safePath = await resolveContainedRegularFile(memoryDir, fullPath, canonicalRoot);
+      if (!safePath) continue;
+
       results.push({
         docid: nameWithoutExt,
-        path: path.join(entitiesDir, entry),
+        path: safePath,
         snippet: "", // populated by augmentWithDirectAndTemporal after merge
         score,
         transport: "scoped_prefilter",
@@ -168,6 +196,7 @@ export async function runTemporalAgent(
   candidatePaths?: Set<string> | null,
 ): Promise<ParallelSearchResult[]> {
   try {
+    const canonicalRoot = await realpath(memoryDir);
     // Read index_time.json once — used for both date-range filtering and recency scoring.
     let dateIndex: Record<string, string[]> = {};
     try {
@@ -244,17 +273,17 @@ export async function runTemporalAgent(
       : Promise.resolve(new Map<string, string[]>());
 
     // Parallel: existence checks + tag index read.
-    const [existenceResults, pathToTags] = await Promise.all([
-      Promise.all(entries.map(([p]) => stat(p).then(() => true).catch(() => false))),
+    const [safePathResults, pathToTags] = await Promise.all([
+      Promise.all(entries.map(([p]) => resolveContainedRegularFile(memoryDir, p, canonicalRoot))),
       tagIndexPromise,
     ]);
 
     const results: ParallelSearchResult[] = [];
 
     for (let i = 0; i < entries.length; i++) {
-      if (!existenceResults[i]) continue; // skip stale index entry
-
       const [p, dateStr] = entries[i];
+      const safePath = safePathResults[i];
+      if (!safePath) continue; // skip stale or out-of-root index entry
       const ageMs = todayMs - new Date(dateStr).getTime();
       const ageDays = ageMs / 86_400_000;
       // Exponential recency decay with half-life of ~30 days.
@@ -266,7 +295,7 @@ export async function runTemporalAgent(
       // purely temporal (no topic tokens) or the tag index doesn't cover the file.
       let topicBoost = 0;
       if (topicTokens.length > 0) {
-        const tags = pathToTags.get(p);
+        const tags = pathToTags.get(p) ?? pathToTags.get(safePath);
         if (tags && tags.length > 0) {
           const tagSet = new Set(tags.flatMap((t) => tokenize(t)));
           const hits = topicTokens.filter((t) => tagSet.has(t)).length;
@@ -275,11 +304,11 @@ export async function runTemporalAgent(
       }
       const score = recencyScore * (1 + topicBoost * 0.3);
 
-      const baseName = path.basename(p, ".md");
+      const baseName = path.basename(safePath, ".md");
 
       results.push({
         docid: baseName,
-        path: p,
+        path: safePath,
         snippet: "", // populated by augmentWithDirectAndTemporal after merge
         score,
         transport: "scoped_prefilter",
@@ -320,6 +349,7 @@ export async function runContextualAgent(
     );
     return results.map((r: QmdSearchResult) => ({ ...r, agentSource: "contextual" as const }));
   } catch (err) {
+    if (isAbortError(err)) throw err;
     log.debug(`ContextualAgent error: ${err}`);
     return [];
   }
@@ -375,9 +405,10 @@ function stripFrontmatter(raw: string): string {
   return raw.slice(end + 4).replace(/^\n+/, "");
 }
 
-async function populateEmptySnippets(results: QmdSearchResult[]): Promise<QmdSearchResult[]> {
+async function populateEmptySnippets(results: QmdSearchResult[], memoryDir?: string): Promise<QmdSearchResult[]> {
   const needsSnippet = results.filter((r) => !r.snippet && r.path);
   if (needsSnippet.length === 0) return results;
+  const canonicalRoot = memoryDir ? await realpath(memoryDir).catch(() => null) : null;
 
   const toRead = needsSnippet.slice(0, MAX_SNIPPET_READS);
   const snippetMap = new Map<string, string>();
@@ -385,7 +416,11 @@ async function populateEmptySnippets(results: QmdSearchResult[]): Promise<QmdSea
   await Promise.all(
     toRead.map(async (r) => {
       try {
-        const raw = await readFile(r.path, "utf-8");
+        const safePath = canonicalRoot && r.path
+          ? await resolveContainedRegularFile(memoryDir!, r.path, canonicalRoot)
+          : null;
+        if (!safePath) return;
+        const raw = await readFile(safePath, "utf-8");
         // Memory files start with YAML frontmatter — skip it so the snippet
         // contains actual memory content, not metadata fields.
         const body = stripFrontmatter(raw);
@@ -419,6 +454,7 @@ export async function mergeWithAgentResults(
   temporalResults: ParallelSearchResult[],
   weights: Record<SearchAgentSource, number>,
   maxResults: number,
+  memoryDir?: string,
 ): Promise<QmdSearchResult[]> {
   if (directResults.length === 0 && temporalResults.length === 0) {
     return contextualResults.slice(0, maxResults);
@@ -434,7 +470,7 @@ export async function mergeWithAgentResults(
     weights,
     maxResults,
   );
-  return populateEmptySnippets(merged);
+  return populateEmptySnippets(merged, memoryDir);
 }
 
 // ─── Augmentation helper (used by tests; orchestrator uses inline logic) ─────
@@ -542,7 +578,7 @@ export async function augmentWithDirectAndTemporal(
   );
 
   // Populate snippets for results discovered only by direct/temporal (no contextual preview)
-  return populateEmptySnippets(merged);
+  return populateEmptySnippets(merged, memoryDir);
 }
 
 // ─── Orchestrator ─────────────────────────────────────────────────────────────
@@ -601,6 +637,7 @@ export async function parallelRetrieval(
       : Promise.resolve([] as ParallelSearchResult[]),
     runContextual
       ? runContextualAgent(query, qmd, options.collection, maxPerAgent, options.signal).catch((err) => {
+        if (isAbortError(err)) throw err;
         log.debug(`parallelRetrieval: ContextualAgent failed — ${err}`);
         return [] as ParallelSearchResult[];
       })
@@ -619,5 +656,5 @@ export async function parallelRetrieval(
     options.agentWeights ?? PARALLEL_AGENT_WEIGHTS,
     maxResults,
   );
-  return populateEmptySnippets(merged);
+  return populateEmptySnippets(merged, memoryDir);
 }

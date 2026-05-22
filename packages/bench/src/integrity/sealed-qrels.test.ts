@@ -58,6 +58,16 @@ test("parseSealedQrels rejects tampered envelopes via sealHash mismatch", () => 
   );
 });
 
+test("computeSealHash pins the sealed envelope, not stable plaintext identity", () => {
+  const key = randomBytes(32);
+  const plaintext = JSON.stringify({ task1: ["answer-a"], task2: ["answer-b"] });
+  const first = sealPayload(plaintext, key);
+  const second = sealPayload(plaintext, key);
+
+  assert.notEqual(computeSealHash(first), computeSealHash(second));
+  assert.equal(first.plaintextHash, second.plaintextHash);
+});
+
 test("parseSealedQrels rejects mismatched expectedSealHash", () => {
   const key = randomBytes(32);
   const artifact = buildArtifact("canary", { t: ["a"] }, key);

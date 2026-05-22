@@ -27,6 +27,9 @@ jobs:
           echo "Waiting 3 minutes for AI reviewers to analyse the diff..."
           sleep 180
 
+      - name: Checkout gate helper
+        uses: actions/checkout@v4
+
       - name: Check AI review bot activity
         uses: actions/github-script@v7
         env:
@@ -47,11 +50,11 @@ jobs:
             }
 
             const groupsRaw = process.env.REQUIRED_AI_REVIEWER_GROUPS || '';
-            const groups = groupsRaw
-              .split(',')
-              .map(s => s.trim())
-              .filter(Boolean)
-              .map(group => group.split('|').map(x => x.trim().toLowerCase()).filter(Boolean));
+            const { pathToFileURL } = require('url');
+            const { evaluateAiReviewGate, parseReviewerGroups } = await import(
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/ai-review-gate.mjs`).href
+            );
+            const groups = parseReviewerGroups(groupsRaw);
 
             if (groups.length === 0) {
               core.setFailed('No required AI reviewer groups configured.');
@@ -80,6 +83,17 @@ jobs:
             });
 
             const headSha = context.payload.pull_request?.head?.sha;
+            const headCommit = headSha
+              ? await github.rest.repos.getCommit({
+                  owner,
+                  repo,
+                  ref: headSha,
+                })
+              : null;
+            const headCommittedAt =
+              headCommit?.data?.commit?.committer?.date ??
+              headCommit?.data?.commit?.author?.date ??
+              null;
             const checkRuns = headSha
               ? await github.paginate(github.rest.checks.listForRef, {
                   owner,
@@ -89,49 +103,33 @@ jobs:
                 })
               : [];
 
-            const latestByUser = new Map();
-            for (const review of reviews) {
-              const login = review.user?.login?.toLowerCase();
-              if (!login) continue;
-              latestByUser.set(login, review.state);
-            }
-            for (const comment of [...issueComments, ...prComments]) {
-              const login = comment.user?.login?.toLowerCase();
-              if (!login) continue;
-              if (!latestByUser.has(login)) latestByUser.set(login, "COMMENTED");
-            }
-            for (const checkRun of checkRuns) {
-              if (!["success", "failure", "neutral"].includes(checkRun.conclusion)) continue;
-              for (const appName of [checkRun.app?.slug, checkRun.app?.name]) {
-                const login = appName?.toLowerCase();
-                if (!login) continue;
-                if (!latestByUser.has(login)) latestByUser.set(login, "CHECK_RUN");
-              }
-            }
+            const result = evaluateAiReviewGate({
+              groups,
+              headSha,
+              headCommittedAt,
+              reviews,
+              issueComments,
+              reviewComments: prComments,
+              checkRuns,
+            });
 
-            const present = [];
-            const missing = [];
+            core.info(
+              `Positive current-head AI review activity from: ${
+                result.present.map(p => `${p.alias}(${p.kind}:${p.state})`).join(', ') || 'none'
+              }`,
+            );
 
-            for (const group of groups) {
-              const matched = group.find(alias => latestByUser.has(alias));
-              if (matched) {
-                present.push({ group, matched, state: latestByUser.get(matched) });
-              } else {
-                missing.push(group);
-              }
+            if (result.blockers.length > 0) {
+              core.info(
+                `Blocking AI review activity: ${
+                  result.blockers.map(b => `${b.alias}(${b.state})`).join(', ')
+                }`,
+              );
             }
 
-            core.info(`Found review activity from: ${present.map(p => `${p.matched}(${p.state})`).join(', ') || 'none'}`);
-
-            if (present.length === 0) {
-              const expected = groups.map(group => group.join(' OR ')).join('; ');
-              core.setFailed(`No required AI review activity found. Expected one of: ${expected}`);
+            if (!result.ok) {
+              core.setFailed(result.reason);
               return;
             }
 
-            if (missing.length > 0) {
-              const missingText = missing.map(group => group.join(' OR ')).join('; ');
-              core.warning(`Some AI reviewer groups have not reported yet: ${missingText}`);
-            }
-
-            core.notice('AI review gate satisfied (at least one required AI reviewer group reported activity).');
+            core.notice(result.reason);

@@ -1,9 +1,13 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import * as http from "node:http";
 import * as net from "node:net";
 import { gzipSync } from "node:zlib";
-import { createWeCloneProxy } from "./proxy.js";
+import {
+  createWeCloneProxy,
+  writeResponseChunkRespectingBackpressure,
+} from "./proxy.js";
 import type { WeCloneConnectorConfig } from "./config.js";
 
 /**
@@ -90,9 +94,39 @@ describe("WeCloneProxy", () => {
     cleanups.push(() => proxy.stop());
 
     assert.ok(proxy.port > 0, "proxy should have a valid port");
+    assert.equal(proxy.host, "127.0.0.1");
     await proxy.stop();
     // Remove from cleanups since we already stopped
     cleanups.pop();
+  });
+
+  it("stream writes wait for drain when response backpressure is signaled", async () => {
+    const res = new EventEmitter() as http.ServerResponse;
+    (res as unknown as { destroyed: boolean }).destroyed = false;
+    (res as unknown as { writableEnded: boolean }).writableEnded = false;
+    let writeCalls = 0;
+    (res as unknown as { write: (chunk: Uint8Array) => boolean }).write = () => {
+      writeCalls += 1;
+      return false;
+    };
+
+    const written = writeResponseChunkRespectingBackpressure(res, Buffer.from("chunk"));
+    queueMicrotask(() => res.emit("drain"));
+
+    assert.equal(await written, true);
+    assert.equal(writeCalls, 1);
+  });
+
+  it("stream writes stop when the client closes before drain", async () => {
+    const res = new EventEmitter() as http.ServerResponse;
+    (res as unknown as { destroyed: boolean }).destroyed = false;
+    (res as unknown as { writableEnded: boolean }).writableEnded = false;
+    (res as unknown as { write: (chunk: Uint8Array) => boolean }).write = () => false;
+
+    const written = writeResponseChunkRespectingBackpressure(res, Buffer.from("chunk"));
+    queueMicrotask(() => res.emit("close"));
+
+    assert.equal(await written, false);
   });
 
   it("health endpoint returns 200 with status ok", async () => {
@@ -193,6 +227,46 @@ describe("WeCloneProxy", () => {
       systemMsg.content.includes("[Memory]"),
       "Memory template should be used"
     );
+  });
+
+  it("forwards the configured WeClone model name", async () => {
+    let receivedBody: Record<string, unknown> | null = null;
+
+    const weclone = await createMockServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        receivedBody = JSON.parse(Buffer.concat(chunks).toString());
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: "ok" } }] }));
+      });
+    });
+    cleanups.push(weclone.close);
+
+    const remnic = await createMockServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ results: [] }));
+    });
+    cleanups.push(remnic.close);
+
+    const proxy = createWeCloneProxy(testConfig(weclone.port, remnic.port, {
+      wecloneModelName: "custom-avatar",
+    }));
+    await proxy.start();
+    cleanups.push(() => proxy.stop());
+
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "client-placeholder",
+        messages: [{ role: "user", content: "Hi there" }],
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    assert.ok(receivedBody);
+    assert.equal((receivedBody as Record<string, unknown>).model, "custom-avatar");
   });
 
   it("continues working when Remnic recall fails", async () => {
@@ -622,6 +696,66 @@ describe("WeCloneProxy", () => {
     );
   });
 
+  it("stops buffering streaming observation after the configured cap while passing stream through", async () => {
+    const weclone = await createMockServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        });
+        for (let index = 0; index < 100; index += 1) {
+          res.write(
+            `data: {"choices":[{"delta":{"content":"chunk-${index}-${"x".repeat(256)}"},"index":0}]}\n\n`
+          );
+        }
+        res.write("data: [DONE]\n\n");
+        res.end();
+      });
+    });
+    cleanups.push(weclone.close);
+
+    let observeCount = 0;
+    let requestCount = 0;
+    const remnic = await createMockServer((_req, res) => {
+      requestCount++;
+      if (requestCount > 1) observeCount++;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(requestCount === 1 ? JSON.stringify({ results: [] }) : JSON.stringify({ ok: true }));
+    });
+    cleanups.push(remnic.close);
+
+    const proxy = createWeCloneProxy(
+      testConfig(weclone.port, remnic.port, {
+        streamObservationMaxBytes: 32,
+      })
+    );
+    await proxy.start();
+    cleanups.push(() => proxy.stop());
+
+    const res = await fetch(
+      `http://127.0.0.1:${proxy.port}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "weclone-avatar",
+          stream: true,
+          messages: [{ role: "user", content: "stream please" }],
+        }),
+      }
+    );
+
+    assert.equal(res.status, 200);
+    const streamedBody = await res.text();
+    assert.ok(streamedBody.includes("data: [DONE]"));
+    assert.ok(streamedBody.includes("chunk-99-"));
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(observeCount, 0, "oversized streams should not be buffered for observe");
+  });
+
   it("does not expose error details in 502 responses", async () => {
     // WeClone is unreachable (no mock server started on this port)
     const fakeWeclonePort = 59999;
@@ -686,6 +820,43 @@ describe("WeCloneProxy", () => {
     assert.equal(res.status, 400);
     const body = JSON.parse(await readResponse(res));
     assert.equal(body.error, "bad_request");
+  });
+
+  it("returns 400 for non-object JSON chat bodies without contacting upstream", async () => {
+    let upstreamRequests = 0;
+    const weclone = await createMockServer((_req, res) => {
+      upstreamRequests++;
+      res.writeHead(200);
+      res.end("ok");
+    });
+    cleanups.push(weclone.close);
+
+    const remnic = await createMockServer((_req, res) => {
+      upstreamRequests++;
+      res.writeHead(200);
+      res.end(JSON.stringify({ results: [] }));
+    });
+    cleanups.push(remnic.close);
+
+    const proxy = createWeCloneProxy(testConfig(weclone.port, remnic.port));
+    await proxy.start();
+    cleanups.push(() => proxy.stop());
+
+    for (const bodyValue of [null, [], "hello", 42]) {
+      const res = await fetch(
+        `http://127.0.0.1:${proxy.port}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(bodyValue),
+        }
+      );
+      assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(bodyValue)}`);
+      const body = JSON.parse(await readResponse(res));
+      assert.equal(body.error, "bad_request");
+    }
+
+    assert.equal(upstreamRequests, 0, "invalid top-level JSON must not reach upstream services");
   });
 
   it("trailing slash in wecloneApiUrl does not produce double-slash URLs", async () => {
@@ -814,6 +985,68 @@ describe("WeCloneProxy", () => {
     assert.equal(res.status, 502);
     const body = JSON.parse(await readResponse(res));
     assert.equal(body.error, "upstream_unreachable");
+  });
+
+  it("rejects transparent proxy request bodies over the configured limit", async () => {
+    let upstreamCalled = false;
+    const weclone = await createMockServer((_req, res) => {
+      upstreamCalled = true;
+      res.writeHead(200);
+      res.end("unexpected");
+    });
+    cleanups.push(weclone.close);
+
+    const remnic = await createMockServer((_req, res) => {
+      res.writeHead(200);
+      res.end(JSON.stringify({ results: [] }));
+    });
+    cleanups.push(remnic.close);
+
+    const proxy = createWeCloneProxy(
+      testConfig(weclone.port, remnic.port, {
+        maxRequestBytes: 8,
+      })
+    );
+    await proxy.start();
+    cleanups.push(() => proxy.stop());
+
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/uploads`, {
+      method: "POST",
+      body: "0123456789abcdef",
+    });
+
+    assert.equal(res.status, 413);
+    const body = JSON.parse(await readResponse(res));
+    assert.equal(body.error, "request_body_too_large");
+    assert.equal(upstreamCalled, false);
+  });
+
+  it("returns 502 when a buffered transparent upstream response exceeds the configured limit", async () => {
+    const weclone = await createMockServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("0123456789abcdef");
+    });
+    cleanups.push(weclone.close);
+
+    const remnic = await createMockServer((_req, res) => {
+      res.writeHead(200);
+      res.end(JSON.stringify({ results: [] }));
+    });
+    cleanups.push(remnic.close);
+
+    const proxy = createWeCloneProxy(
+      testConfig(weclone.port, remnic.port, {
+        maxResponseBytes: 8,
+      })
+    );
+    await proxy.start();
+    cleanups.push(() => proxy.stop());
+
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/models`);
+
+    assert.equal(res.status, 502);
+    const body = JSON.parse(await readResponse(res));
+    assert.equal(body.error, "upstream_response_too_large");
   });
 
   it("passes through upstream error body for stream requests instead of SSE headers", async () => {
@@ -1391,6 +1624,91 @@ describe("WeCloneProxy", () => {
       "Second instruction.",
       "Second system message must be preserved verbatim"
     );
+  });
+
+  it("preserves OpenAI chat message metadata and end-to-end headers", async () => {
+    let receivedBody: Record<string, unknown> | null = null;
+    let receivedApiKey: string | undefined;
+    let receivedRequestId: string | undefined;
+    const weclone = await createMockServer((req, res) => {
+      receivedApiKey = req.headers["api-key"] as string | undefined;
+      receivedRequestId = req.headers["x-ms-client-request-id"] as string | undefined;
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        receivedBody = JSON.parse(Buffer.concat(chunks).toString());
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "ok" } }],
+          })
+        );
+      });
+    });
+    cleanups.push(weclone.close);
+
+    const remnic = await createMockServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          results: [{ preview: "metadata-memory", confidence: 0.9 }],
+        })
+      );
+    });
+    cleanups.push(remnic.close);
+
+    const proxy = createWeCloneProxy(testConfig(weclone.port, remnic.port));
+    await proxy.start();
+    cleanups.push(() => proxy.stop());
+
+    await fetch(`http://127.0.0.1:${proxy.port}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": "azure-key",
+        "x-ms-client-request-id": "request-123",
+      },
+      body: JSON.stringify({
+        model: "weclone-avatar",
+        messages: [
+          { role: "system", content: "First instruction.", name: "primary" },
+          { role: "user", content: "Use the tool" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "lookup", arguments: "{}" },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            tool_call_id: "call_1",
+            content: "tool result",
+          },
+        ],
+      }),
+    });
+
+    assert.equal(receivedApiKey, "azure-key");
+    assert.equal(receivedRequestId, "request-123");
+    assert.ok(receivedBody);
+    const messages = (receivedBody as Record<string, unknown>).messages as Array<Record<string, unknown>>;
+    assert.equal(messages[0].name, "primary");
+    assert.match(String(messages[0].content), /metadata-memory/);
+    assert.deepEqual(messages[2].tool_calls, [
+      {
+        id: "call_1",
+        type: "function",
+        function: { name: "lookup", arguments: "{}" },
+      },
+    ]);
+    assert.equal(messages[3].role, "tool");
+    assert.equal(messages[3].tool_call_id, "call_1");
+    assert.equal(messages[3].content, "tool result");
   });
 
   it("returns 400 when messages is not an array", async () => {

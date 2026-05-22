@@ -79,6 +79,44 @@ interface ReviewFileMatch {
 
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.7;
 
+function realMemoryRoot(memoryDir: string): string | null {
+  try {
+    const stat = fs.lstatSync(memoryDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
+    return fs.realpathSync(memoryDir);
+  } catch {
+    return null;
+  }
+}
+
+function isPathInside(rootReal: string, candidateReal: string): boolean {
+  const relative = path.relative(rootReal, candidateReal);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function isSafeDirectory(rootReal: string, dir: string): boolean {
+  try {
+    const stat = fs.lstatSync(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    return isPathInside(rootReal, fs.realpathSync(dir));
+  } catch {
+    return false;
+  }
+}
+
+function ensureSafeDirectory(rootReal: string, dir: string): void {
+  if (fs.existsSync(dir)) {
+    if (!isSafeDirectory(rootReal, dir)) {
+      throw new Error(`Refusing to write through unsafe review path: ${dir}`);
+    }
+    return;
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  if (!isSafeDirectory(rootReal, dir)) {
+    throw new Error(`Refusing to write through unsafe review path: ${dir}`);
+  }
+}
+
 // ── Main functions ───────────────────────────────────────────────────────────
 
 /**
@@ -92,23 +130,29 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
     limit = 50,
     confidenceThreshold = DEFAULT_CONFIDENCE_THRESHOLD,
   } = options;
+  const maxItems = Math.max(0, limit);
+  const rootReal = realMemoryRoot(memoryDir);
+  if (!rootReal || maxItems === 0) {
+    return { items: [], total: 0, durationMs: Date.now() - startTime };
+  }
 
   const items: ReviewItem[] = [];
+  const isLimitReached = (): boolean => items.length >= maxItems;
   const addItem = (item: ReviewItem): void => {
-    if (items.length >= limit) return;
+    if (isLimitReached()) return;
     if (filterReason && item.reviewReason !== filterReason) return;
     items.push(item);
   };
 
   // Check suggestions directory
   const suggestionsDir = path.join(memoryDir, "suggestions");
-  if (fs.existsSync(suggestionsDir)) {
-    walkMd(suggestionsDir, (filePath, content) => {
-      if (items.length >= limit) return;
+  if (!isLimitReached() && fs.existsSync(suggestionsDir) && isSafeDirectory(rootReal, suggestionsDir)) {
+    walkMd(rootReal, suggestionsDir, (filePath, content) => {
+      if (isLimitReached()) return true;
 
       const fm = parseFrontmatter(content);
       const body = extractBody(content);
-      if (!fm?.id) return;
+      if (!fm?.id) return false;
 
       addItem({
         id: fm.id as string,
@@ -121,18 +165,19 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
         created: (fm.created as string) ?? new Date().toISOString(),
         reviewReason: "suggestion",
       });
+      return isLimitReached();
     });
   }
 
   // Check review directory
   const reviewDir = path.join(memoryDir, "review");
-  if (fs.existsSync(reviewDir)) {
-    walkMd(reviewDir, (filePath, content) => {
-      if (items.length >= limit) return;
+  if (!isLimitReached() && fs.existsSync(reviewDir) && isSafeDirectory(rootReal, reviewDir)) {
+    walkMd(rootReal, reviewDir, (filePath, content) => {
+      if (isLimitReached()) return true;
 
       const fm = parseFrontmatter(content);
       const body = extractBody(content);
-      if (!fm?.id) return;
+      if (!fm?.id) return false;
 
       addItem({
         id: fm.id as string,
@@ -146,30 +191,31 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
         reviewReason: (fm.reviewReason as ReviewItem["reviewReason"]) ?? "low_confidence",
         context: fm.context as string | undefined,
       });
+      return isLimitReached();
     });
   }
 
   // Scan all categories for low-confidence items
   const categories = ALL_CATEGORY_DIRS;
   for (const category of categories) {
-    if (items.length >= limit) break;
+    if (isLimitReached()) break;
 
     const dir = path.join(memoryDir, category);
-    if (!fs.existsSync(dir)) continue;
+    if (!fs.existsSync(dir) || !isSafeDirectory(rootReal, dir)) continue;
 
-    walkMd(dir, (filePath, content) => {
-      if (items.length >= limit) return;
+    walkMd(rootReal, dir, (filePath, content) => {
+      if (isLimitReached()) return true;
 
       const fm = parseFrontmatter(content);
       const body = extractBody(content);
-      if (!fm?.id) return;
+      if (!fm?.id) return false;
 
       const confidence = parseConfidence(fm.confidence, 1);
-      if (confidence >= confidenceThreshold) return;
-      if (parseBoolean(fm.reviewDismissed)) return;
+      if (confidence >= confidenceThreshold) return false;
+      if (parseBoolean(fm.reviewDismissed)) return false;
 
       // Skip if already in items
-      if (items.some((i) => i.id === fm.id)) return;
+      if (items.some((i) => i.id === fm.id)) return false;
 
       addItem({
         id: fm.id as string,
@@ -182,6 +228,7 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
         created: (fm.created as string) ?? new Date().toISOString(),
         reviewReason: "low_confidence",
       });
+      return isLimitReached();
     });
   }
 
@@ -218,6 +265,8 @@ function approveItem(
   itemId: string,
   options: ReviewActionOptions,
 ): ReviewResult {
+  const rootReal = realMemoryRoot(memoryDir);
+  if (!rootReal) return { itemId, action: "approve", message: "Item not found" };
   const found = findReviewFileById(memoryDir, itemId, options);
   if (!found) {
     return { itemId, action: "approve", message: "Item not found" };
@@ -247,9 +296,10 @@ function approveItem(
   const category = (fm.category as string) ?? "fact";
   const targetDir = getCategoryDir(memoryDir, category);
   const dateDir = new Date().toISOString().split("T")[0];
+  ensureSafeDirectory(rootReal, targetDir);
   const outputPath = path.join(targetDir, dateDir, path.basename(found.filePath));
 
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  ensureSafeDirectory(rootReal, path.dirname(outputPath));
   const promotedPath = writeFileWithoutClobber(outputPath, updatedContent, itemId);
 
   // Remove from review
@@ -326,19 +376,21 @@ function findReviewFileById(
   id: string,
   options: ReviewActionOptions = {},
 ): ReviewFileMatch | null {
+  const rootReal = realMemoryRoot(memoryDir);
+  if (!rootReal) return null;
   for (const loc of ["suggestions", "review"]) {
     const dir = path.join(memoryDir, loc);
-    if (!fs.existsSync(dir)) continue;
+    if (!fs.existsSync(dir) || !isSafeDirectory(rootReal, dir)) continue;
 
-    const found = findFileById(dir, id);
+    const found = findFileById(rootReal, dir, id);
     if (found) return { filePath: found, location: "queue" };
   }
 
   for (const category of ALL_CATEGORY_DIRS) {
     const dir = path.join(memoryDir, category);
-    if (!fs.existsSync(dir)) continue;
+    if (!fs.existsSync(dir) || !isSafeDirectory(rootReal, dir)) continue;
 
-    const found = findFileById(dir, id, (fm) => isLowConfidenceReviewCandidate(fm, options));
+    const found = findFileById(rootReal, dir, id, (fm) => isLowConfidenceReviewCandidate(fm, options));
     if (found) return { filePath: found, location: "category" };
   }
 
@@ -346,11 +398,12 @@ function findReviewFileById(
 }
 
 function findFileById(
+  rootReal: string,
   dir: string,
   id: string,
   include?: (frontmatter: Record<string, unknown>) => boolean,
 ): string | null {
-  const files = walkMdPaths(dir);
+  const files = walkMdPaths(rootReal, dir);
   for (const filePath of files) {
     const content = readFileSafe(filePath);
     if (!content) continue;
@@ -510,25 +563,30 @@ function extractBody(content: string): string {
   return match ? match[1].trim() : content.trim();
 }
 
-function walkMd(dir: string, callback: (filePath: string, content: string) => void): void {
+function walkMd(rootReal: string, dir: string, callback: (filePath: string, content: string) => boolean | void): boolean {
+  if (!isSafeDirectory(rootReal, dir)) return false;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
-      walkMd(fullPath, callback);
-    } else if (entry.name.endsWith(".md")) {
+      if (walkMd(rootReal, fullPath, callback)) return true;
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
       const content = readFileSafe(fullPath);
-      if (content) callback(fullPath, content);
+      if (content && callback(fullPath, content) === true) return true;
     }
   }
+  return false;
 }
 
-function walkMdPaths(dir: string): string[] {
+function walkMdPaths(rootReal: string, dir: string): string[] {
   const results: string[] = [];
+  if (!isSafeDirectory(rootReal, dir)) return results;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
-      results.push(...walkMdPaths(fullPath));
-    } else if (entry.name.endsWith(".md")) {
+      results.push(...walkMdPaths(rootReal, fullPath));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
       results.push(fullPath);
     }
   }

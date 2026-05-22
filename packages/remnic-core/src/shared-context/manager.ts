@@ -1,4 +1,5 @@
-import { mkdir, readFile, readdir, appendFile, writeFile, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, appendFile, writeFile, stat, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { log } from "../logger.js";
@@ -84,6 +85,17 @@ function readFrontmatterScalar(raw: string, key: string): string | null {
 
 function ymd(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+
+function safeDateSegment(date: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error(`Invalid shared-context date: ${JSON.stringify(date)}; expected YYYY-MM-DD`);
+  }
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) {
+    throw new Error(`Invalid shared-context date: ${JSON.stringify(date)}; expected a real calendar date`);
+  }
+  return date;
 }
 
 const CROSS_SIGNAL_STOPWORDS = new Set([
@@ -373,15 +385,38 @@ function compareFeedbackPriority(a: SharedFeedbackEntry, b: SharedFeedbackEntry)
   );
 }
 
+function markdownLineText(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function markdownLineList(values: readonly string[]): string {
+  return values.map(markdownLineText).filter(Boolean).join(", ");
+}
+
 function formatFeedbackLine(entry: SharedFeedbackEntry): string {
-  const extras: string[] = [`feedback: ${entry.date}`];
-  if (entry.severity) extras.push(`severity: ${entry.severity}`);
-  if (entry.refs?.length) extras.push(`refs: ${entry.refs.join(", ")}`);
-  return `- [${entry.agent}] ${entry.decision}: ${entry.reason} [${extras.join("; ")}]`;
+  const extras: string[] = [`feedback: ${markdownLineText(entry.date)}`];
+  if (entry.severity) extras.push(`severity: ${markdownLineText(entry.severity)}`);
+  if (entry.refs?.length) extras.push(`refs: ${markdownLineList(entry.refs)}`);
+  return `- [${markdownLineText(entry.agent)}] ${entry.decision}: ${markdownLineText(entry.reason)} [${extras.join("; ")}]`;
 }
 
 function formatOverlapLine(entry: SharedCrossSignalOverlap): string {
-  return `- \`${entry.token}\` (${entry.agentCount} agents: ${entry.agents.join(", ")}) [sources: ${entry.sourcePaths.join(", ")}]`;
+  return `- \`${entry.token}\` (${entry.agentCount} agents: ${markdownLineList(entry.agents)}) [sources: ${markdownLineList(entry.sourcePaths)}]`;
+}
+
+async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    await writeFile(tempPath, content, { encoding: "utf-8", flag: "wx" });
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 export function resolveSharedContextDir(config: PluginConfig): string {
@@ -399,6 +434,7 @@ export class SharedContextManager {
   private readonly feedbackDir: string;
   private readonly feedbackInboxPath: string;
   private readonly crossSignalsDir: string;
+  private readonly dailySynthesisChains = new Map<string, Promise<void>>();
 
   constructor(private readonly config: PluginConfig) {
     const base = resolveSharedContextDir(config);
@@ -553,17 +589,48 @@ export class SharedContextManager {
     await appendFile(this.prioritiesInboxPath, lines, "utf-8");
   }
 
+  private async withDailySynthesisLock<T>(date: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.dailySynthesisChains.get(date) ?? Promise.resolve();
+    let releaseCurrent!: () => void;
+    const current = new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    const queued = previous.catch(() => undefined).then(() => current);
+    this.dailySynthesisChains.set(date, queued);
+    await previous.catch(() => undefined);
+    try {
+      return await fn();
+    } finally {
+      releaseCurrent();
+      if (this.dailySynthesisChains.get(date) === queued) {
+        this.dailySynthesisChains.delete(date);
+      }
+    }
+  }
+
   async synthesizeCrossSignals(opts: {
     date?: string;
     maxSummaryItems?: number;
   }): Promise<SharedCrossSignalSynthesisResult> {
-    const date = opts.date ?? ymd(new Date());
+    const date = safeDateSegment(opts.date ?? ymd(new Date()));
+    return this.withDailySynthesisLock(date, () => this.synthesizeCrossSignalsUnlocked({
+      date,
+      maxSummaryItems: opts.maxSummaryItems,
+    }));
+  }
+
+  private async synthesizeCrossSignalsUnlocked(opts: {
+    date: string;
+    maxSummaryItems?: number;
+  }): Promise<SharedCrossSignalSynthesisResult> {
+    const date = opts.date;
     const maxSummaryItems = Math.max(1, opts.maxSummaryItems ?? 8);
 
     // Collect outputs for the day (best-effort).
     const outputs: Array<{ agent: string; path: string; title: string; raw: string }> = [];
     try {
-      const agents = await readdir(this.outputsDir, { withFileTypes: true });
+      const agents = (await readdir(this.outputsDir, { withFileTypes: true }))
+        .sort((a, b) => a.name.localeCompare(b.name));
       for (const a of agents) {
         if (!a.isDirectory()) continue;
         const dayDir = path.join(this.outputsDir, a.name, date);
@@ -583,6 +650,12 @@ export class SharedContextManager {
     } catch {
       // ignore
     }
+    outputs.sort(
+      (a, b) =>
+        a.agent.localeCompare(b.agent)
+        || a.path.localeCompare(b.path)
+        || a.title.localeCompare(b.title),
+    );
 
     // Collect feedback entries for the day.
     const feedback: SharedFeedbackEntry[] = [];
@@ -700,7 +773,7 @@ export class SharedContextManager {
     };
 
     const crossSignalsPath = path.join(this.crossSignalsDir, `${date}.json`);
-    await writeFile(crossSignalsPath, `${JSON.stringify(report, null, 2)}\n`, "utf-8");
+    await writeFileAtomic(crossSignalsPath, `${JSON.stringify(report, null, 2)}\n`);
 
     const recurringThemeLines = mergedOverlaps.length === 0
       ? ["- No multi-agent topic overlap detected."]
@@ -718,7 +791,7 @@ export class SharedContextManager {
     const promotionLines = promotionCandidates.length === 0
       ? ["- No promotion candidates yet."]
       : promotionCandidates.map((entry) =>
-          `- Consider promoting \`${entry.token}\` into priorities or operating rules [sources: ${entry.sourcePaths.join(", ")}]`
+          `- Consider promoting \`${entry.token}\` into priorities or operating rules [sources: ${markdownLineList(entry.sourcePaths)}]`
         );
 
     const crossSignalsMarkdown = [
@@ -742,13 +815,13 @@ export class SharedContextManager {
       "",
       "## Sources",
       ...(sources.length === 0 ? ["- (none)"] : sources.map((source) =>
-        `- [${source.agent}] ${source.title} (${source.path})`
+        `- [${markdownLineText(source.agent)}] ${markdownLineText(source.title)} (${markdownLineText(source.path)})`
       )),
       "",
     ].join("\n");
 
     const crossSignalsMarkdownPath = path.join(this.crossSignalsDir, `${date}.md`);
-    await writeFile(crossSignalsMarkdownPath, crossSignalsMarkdown, "utf-8");
+    await writeFileAtomic(crossSignalsMarkdownPath, crossSignalsMarkdown);
 
     return {
       date,
@@ -760,9 +833,14 @@ export class SharedContextManager {
   }
 
   async curateDaily(opts: { date?: string; maxChars?: number }): Promise<SharedDailyCurationResult> {
-    const date = opts.date ?? ymd(new Date());
+    const date = safeDateSegment(opts.date ?? ymd(new Date()));
+    return this.withDailySynthesisLock(date, () => this.curateDailyUnlocked({ ...opts, date }));
+  }
+
+  private async curateDailyUnlocked(opts: { date: string; maxChars?: number }): Promise<SharedDailyCurationResult> {
+    const date = opts.date;
     const maxChars = Math.max(2_000, opts.maxChars ?? 20_000);
-    const crossSignals = await this.synthesizeCrossSignals({ date });
+    const crossSignals = await this.synthesizeCrossSignalsUnlocked({ date });
     const feedbackLines = crossSignals.report.feedbackEntries.length === 0
       ? ["- (none)"]
       : crossSignals.report.feedbackEntries.map((entry) => formatFeedbackLine(entry));
@@ -796,7 +874,7 @@ export class SharedContextManager {
     const trimmed = out.length > maxChars ? out.slice(0, maxChars) + "\n\n...(trimmed)\n" : out;
 
     const roundtablePath = path.join(this.roundtableDir, `${date}.md`);
-    await writeFile(roundtablePath, trimmed, "utf-8");
+    await writeFileAtomic(roundtablePath, trimmed);
 
     log.info(`shared-context curated daily roundtable: ${roundtablePath}`);
     return {

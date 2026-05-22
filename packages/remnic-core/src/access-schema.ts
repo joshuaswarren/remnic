@@ -136,10 +136,26 @@ export const recallExplainRequestSchema = z.object({
  * `POST /engram/v1/coding-context` and the MCP `remnic.set_coding_context`
  * tool (PR 7). `codingContext: null` clears the attached context.
  */
-export const setCodingContextRequestSchema = z.object({
-  sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
-  codingContext: codingContextSchema,
-});
+export const setCodingContextRequestSchema = z
+  .object({
+    sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
+    codingContext: codingContextSchema.optional(),
+    /**
+     * Project tag shorthand for non-git-based project scoping. When
+     * `codingContext` is omitted, this becomes
+     * `{ projectId: "tag:<projectTag>", branch: null, rootPath: "tag:<projectTag>", defaultBranch: null }`.
+     */
+    projectTag: z.string().trim().min(1, "projectTag must be non-empty when provided").max(256).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.codingContext === undefined && value.projectTag === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "codingContext or projectTag is required",
+        path: ["codingContext"],
+      });
+    }
+  });
 
 // ---------------------------------------------------------------------------
 // Observe
@@ -362,6 +378,7 @@ export const capsuleImportRequestSchema = z
     archivePath: z.string().trim().min(1, "archivePath is required").max(4096),
     namespace: namespaceSchema,
     mode: z.enum(["skip", "overwrite", "fork"]).optional(),
+    passphrase: z.string().min(1, "passphrase must not be empty").max(4096).optional(),
   });
 
 export const capsuleListRequestSchema = z

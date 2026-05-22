@@ -659,7 +659,7 @@ export class TranscriptManager {
               const entryTime = new Date(entry.timestamp);
 
               // Check if entry is within time range
-              if (entryTime >= start && entryTime <= end) {
+              if (entryTime >= start && entryTime < end) {
                 // Filter by sessionKey if provided
                 if (!sessionKey || entry.sessionKey === sessionKey) {
                   entries.push(entry);
@@ -739,7 +739,7 @@ export class TranscriptManager {
           try {
             const entry = JSON.parse(line) as TranscriptEntry;
             const ts = new Date(entry.timestamp);
-            if (ts >= start && ts <= end && entry.sessionKey === sessionKey) {
+            if (ts >= start && ts < end && entry.sessionKey === sessionKey) {
               entries.push(entry);
             }
           } catch {

@@ -343,6 +343,75 @@ describe("loadTaxonomy", () => {
     );
   });
 
+  it("rejects non-string filingRules entries", async () => {
+    const bad = {
+      version: 1,
+      categories: [
+        {
+          id: "research",
+          name: "Research",
+          description: "Research notes",
+          filingRules: ["valid", null],
+          priority: 45,
+          memoryCategories: [],
+        },
+      ],
+    };
+    const taxonomyDir = path.join(tmpDir, ".taxonomy");
+    fs.mkdirSync(taxonomyDir, { recursive: true });
+    fs.writeFileSync(path.join(taxonomyDir, "taxonomy.json"), JSON.stringify(bad));
+
+    await assert.rejects(
+      () => loadTaxonomy(tmpDir),
+      /filingRules\[1\] must be a non-empty string/,
+    );
+  });
+
+  it("rejects non-string or unknown memoryCategories entries", async () => {
+    const bad = {
+      version: 1,
+      categories: [
+        {
+          id: "facts",
+          name: "Facts",
+          description: "Overridden facts",
+          filingRules: ["Facts"],
+          priority: 10,
+          memoryCategories: [123, "typo-category"],
+        },
+      ],
+    };
+    const taxonomyDir = path.join(tmpDir, ".taxonomy");
+    fs.mkdirSync(taxonomyDir, { recursive: true });
+    fs.writeFileSync(path.join(taxonomyDir, "taxonomy.json"), JSON.stringify(bad));
+
+    await assert.rejects(
+      () => loadTaxonomy(tmpDir),
+      /memoryCategories\[0\] must be a non-empty string/,
+    );
+
+    bad.categories[0].memoryCategories = ["typo-category"];
+    fs.writeFileSync(path.join(taxonomyDir, "taxonomy.json"), JSON.stringify(bad));
+    await assert.rejects(
+      () => loadTaxonomy(tmpDir),
+      /memoryCategories\[0\] is unknown: "typo-category"/,
+    );
+  });
+
+  it("rejects malformed existing taxonomy file instead of falling back to defaults", async () => {
+    const taxonomyDir = path.join(tmpDir, ".taxonomy");
+    fs.mkdirSync(taxonomyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(taxonomyDir, "taxonomy.json"),
+      JSON.stringify({ version: "bad", categories: "not-an-array" }),
+    );
+
+    await assert.rejects(
+      () => loadTaxonomy(tmpDir),
+      /version must be a number|categories must be an array/,
+    );
+  });
+
   it("rethrows non-ENOENT errors instead of falling back to defaults", async () => {
     // Create a taxonomy directory that is a file, not a directory, so readFile
     // on the nested path triggers ENOTDIR (not ENOENT).

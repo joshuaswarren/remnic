@@ -4,6 +4,7 @@ import { log } from "../logger.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
 import type { EmbedHelper } from "./embed-helper.js";
 import { scanMemoryDir } from "./document-scanner.js";
+import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
 
 export interface OramaBackendOptions {
   dbPath: string;
@@ -11,6 +12,30 @@ export interface OramaBackendOptions {
   embedHelper: EmbedHelper;
   memoryDir: string;
   embeddingDimension: number;
+}
+
+const ORAMA_COLLECTION_FILENAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function pathIsInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function resolveOramaCollectionDbFilePath(dbPath: string, collection: string): string {
+  if (!ORAMA_COLLECTION_FILENAME_PATTERN.test(collection)) {
+    throw new Error(
+      `Invalid Orama collection name ${JSON.stringify(collection)}. ` +
+        "Collection names must match [A-Za-z0-9][A-Za-z0-9._-]*.",
+    );
+  }
+  const resolvedDbPath = path.resolve(dbPath);
+  const filePath = path.resolve(resolvedDbPath, `${collection}.msp`);
+  if (!pathIsInside(resolvedDbPath, filePath)) {
+    throw new Error(
+      `Invalid Orama collection path for ${JSON.stringify(collection)}: resolved outside dbPath.`,
+    );
+  }
+  return filePath;
 }
 
 /**
@@ -64,21 +89,23 @@ export class OramaBackend implements SearchBackend {
     _collection?: string,
     maxResults?: number,
     _options?: SearchQueryOptions,
-    _execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions,
   ): Promise<SearchResult[]> {
-    return this.hybridSearch(query, _collection, maxResults);
+    return this.hybridSearch(query, _collection, maxResults, execution);
   }
 
-  async searchGlobal(query: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+  async searchGlobal(query: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
     const limit = maxResults ?? 10;
     if (!this.available) return [];
     try {
+      throwIfSearchAborted(execution, "OramaBackend global search aborted");
       const files = await this.listDbFiles();
       const allResults: SearchResult[] = [];
       for (const file of files) {
+        throwIfSearchAborted(execution, "OramaBackend global search aborted");
         const db = await this.loadDbFromFile(file);
         if (!db) continue;
-        const results = await this.searchDb(db, query, "hybrid", limit);
+        const results = await this.searchDb(db, query, "hybrid", limit, execution);
         allResults.push(...results);
       }
       allResults.sort((a, b) => b.score - a.score);
@@ -89,34 +116,43 @@ export class OramaBackend implements SearchBackend {
     }
   }
 
-  async bm25Search(query: string, collection?: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+  async bm25Search(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+    if (isSearchAborted(execution)) return [];
     const db = await this.ensureDbForCollection(collection ?? this.collection);
+    if (isSearchAborted(execution)) return [];
     if (!db) return [];
-    return this.searchDb(db, query, "fulltext", maxResults ?? 10);
+    return this.searchDb(db, query, "fulltext", maxResults ?? 10, execution);
   }
 
-  async vectorSearch(query: string, collection?: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+  async vectorSearch(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+    if (isSearchAborted(execution)) return [];
     const db = await this.ensureDbForCollection(collection ?? this.collection);
+    if (isSearchAborted(execution)) return [];
     if (!db) return [];
-    return this.searchDb(db, query, "vector", maxResults ?? 10);
+    return this.searchDb(db, query, "vector", maxResults ?? 10, execution);
   }
 
-  async hybridSearch(query: string, collection?: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+  async hybridSearch(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+    if (isSearchAborted(execution)) return [];
     const db = await this.ensureDbForCollection(collection ?? this.collection);
+    if (isSearchAborted(execution)) return [];
     if (!db) return [];
-    return this.searchDb(db, query, "hybrid", maxResults ?? 10);
+    return this.searchDb(db, query, "hybrid", maxResults ?? 10, execution);
   }
 
   async update(execution?: SearchExecutionOptions): Promise<void> {
     await this.updateCollection(this.collection, execution);
   }
 
-  async updateCollection(collection: string, _execution?: SearchExecutionOptions): Promise<void> {
+  async updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void> {
+    if (isSearchAborted(execution)) return;
     const db = await this.ensureDbForCollection(collection);
+    if (isSearchAborted(execution)) return;
     if (!db) return;
     const { search: oramaSearch, insert, remove, count } = this.oramaModule;
 
     const docs = await scanMemoryDir(this.memoryDir);
+    if (isSearchAborted(execution)) return;
     const docMap = new Map(docs.map((d) => [d.docid, d]));
     const { update: oramaUpdate } = this.oramaModule;
 
@@ -126,6 +162,7 @@ export class OramaBackend implements SearchBackend {
     if (existingCount > 0) {
       const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
       for (const hit of allHits.hits) {
+        if (isSearchAborted(execution)) return;
         if (!docMap.has(hit.document.id)) {
           await remove(db, hit.id);
         } else {
@@ -139,6 +176,7 @@ export class OramaBackend implements SearchBackend {
 
     // Insert new docs, update existing ones (preserving vectors since update is remove+insert)
     for (const doc of docs) {
+      if (isSearchAborted(execution)) return;
       const existing = existingDocs.get(doc.docid);
       if (existing) {
         const payload: Record<string, unknown> = {
@@ -169,6 +207,7 @@ export class OramaBackend implements SearchBackend {
       }
     }
 
+    if (isSearchAborted(execution)) return;
     await this.persistDbForCollection(db, collection);
   }
 
@@ -293,7 +332,7 @@ export class OramaBackend implements SearchBackend {
   }
 
   private dbFilePath(collection: string): string {
-    return path.join(this.dbPath, `${collection}.msp`);
+    return resolveOramaCollectionDbFilePath(this.dbPath, collection);
   }
 
   private async listDbFiles(): Promise<string[]> {
@@ -317,16 +356,24 @@ export class OramaBackend implements SearchBackend {
     }
   }
 
-  private async searchDb(db: any, query: string, mode: "fulltext" | "vector" | "hybrid", limit: number): Promise<SearchResult[]> {
+  private async searchDb(
+    db: any,
+    query: string,
+    mode: "fulltext" | "vector" | "hybrid",
+    limit: number,
+    execution?: SearchExecutionOptions,
+  ): Promise<SearchResult[]> {
     const { search: oramaSearch } = this.oramaModule;
 
     try {
+      throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
       let searchParams: any;
 
       if (mode === "fulltext") {
         searchParams = { term: query, limit };
       } else if (mode === "vector") {
-        const vec = await this.embedHelper.embed(query);
+        const vec = await this.embedHelper.embed(query, { signal: execution?.signal });
+        throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
         if (!vec) {
           // Fall back to fulltext if no embeddings available
           searchParams = { term: query, limit };
@@ -335,7 +382,8 @@ export class OramaBackend implements SearchBackend {
         }
       } else {
         // hybrid
-        const vec = await this.embedHelper.embed(query);
+        const vec = await this.embedHelper.embed(query, { signal: execution?.signal });
+        throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
         if (!vec) {
           searchParams = { term: query, limit };
         } else {
@@ -343,7 +391,9 @@ export class OramaBackend implements SearchBackend {
         }
       }
 
+      throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
       const result = await oramaSearch(db, searchParams);
+      throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
       return (result.hits ?? []).map((hit: any) => ({
         docid: hit.document?.id ?? "",
         path: hit.document?.path ?? "",

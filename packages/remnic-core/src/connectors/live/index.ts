@@ -30,6 +30,7 @@ export {
 export {
   listConnectorStates,
   readConnectorState,
+  withConnectorStateLock,
   writeConnectorState,
   type ConnectorState,
   type ConnectorSyncStatus,

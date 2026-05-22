@@ -16,6 +16,7 @@ import {
   NOTION_CONNECTOR_ID,
   NOTION_DEFAULT_POLL_INTERVAL_MS,
   readConnectorState,
+  withConnectorStateLock,
   writeConnectorState,
   validateGitHubConfig,
   validateGmailConfig,
@@ -210,32 +211,51 @@ export async function runLiveConnectorsOnce(options: {
     let lastStateWrittenAt: Date | undefined;
     try {
       const connector = definition.createConnector();
-      runResult = await runConnectorPollOnce({
-        connectorId: definition.id,
-        priorState: state,
-        syncFn: (cursor: ConnectorCursor | null) =>
-          connector.syncIncremental({
-            cursor,
-            config: validatedConfig,
-            abortSignal: options.abortSignal,
-          }),
-        ingestFn: options.ingestDocuments,
-        writeCursorFn: (writeState) => {
-          const writeAt = resolveNow(options.now);
-          return writeConnectorState(options.memoryDir, definition.id, {
-            id: definition.id,
-            cursor: writeState.cursor,
-            lastSyncAt: writeAt.toISOString(),
-            lastSyncStatus: writeState.lastSyncStatus,
-            ...(writeState.lastSyncError !== undefined
-              ? { lastSyncError: writeState.lastSyncError }
-              : {}),
-            totalDocsImported: writeState.totalDocsImported,
-          }).then(() => {
-            lastStateWrittenAt = writeAt;
-          });
-        },
+      runResult = await withConnectorStateLock(options.memoryDir, definition.id, async () => {
+        const lockedState = await readConnectorState(options.memoryDir, definition.id);
+        if (!force && !isConnectorDue(lockedState, definition.pollIntervalMs, checkAt)) {
+          return { docsImported: 0 };
+        }
+        state = lockedState;
+        return runConnectorPollOnce({
+          connectorId: definition.id,
+          priorState: lockedState,
+          syncFn: (cursor: ConnectorCursor | null) =>
+            connector.syncIncremental({
+              cursor,
+              config: validatedConfig,
+              abortSignal: options.abortSignal,
+            }),
+          ingestFn: options.ingestDocuments,
+          writeCursorFn: (writeState) => {
+            const writeAt = resolveNow(options.now);
+            return writeConnectorState(options.memoryDir, definition.id, {
+              id: definition.id,
+              cursor: writeState.cursor,
+              lastSyncAt: writeAt.toISOString(),
+              lastSyncStatus: writeState.lastSyncStatus,
+              ...(writeState.lastSyncError !== undefined
+                ? { lastSyncError: writeState.lastSyncError }
+                : {}),
+              totalDocsImported: writeState.totalDocsImported,
+            }).then(() => {
+              lastStateWrittenAt = writeAt;
+            });
+          },
+        });
       });
+      if (
+        runResult.docsImported === 0 &&
+        runResult.error === undefined &&
+        runResult.stateWriteError === undefined &&
+        lastStateWrittenAt === undefined
+      ) {
+        const lockedState = await readConnectorState(options.memoryDir, definition.id);
+        if (!force && !isConnectorDue(lockedState, definition.pollIntervalMs, checkAt)) {
+          results.push(skipResult(definition, lockedState, "not_due"));
+          continue;
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       let stateWriteError: string | undefined;

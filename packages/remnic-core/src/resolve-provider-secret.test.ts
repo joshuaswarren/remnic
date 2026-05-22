@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  __findExecutableOnPathForTest,
   __setGatewayResolverForTest,
   clearSecretCache,
   resolveProviderApiKey,
@@ -44,6 +43,37 @@ test("resolveProviderApiKey scopes cached gateway secrets by agent directory", a
     assert.deepEqual(calls, [
       "/tmp/openclaw-profile-a/agent",
       "/tmp/openclaw-profile-b/agent",
+    ]);
+  } finally {
+    clearSecretCache();
+  }
+});
+
+test("resolveProviderApiKey resolves SecretRef-like inputs through an injected host resolver", async () => {
+  clearSecretCache();
+  const calls: unknown[] = [];
+
+  try {
+    const resolved = await resolveProviderApiKey(
+      "anthropic",
+      { source: "host-secret", id: "claude-prod" },
+      { profile: "standalone-host" },
+      "/tmp/host-agent",
+      {
+        resolveApiKeyForProvider: async (params) => {
+          calls.push(params);
+          return { apiKey: "sk-from-injected-host", source: "host-secret", mode: "test" };
+        },
+      },
+    );
+
+    assert.equal(resolved, "sk-from-injected-host");
+    assert.deepEqual(calls, [
+      {
+        provider: "anthropic",
+        cfg: { profile: "standalone-host" },
+        agentDir: "/tmp/host-agent",
+      },
     ]);
   } finally {
     clearSecretCache();
@@ -162,26 +192,5 @@ test("resolveProviderApiKey treats env-var-shaped config strings as markers", as
     if (previousOpenAI === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previousOpenAI;
     clearSecretCache();
-  }
-});
-
-test("findExecutableOnPath skips directories named like the executable", () => {
-  const calls: string[] = [];
-  const access = (candidate: string): void => {
-    calls.push(candidate);
-  };
-  const stat = (candidate: string): { isFile(): boolean } => ({
-    isFile: () => candidate === "/bin/openclaw",
-  });
-  const previousPath = process.env.PATH;
-
-  try {
-    process.env.PATH = ["/tmp", "/bin"].join(":");
-    const resolved = __findExecutableOnPathForTest("openclaw", access, stat, 1);
-    assert.equal(resolved, "/bin/openclaw");
-    assert.deepEqual(calls, ["/tmp/openclaw", "/bin/openclaw"]);
-  } finally {
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
   }
 });

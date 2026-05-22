@@ -1,11 +1,13 @@
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { writeFileAtomically } from "./atomic-file.js";
 
 interface LedgerWriteOptions<T extends object> {
   memoryDir: string;
   outputPath: string;
   rows: T[];
   now: Date;
+  atomicWrite?: typeof writeFileAtomically;
 }
 
 export function toHourBucketIso(timestamp: string): string | null {
@@ -21,6 +23,7 @@ export async function backupAndWriteRebuiltObservations<T extends object>(
   options: LedgerWriteOptions<T>,
 ): Promise<string | undefined> {
   const stamp = options.now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  const atomicWrite = options.atomicWrite ?? writeFileAtomically;
   const archiveRoot = path.join(options.memoryDir, "archive", "observations", stamp);
   let backupPath: string | undefined = path.join(
     archiveRoot,
@@ -30,8 +33,7 @@ export async function backupAndWriteRebuiltObservations<T extends object>(
   );
   try {
     const existing = await readFile(options.outputPath, "utf-8");
-    await mkdir(path.dirname(backupPath), { recursive: true });
-    await writeFile(backupPath, existing, "utf-8");
+    await atomicWrite(backupPath, existing);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code && code === "ENOENT") {
@@ -48,7 +50,6 @@ export async function backupAndWriteRebuiltObservations<T extends object>(
       rebuiltAt,
     }),
   );
-  await mkdir(path.dirname(options.outputPath), { recursive: true });
-  await writeFile(options.outputPath, lines.length > 0 ? `${lines.join("\n")}\n` : "", "utf-8");
+  await atomicWrite(options.outputPath, lines.length > 0 ? `${lines.join("\n")}\n` : "");
   return backupPath;
 }

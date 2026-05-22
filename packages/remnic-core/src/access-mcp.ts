@@ -8,13 +8,16 @@ import {
   type CapsuleExportRequest,
   type CapsuleImportRequest,
   type CapsuleListRequest,
+  type MemoryStoreRequest,
   type SchemaName,
   type SchemaTypeFor,
+  type SuggestionSubmitRequest,
 } from "./access-schema.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { buildCitationGuidance, type CitationMetadata } from "./citations.js";
+import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { expandTildePath } from "./utils/path.js";
 import {
   REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
@@ -33,6 +36,14 @@ type JsonRpcRequest = {
   id?: JsonRpcId;
   method?: string;
   params?: Record<string, unknown>;
+};
+
+type McpRequestOptions = {
+  principalOverride?: string;
+  namespaceOverride?: string;
+  sessionKeyOverride?: string;
+  sessionId?: string;
+  correlationId?: string;
 };
 
 type McpTool = {
@@ -87,6 +98,34 @@ function resolveChatGptInspectorRecallSessionKey(
 }
 
 const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
+  memoryStore: [
+    "schemaVersion",
+    "idempotencyKey",
+    "dryRun",
+    "sessionKey",
+    "content",
+    "category",
+    "confidence",
+    "namespace",
+    "tags",
+    "entityRef",
+    "ttl",
+    "sourceReason",
+  ],
+  suggestionSubmit: [
+    "schemaVersion",
+    "idempotencyKey",
+    "dryRun",
+    "sessionKey",
+    "content",
+    "category",
+    "confidence",
+    "namespace",
+    "tags",
+    "entityRef",
+    "ttl",
+    "sourceReason",
+  ],
   capsuleExport: [
     "name",
     "namespace",
@@ -1671,7 +1710,7 @@ export class EngramMcpServer {
     return sid;
   }
 
-  async handleRequest(request: JsonRpcRequest, options?: { principalOverride?: string; sessionId?: string; correlationId?: string }): Promise<Record<string, unknown> | null> {
+  async handleRequest(request: JsonRpcRequest, options?: McpRequestOptions): Promise<Record<string, unknown> | null> {
     const id = request.id ?? null;
     const method = request.method ?? "";
 
@@ -1793,6 +1832,12 @@ export class EngramMcpServer {
             throw new EngramAccessInputError("tools/call arguments must be an object when provided");
           }
           argumentsObject = params.arguments as Record<string, unknown>;
+        }
+        if (!("namespace" in argumentsObject) && options?.namespaceOverride) {
+          argumentsObject = { ...argumentsObject, namespace: options.namespaceOverride };
+        }
+        if (!("sessionKey" in argumentsObject) && options?.sessionKeyOverride) {
+          argumentsObject = { ...argumentsObject, sessionKey: options.sessionKeyOverride };
         }
         const effectivePrincipal = options?.principalOverride ?? this.authenticatedPrincipal;
         const result = await this.callTool(name, argumentsObject, effectivePrincipal, options?.sessionId);
@@ -2070,12 +2115,13 @@ export class EngramMcpServer {
         const hasCodingContext = "codingContext" in args;
         if (!hasCodingContext && hasProjectTag) {
           const tag = (args.projectTag as string).trim();
+          const projectId = projectTagProjectId(tag);
           this.service.setCodingContext({
             sessionKey,
             codingContext: {
-              projectId: `tag:${tag}`,
+              projectId,
               branch: null,
-              rootPath: `tag:${tag}`,
+              rootPath: projectId,
               defaultBranch: null,
             },
           });
@@ -2383,38 +2429,42 @@ export class EngramMcpServer {
           effectivePrincipal,
         );
       }
-      case "engram.memory_store":
+      case "engram.memory_store": {
+        const body: MemoryStoreRequest = parseMcpRequest("memoryStore", args);
         return this.service.memoryStore({
-          schemaVersion: typeof args.schemaVersion === "number" ? args.schemaVersion : undefined,
-          idempotencyKey: typeof args.idempotencyKey === "string" ? args.idempotencyKey : undefined,
-          dryRun: args.dryRun === true,
-          sessionKey: typeof args.sessionKey === "string" ? args.sessionKey : undefined,
+          schemaVersion: body.schemaVersion,
+          idempotencyKey: body.idempotencyKey,
+          dryRun: body.dryRun,
+          sessionKey: body.sessionKey,
           authenticatedPrincipal: effectivePrincipal,
-          content: typeof args.content === "string" ? args.content : "",
-          category: typeof args.category === "string" ? args.category : undefined,
-          confidence: typeof args.confidence === "number" ? args.confidence : undefined,
-          namespace: typeof args.namespace === "string" ? args.namespace : undefined,
-          tags: Array.isArray(args.tags) ? args.tags.filter((tag): tag is string => typeof tag === "string") : undefined,
-          entityRef: typeof args.entityRef === "string" ? args.entityRef : undefined,
-          ttl: typeof args.ttl === "string" ? args.ttl : undefined,
-          sourceReason: typeof args.sourceReason === "string" ? args.sourceReason : undefined,
+          content: body.content,
+          category: body.category,
+          confidence: body.confidence,
+          namespace: body.namespace,
+          tags: body.tags,
+          entityRef: body.entityRef,
+          ttl: body.ttl,
+          sourceReason: body.sourceReason,
         });
-      case "engram.suggestion_submit":
+      }
+      case "engram.suggestion_submit": {
+        const body: SuggestionSubmitRequest = parseMcpRequest("suggestionSubmit", args);
         return this.service.suggestionSubmit({
-          schemaVersion: typeof args.schemaVersion === "number" ? args.schemaVersion : undefined,
-          idempotencyKey: typeof args.idempotencyKey === "string" ? args.idempotencyKey : undefined,
-          dryRun: args.dryRun === true,
-          sessionKey: typeof args.sessionKey === "string" ? args.sessionKey : undefined,
+          schemaVersion: body.schemaVersion,
+          idempotencyKey: body.idempotencyKey,
+          dryRun: body.dryRun,
+          sessionKey: body.sessionKey,
           authenticatedPrincipal: effectivePrincipal,
-          content: typeof args.content === "string" ? args.content : "",
-          category: typeof args.category === "string" ? args.category : undefined,
-          confidence: typeof args.confidence === "number" ? args.confidence : undefined,
-          namespace: typeof args.namespace === "string" ? args.namespace : undefined,
-          tags: Array.isArray(args.tags) ? args.tags.filter((tag): tag is string => typeof tag === "string") : undefined,
-          entityRef: typeof args.entityRef === "string" ? args.entityRef : undefined,
-          ttl: typeof args.ttl === "string" ? args.ttl : undefined,
-          sourceReason: typeof args.sourceReason === "string" ? args.sourceReason : undefined,
+          content: body.content,
+          category: body.category,
+          confidence: body.confidence,
+          namespace: body.namespace,
+          tags: body.tags,
+          entityRef: body.entityRef,
+          ttl: body.ttl,
+          sourceReason: body.sourceReason,
         });
+      }
       case "engram.entity_get":
         return this.service.entityGet(
           typeof args.name === "string" ? args.name : "",

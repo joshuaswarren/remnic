@@ -531,6 +531,90 @@ test("incremental sync skips empty pages (no extractable text)", async () => {
   assert.equal(result.skippedEmpty, 1);
 });
 
+test("incremental sync does not let replayed skipped pages exhaust the page cap", async () => {
+  const emptyPages = Array.from({ length: 200 }, (_, index) =>
+    makeSyntheticPage(
+      `a${String(index).padStart(31, "0")}`,
+      new Date(Date.UTC(2026, 3, 26, 12, 0, 0) - index * 1000).toISOString(),
+    ),
+  );
+  const validPage = makeSyntheticPage(
+    "cccccccccccccccccccccccccccccccc",
+    "2026-04-26T10:00:00.000Z",
+    "Older valid page",
+  );
+
+  const queryPage = (cursor: unknown) => {
+    if (cursor === "page-2") {
+      return { results: emptyPages.slice(100, 200), has_more: true, next_cursor: "page-3" };
+    }
+    if (cursor === "page-3") {
+      return { results: [validPage], has_more: false, next_cursor: null };
+    }
+    return { results: emptyPages.slice(0, 100), has_more: true, next_cursor: "page-2" };
+  };
+
+  const fetchFn = makeFetch([
+    {
+      match: (url) => url.includes(`/databases/${DB_ID_A}/query`),
+      respond: (_url, body) => ({
+        status: 200,
+        data: queryPage((body as { start_cursor?: unknown } | undefined)?.start_cursor),
+      }),
+    },
+    {
+      match: (url) => url.includes(`/blocks/${validPage.id}/children`),
+      respond: () => ({
+        status: 200,
+        data: {
+          results: [
+            {
+              id: "valid-block",
+              type: "paragraph",
+              has_children: false,
+              paragraph: { rich_text: [{ plain_text: "eventually imported content" }] },
+            },
+          ],
+          has_more: false,
+          next_cursor: null,
+        },
+      }),
+    },
+    {
+      match: (url) => url.includes("/blocks/"),
+      respond: () => ({
+        status: 200,
+        data: { results: [], has_more: false, next_cursor: null },
+      }),
+    },
+  ]);
+
+  const connector = createNotionConnector({ fetchFn });
+  const config = connector.validateConfig({ token: SYNTHETIC_TOKEN, databaseIds: [DB_ID_A] });
+  const cursor = makeNotionCursor({
+    pages: {},
+    databases: { [DB_ID_A]: "2026-04-26T09:00:00.000Z" },
+  });
+
+  const firstPass = (await connector.syncIncremental({ cursor, config })) as NotionSyncResult;
+  assert.deepEqual(firstPass.newDocs, []);
+  assert.equal(firstPass.skippedEmpty, 200);
+
+  const secondPass = (await connector.syncIncremental({
+    cursor: firstPass.nextCursor,
+    config,
+  })) as NotionSyncResult;
+  assert.equal(secondPass.newDocs.length, 1);
+  assert.equal(secondPass.newDocs[0]?.source.externalId, validPage.id);
+
+  const payload = JSON.parse(secondPass.nextCursor.value) as {
+    pages: Record<string, string>;
+    databases: Record<string, string>;
+  };
+  assert.equal(payload.pages[validPage.id], validPage.last_edited_time);
+  assert.equal(payload.databases[DB_ID_A], emptyPages[0]!.last_edited_time);
+});
+
 // ---------------------------------------------------------------------------
 // Block text extraction (heading, todo, list items)
 // ---------------------------------------------------------------------------

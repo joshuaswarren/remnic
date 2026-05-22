@@ -690,7 +690,7 @@ test("before_prompt_build does not suppress Remnic active recall when runtime ac
   }
 });
 
-test("before_prompt_build does not suppress Remnic active recall when runtime active-memory config omits enabled and file-backed config disables bundled active-memory", async () => {
+test("before_prompt_build treats string active-memory enabled=false as disabled", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-active-recall-partial-runtime-enabled-"));
   const configPath = path.join(root, "openclaw.json");
   await writeFile(
@@ -700,7 +700,7 @@ test("before_prompt_build does not suppress Remnic active recall when runtime ac
         plugins: {
           entries: {
             "active-memory": {
-              enabled: false,
+              enabled: "false",
               config: {
                 agents: ["main"],
               },

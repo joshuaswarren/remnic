@@ -124,9 +124,13 @@ export class FaissConversationIndexAdapter {
   private readonly pythonBin: string;
   private readonly scriptPath: string;
   private readonly indexPath: string;
+  private readonly maxBatchSize: number;
   private readonly spawnFn: typeof launchProcess;
 
   constructor(private readonly config: FaissAdapterConfig) {
+    if (!Number.isInteger(config.maxBatchSize) || config.maxBatchSize <= 0) {
+      throw new RangeError("FAISS maxBatchSize must be a positive integer");
+    }
     this.pythonBin = config.pythonBin && config.pythonBin.trim().length > 0 ? config.pythonBin.trim() : "python3";
     this.scriptPath = config.scriptPath && config.scriptPath.trim().length > 0
       ? config.scriptPath.trim()
@@ -134,14 +138,17 @@ export class FaissConversationIndexAdapter {
     this.indexPath = path.isAbsolute(config.indexDir)
       ? config.indexDir
       : path.join(config.memoryDir, config.indexDir);
+    this.maxBatchSize = config.maxBatchSize;
     this.spawnFn = config.spawnFn ?? launchProcess;
   }
 
-  async upsertChunks(chunks: ConversationChunk[]): Promise<number> {
-    if (this.config.maxBatchSize <= 0) return 0;
+  async upsertChunks(
+    chunks: ConversationChunk[],
+    options: { retentionCutoffMs?: number } = {},
+  ): Promise<number> {
     let totalUpserted = 0;
-    for (let offset = 0; offset < chunks.length; offset += this.config.maxBatchSize) {
-      const batch = chunks.slice(offset, offset + this.config.maxBatchSize);
+    for (let offset = 0; offset < chunks.length; offset += this.maxBatchSize) {
+      const batch = chunks.slice(offset, offset + this.maxBatchSize);
       if (batch.length === 0) continue;
       const payload = {
         modelId: this.config.modelId,
@@ -153,6 +160,10 @@ export class FaissConversationIndexAdapter {
           startTs: chunk.startTs,
           endTs: chunk.endTs,
         })),
+        ...(typeof options.retentionCutoffMs === "number" &&
+        Number.isFinite(options.retentionCutoffMs)
+          ? { retentionCutoffMs: options.retentionCutoffMs }
+          : {}),
       };
       const result = await this.runCommand("upsert", payload, this.config.upsertTimeoutMs);
       const upserted = result.upserted;
@@ -237,13 +248,10 @@ export class FaissConversationIndexAdapter {
   }
 
   async rebuildChunks(chunks: ConversationChunk[]): Promise<number> {
-    if (this.config.maxBatchSize <= 0) return 0;
-
-    const firstBatch = chunks.slice(0, this.config.maxBatchSize);
     const rebuildPayload = {
       modelId: this.config.modelId,
       indexPath: this.indexPath,
-      chunks: firstBatch.map((chunk) => ({
+      chunks: chunks.map((chunk) => ({
         id: chunk.id,
         sessionKey: chunk.sessionKey,
         text: chunk.text,
@@ -256,13 +264,14 @@ export class FaissConversationIndexAdapter {
     if (typeof rebuilt !== "number" || !Number.isFinite(rebuilt)) {
       throw new FaissAdapterError("FAISS sidecar produced malformed rebuild response", "malformed_output");
     }
-
-    const rebuildCount = Math.max(0, Math.floor(rebuilt));
-    const remaining = chunks.slice(firstBatch.length);
-    if (remaining.length === 0) return rebuildCount;
-
-    const upserted = await this.upsertChunks(remaining);
-    return rebuildCount + upserted;
+    const rebuildCount = Math.floor(rebuilt);
+    if (rebuildCount !== chunks.length) {
+      throw new FaissAdapterError(
+        `FAISS sidecar rebuilt ${rebuildCount} chunk(s), expected ${chunks.length}`,
+        "malformed_output",
+      );
+    }
+    return rebuildCount;
   }
 
   private async runCommand(command: SidecarCommand, payload: object, timeoutMs: number): Promise<SidecarResult> {

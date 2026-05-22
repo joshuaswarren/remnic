@@ -227,6 +227,65 @@ test("gc() evicts buckets whose window has fully expired", () => {
   assert.equal(limiter.bucketCount(), 0);
 });
 
+test("record() normalizes non-finite clocks before mutating limiter state", () => {
+  const limiter = new CrossNamespaceBudget({
+    enabled: true,
+    softLimit: 1,
+    hardLimit: 1,
+    windowMs: 100,
+  });
+
+  const invalidClock = limiter.record("p1", Number.NaN);
+  assert.equal(invalidClock.allowed, true);
+  assert.equal(invalidClock.reason, "allowed-under-soft");
+  assert.equal(invalidClock.count, 1);
+  assert.equal(limiter.bucketCount(), 1);
+
+  const later = limiter.record("p1", 101);
+  assert.equal(later.allowed, true);
+  assert.equal(later.reason, "allowed-under-soft");
+  assert.equal(later.count, 1);
+
+  assert.equal(limiter.gc(250), 1);
+  assert.equal(limiter.bucketCount(), 0);
+});
+
+test("peek() with a non-finite clock is read-only and does not poison state", () => {
+  const limiter = new CrossNamespaceBudget({
+    enabled: true,
+    softLimit: 0,
+    hardLimit: 1,
+    windowMs: 100,
+  });
+
+  const decision = limiter.peek({
+    principal: "p1",
+    principalNamespace: "alice",
+    queryNamespace: "bob",
+    now: Number.NaN,
+  });
+
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.reason, "warn-over-soft");
+  assert.equal(decision.count, 1);
+  assert.equal(limiter.bucketCount(), 0);
+});
+
+test("gc() normalizes non-finite clocks without evicting future-valid state", () => {
+  const limiter = new CrossNamespaceBudget({
+    enabled: true,
+    softLimit: 10,
+    hardLimit: 20,
+    windowMs: 100,
+  });
+
+  limiter.record("p1", 0);
+  assert.equal(limiter.gc(Number.NaN), 0);
+  assert.equal(limiter.bucketCount(), 1);
+  assert.equal(limiter.gc(101), 1);
+  assert.equal(limiter.bucketCount(), 0);
+});
+
 test("bucket is evicted after a denial rolls the only timestamp back", () => {
   const limiter = new CrossNamespaceBudget({
     enabled: true,

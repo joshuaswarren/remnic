@@ -14,10 +14,10 @@ import {
   Orchestrator,
   sanitizeSessionKeyForFilename,
   defaultWorkspaceDir,
-} from "./orchestrator.js";
+} from "@remnic/core/orchestrator";
 import { registerTools } from "./tools.js";
-import { registerLcmTools } from "./lcm/index.js";
-import { estimateTokens as estimateLcmTokens } from "./lcm/archive.js";
+import { registerLcmTools } from "@remnic/core/lcm/index";
+import { estimateTokens as estimateLcmTokens } from "@remnic/core/lcm/archive";
 import { registerCli } from "@remnic/core/cli";
 import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
 import { recordObjectiveStateSnapshotsFromAgentMessages } from "./objective-state-writers.js";
@@ -37,7 +37,7 @@ import {
 import path from "node:path";
 import os from "node:os";
 import { createOpikExporter } from "./opik-exporter.js";
-import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
+import { readEnvVar, resolveHomeDir } from "@remnic/core/runtime/env";
 import { migrateFromEngram } from "./migrate/from-engram.js";
 import { cleanUserMessage } from "./user-message-cleaning.js";
 import { listRemnicPublicArtifacts } from "../packages/plugin-openclaw/src/public-artifacts.js";
@@ -60,7 +60,10 @@ import {
   buildSessionCommandDescriptors,
 } from "../packages/plugin-openclaw/src/session-command-descriptors.js";
 import { validateSlotSelection } from "../packages/plugin-openclaw/src/slot-validator.js";
-import { PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id";
+import {
+  REMNIC_OPENCLAW_PLUGIN_ID,
+  resolveRemnicOpenClawPluginEntry,
+} from "../packages/plugin-openclaw/src/plugin-id.js";
 import { createFileToggleStore } from "@remnic/core/session-toggles";
 import { appendRecallAuditEntry, pruneRecallAuditEntries } from "@remnic/core/recall-audit";
 import { createActiveRecallEngine } from "@remnic/core/active-recall";
@@ -75,6 +78,7 @@ import { planRecallMode } from "@remnic/core/intent";
 import {
   resolvePrincipal,
   resolveAgentAccessAuthToken,
+  expandTildePath,
 } from "@remnic/core";
 import { findGatewayRuntimeModules } from "./resolve-provider-secret.js";
 import { createDreamsSurface } from "@remnic/core/surfaces/dreams";
@@ -167,6 +171,64 @@ async function writeTextFileLater(filePath: string, data: string): Promise<void>
   await fs.writeFile(filePath, data, "utf-8");
 }
 
+type HourlySummaryCronJob = Record<string, unknown> & { id?: unknown };
+
+export interface HourlySummaryCronJobsData {
+  version: number;
+  jobs: HourlySummaryCronJob[];
+  [key: string]: unknown;
+}
+
+export type HourlySummaryCronJobsLoadResult =
+  | { status: "missing" }
+  | { status: "invalid"; error: Error }
+  | { status: "loaded"; jobsData: HourlySummaryCronJobsData };
+
+function isRecordLike(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function parseHourlySummaryCronJobsData(
+  content: string,
+  filePath = "cron jobs file",
+): HourlySummaryCronJobsData {
+  const parsed = JSON.parse(content) as unknown;
+  if (!isRecordLike(parsed)) {
+    throw new Error(`${filePath} must contain a JSON object.`);
+  }
+  if (!Array.isArray(parsed.jobs)) {
+    throw new Error(`${filePath} must contain a jobs array.`);
+  }
+  if (!parsed.jobs.every(isRecordLike)) {
+    throw new Error(`${filePath} jobs entries must be JSON objects.`);
+  }
+  return {
+    ...parsed,
+    version: typeof parsed.version === "number" ? parsed.version : 1,
+    jobs: parsed.jobs,
+  };
+}
+
+export async function loadHourlySummaryCronJobsData(
+  cronFilePath: string,
+): Promise<HourlySummaryCronJobsLoadResult> {
+  try {
+    const content = await readTextFileLater(cronFilePath);
+    return {
+      status: "loaded",
+      jobsData: parseHourlySummaryCronJobsData(content, cronFilePath),
+    };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { status: "missing" };
+    }
+    return {
+      status: "invalid",
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+}
+
 async function realPathLater(filePath: string): Promise<string> {
   const fs = await import(NODE_FS_PROMISES_MODULE_ID);
   return fs.realpath(filePath);
@@ -190,10 +252,89 @@ const SECRET_REF_RESOLVER_MODULE_PREFIXES = [
   "runtime-secret.runtime-",
   "runtime-model-auth.runtime-",
 ] as const;
+const PROVIDER_AUTH_RUNTIME_MODULE_PREFIX = "runtime-model-auth.runtime-";
 
 let secretRefResolver: ResolveSecretRefFn | null = null;
 let secretRefResolverLoaded = false;
 let secretRefResolverNextRetryAt = 0;
+let providerAuthRuntimeModule: Record<string, unknown> | null = null;
+let providerAuthRuntimeLoaded = false;
+let providerAuthRuntimeNextRetryAt = 0;
+
+async function loadOpenClawProviderAuthRuntimeModule(): Promise<Record<string, unknown> | null> {
+  if (providerAuthRuntimeLoaded) return providerAuthRuntimeModule;
+  if (
+    providerAuthRuntimeNextRetryAt > 0 &&
+    Date.now() < providerAuthRuntimeNextRetryAt
+  ) {
+    return null;
+  }
+
+  try {
+    const { pathToFileURL } = await import("node:url");
+    const candidates = await findGatewayRuntimeModules(PROVIDER_AUTH_RUNTIME_MODULE_PREFIX);
+    for (const candidate of candidates) {
+      try {
+        const mod = (await import(pathToFileURL(candidate).href)) as Record<string, unknown>;
+        if (
+          typeof mod.resolveApiKeyForProvider === "function" ||
+          typeof mod.getRuntimeAuthForModel === "function"
+        ) {
+          providerAuthRuntimeModule = mod;
+          providerAuthRuntimeLoaded = true;
+          log.debug("loaded OpenClaw provider auth runtime module");
+          return providerAuthRuntimeModule;
+        }
+      } catch {
+        // Try next candidate.
+      }
+    }
+  } catch {
+    // Silent — fall through to backoff.
+  }
+
+  providerAuthRuntimeNextRetryAt = Date.now() + SECRET_REF_RESOLVER_RETRY_BACKOFF_MS;
+  log.debug(
+    `OpenClaw provider auth runtime not available — will retry after ${
+      SECRET_REF_RESOLVER_RETRY_BACKOFF_MS / 1000
+    }s`,
+  );
+  return null;
+}
+
+async function resolveOpenClawProviderApiKey(params: {
+  provider: string;
+  cfg?: unknown;
+  agentDir?: string;
+}): Promise<{ apiKey?: string; source?: string; mode?: string } | null> {
+  const mod = await loadOpenClawProviderAuthRuntimeModule();
+  const resolver = mod?.resolveApiKeyForProvider;
+  if (typeof resolver !== "function") return null;
+  return await (resolver as (input: typeof params) => Promise<{ apiKey?: string; source?: string; mode?: string } | null>)(params);
+}
+
+async function getOpenClawRuntimeAuthForModel(params: {
+  model: { provider: string; id: string; api?: string; baseUrl?: string };
+  cfg?: unknown;
+  workspaceDir?: string;
+}): Promise<{
+  apiKey?: string;
+  baseUrl?: string;
+  source?: string;
+  mode?: string;
+  profileId?: string;
+} | null> {
+  const mod = await loadOpenClawProviderAuthRuntimeModule();
+  const resolver = mod?.getRuntimeAuthForModel;
+  if (typeof resolver !== "function") return null;
+  return await (resolver as (input: typeof params) => Promise<{
+    apiKey?: string;
+    baseUrl?: string;
+    source?: string;
+    mode?: string;
+    profileId?: string;
+  } | null>)(params);
+}
 
 async function loadOpenClawSecretRefResolver(): Promise<ResolveSecretRefFn | null> {
   const testResolver = (globalThis as Record<string, unknown>)[SECRET_REF_RESOLVER_TEST_KEY];
@@ -282,26 +423,39 @@ function buildServiceKeys(serviceId: string): ServiceKeys {
     ORCHESTRATOR: `__openclawEngramOrchestrator${suffix}`,
   };
 }
+
+function resolveOpenClawConfigFilePath(): string {
+  const explicitConfigPath =
+    readEnvVar("OPENCLAW_CONFIG_PATH") ||
+    readEnvVar("OPENCLAW_ENGRAM_CONFIG_PATH");
+  if (explicitConfigPath && explicitConfigPath.length > 0) {
+    return expandTildePath(explicitConfigPath);
+  }
+  return path.join(resolveHomeDir(), ".openclaw", "openclaw.json");
+}
+
+function coerceRawConfigBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  return undefined;
+}
+
 // Workaround: Read config directly from openclaw.json since gateway may not pass it.
 // IMPORTANT: Do not log raw config contents (may include secrets).
 // Shared helper: read and parse the full plugin entry from openclaw.json.
 function loadPluginEntryFromFile(pluginId?: string): Record<string, unknown> | undefined {
   try {
-    const explicitConfigPath =
-      readEnvVar("OPENCLAW_CONFIG_PATH") ||
-      readEnvVar("OPENCLAW_ENGRAM_CONFIG_PATH");
-    const homeDir = resolveHomeDir();
-    const configPath =
-      explicitConfigPath && explicitConfigPath.length > 0
-        ? explicitConfigPath
-        : path.join(homeDir, ".openclaw", "openclaw.json");
+    const configPath = resolveOpenClawConfigFilePath();
     const content = readTextFileNow(configPath);
     const config = JSON.parse(content);
-    // Delegate slot → preferredId → PLUGIN_ID → LEGACY_PLUGIN_ID resolution to
+    // Delegate slot → preferredId → canonical → legacy resolution to
     // the shared helper so all config loaders stay in sync (#403).
     // Pass the active plugin id so shim installs (id="openclaw-engram") prefer
     // their own entry when no slots.memory override is present.
-    return resolveRemnicPluginEntry(config, pluginId);
+    return resolveRemnicOpenClawPluginEntry(config, pluginId);
   } catch (err) {
     log.warn(`Failed to load config from file: ${err}`);
     return undefined;
@@ -316,14 +470,7 @@ function loadPluginConfigFromFile(pluginId?: string): Record<string, unknown> | 
 
 function loadRawConfigFromFile(): Record<string, unknown> | undefined {
   try {
-    const explicitConfigPath =
-      readEnvVar("OPENCLAW_CONFIG_PATH") ||
-      readEnvVar("OPENCLAW_ENGRAM_CONFIG_PATH");
-    const homeDir = resolveHomeDir();
-    const configPath =
-      explicitConfigPath && explicitConfigPath.length > 0
-        ? explicitConfigPath
-        : path.join(homeDir, ".openclaw", "openclaw.json");
+    const configPath = resolveOpenClawConfigFilePath();
     const content = readTextFileNow(configPath);
     const config = JSON.parse(content);
     return config && typeof config === "object"
@@ -343,9 +490,9 @@ function readPluginHooksPolicy(
   apiConfig: unknown,
   pluginId?: string,
 ): Record<string, unknown> | undefined {
-  // Try api.config first — delegate slot → preferredId → PLUGIN_ID → LEGACY_PLUGIN_ID
+  // Try api.config first — delegate slot → preferredId → canonical → legacy
   // resolution to the shared helper so all config loaders stay in sync (#403).
-  const apiEntry = resolveRemnicPluginEntry(apiConfig, pluginId);
+  const apiEntry = resolveRemnicOpenClawPluginEntry(apiConfig, pluginId);
   const fromApi = apiEntry?.["hooks"] as Record<string, unknown> | undefined;
   if (fromApi && typeof fromApi === "object") return fromApi;
   // Fall back to file-backed config
@@ -417,7 +564,7 @@ function isBundledActiveMemoryEnabledForAgent(
   const resolveEnabled = (
     entry: Record<string, unknown> | undefined,
   ): boolean | undefined => {
-    return typeof entry?.enabled === "boolean" ? (entry.enabled as boolean) : undefined;
+    return coerceRawConfigBoolean(entry?.enabled);
   };
 
   const runtimeEnabled = resolveEnabled(runtimeEntry);
@@ -606,7 +753,7 @@ function isNonRuntimeRegistrationMode(
 }
 
 const pluginDefinition = {
-  id: PLUGIN_ID,
+  id: REMNIC_OPENCLAW_PLUGIN_ID,
   name: "Remnic (Local Memory)",
   description:
     "Local-first memory plugin. Uses GPT-5.2 for intelligent extraction and hybrid local retrieval.",
@@ -627,7 +774,7 @@ const pluginDefinition = {
     const serviceId: string =
       typeof registerThis?.id === "string" && registerThis.id.trim().length > 0
         ? registerThis.id
-        : PLUGIN_ID;
+        : REMNIC_OPENCLAW_PLUGIN_ID;
     // Scope all per-plugin runtime singletons (orchestrator, start guards,
     // access service, HTTP server, etc.) by serviceId so a migration install
     // can host both `openclaw-remnic` and `openclaw-engram` without the second
@@ -674,6 +821,8 @@ const pluginDefinition = {
       ...api.pluginConfig, // Runtime/plugin-supplied config must win
       gatewayConfig: api.config, // Pass gateway config for fallback AI
     });
+    cfg.providerApiKeyResolver = resolveOpenClawProviderApiKey;
+    cfg.runtimeAuthForModelResolver = getOpenClawRuntimeAuthForModel;
     // Re-initialize with correct debug setting
     initLogger(api.logger, cfg.debug);
     log.info(
@@ -1064,7 +1213,8 @@ const pluginDefinition = {
     // Read from both api.config and file-backed config for installs where
     // the gateway doesn't pass the full config object.
     const hooksPolicy = readPluginHooksPolicy(api.config, serviceId);
-    const promptInjectionAllowed = hooksPolicy?.allowPromptInjection !== false;
+    const promptInjectionAllowed =
+      coerceRawConfigBoolean(hooksPolicy?.allowPromptInjection) !== false;
 
     // True when the section builder will be registered (capability + policy).
     // Must be determined before the hook registration block below.
@@ -3720,17 +3870,20 @@ const pluginDefinition = {
       );
 
       try {
-        // Read existing jobs
-        let jobsData: { version: number; jobs: Array<{ id: string }> } = {
-          version: 1,
-          jobs: [],
-        };
-        try {
-          const content = await readTextFileLater(cronFilePath);
-          jobsData = JSON.parse(content);
-        } catch {
-          // File doesn't exist or is invalid - will create new
+        const loadedJobs = await loadHourlySummaryCronJobsData(cronFilePath);
+        if (loadedJobs.status === "invalid") {
+          log.error(
+            `hourly summary cron auto-registration skipped: existing jobs file is invalid at ${cronFilePath}`,
+            loadedJobs.error,
+          );
+          return;
         }
+        // Only bootstrap a new jobs file when the file is absent. Invalid
+        // existing files are preserved above so recoverable jobs are not lost.
+        const jobsData: HourlySummaryCronJobsData =
+          loadedJobs.status === "loaded"
+            ? loadedJobs.jobsData
+            : { version: 1, jobs: [] };
 
         // Check if job already exists
         const exists = jobsData.jobs.some((j) => j.id === jobId);

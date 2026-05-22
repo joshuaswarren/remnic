@@ -159,6 +159,22 @@ export const ExtractedFactSchema = z.object({
     .describe(
       'For category "reasoning_trace" only: a stored solution chain with ordered steps, a final answer, and an optional observed outcome. Require at least two steps.',
     ),
+}).superRefine((value, ctx) => {
+  if (value.category === "procedure" && (!Array.isArray(value.procedureSteps) || value.procedureSteps.length < 2)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["procedureSteps"],
+      message: "procedure facts require at least two procedureSteps",
+    });
+  }
+
+  if (value.category === "reasoning_trace" && value.reasoningTrace == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["reasoningTrace"],
+      message: "reasoning_trace facts require reasoningTrace",
+    });
+  }
 });
 
 export const EntityMentionSchema = z.object({
@@ -446,4 +462,3 @@ export type ConsolidationItemParsed = z.infer<typeof ConsolidationItemSchema>;
 export type ConsolidationResultParsed = z.infer<
   typeof ConsolidationResultSchema
 >;
-

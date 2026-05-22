@@ -76,6 +76,15 @@ test("neutralizeUnsupportedGenderedPronouns handles object-pronoun her without p
   );
 });
 
+test("neutralizeUnsupportedGenderedPronouns preserves possessive her grammar", () => {
+  assert.equal(
+    neutralizeUnsupportedGenderedPronouns(
+      "Ask Priya about her team's deadline and her launch plan.",
+    ),
+    "Ask Priya about the person's team's deadline and the person's launch plan.",
+  );
+});
+
 test("finalizeAssistantOutput appends a grounded leverage frame for next-best-action prompts", () => {
   const output = finalizeAssistantOutput(
     {
@@ -124,6 +133,34 @@ test("finalizeAssistantOutput preserves provider-backed answers even when specia
   assert.match(output, /^Review PR #481 first/);
   assert.doesNotMatch(output, /Do \*\*Remnic PR #481 review\*\* now/);
   assert.match(output, /Leverage frame:/);
+});
+
+test("finalizeAssistantOutput preserves gendered pronouns supported by memory", () => {
+  const output = finalizeAssistantOutput(
+    {
+      prompt: "What should Alex prioritize?",
+      memoryView:
+        "Recent memory items:\n- Alex should prioritize predictable latency; his manager notes emphasize it over raw throughput.",
+    },
+    "Alex should prioritize predictable latency, as his manager notes emphasize it over raw throughput.",
+  );
+
+  assert.match(output, /his manager notes/);
+  assert.doesNotMatch(output, /the person's manager notes/);
+});
+
+test("finalizeAssistantOutput neutralizes gendered pronouns unsupported by memory", () => {
+  const output = finalizeAssistantOutput(
+    {
+      prompt: "What should Alex prioritize?",
+      memoryView:
+        "Recent memory items:\n- Alex should prioritize predictable latency over raw throughput.",
+    },
+    "Alex should prioritize predictable latency, as his manager notes emphasize it over raw throughput.",
+  );
+
+  assert.match(output, /the person's manager notes/);
+  assert.doesNotMatch(output, /his manager notes/);
 });
 
 test("finalizeAssistantOutput does not replace uncertain provider-backed answers with fixture fallbacks", () => {

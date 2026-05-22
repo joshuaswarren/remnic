@@ -921,7 +921,10 @@ async function fetchAndFilterComments(
       if (consumed >= remainingBudget) break;
       throwIfAborted(signal);
 
-      const comment = item as GitHubComment;
+      const comment = normalizeGitHubComment(item, kind);
+      if (!comment) {
+        continue;
+      }
 
       // Skip items strictly before the watermark. Items whose `updated_at`
       // equals the watermark second must pass through so the seenIds check
@@ -1003,6 +1006,31 @@ async function fetchAndFilterComments(
   }
 
   return { docs, skippedOtherAuthor, skippedEmpty, skippedTooLarge, consumed, latestWatermark, newSeenIds };
+}
+
+function normalizeGitHubComment(
+  item: unknown,
+  kind: string,
+): GitHubComment | null {
+  if (typeof item !== "object" || item === null) {
+    return null;
+  }
+  if (kind !== "discussion") {
+    return item as GitHubComment;
+  }
+  const discussion = item as GitHubDiscussionComment;
+  const updatedAt = discussion.updatedAt ?? discussion.createdAt;
+  if (typeof discussion.id !== "number" || typeof updatedAt !== "string") {
+    return null;
+  }
+  return {
+    id: discussion.id,
+    body: discussion.body,
+    user: discussion.author,
+    created_at: discussion.createdAt ?? updatedAt,
+    updated_at: updatedAt,
+    html_url: discussion.url,
+  };
 }
 
 /**

@@ -53,6 +53,13 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+function normalizeSearchLimit(limit: number, fallback = 10, max = 50): number {
+  if (typeof limit !== "number" || !Number.isFinite(limit)) return fallback;
+  const normalized = Math.floor(limit);
+  if (normalized <= 0) return 0;
+  return Math.min(max, normalized);
+}
+
 export class LcmArchive {
   constructor(private readonly db: Database.Database) {}
 
@@ -197,6 +204,8 @@ export class LcmArchive {
     try {
       const ftsQuery = sanitizeFtsQuery(query);
       if (!ftsQuery) return [];
+      const cappedLimit = normalizeSearchLimit(limit);
+      if (cappedLimit === 0) return [];
 
       let sql: string;
       const params: unknown[] = [ftsQuery];
@@ -212,7 +221,7 @@ export class LcmArchive {
           ORDER BY rank
           LIMIT ?
         `;
-        params.push(sessionId, limit);
+        params.push(sessionId, cappedLimit);
       } else {
         sql = `
           SELECT m.turn_index, m.role, snippet(lcm_messages_fts, 0, '>>>', '<<<', '...', 48) as snippet,
@@ -223,7 +232,7 @@ export class LcmArchive {
           ORDER BY rank
           LIMIT ?
         `;
-        params.push(limit);
+        params.push(cappedLimit);
       }
 
       const rows = this.db.prepare(sql).all(...params) as Array<{
@@ -256,6 +265,8 @@ export class LcmArchive {
     try {
       const ftsQuery = sanitizeFtsQuery(query);
       if (!ftsQuery) return [];
+      const cappedLimit = normalizeSearchLimit(limit);
+      if (cappedLimit === 0) return [];
 
       // Extract content words from query for excerpt windowing
       const queryWords = query
@@ -277,7 +288,7 @@ export class LcmArchive {
           ORDER BY rank
           LIMIT ?
         `;
-        params.push(sessionId, limit);
+        params.push(sessionId, cappedLimit);
       } else {
         sql = `
           SELECT m.id, m.turn_index, m.role, m.content, m.session_id, rank
@@ -287,7 +298,7 @@ export class LcmArchive {
           ORDER BY rank
           LIMIT ?
         `;
-        params.push(limit);
+        params.push(cappedLimit);
       }
 
       const rows = this.db.prepare(sql).all(...params) as Array<{
@@ -431,17 +442,26 @@ export class LcmArchive {
   pruneOldMessages(retentionDays: number): number {
     const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
 
-    // Delete from FTS first
-    this.db
-      .prepare(
-        "DELETE FROM lcm_messages_fts WHERE rowid IN (SELECT id FROM lcm_messages WHERE created_at < ?)",
-      )
-      .run(cutoff);
+    const txn = this.db.transaction(() => {
+      // Delete from FTS and child tables first. Some handles may not have
+      // foreign_keys enabled, so do not rely on ON DELETE CASCADE for parts.
+      this.db
+        .prepare(
+          "DELETE FROM lcm_messages_fts WHERE rowid IN (SELECT id FROM lcm_messages WHERE created_at < ?)",
+        )
+        .run(cutoff);
+      this.db
+        .prepare(
+          "DELETE FROM lcm_message_parts WHERE message_id IN (SELECT id FROM lcm_messages WHERE created_at < ?)",
+        )
+        .run(cutoff);
 
-    const result = this.db
-      .prepare("DELETE FROM lcm_messages WHERE created_at < ?")
-      .run(cutoff);
-    return result.changes;
+      const result = this.db
+        .prepare("DELETE FROM lcm_messages WHERE created_at < ?")
+        .run(cutoff);
+      return result.changes;
+    });
+    return txn();
   }
 }
 

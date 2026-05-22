@@ -22,6 +22,8 @@ export interface SyncOptions {
   extensions?: string[];
   /** Directories to exclude */
   excludeDirs?: string[];
+  /** Poll interval for watchForChanges. Default: 5000ms */
+  pollIntervalMs?: number;
   /** Whether to actually write changes (default: true) */
   dryRun?: boolean;
 }
@@ -146,35 +148,53 @@ export function syncChanges(options: SyncOptions): SyncResult {
  */
 export function watchForChanges(
   options: SyncOptions,
-  onChange: (changes: FileChange[]) => void,
+  onChange: (changes: FileChange[]) => void | Promise<void>,
 ): { stop: () => void } {
   const { sourceDir, extensions, excludeDirs } = options;
   const extSet = new Set(extensions ?? DEFAULT_EXTENSIONS);
   const excludeSet = new Set([...DEFAULT_EXCLUDE, ...(excludeDirs ?? [])]);
+  const pollIntervalMs =
+    typeof options.pollIntervalMs === "number" &&
+    Number.isFinite(options.pollIntervalMs) &&
+    options.pollIntervalMs > 0
+      ? options.pollIntervalMs
+      : 5000;
 
   let lastHashes: Record<string, string> = {};
+  let pollInFlight = false;
 
   // Initial scan
   const currentFiles = scanFiles(sourceDir, extSet, excludeSet);
   lastHashes = { ...currentFiles };
 
   // Poll interval (FSWatcher doesn't reliably work for all platforms)
-  const interval = setInterval(() => {
-    const nowFiles = scanFiles(sourceDir, extSet, excludeSet);
-    const changes = computeDiff(nowFiles, lastHashes, sourceDir);
+  const poll = async (): Promise<void> => {
+    if (pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const nowFiles = scanFiles(sourceDir, extSet, excludeSet);
+      const changes = computeDiff(nowFiles, lastHashes, sourceDir);
 
-    if (changes.length > 0) {
-      // Update hashes
-      for (const change of changes) {
-        if (change.type === "deleted") {
-          delete lastHashes[change.relativePath];
-        } else {
-          lastHashes[change.relativePath] = change.currentHash;
+      if (changes.length > 0) {
+        await onChange(changes);
+        // Update hashes
+        for (const change of changes) {
+          if (change.type === "deleted") {
+            delete lastHashes[change.relativePath];
+          } else {
+            lastHashes[change.relativePath] = change.currentHash;
+          }
         }
       }
-      onChange(changes);
+    } catch {
+      // Leave lastHashes unchanged so the next poll retries the same diff.
+    } finally {
+      pollInFlight = false;
     }
-  }, 5000);
+  };
+  const interval = setInterval(() => {
+    void poll();
+  }, pollIntervalMs);
 
   return {
     stop: () => clearInterval(interval),
@@ -190,11 +210,16 @@ function scanFiles(
 ): Record<string, string> {
   const result: Record<string, string> = {};
 
-  function walk(dir: string): void {
+  function walk(dir: string, isRoot = false): void {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
+    } catch (err) {
+      if (isRoot) {
+        throw new Error(
+          `sync scan failed for ${dir}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       return;
     }
 
@@ -219,7 +244,7 @@ function scanFiles(
     }
   }
 
-  walk(root);
+  walk(root, true);
   return result;
 }
 

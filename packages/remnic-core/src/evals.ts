@@ -295,6 +295,14 @@ function assertIsoTimestamp(value: unknown, field: string): string {
   return normalized;
 }
 
+function assertNonNegativeInteger(value: unknown, field: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${field} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
 function assertPathWithin(rootDir: string, targetPath: string, field: string): void {
   const resolvedRoot = path.resolve(rootDir);
   const resolvedTarget = path.resolve(targetPath);
@@ -374,25 +382,26 @@ export function validateEvalRunSummary(raw: unknown): EvalRunSummary {
     throw new Error("status must be one of running|completed|failed|partial");
   }
 
-  const totalCases = Number(raw.totalCases);
-  const passedCases = Number(raw.passedCases);
-  const failedCases = Number(raw.failedCases);
-  if (!Number.isFinite(totalCases) || totalCases < 0) throw new Error("totalCases must be a non-negative number");
-  if (!Number.isFinite(passedCases) || passedCases < 0) throw new Error("passedCases must be a non-negative number");
-  if (!Number.isFinite(failedCases) || failedCases < 0) throw new Error("failedCases must be a non-negative number");
+  const totalCases = assertNonNegativeInteger(raw.totalCases, "totalCases");
+  const passedCases = assertNonNegativeInteger(raw.passedCases, "passedCases");
+  const failedCases = assertNonNegativeInteger(raw.failedCases, "failedCases");
+  if (passedCases + failedCases > totalCases) {
+    throw new Error("passedCases + failedCases must be less than or equal to totalCases");
+  }
 
   const metrics = parseOptionalEvalRunMetrics(raw.metrics);
+  const completedAt =
+    typeof raw.completedAt === "string" && raw.completedAt.trim().length > 0
+      ? assertIsoTimestamp(raw.completedAt, "completedAt")
+      : undefined;
 
   return {
     schemaVersion: 1,
     runId: assertString(raw.runId, "runId"),
     benchmarkId: assertString(raw.benchmarkId, "benchmarkId"),
     status: status as EvalRunStatus,
-    startedAt: assertString(raw.startedAt, "startedAt"),
-    completedAt:
-      typeof raw.completedAt === "string" && raw.completedAt.trim().length > 0
-        ? raw.completedAt.trim()
-        : undefined,
+    startedAt: assertIsoTimestamp(raw.startedAt, "startedAt"),
+    completedAt,
     totalCases,
     passedCases,
     failedCases,
@@ -421,7 +430,7 @@ export function validateEvalBaselineSnapshot(raw: unknown): EvalBaselineSnapshot
       runId: assertString(item.runId, `benchmarks[${index}].runId`),
       completedAt:
         typeof item.completedAt === "string" && item.completedAt.trim().length > 0
-          ? item.completedAt.trim()
+          ? assertIsoTimestamp(item.completedAt, `benchmarks[${index}].completedAt`)
           : undefined,
       gitRef:
         typeof item.gitRef === "string" && item.gitRef.trim().length > 0
@@ -443,7 +452,7 @@ export function validateEvalBaselineSnapshot(raw: unknown): EvalBaselineSnapshot
   return {
     schemaVersion: 1,
     snapshotId: assertString(raw.snapshotId, "snapshotId"),
-    createdAt: assertString(raw.createdAt, "createdAt"),
+    createdAt: assertIsoTimestamp(raw.createdAt, "createdAt"),
     sourceRootDir: assertString(raw.sourceRootDir, "sourceRootDir"),
     benchmarkCount,
     benchmarks,

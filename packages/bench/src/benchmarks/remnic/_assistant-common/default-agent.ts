@@ -194,28 +194,112 @@ export function buildAssistantResponderPrompt(prompt: string): string {
   ].join("\n");
 }
 
-export function neutralizeUnsupportedGenderedPronouns(text: string): string {
-  return text
-    .replace(/\bHe\b/g, "The person")
-    .replace(/\bhe\b/g, "the person")
-    .replace(/\bShe\b/g, "The person")
-    .replace(/\bshe\b/g, "the person")
-    .replace(/\bHis\b/g, "The person's")
-    .replace(/\bhis\b/g, "the person's")
-    .replace(/\bHim\b/g, "The person")
-    .replace(/\bhim\b/g, "the person")
-    .replace(/\bHers\b/g, "The person's")
-    .replace(/\bhers\b/g, "the person's")
-    .replace(/\bHer\b/g, "The person")
-    .replace(/\bher\b/g, "the person");
+interface GenderedPronounSupport {
+  male?: boolean;
+  female?: boolean;
 }
+
+export function neutralizeUnsupportedGenderedPronouns(
+  text: string,
+  support: GenderedPronounSupport = {},
+): string {
+  let output = text;
+  if (!support.female) {
+    output = neutralizePossessiveHer(output)
+      .replace(/\bShe\b/g, "The person")
+      .replace(/\bshe\b/g, "the person")
+      .replace(/\bHers\b/g, "The person's")
+      .replace(/\bhers\b/g, "the person's")
+      .replace(/\bHer\b/g, "The person")
+      .replace(/\bher\b/g, "the person");
+  }
+  if (!support.male) {
+    output = output
+      .replace(/\bHe\b/g, "The person")
+      .replace(/\bhe\b/g, "the person")
+      .replace(/\bHis\b/g, "The person's")
+      .replace(/\bhis\b/g, "the person's")
+      .replace(/\bHim\b/g, "The person")
+      .replace(/\bhim\b/g, "the person");
+  }
+  return output;
+}
+
+function neutralizePossessiveHer(text: string): string {
+  return text.replace(/\b(Her|her)\s+([A-Za-z][A-Za-z0-9_-]*(?:'s|s')?)/g, (match, pronoun: string, nextWord: string) => {
+    if (isObjectHerFollower(nextWord)) {
+      return match;
+    }
+    const replacement = pronoun === "Her" ? "The person's" : "the person's";
+    return `${replacement} ${nextWord}`;
+  });
+}
+
+function isObjectHerFollower(word: string): boolean {
+  return objectHerFollowers.has(word.toLowerCase());
+}
+
+const objectHerFollowers = new Set([
+  "a",
+  "about",
+  "above",
+  "across",
+  "after",
+  "against",
+  "along",
+  "among",
+  "an",
+  "and",
+  "around",
+  "as",
+  "at",
+  "before",
+  "behind",
+  "below",
+  "beneath",
+  "beside",
+  "between",
+  "but",
+  "by",
+  "for",
+  "from",
+  "if",
+  "in",
+  "inside",
+  "into",
+  "near",
+  "of",
+  "off",
+  "on",
+  "onto",
+  "or",
+  "over",
+  "than",
+  "that",
+  "the",
+  "then",
+  "these",
+  "this",
+  "those",
+  "through",
+  "to",
+  "under",
+  "until",
+  "up",
+  "with",
+  "within",
+  "without",
+]);
 
 export function finalizeAssistantOutput(
   request: { prompt: string; memoryView: string },
   text: string,
   options: { allowSpecializedFallback?: boolean } = {},
 ): string {
-  const neutralized = neutralizeUnsupportedGenderedPronouns(text);
+  const neutralized = neutralizeUnsupportedGenderedPronouns(
+    text,
+    detectGenderedPronounSupport(request.memoryView),
+  );
   const allowSpecializedFallback = options.allowSpecializedFallback === true;
   const shouldUseFallback = shouldUseSpecializedAssistantFallback(neutralized);
   const baseText =
@@ -234,6 +318,13 @@ export function finalizeAssistantOutput(
     "",
     ...additions,
   ].join("\n");
+}
+
+function detectGenderedPronounSupport(memoryView: string): GenderedPronounSupport {
+  return {
+    male: /\b(?:he|him|his)\b/i.test(memoryView),
+    female: /\b(?:she|her|hers)\b/i.test(memoryView),
+  };
 }
 
 function shouldUseSpecializedAssistantFallback(text: string): boolean {

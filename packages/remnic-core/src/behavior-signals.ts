@@ -64,7 +64,7 @@ export function dedupeBehaviorSignalsByMemoryAndHash(
   const seen = new Set<string>();
   const out: BehaviorSignalEvent[] = [];
   for (const signal of signals) {
-    const key = `${signal.memoryId}:${signal.signalHash}`;
+    const key = `${signal.namespace}:${signal.memoryId}:${signal.signalHash}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(signal);

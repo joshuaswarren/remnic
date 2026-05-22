@@ -400,6 +400,30 @@ describe("importLosslessClaw — basic copy", () => {
       },
     ]);
   });
+
+  it("preserves unknown message part kinds instead of coercing them", () => {
+    const seed = TWO_CONVS();
+    seed.messageParts = [
+      {
+        message_id: "m-a-2",
+        ordinal: 0,
+        kind: "reasoning_delta",
+        payload: JSON.stringify({ text: "future source event" }),
+        created_at: "2026-04-01T00:00:01.500Z",
+      },
+    ];
+    const src = buildSourceDb(seed);
+    const dst = buildDestDb();
+    const result = importLosslessClaw({ sourceDb: src, destDb: dst });
+
+    assert.equal(result.messagePartsInserted, 1);
+
+    const part = dst
+      .prepare("SELECT kind, payload FROM lcm_message_parts")
+      .get() as { kind: string; payload: string };
+    assert.equal(part.kind, "reasoning_delta");
+    assert.deepEqual(JSON.parse(part.payload), { text: "future source event" });
+  });
 });
 
 describe("importLosslessClaw — idempotency", () => {
@@ -619,18 +643,28 @@ describe("importLosslessClaw — session filter", () => {
 describe("importLosslessClaw — multi-parent DAG collapse", () => {
   it("counts and logs collapsed multi-parent rows, picks lowest-ordinal parent", () => {
     const seed = TWO_CONVS();
-    seed.summaries.push({
-      summary_id: "sum-rollup",
-      kind: "condensed",
-      depth: 1,
-      content: "rollup",
-      token_count: 8,
-      message_ids: ["m-a-1", "m-a-2"],
-      parent_ids: [
-        { parent_summary_id: "p-late", ordinal: 5 },
-        { parent_summary_id: "sum-A", ordinal: 0 },
-      ],
-    });
+    seed.summaries.push(
+      {
+        summary_id: "p-late",
+        kind: "leaf",
+        depth: 0,
+        content: "late parent",
+        token_count: 5,
+        message_ids: ["m-a-1", "m-a-2"],
+      },
+      {
+        summary_id: "sum-rollup",
+        kind: "condensed",
+        depth: 1,
+        content: "rollup",
+        token_count: 8,
+        message_ids: ["m-a-1", "m-a-2"],
+        parent_ids: [
+          { parent_summary_id: "p-late", ordinal: 5 },
+          { parent_summary_id: "sum-A", ordinal: 0 },
+        ],
+      },
+    );
     const src = buildSourceDb(seed);
     const dst = buildDestDb();
     const logs: string[] = [];
@@ -650,6 +684,80 @@ describe("importLosslessClaw — multi-parent DAG collapse", () => {
       .prepare("SELECT parent_id FROM lcm_summary_nodes WHERE id = 'sum-rollup'")
       .get() as { parent_id: string | null };
     assert.equal(row.parent_id, "sum-A");
+  });
+
+  it("drops parent links to summaries that are skipped during import", () => {
+    const seed = TWO_CONVS();
+    seed.summaries.push(
+      {
+        summary_id: "sum-orphan-parent",
+        kind: "leaf",
+        depth: 0,
+        content: "orphan parent",
+        token_count: 4,
+        message_ids: [],
+      },
+      {
+        summary_id: "sum-child",
+        kind: "condensed",
+        depth: 1,
+        content: "child with skipped parent",
+        token_count: 6,
+        message_ids: ["m-a-1", "m-a-2"],
+        parent_ids: [{ parent_summary_id: "sum-orphan-parent", ordinal: 0 }],
+      },
+    );
+    const src = buildSourceDb(seed);
+    const dst = buildDestDb();
+    const logs: string[] = [];
+    const result = importLosslessClaw({
+      sourceDb: src,
+      destDb: dst,
+      onLog: (line) => logs.push(line),
+    });
+
+    assert.equal(result.summariesSkippedNoMessages, 1);
+
+    const child = dst
+      .prepare("SELECT parent_id FROM lcm_summary_nodes WHERE id = 'sum-child'")
+      .get() as { parent_id: string | null };
+    assert.equal(child.parent_id, null);
+    assert.ok(
+      logs.some((line) => line.includes("sum-child") && line.includes("dropped 1 parent")),
+      "expected dropped parent link log",
+    );
+  });
+
+  it("drops parent links to summaries from a different resolved session", () => {
+    const seed = TWO_CONVS();
+    seed.summaries.push({
+      summary_id: "sum-cross-session-child",
+      kind: "condensed",
+      depth: 1,
+      content: "child in B with parent from A",
+      token_count: 6,
+      message_ids: ["m-b-1"],
+      parent_ids: [{ parent_summary_id: "sum-A", ordinal: 0 }],
+    });
+    const src = buildSourceDb(seed);
+    const dst = buildDestDb();
+    const logs: string[] = [];
+
+    importLosslessClaw({
+      sourceDb: src,
+      destDb: dst,
+      onLog: (line) => logs.push(line),
+    });
+
+    const child = dst
+      .prepare("SELECT session_id, parent_id FROM lcm_summary_nodes WHERE id = 'sum-cross-session-child'")
+      .get() as { session_id: string; parent_id: string | null };
+    assert.equal(child.session_id, "conv-B");
+    assert.equal(child.parent_id, null);
+    assert.ok(
+      logs.some((line) => line.includes("sum-cross-session-child") && line.includes("dropped 1 parent")),
+      "expected dropped cross-session parent link log",
+    );
   });
 });
 
@@ -684,7 +792,8 @@ describe("importLosslessClaw — compaction-event token aggregation", () => {
     const result = importLosslessClaw({ sourceDb: src, destDb: dst });
     assert.equal(result.messagesInserted, 0);
     assert.equal(result.summariesInserted, 1);
-    assert.equal(result.compactionEventsInserted, 1);
+    assert.equal(result.compactionEventsInserted, 2);
+    assert.deepEqual(result.sessionsTouched, ["conv-B", "sess-A"]);
 
     const event = dst
       .prepare(
@@ -697,6 +806,82 @@ describe("importLosslessClaw — compaction-event token aggregation", () => {
       5,
       "summary-only retry must read tokens from dest, not from this run's writes",
     );
+  });
+
+  it("recreates a missing import boundary when messages and summaries already exist", () => {
+    const seed = TWO_CONVS();
+    const src = buildSourceDb(seed);
+    const dst = buildDestDb();
+
+    importLosslessClaw({ sourceDb: src, destDb: dst });
+    dst.exec("DELETE FROM lcm_compaction_events;");
+
+    const result = importLosslessClaw({ sourceDb: src, destDb: dst });
+    assert.equal(result.messagesInserted, 0);
+    assert.equal(result.summariesInserted, 0);
+    assert.equal(result.compactionEventsInserted, 2);
+    assert.deepEqual(result.sessionsTouched, ["conv-B", "sess-A"]);
+
+    const event = dst
+      .prepare(
+        "SELECT session_id, msg_before, tokens_before, tokens_after FROM lcm_compaction_events WHERE session_id = 'sess-A'",
+      )
+      .get() as {
+        session_id: string;
+        msg_before: number;
+        tokens_before: number;
+        tokens_after: number;
+      };
+    assert.equal(event.session_id, "sess-A");
+    assert.equal(event.msg_before, 2);
+    assert.equal(event.tokens_before, 5);
+    assert.equal(event.tokens_after, 5);
+  });
+
+  it("recreates a missing import boundary for a message-only session", () => {
+    const seed = {
+      conversations: [
+        { conversation_id: "conv-message-only", session_id: "sess-message-only" },
+      ],
+      messages: [
+        {
+          message_id: "msg-only-1",
+          conversation_id: "conv-message-only",
+          seq: 0,
+          role: "user",
+          content: "message only",
+          token_count: 4,
+          created_at: "2026-04-01T00:00:00.000Z",
+        },
+      ],
+    };
+    const src = buildSourceDb(seed);
+    const dst = buildDestDb();
+
+    importLosslessClaw({ sourceDb: src, destDb: dst });
+    dst.exec("DELETE FROM lcm_compaction_events;");
+
+    const result = importLosslessClaw({ sourceDb: src, destDb: dst });
+    assert.equal(result.messagesInserted, 0);
+    assert.equal(result.messagesSkipped, 1);
+    assert.equal(result.summariesInserted, 0);
+    assert.equal(result.compactionEventsInserted, 1);
+    assert.deepEqual(result.sessionsTouched, ["sess-message-only"]);
+
+    const event = dst
+      .prepare(
+        "SELECT session_id, msg_before, tokens_before, tokens_after FROM lcm_compaction_events WHERE session_id = 'sess-message-only'",
+      )
+      .get() as {
+        session_id: string;
+        msg_before: number;
+        tokens_before: number;
+        tokens_after: number;
+      };
+    assert.equal(event.session_id, "sess-message-only");
+    assert.equal(event.msg_before, 1);
+    assert.equal(event.tokens_before, 4);
+    assert.equal(event.tokens_after, 4);
   });
 });
 

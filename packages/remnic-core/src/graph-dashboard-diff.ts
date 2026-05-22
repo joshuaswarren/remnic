@@ -7,6 +7,19 @@ export interface GraphPatch {
   removedNodes: string[];
   addedEdges: GraphEdge[];
   removedEdges: GraphEdge[];
+  updatedEdges: Array<{ previous: GraphEdge; next: GraphEdge }>;
+}
+
+function compareGraphEdges(a: GraphEdge, b: GraphEdge): number {
+  return a.type.localeCompare(b.type) || a.from.localeCompare(b.from) || a.to.localeCompare(b.to);
+}
+
+function edgeFieldsChanged(previous: GraphEdge, next: GraphEdge): boolean {
+  return (
+    previous.weight !== next.weight ||
+    (previous.confidence ?? 1) !== (next.confidence ?? 1) ||
+    (previous.lastReinforcedAt ?? null) !== (next.lastReinforcedAt ?? null)
+  );
 }
 
 export function diffGraphSnapshots(previous: GraphSnapshot, next: GraphSnapshot): GraphPatch {
@@ -20,16 +33,25 @@ export function diffGraphSnapshots(previous: GraphSnapshot, next: GraphSnapshot)
   const addedEdges = [...nextEdges.entries()]
     .filter(([key]) => !prevEdges.has(key))
     .map(([, edge]) => edge)
-    .sort((a, b) => a.type.localeCompare(b.type) || a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+    .sort(compareGraphEdges);
   const removedEdges = [...prevEdges.entries()]
     .filter(([key]) => !nextEdges.has(key))
     .map(([, edge]) => edge)
-    .sort((a, b) => a.type.localeCompare(b.type) || a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+    .sort(compareGraphEdges);
+  const updatedEdges = [...nextEdges.entries()]
+    .flatMap(([key, nextEdge]) => {
+      const previousEdge = prevEdges.get(key);
+      return previousEdge && edgeFieldsChanged(previousEdge, nextEdge)
+        ? [{ previous: previousEdge, next: nextEdge }]
+        : [];
+    })
+    .sort((a, b) => compareGraphEdges(a.next, b.next));
 
   return {
     addedNodes,
     removedNodes,
     addedEdges,
     removedEdges,
+    updatedEdges,
   };
 }

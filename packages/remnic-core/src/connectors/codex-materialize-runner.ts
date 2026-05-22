@@ -81,6 +81,7 @@ export async function runCodexMaterialize(
 
   const namespace = resolveNamespace(options.namespace, cfg);
   const memoryDir = options.memoryDir ?? cfg.memoryDir;
+  const codexHome = options.codexHome ?? cfg.codex?.codexHome ?? undefined;
   if (!memoryDir) {
     log.warn(`[codex-materialize] skipped — no memoryDir available`);
     return null;
@@ -90,10 +91,10 @@ export async function runCodexMaterialize(
   if (options.memories) {
     memories = options.memories;
   } else {
-    if (!hasCodexMaterializeSentinel(options.codexHome)) {
+    if (!hasCodexMaterializeSentinel(codexHome)) {
       return materializeForNamespace(namespace, {
         memories: [],
-        codexHome: options.codexHome,
+        codexHome,
         maxSummaryTokens: cfg.codexMaterializeMaxSummaryTokens,
         rolloutRetentionDays: cfg.codexMaterializeRolloutRetentionDays,
         rolloutSummaries: options.rolloutSummaries,
@@ -114,7 +115,7 @@ export async function runCodexMaterialize(
   // ones for a feature that writes to `~/.codex/memories`.
   const result = materializeForNamespace(namespace, {
     memories,
-    codexHome: options.codexHome,
+    codexHome,
     maxSummaryTokens: cfg.codexMaterializeMaxSummaryTokens,
     rolloutRetentionDays: cfg.codexMaterializeRolloutRetentionDays,
     rolloutSummaries: options.rolloutSummaries,

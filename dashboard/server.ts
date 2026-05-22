@@ -1,4 +1,5 @@
 import { GraphDashboardServer } from "../src/dashboard-runtime.js";
+import { parseDashboardPort } from "./server-args.js";
 
 function readArg(flag: string, fallback?: string): string | undefined {
   const idx = process.argv.findIndex((arg) => arg === flag);
@@ -12,19 +13,18 @@ async function main(): Promise<void> {
   const memoryDir = readArg("--memory-dir", process.cwd());
   const host = readArg("--host", "127.0.0.1");
   const portRaw = readArg("--port", "4319");
-  const port = Number.parseInt(String(portRaw), 10);
+  const authToken = readArg("--token");
+  const port = parseDashboardPort(portRaw);
 
   if (!memoryDir) {
     throw new Error("missing --memory-dir");
-  }
-  if (!Number.isFinite(port) || port < 0 || port > 65535) {
-    throw new Error(`invalid --port: ${portRaw}`);
   }
 
   const server = new GraphDashboardServer({
     memoryDir,
     host,
     port,
+    authToken,
   });
   const status = await server.start();
   // Keep this log concise; operators can use CLI status for machine-readable output.
@@ -44,4 +44,3 @@ void main().catch((err) => {
   console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 });
-

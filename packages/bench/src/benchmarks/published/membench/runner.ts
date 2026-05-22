@@ -121,8 +121,8 @@ export async function runMemBenchBenchmark(
         responder: options.system.responder,
         answerMode: "strict",
       });
-      const predictedChoice = testCase.choices && options.system.responder
-        ? extractChoice(answered.finalAnswer)
+      const predictedChoice = testCase.choices
+        ? extractChoice(answered.finalAnswer, testCase.choices)
         : undefined;
       const actualAnswer = predictedChoice && testCase.choices
         ? testCase.choices[predictedChoice]
@@ -1117,30 +1117,52 @@ function isRecommendationQuestion(question: string): boolean {
   return /\b(?:recommend|recommendation|suggest|suggestion|prefer|preference|favorite|choice|option|should i|would i|do i usually)\b/i.test(question);
 }
 
-function extractChoice(answer: string): MemBenchChoice | undefined {
-  const trimmed = answer.trim().toUpperCase();
-  if (/^[ABCD]$/.test(trimmed)) {
-    return trimmed as MemBenchChoice;
+function extractChoice(
+  answer: string,
+  choices?: Record<MemBenchChoice, string>,
+): MemBenchChoice | undefined {
+  const trimmed = answer.trim();
+  const direct = normalizeChoice(trimmed);
+  if (direct) {
+    return direct;
   }
 
-  const jsonChoice = trimmed.match(/"CHOICE"\s*:\s*"([ABCD])"/);
+  const jsonChoice = trimmed.match(/"choice"\s*:\s*"([ABCD])"/i);
   if (jsonChoice?.[1]) {
-    return jsonChoice[1] as MemBenchChoice;
+    return jsonChoice[1].toUpperCase() as MemBenchChoice;
+  }
+
+  const leadingMarker = trimmed.match(
+    /^\s*(?:(?:OPTION|CHOICE)\s*)?\(?([ABCD])\)?(?:[.)]|:)\s*/i,
+  );
+  if (leadingMarker?.[1]) {
+    return leadingMarker[1].toUpperCase() as MemBenchChoice;
   }
 
   const answerMarkers = [
     ...trimmed.matchAll(
-      /(?:FINAL\s+ANSWER|ANSWER|CHOICE|OPTION)\s*(?:IS|:|-)?\s*([ABCD])\b/g,
+      /(?:FINAL\s+ANSWER|ANSWER|CHOICE|OPTION)\s*(?:IS|:|-)?\s*\(?([ABCD])\)?\b/gi,
     ),
-  ].map((match) => match[1] as MemBenchChoice);
+  ].map((match) => match[1].toUpperCase() as MemBenchChoice);
   if (answerMarkers.length > 0) {
     return answerMarkers.at(-1);
   }
 
-  const optionTokens = [...trimmed.matchAll(/\b([ABCD])\b/g)].map(
-    (match) => match[1] as MemBenchChoice,
-  );
-  return optionTokens.at(-1);
+  if (choices) {
+    const normalizedAnswer = normalizeComparableForChoiceText(trimmed);
+    const matchingChoices = (Object.entries(choices) as Array<[MemBenchChoice, string]>)
+      .filter(([, choiceText]) => {
+        const normalizedChoice = normalizeComparableForChoiceText(choiceText);
+        if (!normalizedChoice) return false;
+        return ` ${normalizedAnswer} `.includes(` ${normalizedChoice} `);
+      })
+      .map(([choice]) => choice);
+    if (matchingChoices.length === 1) {
+      return matchingChoices[0];
+    }
+  }
+
+  return undefined;
 }
 
 async function scoreRecallAt10(
@@ -1299,6 +1321,13 @@ function normalizeChoice(value: unknown): MemBenchChoice | undefined {
 
 function normalizeComparable(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function normalizeComparableForChoiceText(value: string): string {
+  return normalizeComparable(value)
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function memBenchExactAnswerMatch(predicted: string, expected: string): number {

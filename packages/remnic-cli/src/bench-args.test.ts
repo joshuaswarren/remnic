@@ -46,6 +46,22 @@ test("parseBenchArgs treats action help flags as help requests", () => {
   assert.equal(parseBenchArgs(["datasets", "--help"]).action, "help");
 });
 
+test("parseBenchArgs rejects empty legacy benchmark equals paths", () => {
+  assert.throws(
+    () => parseBenchArgs(["check", "--baseline="]),
+    /--baseline requires a value/,
+  );
+  assert.throws(
+    () => parseBenchArgs(["report", "--report=   "]),
+    /--report requires a value/,
+  );
+});
+
+test("parseBenchArgs accepts non-empty legacy benchmark equals paths", () => {
+  assert.equal(parseBenchArgs(["check", "--baseline=/tmp/baseline.json"]).action, "check");
+  assert.equal(parseBenchArgs(["report", "--report=/tmp/report.json"]).action, "report");
+});
+
 test("retry-failed filters matrix work at profile granularity", () => {
   const workItems = createBenchWorkItems(["locomo"], ["baseline", "real"]);
   const filtered = filterBenchWorkItemsForPreviousStatus(

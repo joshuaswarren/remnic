@@ -233,15 +233,21 @@ function extractPluginManifestContractsBlock(text) {
 }
 
 async function collectFiles(root) {
-  const preferredFiles = [];
-  for (const relativePath of PREFERRED_SDK_SURFACE_FILES) {
-    const fullPath = path.join(root, relativePath);
-    const info = await stat(fullPath).catch(() => null);
-    if (info?.isFile() && info.size <= 500_000) preferredFiles.push(fullPath);
-  }
-  if (preferredFiles.length > 0) return preferredFiles;
-
   const files = [];
+  const seen = new Set();
+  const addFile = async (fullPath) => {
+    if (seen.has(fullPath)) return;
+    const info = await stat(fullPath).catch(() => null);
+    if (info?.isFile() && info.size <= 500_000) {
+      seen.add(fullPath);
+      files.push(fullPath);
+    }
+  };
+
+  for (const relativePath of PREFERRED_SDK_SURFACE_FILES) {
+    await addFile(path.join(root, relativePath));
+  }
+
   const stack = [root];
   while (stack.length > 0) {
     const current = stack.pop();
@@ -258,8 +264,7 @@ async function collectFiles(root) {
       if (relativePath !== "plugin-sdk.d.ts" && !relativePath.includes("plugin-sdk/")) {
         continue;
       }
-      const info = await stat(fullPath).catch(() => null);
-      if (info && info.size <= 500_000) files.push(fullPath);
+      await addFile(fullPath);
     }
   }
   return files;

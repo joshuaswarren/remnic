@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import * as path from "node:path";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 
 import {
   emitGraphEvent,
@@ -138,6 +138,25 @@ test("emitGraphEvent reaches subscribeGraphEvents listener", () => {
     assert.equal((received[0]!.payload as Record<string, unknown>).source, "a.md");
     assert.equal(received[0]!.memoryDir, dir);
     assert.ok(!Number.isNaN(Date.parse(received[0]!.ts)));
+  } finally {
+    destroyGraphEventBus(dir);
+  }
+});
+
+test("emitGraphEvent continues after a subscriber throws", () => {
+  const dir = "/tmp/engram-test-emit-throw-" + Date.now();
+  try {
+    const received: GraphEvent[] = [];
+    subscribeGraphEvents(dir, () => {
+      throw new Error("synthetic subscriber failure");
+    });
+    const unsub = subscribeGraphEvents(dir, (e) => received.push(e));
+
+    emitGraphEvent(dir, "edge-added", { source: "a.md", target: "b.md", kind: "entity" });
+    unsub();
+
+    assert.equal(received.length, 1);
+    assert.equal(received[0]!.type, "edge-added");
   } finally {
     destroyGraphEventBus(dir);
   }
@@ -729,6 +748,16 @@ test("edge-removed: node with other remaining edges is preserved", () => {
   assert.equal(graphData.nodes.length, 2);
   const ids = graphData.nodes.map((n) => n.id).sort();
   assert.deepEqual(ids, ["facts/a.md", "facts/c.md"]);
+});
+
+test("admin graph simulation handle exposes reheat for live graph events", async () => {
+  const source = await readFile(
+    path.join(process.cwd(), "admin-console", "public", "app.js"),
+    "utf8",
+  );
+
+  assert.match(source, /reheat\(drawFn\)/);
+  assert.match(source, /if \(graphSim\) graphSim\.reheat\(\);/);
 });
 
 // ---------------------------------------------------------------------------

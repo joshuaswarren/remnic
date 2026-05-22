@@ -211,6 +211,7 @@ function manifestArtifactHashIdentity(manifest: Record<string, unknown>): unknow
       ...(run?.mode ? { mode: run.mode } : {}),
       selectedBenchmarks: run?.selectedBenchmarks,
       runtimeProfiles: run?.runtimeProfiles,
+      selectedWorkItems: run?.selectedWorkItems,
       ...(run && Object.prototype.hasOwnProperty.call(run, "limit")
         ? { limit: run.limit }
         : {}),
@@ -271,6 +272,10 @@ async function writeManifest(
       mode: "full",
       runtimeProfiles: ["real"],
       selectedBenchmarks: benchmarks,
+      selectedWorkItems: benchmarks.map((benchmark) => ({
+        benchmark,
+        runtimeProfile: "real",
+      })),
       ...(limit !== undefined ? { limit } : {}),
     },
     datasets: benchmarks.map((benchmark) => ({

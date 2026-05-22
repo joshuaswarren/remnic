@@ -8,12 +8,14 @@ import assert from "node:assert/strict";
 
 import {
   CONSOLIDATION_OPERATORS,
+  findSimilarClusters,
   isConsolidationOperator,
   isSemanticConsolidationLlmOperator,
   isValidDerivedFromEntry,
   type ConsolidationOperator,
   type SemanticConsolidationLlmOperator,
 } from "./semantic-consolidation.js";
+import type { MemoryCategory, MemoryFile } from "./types.js";
 // The standalone module is the source of truth; semantic-consolidation.ts
 // re-exports it.  This test import proves both surfaces work.
 import {
@@ -180,3 +182,46 @@ test("SemanticConsolidationLlmOperator type literally excludes pattern-reinforce
   const update: SemanticConsolidationLlmOperator = "update";
   assert.equal([split, merge, update].length, 3);
 });
+
+test("findSimilarClusters never exceeds maxPerRun after prior clusters consume budget", () => {
+  const memories = [
+    consolidationMemory("a-1", "fact", "atlas cache latency shared alpha"),
+    consolidationMemory("a-2", "fact", "atlas cache latency shared beta"),
+    consolidationMemory("a-3", "fact", "atlas cache latency shared gamma"),
+    consolidationMemory("a-4", "fact", "atlas cache latency shared delta"),
+    consolidationMemory("b-1", "preference", "aurora rollout dependency shared alpha"),
+    consolidationMemory("b-2", "preference", "aurora rollout dependency shared beta"),
+  ];
+
+  const clusters = findSimilarClusters(memories, {
+    threshold: 0.1,
+    minClusterSize: 2,
+    excludeCategories: [],
+    maxPerRun: 5,
+  });
+
+  const totalMemories = clusters.reduce((sum, cluster) => sum + cluster.memories.length, 0);
+  assert.equal(totalMemories, 4);
+  assert.deepEqual(
+    clusters.map((cluster) => cluster.memories.map((memory) => memory.frontmatter.id)),
+    [["a-1", "a-2", "a-3", "a-4"]],
+  );
+});
+
+function consolidationMemory(id: string, category: MemoryCategory, content: string): MemoryFile {
+  return {
+    path: `${category}/${id}.md`,
+    content,
+    frontmatter: {
+      id,
+      category,
+      created: "2026-05-21T00:00:00.000Z",
+      updated: "2026-05-21T00:00:00.000Z",
+      source: "test",
+      confidence: 1,
+      confidenceTier: "explicit",
+      tags: [],
+      status: "active",
+    },
+  };
+}

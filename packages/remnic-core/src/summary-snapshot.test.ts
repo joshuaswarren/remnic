@@ -263,6 +263,83 @@ test("saveSummary encodes slash-containing session keys before writing markdown"
   await assert.rejects(readFile(legacyPath, "utf-8"), /ENOENT/);
 });
 
+test("generateSummary falls back when local LLM returns schema-invalid bullets", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-summary-local-schema-fallback-"),
+  );
+  const summarizer = new HourlySummarizer({
+    ...makeConfig(memoryDir),
+    localLlmEnabled: true,
+    localLlmFallback: true,
+  });
+  await summarizer.initialize();
+
+  (summarizer as any).localLlm.chatCompletion = async () => ({
+    content: JSON.stringify({ bullets: [] }),
+  });
+  let fallbackCalls = 0;
+  (summarizer as any).fallbackLlm.parseWithSchema = async () => {
+    fallbackCalls += 1;
+    return { bullets: ["gateway fallback bullet"] };
+  };
+
+  const summary = await summarizer.generateSummary(
+    "session-local-invalid",
+    new Date("2026-03-26T08:00:00.000Z"),
+    [
+      {
+        role: "user",
+        content: "Please summarize this work.",
+        timestamp: "2026-03-26T08:00:00.000Z",
+        sessionKey: "session-local-invalid",
+        turnId: "turn-1",
+      },
+    ],
+  );
+
+  assert.deepEqual(summary?.bullets, ["gateway fallback bullet"]);
+  assert.equal(fallbackCalls, 1);
+});
+
+test("saveSummary updates an early hour without dropping later sections", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-summary-preserve-later-hours-"),
+  );
+  const summarizer = new HourlySummarizer(makeConfig(memoryDir));
+  await summarizer.initialize();
+
+  const sessionKey = "session-preserve-later-hours";
+  const dateStr = "2026-03-26";
+  const summary = (hour: string, bullet: string) => ({
+    hour: `${dateStr}T${hour}:00:00.000Z`,
+    sessionKey,
+    bullets: [bullet],
+    turnCount: 1,
+    generatedAt: "2026-03-26T08:15:00.000Z",
+  });
+
+  await summarizer.saveSummary(summary("08", "original first hour"));
+  await summarizer.saveSummary(summary("09", "second hour"));
+  await summarizer.saveSummary(summary("10", "third hour"));
+  await summarizer.saveSummary(summary("08", "updated first hour"));
+
+  const markdownPath = path.join(
+    memoryDir,
+    "summaries",
+    "hourly",
+    encodeStoragePathSegment(sessionKey, "session"),
+    `${dateStr}.md`,
+  );
+  const markdown = await readFile(markdownPath, "utf-8");
+
+  assert.match(markdown, /updated first hour/);
+  assert.doesNotMatch(markdown, /original first hour/);
+  assert.match(markdown, /second hour/);
+  assert.match(markdown, /third hour/);
+  assert.equal(markdown.indexOf("## 08:00") < markdown.indexOf("## 09:00"), true);
+  assert.equal(markdown.indexOf("## 09:00") < markdown.indexOf("## 10:00"), true);
+});
+
 test("readRecent backfills a summary snapshot from the full parsed markdown history", async () => {
   const memoryDir = await mkdtemp(
     path.join(os.tmpdir(), "engram-summary-backfill-"),

@@ -105,6 +105,28 @@ test("TMT integration: enabled → all node levels written for a single day batc
   } finally { await cleanup(dir); }
 });
 
+test("TMT integration: active memory shrink rebuilds stale hour day and week nodes", async () => {
+  const dir = await makeTmp();
+  try {
+    const builder = new TmtBuilder(dir, enabledCfg);
+    const date = "2026-02-22";
+    const initialEntries = makeEntries(5, date, 10);
+    await builder.maybeRebuildNodes(initialEntries, mockSummarize);
+
+    const shrunkEntries = makeEntries(3, date, 10);
+    await builder.maybeRebuildNodes(shrunkEntries, mockSummarize);
+
+    const { isoWeekKey } = await import("../src/tmt.js");
+    const week = isoWeekKey(new Date(date));
+    const hourNode = await (await import("node:fs/promises")).readFile(hourNodePath(dir, date, "10"), "utf8");
+    const dayNode = await (await import("node:fs/promises")).readFile(dayNodePath(dir, date), "utf8");
+    const weekNode = await (await import("node:fs/promises")).readFile(weekNodePath(dir, week), "utf8");
+    assert.match(hourNode, /memoryCount: 3/);
+    assert.match(dayNode, /memoryCount: 3/);
+    assert.match(weekNode, /memoryCount: 3/);
+  } finally { await cleanup(dir); }
+});
+
 test("TMT integration: enabled → getMostRelevantNode returns day node after build", async () => {
   const dir = await makeTmp();
   try {

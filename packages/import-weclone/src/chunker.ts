@@ -43,9 +43,21 @@ export function chunkThreads(
   const maxTurns = options?.maxTurnsPerChunk ?? DEFAULT_MAX_TURNS;
   const overlap = options?.overlapTurns ?? DEFAULT_OVERLAP;
 
+  if (options?.maxTurnsPerChunk !== undefined && (!Number.isFinite(maxTurns) || !Number.isInteger(maxTurns))) {
+    throw new Error(
+      `maxTurnsPerChunk must be a finite integer, received ${maxTurns}`,
+    );
+  }
+
   if (maxTurns <= 0) {
     throw new Error(
       `maxTurnsPerChunk must be positive, received ${maxTurns}`,
+    );
+  }
+
+  if (options?.overlapTurns !== undefined && (!Number.isFinite(overlap) || !Number.isInteger(overlap))) {
+    throw new Error(
+      `overlapTurns must be a finite integer, received ${overlap}`,
     );
   }
 

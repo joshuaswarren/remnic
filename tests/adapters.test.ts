@@ -40,12 +40,14 @@ test("ClaudeCodeAdapter matches on exact clientInfo.name 'claude-code'", () => {
 test("ClaudeCodeAdapter matches on User-Agent header", () => {
   const adapter = new ClaudeCodeAdapter();
   assert.equal(adapter.matches({ headers: { "user-agent": "claude-code/2.1.92" } }), true);
+  assert.equal(adapter.matches({ headers: { "User-Agent": "claude-code/2.1.92" } }), true);
   assert.equal(adapter.matches({ headers: { "user-agent": "Mozilla/5.0" } }), false);
 });
 
 test("ClaudeCodeAdapter matches on X-Engram-Client-Id header", () => {
   const adapter = new ClaudeCodeAdapter();
   assert.equal(adapter.matches({ headers: { "x-engram-client-id": "claude-code" } }), true);
+  assert.equal(adapter.matches({ headers: { "X-Engram-Client-Id": "claude-code" } }), true);
 });
 
 test("ClaudeCodeAdapter uses Mcp-Session-Id and X-Engram-Namespace", () => {
@@ -61,6 +63,19 @@ test("ClaudeCodeAdapter uses Mcp-Session-Id and X-Engram-Namespace", () => {
   assert.equal(identity.namespace, "my-project");
   assert.equal(identity.principal, "claude-code");
   assert.equal(identity.sessionKey, "mcp-sess-123");
+});
+
+test("ClaudeCodeAdapter resolves mixed-case session and namespace headers", () => {
+  const adapter = new ClaudeCodeAdapter();
+  const identity = adapter.resolveIdentity({
+    headers: {
+      "Mcp-Session-Id": "mcp-sess-mixed",
+      "X-Engram-Namespace": "mixed-project",
+    },
+    clientInfo: { name: "claude-code" },
+  });
+  assert.equal(identity.namespace, "mixed-project");
+  assert.equal(identity.sessionKey, "mcp-sess-mixed");
 });
 
 test("ClaudeCodeAdapter defaults namespace and principal without custom headers", () => {
@@ -84,9 +99,10 @@ test("CodexAdapter matches on exact clientInfo.name 'codex-mcp-client'", () => {
 test("CodexAdapter matches on X-Engram-Client-Id header", () => {
   const adapter = new CodexAdapter();
   assert.equal(adapter.matches({ headers: { "x-engram-client-id": "codex" } }), true);
+  assert.equal(adapter.matches({ headers: { "X-Engram-Client-Id": "codex" } }), true);
 });
 
-test("CodexAdapter uses X-Engram-Namespace and X-Engram-Principal", () => {
+test("CodexAdapter uses X-Engram-Namespace and ignores X-Engram-Principal", () => {
   const adapter = new CodexAdapter();
   const identity = adapter.resolveIdentity({
     headers: { "x-engram-namespace": "my-app", "x-engram-principal": "pm-agent" },
@@ -94,7 +110,22 @@ test("CodexAdapter uses X-Engram-Namespace and X-Engram-Principal", () => {
   });
   assert.equal(identity.adapterId, "codex");
   assert.equal(identity.namespace, "my-app");
-  assert.equal(identity.principal, "pm-agent");
+  assert.equal(identity.principal, "codex");
+});
+
+test("CodexAdapter resolves mixed-case namespace and session headers", () => {
+  const adapter = new CodexAdapter();
+  const identity = adapter.resolveIdentity({
+    headers: {
+      "Mcp-Session-Id": "codex-mcp-session",
+      "X-Engram-Namespace": "codex-project",
+      "X-Engram-Principal": "ignored-principal",
+    },
+    clientInfo: { name: "codex-mcp-client" },
+  });
+  assert.equal(identity.namespace, "codex-project");
+  assert.equal(identity.principal, "codex");
+  assert.equal(identity.sessionKey, "codex-mcp-session");
 });
 
 test("CodexAdapter defaults without custom headers", () => {
@@ -120,7 +151,7 @@ test("ReplitAdapter matches on clientInfo containing 'replit'", () => {
   assert.equal(adapter.matches({ headers: {}, clientInfo: { name: "replit-agent" } }), true);
 });
 
-test("ReplitAdapter uses X-Engram-Namespace and X-Engram-Principal", () => {
+test("ReplitAdapter uses X-Engram-Namespace and ignores X-Engram-Principal", () => {
   const adapter = new ReplitAdapter();
   const identity = adapter.resolveIdentity({
     headers: {
@@ -131,7 +162,7 @@ test("ReplitAdapter uses X-Engram-Namespace and X-Engram-Principal", () => {
   });
   assert.equal(identity.adapterId, "replit");
   assert.equal(identity.namespace, "my-repl");
-  assert.equal(identity.principal, "replit-user-123");
+  assert.equal(identity.principal, "replit-agent");
 });
 
 test("ReplitAdapter defaults without custom headers", () => {
@@ -184,15 +215,15 @@ test("HermesAdapter defaults without custom headers", () => {
   assert.equal(identity.principal, "hermes-agent");
 });
 
-// -- Cross-cutting: X-Engram-Principal overrides all adapters --
+// -- Cross-cutting: X-Engram-Principal is gated by access-http --
 
-test("X-Engram-Principal header overrides adapter-resolved principal", () => {
+test("X-Engram-Principal header does not override adapter-resolved principal", () => {
   const adapter = new ClaudeCodeAdapter();
   const identity = adapter.resolveIdentity({
     headers: { "x-engram-principal": "custom-principal" },
     clientInfo: { name: "claude-code" },
   });
-  assert.equal(identity.principal, "custom-principal");
+  assert.equal(identity.principal, "claude-code");
 });
 
 // -- MCP clientInfo storage --

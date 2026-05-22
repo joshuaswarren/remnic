@@ -173,6 +173,39 @@ test("memory prompt section registration on api satisfies recall hook requiremen
   assert.equal(hookCheck.level, "ok");
 });
 
+test("service start detection ignores nested start properties", async () => {
+  const checks = await runFixture({
+    enginesNode: ">=22.12.0",
+    currentNodeVersion: "v22.12.0",
+    indexSource: [
+      "api.on('before_prompt_build', async () => {});",
+      "api.on('agent_end', async () => {});",
+      "api.registerService({ id: 'x', stop() {}, metadata: { start: false } });",
+      "registerCli(api, orchestrator);",
+    ].join("\n"),
+  });
+
+  const hookCheck = checkById(checks, "hook-registration-core");
+  assert.equal(hookCheck.level, "error");
+  assert.match(hookCheck.message, /startup wiring/);
+});
+
+test("service start detection accepts top-level start methods", async () => {
+  const checks = await runFixture({
+    enginesNode: ">=22.12.0",
+    currentNodeVersion: "v22.12.0",
+    indexSource: [
+      "api.on('before_prompt_build', async () => {});",
+      "api.on('agent_end', async () => {});",
+      "api.registerService({ id: 'x', stop() {}, metadata: { start: false }, start() {} });",
+      "registerCli(api, orchestrator);",
+    ].join("\n"),
+  });
+
+  const hookCheck = checkById(checks, "hook-registration-core");
+  assert.equal(hookCheck.level, "ok");
+});
+
 test("memory prompt section registration accepts casted api receivers", async () => {
   const checks = await runFixture({
     enginesNode: ">=22.12.0",

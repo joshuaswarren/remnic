@@ -79,39 +79,14 @@ const NOOP_LOG = (_line: string): void => {
   /* default sink */
 };
 
-type LcmMessagePartKind =
-  | "text"
-  | "tool_call"
-  | "tool_result"
-  | "patch"
-  | "file_read"
-  | "file_write"
-  | "step_start"
-  | "step_finish"
-  | "snapshot"
-  | "retry";
-
 interface LcmMessagePartInput {
   ordinal?: number;
-  kind: LcmMessagePartKind;
+  kind: string;
   payload: Record<string, unknown>;
   toolName?: string | null;
   filePath?: string | null;
   createdAt?: string | null;
 }
-
-const LCM_MESSAGE_PART_KINDS: ReadonlySet<string> = new Set([
-  "text",
-  "tool_call",
-  "tool_result",
-  "patch",
-  "file_read",
-  "file_write",
-  "step_start",
-  "step_finish",
-  "snapshot",
-  "retry",
-]);
 
 export function importLosslessClaw(
   options: ImportLosslessClawOptions,
@@ -269,6 +244,25 @@ export function importLosslessClaw(
     maxTurnBySession.set(session, max);
   }
 
+  const importBoundaryExistsStmt = destDb.prepare(
+    "SELECT 1 AS hit FROM lcm_compaction_events " +
+      "WHERE session_id = ? AND tokens_before = tokens_after LIMIT 1",
+  );
+  const importBoundaryCache = new Map<string, boolean>();
+
+  function hasImportBoundary(session: string): boolean {
+    const cached = importBoundaryCache.get(session);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const row = importBoundaryExistsStmt.get(session) as
+      | { hit: number }
+      | undefined;
+    const exists = row !== undefined;
+    importBoundaryCache.set(session, exists);
+    return exists;
+  }
+
   const sessionsTouched = new Set<string>();
   // Mapping from source message_id → assigned (or pre-existing)
   // turn_index. Populated for both inserted rows and dedup-skipped rows
@@ -291,6 +285,9 @@ export function importLosslessClaw(
           turnIndexByMessageId.set(msg.message_id, existingTurn.turnIndex);
           destRowIdByMessageId.set(msg.message_id, existingTurn.rowId);
           result.messagesSkipped += 1;
+          if (!hasImportBoundary(session)) {
+            sessionsTouched.add(session);
+          }
           continue;
         }
         const ti = nextTurn++;
@@ -412,7 +409,7 @@ export function importLosslessClaw(
   const derivations = indexSummaryDerivations(summaryMessages, summaryParents);
 
   const summaryExistsStmt = destDb.prepare(
-    "SELECT 1 AS hit FROM lcm_summary_nodes WHERE id = ? LIMIT 1",
+    "SELECT session_id FROM lcm_summary_nodes WHERE id = ? LIMIT 1",
   );
   const insertSummaryStmt = destDb.prepare(
     "INSERT INTO lcm_summary_nodes (id, session_id, depth, parent_id, summary_text, token_count, msg_start, msg_end, escalation, created_at) " +
@@ -424,6 +421,24 @@ export function importLosslessClaw(
   const lookupSummaryRowidStmt = destDb.prepare(
     "SELECT rowid AS rowid FROM lcm_summary_nodes WHERE id = ?",
   );
+  const importableSummarySessions = new Map<string, string>();
+  for (const summary of summaries) {
+    const derivation = derivations.get(summary.summary_id);
+    if (!derivation || derivation.messageIds.length === 0) continue;
+    const session = resolveSummarySession(
+      derivation.messageIds,
+      sessionByMessageId,
+    );
+    if (!session) continue;
+    if (sessionFilter && !sessionFilter.has(session)) continue;
+    if (
+      derivation.messageIds.some(
+        (mid) => typeof turnIndexByMessageId.get(mid) === "number",
+      )
+    ) {
+      importableSummarySessions.set(summary.summary_id, session);
+    }
+  }
 
   // Single shared loop body for both write and dry-run paths so summary
   // filter conditions (skip-no-messages, multi-session, dedup, etc.)
@@ -464,26 +479,46 @@ export function importLosslessClaw(
         continue;
       }
 
+      const validParents = derivation.parents.filter((parent) => {
+        const importableParentSession = importableSummarySessions.get(parent.parent_summary_id);
+        if (importableParentSession !== undefined) {
+          return importableParentSession === session;
+        }
+        const existingParent = summaryExistsStmt.get(parent.parent_summary_id) as
+          | { session_id: string }
+          | undefined;
+        return existingParent !== undefined && existingParent.session_id === session;
+      });
+      if (validParents.length !== derivation.parents.length) {
+        log(
+          `summary ${summary.summary_id}: dropped ${derivation.parents.length - validParents.length} ` +
+            "parent link(s) to skipped or missing summaries",
+        );
+      }
+
       const mapped = mapSummary({
         summary,
-        parents: derivation.parents,
+        parents: validParents,
         messageSeqs,
         sessionId: session,
       });
 
-      if (isMultiParent(derivation.parents)) {
+      if (isMultiParent(validParents)) {
         result.summariesMultiParentCollapsed += 1;
         log(
-          `summary ${summary.summary_id} has ${derivation.parents.length} parents; ` +
+          `summary ${summary.summary_id} has ${validParents.length} parents; ` +
             `keeping ${mapped.parent_id ?? "(none)"} (Remnic LCM is single-parent).`,
         );
       }
 
       const existing = summaryExistsStmt.get(mapped.id) as
-        | { hit: number }
+        | { session_id: string }
         | undefined;
       if (existing) {
         result.summariesSkipped += 1;
+        if (!hasImportBoundary(mapped.session_id)) {
+          sessionsTouched.add(mapped.session_id);
+        }
         continue;
       }
       if (forWrite) {
@@ -583,9 +618,6 @@ function sqliteTableExists(db: Database.Database, tableName: string): boolean {
 function mapLosslessMessagePart(
   part: LosslessClawMessagePart,
 ): LcmMessagePartInput {
-  const kind = LCM_MESSAGE_PART_KINDS.has(part.kind)
-    ? (part.kind as LcmMessagePartKind)
-    : "tool_call";
   let payload: Record<string, unknown>;
   try {
     const parsed = JSON.parse(part.payload);
@@ -598,7 +630,7 @@ function mapLosslessMessagePart(
   }
   return {
     ordinal: part.ordinal,
-    kind,
+    kind: part.kind,
     payload,
     toolName: part.tool_name,
     filePath: part.file_path,

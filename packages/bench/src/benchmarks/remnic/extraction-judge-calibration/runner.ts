@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import {
-  clearVerdictCache,
+  createVerdictCache,
   judgeFactDurability,
   parseConfig,
   type JudgeCandidate,
@@ -50,8 +50,8 @@ export async function runExtractionJudgeCalibrationBenchmark(
       extractionJudgeShadow: false,
     });
     const effectiveRemnicConfig = buildReportedRemnicConfig(config);
-
-    clearVerdictCache();
+    const verdictCache = createVerdictCache();
+    const deferCounts = new Map<string, number>();
 
     const localLlm = {
       chatCompletion: async (messages: Array<{ content: string }>) => {
@@ -85,6 +85,8 @@ export async function runExtractionJudgeCalibrationBenchmark(
       config,
       localLlm as never,
       null,
+      verdictCache,
+      deferCounts,
     );
     const totalLatencyMs = Math.round(performance.now() - startedAt);
 

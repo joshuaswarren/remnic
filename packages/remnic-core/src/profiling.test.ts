@@ -139,6 +139,29 @@ describe("ProfilingCollector", () => {
     }
   });
 
+  test("getRecentTraces handles zero, positive, and omitted limits", () => {
+    const dir = tempDir();
+    try {
+      const collector = new ProfilingCollector({
+        enabled: true,
+        storageDir: dir,
+        maxTraces: 10,
+      });
+
+      const id1 = collector.startTrace("recall");
+      collector.endTrace(id1);
+      const id2 = collector.startTrace("extraction");
+      collector.endTrace(id2);
+
+      assert.deepEqual(collector.getRecentTraces(0), []);
+      assert.deepEqual(collector.getRecentTraces(-1), []);
+      assert.equal(collector.getRecentTraces(1).length, 1);
+      assert.equal(collector.getRecentTraces().length, 2);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
   test("isolates concurrent traces — spans do not cross-contaminate", () => {
     const dir = tempDir();
     try {

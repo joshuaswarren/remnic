@@ -21,7 +21,7 @@ import { log } from "../logger.js";
 import { judgeContradictionPairs, type ContradictionJudgeInput } from "./contradiction-judge.js";
 import {
   writePairs,
-  listPairs,
+  readPair,
   isCoolingDown,
   memoryHashesChanged,
   computeMemoryContentHash,
@@ -128,15 +128,19 @@ export async function runContradictionScan(deps: ScanDependencies): Promise<Scan
     return { scanned: memories.length, candidates: 0, judged: 0, queued: 0, cooledDown: 0, elapsedMs: Date.now() - startTime };
   }
 
-  // 2. Load existing review pairs for cooldown checking
-  const existingPairs = listPairs(memoryDir, { filter: "all", namespace, limit: 10000 }).pairs;
-  const existingMap = new Map<string, ContradictionPair>();
-  for (const p of existingPairs) {
-    existingMap.set(p.pairId, p);
-  }
+  // 2. Prepare exact existing-pair lookup for cooldown checking.
+  // Pair IDs are deterministic, so lookup the candidate's file directly instead
+  // of paging through the review queue and risking a bounded-list miss.
+  const existingPairCache = new Map<string, ContradictionPair | undefined>();
+  const getExistingPair = (pairId: string): ContradictionPair | undefined => {
+    if (!existingPairCache.has(pairId)) {
+      existingPairCache.set(pairId, readPair(memoryDir, pairId) ?? undefined);
+    }
+    return existingPairCache.get(pairId);
+  };
 
   // 3. Generate candidate pairs
-  const candidates = await generatePairs(memories, existingMap, scanConfig, namespace, scopedEmbeddingLookup);
+  const candidates = await generatePairs(memories, getExistingPair, scanConfig, namespace, scopedEmbeddingLookup);
   const cooledDown = candidates.skipped;
   log.info("[contradiction-scan] generated %d candidates (%d cooled down)", candidates.pairs.length, cooledDown);
 
@@ -216,7 +220,7 @@ interface PairGenResult {
 
 async function generatePairs(
   memories: MemoryFile[],
-  existingPairs: Map<string, ContradictionPair>,
+  getExistingPair: (pairId: string) => ContradictionPair | undefined,
   scanConfig: PluginConfig["contradictionScan"],
   namespace: string | undefined,
   embeddingLookup?: SemanticDedupLookup,
@@ -267,7 +271,7 @@ async function generatePairs(
         seen.add(pairId);
 
         // Check cooldown
-        const existing = existingPairs.get(pairId);
+        const existing = getExistingPair(pairId);
         if (isSkippedByCooldown(existing)) {
           skipped++;
           continue;
@@ -285,14 +289,14 @@ async function generatePairs(
     }
   }
 
-  // Strategy 2: Tag/topic overlap for memories without shared entityRef
-  const noEntity = orderedMemories.filter((m) => !m.frontmatter.entityRef);
+  // Strategy 2: Tag/topic overlap for memories without a shared entityRef
   topicPairs:
-  for (let i = 0; i < noEntity.length; i++) {
-    for (let j = i + 1; j < noEntity.length; j++) {
+  for (let i = 0; i < orderedMemories.length; i++) {
+    for (let j = i + 1; j < orderedMemories.length; j++) {
       if (!hasCapacity()) break topicPairs;
-      const a = noEntity[i];
-      const b = noEntity[j];
+      const a = orderedMemories[i];
+      const b = orderedMemories[j];
+      if (shareEntityRef(a, b)) continue;
       const overlap = jaccardOverlap(
         (a.frontmatter.tags as string[]) ?? [],
         (b.frontmatter.tags as string[]) ?? [],
@@ -304,7 +308,7 @@ async function generatePairs(
       if (seen.has(pairId)) continue;
       seen.add(pairId);
 
-      const existing = existingPairs.get(pairId);
+      const existing = getExistingPair(pairId);
       if (isSkippedByCooldown(existing)) {
         skipped++;
         continue;
@@ -343,7 +347,7 @@ async function generatePairs(
           if (seen.has(pairId)) continue;
           seen.add(pairId);
 
-          const existing = existingPairs.get(pairId);
+          const existing = getExistingPair(pairId);
           if (isSkippedByCooldown(existing)) {
             skipped++;
             continue;
@@ -473,6 +477,12 @@ function jaccardOverlap(a: string[], b: string[]): number {
   }
   const union = setA.size + setB.size - intersection;
   return union === 0 ? 0 : intersection / union;
+}
+
+function shareEntityRef(a: MemoryFile, b: MemoryFile): boolean {
+  const entityA = a.frontmatter.entityRef?.trim();
+  const entityB = b.frontmatter.entityRef?.trim();
+  return Boolean(entityA && entityB && entityA === entityB);
 }
 
 function compareMemoryId(a: MemoryFile, b: MemoryFile): number {

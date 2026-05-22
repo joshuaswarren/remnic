@@ -82,14 +82,21 @@ function scoreCase(benchCase: DirectAnswerBenchCase): { scores: Record<string, n
     verdict_correct: verdictCorrect,
     latency_under_5ms: latencyMs < 5 ? 1 : 0,
   };
-  // Only record winner_correct on cases that expect an eligible verdict.
-  // Hard-coding 1 for defer cases would inflate the aggregate mean and mask
-  // real winner-selection regressions on eligible cases. Omitting the metric
-  // causes aggregateTaskScores to average only over eligible cases (see
-  // collectMetricValues, which filters non-numeric entries).
   if (benchCase.expected === "eligible") {
+    // Positive split metrics: expected-eligible cases should fire Tier 2.
+    scores.eligible_case_correct = actualVerdict === "eligible" ? 1 : 0;
+    scores.direct_answer_precision = scores.eligible_case_correct;
+    // Only record winner_correct on cases that expect an eligible verdict.
+    // Hard-coding 1 for defer cases would inflate the aggregate mean and mask
+    // real winner-selection regressions on eligible cases. Omitting the metric
+    // causes aggregateTaskScores to average only over eligible cases (see
+    // collectMetricValues, which filters non-numeric entries).
     scores.winner_correct =
       winnerId === (benchCase.expectedWinnerId ?? null) ? 1 : 0;
+  } else {
+    // Negative split metrics: expected-defer cases should stay on the hybrid path.
+    scores.defer_case_correct = actualVerdict === "defer" ? 1 : 0;
+    scores.deferral_recall = scores.defer_case_correct;
   }
 
   return {

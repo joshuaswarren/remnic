@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { log } from "./logger.js";
+import { writeFileAtomically } from "./maintenance/atomic-file.js";
 import type {
   IdentityInjectionMode,
   RecallPlanMode,
@@ -120,6 +121,7 @@ export function clampGraphRecallExpandedEntries(
 }
 
 type LastRecallState = Record<string, LastRecallSnapshot>;
+type StateFileWriter = (filePath: string, content: string) => Promise<void>;
 
 /**
  * Deep-copy a RecallTierExplain block.  Used by both the write path
@@ -193,11 +195,18 @@ const DEFAULT_TIER_MIGRATION_STATUS: TierMigrationStatusSnapshot = {
 export class LastRecallStore {
   private readonly statePath: string;
   private readonly impressionsPath: string;
+  private readonly writeStateFile: StateFileWriter;
   private state: LastRecallState = {};
+  private stateWriteChain: Promise<void> = Promise.resolve();
 
-  constructor(memoryDir: string) {
+  constructor(memoryDir: string, options: { writeStateFile?: StateFileWriter } = {}) {
     this.statePath = path.join(memoryDir, "state", "last_recall.json");
     this.impressionsPath = path.join(memoryDir, "state", "recall_impressions.jsonl");
+    this.writeStateFile =
+      options.writeStateFile ??
+      (async (filePath, content) => {
+        await writeFileAtomically(filePath, content);
+      });
   }
 
   async load(): Promise<void> {
@@ -310,8 +319,7 @@ export class LastRecallStore {
     }
 
     try {
-      await mkdir(path.dirname(this.statePath), { recursive: true });
-      await writeFile(this.statePath, JSON.stringify(this.state, null, 2), "utf-8");
+      await this.flushState();
     } catch (err) {
       log.debug(`last recall store write failed: ${err}`);
     }
@@ -370,11 +378,22 @@ export class LastRecallStore {
       tierExplain: cloneTierExplain(tierExplain),
     };
     try {
-      await mkdir(path.dirname(this.statePath), { recursive: true });
-      await writeFile(this.statePath, JSON.stringify(this.state, null, 2), "utf-8");
+      await this.flushState();
     } catch (err) {
       log.debug(`last recall tier-explain annotate failed: ${err}`);
     }
+  }
+
+  private flushState(): Promise<void> {
+    const run = this.stateWriteChain.catch(() => undefined).then(async () => {
+      await mkdir(path.dirname(this.statePath), { recursive: true });
+      await this.writeStateFile(this.statePath, JSON.stringify(this.state, null, 2));
+    });
+    this.stateWriteChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 }
 

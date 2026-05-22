@@ -57,6 +57,22 @@ test("writeEntity appends timeline evidence and marks older synthesis as stale",
   }
 });
 
+test("readEntity rejects names that escape the entities directory", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-read-path-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+
+    await writeFile(path.join(dir, "profile.md"), "outside entities", "utf-8");
+    await writeFile(path.join(dir, "entities", "person-jane-doe.md"), "inside entities", "utf-8");
+
+    assert.equal(await storage.readEntity("../profile"), "");
+    assert.equal(await storage.readEntity("person-jane-doe"), "inside entities");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("writeEntity preserves structured sections alongside timeline evidence", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-structured-sections-"));
   try {

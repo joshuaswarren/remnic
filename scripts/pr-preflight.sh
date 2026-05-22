@@ -48,6 +48,7 @@ needs_entity_hardening() {
 }
 
 # Core mandatory gate from docs/ops/pr-review-hardening-playbook.md
+run npm run lint
 run npm run check-types
 run npm run check-config-contract
 run npm run plugin:inspect

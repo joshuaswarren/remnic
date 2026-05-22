@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -450,6 +450,34 @@ test("active recall transcript persistence sanitizes agent and session path segm
   const raw = await readFile(result.transcriptPath ?? "", "utf8");
   assert.match(raw, /"agentId":"\.\.\/\.\.\/etc"/);
   assert.match(raw, /"sessionKey":"session\/\.\.\/\.\.\/escape"/);
+});
+
+test("active recall transcript persistence failures do not abort generated summaries", async () => {
+  const transcriptFile = path.join(
+    await mkdtemp(path.join(os.tmpdir(), "active-recall-transcript-file-")),
+    "not-a-directory",
+  );
+  await writeFile(transcriptFile, "existing file", "utf8");
+  const engine = createActiveRecallEngine(
+    {
+      async recall() {
+        return "Primary recall";
+      },
+      async generateSummary() {
+        return { text: "useful summary", modelUsed: "gpt-5.5" };
+      },
+    },
+    baseConfig({
+      persistTranscripts: true,
+      transcriptDir: transcriptFile,
+    }),
+  );
+
+  const result = await engine.run(baseInput());
+
+  assert.equal(result.summary, "useful summary");
+  assert.equal(result.modelUsed, "gpt-5.5");
+  assert.equal(result.transcriptPath, null);
 });
 
 test("active recall transcript persistence encodes bare dot path segments", async () => {

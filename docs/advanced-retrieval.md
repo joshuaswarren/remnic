@@ -76,15 +76,15 @@ See [Procedural memory](./procedural-memory.md) for configuration, mining, and t
 
 ### Direct-answer retrieval tier (issue #518)
 
-> **Status (current release): design + pure eligibility function + config keys only.** The orchestrator wiring that would populate a `tierExplain` annotation on the caller's last-recall snapshot — and the CLI / HTTP / MCP surfaces that would expose it — are **not yet shipped**. This section documents the design so downstream slices land against a stable contract. Setting `recallDirectAnswerEnabled: true` in the current release is a no-op at recall time.
+> **Status (current release): observation mode.** The direct-answer tier runs by default and annotates `LastRecallSnapshot.tierExplain` without short-circuiting the QMD path. Set `recallDirectAnswerEnabled: false` to opt out.
 
-Planned behavior: when **`recallDirectAnswerEnabled`** is true, Remnic will run a lightweight eligibility gate alongside QMD to decide whether a single validated memory can answer the query. The first slice that ships runtime behavior will run the gate in observation mode — it will record *which tier would have served the query* onto the caller's last-recall snapshot, so CLI / HTTP / MCP surfaces can surface the decision. A later slice will flip the short-circuit bit and return the direct-answer winner before QMD runs.
+Behavior: when **`recallDirectAnswerEnabled`** is true, Remnic runs a lightweight eligibility gate alongside QMD to decide whether a single validated memory can answer the query. The current release records *which tier would have served the query* onto the caller's last-recall snapshot so CLI / HTTP / MCP surfaces can surface the decision. A later slice will flip the short-circuit bit and return the direct-answer winner before QMD runs.
 
 What exists today:
 
 - `packages/remnic-core/src/direct-answer.ts` — pure eligibility function (`isDirectAnswerEligible`) exercised by unit tests.
 - `packages/remnic-core/src/direct-answer-wiring.ts` — `tryDirectAnswer(...)` source-agnostic binding, callable by tests but not yet invoked by the orchestrator.
-- The five `recallDirectAnswer*` config keys below (parsed and validated; no runtime callers yet).
+- The five `recallDirectAnswer*` config keys below (parsed and validated; `recallDirectAnswerEnabled: false` disables observation-mode annotations).
 
 A dedicated `retrieval-direct-answer` bench fixture is planned but not yet in-tree.
 
@@ -98,9 +98,9 @@ Planned eligibility ladder (in order, unchanged between observation and short-ci
 6. Top two candidates within `recallDirectAnswerAmbiguityMargin` of each other → reason `ambiguous`
 7. Otherwise → reason `eligible`, winner annotated on the snapshot
 
-Config keys (already parsed by `config.ts`; inert at recall time until the wiring slice lands):
+Config keys:
 
-- `recallDirectAnswerEnabled` (default `false`) — master switch
+- `recallDirectAnswerEnabled` (default `true`) — master switch; set to `false` to opt out of observation mode
 - `recallDirectAnswerTokenOverlapFloor` (default `0.55`, `0` to disable the gate)
 - `recallDirectAnswerImportanceFloor` (default `0.7`, `0` to disable the gate)
 - `recallDirectAnswerAmbiguityMargin` (default `0.15`)

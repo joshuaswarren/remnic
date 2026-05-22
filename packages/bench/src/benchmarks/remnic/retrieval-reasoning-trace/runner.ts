@@ -5,8 +5,8 @@
  * ordinary facts) into the retrieval boost helper with the flag on and
  * off, and reports:
  *
- * - `boost_recall_at_1`: on positive problem-solving cases, the reasoning
- *   trace lands at rank 1 after boost.
+ * - `boost_recall_at_1`: on positive problem-solving cases, the expected
+ *   reasoning trace lands at rank 1 after boost.
  * - `boost_false_positive_rate_at_1`: on negative / ordinary-lookup
  *   cases, the boost must leave rank 1 unchanged.
  * - `heuristic_classification_correct`: looksLikeProblemSolvingQuery
@@ -122,12 +122,12 @@ function scoreCase(
     scores.boost_noop_preserved =
       outcome.boostedTop === outcome.baselineTop ? 1 : 0;
   } else {
-    // Positive case: the top-1 memory after boost must live under
-    // reasoning-traces/. We measure "any trace at rank 1" rather than a
-    // specific docid because the shipped boost is uniform across the
-    // category — when two traces share the boosted tier, the higher-scored
-    // one naturally wins.
-    scores.boost_recall_at_1 = isReasoningTracePath(outcome.boostedTopPath) ? 1 : 0;
+    // Positive case: the top-1 memory after boost must be the trace that
+    // matches this scenario, not merely any reasoning trace in the shared
+    // category.
+    scores.boost_recall_at_1 =
+      isReasoningTracePath(outcome.boostedTopPath) &&
+      outcome.boostedTop === benchCase.expectedTopWithBoost ? 1 : 0;
   }
 
   scores.latency_under_1ms = outcome.latencyMs < 1 ? 1 : 0;
@@ -207,7 +207,7 @@ export async function runRetrievalReasoningTraceBenchmark(
       taskId: benchCase.id,
       question: benchCase.query,
       expected: benchCase.expectsTraceTopAfterBoost
-        ? "top-is-reasoning-trace"
+        ? `top=${benchCase.expectedTopWithBoost ?? ""}`
         : `top-unchanged=${benchCase.expectedTopWithoutBoost}`,
       actual: `baseline-top=${outcome.baselineTop};boosted-top=${outcome.boostedTop}`,
       scores,
@@ -217,8 +217,10 @@ export async function runRetrievalReasoningTraceBenchmark(
         caseId: benchCase.id,
         candidateCount: benchCase.candidates.length,
         classifiedAsProblemSolving: outcome.classifiedAsProblemSolving,
+        expectedTopWithBoost: benchCase.expectedTopWithBoost ?? null,
       },
     });
+    options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, cases.length);
   }
 
   latencies.sort((a, b) => a - b);

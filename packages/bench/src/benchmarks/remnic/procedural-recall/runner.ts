@@ -69,6 +69,8 @@ export async function runProceduralRecallBenchmark(
   const intentPick = sliceWithBudget(intentSource, remainingBudget);
   const intentCases = intentPick.picked;
   remainingBudget = intentPick.remaining;
+  const e2eCases = sliceWithBudget(e2eSource, remainingBudget).picked;
+  const totalTasks = intentCases.length + e2eCases.length;
 
   for (const sample of intentCases) {
     const startedAt = performance.now();
@@ -88,9 +90,8 @@ export async function runProceduralRecallBenchmark(
       tokens: { input: 0, output: 0 },
       details: { intent },
     });
+    options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, totalTasks);
   }
-
-  const e2eCases = sliceWithBudget(e2eSource, remainingBudget).picked;
 
   for (const sample of e2eCases) {
     const startedAt = performance.now();
@@ -135,6 +136,7 @@ export async function runProceduralRecallBenchmark(
       tokens: { input: 0, output: 0 },
       details: { sectionPreview: section?.slice(0, 200) ?? null },
     });
+    options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, totalTasks);
   }
 
   const remnicVersion = await getRemnicVersion();

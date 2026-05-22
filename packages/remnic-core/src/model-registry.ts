@@ -235,13 +235,20 @@ export class ModelRegistry {
     const caps = this.getCapabilities(modelId);
 
     // Use override if provided (e.g., user knows their LLM server limits), otherwise use detected caps
-    const effectiveContextWindow = maxContextOverride ?? caps.contextWindow;
+    const sanitizedOverride =
+      typeof maxContextOverride === "number" &&
+      Number.isFinite(maxContextOverride) &&
+      Number.isInteger(maxContextOverride) &&
+      maxContextOverride >= 1024
+        ? maxContextOverride
+        : undefined;
+    const effectiveContextWindow = sanitizedOverride ?? Math.max(1024, Math.floor(caps.contextWindow));
 
     // Guardrails: never allow output budget to exceed the model/server context window.
     // If we do, input budget goes negative and we end up generating huge, invalid prompts.
     const overheadTokens = Math.min(1000, Math.floor(effectiveContextWindow / 10)); // <=10% overhead, max 1k
     const minInputTokens = Math.min(512, Math.floor(effectiveContextWindow / 4)); // keep some room even on small contexts
-    const minOutputTokens = 256;
+    const minOutputTokens = Math.min(256, Math.max(1, effectiveContextWindow - overheadTokens - minInputTokens));
 
     // Base output budget: typical output, but scaled down for small contexts.
     let outputTokens = caps.typicalOutputTokens;
@@ -255,10 +262,8 @@ export class ModelRegistry {
     outputTokens = Math.min(outputTokens, Math.floor(effectiveContextWindow / 4));
 
     // Clamp output so we always have positive input headroom.
-    outputTokens = Math.max(
-      minOutputTokens,
-      Math.min(outputTokens, effectiveContextWindow - overheadTokens - minInputTokens),
-    );
+    const maxOutputTokens = Math.max(1, effectiveContextWindow - overheadTokens - minInputTokens);
+    outputTokens = Math.min(maxOutputTokens, Math.max(minOutputTokens, outputTokens));
 
     const availableForInput = Math.max(
       0,
@@ -268,7 +273,7 @@ export class ModelRegistry {
     // Convert to characters (rough estimate: 1 token ≈ 4 chars)
     const maxInputChars = Math.max(0, Math.floor(availableForInput * 3.5)); // Conservative: 3.5 chars/token
 
-    const source = maxContextOverride ? "user override" : caps.source;
+    const source = sanitizedOverride ? "user override" : caps.source;
     return {
       maxInputChars,
       maxOutputTokens: outputTokens,

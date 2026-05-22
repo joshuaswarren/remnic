@@ -11,6 +11,7 @@ import {
   compactResponderContext,
   compactResponderQuestion,
 } from "./responders.ts";
+import { createTimeoutGuardedAdapter } from "./adapters/timeout-guard.ts";
 import type { LlmProvider } from "./providers/types.ts";
 
 function createFakeProvider(
@@ -72,6 +73,19 @@ test("responder wrappers adapt a provider instance into answer-generation and ju
   assert.equal(judgeResult?.tokens.output > 0, true);
   assert.equal(judgeResult?.latencyMs, 12);
   assert.equal(judgeResult?.model, "test-model");
+
+  const cuedJudge = createProviderBackedJudge(
+    { provider: "openai", model: "gpt-5.4-mini" },
+    createFakeProvider("Score: 0.82\nmetadata id: 17"),
+  );
+  assert.equal(await cuedJudge.score("q", "predicted", "expected"), 0.82);
+
+  const cuedFractionJudge = createProviderBackedJudge(
+    { provider: "openai", model: "gpt-5.4-mini" },
+    createFakeProvider("Final score: 8/10\ncase: 99"),
+  );
+  assert.equal(await cuedFractionJudge.score("q", "predicted", "expected"), 0.8);
+
   const noJudge = createProviderBackedJudge(
     { provider: "openai", model: "gpt-5.4-mini" },
     createFakeProvider("No."),
@@ -302,6 +316,67 @@ test("gateway responder forwards profile-scoped auth context to the fallback cli
     agentDir: "/tmp/openclaw-profile/agents/main/agent",
     workspaceDir: "/tmp/openclaw-profile/workspace",
   });
+});
+
+test("gateway responder forwards benchmark abort signals to the fallback client", async () => {
+  let observedAbort = false;
+
+  const responder = createGatewayResponder({
+    gatewayConfig: {
+      agents: {
+        defaults: {
+          model: {
+            primary: "openai/gpt-5.4-mini",
+          },
+        },
+      },
+    },
+    llmFactory() {
+      return {
+        async chatCompletion(_messages, options) {
+          assert.ok(options.signal, "expected gateway responder to pass the benchmark signal");
+          await new Promise<never>((_, reject) => {
+            options.signal!.addEventListener(
+              "abort",
+              () => {
+                observedAbort = true;
+                reject(options.signal!.reason);
+              },
+              { once: true },
+            );
+          });
+        },
+      };
+    },
+  });
+
+  const adapter = createTimeoutGuardedAdapter(
+    {
+      async store() {},
+      async recall() {
+        return "";
+      },
+      async search() {
+        return [];
+      },
+      async reset() {},
+      async getStats() {
+        return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+      },
+      async destroy() {},
+      responder,
+    },
+    {
+      benchmarkId: "gateway-responder-test",
+      timeoutMs: 5,
+    },
+  );
+
+  await assert.rejects(
+    () => adapter.responder!.respond("What changed?", "Context"),
+    /benchmark phase timed out after 5ms: gateway-responder-test:respond/,
+  );
+  assert.equal(observedAbort, true);
 });
 
 test("provider-backed judge parses fraction and percent score formats", async () => {

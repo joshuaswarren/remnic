@@ -160,6 +160,54 @@ test("detectBridgeMode reads legacy config port when remnic config is malformed"
   }
 });
 
+test("detectBridgeMode expands tilde-prefixed REMNIC_CONFIG_PATH", async () => {
+  const previousHome = process.env.HOME;
+  const previousMode = process.env.REMNIC_BRIDGE_MODE;
+  const previousLegacyMode = process.env.ENGRAM_BRIDGE_MODE;
+  const previousPort = process.env.REMNIC_PORT;
+  const previousLegacyPort = process.env.ENGRAM_PORT;
+  const previousConfigPath = process.env.REMNIC_CONFIG_PATH;
+  const previousLegacyConfigPath = process.env.ENGRAM_CONFIG_PATH;
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "bridge-tilde-config-"));
+  const remnicConfigDir = path.join(homeDir, ".config", "remnic");
+
+  await mkdir(remnicConfigDir, { recursive: true });
+  await writeFile(
+    path.join(remnicConfigDir, "config.json"),
+    JSON.stringify({ server: { port: 4815 } }),
+    "utf8",
+  );
+
+  try {
+    process.env.HOME = homeDir;
+    process.env.REMNIC_BRIDGE_MODE = "delegate";
+    process.env.REMNIC_CONFIG_PATH = "~/.config/remnic/config.json";
+    delete process.env.ENGRAM_BRIDGE_MODE;
+    delete process.env.REMNIC_PORT;
+    delete process.env.ENGRAM_PORT;
+    delete process.env.ENGRAM_CONFIG_PATH;
+
+    const { detectBridgeMode } = await import(path.join(ROOT, "packages/plugin-openclaw/src/bridge.ts"));
+    const config = detectBridgeMode();
+    assert.equal(config.daemonPort, 4815);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousMode === undefined) delete process.env.REMNIC_BRIDGE_MODE;
+    else process.env.REMNIC_BRIDGE_MODE = previousMode;
+    if (previousLegacyMode === undefined) delete process.env.ENGRAM_BRIDGE_MODE;
+    else process.env.ENGRAM_BRIDGE_MODE = previousLegacyMode;
+    if (previousPort === undefined) delete process.env.REMNIC_PORT;
+    else process.env.REMNIC_PORT = previousPort;
+    if (previousLegacyPort === undefined) delete process.env.ENGRAM_PORT;
+    else process.env.ENGRAM_PORT = previousLegacyPort;
+    if (previousConfigPath === undefined) delete process.env.REMNIC_CONFIG_PATH;
+    else process.env.REMNIC_CONFIG_PATH = previousConfigPath;
+    if (previousLegacyConfigPath === undefined) delete process.env.ENGRAM_CONFIG_PATH;
+    else process.env.ENGRAM_CONFIG_PATH = previousLegacyConfigPath;
+  }
+});
+
 test("detectBridgeMode does not delegate solely because a Remnic daemon pid file is live", async () => {
   const previousHome = process.env.HOME, previousPort = process.env.REMNIC_PORT;
   const previousMode = process.env.REMNIC_BRIDGE_MODE;

@@ -186,6 +186,40 @@ describe("groupIntoThreads", () => {
     );
   });
 
+  it("throws on non-finite or fractional gapThresholdMs", () => {
+    const turns: ImportTurn[] = [
+      makeTurn({ timestamp: "2025-01-10T08:00:00.000Z", content: "a" }),
+      makeTurn({ timestamp: "2025-01-10T08:05:00.000Z", content: "b" }),
+    ];
+    for (const gapThresholdMs of [Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      assert.throws(
+        () => groupIntoThreads(turns, { gapThresholdMs }),
+        /gapThresholdMs must be a finite integer/,
+      );
+    }
+  });
+
+  it("throws on invalid minThreadSize", () => {
+    const turns: ImportTurn[] = [
+      makeTurn({ timestamp: "2025-01-10T08:00:00.000Z", content: "a" }),
+      makeTurn({ timestamp: "2025-01-10T08:05:00.000Z", content: "b" }),
+    ];
+    for (const minThreadSize of [Number.NaN, Number.POSITIVE_INFINITY, 1.5]) {
+      assert.throws(
+        () => groupIntoThreads(turns, { minThreadSize }),
+        /minThreadSize must be a finite integer/,
+      );
+    }
+    assert.throws(
+      () => groupIntoThreads(turns, { minThreadSize: 0 }),
+      /minThreadSize must be positive, received 0/,
+    );
+    assert.throws(
+      () => groupIntoThreads(turns, { minThreadSize: -1 }),
+      /minThreadSize must be positive, received -1/,
+    );
+  });
+
   it("does NOT merge threads when turns lack messageId", () => {
     // Without messageId, replyToId has nothing to match against
     const turns: ImportTurn[] = [

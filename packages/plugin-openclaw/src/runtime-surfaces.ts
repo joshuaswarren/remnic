@@ -2,9 +2,9 @@ import type {
   ConsolidationObservation,
   MemoryFile,
   MemoryFrontmatter,
-} from "../../remnic-core/src/types.js";
-import type { DreamEntry } from "../../remnic-core/src/surfaces/dreams.js";
-import type { HeartbeatEntry } from "../../remnic-core/src/surfaces/heartbeat.js";
+} from "@remnic/core";
+import type { DreamEntry } from "@remnic/core/surfaces/dreams";
+import type { HeartbeatEntry } from "@remnic/core/surfaces/heartbeat";
 
 type StorageWriteOptions = {
   confidence?: number;
@@ -79,6 +79,35 @@ function serializeStringRecord(
   );
 }
 
+function normalizeAttributePairs(pairs: Record<string, string>): string {
+  return Object.entries(pairs)
+    .map(([key, value]) => [key.trim().toLowerCase(), value.trim()] as [string, string])
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("; ");
+}
+
+function enrichSurfaceContent(
+  content: string,
+  structuredAttributes: Record<string, string> | undefined,
+): string {
+  if (!structuredAttributes || Object.keys(structuredAttributes).length === 0) {
+    return content;
+  }
+  return `${content}\n[Attributes: ${normalizeAttributePairs(structuredAttributes)}]`;
+}
+
+function stripSurfaceAttributeSuffix(
+  content: string,
+  structuredAttributes: Record<string, string> | undefined,
+): string {
+  if (!structuredAttributes || Object.keys(structuredAttributes).length === 0) {
+    return content;
+  }
+  const suffix = `\n[Attributes: ${normalizeAttributePairs(structuredAttributes)}]`;
+  return content.endsWith(suffix) ? content.slice(0, -suffix.length) : content;
+}
+
 function buildDreamMemoryContent(entry: DreamEntry): string {
   return entry.title ? `${entry.title}\n\n${entry.body}` : entry.body;
 }
@@ -127,13 +156,12 @@ async function patchMemory(
   patch: Partial<MemoryFrontmatter>,
 ): Promise<boolean> {
   let changed = false;
-  if (memory.content.trim() !== nextContent.trim()) {
-    changed = (await storage.updateMemory(memory.frontmatter.id, nextContent)) || changed;
-  }
   const nextTags = JSON.stringify(uniqueTags(patch.tags ?? memory.frontmatter.tags ?? []));
   const prevTags = JSON.stringify(uniqueTags(memory.frontmatter.tags ?? []));
+  const nextStructuredAttributes =
+    patch.structuredAttributes ?? memory.frontmatter.structuredAttributes;
   const nextAttrs = serializeStringRecord(
-    patch.structuredAttributes ?? memory.frontmatter.structuredAttributes,
+    nextStructuredAttributes,
   );
   const prevAttrs = serializeStringRecord(memory.frontmatter.structuredAttributes);
   const sourceChanged =
@@ -141,18 +169,41 @@ async function patchMemory(
   const memoryKindChanged =
     patch.memoryKind !== undefined &&
     patch.memoryKind !== memory.frontmatter.memoryKind;
-  if (
+  const metadataChanged =
     nextTags !== prevTags ||
     nextAttrs !== prevAttrs ||
     sourceChanged ||
-    memoryKindChanged
-  ) {
-    changed =
-      (await storage.writeMemoryFrontmatter(memory, {
+    memoryKindChanged;
+  if (metadataChanged) {
+    if (
+      !(await storage.writeMemoryFrontmatter(memory, {
         ...patch,
         tags: uniqueTags(patch.tags ?? memory.frontmatter.tags ?? []),
         updated: new Date().toISOString(),
-      })) || changed;
+      }))
+    ) {
+      return false;
+    }
+    changed = true;
+  }
+  const persistedContent = enrichSurfaceContent(nextContent, nextStructuredAttributes);
+  const existingBody = stripSurfaceAttributeSuffix(
+    memory.content,
+    memory.frontmatter.structuredAttributes,
+  );
+  const contentChanged =
+    existingBody.trim() !== nextContent.trim() ||
+    memory.content.trim() !== persistedContent.trim();
+  if (contentChanged) {
+    if (!(await storage.updateMemory(memory.frontmatter.id, persistedContent))) {
+      if (metadataChanged) {
+        throw new Error(
+          `surface memory ${memory.frontmatter.id} frontmatter was updated but content update failed`,
+        );
+      }
+      return false;
+    }
+    changed = true;
   }
   return changed;
 }
@@ -169,7 +220,7 @@ function makeSurfaceMemorySnapshot(params: {
   const now = new Date().toISOString();
   return {
     path: params.id,
-    content: params.content,
+    content: enrichSurfaceContent(params.content, params.structuredAttributes),
     frontmatter: {
       id: params.id,
       category: params.category,
@@ -195,7 +246,7 @@ function applySurfaceMemorySnapshot(
     structuredAttributes: Record<string, string>;
   },
 ): void {
-  memory.content = params.content;
+  memory.content = enrichSurfaceContent(params.content, params.structuredAttributes);
   memory.frontmatter = {
     ...memory.frontmatter,
     updated: new Date().toISOString(),
@@ -411,7 +462,11 @@ function detectHeartbeatSlug(
       !tag.startsWith("heartbeat:") &&
       !ignoredTagTerms.has(tag.trim().toLowerCase()),
   );
-  const haystack = `${memory.content}\n${searchableTags.join(" ")}`.toLowerCase();
+  const searchableContent = stripSurfaceAttributeSuffix(
+    memory.content,
+    memory.frontmatter.structuredAttributes,
+  );
+  const haystack = `${searchableContent}\n${searchableTags.join(" ")}`.toLowerCase();
   const matches = entries.filter((entry) => {
     if (matchesDelimitedPattern(haystack, entry.titlePattern)) return true;
     return matchesDelimitedPattern(haystack, entry.slugPattern);

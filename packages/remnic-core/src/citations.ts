@@ -115,14 +115,23 @@ function parseEntryLine(line: string): CitationEntry | null {
   if (!pathRaw || !startRaw || !endRaw) return null;
   const lineStart = parseInt(startRaw, 10);
   const lineEnd = parseInt(endRaw, 10);
-  if (!Number.isFinite(lineStart) || !Number.isFinite(lineEnd)) return null;
-  if (lineStart < 0 || lineEnd < 0) return null;
+  const entryPath = pathRaw.trim();
+  if (!entryPath || !isValidCitationRange(lineStart, lineEnd)) return null;
   return {
-    path: pathRaw.trim(),
+    path: entryPath,
     lineStart,
     lineEnd,
     note: noteRaw ?? "",
   };
+}
+
+function isValidCitationRange(lineStart: number, lineEnd: number): boolean {
+  return (
+    Number.isInteger(lineStart) &&
+    Number.isInteger(lineEnd) &&
+    lineStart >= 1 &&
+    lineEnd >= lineStart
+  );
 }
 
 function parseIds(block: string, openTag: string, closeTag: string): string[] | null {
@@ -195,12 +204,16 @@ export function formatOaiMemCitation(block: CitationBlock): string {
  * Returns an empty string when `citations` is empty (no guidance needed).
  */
 export function buildCitationGuidance(citations: CitationMetadata[]): string {
-  if (citations.length === 0) return "";
+  const validCitations = citations.filter((citation) =>
+    citation.path.trim().length > 0 &&
+    isValidCitationRange(citation.lineStart, citation.lineEnd)
+  );
+  if (validCitations.length === 0) return "";
 
-  const entryExamples = citations.map((c) =>
+  const entryExamples = validCitations.map((c) =>
     `${c.path}:${c.lineStart}-${c.lineEnd}|note=[${sanitizeNoteForCitation(c.noteDefault)}]`,
   );
-  const rolloutExamples = citations
+  const rolloutExamples = validCitations
     .filter((c) => c.rolloutId != null)
     .map((c) => c.rolloutId!);
 

@@ -71,7 +71,10 @@ import { extractTopics } from "./topics.js";
 import { TranscriptManager } from "./transcript.js";
 import { HourlySummarizer } from "./summarizer.js";
 import { LocalLlmClient } from "./local-llm.js";
-import { FallbackLlmClient } from "./fallback-llm.js";
+import {
+  FallbackLlmClient,
+  fallbackLlmRuntimeContextFromConfig,
+} from "./fallback-llm.js";
 import {
   ensureDaySummaryCron,
   ensureNightlyGovernanceCron,
@@ -2014,9 +2017,10 @@ export class Orchestrator {
       : this.localLlm;
     // Initialize gateway fast LLM for fast-tier ops when modelSource is "gateway"
     this._fastGatewayLlm = config.modelSource === "gateway"
-      ? new FallbackLlmClient(config.gatewayConfig, {
-          workspaceDir: config.workspaceDir,
-        })
+      ? new FallbackLlmClient(
+          config.gatewayConfig,
+          fallbackLlmRuntimeContextFromConfig(config),
+        )
       : null;
     if (config.modelSource === "gateway") {
       log.debug(
@@ -3337,9 +3341,10 @@ export class Orchestrator {
           ? this.config.fastGatewayAgentId
           : this.config.gatewayAgentId || undefined)
       : undefined;
-    const llm = new FallbackLlmClient(this.config.gatewayConfig, {
-      workspaceDir: this.config.workspaceDir,
-    });
+    const llm = new FallbackLlmClient(
+      this.config.gatewayConfig,
+      fallbackLlmRuntimeContextFromConfig(this.config),
+    );
     if (!llm.isAvailable(gatewayAgentId) && !(modelSetting === "fast" && this.fastLlm && !useGateway)) {
       log.warn(
         "[semantic-consolidation] no LLM available — skipping synthesis",
@@ -3584,9 +3589,10 @@ export class Orchestrator {
     if (this.config.peerProfileReasonerEnabled) {
       try {
         const { runPeerProfileReasoner } = await import("./peers/index.js");
-        const llm = new FallbackLlmClient(this.config.gatewayConfig, {
-          workspaceDir: this.config.workspaceDir,
-        });
+        const llm = new FallbackLlmClient(
+          this.config.gatewayConfig,
+          fallbackLlmRuntimeContextFromConfig(this.config),
+        );
         const peerResult = await runPeerProfileReasoner({
           memoryDir: targetStorage.dir,
           enabled: true,
@@ -4627,6 +4633,12 @@ export class Orchestrator {
     }
     const chunks = await this.buildConversationIndexChunks(sessionKey, hours);
     await writeConversationChunks(this.conversationIndexDir, chunks);
+    const retentionCutoffMs =
+      Number.isFinite(this.config.conversationIndexRetentionDays) &&
+      this.config.conversationIndexRetentionDays > 0
+        ? Date.now() -
+          this.config.conversationIndexRetentionDays * 24 * 60 * 60 * 1000
+        : undefined;
     await cleanupConversationChunks(
       this.conversationIndexDir,
       this.config.conversationIndexRetentionDays,
@@ -4638,6 +4650,7 @@ export class Orchestrator {
     if (this.conversationIndexBackend) {
       const result = await this.conversationIndexBackend.update(chunks, {
         embed: shouldEmbed,
+        ...(retentionCutoffMs !== undefined ? { retentionCutoffMs } : {}),
       });
       embedded = result.embedded;
     }
@@ -4814,7 +4827,7 @@ export class Orchestrator {
     if (this.config.secureStoreEnabled && !this.storage.isSecureStoreUnlocked()) {
       const lockedMsg =
         "[secure-store locked] Memory store is encrypted and locked. " +
-        "Run `remnic secure-store unlock` then restart the daemon to decrypt.";
+        "Unlock the secure-store inside this daemon process, or restart the daemon through a secure-store aware launcher that installs the key.";
       log.warn("recall blocked: secure-store is locked");
       return lockedMsg;
     }
@@ -6900,6 +6913,7 @@ export class Orchestrator {
       const section = await buildEntityRecallSection({
         config: this.config,
         storage: profileStorage,
+        namespaceStorage: (namespace) => this.getStorage(namespace),
         query: retrievalQuery,
         recallNamespaces,
         recentTurns,
@@ -7851,6 +7865,7 @@ export class Orchestrator {
                   temporalResults,
                   this.config.parallelAgentWeights,
                   qmdFetchLimit + lifecycleHeadroom,
+                  this.config.memoryDir,
                 );
               }
             } catch (err) {
@@ -10362,9 +10377,18 @@ export class Orchestrator {
 
   async ingestReplayBatch(
     turns: ReplayTurn[],
-    options: { deadlineMs?: number; archiveLcm?: boolean } = {},
+    options: {
+      deadlineMs?: number;
+      archiveLcm?: boolean;
+      abortSignal?: AbortSignal;
+    } = {},
   ): Promise<void> {
     if (!Array.isArray(turns) || turns.length === 0) return;
+    if (options.abortSignal?.aborted) {
+      throw options.abortSignal.reason instanceof Error
+        ? options.abortSignal.reason
+        : new Error("ingestReplayBatch aborted");
+    }
     if (shouldSkipImplicitExtraction(this.config)) {
       log.debug(
         "ingestReplayBatch: skipping implicit extraction because captureMode=explicit",
@@ -10398,6 +10422,11 @@ export class Orchestrator {
     }> = [];
     for (const [key, sessionTurns] of bySession.entries()) {
       if (sessionTurns.length === 0) continue;
+      if (options.abortSignal?.aborted) {
+        throw options.abortSignal.reason instanceof Error
+          ? options.abortSignal.reason
+          : new Error("ingestReplayBatch aborted");
+      }
       if (options.archiveLcm !== false && this.lcmEngine?.enabled) {
         await this.lcmEngine.observeMessages(
           key,
@@ -10437,6 +10466,7 @@ export class Orchestrator {
               skipUserTurnThreshold: true,
               bufferKey,
               extractionDeadlineMs: options.deadlineMs,
+              abortSignal: options.abortSignal,
               onTaskSettled: (err) => (err ? reject(err) : resolve()),
             }).catch(reject);
           }),
@@ -10540,6 +10570,7 @@ export class Orchestrator {
         parts: turn.parts,
         rawContent: turn.rawContent,
         sourceFormat: turn.sourceFormat,
+        importProvenance: turn.importProvenance,
       });
     }
     if (sessionTurns.length === 0) return;
@@ -12163,9 +12194,10 @@ export class Orchestrator {
           judgeCandidates,
           this.config,
           this.localLlm,
-          new FallbackLlmClient(this.config.gatewayConfig, {
-            workspaceDir: this.config.workspaceDir,
-          }),
+          new FallbackLlmClient(
+            this.config.gatewayConfig,
+            fallbackLlmRuntimeContextFromConfig(this.config),
+          ),
           this.judgeVerdictCache,
           this.judgeDeferCounts,
           judgeTelemetryHandler,

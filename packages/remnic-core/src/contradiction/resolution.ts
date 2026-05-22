@@ -80,6 +80,7 @@ export async function executeResolution(
   const affectedIds: string[] = [];
   let message = "";
   let supersedeFailed = false;
+  let rollbackAfterResolveFailure: (() => Promise<boolean>) | null = null;
 
   switch (verb) {
     case "keep-a": {
@@ -93,7 +94,12 @@ export async function executeResolution(
       const ok = sourceB
         ? await supersedeSafe(resolutionStorage, idB, idA, "contradiction-resolution:keep-a")
         : false;
-      if (ok) { affectedIds.push(idB); message = `Kept ${idA}, superseded ${idB}`; }
+      if (ok) {
+        affectedIds.push(idB);
+        rollbackAfterResolveFailure = async () =>
+          restoreMemorySnapshot(resolutionStorage, sourceB!, "contradiction-resolution:keep-a-rollback");
+        message = `Kept ${idA}, superseded ${idB}`;
+      }
       else {
         supersedeFailed = true;
         const rolledBack = sourceB
@@ -116,7 +122,12 @@ export async function executeResolution(
       const ok = sourceA
         ? await supersedeSafe(resolutionStorage, idA, idB, "contradiction-resolution:keep-b")
         : false;
-      if (ok) { affectedIds.push(idA); message = `Kept ${idB}, superseded ${idA}`; }
+      if (ok) {
+        affectedIds.push(idA);
+        rollbackAfterResolveFailure = async () =>
+          restoreMemorySnapshot(resolutionStorage, sourceA!, "contradiction-resolution:keep-b-rollback");
+        message = `Kept ${idB}, superseded ${idA}`;
+      }
       else {
         supersedeFailed = true;
         const rolledBack = sourceA
@@ -167,6 +178,14 @@ export async function executeResolution(
       }
 
       affectedIds.push(idA, idB);
+      rollbackAfterResolveFailure = async () => {
+        const rolledBackA = await restoreMemorySnapshot(resolutionStorage, replacement.sourceA);
+        const rolledBackB = await restoreMemorySnapshot(resolutionStorage, replacement.sourceB);
+        if (rolledBackA && rolledBackB) {
+          await cleanupCreatedReplacement(resolutionStorage, replacement);
+        }
+        return rolledBackA && rolledBackB;
+      };
       message = `Both memories superseded by merged ${replacement.mergedId}`;
       break;
     }
@@ -181,7 +200,28 @@ export async function executeResolution(
   }
 
   if (!supersedeFailed) {
-    resolvePair(memoryDir, pairId, verb);
+    let resolved = false;
+    try {
+      resolved = resolvePair(memoryDir, pairId, verb) !== null;
+    } catch (err) {
+      log.warn(
+        "[contradiction-resolution] failed to persist pair=%s verb=%s: %s",
+        pairId,
+        verb,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    if (!resolved) {
+      if (rollbackAfterResolveFailure) {
+        const rolledBack = await rollbackAfterResolveFailure();
+        affectedIds.length = 0;
+        message = rolledBack
+          ? `Resolution persistence failed; rolled back memory changes and did not resolve ${pairId}`
+          : `Resolution persistence failed; rollback incomplete and pair is not resolved`;
+      } else {
+        message = `Resolution persistence failed; pair is not resolved`;
+      }
+    }
   }
   log.info("[contradiction-resolution] pair=%s verb=%s affected=%d", pairId, verb, affectedIds.length);
   return { pairId, verb, affectedIds, message };
@@ -249,7 +289,6 @@ async function prepareMergeReplacement(
       tags: ["contradiction-resolution", "merge"],
       source: "contradiction-resolution",
       lineage: [idA, idB],
-      derivedFrom: [idA, idB],
       derivedVia: "merge",
     });
   } catch (err) {

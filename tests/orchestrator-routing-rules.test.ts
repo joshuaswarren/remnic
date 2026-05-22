@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { access, mkdtemp } from "node:fs/promises";
+import { access, mkdtemp, readFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { selectRouteRule } from "../src/routing/engine.js";
 import { RoutingRulesStore } from "../src/routing/store.js";
 import { readEdges } from "../src/graph.js";
 import { queryByTagsAsync } from "../src/temporal-index.js";
@@ -18,6 +19,54 @@ async function exists(filePath: string): Promise<boolean> {
     return false;
   }
 }
+
+test("RoutingRulesStore persists disabled rules but keeps them inactive for matching", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-routing-disabled-"));
+  const store = new RoutingRulesStore(memoryDir);
+  const disabledRule = {
+    id: "route-disabled-incident",
+    patternType: "keyword" as const,
+    pattern: "incident",
+    priority: 1,
+    target: { category: "fact" as const },
+    enabled: false,
+  };
+
+  const written = await store.write([disabledRule]);
+  assert.equal(written.length, 1);
+  assert.equal(written[0]?.enabled, false);
+
+  const persisted = await store.read();
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0]?.enabled, false);
+
+  const rawState = JSON.parse(
+    await readFile(path.join(memoryDir, "state", "routing-rules.json"), "utf-8"),
+  );
+  assert.equal(rawState.rules[0].enabled, false);
+  assert.equal(selectRouteRule("incident in prod", persisted), null);
+});
+
+test("RoutingRulesStore upsert can disable an existing rule by id", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-routing-upsert-disabled-"));
+  const store = new RoutingRulesStore(memoryDir);
+  const enabledRule = {
+    id: "route-incident",
+    patternType: "keyword" as const,
+    pattern: "incident",
+    priority: 10,
+    target: { category: "fact" as const },
+  };
+
+  await store.upsert(enabledRule);
+  await store.upsert({ ...enabledRule, enabled: false });
+
+  const persisted = await store.read();
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0]?.id, "route-incident");
+  assert.equal(persisted[0]?.enabled, false);
+  assert.equal(selectRouteRule("incident in prod", persisted), null);
+});
 
 test("persistExtraction applies routing rule category+namespace targets", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-orchestrator-routing-"));

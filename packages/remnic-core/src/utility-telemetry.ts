@@ -126,7 +126,7 @@ export async function recordUtilityTelemetryEvent(options: {
   const eventsDir = path.join(rootDir, "events", day);
   const filePath = path.join(eventsDir, `${validated.eventId}.json`);
   await mkdir(eventsDir, { recursive: true });
-  await writeFile(filePath, JSON.stringify(validated, null, 2), "utf8");
+  await writeFile(filePath, JSON.stringify(validated, null, 2), { encoding: "utf8", flag: "wx" });
   return filePath;
 }
 

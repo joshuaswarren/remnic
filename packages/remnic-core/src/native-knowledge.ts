@@ -472,10 +472,26 @@ async function resolveCandidatePaths(options: {
   identityVariantMode: "recall" | "disk";
 }): Promise<string[]> {
   const out = new Set<string>();
+  const workspaceRoot = path.resolve(options.workspaceDir);
+  const resolveWorkspaceFile = (relativePath: string): string | null => {
+    if (path.isAbsolute(relativePath)) return null;
+    const resolved = path.resolve(workspaceRoot, relativePath);
+    const relative = path.relative(workspaceRoot, resolved);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      return null;
+    }
+    return resolved;
+  };
+  const safeIdentityNamespace = (namespace: string): string | null => {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(namespace)) return null;
+    if (namespace.includes("..")) return null;
+    return namespace;
+  };
   for (const rel of options.includeFiles) {
     const trimmed = rel.trim();
     if (!trimmed) continue;
-    const candidatePath = path.join(options.workspaceDir, trimmed);
+    const candidatePath = resolveWorkspaceFile(trimmed);
+    if (candidatePath === null) continue;
     out.add(candidatePath);
     if (path.basename(trimmed).toLowerCase() !== "identity.md") continue;
 
@@ -484,7 +500,10 @@ async function resolveCandidatePaths(options: {
       if (!Array.isArray(options.recallNamespaces)) continue;
       for (const namespace of options.recallNamespaces) {
         if (!namespace || namespace === options.defaultNamespace) continue;
-        out.add(path.join(options.workspaceDir, relativeDir, `IDENTITY.${namespace}.md`));
+        const safeNamespace = safeIdentityNamespace(namespace);
+        if (safeNamespace === null) continue;
+        const variantPath = resolveWorkspaceFile(path.join(relativeDir, `IDENTITY.${safeNamespace}.md`));
+        if (variantPath !== null) out.add(variantPath);
       }
       continue;
     }
@@ -498,7 +517,8 @@ async function resolveCandidatePaths(options: {
     }
     for (const entry of entries) {
       if (!/^identity\.[^.\/]+\.md$/i.test(entry)) continue;
-      out.add(path.join(options.workspaceDir, relativeDir, entry));
+      const variantPath = resolveWorkspaceFile(path.join(relativeDir, entry));
+      if (variantPath !== null) out.add(variantPath);
     }
   }
   return Array.from(out);

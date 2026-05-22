@@ -6,8 +6,12 @@ import type { PluginConfig, QmdSearchResult } from "../types.js";
 
 class FakeBackend implements SearchBackend {
   updates = 0;
+  calls: Array<{ method: string; collection: string | undefined }> = [];
 
-  constructor(private readonly globalUpdate: boolean) {}
+  constructor(
+    private readonly globalUpdate: boolean,
+    private readonly results: QmdSearchResult[] = [],
+  ) {}
 
   async probe(): Promise<boolean> {
     return true;
@@ -21,23 +25,27 @@ class FakeBackend implements SearchBackend {
     return "fake";
   }
 
-  async search(): Promise<QmdSearchResult[]> {
-    return [];
+  async search(_query?: string, collection?: string): Promise<QmdSearchResult[]> {
+    this.calls.push({ method: "search", collection });
+    return this.results;
   }
 
   async searchGlobal(): Promise<QmdSearchResult[]> {
     return [];
   }
 
-  async bm25Search(): Promise<QmdSearchResult[]> {
+  async bm25Search(_query?: string, collection?: string): Promise<QmdSearchResult[]> {
+    this.calls.push({ method: "bm25", collection });
     return [];
   }
 
-  async vectorSearch(): Promise<QmdSearchResult[]> {
+  async vectorSearch(_query?: string, collection?: string): Promise<QmdSearchResult[]> {
+    this.calls.push({ method: "vector", collection });
     return [];
   }
 
-  async hybridSearch(): Promise<QmdSearchResult[]> {
+  async hybridSearch(_query?: string, collection?: string): Promise<QmdSearchResult[]> {
+    this.calls.push({ method: "hybrid", collection });
     return [];
   }
 
@@ -102,4 +110,66 @@ test("updateNamespaces still updates every namespace for scoped backends", async
 
   assert.equal(updated, 3);
   assert.equal(created.reduce((sum, backend) => sum + backend.updates, 0), 3);
+});
+
+test("searchAcrossNamespaces preserves same path results from distinct namespaces", async () => {
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    (scopedConfig) => {
+      const namespace = scopedConfig.memoryDir.endsWith("/shared") ? "shared" : "main";
+      return new FakeBackend(false, [
+        {
+          path: "facts/a.md",
+          docid: "a",
+          score: namespace === "main" ? 0.9 : 0.8,
+          snippet: namespace,
+        },
+      ]);
+    },
+  );
+
+  const results = await router.searchAcrossNamespaces({
+    query: "a",
+    namespaces: ["main", "shared"],
+    maxResults: 10,
+  });
+
+  assert.deepEqual(
+    results.map((result) => result.snippet),
+    ["main", "shared"],
+  );
+});
+
+test("searchAcrossNamespaces passes scoped collection to backend search methods", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false);
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  for (const mode of ["search", "hybrid", "bm25", "vector"] as const) {
+    router.clearCache();
+    created.length = 0;
+    await router.searchAcrossNamespaces({
+      query: "a",
+      namespaces: ["main", "shared"],
+      maxResults: 10,
+      mode,
+    });
+
+    assert.deepEqual(
+      created.flatMap((backend) => backend.calls.map((call) => call.collection)),
+      [
+        "openclaw-engram--ns-6d61696e",
+        "openclaw-engram--ns-736861726564",
+      ],
+      mode,
+    );
+  }
 });

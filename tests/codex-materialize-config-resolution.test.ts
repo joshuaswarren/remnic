@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,10 +10,12 @@ import {
   loadRawConfig as loadDevRawConfig,
 } from "../scripts/codex-materialize.ts";
 import {
-  LEGACY_PLUGIN_ID,
-  PLUGIN_ID,
-  resolveRemnicPluginEntry,
-} from "../packages/remnic-core/src/plugin-id.js";
+  resolvePluginEntry,
+} from "../packages/remnic-core/src/plugin-entry-resolver.js";
+import {
+  REMNIC_OPENCLAW_LEGACY_PLUGIN_ID,
+  REMNIC_OPENCLAW_PLUGIN_ID,
+} from "../packages/plugin-openclaw/src/plugin-id.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,7 +24,7 @@ const packagedMaterialize = require(
   path.resolve(__dirname, "..", "packages", "plugin-codex", "bin", "materialize.cjs"),
 ) as {
   loadRawConfig: (
-    resolveEntry: typeof resolveRemnicPluginEntry,
+    resolveEntry: typeof resolvePluginEntry,
     env?: NodeJS.ProcessEnv,
   ) => Record<string, unknown>;
 };
@@ -33,7 +35,7 @@ const loaders: Array<[string, Loader]> = [
   ["dev script", (env) => loadDevRawConfig(env)],
   [
     "packaged bin",
-    (env) => packagedMaterialize.loadRawConfig(resolveRemnicPluginEntry, env),
+    (env) => packagedMaterialize.loadRawConfig(resolvePluginEntry, env),
   ],
 ];
 
@@ -56,12 +58,12 @@ for (const [name, loadRawConfig] of loaders) {
       const configPath = path.join(dir, "openclaw.json");
       writeJson(configPath, {
         plugins: {
-          slots: { memory: PLUGIN_ID },
+          slots: { memory: REMNIC_OPENCLAW_PLUGIN_ID },
           entries: {
-            [PLUGIN_ID]: {
+            [REMNIC_OPENCLAW_PLUGIN_ID]: {
               config: { memoryDir: "/tmp/canonical", marker: "canonical" },
             },
-            [LEGACY_PLUGIN_ID]: {
+            [REMNIC_OPENCLAW_LEGACY_PLUGIN_ID]: {
               config: { memoryDir: "/tmp/legacy", marker: "legacy" },
             },
           },
@@ -91,6 +93,24 @@ for (const [name, loadRawConfig] of loaders) {
       });
       assert.equal(raw.marker, "primary");
       assert.equal(raw.memoryDir, "/tmp/primary");
+    });
+  });
+
+  test(`${name} expands tilde-prefixed explicit config paths`, () => {
+    withTempDir((dir) => {
+      const configDir = path.join(dir, ".config", "remnic");
+      mkdirSync(configDir, { recursive: true });
+      writeJson(path.join(configDir, "config.json"), {
+        memoryDir: "/tmp/tilde-config",
+        marker: "tilde-config",
+      });
+
+      const raw = loadRawConfig({
+        HOME: dir,
+        REMNIC_CONFIG: "~/.config/remnic/config.json",
+      });
+      assert.equal(raw.marker, "tilde-config");
+      assert.equal(raw.memoryDir, "/tmp/tilde-config");
     });
   });
 

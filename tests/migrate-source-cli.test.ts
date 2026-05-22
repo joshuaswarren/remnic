@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -75,6 +75,24 @@ test("migrate rejects unknown arguments instead of defaulting to all sources", a
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /Unknown argument: --sourc/);
     assert.equal(existsSync(path.join(homeDir, ".openclaw")), false);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("migrate preserves corrupt meta.json instead of replacing it", async () => {
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "remnic-migrate-home-"));
+  try {
+    const stateDir = path.join(homeDir, ".openclaw", "workspace", "memory", "local", "state");
+    const metaPath = path.join(stateDir, "meta.json");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(metaPath, "{not valid json", "utf-8");
+
+    const result = runMigrate(["--source", "context"], homeDir);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /failed to read existing migration meta state/);
+    assert.equal(await readFile(metaPath, "utf-8"), "{not valid json");
   } finally {
     await rm(homeDir, { recursive: true, force: true });
   }

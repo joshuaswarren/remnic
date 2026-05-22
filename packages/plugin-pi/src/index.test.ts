@@ -11,6 +11,7 @@ import remnicPiExtension, {
   createRemnicPiExtension,
   observeMessages,
   stripSessionOwnedSchemaFields,
+  stripSessionOwnedRuntimeFields,
   toPiToolParametersSchema,
 } from "./index.js";
 import type { RemnicPiConfig } from "./config.js";
@@ -33,6 +34,61 @@ test("stripSessionOwnedSchemaFields hides session routing fields from Pi tools",
   });
   assert.deepEqual(schema.required, ["query"]);
   assert.equal(schema.additionalProperties, false);
+});
+
+test("stripSessionOwnedSchemaFields hides nested session routing fields from Pi tools", () => {
+  const schema = stripSessionOwnedSchemaFields({
+    type: "object",
+    properties: {
+      filter: {
+        type: "object",
+        properties: {
+          sessionKey: { type: "string" },
+          namespace: { type: "string" },
+          cwd: { type: "string" },
+          query: { type: "string" },
+        },
+        required: ["sessionKey", "namespace", "cwd", "query"],
+      },
+    },
+    required: ["filter"],
+  });
+
+  assert.deepEqual(schema, {
+    type: "object",
+    properties: {
+      filter: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+        },
+        required: ["query"],
+      },
+    },
+    required: ["filter"],
+  });
+});
+
+test("stripSessionOwnedRuntimeFields removes nested session routing values", () => {
+  assert.deepEqual(
+    stripSessionOwnedRuntimeFields({
+      query: "keep",
+      cwd: "/attacker",
+      filter: {
+        sessionKey: "attacker",
+        namespace: "attacker",
+        keep: true,
+        nested: [{ cwd: "/other", value: 1 }],
+      },
+    }),
+    {
+      query: "keep",
+      filter: {
+        keep: true,
+        nested: [{ value: 1 }],
+      },
+    },
+  );
 });
 
 test("toPiToolParametersSchema wraps stripped MCP schemas as TypeBox schemas", () => {
@@ -464,11 +520,67 @@ test("session_before_compact records token counts only when Pi supplies both cou
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(compactionRecords.length, 0);
 
-  await emit("session_before_compact", { preparation: { tokensBefore: 100, tokensAfter: 42, messagesToSummarize } }, ctx);
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await emit("session_before_compact", { preparation: { tokensBefore: 100, tokensAfter: 42 } }, ctx);
   assert.equal(compactionRecords.length, 1);
   assert.equal(compactionRecords[0].tokensBefore, 100);
   assert.equal(compactionRecords[0].tokensAfter, 42);
+});
+
+test("session_before_compact surfaces checkpoint write failures without dropping compaction result", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const notifications: Array<{ message: string; level: string }> = [];
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/mcp")) {
+      return new Response(JSON.stringify({ error: { message: "checkpoint unavailable" } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const result = await emit(
+    "session_before_compact",
+    {
+      preparation: {
+        tokensBefore: 100,
+        tokensAfter: 42,
+        messagesToSummarize: [{ role: "user", content: "compact this" }],
+      },
+    },
+    {
+      cwd: "/tmp/remnic-pi",
+      sessionManager: { getSessionId: () => "compact-checkpoint-failure-test" },
+      ui: {
+        notify(message: string, level: string) {
+          notifications.push({ message, level });
+        },
+      },
+    },
+  );
+
+  assert.ok(result && typeof result === "object" && "compaction" in result);
+  assert.ok(
+    notifications.some(
+      (notification) =>
+        notification.level === "warning" &&
+        notification.message.includes("Remnic context checkpoint failed"),
+    ),
+  );
 });
 
 test("singleton extension clears per-session recall suppression on shutdown", async (t) => {
@@ -503,6 +615,42 @@ test("singleton extension clears per-session recall suppression on shutdown", as
   await emit("context", event, firstCtx);
   await emit("session_shutdown", {}, firstCtx);
   await emit("context", event, secondCtx);
+
+  assert.equal(recallBodies.length, 2);
+});
+
+test("recall suppression distinguishes repeated user text with different message ids", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const recallBodies: unknown[] = [];
+  globalThis.fetch = async (_input, init) => {
+    recallBodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "repeat-user-text-recall" },
+  };
+
+  await emit("context", { messages: [{ id: "m1", role: "user", content: "continue" }] }, ctx);
+  await emit("context", { messages: [{ id: "m2", role: "user", content: "continue" }] }, ctx);
+  await emit("context", { messages: [{ id: "m2", role: "user", content: "continue" }] }, ctx);
 
   assert.equal(recallBodies.length, 2);
 });
@@ -542,6 +690,14 @@ test("empty recall responses do not suppress retry for same query", async (t) =>
 
   assert.equal(calls, 2);
   assert.ok(result.messages?.[0]?.content?.[0]?.text?.includes("remembered context"));
+  assert.equal(
+    (result.messages?.[0] as { excludeFromContext?: unknown } | undefined)?.excludeFromContext,
+    undefined,
+  );
+  assert.equal(
+    (result.messages?.[0] as { remnicInjected?: unknown } | undefined)?.remnicInjected,
+    true,
+  );
 });
 
 test("recall context truncation stays within the configured budget", async (t) => {
@@ -613,6 +769,109 @@ test("failed recall does not suppress retry for same query", async (t) => {
   await emit("context", event, ctx);
 
   assert.equal(calls, 2);
+});
+
+test("registered MCP tools strip nested session-owned params before forwarding", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const registeredTools: any[] = [];
+  const forwardedArguments: unknown[] = [];
+  globalThis.fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (body.method === "tools/list") {
+      return new Response(JSON.stringify({
+        result: {
+          tools: [
+            {
+              name: "remnic.search",
+              description: "Search",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  filter: {
+                    type: "object",
+                    properties: {
+                      sessionKey: { type: "string" },
+                      namespace: { type: "string" },
+                      cwd: { type: "string" },
+                      query: { type: "string" },
+                    },
+                    required: ["sessionKey", "namespace", "cwd", "query"],
+                  },
+                },
+                required: ["filter"],
+              },
+            },
+          ],
+        },
+      }), { status: 200 });
+    }
+    if (body.method === "tools/call") {
+      forwardedArguments.push(body.params.arguments);
+      return new Response(JSON.stringify({ result: { ok: true } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ result: {} }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "configured-namespace",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      statusEnabled: false,
+      mcpToolsEnabled: true,
+    },
+  });
+  await extension({
+    on: () => undefined,
+    registerCommand: () => undefined,
+    registerTool: (tool: Record<string, unknown>) => {
+      registeredTools.push(tool);
+    },
+    appendEntry: () => undefined,
+  });
+
+  assert.equal(registeredTools.length, 1);
+  assert.deepEqual(registeredTools[0].parameters.properties.filter.properties, {
+    query: { type: "string" },
+  });
+  assert.deepEqual(registeredTools[0].parameters.properties.filter.required, ["query"]);
+
+  await registeredTools[0].execute(
+    "tool-call-1",
+    {
+      filter: {
+        sessionKey: "attacker-session",
+        namespace: "attacker-namespace",
+        cwd: "/attacker",
+        query: "keep",
+        nested: [{ cwd: "/nested-attacker", value: 1 }],
+      },
+    },
+    undefined,
+    undefined,
+    {
+      cwd: "/safe/project",
+      sessionManager: { getSessionId: () => "safe-session" },
+    },
+  );
+
+  assert.deepEqual(forwardedArguments, [
+    {
+      filter: {
+        query: "keep",
+        nested: [{ value: 1 }],
+      },
+      sessionKey: "pi:safe-session",
+      namespace: "configured-namespace",
+      cwd: "/safe/project",
+    },
+  ]);
 });
 
 function baseConfig(): RemnicPiConfig {

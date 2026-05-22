@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
-import { WebDavServer, hostToUrlAuthority } from "../src/network/webdav.ts";
+import { WebDavServer, hostToUrlAuthority, openWebDavFileForRead } from "../src/network/webdav.ts";
 
 type HttpResult = {
   status: number;
@@ -145,6 +145,11 @@ test("webdav enforces optional basic auth", async () => {
     const denied = await httpRequest("GET", started.port, `/${alias}/secret.txt`);
     assert.equal(denied.status, 401);
 
+    const emptyCredentials = await httpRequest("GET", started.port, `/${alias}/secret.txt`, {
+      Authorization: `Basic ${Buffer.from(":").toString("base64")}`,
+    });
+    assert.equal(emptyCredentials.status, 401);
+
     const authHeader = `Basic ${Buffer.from("engram:pass123").toString("base64")}`;
     const allowed = await httpRequest("GET", started.port, `/${alias}/secret.txt`, {
       Authorization: authHeader,
@@ -161,6 +166,41 @@ test("webdav enforces optional basic auth", async () => {
   } finally {
     await server.stop();
   }
+});
+
+test("webdav rejects empty basic auth credentials at create time", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-empty-auth-"));
+
+  await assert.rejects(
+    () =>
+      WebDavServer.create({
+        enabled: true,
+        port: 0,
+        allowlistDirs: [root],
+        auth: { username: "", password: "pass123" },
+      }),
+    /webdav auth\.username must be a non-empty string/,
+  );
+  await assert.rejects(
+    () =>
+      WebDavServer.create({
+        enabled: true,
+        port: 0,
+        allowlistDirs: [root],
+        auth: { username: "engram", password: "" },
+      }),
+    /webdav auth\.password must be a non-empty string/,
+  );
+  await assert.rejects(
+    () =>
+      WebDavServer.create({
+        enabled: true,
+        port: 0,
+        allowlistDirs: [root],
+        auth: { username: "   ", password: "\t" },
+      }),
+    /webdav auth\.username must be a non-empty string/,
+  );
 });
 
 test("webdav does not leak internal errors in 500 response bodies", async () => {
@@ -215,6 +255,62 @@ test("webdav blocks symlink escapes outside allowlisted root", async () => {
   }
 });
 
+test("webdav read open rejects a symlink swapped after path validation", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-race-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-race-outside-"));
+  const target = path.join(root, "target.txt");
+  const outsideFile = path.join(outsideDir, "outside.txt");
+  await writeFile(target, "inside", "utf-8");
+  await writeFile(outsideFile, "outside-secret", "utf-8");
+
+  try {
+    await rm(target);
+    await symlink(outsideFile, target);
+  } catch {
+    return; // symlinks unavailable
+  }
+
+  const opened = await openWebDavFileForRead(target);
+  assert.equal(opened.ok, false);
+  if (!opened.ok) {
+    assert.equal(opened.code, 403);
+    assert.match(opened.message, /symlink/i);
+  }
+});
+
+test("webdav blocks parent-directory symlink escapes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-parent-symlink-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-parent-outside-"));
+  await writeFile(path.join(outsideDir, "outside.txt"), "outside-secret", "utf-8");
+
+  try {
+    await symlink(outsideDir, path.join(root, "linked-dir"), "dir");
+  } catch {
+    return; // symlinks unavailable
+  }
+
+  const server = await WebDavServer.create({
+    enabled: true,
+    port: 0,
+    allowlistDirs: [root],
+  });
+  const started = await server.start();
+  const alias = path.basename(root);
+
+  try {
+    const get = await httpRequest("GET", started.port, `/${alias}/linked-dir/outside.txt`);
+    assert.equal(get.status, 403);
+    assert.match(get.body, /symlink|allowlist/i);
+
+    const propfind = await httpRequest("PROPFIND", started.port, `/${alias}/linked-dir`);
+    assert.equal(propfind.status, 403);
+    assert.match(propfind.body, /symlink|allowlist/i);
+  } finally {
+    await server.stop();
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
 test("webdav start resets state after listen failure and supports retry", async () => {
   const rootA = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-retry-a-"));
   const rootB = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-retry-b-"));
@@ -240,6 +336,45 @@ test("webdav start resets state after listen failure and supports retry", async 
   const secondStarted = await second.start();
   assert.equal(secondStarted.running, true);
   await second.stop();
+});
+
+test("webdav stop during startup settles lifecycle and allows restart", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-stop-startup-"));
+  const server = await WebDavServer.create({
+    enabled: true,
+    port: 0,
+    allowlistDirs: [root],
+  });
+
+  const started = server.start();
+  await server.stop();
+  await started.catch((error) => {
+    assert.match(String(error), /closed before listening|Server is not running|ERR_SERVER_NOT_RUNNING/);
+  });
+
+  const restarted = await server.start();
+  assert.equal(restarted.running, true);
+  await server.stop();
+});
+
+test("webdav concurrent start waits for listening state and bound port", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-concurrent-start-"));
+  const server = await WebDavServer.create({
+    enabled: true,
+    port: 0,
+    allowlistDirs: [root],
+  });
+
+  try {
+    const [first, second] = await Promise.all([server.start(), server.start()]);
+    assert.equal(first.running, true);
+    assert.equal(second.running, true);
+    assert.ok(first.port > 0);
+    assert.equal(second.port, first.port);
+    assert.deepEqual(server.status(), first);
+  } finally {
+    await server.stop();
+  }
 });
 
 test("webdav restart with port 0 rebinds to a fresh ephemeral port", async () => {

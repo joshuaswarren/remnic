@@ -84,6 +84,24 @@ function sampleResult(overrides: Partial<BenchmarkResult> = {}): BenchmarkResult
   };
 }
 
+function sampleArtifactPayload(): Record<string, unknown> {
+  return {
+    schemaVersion: BENCHMARK_ARTIFACT_SCHEMA_VERSION,
+    benchmarkId: "longmemeval",
+    datasetVersion: "v1",
+    system: { name: "remnic", version: "1.0.0", gitSha: "abc" },
+    model: "m",
+    seed: 0,
+    metrics: {},
+    perTaskScores: [{ taskId: "t1", scores: { f1: 1 }, category: "multi_hop" }],
+    startedAt: "2026-04-20T12:00:00Z",
+    finishedAt: "2026-04-20T12:00:00Z",
+    durationMs: 0,
+    env: { node: "v22", os: "linux", arch: "x64" },
+    note: "limit=1",
+  };
+}
+
 test("buildBenchmarkArtifact extracts means + per-task scores", () => {
   const artifact = buildBenchmarkArtifact({
     benchmarkId: "longmemeval",
@@ -431,6 +449,29 @@ test("parseBenchmarkArtifact rejects non-finite per-task score", () => {
   assert.throws(
     () => parseBenchmarkArtifact(raw),
     /perTaskScores\[0\]\.scores\.f1 must be a finite number/,
+  );
+});
+
+test("parseBenchmarkArtifact rejects malformed optional string fields", () => {
+  const withBadArch = sampleArtifactPayload();
+  (withBadArch.env as Record<string, unknown>).arch = {};
+  assert.throws(
+    () => parseBenchmarkArtifact(JSON.stringify(withBadArch)),
+    /field "env\.arch" must be a string when provided/,
+  );
+
+  const withBadNote = sampleArtifactPayload();
+  withBadNote.note = 42;
+  assert.throws(
+    () => parseBenchmarkArtifact(JSON.stringify(withBadNote)),
+    /field "note" must be a string when provided/,
+  );
+
+  const withBadCategory = sampleArtifactPayload();
+  ((withBadCategory.perTaskScores as Array<Record<string, unknown>>)[0]!).category = 42;
+  assert.throws(
+    () => parseBenchmarkArtifact(JSON.stringify(withBadCategory)),
+    /field "perTaskScores\[0\]\.category" must be a string when provided/,
   );
 });
 

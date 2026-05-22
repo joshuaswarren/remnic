@@ -2,10 +2,10 @@
  * Types for the ADAM-style memory-extraction attack harness.
  *
  * See docs/security/memory-extraction-threat-model.md for the threat model
- * this harness probes. The harness targets the read-path surfaces enumerated
- * in §4 of that document (recall / memory_search / memory_entities_list /
- * memory_last_recall / …), driven in-process against a seeded memory fixture
- * so tests do not need a running daemon.
+ * this harness probes. The harness targets the modeled read-path surfaces
+ * enumerated in §4 of that document (recall / memory_search /
+ * memory_entities_list / …), driven in-process against a seeded memory
+ * fixture so tests do not need a running daemon.
  */
 
 /**
@@ -99,11 +99,6 @@ export interface ExtractionAttackTarget {
    * attacker mode was granted access to `memory_entities_list`.
    */
   listEntities?(): Promise<string[]>;
-  /**
-   * Optional side channel: list memory IDs the attacker has already recalled
-   * (models the `memory_last_recall` snapshot surface).
-   */
-  lastRecallIds?(): Promise<string[]>;
 }
 
 export interface AttackRecallOptions {

@@ -57,3 +57,16 @@ export const RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE = buildCases(
   SCHEMA_TIER_SMOKE_FIXTURE.clean.pages,
   SCHEMA_TIER_SMOKE_FIXTURE.dirty.pages,
 );
+
+export function selectRetrievalPersonalizationCases(
+  mode: "quick" | "full",
+  limit?: number,
+): RetrievalPersonalizationCase[] {
+  const fixture = mode === "quick"
+    ? SCHEMA_TIER_SMOKE_FIXTURE
+    : SCHEMA_TIER_FIXTURE;
+  const sourceCases = limit === undefined
+    ? fixture.personalizationCases
+    : fixture.personalizationCases.slice(0, limit);
+  return buildCases(sourceCases, fixture.clean.pages, fixture.dirty.pages);
+}

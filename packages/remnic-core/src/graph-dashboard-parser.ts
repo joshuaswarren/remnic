@@ -55,7 +55,10 @@ export async function graphSnapshotFromMemoryDir(memoryDir: string): Promise<Gra
     let raw = "";
     try {
       raw = await readFile(filePath, "utf-8");
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw err;
+      }
       filesMissing.push(type);
       continue;
     }

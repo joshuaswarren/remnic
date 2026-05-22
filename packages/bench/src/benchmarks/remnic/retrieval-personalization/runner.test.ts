@@ -65,7 +65,10 @@ class SpyPersonalizationAdapter implements BenchMemoryAdapter {
   async destroy(): Promise<void> {}
 }
 
-function buildOptions(system: BenchMemoryAdapter): ResolvedRunBenchmarkOptions {
+function buildOptions(
+  system: BenchMemoryAdapter,
+  overrides: Partial<ResolvedRunBenchmarkOptions> = {},
+): ResolvedRunBenchmarkOptions {
   return {
     benchmark: {
       ...retrievalPersonalizationDefinition,
@@ -73,6 +76,7 @@ function buildOptions(system: BenchMemoryAdapter): ResolvedRunBenchmarkOptions {
     },
     mode: "quick",
     system,
+    ...overrides,
   } as ResolvedRunBenchmarkOptions;
 }
 
@@ -132,6 +136,58 @@ test("retrieval-personalization scores adapter-returned page ids instead of fixt
     assert.equal(task.scores.p_at_3, 0);
     assert.equal(task.scores.p_at_5, 0);
   }
+});
+
+test("retrieval-personalization reports progress after each completed task", async () => {
+  const adapter = new SpyPersonalizationAdapter(
+    (sample) => `recall hit\npage_id: ${sample.expectedPageIds[0]}`,
+  );
+  const completed: Array<{ taskId: string; completedCount: number; totalCount?: number }> = [];
+
+  const result = await runRetrievalPersonalizationBenchmark(
+    buildOptions(adapter, {
+      onTaskComplete(task, completedCount, totalCount) {
+        completed.push({ taskId: task.taskId, completedCount, totalCount });
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    completed.map((entry) => entry.taskId),
+    result.results.tasks.map((task) => task.taskId),
+  );
+  assert.deepEqual(
+    completed.map((entry) => entry.completedCount),
+    result.results.tasks.map((_, index) => index + 1),
+  );
+  assert.deepEqual(
+    completed.map((entry) => entry.totalCount),
+    result.results.tasks.map(() => RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE.length),
+  );
+});
+
+test("retrieval-personalization limit preserves clean and dirty pairs", async () => {
+  const adapter = new SpyPersonalizationAdapter(
+    (sample) => `recall hit\npage_id: ${sample.expectedPageIds[0]}`,
+  );
+
+  const result = await runRetrievalPersonalizationBenchmark(
+    buildOptions(adapter, { limit: 1 }),
+  );
+
+  const expectedPair = RETRIEVAL_PERSONALIZATION_SMOKE_FIXTURE.slice(0, 2);
+  assert.deepEqual(
+    result.results.tasks.map((task) => task.taskId),
+    expectedPair.map((sample) => sample.id),
+  );
+  assert.deepEqual(
+    result.results.tasks.map((task) => task.details?.tier),
+    ["clean", "dirty"],
+  );
+  assert.deepEqual(
+    adapter.recallCalls.map((call) => call.sessionId),
+    expectedPair.map((sample) => `retrieval-personalization:${sample.id}`),
+  );
 });
 
 test("retrieval-personalization does not score prefixed page id matches", async () => {

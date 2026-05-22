@@ -19,18 +19,46 @@ export interface WeCloneProxy {
   start(): Promise<void>;
   stop(): Promise<void>;
   port: number;
+  host: string;
+}
+
+const DEFAULT_MAX_REQUEST_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
+const DEFAULT_STREAM_OBSERVATION_MAX_BYTES = 1024 * 1024;
+
+class BodyLimitExceededError extends Error {
+  constructor(readonly limitBytes: number) {
+    super(`body exceeds ${limitBytes} byte limit`);
+    this.name = "BodyLimitExceededError";
+  }
 }
 
 /**
  * Read the entire body of an IncomingMessage as a string (UTF-8).
  * Used for paths that need to parse JSON (e.g. chat completions).
  */
-function readBody(req: http.IncomingMessage): Promise<string> {
+function readBody(req: http.IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
+    let totalBytes = 0;
+    let exceeded = false;
+    req.on("data", (chunk: Buffer) => {
+      if (exceeded) return;
+      totalBytes += chunk.byteLength;
+      if (totalBytes > maxBytes) {
+        exceeded = true;
+        reject(new BodyLimitExceededError(maxBytes));
+        req.resume();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!exceeded) resolve(Buffer.concat(chunks).toString("utf-8"));
+    });
+    req.on("error", (err) => {
+      if (!exceeded) reject(err);
+    });
   });
 }
 
@@ -38,13 +66,79 @@ function readBody(req: http.IncomingMessage): Promise<string> {
  * Read the entire body of an IncomingMessage as raw bytes.
  * Used for the transparent proxy path to avoid corrupting binary/multipart uploads.
  */
-function readRawBody(req: http.IncomingMessage): Promise<Buffer> {
+function readRawBody(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
+    let totalBytes = 0;
+    let exceeded = false;
+    req.on("data", (chunk: Buffer) => {
+      if (exceeded) return;
+      totalBytes += chunk.byteLength;
+      if (totalBytes > maxBytes) {
+        exceeded = true;
+        reject(new BodyLimitExceededError(maxBytes));
+        req.resume();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!exceeded) resolve(Buffer.concat(chunks));
+    });
+    req.on("error", (err) => {
+      if (!exceeded) reject(err);
+    });
   });
+}
+
+async function readResponseBuffer(response: Response, maxBytes: number): Promise<Buffer> {
+  const reader = response.body?.getReader();
+  if (!reader) return Buffer.alloc(0);
+
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new BodyLimitExceededError(maxBytes);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
+function waitForResponseDrain(res: http.ServerResponse): Promise<"drain" | "closed"> {
+  if (res.destroyed || res.writableEnded) return Promise.resolve("closed");
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      res.off("drain", onDrain);
+      res.off("close", onClose);
+      res.off("error", onClose);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve("drain");
+    };
+    const onClose = () => {
+      cleanup();
+      resolve("closed");
+    };
+    res.once("drain", onDrain);
+    res.once("close", onClose);
+    res.once("error", onClose);
+  });
+}
+
+export async function writeResponseChunkRespectingBackpressure(
+  res: http.ServerResponse,
+  chunk: Uint8Array,
+): Promise<boolean> {
+  if (res.destroyed || res.writableEnded) return false;
+  if (res.write(chunk)) return true;
+  return (await waitForResponseDrain(res)) === "drain";
 }
 
 /**
@@ -60,6 +154,24 @@ function flattenHeaders(
     result[key] = Array.isArray(val) ? val.join(", ") : val;
   }
   return result;
+}
+
+function forwardRequestHeaders(
+  headers: Record<string, string>,
+  options: { reserializedJson?: boolean } = {}
+): Record<string, string> {
+  const forwardHeaders: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey === "host" || HOP_BY_HOP_REQUEST_HEADERS.has(lowerKey)) continue;
+    if (lowerKey === "content-length") continue;
+    if (options.reserializedJson && lowerKey === "content-type") continue;
+    forwardHeaders[key] = value;
+  }
+  if (options.reserializedJson) {
+    forwardHeaders["Content-Type"] = "application/json";
+  }
+  return forwardHeaders;
 }
 
 /**
@@ -168,6 +280,15 @@ function lastUserMessage(messages: Array<{ role: string; content: unknown }>): s
     }
   }
   return "";
+}
+
+type ForwardedChatMessage = Record<string, unknown> & {
+  role: string;
+  content: unknown;
+};
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
@@ -286,7 +407,8 @@ async function transparentProxy(
   path: string,
   headers: Record<string, string>,
   body: Buffer | null,
-  res: http.ServerResponse
+  res: http.ServerResponse,
+  maxResponseBytes: number
 ): Promise<void> {
   // Map the client-facing path into an upstream path.
   //
@@ -314,13 +436,7 @@ async function transparentProxy(
   const targetUrl = `${weclone.origin}${upstreamPathname}${querySuffix}`;
 
   // Remove hop-by-hop request headers and replace host with upstream origin
-  const forwardHeaders: Record<string, string> = {};
-  for (const [key, value] of Object.entries(headers)) {
-    if (key === "host" || HOP_BY_HOP_REQUEST_HEADERS.has(key)) continue;
-    // content-length is recomputed by fetch() for the forwarded body
-    if (key === "content-length") continue;
-    forwardHeaders[key] = value;
-  }
+  const forwardHeaders = forwardRequestHeaders(headers);
 
   const fetchInit: RequestInit = {
     method,
@@ -339,8 +455,7 @@ async function transparentProxy(
     const upstream = await fetch(targetUrl, fetchInit);
 
     // Read full body before sending any headers to the client
-    const responseBody = await upstream.arrayBuffer();
-    const responseBuffer = Buffer.from(responseBody);
+    const responseBuffer = await readResponseBuffer(upstream, maxResponseBytes);
 
     // Build response headers, filtering hop-by-hop and setting Content-Length
     const responseHeaders: Record<string, string> = {};
@@ -353,7 +468,12 @@ async function transparentProxy(
 
     res.writeHead(upstream.status, responseHeaders);
     res.end(responseBuffer);
-  } catch (_err) {
+  } catch (err) {
+    if (err instanceof BodyLimitExceededError) {
+      res.writeHead(502, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "upstream_response_too_large" }));
+      return;
+    }
     res.writeHead(502, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "upstream_unreachable" }));
   }
@@ -371,6 +491,11 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
   // Pre-split the WeClone URL so transparentProxy and the chat path can
   // honor a configured base path (e.g. "/weclone/v1").
   const wecloneParts = splitBaseUrl(wecloneApiUrl);
+  const maxRequestBytes = config.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES;
+  const maxResponseBytes = config.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  const streamObservationMaxBytes =
+    config.streamObservationMaxBytes ?? DEFAULT_STREAM_OBSERVATION_MAX_BYTES;
+  const proxyBindHost = config.proxyBindHost ?? "127.0.0.1";
 
   const sessionMapper: SessionMapper =
     config.sessionStrategy === "caller-id"
@@ -379,6 +504,7 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
 
   let server: http.Server | null = null;
   let resolvedPort = config.proxyPort;
+  let resolvedHost = proxyBindHost;
 
   const requestHandler = async (
     req: http.IncomingMessage,
@@ -414,21 +540,37 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
     if (normalizedPathname === "/v1/chat/completions" && method === "POST") {
       let bodyStr: string;
       try {
-        bodyStr = await readBody(req);
-      } catch {
+        bodyStr = await readBody(req, maxRequestBytes);
+      } catch (err) {
+        if (err instanceof BodyLimitExceededError) {
+          res.writeHead(413, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "request_body_too_large" }));
+          return;
+        }
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "bad_request", detail: "Could not read request body" }));
         return;
       }
 
-      let parsed: ChatCompletionRequest;
+      let parsedJson: unknown;
       try {
-        parsed = JSON.parse(bodyStr) as ChatCompletionRequest;
+        parsedJson = JSON.parse(bodyStr) as unknown;
       } catch {
         res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "bad_request", detail: "Invalid JSON body" }));
         return;
       }
+      if (!isPlainRecord(parsedJson)) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: "bad_request",
+            detail: "JSON body must be an object",
+          })
+        );
+        return;
+      }
+      const parsed = parsedJson as ChatCompletionRequest;
 
       const headers = req.headers as Record<string, string | string[] | undefined>;
       const sessionKey = sessionMapper.resolve(headers, parsed);
@@ -448,11 +590,12 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
       // Messages may contain multimodal content-parts arrays; keep them
       // untyped and validate strings at each use site. Drop entries that
       // are not plain objects so downstream `.map()` cannot throw.
-      const rawMessages: Array<{ role: string; content: unknown }> = [];
+      const rawMessages: ForwardedChatMessage[] = [];
       for (const raw of parsed.messages ?? []) {
         if (raw === null || typeof raw !== "object") continue;
-        const entry = raw as { role?: unknown; content?: unknown };
+        const entry = raw as Record<string, unknown>;
         rawMessages.push({
+          ...entry,
           role: typeof entry.role === "string" ? entry.role : "",
           content: entry.content,
         });
@@ -484,7 +627,7 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
       // synthetic system message is prepended). Subsequent system messages
       // are forwarded verbatim so distinct system instructions are not
       // silently overwritten.
-      const outMessages: Array<{ role: string; content: unknown }> = [];
+      const outMessages: ForwardedChatMessage[] = [];
       const firstSystemIdx = rawMessages.findIndex((m) => m.role === "system");
       const position = config.memoryInjection.position;
 
@@ -501,6 +644,7 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
           if (i === firstSystemIdx) {
             const existing = extractTextContent(m.content);
             outMessages.push({
+              ...m,
               role: "system",
               content:
                 position === "system-prepend"
@@ -515,6 +659,7 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
 
       const modifiedBody = {
         ...parsed,
+        ...(config.wecloneModelName ? { model: config.wecloneModelName } : {}),
         messages: outMessages,
       };
 
@@ -532,15 +677,9 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
       const querySuffix = qIdx === -1 ? "" : url.slice(qIdx);
       const targetUrl =
         `${wecloneParts.origin}${chatBase}/chat/completions${querySuffix}`;
-      const forwardHeaders: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-
-      // Preserve authorization if present
-      const authHeader = req.headers["authorization"];
-      if (typeof authHeader === "string") {
-        forwardHeaders["Authorization"] = authHeader;
-      }
+      const forwardHeaders = forwardRequestHeaders(flattenHeaders(req.headers), {
+        reserializedJson: true,
+      });
 
       try {
         const upstream = await fetch(targetUrl, {
@@ -553,11 +692,11 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
         if (parsed.stream === true) {
           // If upstream returned an error, pass through as-is (don't force SSE headers)
           if (!upstream.ok) {
-            const errBody = await upstream.arrayBuffer();
+            const errBody = await readResponseBuffer(upstream, maxResponseBytes);
             res.writeHead(upstream.status, {
               "content-type": upstream.headers.get("content-type") || "application/json",
             });
-            res.end(Buffer.from(errBody));
+            res.end(errBody);
             return;
           }
 
@@ -572,41 +711,98 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
             res.end();
             return;
           }
+          let clientClosed = false;
+          const onClientClose = () => {
+            clientClosed = true;
+            void reader.cancel().catch(() => {});
+          };
+          res.once("close", onClientClose);
 
-          const chunks: Uint8Array[] = [];
+          const decoder = new TextDecoder();
+          let streamBuffer = "";
+          let assistantContent = "";
+          let observationTextBytes = 0;
+          let observationDisabled = false;
+          const disableObservationBuffer = () => {
+            observationDisabled = true;
+            streamBuffer = "";
+            assistantContent = "";
+            observationTextBytes = 0;
+          };
+          const appendObservationText = (text: string) => {
+            const nextBytes = observationTextBytes + Buffer.byteLength(text, "utf8");
+            if (nextBytes > streamObservationMaxBytes) {
+              disableObservationBuffer();
+              return;
+            }
+            observationTextBytes = nextBytes;
+            assistantContent += text;
+          };
+          const consumeSseLine = (line: string) => {
+            if (!line.startsWith("data: ") || line === "data: [DONE]") return;
+            try {
+              const event = JSON.parse(line.slice(6)) as {
+                choices?: Array<{ delta?: { content?: string } }>;
+              };
+              const delta = event.choices?.[0]?.delta?.content;
+              if (delta) appendObservationText(delta);
+            } catch {
+              // Malformed SSE chunk -- skip
+            }
+          };
           try {
             while (true) {
+              if (clientClosed) break;
               const { done, value } = await reader.read();
               if (done) break;
-              chunks.push(value);
-              res.write(value);
+              const wrote = await writeResponseChunkRespectingBackpressure(res, value);
+              if (!wrote) {
+                clientClosed = true;
+                await reader.cancel().catch(() => {});
+                break;
+              }
+              if (observationDisabled) continue;
+
+              if (
+                Buffer.byteLength(streamBuffer, "utf8") + value.byteLength >
+                streamObservationMaxBytes
+              ) {
+                disableObservationBuffer();
+                continue;
+              }
+
+              streamBuffer += decoder.decode(value, { stream: true });
+              const lines = streamBuffer.split("\n");
+              streamBuffer = lines.pop() ?? "";
+              for (const line of lines) {
+                consumeSseLine(line);
+              }
             }
           } finally {
-            res.end();
+            res.off("close", onClientClose);
+            if (!res.destroyed && !res.writableEnded) {
+              res.end();
+            }
           }
+          if (clientClosed) return;
 
           // Best-effort: reconstruct assistant content for observation
           try {
-            const fullText = Buffer.concat(chunks).toString("utf-8");
-            const contentParts: string[] = [];
-            for (const line of fullText.split("\n")) {
-              if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
-              try {
-                const event = JSON.parse(line.slice(6)) as {
-                  choices?: Array<{ delta?: { content?: string } }>;
-                };
-                const delta = event.choices?.[0]?.delta?.content;
-                if (delta) contentParts.push(delta);
-              } catch {
-                // Malformed SSE chunk -- skip
+            if (!observationDisabled) {
+              const tail = decoder.decode();
+              if (tail) streamBuffer += tail;
+              if (streamBuffer.length > 0) {
+                for (const line of streamBuffer.split("\n")) {
+                  consumeSseLine(line);
+                }
               }
             }
-            if (contentParts.length > 0 && query.length > 0) {
+            if (!observationDisabled && assistantContent.length > 0 && query.length > 0) {
               observeTurn(
                 remnicDaemonUrl,
                 sessionKey,
                 query,
-                contentParts.join(""),
+                assistantContent,
                 config.remnicAuthToken
               );
             }
@@ -617,8 +813,7 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
         }
 
         // --- Non-streaming path ---
-        const responseBuffer = await upstream.arrayBuffer();
-        const responseBytes = Buffer.from(responseBuffer);
+        const responseBytes = await readResponseBuffer(upstream, maxResponseBytes);
 
         // Parse response for observation (best-effort)
         let assistantReply = "";
@@ -646,7 +841,12 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
         chatResponseHeaders["content-length"] = String(responseBytes.length);
         res.writeHead(upstream.status, chatResponseHeaders);
         res.end(responseBytes);
-      } catch (_err) {
+      } catch (err) {
+        if (err instanceof BodyLimitExceededError) {
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "upstream_response_too_large" }));
+          return;
+        }
         res.writeHead(502, { "Content-Type": "application/json" });
         res.end(JSON.stringify({
           error: "upstream_unreachable",
@@ -657,14 +857,29 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
 
     // --- All other paths: transparent proxy ---
     // Use raw bytes to avoid corrupting binary/multipart uploads.
-    const body = method !== "GET" && method !== "HEAD" ? await readRawBody(req) : null;
+    let body: Buffer | null = null;
+    try {
+      body = method !== "GET" && method !== "HEAD"
+        ? await readRawBody(req, maxRequestBytes)
+        : null;
+    } catch (err) {
+      if (err instanceof BodyLimitExceededError) {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "request_body_too_large" }));
+        return;
+      }
+      throw err;
+    }
     const flat = flattenHeaders(req.headers);
-    await transparentProxy(wecloneParts, method, url, flat, body, res);
+    await transparentProxy(wecloneParts, method, url, flat, body, res, maxResponseBytes);
   };
 
   return {
     get port() {
       return resolvedPort;
+    },
+    get host() {
+      return resolvedHost;
     },
 
     start(): Promise<void> {
@@ -680,10 +895,11 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
 
         server.on("error", reject);
 
-        server.listen(config.proxyPort, () => {
+        server.listen(config.proxyPort, proxyBindHost, () => {
           const addr = server!.address();
           if (typeof addr === "object" && addr !== null) {
             resolvedPort = addr.port;
+            resolvedHost = addr.address;
           }
           resolve();
         });

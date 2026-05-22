@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { parseConfig } from "../src/config.js";
@@ -137,6 +137,54 @@ test("shared-context cross-signals captures multi-source overlap and feedback co
     assert.match(crossSignalsMarkdown, /No promotion candidates yet/);
     assert.match(roundtable, /Cross-signals JSON:/);
     assert.match(roundtable, /Cross-signals markdown:/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(sharedDir, { recursive: true, force: true });
+  }
+});
+
+test("shared-context daily curation serializes same-date artifact writes", async () => {
+  const { manager, memoryDir, sharedDir } = await buildManager("engram-shared-concurrent");
+  try {
+    const date = "2026-03-05";
+    await manager.writeAgentOutput({
+      agentId: "generalist",
+      title: "Checkout reliability notes",
+      content: "Checkout reliability and latency work stayed aligned.",
+      createdAt: isoForDate(date, "09:00:00"),
+    });
+    await manager.writeAgentOutput({
+      agentId: "oracle",
+      title: "Latency reliability notes",
+      content: "Latency reliability checks confirmed checkout overlap.",
+      createdAt: isoForDate(date, "09:05:00"),
+    });
+
+    const results = await Promise.all([
+      manager.curateDaily({ date }),
+      manager.curateDaily({ date }),
+      manager.curateDaily({ date }),
+    ]);
+    const [result] = results;
+    assert.ok(result);
+
+    const raw = JSON.parse(await readFile(result.crossSignalsPath, "utf-8"));
+    const crossSignalsMarkdown = await readFile(result.crossSignalsMarkdownPath, "utf-8");
+    const roundtable = await readFile(result.roundtablePath, "utf-8");
+
+    assert.equal(raw.date, date);
+    assert.equal(raw.sourceCount, 2);
+    assert.match(crossSignalsMarkdown, new RegExp(`# Cross-Signals .+ ${date}`));
+    assert.match(roundtable, new RegExp(`# Roundtable .+ ${date}`));
+    assert.match(roundtable, /Cross-signals JSON:/);
+    assert.equal(
+      (await readdir(path.dirname(result.crossSignalsPath))).some((file) => file.includes(".tmp")),
+      false,
+    );
+    assert.equal(
+      (await readdir(path.dirname(result.roundtablePath))).some((file) => file.includes(".tmp")),
+      false,
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(sharedDir, { recursive: true, force: true });

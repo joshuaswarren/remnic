@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
 import {
   getTrustZoneStoreStatus,
@@ -82,6 +82,50 @@ test("recordTrustZoneRecord persists records into zoned dated storage", async ()
     filePath,
     path.join(memoryDir, "state", "trust-zones", "zones", "trusted", "2026-03-07", "tz-2.json"),
   );
+});
+
+test("recordTrustZoneRecord rejects duplicate ids without overwriting the original record", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-trust-zone-duplicate-"));
+  const filePath = await recordTrustZoneRecord({
+    memoryDir,
+    record: {
+      schemaVersion: 1,
+      recordId: "tz-duplicate",
+      zone: "trusted",
+      recordedAt: "2026-03-07T18:01:00.000Z",
+      kind: "memory",
+      summary: "Original trust-zone record.",
+      provenance: {
+        sourceClass: "system_memory",
+        observedAt: "2026-03-07T18:00:00.000Z",
+        sessionKey: "agent:main",
+      },
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      recordTrustZoneRecord({
+        memoryDir,
+        record: {
+          schemaVersion: 1,
+          recordId: "tz-duplicate",
+          zone: "trusted",
+          recordedAt: "2026-03-07T18:01:30.000Z",
+          kind: "memory",
+          summary: "Replacement trust-zone record.",
+          provenance: {
+            sourceClass: "system_memory",
+            observedAt: "2026-03-07T18:00:30.000Z",
+            sessionKey: "agent:main",
+          },
+        },
+      }),
+    /EEXIST|exists/i,
+  );
+
+  const stored = JSON.parse(await readFile(filePath, "utf8")) as { summary: string };
+  assert.equal(stored.summary, "Original trust-zone record.");
 });
 
 test("recordTrustZoneRecord rejects unsafe ids and malformed timestamps", async () => {

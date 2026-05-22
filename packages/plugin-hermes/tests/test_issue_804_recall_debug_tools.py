@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -106,6 +107,32 @@ def test_issue_804_tools_are_registered_with_primary_and_legacy_names() -> None:
         {"required": ["projectTag"]},
     ]
     assert ctx.tools["engram_memory_feedback_last_recall"]["schema"]["name"] == "engram_memory_feedback_last_recall"
+
+
+def test_issue_804_remnic_store_forwards_extensible_metadata() -> None:
+    provider = RemnicMemoryProvider({})
+    provider._client = MagicMock()
+    provider._client.store = AsyncMock(return_value={"ok": True})  # type: ignore[union-attr]
+
+    raw = provider.handle_tool_call(
+        "remnic_store",
+        {
+            "content": "remember this",
+            "category": "fact",
+            "namespace": "project",
+            "tags": ["remnic", "hermes"],
+            "sessionKey": "tool-session",
+        },
+    )
+
+    assert json.loads(raw) == {"ok": True}
+    provider._client.store.assert_awaited_once_with(  # type: ignore[union-attr]
+        content="remember this",
+        category="fact",
+        namespace="project",
+        tags=["remnic", "hermes"],
+        sessionKey="tool-session",
+    )
 
 
 @pytest.mark.asyncio

@@ -55,7 +55,7 @@ function collectPageIdMarkers(recallText: string): Array<{ id: string; index: nu
     let valueStart = markerIndex + marker.length;
     while (
       valueStart < lowerRecallText.length &&
-      isAsciiWhitespace(lowerRecallText.charCodeAt(valueStart))
+      isAsciiHorizontalWhitespace(lowerRecallText.charCodeAt(valueStart))
     ) {
       valueStart += 1;
     }
@@ -87,6 +87,10 @@ function hasMarkerBoundaryBefore(value: string, markerIndex: number): boolean {
 
 function isAsciiWhitespace(code: number): boolean {
   return code === 9 || code === 10 || code === 13 || code === 32;
+}
+
+function isAsciiHorizontalWhitespace(code: number): boolean {
+  return code === 9 || code === 32;
 }
 
 function isAsciiIdentifier(code: number): boolean {

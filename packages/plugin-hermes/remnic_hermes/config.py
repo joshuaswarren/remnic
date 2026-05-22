@@ -69,21 +69,28 @@ def _load_token_from_file() -> str:
         try:
             with open(token_path) as f:
                 store = json.load(f)
+                if not isinstance(store, dict):
+                    continue
                 # New array format: {tokens: [{token, connector, createdAt}]}
                 token_entries = store.get("tokens", [])
                 if isinstance(token_entries, list):
                     for entry in token_entries:
-                        if entry.get("connector") == "hermes":
-                            return str(entry.get("token", ""))
+                        if not isinstance(entry, dict):
+                            continue
+                        token = entry.get("token")
+                        if entry.get("connector") == "hermes" and isinstance(token, str) and token:
+                            return token
                     for entry in token_entries:
-                        if entry.get("connector") == "openclaw":
-                            return str(entry.get("token", ""))
+                        if not isinstance(entry, dict):
+                            continue
+                        token = entry.get("token")
+                        if entry.get("connector") == "openclaw" and isinstance(token, str) and token:
+                            return token
                 # Legacy flat-map format: {"hermes": "token_value", "openclaw": "..."}
-                if isinstance(store, dict):
-                    for key in ("hermes", "openclaw"):
-                        val = store.get(key, "")
-                        if isinstance(val, str) and val:
-                            return val
-        except (json.JSONDecodeError, OSError):
+                for key in ("hermes", "openclaw"):
+                    val = store.get(key, "")
+                    if isinstance(val, str) and val:
+                        return val
+        except (json.JSONDecodeError, OSError, TypeError):
             continue
     return ""

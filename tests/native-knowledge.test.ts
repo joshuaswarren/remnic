@@ -45,6 +45,34 @@ test("collectNativeKnowledgeChunks reads configured workspace files and preserve
   assert.equal(chunks[2]?.sourcePath, "MEMORY.md");
 });
 
+test("collectNativeKnowledgeChunks ignores includeFiles outside the workspace", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "engram-native-knowledge-root-"));
+  const workspaceDir = path.join(rootDir, "workspace");
+  const outsideFile = path.join(rootDir, "outside.md");
+  await mkdir(workspaceDir, { recursive: true });
+  await writeFile(outsideFile, "# Outside\n\nMust not be indexed.\n", "utf-8");
+
+  try {
+    const chunks = await collectNativeKnowledgeChunks({
+      workspaceDir,
+      config: {
+        enabled: true,
+        includeFiles: ["../outside.md"],
+        maxChunkChars: 200,
+        maxResults: 4,
+        maxChars: 2400,
+        stateDir: "state/native-knowledge",
+        obsidianVaults: [],
+      },
+      defaultNamespace: "default",
+    });
+
+    assert.equal(chunks.length, 0);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("collectNativeKnowledgeChunks includes namespaced identity files for allowed recall namespaces", async () => {
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-native-knowledge-ns-"));
   await mkdir(workspaceDir, { recursive: true });

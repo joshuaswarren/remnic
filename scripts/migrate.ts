@@ -17,6 +17,7 @@
 import { readdir, readFile, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { existsSync } from "node:fs";
+import { makeMigrationMemoryId, writeMemoryFileWithRetry } from "./migrate-utils.js";
 
 const MEMORY_DIR = path.join(
   process.env.HOME ?? "~",
@@ -240,23 +241,6 @@ async function ensureDirs(): Promise<void> {
   await mkdir(path.join(MEMORY_DIR, "state"), { recursive: true });
 }
 
-function makeId(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 4)}`;
-}
-
-async function writeMemoryFile(
-  subdir: string,
-  filename: string,
-  content: string,
-): Promise<void> {
-  const filePath = path.join(MEMORY_DIR, subdir, filename);
-  if (dryRun) {
-    console.log(`  [dry-run] Would write: ${filePath}`);
-    return;
-  }
-  await writeFile(filePath, content, "utf-8");
-}
-
 function buildFrontmatter(opts: {
   id: string;
   category: string;
@@ -293,19 +277,26 @@ async function writeFact(
     return false;
   }
 
-  const id = makeId(opts.prefix);
   const today = new Date().toISOString().slice(0, 10);
   const category = opts.category ?? "fact";
-  const fm = buildFrontmatter({
-    id,
-    category,
-    source: opts.source,
-    confidence: opts.confidence,
-    tags: opts.tags,
-  });
-
   const subdir = category === "correction" ? "corrections" : `facts/${today}`;
-  await writeMemoryFile(subdir, `${id}.md`, `${fm}\n\n${body}\n`);
+  await writeMemoryFileWithRetry({
+    memoryDir: MEMORY_DIR,
+    dryRun,
+    subdir,
+    prefix: opts.prefix,
+    makeId: makeMigrationMemoryId,
+    buildContent: (id) => {
+      const fm = buildFrontmatter({
+        id,
+        category,
+        source: opts.source,
+        confidence: opts.confidence,
+        tags: opts.tags,
+      });
+      return `${fm}\n\n${body}\n`;
+    },
+  });
 
   dedupIndex.add(body);
   stats.factsCreated++;
@@ -748,8 +739,10 @@ async function updateMetaState(): Promise<void> {
   try {
     const existing = await readFile(metaPath, "utf-8");
     meta = JSON.parse(existing);
-  } catch {
-    // Fresh state
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error(`failed to read existing migration meta state at ${metaPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // Count total memories on disk

@@ -70,6 +70,27 @@ test("shared-context semantic cross-signals adds overlap for related token varia
   }
 });
 
+test("shared-context rejects date path segments that are not calendar dates", async () => {
+  const { manager, memoryDir, sharedDir } = await buildManager("engram-shared-date-validation", {
+    enabled: false,
+    timeoutMs: 2000,
+    maxCandidates: 120,
+  });
+  try {
+    await assert.rejects(
+      () => manager.curateDaily({ date: "../2026-03-04" }),
+      /Invalid shared-context date/,
+    );
+    await assert.rejects(
+      () => manager.synthesizeCrossSignals({ date: "2026-02-31" }),
+      /Invalid shared-context date/,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(sharedDir, { recursive: true, force: true });
+  }
+});
+
 test("shared-context semantic cross-signals fail-open under extreme timeout budget", async () => {
   const { manager, memoryDir, sharedDir } = await buildManager("engram-shared-semantic-timeout", {
     enabled: true,

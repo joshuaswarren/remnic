@@ -107,6 +107,12 @@ export interface BenchResultSummary {
 export interface BenchResultSummaryPayload {
   resultsDir: string;
   summaries: BenchResultSummary[];
+  skippedFiles?: BenchResultFileWarning[];
+}
+
+export interface BenchResultFileWarning {
+  filePath: string;
+  reason: string;
 }
 
 export type TrendRange = "7d" | "30d" | "90d" | "all";
@@ -117,6 +123,8 @@ export interface BenchmarkCard {
   previous: BenchResultSummary | null;
   delta: number | null;
 }
+
+export type RecentRun = BenchResultSummary & { delta: number | null };
 
 export interface TrendPoint {
   runId: string;
@@ -249,6 +257,12 @@ export function formatDelta(value: number | null, metricName?: string): string {
   return `${prefix}${formatMetricValue(value, metricName)}`;
 }
 
+export function deltaPolarityClass(value: number | null, metricName?: string): string {
+  if (value === null || value === 0) return "";
+  const improved = isLowerIsBetterMetric(metricName) ? value < 0 : value > 0;
+  return improved ? "delta-pill--positive" : "delta-pill--negative";
+}
+
 export function formatDuration(value: number | null): string {
   if (value === null) {
     return "n/a";
@@ -322,6 +336,37 @@ export function getBenchmarkCards(payload: BenchResultSummaryPayload): Benchmark
   }
 
   return cards.sort((left, right) => compareStrings(left.benchmark, right.benchmark));
+}
+
+export function getRecentRuns(payload: BenchResultSummaryPayload, limit = 6): RecentRun[] {
+  const deltaByRunId = new Map<string, number | null>();
+
+  for (const benchmark of listBenchmarks(payload)) {
+    const runs = payload.summaries
+      .filter((summary) => summary.benchmark === benchmark)
+      .slice()
+      .sort(compareTimestampedRuns);
+
+    for (let index = 0; index < runs.length; index += 1) {
+      const run = runs[index]!;
+      const previous = runs[index + 1] ?? null;
+      deltaByRunId.set(
+        run.id,
+        run.primaryScore !== null && previous !== null && previous.primaryScore !== null
+          ? run.primaryScore - previous.primaryScore
+          : null,
+      );
+    }
+  }
+
+  return payload.summaries
+    .slice()
+    .sort(compareTimestampedRuns)
+    .slice(0, Math.max(0, limit))
+    .map((summary) => ({
+      ...summary,
+      delta: deltaByRunId.get(summary.id) ?? null,
+    }));
 }
 
 export function getTrendPoints(
@@ -449,12 +494,12 @@ export function buildCompareModel(
       };
     })
     .sort((left, right) => {
-      const leftDelta = left.delta ?? Number.POSITIVE_INFINITY;
-      const rightDelta = right.delta ?? Number.POSITIVE_INFINITY;
-      if (leftDelta === rightDelta) {
+      const leftMagnitude = left.delta === null ? -1 : Math.abs(left.delta);
+      const rightMagnitude = right.delta === null ? -1 : Math.abs(right.delta);
+      if (leftMagnitude === rightMagnitude) {
         return compareStrings(left.taskId, right.taskId);
       }
-      return leftDelta - rightDelta;
+      return rightMagnitude - leftMagnitude;
     });
 
   return {
@@ -493,17 +538,29 @@ export function buildHistogram(summary: BenchResultSummary): HistogramBucket[] {
 
 export function buildProviderRows(payload: BenchResultSummaryPayload): ProviderRow[] {
   const grouped = new Map<string, ProviderRow>();
+  const benchmarkScoreBuckets = new Map<string, Map<string, number[]>>();
 
   for (const summary of payload.summaries) {
+    let providerBenchmarkScores = benchmarkScoreBuckets.get(summary.providerKey);
+    if (!providerBenchmarkScores) {
+      providerBenchmarkScores = new Map();
+      benchmarkScoreBuckets.set(summary.providerKey, providerBenchmarkScores);
+    }
+    let benchmarkScores = providerBenchmarkScores.get(summary.benchmark);
+    if (!benchmarkScores) {
+      benchmarkScores = [];
+      providerBenchmarkScores.set(summary.benchmark, benchmarkScores);
+    }
+    if (summary.primaryScore !== null) {
+      benchmarkScores.push(summary.primaryScore);
+    }
+
     const existing = grouped.get(summary.providerKey);
     if (existing) {
       existing.runCount += 1;
       if (!existing.benchmarks.includes(summary.benchmark)) {
         existing.benchmarks.push(summary.benchmark);
         existing.benchmarks.sort(compareStrings);
-      }
-      if (!(summary.benchmark in existing.benchmarkScores)) {
-        existing.benchmarkScores[summary.benchmark] = summary.primaryScore;
       }
       continue;
     }
@@ -516,7 +573,7 @@ export function buildProviderRows(payload: BenchResultSummaryPayload): ProviderR
       benchmarks: [summary.benchmark],
       averageScore: summary.primaryScore,
       averageCostUsd: summary.estimatedCostUsd,
-      benchmarkScores: { [summary.benchmark]: summary.primaryScore },
+      benchmarkScores: {},
     });
   }
 
@@ -530,6 +587,14 @@ export function buildProviderRows(payload: BenchResultSummaryPayload): ProviderR
         .filter((summary) => summary.providerKey === row.providerKey)
         .map((summary) => summary.estimatedCostUsd)
         .filter((value): value is number => value !== null);
+      const perBenchmarkScores: Record<string, number | null> = {};
+      const providerBenchmarkScores =
+        benchmarkScoreBuckets.get(row.providerKey) ?? new Map<string, number[]>();
+      for (const benchmark of row.benchmarks) {
+        const values = providerBenchmarkScores.get(benchmark) ?? [];
+        perBenchmarkScores[benchmark] =
+          values.length > 0 ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+      }
 
       return {
         ...row,
@@ -541,6 +606,7 @@ export function buildProviderRows(payload: BenchResultSummaryPayload): ProviderR
           costValues.length > 0
             ? costValues.reduce((sum, value) => sum + value, 0) / costValues.length
             : null,
+        benchmarkScores: perBenchmarkScores,
       };
     })
     .sort((left, right) => compareStrings(left.providerKey, right.providerKey));
@@ -550,9 +616,27 @@ export function pickDefaultCompareIds(payload: BenchResultSummaryPayload): {
   baselineId: string | null;
   candidateId: string | null;
 } {
+  const sorted = payload.summaries.slice().sort(compareTimestampedRuns);
+  const byBenchmark = new Map<string, BenchResultSummary[]>();
+  for (const summary of sorted) {
+    const runs = byBenchmark.get(summary.benchmark) ?? [];
+    runs.push(summary);
+    byBenchmark.set(summary.benchmark, runs);
+  }
+
+  for (const summary of sorted) {
+    const runs = byBenchmark.get(summary.benchmark) ?? [];
+    if (runs.length >= 2) {
+      return {
+        candidateId: runs[0]!.id,
+        baselineId: runs[1]!.id,
+      };
+    }
+  }
+
   return {
-    candidateId: payload.summaries[0]?.id ?? null,
-    baselineId: payload.summaries[1]?.id ?? null,
+    candidateId: sorted[0]?.id ?? null,
+    baselineId: null,
   };
 }
 

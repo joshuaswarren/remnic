@@ -183,6 +183,7 @@ export function saveTokenStore(store: TokenStore, tokensPath?: string): void {
     // Tighten permissions on pre-existing files after atomic replacement.
     try { fs.chmodSync(p, 0o600); } catch { /* ignore on platforms without chmod */ }
     fsyncDirectoryBestEffort(dir);
+    invalidateTokenCache();
   } catch (error) {
     if (fd !== null) {
       try { fs.closeSync(fd); } catch { /* ignore */ }
@@ -264,6 +265,12 @@ const TOKEN_CACHE_TTL_MS = 5_000;
 let _cachedTokens: string[] = [];
 let _cachedAt = 0;
 let _cachedPath: string | undefined;
+
+function invalidateTokenCache(): void {
+  _cachedTokens = [];
+  _cachedAt = 0;
+  _cachedPath = undefined;
+}
 
 export function getAllValidTokensCached(tokensPath?: string): string[] {
   const now = Date.now();

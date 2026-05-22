@@ -35,7 +35,12 @@ function describeCanary(summary: BenchIntegritySummary): string {
   if (summary.canaryScore === null) {
     return "Canary: not recorded";
   }
-  const status = summary.canaryUnderFloor ? "under floor" : "ABOVE FLOOR";
+  const status =
+    summary.canaryUnderFloor === true
+      ? "under floor"
+      : summary.canaryUnderFloor === false
+        ? "ABOVE FLOOR"
+        : "status unknown";
   return `Canary: ${summary.canaryScore.toFixed(3)} (floor ${summary.canaryFloor.toFixed(2)}, ${status})`;
 }
 
@@ -78,6 +83,10 @@ export function describeIntegrity(summary: BenchIntegritySummary): IntegrityBadg
   if (summary.canaryUnderFloor === false) {
     level = "unverified";
     reasons.push("Canary adapter scored above the configured floor.");
+  }
+  if (summary.canaryScore !== null && summary.canaryUnderFloor === null) {
+    level = level === "verified" ? "partial" : level;
+    reasons.push("Canary floor comparison was not recorded.");
   }
   if (summary.canaryScore === null) {
     level = level === "verified" ? "partial" : level;

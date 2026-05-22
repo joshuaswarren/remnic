@@ -288,6 +288,25 @@ test("listVersions returns empty history when manifest is missing", async () => 
   assert.equal(history.currentVersion, "0");
 });
 
+test("createVersion fails closed when manifest is corrupt and preserves existing snapshots", async () => {
+  const tmp = await makeTmpDir();
+  const factsDir = path.join(tmp, "facts");
+  await fs.mkdir(factsDir, { recursive: true });
+  const pagePath = path.join(factsDir, "corrupt.md");
+  const sidecar = path.join(tmp, ".versions", "facts__corrupt");
+  await fs.mkdir(sidecar, { recursive: true });
+  await fs.writeFile(path.join(sidecar, "manifest.json"), "{not-json", "utf-8");
+  await fs.writeFile(path.join(sidecar, "1.md"), "original snapshot", "utf-8");
+
+  const cfg = config(tmp);
+
+  await assert.rejects(
+    () => createVersion(pagePath, "new snapshot", "write", cfg, undefined, undefined, tmp),
+    /invalid manifest/,
+  );
+  assert.equal(await fs.readFile(path.join(sidecar, "1.md"), "utf-8"), "original snapshot");
+});
+
 // ---------------------------------------------------------------------------
 // Concurrent writes — sequential within same page
 // ---------------------------------------------------------------------------

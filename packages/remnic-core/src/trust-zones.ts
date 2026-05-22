@@ -225,7 +225,7 @@ export async function recordTrustZoneRecord(options: {
   const zoneDir = path.join(rootDir, "zones", validated.zone, day);
   const filePath = path.join(zoneDir, `${validated.recordId}.json`);
   await mkdir(zoneDir, { recursive: true });
-  await writeFile(filePath, JSON.stringify(validated, null, 2), "utf8");
+  await writeFile(filePath, JSON.stringify(validated, null, 2), { encoding: "utf8", flag: "wx" });
   return filePath;
 }
 

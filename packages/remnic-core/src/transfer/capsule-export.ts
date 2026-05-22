@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { CAPSULE_SCHEMA_VERSION, EXPORT_FORMAT } from "./constants.js";
@@ -151,6 +151,13 @@ export async function exportCapsule(
   opts: ExportCapsuleOptions,
 ): Promise<ExportCapsuleResult> {
   validateName(opts.name);
+  if (opts.encrypt === true && !opts.memoryDir) {
+    throw new Error(
+      "exportCapsule: 'memoryDir' is required when 'encrypt' is true so the " +
+        "secure-store key can be retrieved.",
+    );
+  }
+  const encryptionMemoryDir = opts.encrypt === true ? opts.memoryDir : undefined;
   const sinceMs = parseSince(opts.since);
   const includeKinds = normalizeIncludeKinds(opts.includeKinds);
   const peerFilter = normalizePeerIds(opts.peerIds);
@@ -245,20 +252,22 @@ export async function exportCapsule(
   // Per gotcha #54: write the encrypted file before removing the plaintext so
   // a crash mid-encrypt does not destroy the only copy.
   if (opts.encrypt === true) {
-    if (!opts.memoryDir) {
-      throw new Error(
-        "exportCapsule: 'memoryDir' is required when 'encrypt' is true so the " +
-          "secure-store key can be retrieved.",
-      );
+    try {
+      const { encPath } = await encryptCapsuleFile({
+        sourceGzPath: archivePath,
+        memoryDir: encryptionMemoryDir!,
+      });
+      // Remove the plaintext only after the encrypted file was written successfully.
+      await unlink(archivePath);
+      return { archivePath: encPath, manifestPath, manifest, encryptedArchivePath: encPath };
+    } catch (error) {
+      try {
+        await unlink(archivePath);
+      } catch {
+        // Best-effort cleanup: do not leave a plaintext capsule after a failed encrypted export.
+      }
+      throw error;
     }
-    const { encPath } = await encryptCapsuleFile({
-      sourceGzPath: archivePath,
-      memoryDir: opts.memoryDir,
-    });
-    // Remove the plaintext only after the encrypted file was written successfully.
-    const { unlink } = await import("node:fs/promises");
-    await unlink(archivePath);
-    return { archivePath: encPath, manifestPath, manifest, encryptedArchivePath: encPath };
   }
 
   return { archivePath, manifestPath, manifest, encryptedArchivePath: null };

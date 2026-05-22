@@ -1,5 +1,6 @@
-import { createReadStream } from "node:fs";
-import { mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+import { mkdir, open, readdir, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import path from "node:path";
@@ -38,10 +39,49 @@ interface AllowedRoot {
   name: string;
 }
 
+type WebDavReadOpenResult =
+  | { ok: true; handle: FileHandle; size: number }
+  | { ok: false; code: number; message: string };
+
+function validateWebDavAuth(auth: WebDavAuth): WebDavAuth {
+  if (typeof auth.username !== "string" || auth.username.trim().length === 0) {
+    throw new Error("webdav auth.username must be a non-empty string");
+  }
+  if (typeof auth.password !== "string" || auth.password.trim().length === 0) {
+    throw new Error("webdav auth.password must be a non-empty string");
+  }
+  return auth;
+}
+
+export async function openWebDavFileForRead(absolutePath: string): Promise<WebDavReadOpenResult> {
+  let handle: FileHandle | null = null;
+  try {
+    handle = await open(absolutePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const info = await handle.stat();
+    if (!info.isFile()) {
+      await handle.close().catch(() => {});
+      return { ok: false, code: 403, message: "path is not a file" };
+    }
+    return { ok: true, handle, size: info.size };
+  } catch (err) {
+    await handle?.close().catch(() => {});
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ELOOP") {
+      return { ok: false, code: 403, message: "path escaped allowlist via symlink" };
+    }
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return { ok: false, code: 404, message: "not found" };
+    }
+    return { ok: false, code: 404, message: "not found" };
+  }
+}
+
 export class WebDavServer {
   private readonly options: Required<Omit<WebDavServerOptions, "auth">> & Pick<WebDavServerOptions, "auth">;
   private readonly allowedRoots: AllowedRoot[];
   private server: Server | null = null;
+  private startPromise: Promise<WebDavServerStatus> | null = null;
+  private listening = false;
   private boundPort: number;
 
   private constructor(
@@ -59,7 +99,7 @@ export class WebDavServer {
       host: input.host ?? "127.0.0.1",
       port: input.port,
       allowlistDirs: input.allowlistDirs,
-      auth: input.auth,
+      auth: input.auth ? validateWebDavAuth(input.auth) : undefined,
     };
 
     if (!Array.isArray(options.allowlistDirs) || options.allowlistDirs.length === 0) {
@@ -90,9 +130,10 @@ export class WebDavServer {
     if (!this.options.enabled) {
       throw new Error("webdav server is disabled; set enabled=true to start");
     }
-    if (this.server) {
+    if (this.server && this.listening) {
       return this.status();
     }
+    if (this.startPromise) return this.startPromise;
 
     const server = createServer((req, res) => {
       this.handle(req, res).catch((err) => {
@@ -105,48 +146,80 @@ export class WebDavServer {
       });
     });
     this.server = server;
+    this.listening = false;
+
+    this.startPromise = (async () => {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (err: Error) => {
+            server.removeListener("listening", onListening);
+            server.removeListener("close", onClose);
+            reject(err);
+          };
+          const onListening = () => {
+            server.removeListener("error", onError);
+            server.removeListener("close", onClose);
+            resolve();
+          };
+          const onClose = () => {
+            server.removeListener("error", onError);
+            server.removeListener("listening", onListening);
+            reject(new Error("webdav server closed before listening"));
+          };
+          server.once("error", onError);
+          server.once("listening", onListening);
+          server.once("close", onClose);
+          server.listen(this.options.port, this.options.host);
+        });
+      } catch (err) {
+        if (this.server === server) {
+          this.server = null;
+        }
+        this.listening = false;
+        server.close();
+        throw err;
+      }
+
+      const address = server.address();
+      if (address && typeof address !== "string") {
+        this.boundPort = address.port;
+      }
+      this.listening = true;
+
+      return this.status();
+    })();
 
     try {
-      await new Promise<void>((resolve, reject) => {
-        const onError = (err: Error) => {
-          server.removeListener("listening", onListening);
-          reject(err);
-        };
-        const onListening = () => {
-          server.removeListener("error", onError);
-          resolve();
-        };
-        server.once("error", onError);
-        server.once("listening", onListening);
-        server.listen(this.options.port, this.options.host);
-      });
-    } catch (err) {
-      this.server = null;
-      server.close();
-      throw err;
+      return await this.startPromise;
+    } finally {
+      this.startPromise = null;
     }
-
-    const address = server.address();
-    if (address && typeof address !== "string") {
-      this.boundPort = address.port;
-    }
-
-    return this.status();
   }
 
   async stop(): Promise<void> {
     if (!this.server) return;
     const server = this.server;
-    this.server = null;
-    this.boundPort = this.options.port;
+    const pendingStart = this.startPromise;
     await new Promise<void>((resolve, reject) => {
-      server.close((err) => (err ? reject(err) : resolve()));
+      server.close((err) => {
+        if (err && (err as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") {
+          reject(err);
+          return;
+        }
+        resolve();
+      });
     });
+    await pendingStart?.catch(() => undefined);
+    if (this.server === server) {
+      this.server = null;
+    }
+    this.listening = false;
+    this.boundPort = this.options.port;
   }
 
   status(): WebDavServerStatus {
     return {
-      running: this.server !== null,
+      running: this.server !== null && this.listening,
       host: this.options.host,
       port: this.boundPort,
       rootCount: this.allowedRoots.length,
@@ -182,12 +255,12 @@ export class WebDavServer {
     }
 
     if (method === "PROPFIND") {
-      await this.handlePropfind(resolved.absolutePath, resolved.displayPath, res);
+      await this.handlePropfind(resolved.absolutePath, resolved.rootAbsolute, resolved.displayPath, res);
       return;
     }
 
     if (method === "GET" || method === "HEAD") {
-      await this.handleRead(method, resolved.absolutePath, res);
+      await this.handleRead(method, resolved.absolutePath, resolved.rootAbsolute, res);
       return;
     }
 
@@ -241,7 +314,7 @@ export class WebDavServer {
   }
 
   private async resolvePath(requestPathname: string): Promise<
-    | { ok: true; absolutePath: string; displayPath: string }
+    | { ok: true; absolutePath: string; displayPath: string; rootAbsolute: string }
     | { ok: false; code: number; message: string }
   > {
     let decodedPath: string;
@@ -282,11 +355,11 @@ export class WebDavServer {
       if (!this.isPathInside(root.absolute, canonicalCandidate)) {
         return { ok: false, code: 403, message: "path escaped allowlist via symlink" };
       }
-      return { ok: true, absolutePath: canonicalCandidate, displayPath: `/${segments.join("/")}` };
+      return { ok: true, absolutePath: canonicalCandidate, displayPath: `/${segments.join("/")}`, rootAbsolute: root.absolute };
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
-        return { ok: true, absolutePath: candidate, displayPath: `/${segments.join("/")}` };
+        return { ok: true, absolutePath: candidate, displayPath: `/${segments.join("/")}`, rootAbsolute: root.absolute };
       }
       if (code === "ENOTDIR" || code === "ELOOP") {
         return { ok: false, code: 400, message: "invalid path" };
@@ -295,36 +368,57 @@ export class WebDavServer {
     }
   }
 
-  private async handleRead(method: "GET" | "HEAD", absolutePath: string, res: ServerResponse): Promise<void> {
-    let info;
+  private async handleRead(
+    method: "GET" | "HEAD",
+    absolutePath: string,
+    rootAbsolute: string,
+    res: ServerResponse,
+  ): Promise<void> {
+    const revalidated = await this.revalidatePathInsideRoot(absolutePath, rootAbsolute);
+    if (!revalidated.ok) {
+      res.writeHead(revalidated.code, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(revalidated.message);
+      return;
+    }
+    const opened = await openWebDavFileForRead(revalidated.absolutePath);
+    if (!opened.ok) {
+      res.writeHead(opened.code, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(opened.message);
+      return;
+    }
+
+    const { handle, size } = opened;
+
     try {
-      info = await stat(absolutePath);
-    } catch {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("not found");
-      return;
+      res.writeHead(200, {
+        "Content-Length": String(size),
+        "Content-Type": "application/octet-stream",
+      });
+
+      if (method === "HEAD") {
+        res.end();
+        return;
+      }
+
+      await pipeline(handle.createReadStream({ autoClose: false }), res);
+    } finally {
+      await handle.close().catch(() => {});
     }
-
-    if (!info.isFile()) {
-      res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("path is not a file");
-      return;
-    }
-
-    res.writeHead(200, {
-      "Content-Length": String(info.size),
-      "Content-Type": "application/octet-stream",
-    });
-
-    if (method === "HEAD") {
-      res.end();
-      return;
-    }
-
-    await pipeline(createReadStream(absolutePath), res);
   }
 
-  private async handlePropfind(absolutePath: string, displayPath: string, res: ServerResponse): Promise<void> {
+  private async handlePropfind(
+    absolutePath: string,
+    rootAbsolute: string,
+    displayPath: string,
+    res: ServerResponse,
+  ): Promise<void> {
+    const revalidated = await this.revalidatePathInsideRoot(absolutePath, rootAbsolute);
+    if (!revalidated.ok) {
+      res.writeHead(revalidated.code, { "Content-Type": "text/plain; charset=utf-8" });
+      res.end(revalidated.message);
+      return;
+    }
+    absolutePath = revalidated.absolutePath;
     let info;
     try {
       info = await stat(absolutePath);
@@ -365,6 +459,31 @@ export class WebDavServer {
       return target.startsWith(root);
     }
     return target.startsWith(`${root}${path.sep}`);
+  }
+
+  private async revalidatePathInsideRoot(
+    absolutePath: string,
+    rootAbsolute: string,
+  ): Promise<
+    | { ok: true; absolutePath: string }
+    | { ok: false; code: number; message: string }
+  > {
+    try {
+      const canonical = await realpath(absolutePath);
+      if (!this.isPathInside(rootAbsolute, canonical)) {
+        return { ok: false, code: 403, message: "path escaped allowlist via symlink" };
+      }
+      return { ok: true, absolutePath: canonical };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") {
+        return { ok: false, code: 404, message: "not found" };
+      }
+      if (code === "ELOOP") {
+        return { ok: false, code: 403, message: "path escaped allowlist via symlink" };
+      }
+      throw err;
+    }
   }
 }
 

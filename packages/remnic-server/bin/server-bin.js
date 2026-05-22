@@ -16,6 +16,14 @@ Options:
   --port <number>     Port number (default: 4318)
   --auth-token <tok>  Bearer token for auth (or set REMNIC_AUTH_TOKEN)
   --help              Show this help
+
+Environment:
+  REMNIC_CONFIG_PATH   Config file path (ENGRAM_CONFIG_PATH also supported)
+  REMNIC_PORT          Server port (ENGRAM_PORT also supported)
+  REMNIC_HOST          Bind address (ENGRAM_HOST also supported)
+  REMNIC_AUTH_TOKEN    Auth bearer token (ENGRAM_AUTH_TOKEN also supported)
+  REMNIC_MEMORY_DIR    Override memory directory (ENGRAM_MEMORY_DIR also supported)
+  OPENAI_API_KEY       OpenAI API key for extraction; ignored when config sets openaiApiKey=false
 `;
 
   if (shouldPrintHelpWithoutCli(argv)) {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -19,12 +20,12 @@ function parseArgs(argv) {
     console.error(usage());
     process.exit(packageDir ? 0 : 2);
   }
-  return path.resolve(packageDir);
+  return resolveUserPath(packageDir);
 }
 
 function findOpenClawPackageDir() {
   const explicit = process.env.OPENCLAW_PACKAGE_DIR;
-  if (explicit) return path.resolve(explicit);
+  if (explicit) return resolveUserPath(explicit);
 
   for (const searchRoot of [
     process.cwd(),
@@ -39,6 +40,18 @@ function findOpenClawPackageDir() {
   }
 
   throw new Error("Unable to find openclaw package; set OPENCLAW_PACKAGE_DIR.");
+}
+
+function expandTilde(input) {
+  if (input === "~") return process.env.HOME || os.homedir();
+  if (input.startsWith("~/")) {
+    return path.join(process.env.HOME || os.homedir(), input.slice(2));
+  }
+  return input;
+}
+
+function resolveUserPath(input) {
+  return path.resolve(expandTilde(input));
 }
 
 function findScannerModule(openclawPackageDir) {

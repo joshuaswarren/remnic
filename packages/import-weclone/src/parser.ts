@@ -57,6 +57,13 @@ export interface ParseOptions {
   assistantSenders?: string[];
 }
 
+type NormalizedParseOptions = {
+  platform?: WeClonePlatform;
+  strict: boolean;
+  selfSender?: string;
+  assistantSenders: string[];
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -111,6 +118,51 @@ function isValidMessage(
   return isNonEmptyString(m.sender) && isNonEmptyString(m.text) && isNonEmptyString(m.timestamp);
 }
 
+function invalidOption(name: string, expected: string): Error {
+  return new Error(`WeClone import: invalid option ${name}: expected ${expected}`);
+}
+
+function normalizeParseOptions(options: ParseOptions | undefined): NormalizedParseOptions {
+  if (options === undefined) {
+    return { strict: false, assistantSenders: [] };
+  }
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw invalidOption("options", "an object");
+  }
+
+  const raw = options as Record<string, unknown>;
+  if (raw.strict !== undefined && typeof raw.strict !== "boolean") {
+    throw invalidOption("strict", "a boolean");
+  }
+  if (raw.platform !== undefined && typeof raw.platform !== "string") {
+    throw invalidOption("platform", [...VALID_PLATFORMS].join(", "));
+  }
+  if (raw.selfSender !== undefined && !isNonEmptyString(raw.selfSender)) {
+    throw invalidOption("selfSender", "a non-empty string");
+  }
+  if (raw.assistantSenders !== undefined) {
+    if (!Array.isArray(raw.assistantSenders)) {
+      throw invalidOption("assistantSenders", "an array of non-empty strings");
+    }
+    for (let i = 0; i < raw.assistantSenders.length; i += 1) {
+      if (!isNonEmptyString(raw.assistantSenders[i])) {
+        throw invalidOption(`assistantSenders[${i}]`, "a non-empty string");
+      }
+    }
+  }
+
+  return {
+    strict: raw.strict === true,
+    ...(raw.platform !== undefined
+      ? { platform: raw.platform as WeClonePlatform }
+      : {}),
+    ...(raw.selfSender !== undefined
+      ? { selfSender: raw.selfSender as string }
+      : {}),
+    assistantSenders: (raw.assistantSenders as string[] | undefined) ?? [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
@@ -132,7 +184,8 @@ export function parseWeCloneExport(
     );
   }
 
-  const strict = options?.strict === true;
+  const parseOptions = normalizeParseOptions(options);
+  const strict = parseOptions.strict;
 
   // Accept raw array or object-with-messages
   let rawMessages: unknown[];
@@ -163,7 +216,7 @@ export function parseWeCloneExport(
 
   // Resolve platform
   const platform: WeClonePlatform = resolvePlatform(
-    options?.platform,
+    parseOptions.platform,
     platformStr,
   );
 
@@ -175,9 +228,9 @@ export function parseWeCloneExport(
   // for downstream extraction.  If every sender looks bot-like (rare),
   // fall through to the first valid sender rather than leaving `selfSender`
   // empty (which would make every message `other` or `assistant`).
-  const assistantSet = new Set<string>(options?.assistantSenders ?? []);
+  const assistantSet = new Set<string>(parseOptions.assistantSenders);
   let inferredSelfSender = "";
-  if (options?.selfSender === undefined) {
+  if (parseOptions.selfSender === undefined) {
     for (const m of rawMessages) {
       if (!isValidMessage(m)) continue;
       if (assistantSet.has(m.sender)) continue;
@@ -190,7 +243,7 @@ export function parseWeCloneExport(
       inferredSelfSender = firstValid ? firstValid.sender : "";
     }
   }
-  const selfSender = options?.selfSender ?? inferredSelfSender;
+  const selfSender = parseOptions.selfSender ?? inferredSelfSender;
 
   // Map messages to WeCloneImportTurn[]
   const turns: WeCloneImportTurn[] = [];

@@ -48,10 +48,7 @@ export async function runAssistantNextBestActionBenchmark(
       ? ASSISTANT_NEXT_BEST_ACTION_SMOKE_SCENARIOS
       : ASSISTANT_NEXT_BEST_ACTION_SCENARIOS;
 
-  const limited =
-    typeof options.limit === "number" && options.limit > 0
-      ? scenarios.slice(0, options.limit)
-      : scenarios;
+  const limited = applyScenarioLimit(scenarios, options.limit);
 
   if (limited.length === 0) {
     throw new Error(
@@ -71,4 +68,16 @@ export async function runAssistantNextBestActionBenchmark(
       rubricId: resolveAssistantRubricId(options),
     },
   );
+}
+
+function applyScenarioLimit<T>(scenarios: T[], limit: number | undefined): T[] {
+  if (limit === undefined) {
+    return scenarios;
+  }
+  if (!Number.isFinite(limit) || !Number.isInteger(limit) || limit <= 0) {
+    throw new Error(
+      `assistant-next-best-action limit must be a positive integer; received ${String(limit)}.`,
+    );
+  }
+  return scenarios.slice(0, limit);
 }

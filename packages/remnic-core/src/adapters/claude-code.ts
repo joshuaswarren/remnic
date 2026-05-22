@@ -11,9 +11,13 @@ import { headerValue, type AdapterContext, type EngramAdapter, type ResolvedIden
  * For HTTP REST (non-MCP) requests, detection relies on User-Agent or
  * user-configured X-Engram-Client-Id header in .claude.json headers.
  *
- * Namespace/principal can be set by configuring custom headers in
+ * Namespace can be set by configuring custom headers in
  * .claude.json or .mcp.json:
- *   "headers": { "X-Engram-Namespace": "my-project", "X-Engram-Principal": "my-team" }
+ *   "headers": { "X-Engram-Namespace": "my-project" }
+ *
+ * Principal overrides are intentionally handled only by the HTTP server's
+ * trustPrincipalHeader gate. Adapters must not independently trust
+ * X-Engram-Principal.
  */
 export class ClaudeCodeAdapter implements EngramAdapter {
   readonly id = "claude-code";
@@ -37,20 +41,15 @@ export class ClaudeCodeAdapter implements EngramAdapter {
     // MCP session ID (standard MCP header, server-assigned)
     const mcpSessionId = headerValue(context.headers, "mcp-session-id");
 
-    // Principal: explicit header > default
-    const principal = headerValue(context.headers, "x-engram-principal")
-      || "claude-code";
-
     // Namespace: explicit header > default
     const namespace = headerValue(context.headers, "x-engram-namespace")
       || "claude-code";
 
     return {
       namespace,
-      principal,
+      principal: "claude-code",
       sessionKey: mcpSessionId ?? context.sessionKey,
       adapterId: this.id,
     };
   }
 }
-

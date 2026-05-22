@@ -8,6 +8,7 @@ import {
   buildTokenEntry,
   commitTokenEntry,
   generateToken,
+  getAllValidTokensCached,
   loadTokenStore,
   revokeToken,
   saveTokenStore,
@@ -172,6 +173,23 @@ test("legacy flat token stores reject empty connector keys before returning toke
       () => loadTokenStore(tokensPath),
       /connector must be a non-empty string/,
     );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("token writes invalidate the cached valid-token list", async () => {
+  const { dir, tokensPath } = await makeTempTokenPath();
+  try {
+    const entry = generateToken("codex", tokensPath);
+    assert.deepEqual(getAllValidTokensCached(tokensPath), [entry.token]);
+
+    assert.equal(revokeToken("codex", tokensPath), true);
+    assert.deepEqual(getAllValidTokensCached(tokensPath), []);
+
+    const replacement = buildTokenEntry("codex");
+    commitTokenEntry(replacement, tokensPath);
+    assert.deepEqual(getAllValidTokensCached(tokensPath), [replacement.token]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

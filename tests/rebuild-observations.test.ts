@@ -95,6 +95,59 @@ test("rebuildObservations writes deterministic ledger and backs up existing file
   );
 });
 
+test("rebuildObservations rejects unreadable transcript shards without writing output", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-observations-read-fail-"));
+  await writeText(
+    memoryDir,
+    "transcripts/main/default/2026-02-25.jsonl",
+    JSON.stringify({
+      timestamp: "2026-02-25T10:01:00.000Z",
+      role: "user",
+      content: "ok",
+      sessionKey: "agent:main:default",
+      turnId: "t1",
+    }) + "\n",
+  );
+  await writeText(
+    memoryDir,
+    "transcripts/main/default/2026-02-26.jsonl",
+    JSON.stringify({
+      timestamp: "2026-02-26T10:01:00.000Z",
+      role: "assistant",
+      content: "later",
+      sessionKey: "agent:main:default",
+      turnId: "t2",
+    }) + "\n",
+  );
+  await writeText(
+    memoryDir,
+    "state/observation-ledger/rebuilt-observations.jsonl",
+    "{\"legacy\":true}\n",
+  );
+
+  await assert.rejects(
+    () =>
+      rebuildObservations({
+        memoryDir,
+        dryRun: false,
+        now: new Date("2026-02-27T12:00:00.000Z"),
+        readTranscriptFile: async (file) => {
+          if (file.endsWith("2026-02-26.jsonl")) {
+            const err = new Error("permission denied") as NodeJS.ErrnoException;
+            err.code = "EACCES";
+            throw err;
+          }
+          return readFile(file, "utf-8");
+        },
+      }),
+    /Failed to read transcript file .*2026-02-26\.jsonl: permission denied/,
+  );
+  assert.equal(
+    await readFile(path.join(memoryDir, "state/observation-ledger/rebuilt-observations.jsonl"), "utf-8"),
+    "{\"legacy\":true}\n",
+  );
+});
+
 test("rebuildObservations ignores malformed transcript lines fail-open", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-observations-malformed-"));
   await writeText(
@@ -150,6 +203,10 @@ test("rebuildObservations enforces backup-first when existing ledger backup fail
         dryRun: false,
         now,
       }),
+  );
+  assert.equal(
+    await readFile(path.join(memoryDir, "state/observation-ledger/rebuilt-observations.jsonl"), "utf-8"),
+    "{\"legacy\":true}\n",
   );
 });
 

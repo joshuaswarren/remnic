@@ -226,7 +226,8 @@ export async function runBeamBenchmark(
     try {
       await options.system.drain?.();
     } catch (drainErr) {
-      console.error(`  [WARN] beam drain failed for ${entry.conversation.conversation_id}: ${drainErr instanceof Error ? drainErr.message : String(drainErr)}`);
+      const message = drainErr instanceof Error ? drainErr.message : String(drainErr);
+      throw new Error(`beam drain failed for ${entry.conversation.conversation_id}: ${message}`, { cause: drainErr });
     }
 
     let taskIndex = 0;
@@ -678,8 +679,9 @@ function focusedBeamEvidenceLines(
   lines.forEach((line, index) => {
     for (const sourceChatId of sourceChatIds) {
       if (
-        line.includes(`source_chat_id=${sourceChatId}`) ||
-        line.includes(`chat_id=${sourceChatId}`)
+        beamAnchorFieldContains(line, "source_chat_id", sourceChatId) ||
+        beamAnchorFieldContains(line, "chat_id", sourceChatId) ||
+        beamAnchorFieldContains(line, "chat_ids", sourceChatId)
       ) {
         sourceLines.push(line);
         const nextLine = lines[index + 1];
@@ -695,6 +697,28 @@ function focusedBeamEvidenceLines(
     }
   });
   return sourceLines.length > 0 ? sourceLines : lines;
+}
+
+function beamAnchorFieldContains(
+  line: string,
+  field: "source_chat_id" | "chat_id" | "chat_ids",
+  expectedValue: string,
+): boolean {
+  const expected = expectedValue.trim();
+  if (expected.length === 0) {
+    return false;
+  }
+  const fieldPattern = new RegExp(
+    `(?:^|[\\s;])${field}=([^;\\s]+)(?=$|[\\s;])`,
+  );
+  const match = line.match(fieldPattern);
+  if (!match?.[1]) {
+    return false;
+  }
+  return match[1]
+    .split(",")
+    .map((value) => value.trim())
+    .includes(expected);
 }
 
 function collectBeamSourceChatIds(value: unknown): Set<string> {
@@ -924,6 +948,9 @@ async function* streamJsonDataset(
         if (limit === undefined || yielded < limit) {
           yield conversation;
           yielded += 1;
+          if (limit !== undefined && yielded >= limit) {
+            return;
+          }
         }
       }
     }
@@ -976,6 +1003,9 @@ async function* streamJsonlDataset(
     if (limit === undefined || yielded < limit) {
       yield conversation;
       yielded += 1;
+      if (limit !== undefined && yielded >= limit) {
+        return;
+      }
     }
   }
 }

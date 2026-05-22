@@ -64,11 +64,6 @@ export function ensureWecloneImportAdapterRegistered(): boolean {
 // `clearBulkImportSources()`) can re-invoke
 // `ensureWecloneImportAdapterRegistered()` after clearing.
 //
-// The try/catch keeps import-time errors from breaking unrelated callers —
-// the adapter's `parse` is pure, so a failure here would be surprising, but
-// defensive coding keeps CLI startup resilient.
-try {
-  ensureWecloneImportAdapterRegistered();
-} catch {
-  // Swallow — explicit callers can re-invoke ensureWecloneImportAdapterRegistered().
-}
+// Let unexpected registry failures surface at import time so the public
+// "import registers the adapter" contract cannot silently become false.
+ensureWecloneImportAdapterRegistered();

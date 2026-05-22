@@ -233,6 +233,56 @@ test("discovery never reads scripts/ directory", async () => {
   fs.rmSync(root, { recursive: true });
 });
 
+test("discovery ignores symlinked examples directory", async () => {
+  const root = makeTempDir();
+  createExtension(root, "symlink-examples", {
+    instructions: "Test",
+    includeScripts: true,
+  });
+  const extensionDir = path.join(root, "symlink-examples");
+  fs.writeFileSync(path.join(extensionDir, "scripts", "leak.md"), "leak", "utf-8");
+  try {
+    fs.symlinkSync(path.join(extensionDir, "scripts"), path.join(extensionDir, "examples"), "dir");
+  } catch {
+    fs.rmSync(root, { recursive: true });
+    return;
+  }
+
+  const { log, warnings } = collectWarnings();
+  const result = await discoverMemoryExtensions(root, log);
+
+  assert.equal(result.length, 1);
+  assert.deepEqual(result[0].examplesPaths, []);
+  assert.equal(warnings.some((warning) => warning.includes("examples/ is a symlink")), true);
+  fs.rmSync(root, { recursive: true });
+});
+
+test("discovery ignores symlinked example markdown files", async () => {
+  const root = makeTempDir();
+  createExtension(root, "symlink-example-file", {
+    instructions: "Test",
+  });
+  const extensionDir = path.join(root, "symlink-example-file");
+  const examplesDir = path.join(extensionDir, "examples");
+  fs.mkdirSync(examplesDir, { recursive: true });
+  const outside = path.join(root, "outside.md");
+  fs.writeFileSync(outside, "outside", "utf-8");
+  try {
+    fs.symlinkSync(outside, path.join(examplesDir, "leak.md"));
+  } catch {
+    fs.rmSync(root, { recursive: true });
+    return;
+  }
+
+  const { log, warnings } = collectWarnings();
+  const result = await discoverMemoryExtensions(root, log);
+
+  assert.equal(result.length, 1);
+  assert.deepEqual(result[0].examplesPaths, []);
+  assert.equal(warnings.some((warning) => warning.includes("examples/leak.md is a symlink")), true);
+  fs.rmSync(root, { recursive: true });
+});
+
 // ── renderExtensionsBlock ────────────────────────────────────────────────────
 
 test("renderExtensionsBlock: empty list returns empty string", () => {

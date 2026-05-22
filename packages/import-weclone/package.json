@@ -16,7 +16,7 @@
     "build": "tsup src/index.ts --format esm --dts",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "test": "tsx --test 'src/**/*.test.ts'",
+    "test": "tsx --test src/**/*.test.ts",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
@@ -24,7 +24,7 @@
     "provenance": true
   },
   "dependencies": {
-    "@remnic/core": "workspace:^"
+    "@remnic/core": "^1.1.12"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

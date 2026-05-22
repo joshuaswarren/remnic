@@ -177,6 +177,42 @@ test("v3 namespaces router uses namespaced dir when it exists before first resol
   assert.match(namespacedProfile, /Namespaced/);
 });
 
+test("v3 namespaces router refreshes default storage when namespaced dir appears", async () => {
+  const memoryDir = tmpDir("engram-ns-router-refresh");
+  const nsDir = path.join(memoryDir, "namespaces", "default");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = baseConfig(memoryDir);
+  const router = new NamespaceStorageRouter(cfg);
+
+  const legacyStorage = await router.storageFor("default");
+  assert.equal(legacyStorage.dir, memoryDir);
+
+  await mkdir(nsDir, { recursive: true });
+
+  const namespacedStorage = await router.storageFor("default");
+  assert.equal(namespacedStorage.dir, nsDir);
+  assert.notEqual(namespacedStorage, legacyStorage);
+});
+
+test("v3 namespaces router keeps default storage at legacy root when legacy data exists", async () => {
+  const memoryDir = tmpDir("engram-ns-router-legacy-refresh");
+  const nsDir = path.join(memoryDir, "namespaces", "default");
+  await mkdir(memoryDir, { recursive: true });
+
+  const cfg = baseConfig(memoryDir);
+  const router = new NamespaceStorageRouter(cfg);
+
+  const legacyStorage = await router.storageFor("default");
+  await legacyStorage.ensureDirectories();
+  await legacyStorage.writeProfile("# Profile\n\n- Legacy root\n");
+  await mkdir(nsDir, { recursive: true });
+
+  const refreshedStorage = await router.storageFor("default");
+  assert.equal(refreshedStorage.dir, memoryDir);
+  assert.equal(refreshedStorage, legacyStorage);
+});
+
 test("v3 namespaces router propagates custom entity schemas to routed storage managers", async () => {
   const memoryDir = tmpDir("engram-ns-router-schemas");
   await mkdir(path.join(memoryDir, "entities"), { recursive: true });

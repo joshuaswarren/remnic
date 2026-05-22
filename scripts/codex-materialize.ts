@@ -20,7 +20,9 @@ import { pathToFileURL } from "node:url";
 
 import { parseConfig } from "../packages/remnic-core/src/config.js";
 import { runCodexMaterialize } from "../packages/remnic-core/src/connectors/codex-materialize-runner.js";
-import { resolveRemnicPluginEntry } from "../packages/remnic-core/src/plugin-id.js";
+import { resolvePluginEntry } from "../packages/remnic-core/src/plugin-entry-resolver.js";
+
+const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
 interface Args {
   namespace?: string;
@@ -31,27 +33,71 @@ interface Args {
   help: boolean;
 }
 
+function getOpenClawPluginEntries(raw: Record<string, unknown>): Record<string, unknown> | undefined {
+  const plugins =
+    raw["plugins"] && typeof raw["plugins"] === "object" && !Array.isArray(raw["plugins"])
+      ? (raw["plugins"] as Record<string, unknown>)
+      : undefined;
+  const entries =
+    plugins && plugins["entries"] && typeof plugins["entries"] === "object" && !Array.isArray(plugins["entries"])
+      ? (plugins["entries"] as Record<string, unknown>)
+      : undefined;
+  return entries;
+}
+
+function getOpenClawMemorySlotId(raw: Record<string, unknown>): string | undefined {
+  const plugins =
+    raw["plugins"] && typeof raw["plugins"] === "object" && !Array.isArray(raw["plugins"])
+      ? (raw["plugins"] as Record<string, unknown>)
+      : undefined;
+  const slots =
+    plugins && plugins["slots"] && typeof plugins["slots"] === "object" && !Array.isArray(plugins["slots"])
+      ? (plugins["slots"] as Record<string, unknown>)
+      : undefined;
+  const slotId = slots?.["memory"];
+  return typeof slotId === "string" ? slotId : undefined;
+}
+
+function resolveOpenClawRemnicPluginEntry(raw: unknown): Record<string, unknown> | undefined {
+  return resolvePluginEntry(raw, {
+    candidateIds: OPENCLAW_REMNIC_PLUGIN_IDS,
+    getEntries: getOpenClawPluginEntries,
+    getSlotId: getOpenClawMemorySlotId,
+  });
+}
+
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     reason: "cli",
     json: false,
     help: false,
   };
+  const readRequiredValue = (index: number, flag: string): string => {
+    const value = argv[index + 1];
+    if (!value || value.startsWith("-")) {
+      throw new CliUsageError(`${flag} requires a value`);
+    }
+    return value;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
       case "--namespace":
       case "-n":
-        args.namespace = argv[++i];
+        args.namespace = readRequiredValue(i, a);
+        i += 1;
         break;
       case "--codex-home":
-        args.codexHome = argv[++i];
+        args.codexHome = readRequiredValue(i, a);
+        i += 1;
         break;
       case "--memory-dir":
-        args.memoryDir = argv[++i];
+        args.memoryDir = readRequiredValue(i, a);
+        i += 1;
         break;
       case "--reason":
-        args.reason = (argv[++i] as Args["reason"]) ?? "cli";
+        args.reason = readRequiredValue(i, a) as Args["reason"];
+        i += 1;
         break;
       case "--json":
         args.json = true;
@@ -84,9 +130,25 @@ class MaterializeConfigError extends Error {
   }
 }
 
+class CliUsageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CliUsageError";
+  }
+}
+
 function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const value = env[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function expandConfigPathForEnv(filePath: string | undefined, home: string): string | undefined {
+  if (filePath === undefined) return undefined;
+  if (filePath === "~") return home.length > 0 ? home : filePath;
+  if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
+    return home.length > 0 ? path.join(home, filePath.slice(2)) : filePath;
+  }
+  return filePath;
 }
 
 function safeErrorDetail(error: unknown): string {
@@ -107,9 +169,12 @@ export function configCandidates(
     envValue(env, "OPENCLAW_ENGRAM_CONFIG_PATH") ??
     path.join(home, ".openclaw", "openclaw.json");
   return [
-    { path: envValue(env, "REMNIC_CONFIG"), label: "REMNIC_CONFIG" },
     {
-      path: openclawConfigPath,
+      path: expandConfigPathForEnv(envValue(env, "REMNIC_CONFIG"), home),
+      label: "REMNIC_CONFIG",
+    },
+    {
+      path: expandConfigPathForEnv(openclawConfigPath, home),
       label:
         envValue(env, "OPENCLAW_CONFIG_PATH") !== undefined
           ? "OPENCLAW_CONFIG_PATH"
@@ -137,7 +202,7 @@ export function configCandidates(
 export function extractRemnicConfigFromRaw(
   raw: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
-  const entry = resolveRemnicPluginEntry(raw);
+  const entry = resolveOpenClawRemnicPluginEntry(raw);
   if (isPlainRecord(entry)) {
     const config = entry["config"];
     return isPlainRecord(config) ? config : entry;
@@ -266,6 +331,9 @@ function isCliEntrypoint(): boolean {
 }
 
 function formatFatalError(error?: unknown): string {
+  if (error instanceof CliUsageError) {
+    return `codex-materialize usage error: ${error.message}`;
+  }
   if (error instanceof MaterializeConfigError) {
     return error.message;
   }

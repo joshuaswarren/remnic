@@ -41,6 +41,9 @@ export const adapter: ImporterAdapter<ParsedGeminiExport> = {
       ...(options?.maxMemories !== undefined
         ? { maxMemories: options.maxMemories }
         : {}),
+      ...(options?.minPromptLength !== undefined
+        ? { minPromptLength: options.minPromptLength }
+        : {}),
     });
   },
 

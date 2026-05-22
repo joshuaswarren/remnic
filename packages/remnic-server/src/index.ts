@@ -48,6 +48,74 @@ function parseServerPort(value: unknown, source: string): number {
   return port;
 }
 
+function parseOptionalString(value: unknown, source: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`Invalid ${source}: expected a string`);
+  }
+  return value;
+}
+
+function parseOptionalNonEmptyString(value: unknown, source: string): string | undefined {
+  const parsed = parseOptionalString(value, source);
+  if (parsed === undefined) return undefined;
+  if (parsed.trim() === "") {
+    throw new Error(`Invalid ${source}: expected a non-empty string`);
+  }
+  return parsed;
+}
+
+function parseOptionalPositiveInteger(value: unknown, source: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = typeof value === "string" ? Number(value.trim()) : value;
+  if (
+    typeof parsed !== "number" ||
+    !Number.isInteger(parsed) ||
+    parsed < 1
+  ) {
+    throw new Error(`Invalid ${source}: expected a positive integer`);
+  }
+  return parsed;
+}
+
+function parseOptionalBoolean(value: unknown, source: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  throw new Error(`Invalid ${source}: expected a boolean`);
+}
+
+export interface ParsedServerConfig {
+  host: string;
+  port: number;
+  authToken?: string;
+  principal?: string;
+  maxBodyBytes?: number;
+  adminConsoleEnabled: boolean;
+  adminConsolePublicDir?: string;
+}
+
+export function parseServerConfig(
+  raw: Partial<ServerConfig["server"]>,
+  options?: { portSource?: string },
+): ParsedServerConfig {
+  return {
+    host: parseOptionalNonEmptyString(raw.host, "server.host") ?? "127.0.0.1",
+    port: raw.port === undefined
+      ? 4318
+      : parseServerPort(raw.port, options?.portSource ?? "server.port"),
+    authToken: parseOptionalString(raw.authToken, "server.authToken"),
+    principal: parseOptionalString(raw.principal, "server.principal"),
+    maxBodyBytes: parseOptionalPositiveInteger(raw.maxBodyBytes, "server.maxBodyBytes"),
+    adminConsoleEnabled: parseOptionalBoolean(raw.adminConsoleEnabled, "server.adminConsoleEnabled") ?? false,
+    adminConsolePublicDir: parseOptionalString(raw.adminConsolePublicDir, "server.adminConsolePublicDir"),
+  };
+}
+
 interface ResolvedConfigPath {
   path: string;
   explicit: boolean;
@@ -84,11 +152,34 @@ function resolveConfigPath(cliPath?: string): ResolvedConfigPath {
   return { path: path.join(homeDir, ".config", "remnic", "config.json"), explicit: false, source: "auto-discovery" };
 }
 
-function loadConfigFile(configPath: string): ServerConfig {
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function requirePlainConfigBlock(
+  raw: Record<string, unknown>,
+  key: "remnic" | "engram" | "server",
+  configPath: string,
+): Record<string, unknown> | undefined {
+  const value = raw[key];
+  if (value === undefined) return undefined;
+  if (!isPlainRecord(value)) {
+    throw new Error(`Invalid config file ${configPath}: ${key} must be a JSON object`);
+  }
+  return value;
+}
+
+export function loadConfigFile(configPath: string): ServerConfig {
   const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  if (!isPlainRecord(raw)) {
+    throw new Error(`Invalid config file ${configPath}: top-level config must be a JSON object`);
+  }
+  const remnic = requirePlainConfigBlock(raw, "remnic", configPath);
+  const engram = requirePlainConfigBlock(raw, "engram", configPath);
+  const server = requirePlainConfigBlock(raw, "server", configPath);
   return {
-    remnic: raw.remnic ?? raw.engram ?? raw ?? {},
-    server: raw.server ?? {},
+    remnic: remnic ?? engram ?? raw,
+    server: server ?? {},
   };
 }
 
@@ -162,6 +253,23 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+async function cleanupFailedStartup(
+  orchestrator: Orchestrator,
+  httpServer: EngramAccessHttpServer,
+): Promise<void> {
+  try {
+    await httpServer.stop();
+  } catch (err) {
+    log.warn(`HTTP startup failure cleanup could not stop server: ${err}`);
+  }
+
+  try {
+    await orchestrator.destroy();
+  } catch (err) {
+    log.warn(`HTTP startup failure cleanup could not destroy orchestrator: ${err}`);
+  }
+}
+
 // ── Server startup ──────────────────────────────────────────────────────────
 
 export interface ServerResult {
@@ -170,6 +278,8 @@ export interface ServerResult {
   httpServer: EngramAccessHttpServer;
   host: string;
   port: number;
+  /** Stop HTTP, cancel startup work, abort deferred init, and destroy the orchestrator. */
+  stop: () => Promise<void>;
   /** Cancel any pending startup-sync retry timers. Called automatically on shutdown. */
   cancelStartupSync: () => void;
   /** Abort deferred orchestrator initialization (QMD sync, warmup, cache). */
@@ -207,9 +317,7 @@ export async function startServer(options?: {
     : envServer.port !== undefined
       ? "REMNIC_PORT/ENGRAM_PORT"
       : "server.port";
-  const serverPort = serverConfig.port === undefined
-    ? 4318
-    : parseServerPort(serverConfig.port, portSource);
+  const parsedServerConfig = parseServerConfig(serverConfig, { portSource });
 
   const config = parseConfig(remnicConfig);
   const orchestrator = new Orchestrator(config);
@@ -219,7 +327,7 @@ export async function startServer(options?: {
   // and liveness probes can connect while deferred init is still running.
   const service = new EngramAccessService(orchestrator);
 
-  const authToken = serverConfig.authToken ?? readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ?? "";
+  const authToken = parsedServerConfig.authToken ?? readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ?? "";
 
   // Connector tokens are loaded dynamically per request via authTokensGetter
   // so that token generate/revoke takes effect without server restart
@@ -229,21 +337,28 @@ export async function startServer(options?: {
 
   const httpServer = new EngramAccessHttpServer({
     service,
-    host: serverConfig.host ?? "127.0.0.1",
-    port: serverPort,
+    host: parsedServerConfig.host,
+    port: parsedServerConfig.port,
     authToken: authToken || undefined,
     authTokensGetter: () => getAllValidTokensCached(),
-    principal: serverConfig.principal,
-    maxBodyBytes: serverConfig.maxBodyBytes,
-    adminConsoleEnabled: serverConfig.adminConsoleEnabled ?? false,
-    adminConsolePublicDir: serverConfig.adminConsolePublicDir
-      ? path.resolve(expandTildePath(serverConfig.adminConsolePublicDir))
+    principal: parsedServerConfig.principal,
+    maxBodyBytes: parsedServerConfig.maxBodyBytes,
+    adminConsoleEnabled: parsedServerConfig.adminConsoleEnabled,
+    adminConsolePublicDir: parsedServerConfig.adminConsolePublicDir
+      ? path.resolve(expandTildePath(parsedServerConfig.adminConsolePublicDir))
       : undefined,
     citationsEnabled: config.citationsEnabled,
     citationsAutoDetect: config.citationsAutoDetect,
   });
 
-  const { host, port } = await httpServer.start();
+  let host: string;
+  let port: number;
+  try {
+    ({ host, port } = await httpServer.start());
+  } catch (err) {
+    await cleanupFailedStartup(orchestrator, httpServer);
+    throw err;
+  }
 
   // Fire-and-forget: wait for deferred init (QMD probe, collection setup,
   // warmup) then check QMD availability and retry if needed. This does NOT
@@ -251,17 +366,31 @@ export async function startServer(options?: {
   // An AbortController allows the shutdown handler to cancel pending retries.
   const startupSyncAbort = new AbortController();
 
-  // Wrap httpServer.stop() so that stopping the HTTP server also cancels any
-  // in-flight startup-sync retry timers.  This ensures callers that only have
-  // a reference to httpServer (e.g. test harnesses) don't leave dangling timers
-  // even if they never call cancelStartupSync() directly.
+  // Wrap httpServer.stop() so that existing callers also get full lifecycle
+  // cleanup: retry timers, deferred init, HTTP listener, and orchestrator.
   const originalStop = httpServer.stop.bind(httpServer);
-  httpServer.stop = async (): Promise<void> => {
-    startupSyncAbort.abort();
-    return originalStop();
+  let stopPromise: Promise<void> | undefined;
+  const stop = async (): Promise<void> => {
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      startupSyncAbort.abort();
+      orchestrator.abortDeferredInit();
+      try {
+        await originalStop();
+      } finally {
+        await orchestrator.destroy();
+      }
+    })();
+    return stopPromise;
   };
+  httpServer.stop = stop;
 
   orchestrator.deferredReady.then(() => {
+    if (startupSyncAbort.signal.aborted) {
+      log.debug("QMD startup-sync: cancelled before deferred init completed");
+      return;
+    }
+
     // Skip retries when search is explicitly disabled via config or when the
     // orchestrator already resolved to a noop backend (e.g. missing collection
     // detected during deferredInitialize). Both cases mean no sync should ever
@@ -284,6 +413,10 @@ export async function startServer(options?: {
     }
 
     const RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000, 120_000];
+    if (startupSyncAbort.signal.aborted) {
+      log.debug("QMD startup-sync retry: cancelled before retry task started");
+      return;
+    }
     (async () => {
       for (const delay of RETRY_DELAYS_MS) {
         await abortableDelay(delay, startupSyncAbort.signal);
@@ -314,7 +447,7 @@ export async function startServer(options?: {
     log.warn(`Deferred init error: ${err}`);
   });
 
-  return { config, service, httpServer, host, port, cancelStartupSync: () => startupSyncAbort.abort(), abortDeferredInit: () => orchestrator.abortDeferredInit() };
+  return { config, service, httpServer, host, port, stop, cancelStartupSync: () => startupSyncAbort.abort(), abortDeferredInit: () => orchestrator.abortDeferredInit() };
 }
 
 // ── CLI entry point ──────────────────────────────────────────────────────────
@@ -405,9 +538,7 @@ Environment:
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     console.log(`\nReceived ${signal}, shutting down...`);
-    result.cancelStartupSync();
-    result.abortDeferredInit();
-    await result.httpServer.stop();
+    await result.stop();
     process.exit(0);
   };
 

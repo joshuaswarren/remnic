@@ -130,6 +130,7 @@ const TOPIC_KEYWORDS = [
   ["omicron", "small", "letter"],
   ["pi", "circle", "ratio"],
 ];
+const MAX_PRNG_SEED = 0xffffffff;
 
 function topicWord(topicId: number, slot: number): string {
   // Disambiguate distinct topics that wrap past the keyword table's
@@ -198,6 +199,15 @@ export function generateAgedDataset(
     !Number.isInteger(horizonDays)
   ) {
     throw new Error(`horizonDays must be a positive integer, got ${horizonDays}`);
+  }
+  if (
+    !Number.isInteger(seed) ||
+    seed < 0 ||
+    seed > MAX_PRNG_SEED
+  ) {
+    throw new Error(
+      `seed must be an integer in [0, ${MAX_PRNG_SEED}], got ${seed}`,
+    );
   }
 
   const rng = mulberry32(seed);

@@ -128,6 +128,38 @@ test("work storage keeps project index in sync when patching task projectId", as
   assert.deepEqual(cleared?.taskIds, []);
 });
 
+test("work storage preserves project task IDs across concurrent linked task creation", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-work-storage-concurrent-project-"));
+  const storage = new WorkStorage(memoryDir);
+
+  const project = await storage.createProject({ name: "Concurrent Project" });
+  const [first, second] = await Promise.all([
+    storage.createTask({ title: "Concurrent task A", projectId: project.id }),
+    storage.createTask({ title: "Concurrent task B", projectId: project.id }),
+  ]);
+
+  const fetched = await storage.getProject(project.id);
+  assert.ok(fetched);
+  assert.deepEqual(fetched.taskIds.sort(), [first.id, second.id].sort());
+});
+
+test("work storage preserves project task IDs across concurrent storage instances", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-work-storage-concurrent-instances-"));
+  const bootstrap = new WorkStorage(memoryDir);
+
+  const project = await bootstrap.createProject({ name: "Concurrent Instance Project" });
+  const firstStorage = new WorkStorage(memoryDir);
+  const secondStorage = new WorkStorage(memoryDir);
+  const [first, second] = await Promise.all([
+    firstStorage.createTask({ title: "Instance task A", projectId: project.id }),
+    secondStorage.createTask({ title: "Instance task B", projectId: project.id }),
+  ]);
+
+  const fetched = await new WorkStorage(memoryDir).getProject(project.id);
+  assert.ok(fetched);
+  assert.deepEqual(fetched.taskIds.sort(), [first.id, second.id].sort());
+});
+
 test("work storage clears task links when deleting a project", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-work-storage-delete-project-"));
   const storage = new WorkStorage(memoryDir);

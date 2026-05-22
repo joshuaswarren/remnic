@@ -49,6 +49,35 @@ test("OpenClaw SDK surface check reports added SDK names as actionable drift", (
   });
 });
 
+test("OpenClaw SDK surface check scans extra declaration files even when preferred files exist", () => {
+  withFakeOpenClawSurface((fixture) => {
+    writeExpectedSurface(fixture.expectedPath);
+    const preferredDir = path.join(
+      fixture.packageRoot,
+      "dist",
+      "plugin-sdk",
+      "src",
+      "plugins",
+    );
+    fs.mkdirSync(preferredDir, { recursive: true });
+    fs.copyFileSync(fixture.sdkPath, path.join(preferredDir, "types.d.ts"));
+    fs.writeFileSync(
+      path.join(preferredDir, "new-surface.d.ts"),
+      "export function registerMemoryTimeline(): void;\n",
+    );
+
+    const result = runCheck([
+      "--package-root",
+      fixture.packageRoot,
+      "--expected",
+      fixture.expectedPath,
+    ]);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /registrars added: registerMemoryTimeline/);
+  });
+});
+
 test("OpenClaw SDK surface check can refresh the snapshot for an intentional upgrade", () => {
   withFakeOpenClawSurface((fixture) => {
     fs.writeFileSync(

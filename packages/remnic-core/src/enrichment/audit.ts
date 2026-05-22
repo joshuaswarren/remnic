@@ -61,6 +61,10 @@ export async function readAuditLog(
 ): Promise<EnrichmentAuditEntry[]> {
   const filePath = auditFilePath(auditDir);
   if (!existsSync(filePath)) return [];
+  const sinceMs = since === undefined ? undefined : Date.parse(since);
+  if (since !== undefined && !Number.isFinite(sinceMs)) {
+    throw new Error(`Invalid enrichment audit since timestamp: ${since}`);
+  }
 
   const raw = await readFile(filePath, "utf-8");
   const entries: EnrichmentAuditEntry[] = [];
@@ -77,7 +81,10 @@ export async function readAuditLog(
         "entityName" in parsed
       ) {
         const entry = parsed as EnrichmentAuditEntry;
-        if (since && entry.timestamp < since) continue;
+        if (typeof entry.timestamp !== "string") continue;
+        const entryMs = Date.parse(entry.timestamp);
+        if (!Number.isFinite(entryMs)) continue;
+        if (sinceMs !== undefined && entryMs < sinceMs) continue;
         entries.push(entry);
       }
     } catch {

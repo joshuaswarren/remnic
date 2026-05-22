@@ -67,6 +67,7 @@ type EntityHintSnippet = {
 export interface BuildEntityRecallSectionOptions {
   config: PluginConfig;
   storage: StorageManager;
+  namespaceStorage?: (namespace: string) => Promise<StorageManager>;
   query: string;
   recallNamespaces?: string[];
   recentTurns: number;
@@ -278,6 +279,38 @@ async function readNativeChunks(
   }).catch(() => []);
 }
 
+async function resolveEntityIndexStorages(
+  storage: StorageManager,
+  config: PluginConfig,
+  recallNamespaces?: string[],
+  namespaceStorage?: (namespace: string) => Promise<StorageManager>,
+): Promise<StorageManager[]> {
+  if (
+    !config.namespacesEnabled ||
+    !namespaceStorage ||
+    !recallNamespaces ||
+    recallNamespaces.length === 0
+  ) {
+    return [storage];
+  }
+
+  const storages: StorageManager[] = [];
+  const seenDirs = new Set<string>();
+  for (const namespace of uniqueStrings(recallNamespaces)) {
+    try {
+      const scopedStorage = await namespaceStorage(namespace);
+      const storageDir = path.resolve(scopedStorage.dir);
+      if (seenDirs.has(storageDir)) continue;
+      seenDirs.add(storageDir);
+      storages.push(scopedStorage);
+    } catch {
+      continue;
+    }
+  }
+
+  return storages.length > 0 ? storages : [storage];
+}
+
 function entityIndexStatePath(storage: StorageManager): string {
   return path.join(storage.dir, "state", "entity-mention-index.json");
 }
@@ -353,13 +386,24 @@ async function buildEntityMentionIndex(
   storage: StorageManager,
   config: PluginConfig,
   recallNamespaces?: string[],
+  namespaceStorage?: (namespace: string) => Promise<StorageManager>,
 ): Promise<EntityMentionIndex> {
-  const [previousIndex, entityFiles, memories, nativeChunks] = await Promise.all([
-    readEntityIndexState(storage),
-    storage.readAllEntityFiles(),
-    storage.readAllMemories(),
+  const storages = await resolveEntityIndexStorages(
+    storage,
+    config,
+    recallNamespaces,
+    namespaceStorage,
+  );
+  const shouldPersistIndex =
+    storages.length === 1 && path.resolve(storages[0]!.dir) === path.resolve(storage.dir);
+  const [previousIndex, entityFileSets, memorySets, nativeChunks] = await Promise.all([
+    shouldPersistIndex ? readEntityIndexState(storage) : Promise.resolve(null),
+    Promise.all(storages.map((scopedStorage) => scopedStorage.readAllEntityFiles())),
+    Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories())),
     readNativeChunks(config, recallNamespaces),
   ]);
+  const entityFiles = entityFileSets.flat();
+  const memories = memorySets.flat();
 
   const entities = new Map<string, EntityMentionIndexEntry>();
   for (const entity of entityFiles) {
@@ -436,7 +480,9 @@ async function buildEntityMentionIndex(
         : new Date().toISOString(),
     entities: sortedEntities,
   };
-  await writeEntityIndexState(storage, index);
+  if (shouldPersistIndex) {
+    await writeEntityIndexState(storage, index);
+  }
   return index;
 }
 
@@ -715,7 +761,12 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
   const mode = detectEntityQueryMode(options.query);
   if (!mode) return null;
 
-  const index = await buildEntityMentionIndex(options.storage, options.config, options.recallNamespaces);
+  const index = await buildEntityMentionIndex(
+    options.storage,
+    options.config,
+    options.recallNamespaces,
+    options.namespaceStorage,
+  );
   if (index.entities.length === 0) return null;
 
   const explicitCandidates = resolveExplicitCandidates(index, options.query);

@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { StorageManager } from "../storage.js";
 import type { PluginConfig } from "../types.js";
+import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -11,6 +12,28 @@ async function exists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+const LEGACY_NAMESPACE_CHILDREN = [
+  "facts",
+  "corrections",
+  "entities",
+  "questions",
+  "artifacts",
+  "identity",
+  "state",
+  "config",
+  "summaries",
+  "procedures",
+  "reasoning-traces",
+  "profile.md",
+] as const;
+
+async function hasAnyLegacyData(rootDir: string): Promise<boolean> {
+  for (const child of LEGACY_NAMESPACE_CHILDREN) {
+    if (await exists(path.join(rootDir, child))) return true;
+  }
+  return false;
 }
 
 /**
@@ -31,14 +54,20 @@ export class NamespaceStorageRouter {
   constructor(private readonly config: PluginConfig) {}
 
   private async defaultNamespaceRoot(): Promise<string> {
-    if (this.defaultNsRootResolved) return this.defaultNsRootResolved;
     if (!this.config.namespacesEnabled) {
       this.defaultNsRootResolved = this.config.memoryDir;
       return this.defaultNsRootResolved;
     }
 
-    const nsDir = path.join(this.config.memoryDir, "namespaces", this.config.defaultNamespace);
-    this.defaultNsRootResolved = (await exists(nsDir)) ? nsDir : this.config.memoryDir;
+    const nsDir = path.join(
+      this.config.memoryDir,
+      "namespaces",
+      namespaceIdentityToken(this.config.defaultNamespace),
+    );
+    this.defaultNsRootResolved =
+      (await exists(nsDir)) && !(await hasAnyLegacyData(this.config.memoryDir))
+        ? nsDir
+        : this.config.memoryDir;
     return this.defaultNsRootResolved;
   }
 
@@ -48,21 +77,28 @@ export class NamespaceStorageRouter {
     if (namespace === this.config.defaultNamespace) {
       return this.defaultNsRootResolved ?? this.config.memoryDir;
     }
-    return path.join(this.config.memoryDir, "namespaces", namespace);
+    return path.join(this.config.memoryDir, "namespaces", namespaceIdentityToken(namespace));
   }
 
   async storageFor(namespace: string): Promise<StorageManager> {
-    const ns = namespace || this.config.defaultNamespace;
+    const ns = normalizeNamespaceIdentity(namespace || this.config.defaultNamespace);
     if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) {
       throw new Error(`unsafe namespace: ${ns}`);
     }
-    if (this.cache.has(ns)) return this.cache.get(ns)!;
 
+    let root: string;
     if (ns === this.config.defaultNamespace) {
-      await this.defaultNamespaceRoot();
+      root = await this.defaultNamespaceRoot();
+      const cached = this.cache.get(ns);
+      if (cached && cached.dir === root) {
+        return cached;
+      }
+    } else {
+      const cached = this.cache.get(ns);
+      if (cached) return cached;
+      root = this.namespaceRootSync(ns);
     }
 
-    const root = this.namespaceRootSync(ns);
     const sm = new StorageManager(root, this.config.entitySchemas);
     // Propagate the inline-attribution template so that router-created storages
     // (used by extraction and shared-promotion paths) strip citations consistently,

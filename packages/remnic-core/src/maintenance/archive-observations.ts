@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 
 const DATE_FILE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})\.(jsonl|md)$/;
 
@@ -75,17 +75,36 @@ async function collectArchiveCandidates(
 ): Promise<CandidateFile[]> {
   const roots = ["transcripts", path.join("state", "tool-usage"), path.join("summaries", "hourly")];
   const out: CandidateFile[] = [];
+  const memoryRoot = path.resolve(memoryDir);
+  const memoryRealRoot = await realpath(memoryRoot).catch(() => memoryRoot);
 
   for (const relRoot of roots) {
-    const absRoot = path.join(memoryDir, relRoot);
+    const absRoot = path.resolve(memoryRoot, relRoot);
+    const rootInfo = await lstat(absRoot).catch(() => null);
+    if (!rootInfo?.isDirectory() || rootInfo.isSymbolicLink()) continue;
+    const absRootReal = await realpath(absRoot).catch(() => null);
+    if (absRootReal === null) continue;
+    const rootRelative = path.relative(memoryRealRoot, absRootReal);
+    if (rootRelative === ".." || rootRelative.startsWith(`..${path.sep}`) || path.isAbsolute(rootRelative)) {
+      continue;
+    }
     const files = await listFilesRecursive(absRoot);
     for (const fileRel of files) {
       const filename = path.basename(fileRel);
       const parsedDate = extractDateFromFilename(filename);
       if (!parsedDate) continue;
       if (parsedDate.getTime() >= cutoffTimeMs) continue;
+      const absolutePath = path.resolve(absRoot, fileRel);
+      const relativeToMemory = path.relative(memoryRoot, absolutePath);
+      if (
+        relativeToMemory === ".." ||
+        relativeToMemory.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relativeToMemory)
+      ) {
+        continue;
+      }
       out.push({
-        absolutePath: path.join(absRoot, fileRel),
+        absolutePath,
         relativePath: path.join(relRoot, fileRel),
       });
     }
@@ -124,6 +143,8 @@ export async function archiveObservations(
       const archivePath = path.join(archiveRoot, candidate.relativePath);
       const archiveDir = path.dirname(archivePath);
       await mkdir(archiveDir, { recursive: true });
+      const candidateInfo = await lstat(candidate.absolutePath).catch(() => null);
+      if (!candidateInfo?.isFile() || candidateInfo.isSymbolicLink()) continue;
       const raw = await readFile(candidate.absolutePath);
       await writeFile(archivePath, raw);
       await unlink(candidate.absolutePath);

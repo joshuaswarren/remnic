@@ -233,6 +233,154 @@ test("MemBench normalizes upstream JSONL trajectory QA records", async () => {
   }
 });
 
+test("MemBench scores direct multiple-choice recall without a responder", async () => {
+  const datasetDir = await mkdtemp(path.join(tmpdir(), "remnic-membench-choice-direct-"));
+
+  try {
+    await writeFile(
+      path.join(datasetDir, "membench.json"),
+      JSON.stringify([
+        {
+          id: "choice-direct-1",
+          memoryType: "factual",
+          scenario: "participant",
+          level: "surface",
+          turns: [
+            {
+              role: "user",
+              content: "I keep the launch checklist in the blue folder.",
+            },
+          ],
+          question: "Where is the launch checklist?",
+          choices: {
+            A: "blue folder",
+            B: "red folder",
+            C: "green binder",
+            D: "archive box",
+          },
+          correctChoice: "A",
+        },
+      ]),
+      "utf8",
+    );
+
+    const result = await runMemBenchBenchmark({
+      benchmark: memBenchDefinition,
+      mode: "full",
+      datasetDir,
+      system: {
+        async reset() {},
+        async store() {},
+        async recall() {
+          return "A";
+        },
+        async search() {
+          return [];
+        },
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "membench-test-judge",
+            };
+          },
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.equal(task.actual, "A");
+    assert.equal(task.details.predictedChoice, "A");
+    assert.equal(task.details.predictedAnswer, "blue folder");
+    assert.equal(task.scores.membench_accuracy, 1);
+  } finally {
+    await rm(datasetDir, { recursive: true, force: true });
+  }
+});
+
+test("MemBench matches multiple-choice option text without treating prose articles as choices", async () => {
+  const datasetDir = await mkdtemp(path.join(tmpdir(), "remnic-membench-choice-prose-"));
+
+  try {
+    await writeFile(
+      path.join(datasetDir, "membench.json"),
+      JSON.stringify([
+        {
+          id: "choice-prose-1",
+          memoryType: "factual",
+          scenario: "participant",
+          level: "surface",
+          turns: [
+            {
+              role: "user",
+              content: "I keep the launch checklist in the blue folder.",
+            },
+          ],
+          question: "Where is the launch checklist?",
+          choices: {
+            A: "red folder",
+            B: "blue folder",
+            C: "green binder",
+            D: "archive box",
+          },
+          correctChoice: "B",
+        },
+      ]),
+      "utf8",
+    );
+
+    const result = await runMemBenchBenchmark({
+      benchmark: memBenchDefinition,
+      mode: "full",
+      datasetDir,
+      system: {
+        async reset() {},
+        async store() {},
+        async recall() {
+          return "It is a blue folder.";
+        },
+        async search() {
+          return [];
+        },
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "membench-test-judge",
+            };
+          },
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.equal(task.actual, "B");
+    assert.equal(task.details.predictedChoice, "B");
+    assert.equal(task.details.predictedAnswer, "blue folder");
+    assert.equal(task.scores.membench_accuracy, 1);
+  } finally {
+    await rm(datasetDir, { recursive: true, force: true });
+  }
+});
+
 test("MemBench records a task failure when ingestion drain fails before scoring", async () => {
   let completedTasks = 0;
   let recallCalls = 0;

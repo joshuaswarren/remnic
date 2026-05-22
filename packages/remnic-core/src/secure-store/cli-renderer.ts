@@ -27,13 +27,13 @@ export function renderInitReport(report: SecureStoreInitReport): string {
   lines.push("");
   lines.push("Note: init does NOT auto-unlock the store. Run");
   lines.push("  remnic engram secure-store unlock");
-  lines.push("to register the master key with the running daemon.");
+  lines.push("to register the master key in the current Remnic process.");
   return lines.join("\n");
 }
 
 export function renderUnlockReport(report: SecureStoreUnlockReport): string {
   if (report.ok) {
-    return `OK — secure-store unlocked at ${report.unlockedAt} (algorithm=${report.algorithm}).`;
+    return `OK — secure-store unlocked in this process at ${report.unlockedAt} (algorithm=${report.algorithm}).`;
   }
   if (report.reason === "not-initialized") {
     return "ERR — secure-store is not initialized. Run 'remnic engram secure-store init' first.";
@@ -43,9 +43,9 @@ export function renderUnlockReport(report: SecureStoreUnlockReport): string {
 
 export function renderLockReport(report: SecureStoreLockReport): string {
   if (report.cleared) {
-    return "OK — secure-store key cleared from in-memory keyring.";
+    return "OK — secure-store key cleared from this process's in-memory keyring.";
   }
-  return "OK — secure-store was already locked (no in-memory key to clear).";
+  return "OK — secure-store was already locked in this process (no in-memory key to clear).";
 }
 
 export function renderMigrateReport(report: SecureStoreMigrateReport): string {
@@ -53,7 +53,10 @@ export function renderMigrateReport(report: SecureStoreMigrateReport): string {
     return "ERR — secure-store is not initialized. Run 'remnic engram secure-store init' first.";
   }
   if (!report.ok && report.reason === "locked") {
-    return "ERR — secure-store is locked. Run 'remnic engram secure-store unlock' before migrate.";
+    return "ERR — secure-store is locked in this process. Run migrate from an interactive CLI so it can prompt for the passphrase, or unlock inside the daemon process that will perform the migration.";
+  }
+  if (!report.ok && report.reason === "wrong-passphrase") {
+    return "ERR — wrong passphrase.";
   }
 
   const lines: string[] = [];
@@ -75,7 +78,10 @@ export function renderDisableReport(report: SecureStoreDisableReport): string {
     return "ERR — secure-store is not initialized. Run 'remnic engram secure-store init' first.";
   }
   if (!report.ok && report.reason === "locked") {
-    return "ERR — secure-store is locked. Run 'remnic engram secure-store unlock' before disable.";
+    return "ERR — secure-store is locked in this process. Run disable from an interactive CLI so it can prompt for the passphrase, or unlock inside the daemon process that will decrypt files.";
+  }
+  if (!report.ok && report.reason === "wrong-passphrase") {
+    return "ERR — wrong passphrase.";
   }
 
   const lines: string[] = [];
@@ -105,7 +111,7 @@ export function renderStatusReport(report: SecureStoreStatusReport): string {
     return lines.join("\n");
   }
   lines.push(`createdAt: ${report.createdAt ?? "n/a"}`);
-  lines.push(`locked: ${report.locked ? "yes" : "no"}`);
+  lines.push(`lockedInThisProcess: ${report.locked ? "yes" : "no"}`);
   if (!report.locked) {
     lines.push(`lastUnlockAt: ${report.unlockedAt ?? "n/a"}`);
   }

@@ -455,7 +455,7 @@ Operational guarantees:
 - `shadow` mode never mutates markdown memories
 - `apply` mode writes rollback-safe restore metadata before the run is considered complete
 - governance lifecycle events record actor, reason code, rule version, correlation ID, and related memory IDs where available
-- the rule set is versioned as `memory-governance.v1` so artifact interpretation stays reproducible
+- the rule set is versioned as `memory-governance.v2` so artifact interpretation stays reproducible
 
 ## Work Board Helpers
 

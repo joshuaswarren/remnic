@@ -184,6 +184,10 @@ export class HermesError extends Error {
   }
 }
 
+function hasNonEmptyIdempotencyKey(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -252,7 +256,9 @@ export class HermesClient {
       namespace: request.namespace ?? this.defaultNamespace,
       sessionKey: request.sessionKey ?? this.defaultSessionKey,
     };
-    return this.request<EngramAccessWriteResponse>("POST", "/engram/v1/memories", body, { noRetry: true });
+    return this.request<EngramAccessWriteResponse>("POST", "/engram/v1/memories", body, {
+      noRetry: !hasNonEmptyIdempotencyKey(request.idempotencyKey),
+    });
   }
 
   async submitSuggestion(request: MemoryStoreRequest): Promise<EngramAccessWriteResponse> {
@@ -261,7 +267,9 @@ export class HermesClient {
       namespace: request.namespace ?? this.defaultNamespace,
       sessionKey: request.sessionKey ?? this.defaultSessionKey,
     };
-    return this.request<EngramAccessWriteResponse>("POST", "/engram/v1/suggestions", body, { noRetry: true });
+    return this.request<EngramAccessWriteResponse>("POST", "/engram/v1/suggestions", body, {
+      noRetry: !hasNonEmptyIdempotencyKey(request.idempotencyKey),
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -415,26 +423,29 @@ export class HermesClient {
           const retryAfter = response.headers.get("retry-after");
           let waitMs = this.retryBaseDelayMs * 4;
           if (retryAfter) {
-            const parsed = parseInt(retryAfter, 10);
-            // Only use numeric seconds form; date-form Retry-After is ignored
-            // (isNaN catches NaN from date-form headers like "Fri, 04 Apr 2026")
+            const trimmedRetryAfter = retryAfter.trim();
+            const parsed = /^[0-9]+$/.test(trimmedRetryAfter)
+              ? Number(trimmedRetryAfter)
+              : Number.NaN;
+            // Only use the RFC seconds form when the entire header is digits.
+            // Date-like or malformed values such as "60 seconds" are ignored
+            // so parseInt() cannot turn a prefix into a long sleep.
             if (Number.isFinite(parsed) && parsed > 0) {
               waitMs = parsed * 1000;
             }
           }
           const errorBody = await response.json().catch(() => ({ error: "rate_limited", code: "rate_limited" })) as { error: string; code?: string };
           lastRateLimitError = new HermesError(429, errorBody.code ?? "rate_limited", errorBody.error);
+          if (attempt >= maxAttempts - 1) {
+            throw lastRateLimitError;
+          }
           await new Promise((resolve) => setTimeout(resolve, waitMs));
           continue;
         }
 
         // Client errors — do not retry
         if (response.status >= 400 && response.status < 500) {
-          const error = (await response.json()) as {
-            error: string;
-            code?: string;
-            details?: Array<{ field: string; message: string }>;
-          };
+          const error = await this.parseErrorResponse(response);
           throw new HermesError(
             response.status,
             error.code ?? `http_${response.status}`,
@@ -461,5 +472,36 @@ export class HermesClient {
     // If we exhausted retries due to rate limiting, throw the preserved 429 error
     if (lastRateLimitError) throw lastRateLimitError;
     throw lastError ?? new Error("request failed after retries");
+  }
+
+  private async parseErrorResponse(response: Response): Promise<{
+    error: string;
+    code?: string;
+    details?: Array<{ field: string; message: string }>;
+  }> {
+    try {
+      const parsed = await response.json() as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const error = parsed as Record<string, unknown>;
+        return {
+          error: typeof error.error === "string" && error.error.trim() ? error.error : response.statusText || `HTTP ${response.status}`,
+          code: typeof error.code === "string" && error.code.trim() ? error.code : undefined,
+          details: Array.isArray(error.details)
+            ? error.details.filter((detail): detail is { field: string; message: string } => (
+              detail !== null
+              && typeof detail === "object"
+              && typeof (detail as { field?: unknown }).field === "string"
+              && typeof (detail as { message?: unknown }).message === "string"
+            ))
+            : undefined,
+        };
+      }
+    } catch {
+      // Preserve the HTTP status for non-JSON or empty 4xx responses.
+    }
+    return {
+      error: response.statusText || `HTTP ${response.status}`,
+      code: `http_${response.status}`,
+    };
   }
 }

@@ -50,6 +50,8 @@ export interface ExtractedPage {
   frontmatter: Record<string, unknown>;
   hasExecSummary: boolean;
   hasTimeline: boolean;
+  /** Source corpus file references that support this page's generated claims. */
+  sourceRefs?: string[];
   seeAlso: string[];
   content: string;
 }

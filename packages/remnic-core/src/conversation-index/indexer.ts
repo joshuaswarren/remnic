@@ -1,5 +1,6 @@
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import type { Stats } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { log } from "../logger.js";
 import type { FaissConversationIndexAdapter } from "./faiss-adapter.js";
@@ -26,7 +27,13 @@ function sanitizePathComponent(
 }
 
 export function sanitizeSessionKey(sessionKey: string): string {
-  return sanitizePathComponent(sessionKey, "unknown-session", { lowercase: true });
+  const raw = typeof sessionKey === "string" && sessionKey.trim().length > 0
+    ? sessionKey.trim()
+    : "";
+  const safe = sanitizePathComponent(raw, "unknown-session", { lowercase: true });
+  if (!raw) return safe;
+  const suffix = `-${createHash("sha256").update(raw).digest("hex").slice(0, 12)}`;
+  return `${safe.slice(0, MAX_PATH_COMPONENT_LENGTH - suffix.length)}${suffix}`;
 }
 
 function sanitizeChunkId(id: string): string {
@@ -34,11 +41,22 @@ function sanitizeChunkId(id: string): string {
 }
 
 function datePathComponent(startTs: string): string {
-  if (typeof startTs !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(startTs)) {
+  const match = typeof startTs === "string"
+    ? /^(\d{4})-(\d{2})-(\d{2})T/.exec(startTs)
+    : null;
+  if (!match) {
     throw new Error("invalid conversation chunk start timestamp");
   }
   const date = new Date(startTs);
   if (!Number.isFinite(date.getTime())) {
+    throw new Error("invalid conversation chunk start timestamp");
+  }
+  const [, year, month, day] = match;
+  if (
+    date.getUTCFullYear() !== Number(year) ||
+    date.getUTCMonth() + 1 !== Number(month) ||
+    date.getUTCDate() !== Number(day)
+  ) {
     throw new Error("invalid conversation chunk start timestamp");
   }
   return date.toISOString().slice(0, 10);
@@ -162,12 +180,13 @@ export interface ConversationChunkRebuildResult {
 export async function upsertConversationChunksFailOpen(
   adapter: FaissConversationIndexAdapter | undefined,
   chunks: ConversationChunk[],
+  options: { retentionCutoffMs?: number } = {},
 ): Promise<ConversationChunkUpsertResult> {
   if (!adapter) {
     return { upserted: 0, skipped: true, reason: "adapter-unavailable" };
   }
   try {
-    const upserted = await adapter.upsertChunks(chunks);
+    const upserted = await adapter.upsertChunks(chunks, options);
     return { upserted, skipped: false };
   } catch (err) {
     log.debug(`conversation index FAISS upsert failed (fail-open): ${err}`);

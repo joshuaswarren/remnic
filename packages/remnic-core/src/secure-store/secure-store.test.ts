@@ -37,6 +37,13 @@ import {
   validateHeader,
 } from "./header.js";
 import {
+  FILE_FORMAT_FLAGS,
+  FILE_FORMAT_VERSION,
+  MAGIC_BYTES,
+  SecureStoreDecryptError,
+  decryptFileBody,
+} from "./secure-fs.js";
+import {
   DEFAULT_ARGON2ID_PARAMS,
   DEFAULT_SCRYPT_PARAMS,
   KDF_KEY_LENGTH,
@@ -60,6 +67,12 @@ import {
   validateMetadata,
 } from "./metadata.js";
 import { createPassphraseReader } from "./passphrase-reader.js";
+import {
+  renderInitReport,
+  renderLockReport,
+  renderStatusReport,
+  renderUnlockReport,
+} from "./cli-renderer.js";
 
 /** Cheap scrypt params for tests — still hex-correct but ~milliseconds. */
 const FAST_SCRYPT: ScryptParams = {
@@ -110,6 +123,46 @@ test("deriveKeyScrypt with default OWASP-acceptable params produces a 32-byte ke
   assert.equal(key.length, KDF_KEY_LENGTH);
   assert.equal(DEFAULT_SCRYPT_PARAMS.keyLength, 32);
   assert.equal(DEFAULT_SCRYPT_PARAMS.N, 1 << 17);
+});
+
+test("secure-store CLI renderers describe process-local unlock scope, not daemon state", () => {
+  const init = renderInitReport({
+    ok: true,
+    headerPath: "/tmp/memory/.secure-store/header.json",
+    createdAt: "2026-05-21T00:00:00.000Z",
+    kdf: {
+      algorithm: "scrypt",
+      params: FAST_SCRYPT,
+      salt: Buffer.alloc(KDF_SALT_LENGTH, 0x11).toString("hex"),
+    },
+  });
+  assert.match(init, /current Remnic process/);
+  assert.doesNotMatch(init, /running daemon/);
+
+  assert.match(
+    renderUnlockReport({
+      ok: true,
+      unlockedAt: "2026-05-21T00:00:01.000Z",
+      algorithm: "scrypt",
+    }),
+    /unlocked in this process/,
+  );
+  assert.match(renderLockReport({ ok: true, cleared: true }), /this process's in-memory keyring/);
+  assert.match(
+    renderStatusReport({
+      initialized: true,
+      headerPath: "/tmp/memory/.secure-store/header.json",
+      locked: false,
+      unlockedAt: "2026-05-21T00:00:01.000Z",
+      createdAt: "2026-05-21T00:00:00.000Z",
+      kdf: {
+        algorithm: "scrypt",
+        params: FAST_SCRYPT,
+        salt: Buffer.alloc(KDF_SALT_LENGTH, 0x22).toString("hex"),
+      },
+    }),
+    /lockedInThisProcess: no/,
+  );
 });
 
 test("deriveKeyScrypt rejects empty passphrase", () => {
@@ -236,6 +289,23 @@ test("seal/open round-trip on an empty payload", () => {
   const sealed = seal(key, salt, Buffer.alloc(0));
   const opened = open(key, sealed);
   assert.equal(opened.length, 0);
+});
+
+test("decryptFileBody reports truncated envelopes as structural errors", () => {
+  const truncated = Buffer.concat([
+    MAGIC_BYTES,
+    Buffer.from([FILE_FORMAT_VERSION, FILE_FORMAT_FLAGS]),
+    Buffer.alloc(ENVELOPE_HEADER_SIZE - 1),
+  ]);
+  assert.throws(
+    () => decryptFileBody(truncated, Buffer.alloc(KDF_KEY_LENGTH, 0x11)),
+    (error) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error instanceof SecureStoreDecryptError, false);
+      assert.match(error.message, /envelope too short/);
+      return true;
+    },
+  );
 });
 
 test("seal produces a different ciphertext for the same plaintext (random IV)", () => {

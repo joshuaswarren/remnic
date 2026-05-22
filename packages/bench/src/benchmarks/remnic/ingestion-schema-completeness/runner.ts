@@ -10,6 +10,7 @@ import type {
   BenchmarkDefinition,
   BenchmarkResult,
   ResolvedRunBenchmarkOptions,
+  TaskResult,
 } from "../../../types.js";
 import { REQUIRED_FRONTMATTER_FIELDS } from "../../../ingestion-types.js";
 import { schemaCompleteness } from "../../../ingestion-scorer.js";
@@ -53,6 +54,70 @@ export async function runIngestionSchemaCompletenessBenchmark(
       options.ingestionAdapter!.ingest(await realpath(fixtureDir)),
     );
 
+    if (ingestionLog.errors.length > 0) {
+      const message = ingestionLog.errors.join(" | ");
+      const tasks: TaskResult[] = [
+        {
+          taskId: `schema-completeness-${fixture.id}`,
+          question: `Check frontmatter schema completeness from ${fixture.id} fixture`,
+          expected: `${fixture.goldGraph.pages.length} pages with required frontmatter fields`,
+          actual: `(ingestion error: ${message})`,
+          scores: {
+            schema_completeness: -1,
+          },
+          latencyMs: durationMs,
+          tokens: { input: 0, output: 0 },
+          details: {
+            fixtureId: fixture.id,
+            goldPageCount: fixture.goldGraph.pages.length,
+            ingestionErrors: ingestionLog.errors,
+            commandsIssued: ingestionLog.commandsIssued,
+            promptsShown: ingestionLog.promptsShown,
+          },
+        },
+      ];
+      options.onTaskComplete?.(tasks[0]!, 1, 1);
+
+      const remnicVersion = await getRemnicVersion();
+      return {
+        meta: {
+          id: randomUUID(),
+          benchmark: options.benchmark.id,
+          benchmarkTier: options.benchmark.tier,
+          version: options.benchmark.meta.version,
+          remnicVersion,
+          gitSha: getGitSha(),
+          timestamp: new Date().toISOString(),
+          mode: options.mode,
+          runCount: 1,
+          seeds: [options.seed ?? 0],
+        },
+        config: {
+          systemProvider: options.systemProvider ?? null,
+          judgeProvider: options.judgeProvider ?? null,
+          adapterMode: options.adapterMode ?? "direct",
+          remnicConfig: options.remnicConfig ?? {},
+        },
+        cost: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          estimatedCostUsd: 0,
+          totalLatencyMs: durationMs,
+          meanQueryLatencyMs: durationMs,
+        },
+        results: {
+          tasks,
+          aggregates: aggregateTaskScores(tasks.map((t) => t.scores)),
+        },
+        environment: {
+          os: process.platform,
+          nodeVersion: process.version,
+          hardware: process.arch,
+        },
+      };
+    }
+
     const graph = await options.ingestionAdapter.getMemoryGraph();
     const { overall, fieldCoverage } = schemaCompleteness(
       graph.pages,
@@ -89,6 +154,7 @@ export async function runIngestionSchemaCompletenessBenchmark(
         },
       },
     ];
+    options.onTaskComplete?.(tasks[0]!, 1, 1);
 
     const remnicVersion = await getRemnicVersion();
     return {

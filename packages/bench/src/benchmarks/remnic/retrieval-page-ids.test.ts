@@ -117,3 +117,12 @@ test("extractRankedPageIds does not rescan markers inside extracted values", () 
     ["some-page_id:-thing", "known"],
   );
 });
+
+test("extractRankedPageIds does not let a blank marker consume the next marker", () => {
+  const pages = [page("expected")];
+
+  assert.deepEqual(
+    extractRankedPageIds("page_id:\npage_id: expected", pages),
+    ["expected"],
+  );
+});

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import {
   getWorkProductLedgerStatus,
   recordWorkProductLedgerEntry,
@@ -70,6 +70,46 @@ test("recordWorkProductLedgerEntry persists entries into dated storage", async (
     filePath,
     path.join(memoryDir, "state", "work-product-ledger", "entries", "2026-03-07", "wp-1.json"),
   );
+});
+
+test("recordWorkProductLedgerEntry rejects duplicate ids without overwriting the original entry", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-work-product-duplicate-"));
+  const filePath = await recordWorkProductLedgerEntry({
+    memoryDir,
+    entry: {
+      schemaVersion: 1,
+      entryId: "wp-duplicate",
+      recordedAt: "2026-03-07T23:21:00.000Z",
+      sessionKey: "agent:main",
+      source: "cli",
+      kind: "file",
+      action: "updated",
+      scope: "docs/config-reference.md",
+      summary: "Original work-product entry.",
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      recordWorkProductLedgerEntry({
+        memoryDir,
+        entry: {
+          schemaVersion: 1,
+          entryId: "wp-duplicate",
+          recordedAt: "2026-03-07T23:21:30.000Z",
+          sessionKey: "agent:main",
+          source: "cli",
+          kind: "file",
+          action: "deleted",
+          scope: "docs/config-reference.md",
+          summary: "Replacement work-product entry.",
+        },
+      }),
+    /EEXIST|exists/i,
+  );
+
+  const stored = JSON.parse(await readFile(filePath, "utf8")) as { summary: string };
+  assert.equal(stored.summary, "Original work-product entry.");
 });
 
 test("work-product ledger status reports valid and invalid entries", async () => {

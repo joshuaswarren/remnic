@@ -16,8 +16,10 @@ import { headerValue, type AdapterContext, type EngramAdapter, type ResolvedIden
  *   Header Name: X-Engram-Client-Id
  *   Header Value: replit
  *
- * Optionally also set X-Engram-Namespace and X-Engram-Principal for
- * project/user scoping.
+ * Optionally also set X-Engram-Namespace for project scoping. Principal
+ * overrides are intentionally handled only by the HTTP server's
+ * trustPrincipalHeader gate. Adapters must not independently trust
+ * X-Engram-Principal.
  */
 export class ReplitAdapter implements EngramAdapter {
   readonly id = "replit";
@@ -38,18 +40,14 @@ export class ReplitAdapter implements EngramAdapter {
   resolveIdentity(context: AdapterContext): ResolvedIdentity {
     const mcpSessionId = headerValue(context.headers, "mcp-session-id");
 
-    const principal = headerValue(context.headers, "x-engram-principal")
-      || "replit-agent";
-
     const namespace = headerValue(context.headers, "x-engram-namespace")
       || "replit";
 
     return {
       namespace,
-      principal,
+      principal: "replit-agent",
       sessionKey: mcpSessionId ?? context.sessionKey,
       adapterId: this.id,
     };
   }
 }
-

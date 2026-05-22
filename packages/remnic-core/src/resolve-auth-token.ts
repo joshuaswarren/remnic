@@ -37,7 +37,7 @@ type ResolveAgentAccessAuthTokenOptions = {
   resolveSecretRef?: ResolveSecretRefFn | null;
 };
 
-const resolvedCache = new Map<string, string>();
+let resolvedCache = new WeakMap<ResolveSecretRefFn, Map<string, string>>();
 
 /**
  * SecretRef objects are stable per (source, provider, id, command) tuple.
@@ -92,10 +92,6 @@ export async function resolveAgentAccessAuthToken(
     );
   }
 
-  const cacheKey = cacheKeyForSecretRef(ref);
-  const cached = resolvedCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-
   const resolver = options.resolveSecretRef ?? null;
   if (!resolver) {
     throw new Error(
@@ -106,6 +102,15 @@ export async function resolveAgentAccessAuthToken(
         "(see https://github.com/joshuaswarren/remnic/issues/757).",
     );
   }
+
+  const cacheKey = cacheKeyForSecretRef(ref);
+  let resolverCache = resolvedCache.get(resolver);
+  if (!resolverCache) {
+    resolverCache = new Map<string, string>();
+    resolvedCache.set(resolver, resolverCache);
+  }
+  const cached = resolverCache.get(cacheKey);
+  if (cached !== undefined) return cached;
 
   let resolved: string | undefined;
   try {
@@ -130,7 +135,7 @@ export async function resolveAgentAccessAuthToken(
     );
   }
 
-  resolvedCache.set(cacheKey, resolved);
+  resolverCache.set(cacheKey, resolved);
   return resolved;
 }
 
@@ -147,5 +152,5 @@ export function isAgentAccessSecretRef(value: unknown): value is SecretRef {
 
 /** Test/operations hook: drop the cache and force resolver rediscovery. */
 export function clearAuthTokenSecretCache(): void {
-  resolvedCache.clear();
+  resolvedCache = new WeakMap<ResolveSecretRefFn, Map<string, string>>();
 }

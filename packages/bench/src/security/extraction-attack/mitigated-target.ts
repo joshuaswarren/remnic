@@ -75,7 +75,7 @@ export function createMitigatedTarget(
 
   function recordAndCheck(now: number): boolean {
     const cutoff = now - budgetWindowMs;
-    while (timestamps.length > 0 && timestamps[0].ts < cutoff) {
+    while (timestamps.length > 0 && timestamps[0].ts <= cutoff) {
       timestamps.shift();
     }
     if (timestamps.length >= budgetHardLimit) {
@@ -113,8 +113,5 @@ export function createMitigatedTarget(
       ? async () => target.listEntities!()
       : undefined,
 
-    lastRecallIds: target.lastRecallIds
-      ? async () => target.lastRecallIds!()
-      : undefined,
   };
 }

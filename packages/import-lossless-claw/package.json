@@ -27,7 +27,7 @@
     "better-sqlite3": "^12.6.2"
   },
   "peerDependencies": {
-    "@remnic/core": "workspace:^"
+    "@remnic/core": "^1.1.12"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",

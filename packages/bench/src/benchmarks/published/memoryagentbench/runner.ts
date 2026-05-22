@@ -131,6 +131,10 @@ export async function runMemoryAgentBenchBenchmark(
 ): Promise<BenchmarkResult> {
   const rawDataset = await loadDataset(options.mode, options.datasetDir, options.limit);
   const trialLimit = resolveTrialLimit(options.benchmarkOptions?.trialLimit);
+  const benchmarkOptions =
+    trialLimit === undefined
+      ? options.benchmarkOptions
+      : { ...(options.benchmarkOptions ?? {}), trialLimit };
   const dataset = applyTrialLimit(rawDataset, trialLimit);
   const validateRecsysMappingBeforeExecution =
     options.adapterMode === "dry-run" && hasRecSysRedialItems(dataset);
@@ -152,7 +156,41 @@ export async function runMemoryAgentBenchBenchmark(
     try {
       await options.system.drain?.();
     } catch (drainErr) {
-      console.error(`  [WARN] memoryagentbench drain failed for sample ${item.metadata.source}: ${drainErr instanceof Error ? drainErr.message : String(drainErr)}`);
+      const drainMessage = drainErr instanceof Error ? drainErr.message : String(drainErr);
+      console.error(`  [WARN] memoryagentbench drain failed for sample ${item.metadata.source}: ${drainMessage}`);
+      for (let questionIndex = 0; questionIndex < item.questions.length; questionIndex += 1) {
+        const question = item.questions[questionIndex]!;
+        const answerVariants = item.answers[questionIndex];
+        if (answerVariants === undefined || answerVariants.length === 0) {
+          throw new Error(
+            `MemoryAgentBench sample ${item.metadata.source} is missing answers for question index ${questionIndex}.`,
+          );
+        }
+        const taskResultId =
+          item.metadata.qa_pair_ids?.[questionIndex] ??
+          `${item.metadata.source}-q${questionIndex}`;
+        const protocol = getProtocolForSource(item.metadata.source);
+        const message = `memoryagentbench drain failed before scoring: ${drainMessage}`;
+        tasks.push({
+          taskId: taskResultId,
+          question,
+          expected: answerVariants[0]!,
+          actual: `(error: ${message})`,
+          scores: errorScoresForProtocol(protocol),
+          latencyMs: 0,
+          tokens: { input: 0, output: 0 },
+          details: {
+            error: message,
+            drainFailed: true,
+            competency: item.metadata.competency,
+            source: item.metadata.source,
+            sessionIds,
+            storedSessionCount: sessionIds.length,
+          },
+        });
+        options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, totalQuestions);
+      }
+      continue;
     }
     for (let questionIndex = 0; questionIndex < item.questions.length; questionIndex += 1) {
       const question = item.questions[questionIndex]!;
@@ -332,6 +370,7 @@ export async function runMemoryAgentBenchBenchmark(
       judgeProvider: options.judgeProvider ?? null,
       adapterMode: options.adapterMode ?? "direct",
       remnicConfig: options.remnicConfig ?? {},
+      ...(benchmarkOptions ? { benchmarkOptions } : {}),
     },
     cost: {
       totalTokens: totalInputTokens + totalOutputTokens,
@@ -889,13 +928,11 @@ function scoreRecSysRedial(
     recsysMapping.movieCandidates,
     recsysMapping.aliasCounts,
   );
-  const groundTruthIds = answerVariants.map((answer) =>
-    Number.parseInt(answer.trim(), 10),
-  );
+  const groundTruthIds = answerVariants.map(parseStrictReDialEntityId);
   const hasIncompleteGroundTruthMapping =
     groundTruthIds.length === 0 ||
     groundTruthIds.some(
-      (id) => !Number.isInteger(id) || !recsysMapping.idToName.has(id),
+      (id) => id === null || !recsysMapping.idToName.has(id),
     );
 
   if (hasIncompleteGroundTruthMapping) {
@@ -907,7 +944,7 @@ function scoreRecSysRedial(
     };
   }
 
-  const groundTruthMovies = groundTruthIds.map((id) => recsysMapping.idToName.get(id)!);
+  const groundTruthMovies = groundTruthIds.map((id) => recsysMapping.idToName.get(id!)!);
 
   return {
     scores: {
@@ -921,6 +958,15 @@ function scoreRecSysRedial(
     predictedMovies,
     groundTruthMovies,
   };
+}
+
+function parseStrictReDialEntityId(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^[0-9]+$/.test(trimmed)) {
+    return null;
+  }
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function parseOfficialAnswer(output: string): string {
@@ -1377,6 +1423,9 @@ async function loadDataset(
           splitData = await readDatasetFile(path.join(datasetDir, filename), filename);
           break;
         } catch (error) {
+          if (!isFileNotFoundError(error)) {
+            throw error;
+          }
           datasetErrors.push(
             `${filename}: ${error instanceof Error ? error.message : String(error)}`,
           );
@@ -1556,11 +1605,23 @@ async function tryReadDatasetFile(
   try {
     return await readDatasetFile(filePath, filename);
   } catch (error) {
+    if (!isFileNotFoundError(error)) {
+      throw error;
+    }
     datasetErrors.push(
       `${filename}: ${error instanceof Error ? error.message : String(error)}`,
     );
     return undefined;
   }
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "ENOENT"
+  );
 }
 
 function inferCompetency(source: string): MemoryAgentBenchCompetency {

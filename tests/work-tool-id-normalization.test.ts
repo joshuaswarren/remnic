@@ -21,6 +21,10 @@ function parseWorkJson(result: { content: Array<{ type: string; text: string }> 
   return JSON.parse(text.slice(start, end + 1));
 }
 
+function workText(result: { content: Array<{ type: string; text: string }> }): string {
+  return result.content.map((c) => c.text).join("\n");
+}
+
 function buildHarness(memoryDir: string) {
   const tools = new Map<string, RegisteredTool>();
   const api = {
@@ -128,6 +132,39 @@ test("work_board failures honor linkToMemory=true", async () => {
     const text = result.content.map((c) => c.text).join("\n");
     assert.match(text, /\[WORK_LAYER_CONTEXT link_to_memory=true\]/);
     assert.match(text, /requires `snapshotJson`/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("work tools reject invalid enum values before mutating storage", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-work-tool-invalid-enum-"));
+  try {
+    const tools = buildHarness(memoryDir);
+    const taskTool = tools.get("work_task");
+    const projectTool = tools.get("work_project");
+    assert.ok(taskTool);
+    assert.ok(projectTool);
+
+    const invalidTaskCreate = workText(
+      await taskTool.execute("t1", { action: "create", title: "Task A", status: "finished" }),
+    );
+    assert.match(invalidTaskCreate, /work_task\.create received invalid `status`/);
+    assert.equal(parseWorkJson(await taskTool.execute("t2", { action: "list" })).count, 0);
+
+    const task = parseWorkJson(await taskTool.execute("t3", { action: "create", title: "Task A" })).task;
+    const invalidTaskUpdate = workText(
+      await taskTool.execute("t4", { action: "update", id: task.id, priority: "urgent" }),
+    );
+    assert.match(invalidTaskUpdate, /work_task\.update received invalid `priority`/);
+    assert.equal(parseWorkJson(await taskTool.execute("t5", { action: "get", id: task.id })).task.priority, "medium");
+
+    const project = parseWorkJson(await projectTool.execute("p1", { action: "create", name: "Project A" })).project;
+    const invalidProjectUpdate = workText(
+      await projectTool.execute("p2", { action: "update", id: project.id, status: "paused" }),
+    );
+    assert.match(invalidProjectUpdate, /work_project\.update received invalid `status`/);
+    assert.equal(parseWorkJson(await projectTool.execute("p3", { action: "get", id: project.id })).project.status, "active");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

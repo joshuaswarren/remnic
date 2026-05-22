@@ -23,11 +23,11 @@ export class RerankCache {
       this.entries.delete(key);
       return null;
     }
-    return e.rankedIds;
+    return e.rankedIds.slice();
   }
 
   set(key: string, rankedIds: string[], ttlMs: number): void {
-    this.entries.set(key, { rankedIds, expiresAtMs: Date.now() + ttlMs });
+    this.entries.set(key, { rankedIds: rankedIds.slice(), expiresAtMs: Date.now() + ttlMs });
   }
 }
 

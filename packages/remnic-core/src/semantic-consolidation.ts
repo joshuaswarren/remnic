@@ -95,13 +95,15 @@ export function findSimilarClusters(
     const clustered = new Set<string>();
 
     for (let i = 0; i < tokenized.length && totalCandidates < config.maxPerRun; i++) {
+      const remainingBudget = config.maxPerRun - totalCandidates;
+      if (remainingBudget < config.minClusterSize) break;
       if (clustered.has(tokenized[i].memory.frontmatter.id)) continue;
 
       const cluster: MemoryFile[] = [tokenized[i].memory];
       let totalOverlap = 0;
       let comparisons = 0;
 
-      for (let j = i + 1; j < tokenized.length; j++) {
+      for (let j = i + 1; j < tokenized.length && cluster.length < remainingBudget; j++) {
         if (clustered.has(tokenized[j].memory.frontmatter.id)) continue;
 
         const aTokens = tokenized[i].tokens;
@@ -117,8 +119,6 @@ export function findSimilarClusters(
           cluster.push(tokenized[j].memory);
           totalOverlap += score;
           comparisons++;
-          // Enforce maxPerRun within a single cluster
-          if (totalCandidates + cluster.length >= config.maxPerRun) break;
         }
       }
 

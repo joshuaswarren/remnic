@@ -620,9 +620,13 @@ export function stripCitationForTemplate(
   let match: RegExpExecArray | null;
 
   while ((match = globalMatcher.exec(text)) !== null) {
-    const before = text.slice(lastIndex, match.index).replace(/[ \t]+$/, "");
+    const matchEnd = match.index + match[0].length;
+    const enclosure = enclosingDelimiterRange(text, match.index, matchEnd);
+    const removalStart = enclosure?.start ?? match.index;
+    const removalEnd = enclosure?.end ?? matchEnd;
+    const before = text.slice(lastIndex, removalStart).replace(/[ \t]+$/, "");
     result += before;
-    lastIndex = match.index + match[0].length;
+    lastIndex = removalEnd;
     // Guard against zero-width matches causing an infinite loop.
     if (match[0].length === 0) {
       globalMatcher.lastIndex++;
@@ -636,4 +640,22 @@ export function stripCitationForTemplate(
   }
 
   return result.trimEnd();
+}
+
+function enclosingDelimiterRange(
+  text: string,
+  start: number,
+  end: number,
+): { start: number; end: number } | undefined {
+  if (start <= 0 || end >= text.length) return undefined;
+  const opener = text[start - 1];
+  const closer = text[end];
+  if (
+    (opener === "[" && closer === "]") ||
+    (opener === "(" && closer === ")") ||
+    (opener === "<" && closer === ">")
+  ) {
+    return { start: start - 1, end: end + 1 };
+  }
+  return undefined;
 }

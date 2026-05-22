@@ -1,5 +1,4 @@
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
 import { ExportBundleV1Schema } from "./types.js";
 import {
   fileExists,
@@ -7,6 +6,7 @@ import {
   readJsonFile,
   resolveSafeArchiveTarget,
   type SafeArchiveRoot,
+  writeSafeArchiveTarget,
 } from "./fs-utils.js";
 import { parseConflictPolicy, type ConflictPolicy } from "./conflict-policy.js";
 import { validateExportBundleRecords } from "./integrity.js";
@@ -38,13 +38,15 @@ export async function importJsonBundle(opts: ImportJsonOptions): Promise<{ writt
     "importJsonBundle",
     "targetMemoryDir",
   );
-  const written: Array<{ abs: string; content: string }> = [];
+  const written: Array<{ root: SafeArchiveRoot; relPath: string; content: string }> = [];
 
   let skipped = 0;
   let workspaceRoot: SafeArchiveRoot | null = null;
 
   for (const rec of bundle.records) {
     const isWorkspace = rec.path.startsWith("workspace/");
+    let writeRoot: SafeArchiveRoot;
+    let writeRelPath: string;
     let absTarget: string;
     if (isWorkspace) {
       if (!opts.workspaceDir) {
@@ -56,12 +58,16 @@ export async function importJsonBundle(opts: ImportJsonOptions): Promise<{ writt
         "importJsonBundle",
         "workspaceDir",
       );
+      writeRoot = workspaceRoot;
+      writeRelPath = rec.path.slice("workspace/".length);
       absTarget = await resolveSafeArchiveTarget(
         workspaceRoot,
-        rec.path.slice("workspace/".length),
+        writeRelPath,
       );
     } else {
-      absTarget = await resolveSafeArchiveTarget(memoryRoot, rec.path);
+      writeRoot = memoryRoot;
+      writeRelPath = rec.path;
+      absTarget = await resolveSafeArchiveTarget(writeRoot, writeRelPath);
     }
 
     const exists = await fileExists(absTarget);
@@ -84,7 +90,7 @@ export async function importJsonBundle(opts: ImportJsonOptions): Promise<{ writt
       // overwrite: proceed
     }
 
-    written.push({ abs: absTarget, content: rec.content });
+    written.push({ root: writeRoot, relPath: writeRelPath, content: rec.content });
   }
 
   if (opts.dryRun) {
@@ -92,8 +98,7 @@ export async function importJsonBundle(opts: ImportJsonOptions): Promise<{ writt
   }
 
   for (const w of written) {
-    await mkdir(path.dirname(w.abs), { recursive: true });
-    await writeFile(w.abs, w.content, "utf-8");
+    await writeSafeArchiveTarget(w.root, w.relPath, w.content);
   }
 
   return { written: written.length, skipped };

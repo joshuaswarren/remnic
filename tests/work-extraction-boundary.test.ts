@@ -55,6 +55,21 @@ test("applyWorkExtractionBoundary drops unterminated work-layer blocks", () => {
   assert.equal(bounded, "[assistant] prefix");
 });
 
+test("applyWorkExtractionBoundary drops from the first of multiple unterminated work-layer blocks", () => {
+  const truncatedConversation = [
+    "keep",
+    "[WORK_LAYER_CONTEXT link_to_memory=false]",
+    "secret1",
+    "mid",
+    "[WORK_LAYER_CONTEXT link_to_memory=false]",
+    "secret2",
+  ].join("\n");
+
+  const bounded = applyWorkExtractionBoundary(truncatedConversation);
+  assert.equal(bounded, "keep");
+  assert.doesNotMatch(bounded, /secret1|secret2|mid/);
+});
+
 test("applyWorkExtractionBoundary keeps literal token text in linked payloads", () => {
   const linked = "note starts [WORK_LAYER_CONTEXT without wrapper metadata and should stay";
   const conversation = wrapWorkLayerContext(linked, { linkToMemory: true });

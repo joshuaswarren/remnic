@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { EmbeddingFallback } from "../src/embedding-fallback.js";
 import type { PluginConfig } from "../src/types.js";
 
@@ -167,4 +170,30 @@ test("embedTexts throws when provider is unavailable", async () => {
     () => fallback.embedTexts(["text"]),
     /Embedding provider is not available/,
   );
+});
+
+test("indexFile preserves all entries when concurrent index writes overlap", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-embedding-concurrent-"));
+  const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
+
+  (fallback as any).embed = async (input: string) => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return [input.charCodeAt(0) || 1, 1, 0];
+  };
+
+  await Promise.all([
+    fallback.indexFile("mem-a", "alpha", path.join(memoryDir, "facts", "a.md")),
+    fallback.indexFile("mem-b", "bravo", path.join(memoryDir, "facts", "b.md")),
+    fallback.indexFile("mem-c", "charlie", path.join(memoryDir, "facts", "c.md")),
+  ]);
+
+  const raw = await readFile(path.join(memoryDir, "state", "embeddings.json"), "utf-8");
+  const parsed = JSON.parse(raw) as {
+    entries: Record<string, { vector: number[]; path: string }>;
+  };
+
+  assert.deepEqual(Object.keys(parsed.entries).sort(), ["mem-a", "mem-b", "mem-c"]);
+  assert.equal(parsed.entries["mem-a"]?.path, "facts/a.md");
+  assert.equal(parsed.entries["mem-b"]?.path, "facts/b.md");
+  assert.equal(parsed.entries["mem-c"]?.path, "facts/c.md");
 });

@@ -12,7 +12,7 @@ import path from "node:path";
 
 export interface OnboardOptions {
   /** Directory to scan (defaults to cwd) */
-  directory: string;
+  directory?: string;
   /** Max depth to walk (default: 6) */
   maxDepth?: number;
   /** Directories to skip */
@@ -84,13 +84,13 @@ const LANGUAGE_RULES: LanguageRule[] = [
   {
     language: "TypeScript",
     extensions: [".ts", ".tsx"],
-    manifests: ["package.json"],
+    manifests: [],
     configFiles: ["tsconfig.json", "tsup.config.ts"],
   },
   {
     language: "JavaScript",
     extensions: [".js", ".jsx", ".mjs", ".cjs"],
-    manifests: ["package.json"],
+    manifests: [],
     configFiles: [".eslintrc", ".prettierrc"],
   },
   {
@@ -182,10 +182,19 @@ const DEFAULT_EXCLUDE = new Set([
 export function onboard(options: OnboardOptions): OnboardResult {
   const startTime = Date.now();
   const {
-    directory,
     maxDepth = 6,
     excludeDirs = [],
   } = options;
+  const directory = path.resolve(options.directory ?? process.cwd());
+  let rootStat: fs.Stats;
+  try {
+    rootStat = fs.statSync(directory);
+  } catch (err) {
+    throw new Error(`Cannot scan onboarding directory ${directory}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!rootStat.isDirectory()) {
+    throw new Error(`Cannot scan onboarding directory ${directory}: not a directory`);
+  }
 
   const exclude = new Set([...DEFAULT_EXCLUDE, ...excludeDirs]);
 
@@ -230,7 +239,10 @@ function walkDir(
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
+    } catch (err) {
+      if (depth === 0) {
+        throw new Error(`Cannot scan onboarding directory ${root}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       return;
     }
 

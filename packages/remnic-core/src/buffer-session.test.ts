@@ -66,6 +66,34 @@ test("SmartBuffer keeps logical session buffers isolated", async () => {
   assert.equal(buffer.getTurns("thread-b")[0]?.content, "beta memory");
 });
 
+test("SmartBuffer keeps dangerous keys isolated from safe-prefix lookalikes", async () => {
+  for (const [dangerousKey, lookalikeKey] of [
+    ["__proto__", "__safe___proto__"],
+    ["constructor", "__safe_constructor"],
+  ] as const) {
+    const storage = new FakeStorage({
+      turns: [],
+      lastExtractionAt: null,
+      extractionCount: 0,
+    });
+    const buffer = new SmartBuffer(parseConfig({}), storage as any);
+
+    await buffer.addTurn(lookalikeKey, makeTurn(lookalikeKey, "lookalike memory"));
+    await buffer.addTurn(dangerousKey, makeTurn(dangerousKey, "dangerous memory"));
+
+    assert.equal(buffer.getTurns(lookalikeKey).length, 1);
+    assert.equal(buffer.getTurns(lookalikeKey)[0]?.content, "lookalike memory");
+    assert.equal(buffer.getTurns(dangerousKey).length, 1);
+    assert.equal(buffer.getTurns(dangerousKey)[0]?.content, "dangerous memory");
+
+    await buffer.clearAfterExtraction(dangerousKey);
+
+    assert.equal(buffer.getTurns(dangerousKey).length, 0);
+    assert.equal(buffer.getTurns(lookalikeKey).length, 1);
+    assert.equal(buffer.getTurns(lookalikeKey)[0]?.content, "lookalike memory");
+  }
+});
+
 test("SmartBuffer serializes concurrent addTurn mutations", async () => {
   const storage = new DelayedBufferStorage();
   const buffer = new SmartBuffer(parseConfig({}), storage as any);

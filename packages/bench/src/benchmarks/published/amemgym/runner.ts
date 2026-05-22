@@ -120,7 +120,12 @@ export async function runAMemGymBenchmark(
       const qa = profile.qas[questionIndex]!;
       const taskResultId = `${profile.id}-q${questionIndex}`;
       const expectedChoice = findExpectedAnswerChoice(qa, finalState);
-      const expectedAnswer = expectedChoice?.choice.answer ?? qa.answer_choices[0]?.answer ?? "";
+      if (!expectedChoice) {
+        throw new Error(
+          `AMemGym profile ${profile.id} question ${questionIndex} final state does not match any answer_choices state`,
+        );
+      }
+      const expectedAnswer = expectedChoice.choice.answer;
       const benchmarkQuestion = formatAMemGymQuestion(qa);
 
       try {
@@ -642,8 +647,8 @@ async function loadDataset(
     for (const filename of DATASET_FILENAMES) {
       try {
         const raw = await readFile(path.join(datasetDir, filename), "utf8");
-        const parsed = parseDataset(raw, filename);
-        return ensureDatasetProfiles(applyLimit(parsed, normalizedLimit));
+        const parsed = parseDataset(raw, filename, normalizedLimit);
+        return ensureDatasetProfiles(parsed);
       } catch (error) {
         if (!isFileNotFoundError(error)) {
           throw new Error(
@@ -670,14 +675,93 @@ async function loadDataset(
   return ensureDatasetProfiles(applyLimit(AMEMGYM_SMOKE_FIXTURE, normalizedLimit));
 }
 
-function parseDataset(raw: string, filename: string): AMemGymProfile[] {
+function parseDataset(
+  raw: string,
+  filename: string,
+  limit: number | undefined,
+): AMemGymProfile[] {
   const parsed = JSON.parse(raw) as unknown;
   if (!Array.isArray(parsed)) {
     throw new Error(
       `AMemGym dataset file ${filename} must contain an array of user profiles.`,
     );
   }
-  return parsed as AMemGymProfile[];
+  return validateDatasetProfiles(applyLimit(parsed, limit), filename);
+}
+
+function validateDatasetProfiles(
+  profiles: unknown[],
+  filename: string,
+): AMemGymProfile[] {
+  return profiles.map((rawProfile, profileIndex) => {
+    if (!rawProfile || typeof rawProfile !== "object" || Array.isArray(rawProfile)) {
+      throw new Error(`AMemGym dataset file ${filename} profile ${profileIndex} must be an object.`);
+    }
+    const profile = rawProfile as AMemGymProfile;
+    const profileId = typeof profile.id === "string" && profile.id.length > 0
+      ? profile.id
+      : `#${profileIndex}`;
+    if (!Array.isArray(profile.periods)) {
+      throw new Error(`AMemGym profile ${profileId} periods must be an array.`);
+    }
+    if (!Array.isArray(profile.qas)) {
+      throw new Error(`AMemGym profile ${profileId} qas must be an array.`);
+    }
+
+    const finalState: Record<string, string> = {};
+    for (const [periodIndex, period] of profile.periods.entries()) {
+      if (!period || typeof period !== "object" || Array.isArray(period)) {
+        throw new Error(`AMemGym profile ${profileId} period ${periodIndex} must be an object.`);
+      }
+      if (!period.state || typeof period.state !== "object" || Array.isArray(period.state)) {
+        throw new Error(`AMemGym profile ${profileId} period ${periodIndex} state must be an object.`);
+      }
+      for (const [key, value] of Object.entries(period.state)) {
+        if (typeof value !== "string") {
+          throw new Error(`AMemGym profile ${profileId} final state ${key} must be a string.`);
+        }
+        finalState[key] = value;
+      }
+    }
+
+    for (const [questionIndex, qa] of profile.qas.entries()) {
+      if (!qa || typeof qa !== "object" || Array.isArray(qa)) {
+        throw new Error(`AMemGym profile ${profileId} question ${questionIndex} must be an object.`);
+      }
+      if (
+        !Array.isArray(qa.required_info) ||
+        qa.required_info.length === 0 ||
+        qa.required_info.some((value) => typeof value !== "string" || value.length === 0)
+      ) {
+        throw new Error(`AMemGym profile ${profileId} question ${questionIndex} required_info must be a non-empty string array.`);
+      }
+      if (!Array.isArray(qa.answer_choices) || qa.answer_choices.length === 0) {
+        throw new Error(`AMemGym profile ${profileId} question ${questionIndex} answer_choices must be a non-empty array.`);
+      }
+      for (const [choiceIndex, choice] of qa.answer_choices.entries()) {
+        if (!choice || typeof choice !== "object" || Array.isArray(choice)) {
+          throw new Error(`AMemGym profile ${profileId} question ${questionIndex} answer choice ${choiceIndex} must be an object.`);
+        }
+        if (
+          !Array.isArray(choice.state) ||
+          choice.state.length !== qa.required_info.length ||
+          choice.state.some((value) => typeof value !== "string")
+        ) {
+          throw new Error(`AMemGym profile ${profileId} question ${questionIndex} answer choice ${choiceIndex} state must match required_info length.`);
+        }
+        if (typeof choice.answer !== "string" || choice.answer.length === 0) {
+          throw new Error(`AMemGym profile ${profileId} question ${questionIndex} answer choice ${choiceIndex} answer must be a non-empty string.`);
+        }
+      }
+      if (!findExpectedAnswerChoice(qa, finalState)) {
+        throw new Error(
+          `AMemGym profile ${profileId} question ${questionIndex} final state does not match any answer_choices state.`,
+        );
+      }
+    }
+
+    return profile;
+  });
 }
 
 function isFileNotFoundError(error: unknown): boolean {

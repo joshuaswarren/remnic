@@ -125,4 +125,22 @@ export const TAXONOMY_ACCURACY_FIXTURE: TaxonomyAccuracyCase[] = [
   },
 ];
 
-export const TAXONOMY_ACCURACY_SMOKE_FIXTURE = TAXONOMY_ACCURACY_FIXTURE.slice(0, 5);
+const TAXONOMY_ACCURACY_SMOKE_CASE_IDS = [
+  "api-token-expiry",
+  "founder-fact",
+  "release-fact",
+  "roadmap-decision",
+  "general-fact",
+  "user-preference",
+  "correction",
+];
+
+function taxonomyCaseById(id: string): TaxonomyAccuracyCase {
+  const found = TAXONOMY_ACCURACY_FIXTURE.find((sample) => sample.id === id);
+  if (!found) {
+    throw new Error(`taxonomy-accuracy smoke fixture references unknown case ${id}`);
+  }
+  return found;
+}
+
+export const TAXONOMY_ACCURACY_SMOKE_FIXTURE = TAXONOMY_ACCURACY_SMOKE_CASE_IDS.map(taxonomyCaseById);

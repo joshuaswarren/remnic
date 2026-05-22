@@ -35,6 +35,15 @@ describe("CallerIdSessionMapper", () => {
     assert.equal(key, "alice");
   });
 
+  it("extracts from public X-Caller-Id header spelling", () => {
+    const mapper = new CallerIdSessionMapper();
+    const key = mapper.resolve(
+      { "X-Caller-Id": "alice" },
+      { user: "bob" }
+    );
+    assert.equal(key, "alice");
+  });
+
   it("extracts from body.user when header is absent", () => {
     const mapper = new CallerIdSessionMapper();
     const key = mapper.resolve({}, { user: "charlie" });

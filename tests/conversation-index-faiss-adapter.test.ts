@@ -12,7 +12,11 @@ import {
   resolveDefaultFaissScriptPath,
   type FaissAdapterConfig,
 } from "../src/conversation-index/faiss-adapter.js";
-import { upsertConversationChunksFailOpen } from "../src/conversation-index/indexer.js";
+import { createConversationIndexBackend } from "../src/conversation-index/backend.js";
+import {
+  rebuildConversationChunksFailOpen,
+  upsertConversationChunksFailOpen,
+} from "../src/conversation-index/indexer.js";
 import { searchConversationIndexFaissFailOpen } from "../src/conversation-index/search.js";
 import type { ConversationChunk } from "../src/conversation-index/chunker.js";
 
@@ -186,6 +190,30 @@ test("FAISS sidecar merge_rows keeps same chunk ids from different sessions", { 
   assert.deepEqual(rows.map((row) => row.text), ["old", "new"]);
 });
 
+test("FAISS sidecar rejects malformed chunk records instead of dropping them", {
+  skip: resolvePythonBin() === undefined,
+}, () => {
+  const pythonBin = resolvePythonBin();
+  assert.ok(pythonBin);
+  const modulePath = path.resolve("packages/remnic-core/scripts/faiss_index.py");
+  const script = [
+    "import importlib.util",
+    `spec = importlib.util.spec_from_file_location("faiss_index", ${JSON.stringify(modulePath)})`,
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "try:",
+    "    module.parse_chunks({'chunks': [{'id': 'valid', 'text': 'ok'}, {'id': '', 'text': 'dropped before'}]})",
+    "except module.SidecarError as exc:",
+    "    print(str(exc))",
+    "else:",
+    "    raise SystemExit('parse_chunks accepted malformed chunk')",
+  ].join("\n");
+
+  const result = spawnSync(pythonBin, ["-c", script], { encoding: "utf-8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /chunks\[1\]\.id must be a non-empty string/);
+});
+
 test("faiss adapter upsertChunks success path parses JSON output", async () => {
   const proc = new FakeProcess();
   const spawnFn: typeof childProcess.spawn = () => {
@@ -205,20 +233,29 @@ test("faiss adapter upsertChunks success path parses JSON output", async () => {
   assert.equal(payload.chunks.length, 1);
 });
 
-test("faiss adapter short-circuits upsert when maxBatchSize is zero", async () => {
+test("faiss adapter rejects non-positive maxBatchSize instead of reporting no-op success", async () => {
   let spawnCalls = 0;
   const spawnFn: typeof childProcess.spawn = () => {
     spawnCalls += 1;
     return new FakeProcess() as unknown as childProcess.ChildProcess;
   };
 
-  const adapter = new FaissConversationIndexAdapter({
-    ...baseConfig(spawnFn),
-    maxBatchSize: 0,
-  });
-
-  const upserted = await adapter.upsertChunks(sampleChunks());
-  assert.equal(upserted, 0);
+  assert.throws(
+    () =>
+      new FaissConversationIndexAdapter({
+        ...baseConfig(spawnFn),
+        maxBatchSize: 0,
+      }),
+    /positive integer/,
+  );
+  assert.throws(
+    () =>
+      new FaissConversationIndexAdapter({
+        ...baseConfig(spawnFn),
+        maxBatchSize: -1,
+      }),
+    /positive integer/,
+  );
   assert.equal(spawnCalls, 0);
 });
 
@@ -419,7 +456,7 @@ test("faiss adapter rebuildChunks parses rebuild count", async () => {
   assert.equal(rebuilt, 3);
 });
 
-test("faiss adapter rebuildChunks batches rebuild payloads via rebuild then incremental upserts", async () => {
+test("faiss adapter rebuildChunks sends the complete replacement in one rebuild", async () => {
   const stdinWrites: string[] = [];
   const commands: string[] = [];
   const spawnFn: typeof childProcess.spawn = (_bin, args) => {
@@ -432,8 +469,7 @@ test("faiss adapter rebuildChunks batches rebuild payloads via rebuild then incr
     };
 
     process.nextTick(() => {
-      const command = String(args?.[1] ?? "");
-      proc.stdout.emit("data", JSON.stringify(command === "rebuild" ? { ok: true, rebuilt: 2 } : { ok: true, upserted: 2 }));
+      proc.stdout.emit("data", JSON.stringify({ ok: true, rebuilt: 4 }));
       proc.emit("close", 0);
     });
 
@@ -447,11 +483,36 @@ test("faiss adapter rebuildChunks batches rebuild payloads via rebuild then incr
 
   const rebuilt = await adapter.rebuildChunks(sampleChunks(4));
   assert.equal(rebuilt, 4);
-  assert.deepEqual(commands, ["rebuild", "upsert"]);
+  assert.deepEqual(commands, ["rebuild"]);
 
   const payloads = stdinWrites.map((chunk) => JSON.parse(chunk));
-  assert.equal(payloads[0].chunks.length, 2);
-  assert.equal(payloads[1].chunks.length, 2);
+  assert.equal(payloads[0].chunks.length, 4);
+});
+
+test("faiss adapter rejects partial rebuild counts", async () => {
+  const spawnFn: typeof childProcess.spawn = () => {
+    const proc = new FakeProcess();
+    process.nextTick(() => {
+      proc.stdout.emit("data", JSON.stringify({ ok: true, rebuilt: 1 }));
+      proc.emit("close", 0);
+    });
+    return proc as unknown as childProcess.ChildProcess;
+  };
+
+  const adapter = new FaissConversationIndexAdapter({
+    ...baseConfig(spawnFn),
+    maxBatchSize: 2,
+  });
+
+  await assert.rejects(
+    () => adapter.rebuildChunks(sampleChunks(4)),
+    (err: unknown) => {
+      assert.ok(err instanceof FaissAdapterError);
+      assert.equal(err.code, "malformed_output");
+      assert.match(err.message, /expected 4/);
+      return true;
+    },
+  );
 });
 
 test("faiss adapter rebuildChunks still calls rebuild for empty chunk sets", async () => {
@@ -576,6 +637,9 @@ test("fail-open wrappers return safe defaults on adapter errors", async () => {
     async upsertChunks() {
       throw new Error("upsert broke");
     },
+    async rebuildChunks() {
+      throw new Error("rebuild broke");
+    },
     async searchChunks() {
       throw new Error("search broke");
     },
@@ -588,8 +652,30 @@ test("fail-open wrappers return safe defaults on adapter errors", async () => {
   const searchResults = await searchConversationIndexFaissFailOpen(throwingAdapter, "query", 3);
   assert.deepEqual(searchResults, []);
 
+  const rebuildResult = await rebuildConversationChunksFailOpen(throwingAdapter, sampleChunks());
+  assert.equal(rebuildResult.skipped, true);
+  assert.equal(rebuildResult.reason, "adapter-error");
+
   const unavailable = await upsertConversationChunksFailOpen(undefined, sampleChunks());
   assert.equal(unavailable.reason, "adapter-unavailable");
+});
+
+test("faiss backend reports rebuild=false when rebuilt count does not cover requested chunks", async () => {
+  const adapter = {
+    async rebuildChunks() {
+      return 0;
+    },
+  } as unknown as FaissConversationIndexAdapter;
+  const backend = createConversationIndexBackend({
+    enabled: true,
+    backend: "faiss",
+    getFaiss: () => adapter,
+    collectionDir: "/tmp/conversation-index",
+  });
+
+  assert.ok(backend);
+  const result = await backend.rebuild(sampleChunks(1), { embed: false });
+  assert.equal(result.rebuilt, false);
 });
 
 test("FAISS sidecar lock cleanup and release only unlink matching owner tokens", {

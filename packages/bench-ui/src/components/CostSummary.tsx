@@ -22,3 +22,4 @@ export function CostSummary({ summary }: { summary: BenchResultSummary }) {
     </section>
   );
 }
+import * as React from "react";

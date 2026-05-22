@@ -118,10 +118,12 @@ export function emitGraphEvent(
     payload,
   };
   const bus = getGraphEventBus(memoryDir);
-  try {
-    bus.emit("graph-event", event);
-  } catch {
-    // fail-open: never propagate listener errors to the write path
+  for (const listener of bus.listeners("graph-event")) {
+    try {
+      (listener as (event: GraphEvent) => void)(event);
+    } catch {
+      // fail-open: never let one subscriber block later listeners or writes
+    }
   }
 }
 

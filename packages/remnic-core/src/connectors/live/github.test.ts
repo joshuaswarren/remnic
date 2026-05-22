@@ -9,6 +9,7 @@ import {
   isTransientGitHubError,
   validateGitHubConfig,
   type GitHubComment,
+  type GitHubDiscussionComment,
   type GitHubFetchFn,
   type GitHubSyncResult,
 } from "./github.js";
@@ -629,6 +630,52 @@ test("discussion comments are fetched when includeDiscussions is true", async ()
 
   await connector.syncIncremental({ cursor, config });
   assert.equal(discussionFetched, true);
+});
+
+test("discussion comments are imported from discussion-shaped responses", async () => {
+  const updatedAt = "2026-04-26T10:00:00.000Z";
+  const discussion: GitHubDiscussionComment = {
+    id: 1,
+    body: "Synthetic discussion note",
+    author: { login: SYNTHETIC_LOGIN },
+    createdAt: "2026-04-26T09:59:00.000Z",
+    updatedAt,
+    url: "https://example.test/discussions/1",
+  };
+  const fetchFn = makeFetch([
+    {
+      match: (url) => url.includes("/discussions"),
+      respond: () => ({ status: 200, data: [discussion] }),
+    },
+    {
+      match: () => true,
+      respond: () => ({ status: 200, data: [] }),
+    },
+  ]);
+
+  const connector = createGitHubConnector({ fetchFn });
+  const config = connector.validateConfig({
+    ...SYNTHETIC_CONFIG,
+    includeDiscussions: true,
+  });
+  const cursor = makeGitHubCursor({});
+
+  const result = (await connector.syncIncremental({
+    cursor,
+    config,
+  })) as GitHubSyncResult;
+
+  assert.equal(result.newDocs.length, 1);
+  assert.equal(
+    result.newDocs[0]?.source.externalId,
+    `${REPO_A}/discussion/1`,
+  );
+  assert.equal(result.newDocs[0]?.source.externalRevision, updatedAt);
+  assert.equal(
+    result.newDocs[0]?.source.externalUrl,
+    "https://example.test/discussions/1",
+  );
+  assert.equal(result.newDocs[0]?.content, "Synthetic discussion note");
 });
 
 // ---------------------------------------------------------------------------

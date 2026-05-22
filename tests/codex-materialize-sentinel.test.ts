@@ -60,6 +60,27 @@ test("sentinel missing → warns and skips, leaves directory untouched", () => {
   }
 });
 
+test("corrupt sentinel throws instead of permanently skipping materialization", () => {
+  const { root, memoriesDir } = makeTempCodexHome();
+  try {
+    writeFileSync(path.join(memoriesDir, SENTINEL_FILE), "{");
+
+    assert.throws(
+      () =>
+        materializeForNamespace("synthetic-ns", {
+          memories: [makeMemory()],
+          codexHome: root,
+          now: new Date("2026-04-02T00:00:00Z"),
+          logger: { info: () => {}, warn: () => {} },
+        }),
+      /codex-materialize: corrupt \.remnic-managed sentinel/,
+    );
+    assert.equal(existsSync(path.join(memoriesDir, "MEMORY.md")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("ensureSentinel is idempotent and does not overwrite an existing hash", () => {
   const { root, memoriesDir } = makeTempCodexHome();
   try {

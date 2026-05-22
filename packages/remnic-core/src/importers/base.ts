@@ -26,7 +26,7 @@
 // intended for the four memory sources in #568 — they emit *memories*
 // (intent-level content) rather than raw conversation turns.
 
-import type { ImportTurn } from "../bulk-import/types.js";
+import { validateImportTurn, type ImportTurn } from "../bulk-import/types.js";
 
 /**
  * A single imported memory record with provenance.
@@ -217,6 +217,8 @@ export interface ImporterTransformOptions {
   includeConversations?: boolean;
   /** Maximum number of memories to emit. Primarily for tests. */
   maxMemories?: number;
+  /** Adapter-specific minimum source text length for importers that filter tiny prompts. */
+  minPromptLength?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +297,44 @@ export function importedMemoryToTurn(memory: ImportedMemory): ImportTurn {
     timestamp,
     participantName: memory.sourceLabel,
     ...(memory.sourceId !== undefined ? { participantId: memory.sourceId } : {}),
+    importProvenance: {
+      sourceLabel: memory.sourceLabel,
+      ...(memory.sourceId !== undefined ? { sourceId: memory.sourceId } : {}),
+      ...(memory.sourceTimestamp !== undefined ? { sourceTimestamp: memory.sourceTimestamp } : {}),
+      ...(memory.importedFromPath !== undefined ? { importedFromPath: memory.importedFromPath } : {}),
+      ...(memory.importedAt !== undefined ? { importedAt: memory.importedAt } : {}),
+      ...(memory.metadata !== undefined ? { metadata: memory.metadata } : {}),
+    },
   };
+}
+
+function invalidImportedMemoryError(
+  adapterName: string,
+  index: number,
+  issues: string[],
+): Error {
+  return new Error(
+    `Importer '${adapterName}' produced invalid memory at index ${index}: ${issues.join("; ")}`,
+  );
+}
+
+function validateImportedMemory(
+  memory: ImportedMemory,
+  adapterName: string,
+  index: number,
+): void {
+  const issues: string[] = [];
+  if (typeof memory.sourceLabel !== "string" || memory.sourceLabel.trim().length === 0) {
+    issues.push("sourceLabel must be a non-empty string");
+  }
+  issues.push(
+    ...validateImportTurn(importedMemoryToTurn(memory), index).map(
+      (issue) => issue.message,
+    ),
+  );
+  if (issues.length > 0) {
+    throw invalidImportedMemoryError(adapterName, index, issues);
+  }
 }
 
 export interface RunImporterResult {
@@ -362,17 +401,24 @@ export async function runImporter<Parsed>(
         "Adapters must produce ImportedMemory[].",
     );
   }
-  const memories = memoriesRaw.map((memory) => {
+  const memories = memoriesRaw.map((memory, index) => {
+    if (memory === null || typeof memory !== "object") {
+      throw invalidImportedMemoryError(adapter.name, index, [
+        "memory must be an object",
+      ]);
+    }
+    const record = memory as ImportedMemory;
     const sourceLabel =
-      typeof memory.sourceLabel === "string" && memory.sourceLabel.length > 0
-        ? memory.sourceLabel
-        : adapter.sourceLabel;
+      typeof record.sourceLabel === "string" && record.sourceLabel.trim().length > 0
+        ? record.sourceLabel.trim()
+        : adapter.sourceLabel.trim();
     return {
-      ...memory,
+      ...record,
       sourceLabel,
-      importedAt: memory.importedAt ?? importedAt,
+      importedAt: record.importedAt ?? importedAt,
     };
   });
+  memories.forEach((memory, index) => validateImportedMemory(memory, adapter.name, index));
 
   // Phase 3 — write (or dry-run plan)
   if (dryRun) {
@@ -430,6 +476,9 @@ export async function defaultWriteMemoriesToOrchestrator(
   if (memories.length === 0) {
     return { memoriesIngested: 0 };
   }
+  memories.forEach((memory, index) =>
+    validateImportedMemory(memory, "defaultWriteMemoriesToOrchestrator", index),
+  );
   const turns = memories.map(importedMemoryToTurn);
   await target.ingestBulkImportBatch(turns);
   return { memoriesIngested: memories.length };

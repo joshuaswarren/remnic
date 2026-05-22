@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import {
   getUtilityTelemetryStatus,
   readUtilityTelemetryEvents,
@@ -71,6 +71,48 @@ test("recordUtilityTelemetryEvent persists entries into dated storage", async ()
     filePath,
     path.join(memoryDir, "state", "utility-telemetry", "events", "2026-03-08", "utility-pr29-2.json"),
   );
+});
+
+test("recordUtilityTelemetryEvent rejects duplicate ids without overwriting the original event", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-utility-telemetry-duplicate-"));
+  const filePath = await recordUtilityTelemetryEvent({
+    memoryDir,
+    event: {
+      schemaVersion: 1,
+      eventId: "utility-duplicate",
+      recordedAt: "2026-03-08T03:46:00.000Z",
+      sessionKey: "agent:main",
+      source: "system",
+      target: "ranking",
+      decision: "boost",
+      outcome: "helpful",
+      utilityScore: 0.6,
+      summary: "Original utility event.",
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      recordUtilityTelemetryEvent({
+        memoryDir,
+        event: {
+          schemaVersion: 1,
+          eventId: "utility-duplicate",
+          recordedAt: "2026-03-08T03:46:30.000Z",
+          sessionKey: "agent:main",
+          source: "system",
+          target: "ranking",
+          decision: "suppress",
+          outcome: "harmful",
+          utilityScore: -0.6,
+          summary: "Replacement utility event.",
+        },
+      }),
+    /EEXIST|exists/i,
+  );
+
+  const stored = JSON.parse(await readFile(filePath, "utf8")) as { summary: string };
+  assert.equal(stored.summary, "Original utility event.");
 });
 
 test("utility telemetry status reports valid and invalid entries", async () => {

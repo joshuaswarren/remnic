@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
 import {
+  backupExistingProjection,
   rebuildMemoryProjection,
   repairMemoryProjection,
   verifyMemoryProjection,
@@ -70,6 +71,76 @@ test("projection-store queries fail open when projection database is absent", as
   }
 });
 
+test("projection-store skips current rows whose paths escape the memory directory", async () => {
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-escape-base-"));
+  const memoryDir = path.join(baseDir, "memory");
+  const outsidePath = path.join(baseDir, "outside.md");
+  try {
+    await mkdir(memoryDir, { recursive: true });
+    await writeFile(outsidePath, "escaped projection needle", "utf-8");
+    const projectionPath = getMemoryProjectionPath(memoryDir);
+    await mkdir(path.dirname(projectionPath), { recursive: true });
+    const db = new Database(projectionPath);
+    try {
+      initializeMemoryProjectionDb(db);
+      db.prepare(`
+        INSERT INTO memory_current (
+          memory_id,
+          category,
+          status,
+          lifecycle_state,
+          path_rel,
+          created_at,
+          updated_at,
+          archived_at,
+          superseded_at,
+          entity_ref,
+          source,
+          confidence,
+          confidence_tier,
+          memory_kind,
+          access_count,
+          last_accessed,
+          tags_json,
+          preview_text
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "escaped-row",
+        "fact",
+        "active",
+        null,
+        "../outside.md",
+        "2026-03-08T00:00:00.000Z",
+        "2026-03-08T01:00:00.000Z",
+        null,
+        null,
+        null,
+        "test",
+        0.8,
+        "implied",
+        null,
+        null,
+        null,
+        "[]",
+        "",
+      );
+    } finally {
+      db.close();
+    }
+
+    assert.equal(readProjectedMemoryState(memoryDir, "escaped-row"), null);
+    const browse = readProjectedMemoryBrowse(memoryDir, {
+      query: "escaped projection needle",
+      limit: 10,
+      offset: 0,
+    });
+    assert.equal(browse?.total, 0);
+    assert.deepEqual(browse?.memories, []);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("rebuildMemoryProjection dry-run computes current rows and timeline rows without writing output", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-dry-"));
   try {
@@ -97,6 +168,70 @@ alpha
     assert.equal(result.timelineRows, 2);
     assert.equal(result.usedLifecycleLedger, false);
     await assert.rejects(() => stat(result.outputPath));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildMemoryProjection includes hot cold and archived memories", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-cold-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-hot.md",
+      memoryDoc({
+        id: "fact-hot",
+        content: "hot memory",
+        created: "2026-03-08T00:00:00.000Z",
+        updated: "2026-03-08T01:00:00.000Z",
+        tags: ["hot"],
+      }),
+    );
+    await writeText(
+      memoryDir,
+      "cold/facts/2026-03-08/fact-cold.md",
+      memoryDoc({
+        id: "fact-cold",
+        content: "cold memory",
+        created: "2026-03-08T02:00:00.000Z",
+        updated: "2026-03-08T03:00:00.000Z",
+        tags: ["cold"],
+      }),
+    );
+    await writeText(
+      memoryDir,
+      "archive/2026-03-08/fact-archived.md",
+      [
+        "---",
+        "id: fact-archived",
+        "category: fact",
+        "created: 2026-03-08T04:00:00.000Z",
+        "updated: 2026-03-08T05:00:00.000Z",
+        "source: test",
+        "confidence: 0.8",
+        "confidenceTier: implied",
+        'tags: ["archived"]',
+        "status: archived",
+        "archivedAt: 2026-03-08T06:00:00.000Z",
+        "---",
+        "",
+        "archived memory",
+        "",
+      ].join("\n"),
+    );
+
+    const result = await rebuildMemoryProjection({
+      memoryDir,
+      dryRun: false,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+    });
+
+    assert.equal(result.scannedMemories, 3);
+    assert.equal(result.currentRows, 3);
+    assert.equal(result.timelineRows, 7);
+    assert.ok(readProjectedMemoryState(memoryDir, "fact-hot"));
+    assert.ok(readProjectedMemoryState(memoryDir, "fact-cold"));
+    assert.ok(readProjectedMemoryState(memoryDir, "fact-archived"));
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -575,6 +710,66 @@ recent updated
     const recent = readProjectedMemoryState(memoryDir, "fact-recent");
     assert.equal(older?.entityRef, "project-corrupt");
     assert.equal(recent?.entityRef, "project-after");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("scoped rebuild treats updatedBefore as an exclusive upper bound", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-before-boundary-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-inside.md",
+      memoryDoc({
+        id: "fact-inside",
+        content: "Inside the projection window.",
+        updated: "2026-03-08T04:59:59.999Z",
+      }),
+    );
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-boundary.md",
+      memoryDoc({
+        id: "fact-boundary",
+        content: "Exactly on the exclusive projection boundary.",
+        updated: "2026-03-08T05:00:00.000Z",
+      }),
+    );
+
+    const result = await rebuildMemoryProjection({
+      memoryDir,
+      dryRun: false,
+      updatedBefore: "2026-03-08T05:00:00.000Z",
+      now: new Date("2026-03-08T06:00:00.000Z"),
+    });
+
+    assert.equal(result.currentRows, 1);
+    const db = new Database(getMemoryProjectionPath(memoryDir));
+    try {
+      const rows = db.prepare("SELECT memory_id FROM memory_current ORDER BY memory_id").all() as Array<{ memory_id: string }>;
+      assert.deepEqual(rows.map((row) => row.memory_id), ["fact-inside"]);
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("backupExistingProjection rethrows non-missing stat failures", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-stat-failure-"));
+  try {
+    await writeFile(path.join(memoryDir, "state"), "not-a-directory", "utf-8");
+
+    await assert.rejects(
+      () => backupExistingProjection(
+        memoryDir,
+        path.join(memoryDir, "state", "memory-projection.sqlite"),
+        new Date("2026-03-08T06:00:00.000Z"),
+      ),
+      /ENOTDIR|not a directory/i,
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

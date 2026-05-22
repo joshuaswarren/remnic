@@ -98,6 +98,32 @@ def test_load_token_falls_back_to_legacy_store(monkeypatch, tmp_path):
     assert _load_token_from_file() == "engram-token"
 
 
+def test_load_token_treats_malformed_entries_as_absent(monkeypatch, tmp_path):
+    """Malformed token stores and entries do not crash or stringify null tokens."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    remnic_dir = tmp_path / ".remnic"
+    remnic_dir.mkdir()
+    engram_dir = tmp_path / ".engram"
+    engram_dir.mkdir()
+
+    (remnic_dir / "tokens.json").write_text(
+        json.dumps(
+            {
+                "tokens": [
+                    None,
+                    "bad-entry",
+                    {"connector": "hermes", "token": None},
+                    {"connector": "openclaw", "token": 123},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (engram_dir / "tokens.json").write_text(json.dumps(None), encoding="utf-8")
+
+    assert _load_token_from_file() == ""
+
+
 def test_engram_hermes_config_is_alias():
     """The legacy EngramHermesConfig name resolves to RemnicHermesConfig."""
     assert EngramHermesConfig is RemnicHermesConfig

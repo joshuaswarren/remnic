@@ -24,6 +24,16 @@ export interface ImportTurn {
   parts?: import("../message-parts/index.js").LcmMessagePartInput[];
   rawContent?: unknown;
   sourceFormat?: import("../message-parts/index.js").MessagePartSourceFormat;
+  importProvenance?: ImportTurnProvenance;
+}
+
+export interface ImportTurnProvenance {
+  sourceLabel?: string;
+  sourceId?: string;
+  sourceTimestamp?: string;
+  importedFromPath?: string;
+  importedAt?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface BulkImportOptions {

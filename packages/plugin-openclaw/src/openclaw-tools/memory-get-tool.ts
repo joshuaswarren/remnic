@@ -1,7 +1,7 @@
 import {
   getMemoryForActiveMemory,
   type ActiveMemoryGetOutput,
-} from "../../../remnic-core/src/index.js";
+} from "@remnic/core";
 import { MemoryGetInputSchema } from "./shapes.js";
 import { toolJsonResult } from "./tool-json-result.js";
 

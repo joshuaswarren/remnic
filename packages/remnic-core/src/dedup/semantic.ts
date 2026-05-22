@@ -27,9 +27,11 @@ export interface SemanticDedupHit {
 
 /**
  * Lookup function passed by the caller. Must return an array of hits sorted
- * descending by score. Implementations should return an empty array (never
- * throw) when the embedding backend is unavailable — the decision function
- * treats that as "no near duplicate" (fail-open).
+ * descending by score. Implementations must throw when the embedding backend
+ * is unavailable or the provider call fails, and return an empty array only
+ * when a reachable backend successfully reports no hits. The decision function
+ * fail-opens on thrown lookup errors while preserving a distinct
+ * "backend_unavailable" reason for telemetry.
  */
 export type SemanticDedupLookup = (
   content: string,
@@ -66,6 +68,23 @@ export type SemanticDedupDecision =
 
 // ── Pure decision function ────────────────────────────────────────────────────
 
+const DEFAULT_SEMANTIC_THRESHOLD = 0.92;
+const DEFAULT_SEMANTIC_CANDIDATES = 5;
+
+function normalizeSemanticThreshold(value: number): number {
+  return Number.isFinite(value)
+    ? Math.min(1, Math.max(0, value))
+    : DEFAULT_SEMANTIC_THRESHOLD;
+}
+
+function normalizeSemanticCandidates(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    return DEFAULT_SEMANTIC_CANDIDATES;
+  }
+  const normalized = Math.floor(value);
+  return value > 0 && normalized === 0 ? 1 : normalized;
+}
+
 /**
  * Pure decision function: given a lookup callback and options, decide whether
  * the candidate content should be written or skipped as a near-duplicate.
@@ -90,16 +109,17 @@ export async function decideSemanticDedup(
   if (!options.enabled) {
     return { action: "keep", reason: "disabled" };
   }
+  const threshold = normalizeSemanticThreshold(options.threshold);
+  const candidates = normalizeSemanticCandidates(options.candidates);
   // Zero candidates means the operator has disabled the embedding lookup.
   // Treat it identically to enabled=false so no backend call is made.
-  if (options.candidates === 0) {
+  if (candidates === 0) {
     return { action: "keep", reason: "disabled" };
   }
   const trimmed = typeof content === "string" ? content.trim() : "";
   if (!trimmed) {
     return { action: "keep", reason: "no_near_duplicate" };
   }
-  const candidates = Math.max(1, Math.floor(options.candidates));
   let hits: SemanticDedupHit[] = [];
   try {
     hits = await lookup(trimmed, candidates);
@@ -129,7 +149,7 @@ export async function decideSemanticDedup(
     return { action: "keep", reason: "no_near_duplicate" };
   }
 
-  if (top.score >= options.threshold) {
+  if (top.score >= threshold) {
     return {
       action: "skip",
       reason: "near_duplicate",

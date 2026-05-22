@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import net from "node:net";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { Orchestrator } from "@remnic/core";
 import { cliMain, startServer } from "../packages/remnic-server/src/index.js";
 import { runServerBin } from "../packages/remnic-server/bin/server-bin.js";
 
@@ -323,4 +324,66 @@ test("startServer rejects invalid config file ports before initializing", async 
     () => startServer({ configPath }),
     /Invalid server\.port: expected an integer port from 1 to 65535/,
   );
+});
+
+test("startServer destroys the orchestrator when HTTP bind fails after initialization", async (t) => {
+  restoreEnv(t, [
+    "REMNIC_PORT",
+    "ENGRAM_PORT",
+    "REMNIC_MEMORY_DIR",
+    "ENGRAM_MEMORY_DIR",
+    "REMNIC_AUTH_TOKEN",
+    "ENGRAM_AUTH_TOKEN",
+  ]);
+  delete process.env.REMNIC_PORT;
+  delete process.env.ENGRAM_PORT;
+  delete process.env.REMNIC_MEMORY_DIR;
+  delete process.env.ENGRAM_MEMORY_DIR;
+  delete process.env.REMNIC_AUTH_TOKEN;
+  delete process.env.ENGRAM_AUTH_TOKEN;
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-bind-fail-"));
+  const memoryDir = path.join(tempDir, "memory");
+  const configPath = path.join(tempDir, "remnic.config.json");
+  const port = await getFreePort();
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      remnic: { memoryDir, qmdEnabled: false, qmdDaemonEnabled: false, searchBackend: "noop" },
+      server: { authToken: "test-token" },
+    }),
+    "utf8",
+  );
+
+  const blocker = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    blocker.once("error", reject);
+    blocker.listen(port, "127.0.0.1", () => {
+      blocker.off("error", reject);
+      resolve();
+    });
+  });
+  t.after(async () => {
+    await new Promise<void>((resolve, reject) => {
+      blocker.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  const originalDestroy = Orchestrator.prototype.destroy;
+  let destroyCalls = 0;
+  (Orchestrator.prototype as unknown as { destroy: typeof originalDestroy }).destroy = async function (
+    this: Orchestrator,
+  ): Promise<void> {
+    destroyCalls += 1;
+    return originalDestroy.call(this);
+  };
+  t.after(() => {
+    (Orchestrator.prototype as unknown as { destroy: typeof originalDestroy }).destroy = originalDestroy;
+  });
+
+  await assert.rejects(
+    () => startServer({ configPath, port }),
+    /EADDRINUSE|address already in use/i,
+  );
+  assert.equal(destroyCalls, 1);
 });

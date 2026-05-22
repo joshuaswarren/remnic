@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +57,7 @@ def read_payload() -> dict[str, Any]:
     return payload
 
 
-def ensure_index_dir(index_path: str) -> Path:
+def ensure_index_dir(index_path: Any) -> Path:
     if not isinstance(index_path, str) or not index_path.strip():
         raise SidecarError("indexPath is required")
     path = Path(index_path)
@@ -110,7 +111,7 @@ def read_metadata(path: Path) -> list[dict[str, Any]]:
 
 
 def write_metadata(path: Path, rows: list[dict[str, Any]]) -> None:
-    tmp = path.with_suffix(".jsonl.tmp")
+    tmp = temp_artifact_path(path)
     with tmp.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, separators=(",", ":"), ensure_ascii=False))
@@ -129,7 +130,7 @@ def read_manifest(path: Path) -> dict[str, Any] | None:
 
 
 def write_manifest(path: Path, manifest: dict[str, Any]) -> None:
-    tmp = path.with_suffix(".json.tmp")
+    tmp = temp_artifact_path(path)
     tmp.write_text(
         json.dumps(manifest, separators=(",", ":"), ensure_ascii=False),
         encoding="utf-8",
@@ -211,13 +212,74 @@ def embed_texts(texts: list[str], model_id: str) -> tuple[Any, Any, Any]:
 
 
 def write_index(path: Path, vectors: Any, faiss: Any) -> None:
+    tmp = write_index_temp(path, vectors, faiss)
+    os.replace(tmp, path)
+
+
+def temp_artifact_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+
+
+def write_metadata_temp(path: Path, rows: list[dict[str, Any]]) -> Path:
+    tmp = temp_artifact_path(path)
+    with tmp.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, separators=(",", ":"), ensure_ascii=False))
+            handle.write("\n")
+    return tmp
+
+
+def write_manifest_temp(path: Path, manifest: dict[str, Any]) -> Path:
+    tmp = temp_artifact_path(path)
+    tmp.write_text(
+        json.dumps(manifest, separators=(",", ":"), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return tmp
+
+
+def write_index_temp(path: Path, vectors: Any, faiss: Any) -> Path:
     dim = int(vectors.shape[1])
     index = faiss.IndexFlatIP(dim)
     if int(vectors.shape[0]) > 0:
         index.add(vectors)
-    tmp = path.with_suffix(".faiss.tmp")
+    tmp = temp_artifact_path(path)
     faiss.write_index(index, str(tmp))
-    os.replace(tmp, path)
+    return tmp
+
+
+def commit_index_artifacts(artifacts: list[tuple[Path, Path]]) -> None:
+    backups: list[tuple[Path, Path, bool]] = []
+    try:
+        for target, tmp in artifacts:
+            backup = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.bak")
+            existed = target.exists()
+            if existed:
+                os.replace(target, backup)
+            backups.append((target, backup, existed))
+            os.replace(tmp, target)
+        for _target, backup, existed in backups:
+            if existed:
+                try:
+                    backup.unlink()
+                except FileNotFoundError:
+                    pass
+    except Exception:
+        for target, backup, existed in reversed(backups):
+            try:
+                if target.exists():
+                    target.unlink()
+                if existed and backup.exists():
+                    os.replace(backup, target)
+            except Exception:
+                pass
+        raise
+    finally:
+        for _target, tmp in artifacts:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def resolve_vector_dimension(model_id: str) -> int:
@@ -332,15 +394,15 @@ def parse_chunks(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw_chunks, list):
         raise SidecarError("chunks must be an array")
     chunks: list[dict[str, Any]] = []
-    for item in raw_chunks:
+    for index, item in enumerate(raw_chunks):
         if not isinstance(item, dict):
-            continue
+            raise SidecarError(f"chunks[{index}] must be an object")
         chunk_id = item.get("id")
         text = item.get("text")
         if not isinstance(chunk_id, str) or not chunk_id:
-            continue
+            raise SidecarError(f"chunks[{index}].id must be a non-empty string")
         if not isinstance(text, str):
-            continue
+            raise SidecarError(f"chunks[{index}].text must be a string")
         chunks.append(
             {
                 "id": chunk_id,
@@ -359,6 +421,49 @@ def metadata_row_key(row: dict[str, Any]) -> tuple[str, str]:
     )
     row_id = row.get("id") if isinstance(row.get("id"), str) else ""
     return (session_key, row_id)
+
+
+def metadata_result_path(row: dict[str, Any]) -> str:
+    row_id = row.get("id") if isinstance(row.get("id"), str) else ""
+    session_key = row.get("sessionKey") if isinstance(row.get("sessionKey"), str) else ""
+    return f"{session_key}/{row_id}" if session_key else row_id
+
+
+def parse_retention_cutoff_ms(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SidecarError("retentionCutoffMs must be a finite non-negative number when provided")
+    if value < 0 or value != value or value in (float("inf"), float("-inf")):
+        raise SidecarError("retentionCutoffMs must be a finite non-negative number when provided")
+    return int(value)
+
+
+def parse_row_timestamp_ms(row: dict[str, Any]) -> int | None:
+    for key in ("endTs", "startTs"):
+        value = row.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        text = value.strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    return None
+
+
+def prune_metadata_rows(rows: list[dict[str, Any]], retention_cutoff_ms: int | None) -> list[dict[str, Any]]:
+    if retention_cutoff_ms is None:
+        return rows
+    pruned: list[dict[str, Any]] = []
+    for row in rows:
+        timestamp_ms = parse_row_timestamp_ms(row)
+        if timestamp_ms is None or timestamp_ms >= retention_cutoff_ms:
+            pruned.append(row)
+    return pruned
 
 
 def merge_rows(existing: list[dict[str, Any]], updates: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -531,7 +636,8 @@ def run_upsert(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(model_id, str) or not model_id:
         raise SidecarError("modelId is required")
 
-    index_dir = ensure_index_dir(str(payload.get("indexPath", "")))
+    index_dir = ensure_index_dir(payload.get("indexPath"))
+    retention_cutoff_ms = parse_retention_cutoff_ms(payload.get("retentionCutoffMs"))
     chunks = parse_chunks(payload)
 
     if not chunks:
@@ -543,7 +649,7 @@ def run_upsert(payload: dict[str, Any]) -> dict[str, Any]:
 
     writer_lock_path = acquire_writer_lock(index_dir)
     try:
-        existing = read_metadata(meta_path)
+        existing = prune_metadata_rows(read_metadata(meta_path), retention_cutoff_ms)
         existing_manifest = read_manifest(manifest_path)
         merged = merge_rows(existing, chunks)
 
@@ -552,9 +658,6 @@ def run_upsert(payload: dict[str, Any]) -> dict[str, Any]:
 
         lock_path = acquire_index_lock(index_dir)
         try:
-            # Commit FAISS index first; metadata follows so we never point at missing vectors.
-            write_index(idx_path, vectors, faiss)
-            write_metadata(meta_path, merged)
             preserved_rebuild_at = (
                 existing_manifest.get("lastSuccessfulRebuildAt")
                 if isinstance(existing_manifest, dict)
@@ -562,14 +665,18 @@ def run_upsert(payload: dict[str, Any]) -> dict[str, Any]:
                 and existing_manifest.get("lastSuccessfulRebuildAt")
                 else None
             )
-            write_manifest(
-                manifest_path,
-                build_manifest(
-                    model_id,
-                    int(vectors.shape[1]),
-                    len(merged),
-                    last_successful_rebuild_at=preserved_rebuild_at,
-                ),
+            manifest = build_manifest(
+                model_id,
+                int(vectors.shape[1]),
+                len(merged),
+                last_successful_rebuild_at=preserved_rebuild_at,
+            )
+            commit_index_artifacts(
+                [
+                    (idx_path, write_index_temp(idx_path, vectors, faiss)),
+                    (meta_path, write_metadata_temp(meta_path, merged)),
+                    (manifest_path, write_manifest_temp(manifest_path, manifest)),
+                ]
             )
         finally:
             release_index_lock(lock_path)
@@ -584,7 +691,7 @@ def run_rebuild(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(model_id, str) or not model_id:
         raise SidecarError("modelId is required")
 
-    index_dir = ensure_index_dir(str(payload.get("indexPath", "")))
+    index_dir = ensure_index_dir(payload.get("indexPath"))
     chunks = parse_chunks(payload)
 
     writer_lock_path = acquire_writer_lock(index_dir)
@@ -603,9 +710,14 @@ def run_rebuild(payload: dict[str, Any]) -> dict[str, Any]:
             idx_path = index_file(index_dir)
             manifest_path = manifest_file(index_dir)
 
-            write_index(idx_path, vectors, faiss)
-            write_metadata(meta_path, chunks)
-            write_manifest(manifest_path, build_manifest(model_id, int(vectors.shape[1]), chunk_count))
+            manifest = build_manifest(model_id, int(vectors.shape[1]), chunk_count)
+            commit_index_artifacts(
+                [
+                    (idx_path, write_index_temp(idx_path, vectors, faiss)),
+                    (meta_path, write_metadata_temp(meta_path, chunks)),
+                    (manifest_path, write_manifest_temp(manifest_path, manifest)),
+                ]
+            )
         finally:
             release_index_lock(lock_path)
     finally:
@@ -625,7 +737,7 @@ def run_search(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
         raise SidecarError("topK must be a positive integer")
 
-    index_dir = ensure_index_dir(str(payload.get("indexPath", "")))
+    index_dir = ensure_index_dir(payload.get("indexPath"))
     meta_path = metadata_file(index_dir)
     idx_path = index_file(index_dir)
     manifest_path = manifest_file(index_dir)
@@ -672,7 +784,7 @@ def run_search(payload: dict[str, Any]) -> dict[str, Any]:
         row = rows[idx_i]
         results.append(
             {
-                "path": row["id"],
+                "path": metadata_result_path(row),
                 "snippet": row["text"][:280],
                 "score": float(score),
             }
@@ -682,7 +794,7 @@ def run_search(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_health_response(payload: dict[str, Any], *, include_metadata: bool = False) -> dict[str, Any]:
-    index_dir = ensure_index_dir(str(payload.get("indexPath", "")))
+    index_dir = ensure_index_dir(payload.get("indexPath"))
     meta_path = metadata_file(index_dir)
     idx_path = index_file(index_dir)
     manifest_path = manifest_file(index_dir)

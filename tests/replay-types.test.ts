@@ -103,7 +103,7 @@ test("runReplayWithNormalizer applies validation, range, offset, max and dry-run
     {
       dryRun: true,
       from: "2026-02-25T09:30:00.000Z",
-      to: "2026-02-25T12:00:00.000Z",
+      to: "2026-02-25T12:00:00.001Z",
       startOffset: 1,
       maxTurns: 1,
       batchSize: 2,
@@ -120,6 +120,72 @@ test("runReplayWithNormalizer applies validation, range, offset, max and dry-run
   assert.equal(summary.firstTimestamp, "2026-02-25T12:00:00.000Z");
   assert.equal(summary.nextOffset, 2);
   assert.equal(summary.warnings.length >= 2, true);
+});
+
+test("runReplayWithNormalizer uses inclusive from and exclusive to date boundaries", async () => {
+  const normalizer: ReplayNormalizer = {
+    source: "openclaw",
+    parse: async () => ({
+      warnings: [],
+      turns: [
+        {
+          source: "openclaw",
+          sessionKey: "agent:generalist:main",
+          role: "user",
+          content: "start",
+          timestamp: "2024-01-01T00:00:00.000Z",
+        },
+        {
+          source: "openclaw",
+          sessionKey: "agent:generalist:main",
+          role: "assistant",
+          content: "end-boundary",
+          timestamp: "2024-01-01T01:00:00.000Z",
+        },
+        {
+          source: "openclaw",
+          sessionKey: "agent:generalist:main",
+          role: "user",
+          content: "next-window-end",
+          timestamp: "2024-01-01T02:00:00.000Z",
+        },
+      ],
+    }),
+  };
+
+  const firstWindowTurns: string[] = [];
+  const firstWindow = await runReplayWithNormalizer(
+    normalizer,
+    {},
+    {
+      onTurn: (turn) => {
+        firstWindowTurns.push(turn.content);
+      },
+    },
+    {
+      from: "2024-01-01T00:00:00.000Z",
+      to: "2024-01-01T01:00:00.000Z",
+    },
+  );
+  assert.deepEqual(firstWindowTurns, ["start"]);
+  assert.equal(firstWindow.filteredByDate, 2);
+
+  const adjacentWindowTurns: string[] = [];
+  const adjacentWindow = await runReplayWithNormalizer(
+    normalizer,
+    {},
+    {
+      onTurn: (turn) => {
+        adjacentWindowTurns.push(turn.content);
+      },
+    },
+    {
+      from: "2024-01-01T01:00:00.000Z",
+      to: "2024-01-01T02:00:00.000Z",
+    },
+  );
+  assert.deepEqual(adjacentWindowTurns, ["end-boundary"]);
+  assert.equal(adjacentWindow.filteredByDate, 2);
 });
 
 test("runReplayWithNormalizer processes in batches and calls handlers", async () => {

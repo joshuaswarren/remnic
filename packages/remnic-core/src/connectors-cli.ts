@@ -63,6 +63,25 @@ export interface ConnectorRow {
   state: ConnectorState | null;
 }
 
+export interface ConnectorRowDefinition {
+  id: string;
+  displayName: string;
+  enabled: boolean;
+}
+
+export function buildConnectorRowsFromDefinitions(
+  definitions: readonly ConnectorRowDefinition[],
+  states: readonly ConnectorState[],
+): ConnectorRow[] {
+  const stateMap = new Map(states.map((state) => [state.id, state]));
+  return definitions.map((definition) => ({
+    id: definition.id,
+    displayName: definition.displayName,
+    enabled: definition.enabled,
+    state: stateMap.get(definition.id) ?? null,
+  }));
+}
+
 /**
  * Result returned by the `run` command's poll function.
  */

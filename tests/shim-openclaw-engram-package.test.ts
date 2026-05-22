@@ -4,9 +4,10 @@ import { readFile } from "node:fs/promises";
 
 const shimPackageJsonPath = new URL("../packages/shim-openclaw-engram/package.json", import.meta.url);
 const shimManifestPath = new URL("../packages/shim-openclaw-engram/openclaw.plugin.json", import.meta.url);
+const shimSourcePath = new URL("../packages/shim-openclaw-engram/src/index.ts", import.meta.url);
 const bannerScriptPath = new URL("../packages/shim-openclaw-engram/scripts/postinstall-banner.mjs", import.meta.url);
 
-test("Phase C shim package keeps a workspace-linked source manifest", async () => {
+test("Phase C shim package keeps its source manifest aligned", async () => {
   const raw = await readFile(shimPackageJsonPath, "utf8");
   const manifestRaw = await readFile(shimManifestPath, "utf8");
   const pkg = JSON.parse(raw) as Record<string, unknown>;
@@ -20,11 +21,18 @@ test("Phase C shim package keeps a workspace-linked source manifest", async () =
   assert.equal(bin["engram-access"], "./bin/engram-access.js");
   assert.equal(exportsMap["."].import, "./dist/index.js");
   assert.equal(exportsMap["./access-cli"].import, "./dist/access-cli.js");
-  // workspace:^ is intentional for local monorepo linking.
-  // pnpm publish (see release-and-publish.yml) rewrites this to the real
-  // version at pack time, so published packages never contain workspace:^.
-  assert.equal(dependencies["@remnic/plugin-openclaw"], "workspace:^");
-  assert.equal(dependencies["@remnic/core"], "workspace:^");
+  assert.equal(dependencies["@remnic/plugin-openclaw"], "^1.0.36");
+  assert.equal(dependencies["@remnic/core"], "^1.1.12");
+});
+
+test("Phase C shim register binds the legacy plugin id even when called unbound", async () => {
+  const source = await readFile(shimSourcePath, "utf8");
+
+  assert.match(source, /id:\s*"openclaw-engram"\s+as\s+const/);
+  assert.match(
+    source,
+    /remnicPluginDefinition\.register\.call\(shimPluginDefinition,\s*api\)/,
+  );
 });
 
 test("Phase C shim package includes the rename postinstall banner script", async () => {

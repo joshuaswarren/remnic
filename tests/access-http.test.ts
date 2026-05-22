@@ -928,6 +928,7 @@ test("access HTTP capsule import validates input and surfaces ACL errors", async
       namespace: "team-a",
       principal: "principal-1",
       mode: "fork",
+      passphrase: undefined,
     });
   } finally {
     await server.stop();
@@ -2184,6 +2185,78 @@ test("access HTTP server exposes MCP JSON-RPC endpoint at /mcp", async () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "ping" }),
     });
     assert.equal(noAuthRes.status, 401);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("access HTTP MCP calls default to adapter namespace and session key", async () => {
+  const captured: Array<{ namespace?: string; sessionKey?: string; principal?: string }> = [];
+  const service = createFakeService();
+  service.recall = async ({ query, namespace, sessionKey, authenticatedPrincipal }) => {
+    captured.push({ namespace, sessionKey, principal: authenticatedPrincipal });
+    return {
+      query,
+      sessionKey,
+      namespace: namespace ?? "global",
+      context: "memory context",
+      count: 0,
+      memoryIds: [],
+      results: [],
+      recordedAt: "2026-03-08T00:00:00.000Z",
+      traceId: "trace-mcp-adapter-defaults",
+      plannerMode: "full",
+      fallbackUsed: false,
+      sourcesUsed: [],
+      budgetsApplied: {
+        appliedTopK: 0,
+        recallBudgetChars: 8000,
+        maxMemoryTokens: 2000,
+      },
+      latencyMs: 1,
+    };
+  };
+  const server = new EngramAccessHttpServer({
+    service,
+    host: "127.0.0.1",
+    port: 0,
+    authToken: "secret-token",
+    maxBodyBytes: 4096,
+    citationsEnabled: false,
+    citationsAutoDetect: false,
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+
+  try {
+    const res = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret-token",
+        "Content-Type": "application/json",
+        "Mcp-Session-Id": "mcp-session-123",
+        "X-Engram-Client-Id": "replit",
+        "X-Engram-Namespace": "project-a",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "remnic.recall",
+          arguments: { query: "what did we decide?" },
+        },
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(captured, [
+      {
+        namespace: "project-a",
+        sessionKey: "mcp-session-123",
+        principal: "replit-agent",
+      },
+    ]);
   } finally {
     await server.stop();
   }

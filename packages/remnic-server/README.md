@@ -36,14 +36,15 @@ workspace installs; release builds verify that both targets have Node shebangs
 and can start their help command before publish.
 
 ```typescript
-import { createServer } from "@remnic/server";
+import { startServer } from "@remnic/server";
 
-const server = createServer({
+const server = await startServer({
   port: 3141,
   authToken: process.env.REMNIC_AUTH_TOKEN,
 });
 
-await server.start();
+console.log(`Remnic server listening on http://${server.host}:${server.port}`);
+await server.stop();
 ```
 
 ## License

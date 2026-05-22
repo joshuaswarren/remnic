@@ -150,6 +150,29 @@ describe("importedMemoryToTurn", () => {
     const turn = importedMemoryToTurn(memory);
     assert.equal(turn.participantId, "cg-abc-123");
   });
+
+  it("preserves importer provenance separately from the ingest timestamp", () => {
+    const memory: ImportedMemory = {
+      content: "hello",
+      sourceLabel: "chatgpt",
+      sourceId: "cg-abc-123",
+      sourceTimestamp: "2026-04-10T14:25:07.000Z",
+      importedAt: "2026-05-20T00:00:00.000Z",
+      importedFromPath: "/tmp/chatgpt-export.json",
+      metadata: { conversationId: "conv-1", tags: ["saved"] },
+    };
+
+    const turn = importedMemoryToTurn(memory);
+    assert.equal(turn.timestamp, "2026-04-10T14:25:07.000Z");
+    assert.deepEqual(turn.importProvenance, {
+      sourceLabel: "chatgpt",
+      sourceId: "cg-abc-123",
+      sourceTimestamp: "2026-04-10T14:25:07.000Z",
+      importedFromPath: "/tmp/chatgpt-export.json",
+      importedAt: "2026-05-20T00:00:00.000Z",
+      metadata: { conversationId: "conv-1", tags: ["saved"] },
+    });
+  });
 });
 
 describe("runImporter — slice 1 integration", () => {
@@ -211,6 +234,8 @@ describe("runImporter — slice 1 integration", () => {
       for (const turn of batch) {
         assert.equal(turn.role, "user");
         assert.equal(turn.participantName, "chatgpt");
+        assert.equal(turn.importProvenance?.importedFromPath, "/tmp/fake-export.json");
+        assert.equal(turn.importProvenance?.sourceLabel, "chatgpt");
       }
     }
   });
@@ -271,6 +296,51 @@ describe("runImporter — slice 1 integration", () => {
       () => runImporter(adapter, {}, target),
       /non-array/,
     );
+  });
+
+  it("rejects malformed transformed memories before writeTo is called", async () => {
+    const { target, received } = makeMockTarget();
+    let writeToCalls = 0;
+    const adapter: ImporterAdapter<unknown> = {
+      name: "bad-memory",
+      sourceLabel: "chatgpt",
+      parse: (input) => input,
+      transform: () => [
+        {
+          content: "",
+          sourceLabel: "chatgpt",
+          sourceTimestamp: "not-a-date",
+        } as ImportedMemory,
+      ],
+      async writeTo(t, batch) {
+        writeToCalls += 1;
+        return defaultWriteMemoriesToOrchestrator(t, batch);
+      },
+    };
+
+    await assert.rejects(
+      () => runImporter(adapter, {}, target),
+      /Importer 'bad-memory' produced invalid memory at index 0: .*content.*timestamp/s,
+    );
+    assert.equal(writeToCalls, 0);
+    assert.equal(received.length, 0);
+  });
+
+  it("default writer rejects invalid imported memories before ingesting turns", async () => {
+    const { target, received } = makeMockTarget();
+
+    await assert.rejects(
+      () =>
+        defaultWriteMemoriesToOrchestrator(target, [
+          {
+            content: "valid content",
+            sourceLabel: "",
+            importedAt: "not-a-date",
+          },
+        ]),
+      /defaultWriteMemoriesToOrchestrator.*sourceLabel.*timestamp/s,
+    );
+    assert.equal(received.length, 0);
   });
 
   it("fills in a missing sourceLabel from the adapter default", async () => {

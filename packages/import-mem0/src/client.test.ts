@@ -31,12 +31,13 @@ function makeReplayFetch(pages: RecordedPage[]): typeof fetch {
     if (!match) {
       return new Response(`no recording for ${url}`, { status: 404 });
     }
+    assert.equal(init?.method, "POST");
+    assert.equal(init?.headers && (init.headers as Record<string, string>)["Content-Type"], "application/json");
+    assert.equal(init?.body, JSON.stringify({ filters: {} }));
     return new Response(
       JSON.stringify({ results: match.results ?? [], next: match.next ?? null }),
       { status: 200, headers: { "content-type": "application/json" } },
     );
-    // init parameter intentionally ignored in replay mode
-    void init;
   }) as typeof fetch;
 }
 
@@ -62,6 +63,62 @@ describe("fetchAllMem0Memories (record/replay)", () => {
         }),
       /non-empty apiKey/,
     );
+  });
+
+  it("uses hosted POST contract with filters by default", async () => {
+    let sawRequest = false;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      sawRequest = true;
+      assert.equal(String(input), "https://api.mem0.test/v3/memories/?page=1&page_size=50");
+      assert.equal(init?.method, "POST");
+      assert.deepEqual(init?.headers, {
+        Authorization: "Token synthetic-key",
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      });
+      assert.equal(init?.body, JSON.stringify({ filters: { user_id: "alice" } }));
+      return new Response(JSON.stringify({ results: [], next: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await fetchAllMem0Memories({
+      apiKey: "synthetic-key",
+      baseUrl: "https://api.mem0.test",
+      fetchImpl,
+      filters: { user_id: "alice" },
+    });
+
+    assert.equal(sawRequest, true);
+  });
+
+  it("keeps legacy GET contract behind explicit compatibility option", async () => {
+    let sawRequest = false;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      sawRequest = true;
+      assert.equal(String(input), "https://api.mem0.test/v1/memories/");
+      assert.equal(init?.method, "GET");
+      assert.deepEqual(init?.headers, {
+        Authorization: "Token synthetic-key",
+        Accept: "application/json",
+      });
+      assert.equal(init?.body, undefined);
+      return new Response(JSON.stringify({ results: [], next: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await fetchAllMem0Memories({
+      apiKey: "synthetic-key",
+      baseUrl: "https://api.mem0.test",
+      fetchImpl,
+      legacyGet: true,
+      listPath: "/v1/memories/",
+    });
+
+    assert.equal(sawRequest, true);
   });
 
   it("propagates HTTP error responses", async () => {
@@ -125,6 +182,36 @@ describe("fetchAllMem0Memories (record/replay)", () => {
     );
   });
 
+  it("aborts immediately while waiting for rate-limit sleep", async () => {
+    const pages = loadRecording("two-page-recording.json");
+    const controller = new AbortController();
+    let fetchCalls = 0;
+    let sleepCalled = false;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      fetchCalls += 1;
+      return makeReplayFetch(pages)(input, init);
+    }) as typeof fetch;
+
+    const run = fetchAllMem0Memories({
+      apiKey: "synthetic-key",
+      baseUrl: "https://api.mem0.test",
+      fetchImpl,
+      rateLimit: 1,
+      signal: controller.signal,
+      sleep: async () => {
+        sleepCalled = true;
+        setTimeout(() => controller.abort(), 0);
+        await new Promise<void>(() => {
+          // The abort signal, not this sleep, must settle the import.
+        });
+      },
+    });
+
+    await assert.rejects(run, (error: Error) => error.name === "AbortError");
+    assert.equal(sleepCalled, true);
+    assert.equal(fetchCalls, 1);
+  });
+
   // Cursor review on PR #602 — pagination must keep walking when the
   // server returns numeric page metadata without a `next` cursor.
   it("falls back to page-number pagination when next cursor is absent", async () => {
@@ -132,7 +219,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
     const fetchImpl = (async (input: RequestInfo | URL): Promise<Response> => {
       const url = typeof input === "string" ? input : input.toString();
       called += 1;
-      if (!url.includes("page=")) {
+      if (!url.includes("page=2")) {
         // Page 1: returns `page`+`total`+`per_page`, no `next`.
         return new Response(
           JSON.stringify({

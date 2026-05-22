@@ -77,6 +77,44 @@ test("BEAM parquet loader reads bounded row batches instead of whole shards", as
   );
 });
 
+test("BEAM JSON preview limit stops before malformed later conversations", async () => {
+  const datasetDir = await mkdtemp(path.join(tmpdir(), "remnic-beam-json-limit-"));
+  await writeFile(
+    path.join(datasetDir, "beam_100k.json"),
+    `[${JSON.stringify(buildBeamTestConversation("json-limit"))},{"conversation_id":`,
+  );
+
+  const preview = await loadBeamDatasetPreview({
+    mode: "full",
+    datasetDir,
+    limit: 1,
+  });
+
+  assert.equal(preview.source, "dataset");
+  assert.equal(preview.items, 1);
+  assert.equal(preview.tasks, 1);
+  assert.deepEqual(preview.errors, []);
+});
+
+test("BEAM JSONL preview limit stops before malformed later lines", async () => {
+  const datasetDir = await mkdtemp(path.join(tmpdir(), "remnic-beam-jsonl-limit-"));
+  await writeFile(
+    path.join(datasetDir, "beam_100k.jsonl"),
+    `${JSON.stringify(buildBeamTestConversation("jsonl-limit"))}\n{"conversation_id":\n`,
+  );
+
+  const preview = await loadBeamDatasetPreview({
+    mode: "full",
+    datasetDir,
+    limit: 1,
+  });
+
+  assert.equal(preview.source, "dataset");
+  assert.equal(preview.items, 1);
+  assert.equal(preview.tasks, 1);
+  assert.deepEqual(preview.errors, []);
+});
+
 test("BEAM dataset preview reports missing full datasets", async () => {
   const preview = await loadBeamDatasetPreview({
     mode: "full",
@@ -237,6 +275,70 @@ test("BEAM task filter runs only matching diagnostic tasks", async () => {
   assert.equal(result.config.benchmarkOptions?.taskFilter, "instruction_following");
 });
 
+test("BEAM aborts before scoring when ingestion drain fails", async () => {
+  let recallCalls = 0;
+  let responderCalls = 0;
+  let judgeCalls = 0;
+
+  await assert.rejects(
+    () =>
+      runBeamBenchmark({
+        benchmark: beamDefinition,
+        mode: "quick",
+        limit: 1,
+        system: {
+          async reset() {},
+          async store() {},
+          async drain() {
+            throw new Error("drain unavailable");
+          },
+          async recall() {
+            recallCalls += 1;
+            return "";
+          },
+          async search() {
+            return [];
+          },
+          async destroy() {},
+          async getStats() {
+            return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+          },
+          responder: {
+            async respond() {
+              responderCalls += 1;
+              return {
+                text: "",
+                tokens: { input: 0, output: 0 },
+                latencyMs: 0,
+                model: "beam-test-responder",
+              };
+            },
+          },
+          judge: {
+            async score() {
+              judgeCalls += 1;
+              return 0;
+            },
+            async scoreWithMetrics() {
+              judgeCalls += 1;
+              return {
+                score: 0,
+                tokens: { input: 0, output: 0 },
+                latencyMs: 0,
+                model: "beam-test-judge",
+              };
+            },
+          },
+        },
+      }),
+    /beam drain failed.*drain unavailable/,
+  );
+
+  assert.equal(recallCalls, 0);
+  assert.equal(responderCalls, 0);
+  assert.equal(judgeCalls, 0);
+});
+
 test("BEAM refines unknown and hedged answers from source-chat evidence", async () => {
   const result = await runBeamBenchmark({
     benchmark: beamDefinition,
@@ -319,6 +421,91 @@ test("BEAM refines unknown and hedged answers from source-chat evidence", async 
     instructionTask?.details.answerRefinementReason,
     "benchmark recalled-evidence refinement",
   );
+});
+
+test("BEAM source-chat refinement matches exact anchor ids", async () => {
+  const datasetDir = await mkdtemp(path.join(tmpdir(), "remnic-beam-source-id-"));
+  await writeFile(
+    path.join(datasetDir, "100k.json"),
+    JSON.stringify([
+      {
+        conversation_id: "source-id-prefix",
+        chat: [
+          [
+            {
+              id: 1,
+              role: "user",
+              content: "Sprint one should end on March 29.",
+            },
+            {
+              id: 10,
+              role: "user",
+              content: "Sprint ten should end on April 1.",
+            },
+          ],
+        ],
+        probing_questions: {
+          single_session_preference: [
+            {
+              question: "When does sprint one end?",
+              ideal_answer: "March 29",
+              source_chat_ids: [1],
+            },
+          ],
+        },
+      },
+    ]),
+  );
+
+  const result = await runBeamBenchmark({
+    benchmark: beamDefinition,
+    mode: "quick",
+    datasetDir,
+    system: {
+      async reset() {},
+      async store() {},
+      async recall() {
+        return [
+          "BEAM turn anchors: chat_id=10; source_chat_id=10",
+          "Sprint ten should end on April 1.",
+          "BEAM turn anchors: chat_id=1; source_chat_id=1",
+          "Sprint one should end on March 29.",
+        ].join("\n");
+      },
+      async search() {
+        return [{ id: "hit", text: "hit" }];
+      },
+      async destroy() {},
+      async getStats() {
+        return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+      },
+      responder: {
+        async respond() {
+          return {
+            text: "unknown",
+            tokens: { input: 1, output: 1 },
+            latencyMs: 1,
+            model: "beam-test-responder",
+          };
+        },
+      },
+      judge: {
+        async scoreWithMetrics() {
+          return {
+            score: 1,
+            tokens: { input: 0, output: 0 },
+            latencyMs: 0,
+            model: "beam-test-judge",
+          };
+        },
+        async score() {
+          return 1;
+        },
+      },
+    },
+  });
+
+  assert.equal(result.results.tasks[0]?.actual, "March 29");
 });
 
 test("BEAM does not refine unrelated unknown answers to incidental latency", async () => {
@@ -903,6 +1090,21 @@ async function runBeamWithCustomRubricAnswer(
       },
     },
   });
+}
+
+function buildBeamTestConversation(conversationId: string) {
+  return {
+    conversation_id: conversationId,
+    chat: [[{ role: "user", content: "Remember the sprint ends March 29." }]],
+    probing_questions: {
+      date_recall: [
+        {
+          question: "When does the sprint end?",
+          answer: "March 29",
+        },
+      ],
+    },
+  };
 }
 
 async function runBeamWithInstructionAnswer(instructionAnswer: string) {

@@ -20,9 +20,12 @@
  * which only exercises LCM + FTS (no external services needed).
  */
 
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, mkdir, readFile } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import type {
   MemorySystem,
   Message,
@@ -38,6 +41,8 @@ import { FallbackLlmClient } from "../../src/fallback-llm.js";
 import { synthesizePreferencesFromLcm } from "../../src/compounding/preference-consolidator.js";
 import { extractTrajectoryFromConversation } from "../adapter/cmc-adapter.js";
 import type { PluginConfig } from "../../src/types.js";
+
+const execFileAsync = promisify(execFile);
 
 /** Load gateway config from ~/.openclaw/openclaw.json for LLM access. */
 async function loadGatewayConfig(): Promise<Record<string, unknown> | undefined> {
@@ -57,16 +62,31 @@ export interface FullStackAdapterOptions {
   configOverrides?: Record<string, unknown>;
   /**
    * QMD collection name for eval isolation.
-   * Default: `engram-eval-{timestamp}` (auto-cleaned on destroy).
+   * Default: `engram-eval-{timestamp}-{uuid}` (auto-cleaned on reset/destroy).
    */
   qmdCollection?: string;
+}
+
+export async function removeEvalQmdCollection(
+  config: Pick<PluginConfig, "qmdEnabled" | "qmdCollection" | "qmdPath">,
+): Promise<boolean> {
+  if (!config.qmdEnabled) return false;
+  const collection = config.qmdCollection?.trim();
+  if (!collection) return false;
+  const qmdPath = config.qmdPath?.trim() || "qmd";
+  await execFileAsync(qmdPath, ["collection", "remove", collection], {
+    timeout: 15_000,
+  });
+  return true;
 }
 
 export async function createEngramAdapter(
   options?: FullStackAdapterOptions,
 ): Promise<MemorySystem> {
   let tempDir = await mkdtemp(path.join(tmpdir(), "engram-eval-"));
-  const evalCollection = options?.qmdCollection ?? `engram-eval-${Date.now()}`;
+  const nextEvalCollection = () =>
+    options?.qmdCollection ?? `engram-eval-${Date.now()}-${randomUUID()}`;
+  let evalCollection = nextEvalCollection();
   const gatewayConfig = await loadGatewayConfig();
 
   const buildConfig = (dir: string): PluginConfig =>
@@ -160,6 +180,16 @@ export async function createEngramAdapter(
       // Apply user overrides last
       ...options?.configOverrides,
     });
+
+  const cleanupQmdCollection = async (cleanupConfig: PluginConfig): Promise<void> => {
+    try {
+      await removeEvalQmdCollection(cleanupConfig);
+    } catch (err) {
+      console.error(
+        `  [WARN] failed to remove QMD eval collection ${cleanupConfig.qmdCollection}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
 
   let config = buildConfig(tempDir);
   let orchestrator = new Orchestrator(config);
@@ -400,8 +430,10 @@ export async function createEngramAdapter(
     async reset(_sessionId?: string): Promise<void> {
       // Tear down and rebuild with fresh isolated storage
       orchestrator.lcmEngine?.close();
+      await cleanupQmdCollection(config);
       await rm(tempDir, { recursive: true, force: true });
       tempDir = await mkdtemp(path.join(tmpdir(), "engram-eval-"));
+      evalCollection = nextEvalCollection();
       config = buildConfig(tempDir);
       orchestrator = new Orchestrator(config);
       await orchestrator.initialize();
@@ -420,6 +452,7 @@ export async function createEngramAdapter(
 
     async destroy(): Promise<void> {
       orchestrator.lcmEngine?.close();
+      await cleanupQmdCollection(config);
       await rm(tempDir, { recursive: true, force: true });
     },
   };

@@ -13,6 +13,10 @@ export interface AdapterContext {
   clientInfo?: { name: string; version?: string };
   /** Explicit session key from request args */
   sessionKey?: string;
+  /** Explicit namespace from already-validated request args */
+  namespace?: string;
+  /** Explicit principal from already-validated request args */
+  principal?: string;
 }
 
 export interface ResolvedIdentity {
@@ -45,7 +49,26 @@ export function headerValue(
   headers: Record<string, string | string[] | undefined>,
   key: string,
 ): string | undefined {
-  const raw = headers[key];
+  const exactValue = normalizeHeaderValue(headers[key]);
+  if (exactValue !== undefined) {
+    return exactValue;
+  }
+
+  const normalizedKey = key.toLowerCase();
+  for (const [headerKey, raw] of Object.entries(headers)) {
+    if (headerKey.toLowerCase() !== normalizedKey) {
+      continue;
+    }
+    const value = normalizeHeaderValue(raw);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeHeaderValue(raw: string | string[] | undefined): string | undefined {
   const value = Array.isArray(raw) ? raw[0] : raw;
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }

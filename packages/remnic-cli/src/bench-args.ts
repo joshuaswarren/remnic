@@ -514,7 +514,12 @@ function validateBenchFlags(action: BenchAction, args: string[]): void {
       continue;
     }
 
-    if (allowed.legacyEqualsPrefixes?.some((prefix) => arg.startsWith(prefix))) {
+    const legacyEqualsPrefix = allowed.legacyEqualsPrefixes?.find((prefix) => arg.startsWith(prefix));
+    if (legacyEqualsPrefix) {
+      const value = arg.slice(legacyEqualsPrefix.length);
+      if (value.trim().length === 0) {
+        throw new Error(`ERROR: ${legacyEqualsPrefix.slice(0, -1)} requires a value.`);
+      }
       continue;
     }
 

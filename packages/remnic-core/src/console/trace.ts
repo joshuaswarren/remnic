@@ -355,9 +355,9 @@ export async function replayTrace(
 /**
  * Parse a single JSONL line into a `ConsoleStateSnapshot`. Returns
  * null for malformed lines so the replay loop can keep going. We
- * intentionally do NOT validate every nested field — the renderer is
- * already defensive about missing fields and the trace file format
- * is best-effort.
+ * validate the minimum nested shape the renderer dereferences. The trace file
+ * format is best-effort, but partial objects are skipped rather than counted as
+ * rendered frames that only display renderer failures.
  */
 export function parseSnapshotLine(line: string): ConsoleStateSnapshot | null {
   let parsed: unknown;
@@ -371,8 +371,45 @@ export function parseSnapshotLine(line: string): ConsoleStateSnapshot | null {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return null;
   }
-  // Best-effort cast: the renderer is tolerant of missing fields.
-  return parsed as ConsoleStateSnapshot;
+  if (!isConsoleStateSnapshot(parsed)) {
+    return null;
+  }
+  return parsed;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isConsoleStateSnapshot(value: unknown): value is ConsoleStateSnapshot {
+  if (!isRecord(value)) return false;
+  if (typeof value.capturedAt !== "string") return false;
+
+  const bufferState = value.bufferState;
+  if (!isRecord(bufferState)) return false;
+  if (typeof bufferState.turnsCount !== "number") return false;
+  if (typeof bufferState.byteCount !== "number") return false;
+
+  const extractionQueue = value.extractionQueue;
+  if (!isRecord(extractionQueue)) return false;
+  if (typeof extractionQueue.depth !== "number") return false;
+  if (!Array.isArray(extractionQueue.recentVerdicts)) return false;
+
+  if (!Array.isArray(value.dedupRecent)) return false;
+  if (!Array.isArray(value.maintenanceLedgerTail)) return false;
+
+  const qmdProbe = value.qmdProbe;
+  if (!isRecord(qmdProbe)) return false;
+  if (typeof qmdProbe.available !== "boolean") return false;
+  if (typeof qmdProbe.daemonMode !== "boolean") return false;
+  if (typeof qmdProbe.debug !== "string") return false;
+
+  const daemon = value.daemon;
+  if (!isRecord(daemon)) return false;
+  if (typeof daemon.uptimeMs !== "number") return false;
+  if (typeof daemon.version !== "string") return false;
+
+  return Array.isArray(value.errors);
 }
 
 /**

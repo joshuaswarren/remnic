@@ -90,6 +90,7 @@ export async function runEnrichmentFidelityBenchmark(
         results,
       },
     });
+    options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, cases.length);
   }
 
   const remnicVersion = await getRemnicVersion();

@@ -100,10 +100,14 @@ function pairKey(idA: string, idB: string): string {
 function contentHash(a: ContradictionJudgeInput): string {
   // Sort each side pair to be order-independent (matching pairKey behavior)
   const sides = [
-    [a.textA.trim(), (a.categoryA ?? "").trim()].join("|"),
-    [a.textB.trim(), (a.categoryB ?? "").trim()].join("|"),
-  ].sort();
-  const normalized = sides.join("|||");
+    { text: a.textA.trim(), category: (a.categoryA ?? "").trim() },
+    { text: a.textB.trim(), category: (a.categoryB ?? "").trim() },
+  ].sort((left, right) => {
+    const leftKey = JSON.stringify(left);
+    const rightKey = JSON.stringify(right);
+    return leftKey.localeCompare(rightKey);
+  });
+  const normalized = JSON.stringify(sides);
   return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 }
 
@@ -261,6 +265,7 @@ function parseJudgeResponse(
   inputs: ContradictionJudgeInput[],
 ): ContradictionJudgeResult[] {
   const VALID_VERDICTS: ContradictionVerdict[] = ["contradicts", "independent", "duplicates", "needs-user"];
+  let conservativeFallback: ContradictionJudgeResult[] | null = null;
 
   for (const candidate of candidates) {
     try {
@@ -314,11 +319,16 @@ function parseJudgeResponse(
         }
       }
 
-      if (results.length > 0) return results;
+      if (matchedKeys.size > 0) return results;
+      if (results.length > 0 && conservativeFallback === null) {
+        conservativeFallback = results;
+      }
     } catch {
       continue;
     }
   }
+
+  if (conservativeFallback !== null) return conservativeFallback;
 
   // All parse attempts failed → needs-user for every input
   return inputs.map((p) => ({

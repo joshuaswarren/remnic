@@ -66,7 +66,12 @@ interface ReproManifest {
     mode?: string;
     runtimeProfiles?: string[];
     selectedBenchmarks?: string[];
+    selectedWorkItems?: Array<{
+      benchmark?: string;
+      runtimeProfile?: string;
+    }>;
     limit?: number;
+    seed?: number;
   };
   datasets?: Array<{
     benchmark?: string;
@@ -345,11 +350,12 @@ function buildManifestArtifactHashIdentity(manifest: ReproManifest): unknown {
       ...(manifest.run?.mode ? { mode: manifest.run.mode } : {}),
       selectedBenchmarks: manifest.run?.selectedBenchmarks,
       runtimeProfiles: manifest.run?.runtimeProfiles,
+      selectedWorkItems: manifest.run?.selectedWorkItems,
       ...(manifest.run && Object.prototype.hasOwnProperty.call(manifest.run, "limit")
         ? { limit: manifest.run.limit }
         : {}),
       ...(manifest.run && Object.prototype.hasOwnProperty.call(manifest.run, "seed")
-        ? { seed: (manifest.run as { seed?: unknown }).seed }
+        ? { seed: manifest.run.seed }
         : {}),
     },
     git: {

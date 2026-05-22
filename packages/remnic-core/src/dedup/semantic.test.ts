@@ -173,6 +173,46 @@ test("semantic dedup: candidates option is forwarded to lookup", async () => {
   assert.equal(limitSeen, 11);
 });
 
+test("semantic dedup: normalizes malformed numeric options before lookup", async () => {
+  let invalidCandidateLimitSeen = -1;
+  const invalidCandidates = await decideSemanticDedup(
+    "anything",
+    async (_content, limit) => {
+      invalidCandidateLimitSeen = limit;
+      return [{ id: "m1", score: 0.93 }];
+    },
+    { ...DEFAULT_OPTS, threshold: Number.NaN, candidates: Number.NaN },
+  );
+  assert.equal(invalidCandidateLimitSeen, 5);
+  assert.equal(invalidCandidates.action, "skip");
+
+  let fractionalCandidateLimitSeen = -1;
+  await decideSemanticDedup(
+    "anything",
+    async (_content, limit) => {
+      fractionalCandidateLimitSeen = limit;
+      return [];
+    },
+    { ...DEFAULT_OPTS, candidates: 0.5 },
+  );
+  assert.equal(fractionalCandidateLimitSeen, 1);
+
+  const clampedHighThreshold = await decideSemanticDedup(
+    "anything",
+    makeLookup([{ id: "m1", score: 0.99 }]),
+    { ...DEFAULT_OPTS, threshold: 2 },
+  );
+  assert.equal(clampedHighThreshold.action, "keep");
+  assert.equal(clampedHighThreshold.reason, "no_near_duplicate");
+
+  const clampedLowThreshold = await decideSemanticDedup(
+    "anything",
+    makeLookup([{ id: "m1", score: 0.01 }]),
+    { ...DEFAULT_OPTS, threshold: -1 },
+  );
+  assert.equal(clampedLowThreshold.action, "skip");
+});
+
 test("semantic dedup: candidates=0 short-circuits without calling lookup", async () => {
   let called = 0;
   const decision = await decideSemanticDedup(
@@ -369,13 +409,14 @@ test("regression #399: after neighbor archive, re-write of skipped content is al
 async function seedEmbeddingIndex(
   memoryDir: string,
   entries: Record<string, { vector: number[]; path: string }>,
+  options: { provider?: "openai" | "local"; model?: string } = {},
 ): Promise<void> {
   const stateDir = join(memoryDir, "state");
   await mkdir(stateDir, { recursive: true });
   const indexFile = {
     version: 1 as const,
-    provider: "openai" as const,
-    model: "text-embedding-3-small",
+    provider: options.provider ?? "openai" as const,
+    model: options.model ?? "text-embedding-3-small",
     entries,
   };
   await writeFile(
@@ -483,6 +524,40 @@ test("regression #399 P1: semantic dedup lookup is scoped to target namespace", 
       "keep",
       "cross-namespace dedup must not skip writes in a fresh namespace",
     );
+  } finally {
+    restoreFetch();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("embedding fallback ignores persisted indexes from a different provider or model", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-embedding-provider-mismatch-"));
+  const vec = [1, 0, 0, 0];
+  const restoreFetch = stubEmbedFetch(vec);
+  try {
+    await seedEmbeddingIndex(memoryDir, {
+      "mem-openai-001": {
+        vector: vec,
+        path: "facts/openai.md",
+      },
+    }, {
+      provider: "openai",
+      model: "text-embedding-3-small",
+    });
+
+    const config = parseConfig({
+      memoryDir,
+      embeddingFallbackEnabled: true,
+      embeddingFallbackProvider: "local",
+      localLlmEnabled: true,
+      localLlmUrl: "http://127.0.0.1:1234",
+      localLlmModel: "local-embed",
+      embeddingFallbackModel: "local-embed",
+    });
+    const fallback = new EmbeddingFallback(config);
+
+    const hits = await fallback.search("the user prefers tabs", 5);
+    assert.deepEqual(hits, []);
   } finally {
     restoreFetch();
     await rm(memoryDir, { recursive: true, force: true });

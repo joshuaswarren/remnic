@@ -350,6 +350,60 @@ function parseJsonObject<T>(value: unknown): T | undefined {
   }
 }
 
+function resolveMemoryDirRoot(memoryDir: string): string {
+  try {
+    return fs.realpathSync(memoryDir);
+  } catch {
+    return path.resolve(memoryDir);
+  }
+}
+
+function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveProjectedMemoryPath(memoryDir: string, pathRel: string): string | null {
+  if (path.isAbsolute(pathRel)) return null;
+  const root = resolveMemoryDirRoot(memoryDir);
+  const candidate = path.resolve(root, pathRel);
+  if (!isPathInsideRoot(candidate, root)) return null;
+  try {
+    const realCandidate = fs.realpathSync(candidate);
+    if (!isPathInsideRoot(realCandidate, root)) return null;
+  } catch {
+    // Missing files are handled by callers. Still keep the lexical guard above.
+  }
+  return candidate;
+}
+
+function projectedBrowseRowFromCurrentRow(
+  memoryDir: string,
+  row: Record<string, unknown>,
+): ProjectedMemoryBrowseRow | null {
+  if (
+    typeof row.memory_id !== "string" ||
+    typeof row.path_rel !== "string" ||
+    typeof row.category !== "string" ||
+    typeof row.status !== "string"
+  ) {
+    return null;
+  }
+  const filePath = resolveProjectedMemoryPath(memoryDir, row.path_rel);
+  if (!filePath) return null;
+  return {
+    id: row.memory_id,
+    path: filePath,
+    category: row.category as MemoryCategory,
+    status: row.status as MemoryStatus,
+    created: typeof row.created_at === "string" ? row.created_at : undefined,
+    updated: typeof row.updated_at === "string" ? row.updated_at : undefined,
+    tags: parseStringArray(row.tags_json),
+    entityRef: typeof row.entity_ref === "string" ? row.entity_ref : undefined,
+    preview: typeof row.preview_text === "string" ? row.preview_text : "",
+  };
+}
+
 export function parseCurrentRow(
   memoryDir: string,
   row: Record<string, unknown> | undefined,
@@ -368,6 +422,8 @@ export function parseCurrentRow(
   ) {
     return null;
   }
+  const filePath = resolveProjectedMemoryPath(memoryDir, row.path_rel);
+  if (!filePath) return null;
 
   return {
     memoryId: row.memory_id,
@@ -377,7 +433,7 @@ export function parseCurrentRow(
       typeof row.lifecycle_state === "string"
         ? (row.lifecycle_state as MemoryProjectionCurrentState["lifecycleState"])
         : undefined,
-    path: path.join(memoryDir, row.path_rel),
+    path: filePath,
     pathRel: row.path_rel,
     created: row.created_at,
     updated: row.updated_at,
@@ -568,6 +624,8 @@ export function readProjectedMemoryBrowse(
 
       const filtered = allRows.filter((row) => {
         if (typeof row.memory_id !== "string" || typeof row.path_rel !== "string") return false;
+        const filePath = resolveProjectedMemoryPath(memoryDir, row.path_rel);
+        if (!filePath) return false;
         // Check preview, category, entity_ref, tags first (fast)
         const preview = typeof row.preview_text === "string" ? row.preview_text.toLowerCase() : "";
         const category = typeof row.category === "string" ? row.category.toLowerCase() : "";
@@ -579,7 +637,6 @@ export function readProjectedMemoryBrowse(
         }
         // Fall back to reading full file content from disk
         try {
-          const filePath = path.join(memoryDir, row.path_rel as string);
           const content = fs.readFileSync(filePath, "utf-8").toLowerCase();
           return content.includes(normalizedQuery);
         } catch {
@@ -591,24 +648,8 @@ export function readProjectedMemoryBrowse(
       return {
         total: filtered.length,
         memories: pageRows
-          .filter(
-            (row) =>
-              typeof row.memory_id === "string" &&
-              typeof row.path_rel === "string" &&
-              typeof row.category === "string" &&
-              typeof row.status === "string",
-          )
-          .map((row) => ({
-            id: row.memory_id as string,
-            path: path.join(memoryDir, row.path_rel as string),
-            category: row.category as MemoryCategory,
-            status: row.status as MemoryStatus,
-            created: typeof row.created_at === "string" ? row.created_at : undefined,
-            updated: typeof row.updated_at === "string" ? row.updated_at : undefined,
-            tags: parseStringArray(row.tags_json),
-            entityRef: typeof row.entity_ref === "string" ? row.entity_ref : undefined,
-            preview: typeof row.preview_text === "string" ? row.preview_text : "",
-          })),
+          .map((row) => projectedBrowseRowFromCurrentRow(memoryDir, row))
+          .filter((row): row is ProjectedMemoryBrowseRow => row !== null),
       };
     }
 
@@ -638,24 +679,8 @@ export function readProjectedMemoryBrowse(
     return {
       total: typeof totalRow?.total === "number" ? totalRow.total : 0,
       memories: rows
-        .filter(
-          (row) =>
-            typeof row.memory_id === "string" &&
-            typeof row.path_rel === "string" &&
-            typeof row.category === "string" &&
-            typeof row.status === "string",
-        )
-        .map((row) => ({
-          id: row.memory_id as string,
-          path: path.join(memoryDir, row.path_rel as string),
-          category: row.category as MemoryCategory,
-          status: row.status as MemoryStatus,
-          created: typeof row.created_at === "string" ? row.created_at : undefined,
-          updated: typeof row.updated_at === "string" ? row.updated_at : undefined,
-          tags: parseStringArray(row.tags_json),
-          entityRef: typeof row.entity_ref === "string" ? row.entity_ref : undefined,
-          preview: typeof row.preview_text === "string" ? row.preview_text : "",
-        })),
+        .map((row) => projectedBrowseRowFromCurrentRow(memoryDir, row))
+        .filter((row): row is ProjectedMemoryBrowseRow => row !== null),
     };
   });
 }

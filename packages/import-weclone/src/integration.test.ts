@@ -37,6 +37,7 @@ import {
 import type { BulkImportSource, ImportTurn } from "@remnic/core";
 
 import { wecloneImportAdapter } from "./adapter.js";
+import { ensureWecloneImportAdapterRegistered } from "./index.js";
 import { parseWeCloneExport } from "./parser.js";
 import { groupIntoThreads } from "./threader.js";
 import { mapParticipants } from "./participant.js";
@@ -325,6 +326,12 @@ describe("integration: WeClone → @remnic/core bulk-import", () => {
     const resolved = getBulkImportSource("weclone");
     assert.ok(resolved, "adapter should be resolvable by name");
     assert.equal(resolved?.name, "weclone");
+  });
+
+  it("public import registration is recoverable and idempotent", () => {
+    assert.equal(ensureWecloneImportAdapterRegistered(), true);
+    assert.equal(getBulkImportSource("weclone")?.name, "weclone");
+    assert.equal(ensureWecloneImportAdapterRegistered(), false);
   });
 
   it("pipeline dryRun completes end-to-end without calling processBatch", async () => {

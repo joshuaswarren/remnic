@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { log } from "./logger.js";
 import { delinearize } from "./delinearize.js";
 import { LocalLlmClient } from "./local-llm.js";
-import { FallbackLlmClient } from "./fallback-llm.js";
+import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig } from "./fallback-llm.js";
 import {
   ExtractionResultSchema,
   ConsolidationResultSchema,
@@ -115,9 +115,10 @@ export class ExtractionEngine {
       log.warn("no OpenAI API key — direct OpenAI client disabled; local and gateway fallback paths remain available");
     }
     this.localLlm = localLlm ?? new LocalLlmClient(config, modelRegistry);
-    this.fallbackLlm = new FallbackLlmClient(gatewayConfig, {
-      workspaceDir: config.workspaceDir,
-    });
+    this.fallbackLlm = new FallbackLlmClient(
+      gatewayConfig,
+      fallbackLlmRuntimeContextFromConfig(config),
+    );
     this.modelRegistry = modelRegistry ?? new ModelRegistry(config.memoryDir);
     if (config.modelSource === "gateway") {
       log.debug(
@@ -199,6 +200,20 @@ export class ExtractionEngine {
       || result.questions.length > 0
       || result.profileUpdates.length > 0
       || (result.relationships?.length ?? 0) > 0;
+  }
+
+  private looksLikeExtractionResultPayload(parsed: any): boolean {
+    return !!parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      (
+        "facts" in parsed ||
+        "entities" in parsed ||
+        "profileUpdates" in parsed ||
+        "questions" in parsed ||
+        "relationships" in parsed ||
+        "identityReflection" in parsed
+      );
   }
 
   private normalizeExtractionResultPayload(parsed: any): ExtractionResult {
@@ -1299,39 +1314,36 @@ ${truncatedConversation}`;
     // Avoid logging model output content by default (may contain user data).
     log.debug(`extractWithLocalLlm: got response content, length=${content.length}`);
 
-    try {
-      for (const candidate of extractJsonCandidates(content)) {
-        try {
-          log.debug(`extractWithLocalLlm: attempting JSON parse, candidate length=${candidate.length}`);
-          const parsed = JSON.parse(candidate);
-
-          const result: ExtractionResult = this.normalizeExtractionResultPayload(parsed);
-
-          log.debug(
-            `extractWithLocalLlm: successfully parsed response, facts=${result.facts.length}, entities=${result.entities.length}, profileUpdates=${result.profileUpdates.length}, questions=${result.questions.length}`,
-          );
-          return result;
-        } catch {
-          // keep trying candidates
+    for (const candidate of extractJsonCandidates(content)) {
+      try {
+        log.debug(`extractWithLocalLlm: attempting JSON parse, candidate length=${candidate.length}`);
+        const parsed = JSON.parse(candidate);
+        if (!this.looksLikeExtractionResultPayload(parsed)) {
+          continue;
         }
-      }
-      return null;
-    } catch (err) {
-      // Try to extract partial facts from truncated JSON
-      log.debug("extractWithLocalLlm: JSON parse failed, attempting partial extraction...");
-      const partial = this.extractPartialFacts(content);
-      if (partial.facts.length > 0 || partial.entities.length > 0) {
-        log.debug(
-          `extractWithLocalLlm: extracted ${partial.facts.length} partial facts from truncated JSON`,
-        );
-        return partial;
-      }
 
-      // Could not extract anything
-      const errMsg = err instanceof Error ? err.message : String(err);
-      log.debug(`extractWithLocalLlm: JSON parse error: ${errMsg}`);
-      return null;
+        const result: ExtractionResult = this.normalizeExtractionResultPayload(parsed);
+
+        log.debug(
+          `extractWithLocalLlm: successfully parsed response, facts=${result.facts.length}, entities=${result.entities.length}, profileUpdates=${result.profileUpdates.length}, questions=${result.questions.length}`,
+        );
+        return result;
+      } catch {
+        // keep trying candidates
+      }
     }
+
+    // Try to extract partial facts from truncated JSON after all complete JSON
+    // candidates fail to parse.
+    log.debug("extractWithLocalLlm: JSON parse failed, attempting partial extraction...");
+    const partial = this.extractPartialFacts(content);
+    if (partial.facts.length > 0 || partial.entities.length > 0) {
+      log.debug(
+        `extractWithLocalLlm: extracted ${partial.facts.length} partial facts from truncated JSON`,
+      );
+      return partial;
+    }
+    return null;
   }
 
   /**

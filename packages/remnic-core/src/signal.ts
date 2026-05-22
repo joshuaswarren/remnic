@@ -48,7 +48,14 @@ export function scanSignals(
 ): SignalScanResult {
   const matched: string[] = [];
 
-  const customRegexes = customPatterns.map((p) => new RegExp(p, "i"));
+  const customRegexes: RegExp[] = [];
+  for (const pattern of customPatterns) {
+    try {
+      customRegexes.push(new RegExp(pattern, "i"));
+    } catch {
+      // Invalid custom patterns should not make the scan path fail closed.
+    }
+  }
 
   for (const rx of customRegexes) {
     if (rx.test(text)) {

@@ -1,5 +1,5 @@
-import type { SessionToggleStore } from "../../remnic-core/src/session-toggles.js";
-import type { LastRecallSnapshot } from "../../remnic-core/src/recall-state.js";
+import type { LastRecallSnapshot } from "@remnic/core/recall-state";
+import type { SessionToggleStore } from "@remnic/core/session-toggles";
 
 export interface SessionCommandContext {
   sessionKey?: string;

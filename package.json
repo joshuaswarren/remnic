@@ -33,9 +33,7 @@
     "url": "https://github.com/joshuaswarren/remnic/issues"
   },
   "author": "Joshua Warren",
-  "workspaces": [
-    "packages/*"
-  ],
+  "workspaces": ["packages/*"],
   "engines": {
     "node": ">=22.12.0"
   },
@@ -47,13 +45,106 @@
     ".": {
       "import": "./dist/index.js"
     },
+    "./memory-projection-format": {
+      "import": "./dist/memory-projection-format.js"
+    },
+    "./memory-projection-format.js": {
+      "import": "./dist/memory-projection-format.js"
+    },
+    "./model-registry": {
+      "import": "./dist/model-registry.js"
+    },
+    "./model-registry.js": {
+      "import": "./dist/model-registry.js"
+    },
+    "./models-json": {
+      "import": "./dist/models-json.js"
+    },
+    "./models-json.js": {
+      "import": "./dist/models-json.js"
+    },
+    "./orchestrator": {
+      "import": "./dist/orchestrator.js"
+    },
+    "./orchestrator.js": {
+      "import": "./dist/orchestrator.js"
+    },
     "./access-cli": {
       "import": "./dist/access-cli.js"
+    },
+    "./access-cli.js": {
+      "import": "./dist/access-cli.js"
+    },
+    "./adapters": {
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters.js": {
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters/claude-code": {
+      "import": "./dist/adapters/claude-code.js"
+    },
+    "./adapters/claude-code.js": {
+      "import": "./dist/adapters/claude-code.js"
+    },
+    "./adapters/codex": {
+      "import": "./dist/adapters/codex.js"
+    },
+    "./adapters/codex.js": {
+      "import": "./dist/adapters/codex.js"
+    },
+    "./adapters/hermes": {
+      "import": "./dist/adapters/hermes.js"
+    },
+    "./adapters/hermes.js": {
+      "import": "./dist/adapters/hermes.js"
+    },
+    "./adapters/index": {
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters/index.js": {
+      "import": "./dist/adapters/index.js"
+    },
+    "./adapters/registry": {
+      "import": "./dist/adapters/registry.js"
+    },
+    "./adapters/registry.js": {
+      "import": "./dist/adapters/registry.js"
+    },
+    "./adapters/replit": {
+      "import": "./dist/adapters/replit.js"
+    },
+    "./adapters/replit.js": {
+      "import": "./dist/adapters/replit.js"
+    },
+    "./adapters/types": {
+      "import": "./dist/adapters/types.js"
+    },
+    "./adapters/types.js": {
+      "import": "./dist/adapters/types.js"
     },
     "./cli": {
       "import": "./dist/cli.js"
     },
+    "./cli.js": {
+      "import": "./dist/cli.js"
+    },
+    "./compat/checks": {
+      "import": "./dist/compat/checks.js"
+    },
+    "./compat/checks.js": {
+      "import": "./dist/compat/checks.js"
+    },
+    "./compat/types": {
+      "import": "./dist/compat/types.js"
+    },
+    "./compat/types.js": {
+      "import": "./dist/compat/types.js"
+    },
     "./connectors": {
+      "import": "./dist/connectors/index.js"
+    },
+    "./connectors.js": {
       "import": "./dist/connectors/index.js"
     },
     "./connectors/codex-materialize": {
@@ -67,14 +158,573 @@
     },
     "./connectors/codex-materialize-runner.js": {
       "import": "./dist/connectors/codex-materialize-runner.js"
+    },
+    "./conversation-index/backend": {
+      "import": "./dist/conversation-index/backend.js"
+    },
+    "./conversation-index/backend.js": {
+      "import": "./dist/conversation-index/backend.js"
+    },
+    "./conversation-index/chunker": {
+      "import": "./dist/conversation-index/chunker.js"
+    },
+    "./conversation-index/chunker.js": {
+      "import": "./dist/conversation-index/chunker.js"
+    },
+    "./conversation-index/cleanup": {
+      "import": "./dist/conversation-index/cleanup.js"
+    },
+    "./conversation-index/cleanup.js": {
+      "import": "./dist/conversation-index/cleanup.js"
+    },
+    "./conversation-index/faiss-adapter": {
+      "import": "./dist/conversation-index/faiss-adapter.js"
+    },
+    "./conversation-index/faiss-adapter.js": {
+      "import": "./dist/conversation-index/faiss-adapter.js"
+    },
+    "./conversation-index/indexer": {
+      "import": "./dist/conversation-index/indexer.js"
+    },
+    "./conversation-index/indexer.js": {
+      "import": "./dist/conversation-index/indexer.js"
+    },
+    "./conversation-index/search": {
+      "import": "./dist/conversation-index/search.js"
+    },
+    "./conversation-index/search.js": {
+      "import": "./dist/conversation-index/search.js"
+    },
+    "./consolidation-provenance-check": {
+      "import": "./dist/consolidation-provenance-check.js"
+    },
+    "./consolidation-provenance-check.js": {
+      "import": "./dist/consolidation-provenance-check.js"
+    },
+    "./entity-retrieval": {
+      "import": "./dist/entity-retrieval.js"
+    },
+    "./entity-retrieval.js": {
+      "import": "./dist/entity-retrieval.js"
+    },
+    "./extraction": {
+      "import": "./dist/extraction.js"
+    },
+    "./extraction.js": {
+      "import": "./dist/extraction.js"
+    },
+    "./fallback-llm": {
+      "import": "./dist/fallback-llm.js"
+    },
+    "./fallback-llm.js": {
+      "import": "./dist/fallback-llm.js"
+    },
+    "./graph": {
+      "import": "./dist/graph.js"
+    },
+    "./graph.js": {
+      "import": "./dist/graph.js"
+    },
+    "./graph-dashboard-diff": {
+      "import": "./dist/graph-dashboard-diff.js"
+    },
+    "./graph-dashboard-diff.js": {
+      "import": "./dist/graph-dashboard-diff.js"
+    },
+    "./graph-dashboard-key": {
+      "import": "./dist/graph-dashboard-key.js"
+    },
+    "./graph-dashboard-key.js": {
+      "import": "./dist/graph-dashboard-key.js"
+    },
+    "./graph-dashboard-parser": {
+      "import": "./dist/graph-dashboard-parser.js"
+    },
+    "./graph-dashboard-parser.js": {
+      "import": "./dist/graph-dashboard-parser.js"
+    },
+    "./graph-edge-reinforcement": {
+      "import": "./dist/graph-edge-reinforcement.js"
+    },
+    "./graph-edge-reinforcement.js": {
+      "import": "./dist/graph-edge-reinforcement.js"
+    },
+    "./graph-events": {
+      "import": "./dist/graph-events.js"
+    },
+    "./graph-events.js": {
+      "import": "./dist/graph-events.js"
+    },
+    "./graph-snapshot": {
+      "import": "./dist/graph-snapshot.js"
+    },
+    "./graph-snapshot.js": {
+      "import": "./dist/graph-snapshot.js"
+    },
+    "./harmonic-retrieval": {
+      "import": "./dist/harmonic-retrieval.js"
+    },
+    "./harmonic-retrieval.js": {
+      "import": "./dist/harmonic-retrieval.js"
+    },
+    "./himem": {
+      "import": "./dist/himem.js"
+    },
+    "./himem.js": {
+      "import": "./dist/himem.js"
+    },
+    "./hygiene": {
+      "import": "./dist/hygiene.js"
+    },
+    "./hygiene.js": {
+      "import": "./dist/hygiene.js"
+    },
+    "./identity-continuity": {
+      "import": "./dist/identity-continuity.js"
+    },
+    "./identity-continuity.js": {
+      "import": "./dist/identity-continuity.js"
+    },
+    "./json-store": {
+      "import": "./dist/json-store.js"
+    },
+    "./json-store.js": {
+      "import": "./dist/json-store.js"
+    },
+    "./lcm": {
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm.js": {
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm/index": {
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm/index.js": {
+      "import": "./dist/lcm/index.js"
+    },
+    "./lcm/archive": {
+      "import": "./dist/lcm/archive.js"
+    },
+    "./lcm/archive.js": {
+      "import": "./dist/lcm/archive.js"
+    },
+    "./lcm/dag": {
+      "import": "./dist/lcm/dag.js"
+    },
+    "./lcm/dag.js": {
+      "import": "./dist/lcm/dag.js"
+    },
+    "./lcm/engine": {
+      "import": "./dist/lcm/engine.js"
+    },
+    "./lcm/engine.js": {
+      "import": "./dist/lcm/engine.js"
+    },
+    "./lcm/queue": {
+      "import": "./dist/lcm/queue.js"
+    },
+    "./lcm/queue.js": {
+      "import": "./dist/lcm/queue.js"
+    },
+    "./lcm/recall": {
+      "import": "./dist/lcm/recall.js"
+    },
+    "./lcm/recall.js": {
+      "import": "./dist/lcm/recall.js"
+    },
+    "./lcm/schema": {
+      "import": "./dist/lcm/schema.js"
+    },
+    "./lcm/schema.js": {
+      "import": "./dist/lcm/schema.js"
+    },
+    "./lcm/summarizer": {
+      "import": "./dist/lcm/summarizer.js"
+    },
+    "./lcm/summarizer.js": {
+      "import": "./dist/lcm/summarizer.js"
+    },
+    "./lcm/tools": {
+      "import": "./dist/lcm/tools.js"
+    },
+    "./lcm/tools.js": {
+      "import": "./dist/lcm/tools.js"
+    },
+    "./memory-projection-store": {
+      "import": "./dist/memory-projection-store.js"
+    },
+    "./memory-projection-store.js": {
+      "import": "./dist/memory-projection-store.js"
+    },
+    "./migrate/from-engram": {
+      "import": "./dist/migrate/from-engram.js"
+    },
+    "./migrate/from-engram.js": {
+      "import": "./dist/migrate/from-engram.js"
+    },
+    "./namespaces/migrate": {
+      "import": "./dist/namespaces/migrate.js"
+    },
+    "./namespaces/migrate.js": {
+      "import": "./dist/namespaces/migrate.js"
+    },
+    "./namespaces/principal": {
+      "import": "./dist/namespaces/principal.js"
+    },
+    "./namespaces/principal.js": {
+      "import": "./dist/namespaces/principal.js"
+    },
+    "./namespaces/search": {
+      "import": "./dist/namespaces/search.js"
+    },
+    "./namespaces/search.js": {
+      "import": "./dist/namespaces/search.js"
+    },
+    "./namespaces/storage": {
+      "import": "./dist/namespaces/storage.js"
+    },
+    "./namespaces/storage.js": {
+      "import": "./dist/namespaces/storage.js"
+    },
+    "./qmd": {
+      "import": "./dist/qmd.js"
+    },
+    "./qmd.js": {
+      "import": "./dist/qmd.js"
+    },
+    "./reconstruct": {
+      "import": "./dist/reconstruct.js"
+    },
+    "./reconstruct.js": {
+      "import": "./dist/reconstruct.js"
+    },
+    "./replay/normalizers/chatgpt": {
+      "import": "./dist/replay/normalizers/chatgpt.js"
+    },
+    "./replay/normalizers/chatgpt.js": {
+      "import": "./dist/replay/normalizers/chatgpt.js"
+    },
+    "./replay/normalizers/claude": {
+      "import": "./dist/replay/normalizers/claude.js"
+    },
+    "./replay/normalizers/claude.js": {
+      "import": "./dist/replay/normalizers/claude.js"
+    },
+    "./replay/normalizers/openclaw": {
+      "import": "./dist/replay/normalizers/openclaw.js"
+    },
+    "./replay/normalizers/openclaw.js": {
+      "import": "./dist/replay/normalizers/openclaw.js"
+    },
+    "./replay/normalizers/shared": {
+      "import": "./dist/replay/normalizers/shared.js"
+    },
+    "./replay/normalizers/shared.js": {
+      "import": "./dist/replay/normalizers/shared.js"
+    },
+    "./replay/runner": {
+      "import": "./dist/replay/runner.js"
+    },
+    "./replay/runner.js": {
+      "import": "./dist/replay/runner.js"
+    },
+    "./replay/types": {
+      "import": "./dist/replay/types.js"
+    },
+    "./replay/types.js": {
+      "import": "./dist/replay/types.js"
+    },
+    "./maintenance/archive-observations": {
+      "import": "./dist/maintenance/archive-observations.js"
+    },
+    "./maintenance/archive-observations.js": {
+      "import": "./dist/maintenance/archive-observations.js"
+    },
+    "./maintenance/backup-stamp": {
+      "import": "./dist/maintenance/backup-stamp.js"
+    },
+    "./maintenance/backup-stamp.js": {
+      "import": "./dist/maintenance/backup-stamp.js"
+    },
+    "./maintenance/memory-governance": {
+      "import": "./dist/maintenance/memory-governance.js"
+    },
+    "./maintenance/memory-governance.js": {
+      "import": "./dist/maintenance/memory-governance.js"
+    },
+    "./maintenance/memory-governance-cron": {
+      "import": "./dist/maintenance/memory-governance-cron.js"
+    },
+    "./maintenance/memory-governance-cron.js": {
+      "import": "./dist/maintenance/memory-governance-cron.js"
+    },
+    "./maintenance/migrate-observations": {
+      "import": "./dist/maintenance/migrate-observations.js"
+    },
+    "./maintenance/migrate-observations.js": {
+      "import": "./dist/maintenance/migrate-observations.js"
+    },
+    "./maintenance/observation-ledger-utils": {
+      "import": "./dist/maintenance/observation-ledger-utils.js"
+    },
+    "./maintenance/observation-ledger-utils.js": {
+      "import": "./dist/maintenance/observation-ledger-utils.js"
+    },
+    "./maintenance/rebuild-memory-lifecycle-ledger": {
+      "import": "./dist/maintenance/rebuild-memory-lifecycle-ledger.js"
+    },
+    "./maintenance/rebuild-memory-lifecycle-ledger.js": {
+      "import": "./dist/maintenance/rebuild-memory-lifecycle-ledger.js"
+    },
+    "./maintenance/rebuild-memory-projection": {
+      "import": "./dist/maintenance/rebuild-memory-projection.js"
+    },
+    "./maintenance/rebuild-memory-projection.js": {
+      "import": "./dist/maintenance/rebuild-memory-projection.js"
+    },
+    "./maintenance/rebuild-observations": {
+      "import": "./dist/maintenance/rebuild-observations.js"
+    },
+    "./maintenance/rebuild-observations.js": {
+      "import": "./dist/maintenance/rebuild-observations.js"
+    },
+    "./routing/engine": {
+      "import": "./dist/routing/engine.js"
+    },
+    "./routing/engine.js": {
+      "import": "./dist/routing/engine.js"
+    },
+    "./routing/store": {
+      "import": "./dist/routing/store.js"
+    },
+    "./routing/store.js": {
+      "import": "./dist/routing/store.js"
+    },
+    "./runtime/better-sqlite": {
+      "import": "./dist/runtime/better-sqlite.js"
+    },
+    "./runtime/better-sqlite.js": {
+      "import": "./dist/runtime/better-sqlite.js"
+    },
+    "./runtime/child-process": {
+      "import": "./dist/runtime/child-process.js"
+    },
+    "./runtime/child-process.js": {
+      "import": "./dist/runtime/child-process.js"
+    },
+    "./runtime/env": {
+      "import": "./dist/runtime/env.js"
+    },
+    "./runtime/env.js": {
+      "import": "./dist/runtime/env.js"
+    },
+    "./search": {
+      "import": "./dist/search/index.js"
+    },
+    "./search.js": {
+      "import": "./dist/search/index.js"
+    },
+    "./search/document-scanner": {
+      "import": "./dist/search/document-scanner.js"
+    },
+    "./search/document-scanner.js": {
+      "import": "./dist/search/document-scanner.js"
+    },
+    "./search/embed-helper": {
+      "import": "./dist/search/embed-helper.js"
+    },
+    "./search/embed-helper.js": {
+      "import": "./dist/search/embed-helper.js"
+    },
+    "./search/factory": {
+      "import": "./dist/search/factory.js"
+    },
+    "./search/factory.js": {
+      "import": "./dist/search/factory.js"
+    },
+    "./search/index": {
+      "import": "./dist/search/index.js"
+    },
+    "./search/index.js": {
+      "import": "./dist/search/index.js"
+    },
+    "./search/lancedb-backend": {
+      "import": "./dist/search/lancedb-backend.js"
+    },
+    "./search/lancedb-backend.js": {
+      "import": "./dist/search/lancedb-backend.js"
+    },
+    "./search/meilisearch-backend": {
+      "import": "./dist/search/meilisearch-backend.js"
+    },
+    "./search/meilisearch-backend.js": {
+      "import": "./dist/search/meilisearch-backend.js"
+    },
+    "./search/noop-backend": {
+      "import": "./dist/search/noop-backend.js"
+    },
+    "./search/noop-backend.js": {
+      "import": "./dist/search/noop-backend.js"
+    },
+    "./search/orama-backend": {
+      "import": "./dist/search/orama-backend.js"
+    },
+    "./search/orama-backend.js": {
+      "import": "./dist/search/orama-backend.js"
+    },
+    "./search/port": {
+      "import": "./dist/search/port.js"
+    },
+    "./search/port.js": {
+      "import": "./dist/search/port.js"
+    },
+    "./search/remote-backend": {
+      "import": "./dist/search/remote-backend.js"
+    },
+    "./search/remote-backend.js": {
+      "import": "./dist/search/remote-backend.js"
+    },
+    "./session-observer-bands": {
+      "import": "./dist/session-observer-bands.js"
+    },
+    "./session-observer-bands.js": {
+      "import": "./dist/session-observer-bands.js"
+    },
+    "./session-observer-state": {
+      "import": "./dist/session-observer-state.js"
+    },
+    "./session-observer-state.js": {
+      "import": "./dist/session-observer-state.js"
+    },
+    "./session-integrity": {
+      "import": "./dist/session-integrity.js"
+    },
+    "./session-integrity.js": {
+      "import": "./dist/session-integrity.js"
+    },
+    "./store-contract": {
+      "import": "./dist/store-contract.js"
+    },
+    "./store-contract.js": {
+      "import": "./dist/store-contract.js"
+    },
+    "./shared-context/manager": {
+      "import": "./dist/shared-context/manager.js"
+    },
+    "./shared-context/manager.js": {
+      "import": "./dist/shared-context/manager.js"
+    },
+    "./work/board": {
+      "import": "./dist/work/board.js"
+    },
+    "./work/board.js": {
+      "import": "./dist/work/board.js"
+    },
+    "./work/boundary": {
+      "import": "./dist/work/boundary.js"
+    },
+    "./work/boundary.js": {
+      "import": "./dist/work/boundary.js"
+    },
+    "./work/storage": {
+      "import": "./dist/work/storage.js"
+    },
+    "./work/storage.js": {
+      "import": "./dist/work/storage.js"
+    },
+    "./work/types": {
+      "import": "./dist/work/types.js"
+    },
+    "./work/types.js": {
+      "import": "./dist/work/types.js"
+    },
+    "./transfer/autodetect": {
+      "import": "./dist/transfer/autodetect.js"
+    },
+    "./transfer/autodetect.js": {
+      "import": "./dist/transfer/autodetect.js"
+    },
+    "./transfer/backup": {
+      "import": "./dist/transfer/backup.js"
+    },
+    "./transfer/backup.js": {
+      "import": "./dist/transfer/backup.js"
+    },
+    "./transfer/capsule-export": {
+      "import": "./dist/transfer/capsule-export.js"
+    },
+    "./transfer/capsule-export.js": {
+      "import": "./dist/transfer/capsule-export.js"
+    },
+    "./transfer/capsule-import": {
+      "import": "./dist/transfer/capsule-import.js"
+    },
+    "./transfer/capsule-import.js": {
+      "import": "./dist/transfer/capsule-import.js"
+    },
+    "./transfer/constants": {
+      "import": "./dist/transfer/constants.js"
+    },
+    "./transfer/constants.js": {
+      "import": "./dist/transfer/constants.js"
+    },
+    "./transfer/export-json": {
+      "import": "./dist/transfer/export-json.js"
+    },
+    "./transfer/export-json.js": {
+      "import": "./dist/transfer/export-json.js"
+    },
+    "./transfer/export-md": {
+      "import": "./dist/transfer/export-md.js"
+    },
+    "./transfer/export-md.js": {
+      "import": "./dist/transfer/export-md.js"
+    },
+    "./transfer/export-sqlite": {
+      "import": "./dist/transfer/export-sqlite.js"
+    },
+    "./transfer/export-sqlite.js": {
+      "import": "./dist/transfer/export-sqlite.js"
+    },
+    "./transfer/fs-utils": {
+      "import": "./dist/transfer/fs-utils.js"
+    },
+    "./transfer/fs-utils.js": {
+      "import": "./dist/transfer/fs-utils.js"
+    },
+    "./transfer/import-json": {
+      "import": "./dist/transfer/import-json.js"
+    },
+    "./transfer/import-json.js": {
+      "import": "./dist/transfer/import-json.js"
+    },
+    "./transfer/import-md": {
+      "import": "./dist/transfer/import-md.js"
+    },
+    "./transfer/import-md.js": {
+      "import": "./dist/transfer/import-md.js"
+    },
+    "./transfer/import-sqlite": {
+      "import": "./dist/transfer/import-sqlite.js"
+    },
+    "./transfer/import-sqlite.js": {
+      "import": "./dist/transfer/import-sqlite.js"
+    },
+    "./transfer/sqlite-schema": {
+      "import": "./dist/transfer/sqlite-schema.js"
+    },
+    "./transfer/sqlite-schema.js": {
+      "import": "./dist/transfer/sqlite-schema.js"
+    },
+    "./transfer/types": {
+      "import": "./dist/transfer/types.js"
+    },
+    "./transfer/types.js": {
+      "import": "./dist/transfer/types.js"
     }
   },
-  "files": [
-    "dist",
-    "bin/engram-access.js",
-    "openclaw.plugin.json",
-    "scripts/ensure-better-sqlite3.mjs"
-  ],
+  "files": ["dist", "bin/engram-access.js", "openclaw.plugin.json", "scripts/ensure-better-sqlite3.mjs"],
   "dependencies": {
     "@honcho-ai/sdk": "^2.0.0",
     "@lancedb/lancedb": "^0.26.2",
@@ -97,9 +747,7 @@
   },
   "openclaw": {
     "plugin": "./openclaw.plugin.json",
-    "extensions": [
-      "./dist/index.js"
-    ]
+    "extensions": ["./dist/index.js"]
   },
   "scripts": {
     "sync:openclaw-plugin": "node scripts/sync-openclaw-plugin.mjs",
@@ -128,6 +776,7 @@
     "eval:run": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx evals/run.ts",
     "eval:download": "bash evals/scripts/download-datasets.sh",
     "eval:bench": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx evals/run.ts --benchmark all",
+    "lint": "biome check --diagnostic-level=error --files-ignore-unknown=true biome.json eslint.config.js package.json",
     "preflight": "bash scripts/pr-preflight.sh full",
     "preflight:quick": "bash scripts/pr-preflight.sh quick",
     "review:cursor": "bash scripts/cursor-prepush-review.sh",
@@ -138,6 +787,7 @@
     "prepack": "pnpm run check-types && pnpm run build"
   },
   "devDependencies": {
+    "@biomejs/biome": "1.9.4",
     "@openclaw/plugin-inspector": "0.3.10",
     "@remnic/bench": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
@@ -148,12 +798,6 @@
     "typescript": "^5.9.3"
   },
   "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild",
-      "sharp",
-      "koffi",
-      "protobufjs"
-    ]
+    "onlyBuiltDependencies": ["better-sqlite3", "esbuild", "sharp", "koffi", "protobufjs"]
   }
 }

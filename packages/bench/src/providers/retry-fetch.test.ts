@@ -220,9 +220,67 @@ test("retryFetch still fails repeated 5xx when no extended wait budget is config
   }
 });
 
+test("retryFetch treats explicitly undefined retry fields as defaults", async () => {
+  const mock = mockFetchSequence([
+    { status: 500, body: "try again later" },
+    { status: 500, body: "try again later" },
+    { status: 500, body: "try again later" },
+  ]);
+  try {
+    await assert.rejects(
+      () =>
+        retryFetch(
+          "https://example.com/api",
+          { method: "GET" },
+          { maxAttempts: undefined, baseBackoffMs: 1, timeoutMs: 5000 },
+        ),
+      /HTTP 500/,
+    );
+    assert.equal(mock.calls.length, 3);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("retryFetch rejects invalid retry option values", async () => {
+  await assert.rejects(
+    () =>
+      retryFetch(
+        "https://example.com/api",
+        { method: "GET" },
+        { maxAttempts: 0 },
+      ),
+    /maxAttempts must be a positive integer/,
+  );
+});
+
+test("retryFetch caps thrown transport failures at maxAttempts despite extended 429 budget", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("fetch failed: connect ECONNREFUSED 127.0.0.1:9");
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        retryFetch(
+          "http://127.0.0.1:9",
+          { method: "GET" },
+          { maxAttempts: 1, baseBackoffMs: 1, timeoutMs: 1000, max429WaitMs: 600_000 },
+        ),
+      /ECONNREFUSED/,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("retryFetch respects max429WaitMs budget and returns 429 when exhausted", async () => {
   // Always returns 429 — budget should expire quickly.
-  const mock = mockFetchSequence([{ status: 429 }]);
+  const mock = mockFetchSequence([{ status: 429, body: "quota exhausted" }]);
   try {
     // Tiny budget: 10ms. With baseBackoffMs=1, we'll get a few attempts before budget expires.
     const response = await retryFetch(
@@ -231,6 +289,7 @@ test("retryFetch respects max429WaitMs budget and returns 429 when exhausted", a
       { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000, max429WaitMs: 10 },
     );
     assert.equal(response.status, 429);
+    assert.equal(await response.text(), "quota exhausted");
     // Should have retried at least once beyond maxAttempts due to budget
     assert.ok(mock.calls.length >= 3);
   } finally {

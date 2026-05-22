@@ -33,20 +33,33 @@ console.log(setup.instructions);
 // Paste setup.mcpConfig into Replit's Integrations > Add MCP server form.
 ```
 
-`generateReplitInstructions(token, host?, port?)` returns:
+For a cloud Replit workspace, pass the public HTTPS origin for your Remnic server:
+
+```ts
+const setup = generateReplitInstructions("YOUR_REMNIC_TOKEN", {
+  baseUrl: "https://remnic.example.com",
+});
+```
+
+The legacy `generateReplitInstructions(token, host?, port?)` form is still supported for
+local or LAN hosts. If `host` already includes a scheme, it is treated as a complete
+origin and the MCP URL is generated with the URL API.
+
+`generateReplitInstructions(token, endpoint?, port?)` returns:
 
 ```ts
 interface ReplitInstallResult {
   token: string;
   instructions: string; // human-readable setup steps
   mcpConfig: {
-    url: string;                      // http://{host}:{port}/mcp
+    url: string;                      // http://localhost:4318/mcp or https://{origin}/mcp
     headers: Record<string, string>;  // Authorization + X-Engram-Client-Id
   };
 }
 ```
 
-Defaults are `host="localhost"`, `port=4318`.
+Defaults are `host="localhost"`, `port=4318`. Public origins must be an origin only,
+without a path, query string, or hash.
 
 ## Replit pane setup
 
@@ -68,7 +81,7 @@ A ready-to-paste snippet lives at `setup-snippet.json` in the package.
 
 ## Caveats
 
-- For a **cloud** Replit workspace, the Remnic server has to be publicly reachable — via a tunnel (Cloudflare Tunnel, ngrok, Tailscale funnel), a public IP, or a reverse proxy. `localhost` only works for self-hosted Replit-likes.
+- For a **cloud** Replit workspace, the Remnic server has to be publicly reachable — via a tunnel (Cloudflare Tunnel, ngrok, Tailscale funnel), a public IP, or a reverse proxy. Pass that public origin with `baseUrl`, for example `https://remnic.example.com`. `localhost` only works for self-hosted Replit-likes.
 - Replit has **no hook system**, so the agent must explicitly call Remnic MCP tools (`recall`, `observe`, `store`, `search`). Auto-recall before prompts isn't available the way it is on Claude Code, Codex, or OpenClaw. All 44 MCP tools are exposed.
 - The token is a plain bearer token. Don't paste it into a Replit that you share with others unless each collaborator should have the same memory namespace.
 

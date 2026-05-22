@@ -137,8 +137,9 @@ jobs:
               echo "new_version=${OVERRIDE}"
               echo "bump_type=override"
             } >> "$GITHUB_OUTPUT"
-            pnpm version "${OVERRIDE}" --no-git-tag-version --allow-same-version
-            git add package.json pnpm-lock.yaml 2>/dev/null || true
+            node scripts/set-release-version.mjs "${OVERRIDE}"
+            pnpm install --lockfile-only --ignore-scripts
+            git add package.json packages/*/package.json pnpm-lock.yaml 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "::notice title=Release commit skipped::Version already matches v${OVERRIDE}; no package files changed."
             else
@@ -203,8 +204,9 @@ jobs:
               echo "bump_type=bootstrap"
             } >> "$GITHUB_OUTPUT"
             echo "::notice title=Bootstrap release::${BOOTSTRAP_PACKAGE} is not published yet; using package.json version ${PKG_VERSION}."
-            pnpm version "${PKG_VERSION}" --no-git-tag-version --allow-same-version
-            git add package.json pnpm-lock.yaml 2>/dev/null || true
+            node scripts/set-release-version.mjs "${PKG_VERSION}"
+            pnpm install --lockfile-only --ignore-scripts
+            git add package.json packages/*/package.json pnpm-lock.yaml 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "::notice title=Release commit skipped::Version already matches v${PKG_VERSION}; no package files changed."
             else
@@ -250,8 +252,9 @@ jobs:
             echo "tag_name=v${NEXT_VERSION}"
             echo "new_version=${NEXT_VERSION}"
           } >> "$GITHUB_OUTPUT"
-          pnpm version "${NEXT_VERSION}" --no-git-tag-version --allow-same-version
-          git add package.json pnpm-lock.yaml 2>/dev/null || true
+          node scripts/set-release-version.mjs "${NEXT_VERSION}"
+          pnpm install --lockfile-only --ignore-scripts
+          git add package.json packages/*/package.json pnpm-lock.yaml 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "::notice title=Release commit skipped::Version already matches v${NEXT_VERSION}; no package files changed."
           else

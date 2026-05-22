@@ -307,12 +307,26 @@ async function executeAmaBenchQa(args: {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`  [WARN] ama-bench task ${qa.question_uuid} failed: ${message}`);
+    const scores: Record<string, number> = {
+      f1: -1,
+      contains_answer: -1,
+      llm_judge: -1,
+    };
+    if (options.amaBenchJudgeProtocol === "recommended") {
+      scores.ama_bench_recommended_accuracy = -1;
+      if (options.amaBenchCrossJudge) {
+        scores.ama_bench_cross_agreement = -1;
+      }
+    }
+    if (options.amaBenchCrossJudge) {
+      scores.ama_bench_cross_accuracy = -1;
+    }
     return {
       taskId: qa.question_uuid,
       question: qa.question,
       expected: qa.answer,
       actual: `(error: ${message})`,
-      scores: { f1: -1, contains_answer: -1, llm_judge: -1 },
+      scores,
       latencyMs: 0,
       tokens: { input: 0, output: 0 },
       details: {
@@ -616,6 +630,13 @@ function amaBenchLocationAnswerMatches(
   const normalizedEntities = Object.keys(derivedLocations).map((entity) =>
     normalizeAmaBenchLocationText(entity)
   );
+  const singleEntityLocation =
+    normalizedEntities.length === 1
+      ? normalizeAmaBenchLocationText(Object.values(derivedLocations)[0] ?? "")
+      : "";
+  if (singleEntityLocation && normalizedAnswer.includes(singleEntityLocation)) {
+    return true;
+  }
   return Object.entries(derivedLocations).every(([entity, location]) => {
     const normalizedEntity = normalizeAmaBenchLocationText(entity);
     const normalizedLocation = normalizeAmaBenchLocationText(location);

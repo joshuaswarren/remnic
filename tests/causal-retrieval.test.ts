@@ -174,3 +174,66 @@ test("retrieveCausalChains walks chain and returns formatted section", async () 
   assert.ok(result !== null, "Expected non-null retrieval section");
   assert.ok(result.includes("## Causal Chain Context"));
 });
+
+test("retrieveCausalChains formats connected trajectory content instead of only IDs", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-retrieval-content-"));
+
+  await recordCausalTrajectory({
+    memoryDir,
+    record: {
+      schemaVersion: 1,
+      trajectoryId: "traj-context-only",
+      recordedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      sessionKey: "session-1",
+      goal: "Review unclear incident report",
+      actionSummary: "Read the traces and compared audit events",
+      observationSummary: "Missing audit link was identified",
+      outcomeKind: "partial",
+      outcomeSummary: "Identified missing audit link for follow-up",
+    },
+  });
+
+  await recordCausalTrajectory({
+    memoryDir,
+    record: {
+      schemaVersion: 1,
+      trajectoryId: "traj-seed-payment",
+      recordedAt: new Date().toISOString(),
+      sessionKey: "session-2",
+      goal: "Fix payment reconciliation regression",
+      actionSummary: "Patched the payment reconciliation worker",
+      observationSummary: "Payment reconciliation tests pass",
+      outcomeKind: "success",
+      outcomeSummary: "Payment reconciliation regression fixed",
+    },
+  });
+
+  const chainsDir = resolveChainsDir(memoryDir);
+  const edge: CausalEdge = {
+    schemaVersion: 1,
+    edgeId: "edge-content-retrieval",
+    fromTrajectoryId: "traj-context-only",
+    toTrajectoryId: "traj-seed-payment",
+    edgeType: "follow_up_to_goal",
+    confidence: 0.8,
+    stitchMethod: "explicit",
+    createdAt: new Date().toISOString(),
+  };
+  await writeChainIndex(chainsDir, {
+    outgoing: { "traj-context-only": ["edge-content-retrieval"] },
+    incoming: { "traj-seed-payment": ["edge-content-retrieval"] },
+    edges: { "edge-content-retrieval": edge },
+    updatedAt: new Date().toISOString(),
+  });
+
+  const result = await retrieveCausalChains({
+    memoryDir,
+    query: "payment reconciliation regression fixed",
+    config: { maxDepth: 3, maxChars: 2000, counterfactualBoost: 0.4 },
+  });
+
+  assert.ok(result !== null, "Expected non-null retrieval section");
+  assert.match(result, /Review unclear incident report/);
+  assert.match(result, /Identified missing audit link for follow-up/);
+  assert.doesNotMatch(result, /trajectory traj-context/);
+});

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { statSync, watch, type FSWatcher } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface DreamEntry {
@@ -23,6 +23,7 @@ export interface DreamsSurface {
 
 const DIARY_START_MARKER = "<!-- openclaw:dreaming:diary:start -->";
 const DIARY_END_MARKER = "<!-- openclaw:dreaming:diary:end -->";
+const appendQueues = new Map<string, Promise<void>>();
 
 function stableDreamId(params: {
   timestamp: string;
@@ -140,7 +141,7 @@ function parseLegacyHeadingEntries(content: string): ParsedDreamEntry[] {
     const end = index + 1 < matches.length ? (matches[index + 1]?.index ?? content.length) : content.length;
     const heading = match[1]?.trim() ?? "";
     const body = content.slice(start + match[0].length, end).replace(/^\s+/, "");
-    const dividerTrimmed = body.replace(/\n---\s*$/m, "").trim();
+    const dividerTrimmed = body.replace(/\n---\s*$/, "").trim();
     const bodyLines = dividerTrimmed.split("\n");
     const tags = bodyLines.length > 0 ? parseTagsLine(bodyLines[bodyLines.length - 1] ?? "") : [];
     const contentLines =
@@ -221,6 +222,36 @@ function renderAppendBlock(entry: Omit<DreamEntry, "id" | "sourceOffset">): stri
   return `---\n\n*${entry.timestamp}${titlePart}*\n\n${entry.body.trim()}${tagsPart}\n`;
 }
 
+function serializeAppend<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+  const key = path.resolve(filePath);
+  const previous = appendQueues.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(operation);
+  const next = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  appendQueues.set(key, next);
+  next.finally(() => {
+    if (appendQueues.get(key) === next) appendQueues.delete(key);
+  });
+  return current;
+}
+
+async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await writeFile(tmpPath, content, { encoding: "utf8", flag: "wx" });
+    await rename(tmpPath, filePath);
+  } catch (error) {
+    try {
+      await unlink(tmpPath);
+    } catch {
+      // Best-effort cleanup; the original file remains untouched if rename failed.
+    }
+    throw error;
+  }
+}
+
 export function createDreamsSurface(): DreamsSurface {
   return {
     async read(filePath: string): Promise<DreamEntry[]> {
@@ -239,23 +270,26 @@ export function createDreamsSurface(): DreamsSurface {
       filePath: string,
       entry: Omit<DreamEntry, "id" | "sourceOffset">,
     ): Promise<DreamEntry> {
-      await mkdir(path.dirname(filePath), { recursive: true });
-      let content = "";
-      try {
-        content = await readFile(filePath, "utf8");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-      const ensured = ensureDiary(content);
-      const endIndex = ensured.indexOf(DIARY_END_MARKER);
-      const block = renderAppendBlock(entry);
-      const updated =
-        endIndex >= 0
-          ? `${ensured.slice(0, endIndex)}${block}\n${ensured.slice(endIndex)}`
-          : `${ensureDiary("")}${block}`;
-      await writeFile(filePath, updated.endsWith("\n") ? updated : `${updated}\n`, "utf8");
-      const entries = parseDreamEntries(updated);
-      return entries[entries.length - 1]!;
+      return serializeAppend(filePath, async () => {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        let content = "";
+        try {
+          content = await readFile(filePath, "utf8");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        const ensured = ensureDiary(content);
+        const endIndex = ensured.indexOf(DIARY_END_MARKER);
+        const block = renderAppendBlock(entry);
+        const updated =
+          endIndex >= 0
+            ? `${ensured.slice(0, endIndex)}${block}\n${ensured.slice(endIndex)}`
+            : `${ensureDiary("")}${block}`;
+        const normalized = updated.endsWith("\n") ? updated : `${updated}\n`;
+        await atomicWriteUtf8(filePath, normalized);
+        const entries = parseDreamEntries(normalized);
+        return entries[entries.length - 1]!;
+      });
     },
 
     watch(filePath: string, onChange: (entries: DreamEntry[]) => void): () => void {

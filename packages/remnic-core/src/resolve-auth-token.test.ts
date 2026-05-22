@@ -119,6 +119,35 @@ test("resolveAgentAccessAuthToken cache key is order-independent", async () => {
   }
 });
 
+test("resolveAgentAccessAuthToken scopes SecretRef cache by resolver function", async () => {
+  clearAuthTokenSecretCache();
+  let resolverACalls = 0;
+  let resolverBCalls = 0;
+  const resolverA = async () => {
+    resolverACalls += 1;
+    return "token-a";
+  };
+  const resolverB = async () => {
+    resolverBCalls += 1;
+    return "token-b";
+  };
+
+  try {
+    const ref = { source: "exec", provider: "shared", id: "value" };
+    const first = await resolveAgentAccessAuthToken(ref, { resolveSecretRef: resolverA });
+    const second = await resolveAgentAccessAuthToken(ref, { resolveSecretRef: resolverB });
+    const third = await resolveAgentAccessAuthToken({ ...ref }, { resolveSecretRef: resolverB });
+
+    assert.equal(first, "token-a");
+    assert.equal(second, "token-b");
+    assert.equal(third, "token-b");
+    assert.equal(resolverACalls, 1);
+    assert.equal(resolverBCalls, 1);
+  } finally {
+    clearAuthTokenSecretCache();
+  }
+});
+
 test("resolveAgentAccessAuthToken throws when no SecretRef resolver is provided", async () => {
   clearAuthTokenSecretCache();
 

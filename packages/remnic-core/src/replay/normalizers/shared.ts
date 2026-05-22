@@ -27,7 +27,8 @@ export function normalizeReplayContent(value: unknown): string | null {
   }
   if (Array.isArray(value)) {
     const text = value
-      .map((part) => (typeof part === "string" ? part : ""))
+      .map((part) => normalizeReplayContent(part) ?? "")
+      .filter((part) => part.length > 0)
       .join("\n")
       .trim();
     return text.length > 0 ? text : null;
@@ -35,6 +36,8 @@ export function normalizeReplayContent(value: unknown): string | null {
   if (value && typeof value === "object") {
     const obj = value as Record<string, unknown>;
     if (Array.isArray(obj.parts)) return normalizeReplayContent(obj.parts);
+    if (Array.isArray(obj.content)) return normalizeReplayContent(obj.content);
+    if (typeof obj.content === "string") return normalizeReplayContent(obj.content);
     if (typeof obj.text === "string") return normalizeReplayContent(obj.text);
   }
   return null;

@@ -2,6 +2,7 @@ import { log } from "../logger.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
 import type { EmbedHelper } from "./embed-helper.js";
 import { scanMemoryDir } from "./document-scanner.js";
+import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
 
 export interface LanceDbBackendOptions {
   dbPath: string;
@@ -60,24 +61,26 @@ export class LanceDbBackend implements SearchBackend {
     _collection?: string,
     maxResults?: number,
     _options?: SearchQueryOptions,
-    _execution?: SearchExecutionOptions,
+    execution?: SearchExecutionOptions,
   ): Promise<SearchResult[]> {
-    return this.hybridSearch(query, _collection, maxResults);
+    return this.hybridSearch(query, _collection, maxResults, execution);
   }
 
-  async searchGlobal(query: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+  async searchGlobal(query: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
     const limit = maxResults ?? 10;
     if (!this.available) return [];
 
     try {
+      throwIfSearchAborted(execution, "LanceDbBackend global search aborted");
       const db = await this.ensureDb();
       const tableNames = await db.tableNames();
       const allResults: SearchResult[] = [];
 
       for (const name of tableNames) {
+        throwIfSearchAborted(execution, "LanceDbBackend global search aborted");
         try {
           const table = await db.openTable(name);
-          const results = await this.searchTable(table, query, "hybrid", limit);
+          const results = await this.searchTable(table, query, "hybrid", limit, execution);
           allResults.push(...results);
         } catch {
           // Skip tables that fail
@@ -92,33 +95,42 @@ export class LanceDbBackend implements SearchBackend {
     }
   }
 
-  async bm25Search(query: string, collection?: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+  async bm25Search(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+    if (isSearchAborted(execution)) return [];
     const table = await this.ensureTableForCollection(collection ?? this.collection);
+    if (isSearchAborted(execution)) return [];
     if (!table) return [];
-    return this.searchTable(table, query, "fts", maxResults ?? 10);
+    return this.searchTable(table, query, "fts", maxResults ?? 10, execution);
   }
 
-  async vectorSearch(query: string, collection?: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+  async vectorSearch(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+    if (isSearchAborted(execution)) return [];
     const table = await this.ensureTableForCollection(collection ?? this.collection);
+    if (isSearchAborted(execution)) return [];
     if (!table) return [];
-    return this.searchTable(table, query, "vector", maxResults ?? 10);
+    return this.searchTable(table, query, "vector", maxResults ?? 10, execution);
   }
 
-  async hybridSearch(query: string, collection?: string, maxResults?: number, _execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+  async hybridSearch(query: string, collection?: string, maxResults?: number, execution?: SearchExecutionOptions): Promise<SearchResult[]> {
+    if (isSearchAborted(execution)) return [];
     const table = await this.ensureTableForCollection(collection ?? this.collection);
+    if (isSearchAborted(execution)) return [];
     if (!table) return [];
-    return this.searchTable(table, query, "hybrid", maxResults ?? 10);
+    return this.searchTable(table, query, "hybrid", maxResults ?? 10, execution);
   }
 
   async update(execution?: SearchExecutionOptions): Promise<void> {
     await this.updateCollection(this.collection, execution);
   }
 
-  async updateCollection(collection: string, _execution?: SearchExecutionOptions): Promise<void> {
+  async updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void> {
+    if (isSearchAborted(execution)) return;
     const table = await this.ensureTableForCollection(collection);
+    if (isSearchAborted(execution)) return;
     if (!table) return;
 
     const docs = await scanMemoryDir(this.memoryDir);
+    if (isSearchAborted(execution)) return;
     if (docs.length === 0) {
       // Clear stale data when no docs remain
       try {
@@ -131,27 +143,40 @@ export class LanceDbBackend implements SearchBackend {
       return;
     }
 
+    const existingVectors = new Map<string, number[]>();
+    try {
+      const existingRows = await table.query().select(["docid", "vector"]).toArray();
+      for (const row of existingRows ?? []) {
+        if (isSearchAborted(execution)) return;
+        const docid = row.docid;
+        if (typeof docid !== "string") continue;
+        const vector = row.vector;
+        if (!vector || typeof vector !== "object") continue;
+        existingVectors.set(docid, Array.from(vector as ArrayLike<number>));
+      }
+    } catch {
+      // Vector preservation is best-effort; refresh can proceed without it.
+    }
+
     const rows = docs.map((d) => ({
       docid: d.docid,
       path: d.path,
       content: d.content,
       snippet: d.snippet,
-      vector: new Array(this.embeddingDimension).fill(0),
+      vector: existingVectors.get(d.docid) ?? new Array(this.embeddingDimension).fill(0),
     }));
 
     try {
-      // Overwrite with fresh data
-      const db = await this.ensureDb();
-      await db.dropTable(collection).catch(() => {});
-      if (collection === this.collection) this.table = null;
-      const newTable = await db.createTable(collection, rows);
+      if (isSearchAborted(execution)) return;
+      await table.add(rows, { mode: "overwrite" });
+      if (isSearchAborted(execution)) return;
       // Create FTS index on content column
       try {
-        await newTable.createIndex("content", { config: this.lanceIndex.fts() });
+        await table.createIndex("content", { config: this.lanceIndex.fts() });
       } catch {
         // FTS index creation may fail on some platforms — degrade gracefully
       }
-      if (collection === this.collection) this.table = newTable;
+      if (collection === this.collection) this.table = table;
     } catch (err) {
       log.debug(`LanceDbBackend update failed: ${err}`);
     }
@@ -286,28 +311,41 @@ export class LanceDbBackend implements SearchBackend {
     return this.table;
   }
 
-  private async searchTable(table: any, query: string, mode: "fts" | "vector" | "hybrid", limit: number): Promise<SearchResult[]> {
+  private async searchTable(
+    table: any,
+    query: string,
+    mode: "fts" | "vector" | "hybrid",
+    limit: number,
+    execution?: SearchExecutionOptions,
+  ): Promise<SearchResult[]> {
     try {
+      throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
       if (mode === "fts") {
         const results = await table.search(query, "fts").limit(limit).toArray();
+        throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
       }
 
       if (mode === "vector") {
-        const vec = await this.embedHelper.embed(query);
+        const vec = await this.embedHelper.embed(query, { signal: execution?.signal });
+        throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         if (!vec) {
           // Fall back to FTS
           const results = await table.search(query, "fts").limit(limit).toArray();
+          throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
           return this.mapRows(results);
         }
         const results = await table.search(vec).limit(limit).toArray();
+        throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
       }
 
       // hybrid — try FTS+vector with RRF reranking
-      const vec = await this.embedHelper.embed(query);
+      const vec = await this.embedHelper.embed(query, { signal: execution?.signal });
+      throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
       if (!vec) {
         const results = await table.search(query, "fts").limit(limit).toArray();
+        throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
       }
 
@@ -317,10 +355,12 @@ export class LanceDbBackend implements SearchBackend {
           .vector(vec)
           .limit(limit)
           .toArray();
+        throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
       } catch {
         // Hybrid may not be supported in all LanceDB versions — fall back to vector
         const results = await table.search(vec).limit(limit).toArray();
+        throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
       }
     } catch (err) {

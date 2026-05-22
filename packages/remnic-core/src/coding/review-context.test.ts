@@ -199,6 +199,22 @@ test("parseTouchedFiles: escaped quote inside quoted path is preserved", () => {
   assert.deepEqual(out, ['has"quote.ts']);
 });
 
+test("parseTouchedFiles: C-quoted octal UTF-8 path bytes are decoded", () => {
+  const diff = [
+    'diff --git "a/caf\\303\\251.ts" "b/caf\\303\\251.ts"',
+    '--- "a/caf\\303\\251.ts"',
+    '+++ "b/caf\\303\\251.ts"',
+  ].join("\n");
+
+  assert.deepEqual(parseTouchedFiles(diff), ["café.ts"]);
+});
+
+test("parseTouchedFiles: invalid C-quoted UTF-8 preserves raw token without path-separator corruption", () => {
+  const diff = 'diff --git "a/bad\\303.ts" "b/bad\\303.ts"';
+
+  assert.deepEqual(parseTouchedFiles(diff), ['"a/bad\\303.ts"', '"b/bad\\303.ts"']);
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // rankReviewCandidates
 // ──────────────────────────────────────────────────────────────────────────
@@ -304,6 +320,20 @@ test("packReviewContext: full path — diff → touched files + ranked recall", 
   assert.equal(result.rankedRecall[0]!.id, "auth-history");
   assert.equal(result.rankedRecall[0]!.boost, 0.5);
   assert.equal(result.rankedRecall[1]!.id, "random-other");
+});
+
+test("packReviewContext: C-quoted non-ASCII touched paths boost matching candidates", () => {
+  const result = packReviewContext({
+    diff: 'diff --git "a/caf\\303\\251.ts" "b/caf\\303\\251.ts"',
+    candidates: [
+      c("matched-cafe", 0.2, ["café.ts"]),
+      c("unmatched", 0.6, ["db.sql"]),
+    ],
+  });
+
+  assert.deepEqual(result.touchedFiles, ["café.ts"]);
+  assert.equal(result.rankedRecall[0]!.id, "matched-cafe");
+  assert.equal(result.rankedRecall[0]!.boost, 0.5);
 });
 
 test("packReviewContext: empty diff → no touched files, no boosts, ranked by score", () => {

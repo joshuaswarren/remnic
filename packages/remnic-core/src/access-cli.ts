@@ -5,8 +5,10 @@ import type { PluginConfig } from "./types.js";
 import { Orchestrator } from "./orchestrator.js";
 import { EngramAccessService } from "./access-service.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
-import { resolveRemnicPluginEntry } from "./plugin-id.js";
+import { resolvePluginEntry } from "./plugin-entry-resolver.js";
 import { expandTildePath } from "./utils/path.js";
+
+const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
 type CommandName = "browse" | "store";
 
@@ -29,13 +31,51 @@ type Runtime = {
 export type AccessCliOptions = {
   /**
    * The calling plugin's own id (e.g. `"openclaw-engram"` when invoked by the
-   * shim binary).  Forwarded to {@link resolveRemnicPluginEntry} so shim CLI
+   * shim binary).  Forwarded to the plugin-entry resolver so shim CLI
    * users target their own `plugins.entries["openclaw-engram"]` block instead
    * of accidentally resolving to the canonical `"openclaw-remnic"` entry when
    * `plugins.slots.memory` is unset (#403).
    */
   preferredId?: string;
 };
+
+function getOpenClawPluginEntries(raw: Record<string, unknown>): Record<string, unknown> | undefined {
+  const plugins =
+    raw["plugins"] && typeof raw["plugins"] === "object" && !Array.isArray(raw["plugins"])
+      ? (raw["plugins"] as Record<string, unknown>)
+      : undefined;
+  const entries =
+    plugins && plugins["entries"] && typeof plugins["entries"] === "object" && !Array.isArray(plugins["entries"])
+      ? (plugins["entries"] as Record<string, unknown>)
+      : undefined;
+  return entries;
+}
+
+function getOpenClawMemorySlotId(raw: Record<string, unknown>): string | undefined {
+  const plugins =
+    raw["plugins"] && typeof raw["plugins"] === "object" && !Array.isArray(raw["plugins"])
+      ? (raw["plugins"] as Record<string, unknown>)
+      : undefined;
+  const slots =
+    plugins && plugins["slots"] && typeof plugins["slots"] === "object" && !Array.isArray(plugins["slots"])
+      ? (plugins["slots"] as Record<string, unknown>)
+      : undefined;
+  const slotId = slots?.["memory"];
+  return typeof slotId === "string" ? slotId : undefined;
+}
+
+function resolveOpenClawRemnicPluginEntry(raw: unknown, preferredId?: string): Record<string, unknown> | undefined {
+  return resolvePluginEntry(raw, {
+    candidateIds: OPENCLAW_REMNIC_PLUGIN_IDS,
+    preferredId,
+    getEntries: getOpenClawPluginEntries,
+    getSlotId: getOpenClawMemorySlotId,
+  });
+}
+
+function hasAllowedOpenClawRemnicPluginId(value: string): boolean {
+  return (OPENCLAW_REMNIC_PLUGIN_IDS as readonly string[]).includes(value);
+}
 
 type UsageErrorKind =
   | "unsupported-command"
@@ -307,12 +347,26 @@ function loadPluginConfig(preferredId?: string): Record<string, unknown> {
     expandOptionalPath(readEnvVar("OPENCLAW_ENGRAM_CONFIG_PATH")) ||
     path.join(resolveHomeDir(), ".openclaw", "openclaw.json");
   const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
-  // Delegate slot → preferredId → PLUGIN_ID → LEGACY_PLUGIN_ID resolution to
-  // the shared helper so all config loaders stay in sync (#403).  Shim CLI
+  const slotId =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? getOpenClawMemorySlotId(raw as Record<string, unknown>)
+      : undefined;
+  if (typeof slotId === "string" && !hasAllowedOpenClawRemnicPluginId(slotId)) {
+    throw new Error(
+      `OpenClaw memory slot points to non-Remnic plugin "${slotId}"; refusing to use default Remnic access config.`,
+    );
+  }
+  // Delegate slot → preferredId → canonical → legacy resolution to the
+  // generic helper so all config loaders stay in sync (#403).  Shim CLI
   // callers pass `preferredId: "openclaw-engram"` so legacy shim installs
   // target their own config block instead of falling through to the canonical
   // "openclaw-remnic" entry.
-  const entry = resolveRemnicPluginEntry(raw, preferredId);
+  const entry = resolveOpenClawRemnicPluginEntry(raw, preferredId);
+  if (!entry) {
+    throw new Error(
+      "OpenClaw config does not contain an allowed Remnic plugin entry; refusing to use default Remnic access config.",
+    );
+  }
   return (entry?.["config"] as Record<string, unknown> | undefined) ?? {};
 }
 

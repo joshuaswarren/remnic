@@ -47,3 +47,4 @@ export function ComparisonTable({ rows }: { rows: CompareMetricRow[] }) {
     </div>
   );
 }
+import * as React from "react";

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,11 +8,14 @@ import { spawnSync } from "node:child_process";
 const scriptPath = path.resolve("scripts", "faiss_index.py");
 const pythonBin = process.env.PYTHON_BIN || "python3";
 
-function runSidecar(command: "upsert" | "rebuild" | "search" | "health" | "inspect", payload: object) {
+type FaissSidecarCommand = "upsert" | "rebuild" | "search" | "health" | "inspect";
+
+function runSidecar(command: FaissSidecarCommand, payload: object, cwd?: string) {
   const proc = spawnSync(pythonBin, [scriptPath, command], {
     input: JSON.stringify(payload),
     encoding: "utf-8",
     timeout: 30_000,
+    cwd,
   });
 
   assert.equal(proc.status, 0, `sidecar exited non-zero: ${proc.stderr || "<no stderr>"}`);
@@ -26,6 +29,21 @@ function runSidecar(command: "upsert" | "rebuild" | "search" | "health" | "inspe
   }
 
   return parsed as Record<string, unknown>;
+}
+
+function invalidIndexPathPayload(command: FaissSidecarCommand, indexPath: unknown): object {
+  const payload: Record<string, unknown> = {
+    modelId: "__hash__",
+    indexPath,
+  };
+  if (command === "upsert" || command === "rebuild") {
+    payload.chunks = [];
+  }
+  if (command === "search") {
+    payload.query = "sidecar search";
+    payload.topK = 1;
+  }
+  return payload;
 }
 
 function hasFaissDeps(): boolean {
@@ -56,6 +74,23 @@ test("faiss sidecar health command returns contract", () => {
     assert.ok(["ok", "degraded", "error"].includes(String(response.status)));
   } finally {
     rmSync(indexPath, { recursive: true, force: true });
+  }
+});
+
+test("faiss sidecar rejects malformed indexPath payload values before creating directories", () => {
+  for (const command of ["upsert", "rebuild", "search", "health", "inspect"] as const) {
+    for (const indexPath of [null, 42, true, ""]) {
+      const cwd = mkdtempSync(path.join(tmpdir(), "engram-faiss-invalid-index-path-"));
+      try {
+        const response = runSidecar(command, invalidIndexPathPayload(command, indexPath), cwd);
+
+        assert.equal(response.ok, false, `${command} should reject ${JSON.stringify(indexPath)}`);
+        assert.match(String(response.error), /indexPath is required/);
+        assert.deepEqual(readdirSync(cwd), []);
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    }
   }
 });
 

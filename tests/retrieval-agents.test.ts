@@ -2,13 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import {
   runDirectAgent,
   runTemporalAgent,
   parallelRetrieval,
   augmentWithDirectAndTemporal,
+  mergeWithAgentResults,
+  runContextualAgent,
   shouldRunAgent,
   PARALLEL_AGENT_WEIGHTS,
   type SearchAgentSource,
@@ -127,6 +129,29 @@ test("runDirectAgent: gracefully handles readdir error", async () => {
   assert.deepEqual(results, []);
 });
 
+test("runDirectAgent: skips entity symlinks that resolve outside memoryDir", async () => {
+  const tmpDir = await makeTempDir();
+  const outsideDir = await makeTempDir();
+  await mkdir(path.join(tmpDir, "entities"), { recursive: true });
+  const outsideFile = path.join(outsideDir, "secrets.md");
+  await writeFile(outsideFile, "outside-secret", "utf-8");
+  try {
+    await symlink(outsideFile, path.join(tmpDir, "entities", "secrets.md"));
+  } catch {
+    return;
+  }
+
+  const results = await augmentWithDirectAndTemporal(
+    "secrets",
+    tmpDir,
+    [],
+    PARALLEL_AGENT_WEIGHTS,
+    10,
+    10,
+  );
+  assert.deepEqual(results, []);
+});
+
 // ─── runTemporalAgent ─────────────────────────────────────────────────────────
 
 test("runTemporalAgent: returns empty when no temporal index", async () => {
@@ -225,6 +250,24 @@ test("runTemporalAgent: respects maxResults limit", async () => {
 
   const results = await runTemporalAgent("what happened today", tmpDir, 10);
   assert.ok(results.length <= 10);
+});
+
+test("runTemporalAgent: skips temporal index paths outside memoryDir", async () => {
+  const tmpDir = await makeTempDir();
+  const outsideDir = await makeTempDir();
+  const stateDir = path.join(tmpDir, "state");
+  await mkdir(stateDir, { recursive: true });
+  const outsideFile = path.join(outsideDir, "outside.md");
+  await writeFile(outsideFile, "---\nid: outside\n---\n\noutside-secret", "utf-8");
+
+  const today = new Date().toISOString().slice(0, 10);
+  await writeFile(
+    path.join(stateDir, "index_time.json"),
+    JSON.stringify({ version: 1, dates: { [today]: [outsideFile] } }),
+  );
+
+  const results = await runTemporalAgent("what happened today", tmpDir);
+  assert.deepEqual(results, []);
 });
 
 test("runTemporalAgent: boosts topic-relevant files via tag index", async () => {
@@ -402,6 +445,38 @@ test("parallelRetrieval: gracefully handles agent errors (isolation)", async () 
   assert.ok(Array.isArray(results));
 });
 
+test("parallelRetrieval: propagates contextual AbortError", async () => {
+  const tmpDir = await makeTempDir();
+  const qmd = {
+    hybridSearch: async () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      throw error;
+    },
+    isAvailable: () => true,
+  } as unknown as QmdClient;
+
+  await assert.rejects(
+    () => parallelRetrieval("query", qmd, tmpDir),
+    (error: Error) => error.name === "AbortError",
+  );
+});
+
+test("runContextualAgent propagates AbortError", async () => {
+  const qmd = {
+    hybridSearch: async () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      throw error;
+    },
+  } as unknown as QmdClient;
+
+  await assert.rejects(
+    () => runContextualAgent("query", qmd, undefined, 5),
+    (error: Error) => error.name === "AbortError",
+  );
+});
+
 test("parallelRetrieval: respects maxResults limit", async () => {
   const tmpDir = await makeTempDir();
   const qmd = makeStubQmd(
@@ -553,6 +628,34 @@ test("augmentWithDirectAndTemporal: populates snippet from file content for spec
   // Snippet should be populated from file content
   assert.ok(r!.snippet.length > 0, "snippet should be populated from file content");
   assert.ok(r!.snippet.includes("Alice"), "snippet should contain file content");
+});
+
+test("mergeWithAgentResults populates specialized-agent snippets when memoryDir is provided", async () => {
+  const tmpDir = await makeTempDir();
+  await mkdir(path.join(tmpDir, "entities"), { recursive: true });
+  const entityPath = path.join(tmpDir, "entities", "alice.md");
+  await writeFile(entityPath, "---\nid: alice\n---\n\nAlice owns the release checklist.");
+
+  const results = await mergeWithAgentResults(
+    [],
+    [
+      {
+        docid: "alice",
+        path: entityPath,
+        snippet: "",
+        score: 1,
+        transport: "scoped_prefilter",
+        agentSource: "direct",
+      },
+    ],
+    [],
+    DEFAULT_WEIGHTS,
+    10,
+    tmpDir,
+  );
+
+  assert.equal(results.length, 1);
+  assert.match(results[0].snippet, /Alice owns the release checklist/);
 });
 
 test("augmentWithDirectAndTemporal: respects maxResults limit", async () => {

@@ -120,6 +120,43 @@ test("dreams surface append migrates legacy heading entries into the diary marke
   assert.equal(reread[2]?.title, "A useful reflective note");
 });
 
+test("dreams surface preserves legacy in-body dividers through append migration", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-dreams-legacy-body-divider-"));
+  const dreamsPath = path.join(root, "dreams.md");
+  await writeFile(
+    dreamsPath,
+    [
+      "# Dreams",
+      "",
+      "## 2026-04-11T03:22:14Z",
+      "",
+      "first",
+      "",
+      "---",
+      "",
+      "second",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const surface = createDreamsSurface();
+  const entries = await surface.read(dreamsPath);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.body, ["first", "", "---", "", "second"].join("\n"));
+
+  await surface.append(dreamsPath, {
+    timestamp: "2026-04-12T15:00:00Z",
+    title: "Migrating without loss",
+    body: "new entry",
+    tags: [],
+  });
+
+  const migrated = await surface.read(dreamsPath);
+  assert.equal(migrated.length, 2);
+  assert.equal(migrated[0]?.body, ["first", "", "---", "", "second"].join("\n"));
+});
+
 test("dreams surface appends a new OpenClaw diary entry and round-trips cleanly", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-dreams-append-"));
   const dreamsPath = path.join(root, "DREAMS.md");
@@ -143,6 +180,42 @@ test("dreams surface appends a new OpenClaw diary entry and round-trips cleanly"
   assert.equal(reread.length, 1);
   assert.equal(reread[0]?.id, appended.id);
   assert.deepEqual(reread[0]?.tags, ["reflection", "verification"]);
+});
+
+test("dreams surface serializes concurrent appends to preserve every entry", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-dreams-concurrent-"));
+  const dreamsPath = path.join(root, "DREAMS.md");
+  const surface = createDreamsSurface();
+
+  await surface.append(dreamsPath, {
+    timestamp: "2026-04-12T15:00:00Z",
+    title: "Seed",
+    body: "existing entry",
+    tags: [],
+  });
+
+  await Promise.all([
+    surface.append(dreamsPath, {
+      timestamp: "2026-04-12T16:00:00Z",
+      title: "Concurrent A",
+      body: "first concurrent entry",
+      tags: [],
+    }),
+    surface.append(dreamsPath, {
+      timestamp: "2026-04-12T17:00:00Z",
+      title: "Concurrent B",
+      body: "second concurrent entry",
+      tags: [],
+    }),
+  ]);
+
+  const reread = await surface.read(dreamsPath);
+  assert.equal(reread.length, 3);
+  assert.deepEqual(reread.map((entry) => entry.title).sort(), [
+    "Concurrent A",
+    "Concurrent B",
+    "Seed",
+  ]);
 });
 
 test("dream surface keeps entry ids stable when title, body, or tags are edited in place", async () => {

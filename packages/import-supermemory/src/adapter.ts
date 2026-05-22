@@ -1,4 +1,4 @@
-import type { ImporterAdapter } from "@remnic/core";
+import type { ImporterAdapter, ImporterTransformOptions } from "@remnic/core";
 import { defaultWriteMemoriesToOrchestrator } from "@remnic/core";
 
 import { parseSupermemoryExport, type ParsedSupermemoryExport } from "./parser.js";
@@ -10,8 +10,15 @@ export const adapter: ImporterAdapter<ParsedSupermemoryExport> = {
   parse(input, options) {
     return parseSupermemoryExport(input, options?.filePath);
   },
-  transform(parsed) {
-    return transformSupermemoryExport(parsed);
+  transform(
+    parsed,
+    options?: ImporterTransformOptions,
+  ) {
+    return transformSupermemoryExport(parsed, {
+      ...(options?.maxMemories !== undefined
+        ? { maxMemories: options.maxMemories }
+        : {}),
+    });
   },
   writeTo(target, memories) {
     return defaultWriteMemoriesToOrchestrator(target, memories);

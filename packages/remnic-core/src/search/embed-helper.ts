@@ -1,5 +1,7 @@
 import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
+import { isAbortError } from "../abort-error.js";
+import { withTimeoutSignal } from "./abort.js";
 
 type ProviderConfig = {
   type: "openai" | "local";
@@ -38,23 +40,29 @@ export class EmbedHelper {
   /**
    * Embed a single text string. Returns null if no provider is available.
    */
-  async embed(text: string): Promise<number[] | null> {
+  async embed(text: string, options: { signal?: AbortSignal } = {}): Promise<number[] | null> {
     const provider = this.getProvider();
     if (!provider) return null;
-    return this.callEmbed(text, provider);
+    return this.callEmbed(text, provider, options.signal);
   }
 
   /**
    * Embed a batch of texts. Returns an array parallel to input; entries are null on failure.
    */
-  async embedBatch(texts: string[], batchSize = 32): Promise<(number[] | null)[]> {
+  async embedBatch(
+    texts: string[],
+    batchSize = 32,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<(number[] | null)[]> {
     const provider = this.getProvider();
     if (!provider) return texts.map(() => null);
 
     const results: (number[] | null)[] = new Array(texts.length).fill(null);
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize);
-      const batchResults = await Promise.all(batch.map((t) => this.callEmbed(t, provider)));
+      const batchResults = await Promise.all(
+        batch.map((t) => this.callEmbed(t, provider, options.signal)),
+      );
       for (let j = 0; j < batchResults.length; j++) {
         results[i + j] = batchResults[j];
       }
@@ -114,7 +122,11 @@ export class EmbedHelper {
     return null;
   }
 
-  private async callEmbed(input: string, provider: ProviderConfig): Promise<number[] | null> {
+  private async callEmbed(
+    input: string,
+    provider: ProviderConfig,
+    signal?: AbortSignal,
+  ): Promise<number[] | null> {
     try {
       const res = await fetch(provider.endpoint, {
         method: "POST",
@@ -124,7 +136,7 @@ export class EmbedHelper {
           input: input.slice(0, 8000),
           encoding_format: "float",
         }),
-        signal: AbortSignal.timeout(30_000),
+        signal: withTimeoutSignal(signal, 30_000),
       });
       if (!res.ok) {
         log.debug(`EmbedHelper request failed: ${provider.type} ${res.status}`);
@@ -135,6 +147,7 @@ export class EmbedHelper {
       if (!Array.isArray(vector)) return null;
       return vector.map((n: unknown) => { const v = Number(n); return Number.isFinite(v) ? v : 0; });
     } catch (err) {
+      if (isAbortError(err)) throw err;
       log.debug(`EmbedHelper error: ${err}`);
       return null;
     }

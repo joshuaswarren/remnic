@@ -48,9 +48,11 @@ export function parseMem0Export(
 
   if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
+    let recognizedTopLevelShape = false;
     for (const key of ["results", "memories", "all_pages"] as const) {
       const v = obj[key];
       if (Array.isArray(v)) {
+        recognizedTopLevelShape = true;
         appendMemories(memories, v, options);
       }
     }
@@ -58,6 +60,7 @@ export function parseMem0Export(
     // pulls). We flatten each page's `results` / `memories`.
     const pages = obj.pages;
     if (Array.isArray(pages)) {
+      recognizedTopLevelShape = true;
       for (const page of pages) {
         if (page && typeof page === "object") {
           const p = page as Record<string, unknown>;
@@ -68,15 +71,17 @@ export function parseMem0Export(
         }
       }
     }
+    if (!recognizedTopLevelShape) {
+      throw new Error(
+        "mem0 export object must contain a results, memories, all_pages, or pages array",
+      );
+    }
     return withFilePath(memories, options.filePath);
   }
 
-  if (options.strict) {
-    throw new Error(
-      "mem0 export must be an array or object; received " + typeof raw,
-    );
-  }
-  return withFilePath(memories, options.filePath);
+  throw new Error(
+    `mem0 export must be an array or recognized object; received ${describePayloadType(raw)}`,
+  );
 }
 
 function appendMemories(
@@ -121,6 +126,12 @@ function coerceJson(input: unknown): unknown {
     }
   }
   return input;
+}
+
+function describePayloadType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
 }
 
 /** Extract the memory body, preferring explicit `memory` then `content` then `text`. */

@@ -21,12 +21,6 @@ const REMNIC_AMB_INSTALLER_PATCH_PATHS = new Set([
   "src/memory_bench/dataset/__init__.py",
   "src/memory_bench/llm/codex.py",
   "src/memory_bench/llm/__init__.py",
-  "src/memory_bench/cli.py",
-  "src/memory_bench/modes/__init__.py",
-  "src/memory_bench/modes/rag.py",
-  "src/memory_bench/modes/agentic_rag.py",
-  "src/memory_bench/judge.py",
-  "src/memory_bench/runner.py",
 ]);
 
 async function main() {

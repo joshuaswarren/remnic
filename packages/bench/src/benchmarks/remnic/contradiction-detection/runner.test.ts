@@ -61,6 +61,25 @@ test("runContradictionDetectionBenchmark includes per-verdict metrics", async ()
   assert.ok(typeof agg.scores.overall_accuracy === "number");
 });
 
+test("runContradictionDetectionBenchmark emits per-task completion callbacks", async () => {
+  const progress: Array<{ taskId: string; completedCount: number; totalCount: number }> = [];
+  await runContradictionDetectionBenchmark(
+    buildOptions({
+      mode: "full",
+      onTaskComplete(task, completedCount, totalCount) {
+        progress.push({ taskId: task.taskId, completedCount, totalCount });
+      },
+    }),
+  );
+
+  assert.equal(progress.length, CONTRADICTION_DETECTION_FIXTURE.length);
+  assert.ok(!progress.some((entry) => entry.taskId === "_aggregate_verdict_metrics"));
+  for (let i = 0; i < progress.length; i++) {
+    assert.equal(progress[i]!.completedCount, i + 1);
+    assert.equal(progress[i]!.totalCount, CONTRADICTION_DETECTION_FIXTURE.length);
+  }
+});
+
 test("runContradictionDetectionBenchmark quick mode runs the smoke subset", async () => {
   const full = await runContradictionDetectionBenchmark(
     buildOptions({ mode: "full" }),

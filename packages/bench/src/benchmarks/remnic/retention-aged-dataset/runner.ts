@@ -227,7 +227,7 @@ export async function runRetentionAgedDatasetBenchmark(
     const recallHot = recallAtK(hotRanked, relevantIds, 5);
     const recallDelta = recallFull - recallHot;
 
-    tasks.push({
+    const task: TaskResult = {
       taskId: query.id,
       question: query.text,
       expected: JSON.stringify({
@@ -258,7 +258,9 @@ export async function runRetentionAgedDatasetBenchmark(
         coldMemoryCount: coldMemories.length,
         totalMemoryCount: fixture.memories.length,
       },
-    });
+    };
+    tasks.push(task);
+    options.onTaskComplete?.(task, tasks.length, queries.length);
   }
 
   const remnicVersion = await getRemnicVersion();

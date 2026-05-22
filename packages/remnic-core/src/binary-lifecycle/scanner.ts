@@ -8,6 +8,7 @@
 
 import fsp from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import type { BinaryLifecycleConfig, BinaryLifecycleManifest } from "./types.js";
 
 /**
@@ -39,7 +40,7 @@ export async function scanForBinaries(
   config: BinaryLifecycleConfig,
   manifest: BinaryLifecycleManifest,
 ): Promise<string[]> {
-  const tracked = new Set(manifest.assets.map((a) => a.originalPath));
+  const tracked = new Map(manifest.assets.map((a) => [a.originalPath, a]));
   const results: string[] = [];
 
   async function walk(dir: string): Promise<void> {
@@ -68,14 +69,23 @@ export async function scanForBinaries(
       // Check pattern match
       if (!matchesPatterns(entry.name, config.scanPatterns)) continue;
 
-      // Skip already tracked
-      if (tracked.has(relativePath)) continue;
-
       // Check file size
       try {
         const stat = await fsp.stat(fullPath);
         if (stat.size > config.maxBinarySizeBytes) continue;
         if (stat.size === 0) continue; // skip empty files
+        const existing = tracked.get(relativePath);
+        if (existing) {
+          if (existing.sizeBytes !== stat.size) {
+            results.push(relativePath);
+            continue;
+          }
+          const contentHash = await hashFile(fullPath);
+          if (existing.contentHash !== contentHash) {
+            results.push(relativePath);
+          }
+          continue;
+        }
       } catch {
         continue; // stat failure, skip
       }
@@ -86,4 +96,9 @@ export async function scanForBinaries(
 
   await walk(memoryDir);
   return results;
+}
+
+async function hashFile(filePath: string): Promise<string> {
+  const content = await fsp.readFile(filePath);
+  return crypto.createHash("sha256").update(content).digest("hex");
 }

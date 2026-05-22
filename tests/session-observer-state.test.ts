@@ -242,6 +242,48 @@ test("session observer concurrent saves preserve both instances", async () => {
   }
 });
 
+test("session observer concurrent instances debounce threshold decisions against shared state", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-session-observer-concurrent-trigger-"));
+  try {
+    const opts = {
+      memoryDir: dir,
+      debounceMs: 120_000,
+      bands: [{ maxBytes: 1_000_000, triggerDeltaBytes: 100, triggerDeltaTokens: 100 }],
+    };
+    const a = new SessionObserverState(opts);
+    const b = new SessionObserverState(opts);
+    await a.load();
+    await b.load();
+
+    await a.observe({
+      sessionKey: "agent:generalist:main",
+      totalBytes: 0,
+      totalTokens: 0,
+      observedAt: "2026-01-01T00:00:00.000Z",
+    });
+    await b.load();
+
+    const decisions = await Promise.all([
+      a.observe({
+        sessionKey: "agent:generalist:main",
+        totalBytes: 200,
+        totalTokens: 200,
+        observedAt: "2026-01-01T00:01:00.000Z",
+      }),
+      b.observe({
+        sessionKey: "agent:generalist:main",
+        totalBytes: 200,
+        totalTokens: 200,
+        observedAt: "2026-01-01T00:01:00.000Z",
+      }),
+    ]);
+
+    assert.equal(decisions.filter((decision) => decision.triggered).length, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("session observer recovers stale lock files", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-session-observer-stale-lock-"));
   try {

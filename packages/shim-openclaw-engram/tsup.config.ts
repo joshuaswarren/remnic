@@ -7,6 +7,7 @@ export default defineConfig({
   platform: "node",
   outDir: "dist",
   clean: true,
+  dts: true,
   external: [
     "openclaw",
     "@remnic/core",

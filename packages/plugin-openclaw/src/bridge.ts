@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Worker, type WorkerOptions } from "node:worker_threads";
+import { expandTildePath } from "@remnic/core";
 
 export type BridgeMode = "embedded" | "delegate";
 
@@ -91,7 +92,7 @@ function readCompatEnv(primary: string, legacy: string): string | undefined {
 function configPathCandidates(): string[] {
   const envPath = readCompatEnv("REMNIC_CONFIG_PATH", "ENGRAM_CONFIG_PATH");
   return [
-    ...(envPath ? [path.resolve(envPath)] : []),
+    ...(envPath ? [path.resolve(expandTildePath(envPath))] : []),
     path.join(resolveHomeDir(), ".config", "remnic", "config.json"),
     path.join(resolveHomeDir(), ".config", "engram", "config.json"),
     path.join(process.cwd(), "remnic.config.json"),

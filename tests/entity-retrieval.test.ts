@@ -99,6 +99,69 @@ test("entity retrieval builds answer hints and persists a mention index", async 
   assert.ok(index.entities.some((entry: { canonicalId: string }) => entry.canonicalId === canonical));
 });
 
+test("entity retrieval reads entity hints from allowed secondary namespaces only", async () => {
+  const { memoryDir, config } = await buildHarness("engram-entity-namespace-recall", {
+    namespacesEnabled: true,
+    defaultNamespace: "alice",
+    sharedNamespace: "shared",
+  });
+  const aliceStorage = new StorageManager(
+    path.join(memoryDir, "namespaces", "alice"),
+    config.entitySchemas,
+  );
+  const sharedStorage = new StorageManager(
+    path.join(memoryDir, "namespaces", "shared"),
+    config.entitySchemas,
+  );
+  const privateStorage = new StorageManager(
+    path.join(memoryDir, "namespaces", "private"),
+    config.entitySchemas,
+  );
+  await Promise.all([
+    aliceStorage.ensureDirectories(),
+    sharedStorage.ensureDirectories(),
+    privateStorage.ensureDirectories(),
+  ]);
+
+  await writeEntity(
+    sharedStorage,
+    "Shared Person",
+    "person",
+    ["Shared Person owns the allowed shared launch note."],
+    "Shared Person is visible from the shared namespace.",
+  );
+  await writeEntity(
+    privateStorage,
+    "Shared Person",
+    "person",
+    ["Shared Person owns a private namespace secret."],
+    "Shared Person is private-only and must not leak.",
+  );
+
+  const section = await buildEntityRecallSection({
+    config,
+    storage: aliceStorage,
+    namespaceStorage: async (namespace) => {
+      if (namespace === "alice") return aliceStorage;
+      if (namespace === "shared") return sharedStorage;
+      if (namespace === "private") return privateStorage;
+      throw new Error(`unexpected namespace ${namespace}`);
+    },
+    recallNamespaces: ["alice", "shared"],
+    query: "Who is Shared Person?",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+  });
+
+  assert.ok(section);
+  assert.match(section!, /Shared Person is visible from the shared namespace/);
+  assert.doesNotMatch(section!, /private namespace secret|private-only/);
+});
+
 test("entity retrieval preserves mention-index updatedAt when entity state is unchanged", async () => {
   const { memoryDir, config, storage } = await buildHarness("engram-entity-stable-index");
   await writeEntity(

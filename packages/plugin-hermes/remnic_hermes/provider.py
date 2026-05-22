@@ -9,7 +9,7 @@ import uuid
 from collections import OrderedDict
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from time import monotonic
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from remnic_hermes.client import RemnicClient
 from remnic_hermes.config import RemnicHermesConfig
@@ -246,6 +246,25 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
                 if cache_key.startswith(prefix):
                     self._prefetch_cache.pop(cache_key, None)
 
+    async def _client_call(self, operation: Callable[[RemnicClient], Awaitable[Any]]) -> Any:
+        client = self._client
+        if not client:
+            return {"error": "Not connected to Remnic"}
+
+        async def call() -> Any:
+            return await operation(client)
+
+        provider_loop = _get_loop()
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is provider_loop:
+            return await call()
+
+        future = asyncio.run_coroutine_threadsafe(call(), provider_loop)
+        return await asyncio.wrap_future(future)
+
     def _queue_prefetch_locked(self, cache_key: str, query: str, session_key: str) -> Future[Any]:
         self._prefetch_inflight.add(cache_key)
         future = asyncio.run_coroutine_threadsafe(
@@ -278,10 +297,12 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
     async def _recall_block(self, *, query: str, session_key: str) -> str:
         if not self._client:
             return ""
-        result = await self._client.recall(
-            query=query,
-            session_key=session_key,
-            top_k=8,
+        result = await self._client_call(
+            lambda client: client.recall(
+                query=query,
+                session_key=session_key,
+                top_k=8,
+            )
         )
         context = result.get("context", "")
         count = result.get("count", 0)
@@ -330,9 +351,11 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
     async def _observe_and_invalidate_async(self, *, session_key: str, messages: list[dict[str, Any]]) -> None:
         if not self._client:
             return
-        await self._client.observe(
-            session_key=session_key,
-            messages=messages,
+        await self._client_call(
+            lambda client: client.observe(
+                session_key=session_key,
+                messages=messages,
+            )
         )
         self._clear_prefetch_cache(session_key)
 
@@ -351,9 +374,11 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         if not messages:
             return
         try:
-            await self._client.observe(
-                session_key=self._session_key,
-                messages=messages,
+            await self._client_call(
+                lambda client: client.observe(
+                    session_key=self._session_key,
+                    messages=messages,
+                )
             )
             self._clear_prefetch_cache(self._session_key)
         except Exception:
@@ -1397,21 +1422,18 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
 
     async def recall(self, query: str, **kwargs: Any) -> dict[str, Any]:
         """Tool handler for remnic_recall / engram_recall."""
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.recall(query=query, session_key=self._session_key)
+        return await self._client_call(lambda client: client.recall(query=query, session_key=self._session_key))
 
     async def store(self, content: str, **kwargs: Any) -> dict[str, Any]:
         """Tool handler for remnic_store / engram_store."""
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.store(content=content)
+        session_key = kwargs.pop("sessionKey", self._session_key)
+        return await self._client_call(
+            lambda client: client.store(content=content, sessionKey=session_key, **kwargs)
+        )
 
     async def search(self, query: str, **kwargs: Any) -> dict[str, Any]:
         """Tool handler for remnic_search / engram_search."""
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.search(query=query)
+        return await self._client_call(lambda client: client.search(query=query))
 
     async def lcm_search(
         self,
@@ -1422,130 +1444,86 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Tool handler for remnic_lcm_search / engram_lcm_search."""
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.lcm_search(
-            query=query,
-            session_key=sessionKey,
-            namespace=namespace,
-            limit=limit,
+        return await self._client_call(
+            lambda client: client.lcm_search(
+                query=query,
+                session_key=sessionKey,
+                namespace=namespace,
+                limit=limit,
+            )
         )
 
     async def recall_explain(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.recall_explain(**kwargs)
+        return await self._client_call(lambda client: client.recall_explain(**kwargs))
 
     async def recall_tier_explain(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.recall_tier_explain(**kwargs)
+        return await self._client_call(lambda client: client.recall_tier_explain(**kwargs))
 
     async def recall_xray(self, query: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.recall_xray(query=query, **kwargs)
+        return await self._client_call(lambda client: client.recall_xray(query=query, **kwargs))
 
     async def memory_last_recall(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_last_recall(**kwargs)
+        return await self._client_call(lambda client: client.memory_last_recall(**kwargs))
 
     async def memory_intent_debug(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_intent_debug(**kwargs)
+        return await self._client_call(lambda client: client.memory_intent_debug(**kwargs))
 
     async def memory_qmd_debug(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_qmd_debug(**kwargs)
+        return await self._client_call(lambda client: client.memory_qmd_debug(**kwargs))
 
     async def memory_graph_explain(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_graph_explain(**kwargs)
+        return await self._client_call(lambda client: client.memory_graph_explain(**kwargs))
 
     async def memory_feedback_last_recall(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_feedback_last_recall(**kwargs)
+        return await self._client_call(lambda client: client.memory_feedback_last_recall(**kwargs))
 
     async def set_coding_context(self, sessionKey: str, **kwargs: Any) -> dict[str, Any]:  # noqa: N803
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.set_coding_context(sessionKey, **kwargs)
+        return await self._client_call(lambda client: client.set_coding_context(sessionKey, **kwargs))
 
     async def memory_get(self, memoryId: str, **kwargs: Any) -> dict[str, Any]:  # noqa: N803
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_get(memoryId, **kwargs)
+        return await self._client_call(lambda client: client.memory_get(memoryId, **kwargs))
 
     async def memory_store(self, content: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
         session_key = kwargs.pop("sessionKey", self._session_key)
-        return await self._client.memory_store(content=content, sessionKey=session_key, **kwargs)
+        return await self._client_call(
+            lambda client: client.memory_store(content=content, sessionKey=session_key, **kwargs)
+        )
 
     async def memory_timeline(self, memoryId: str, **kwargs: Any) -> dict[str, Any]:  # noqa: N803
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_timeline(memoryId, **kwargs)
+        return await self._client_call(lambda client: client.memory_timeline(memoryId, **kwargs))
 
     async def memory_profile(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_profile(**kwargs)
+        return await self._client_call(lambda client: client.memory_profile(**kwargs))
 
     async def memory_entities(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_entities(**kwargs)
+        return await self._client_call(lambda client: client.memory_entities(**kwargs))
 
     async def memory_questions(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_questions(**kwargs)
+        return await self._client_call(lambda client: client.memory_questions(**kwargs))
 
     async def memory_identity(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_identity(**kwargs)
+        return await self._client_call(lambda client: client.memory_identity(**kwargs))
 
     async def memory_promote(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_promote(**kwargs)
+        return await self._client_call(lambda client: client.memory_promote(**kwargs))
 
     async def memory_outcome(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_outcome(**kwargs)
+        return await self._client_call(lambda client: client.memory_outcome(**kwargs))
 
     async def entity_get(self, name: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.entity_get(name, **kwargs)
+        return await self._client_call(lambda client: client.entity_get(name, **kwargs))
 
     async def memory_capture(self, content: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_capture(content=content, **kwargs)
+        return await self._client_call(lambda client: client.memory_capture(content=content, **kwargs))
 
     async def memory_action_apply(self, action: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_action_apply(action=action, **kwargs)
+        return await self._client_call(lambda client: client.memory_action_apply(action=action, **kwargs))
 
     async def continuity_audit_generate(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.continuity_audit_generate(**kwargs)
+        return await self._client_call(lambda client: client.continuity_audit_generate(**kwargs))
 
     async def continuity_incident_open(self, symptom: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.continuity_incident_open(symptom=symptom, **kwargs)
+        return await self._client_call(lambda client: client.continuity_incident_open(symptom=symptom, **kwargs))
 
     async def continuity_incident_close(
         self,
@@ -1554,19 +1532,17 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         verificationResult: str,  # noqa: N803
         **kwargs: Any,
     ) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.continuity_incident_close(
-            incident_id=id,
-            fix_applied=fixApplied,
-            verification_result=verificationResult,
-            **kwargs,
+        return await self._client_call(
+            lambda client: client.continuity_incident_close(
+                incident_id=id,
+                fix_applied=fixApplied,
+                verification_result=verificationResult,
+                **kwargs,
+            )
         )
 
     async def continuity_incident_list(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.continuity_incident_list(**kwargs)
+        return await self._client_call(lambda client: client.continuity_incident_list(**kwargs))
 
     async def continuity_loop_add_or_update(
         self,
@@ -1577,67 +1553,49 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         killCondition: str,  # noqa: N803
         **kwargs: Any,
     ) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.continuity_loop_add_or_update(
-            loop_id=id,
-            cadence=cadence,
-            purpose=purpose,
-            status=status,
-            kill_condition=killCondition,
-            **kwargs,
+        return await self._client_call(
+            lambda client: client.continuity_loop_add_or_update(
+                loop_id=id,
+                cadence=cadence,
+                purpose=purpose,
+                status=status,
+                kill_condition=killCondition,
+                **kwargs,
+            )
         )
 
     async def continuity_loop_review(self, id: str, **kwargs: Any) -> dict[str, Any]:  # noqa: A002,N803
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.continuity_loop_review(loop_id=id, **kwargs)
+        return await self._client_call(lambda client: client.continuity_loop_review(loop_id=id, **kwargs))
 
     async def identity_anchor_get(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.identity_anchor_get(**kwargs)
+        return await self._client_call(lambda client: client.identity_anchor_get(**kwargs))
 
     async def identity_anchor_update(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.identity_anchor_update(**kwargs)
+        return await self._client_call(lambda client: client.identity_anchor_update(**kwargs))
 
     async def review_queue_list(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.review_queue_list(**kwargs)
+        return await self._client_call(lambda client: client.review_queue_list(**kwargs))
 
     async def review_list(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.review_list(**kwargs)
+        return await self._client_call(lambda client: client.review_list(**kwargs))
 
     async def review_resolve(self, pairId: str, verb: str, **kwargs: Any) -> dict[str, Any]:  # noqa: N803
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.review_resolve(pair_id=pairId, verb=verb, **kwargs)
+        return await self._client_call(lambda client: client.review_resolve(pair_id=pairId, verb=verb, **kwargs))
 
     async def suggestion_submit(self, content: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
         session_key = kwargs.pop("sessionKey", self._session_key)
-        return await self._client.suggestion_submit(content=content, sessionKey=session_key, **kwargs)
+        return await self._client_call(
+            lambda client: client.suggestion_submit(content=content, sessionKey=session_key, **kwargs)
+        )
 
     async def work_task(self, action: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.work_task(action=action, **kwargs)
+        return await self._client_call(lambda client: client.work_task(action=action, **kwargs))
 
     async def work_project(self, action: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.work_project(action=action, **kwargs)
+        return await self._client_call(lambda client: client.work_project(action=action, **kwargs))
 
     async def work_board(self, action: str, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.work_board(action=action, **kwargs)
+        return await self._client_call(lambda client: client.work_board(action=action, **kwargs))
 
     async def shared_context_write_output(
         self,
@@ -1645,12 +1603,12 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         title: str,
         content: str,
     ) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.shared_context_write_output(
-            agent_id=agentId,
-            title=title,
-            content=content,
+        return await self._client_call(
+            lambda client: client.shared_context_write_output(
+                agent_id=agentId,
+                title=title,
+                content=content,
+            )
         )
 
     async def shared_feedback_record(
@@ -1660,34 +1618,26 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         reason: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.shared_feedback_record(
-            agent=agent,
-            decision=decision,
-            reason=reason,
-            **kwargs,
+        return await self._client_call(
+            lambda client: client.shared_feedback_record(
+                agent=agent,
+                decision=decision,
+                reason=reason,
+                **kwargs,
+            )
         )
 
     async def shared_priorities_append(self, agentId: str, text: str) -> dict[str, Any]:  # noqa: N803
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.shared_priorities_append(agent_id=agentId, text=text)
+        return await self._client_call(lambda client: client.shared_priorities_append(agent_id=agentId, text=text))
 
     async def shared_context_cross_signals_run(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.shared_context_cross_signals_run(**kwargs)
+        return await self._client_call(lambda client: client.shared_context_cross_signals_run(**kwargs))
 
     async def shared_context_curate_daily(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.shared_context_curate_daily(**kwargs)
+        return await self._client_call(lambda client: client.shared_context_curate_daily(**kwargs))
 
     async def compounding_weekly_synthesize(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.compounding_weekly_synthesize(**kwargs)
+        return await self._client_call(lambda client: client.compounding_weekly_synthesize(**kwargs))
 
     async def compounding_promote_candidate(
         self,
@@ -1695,68 +1645,46 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         candidateId: str,  # noqa: N803
         **kwargs: Any,
     ) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.compounding_promote_candidate(
-            week_id=weekId,
-            candidate_id=candidateId,
-            **kwargs,
+        return await self._client_call(
+            lambda client: client.compounding_promote_candidate(
+                week_id=weekId,
+                candidate_id=candidateId,
+                **kwargs,
+            )
         )
 
     async def compression_guidelines_optimize(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.compression_guidelines_optimize(**kwargs)
+        return await self._client_call(lambda client: client.compression_guidelines_optimize(**kwargs))
 
     async def compression_guidelines_activate(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.compression_guidelines_activate(**kwargs)
+        return await self._client_call(lambda client: client.compression_guidelines_activate(**kwargs))
 
     async def memory_governance_run(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_governance_run(**kwargs)
+        return await self._client_call(lambda client: client.memory_governance_run(**kwargs))
 
     async def procedure_mining_run(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.procedure_mining_run(**kwargs)
+        return await self._client_call(lambda client: client.procedure_mining_run(**kwargs))
 
     async def procedural_stats(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.procedural_stats(**kwargs)
+        return await self._client_call(lambda client: client.procedural_stats(**kwargs))
 
     async def contradiction_scan_run(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.contradiction_scan_run(**kwargs)
+        return await self._client_call(lambda client: client.contradiction_scan_run(**kwargs))
 
     async def memory_summarize_hourly(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.memory_summarize_hourly()
+        return await self._client_call(lambda client: client.memory_summarize_hourly())
 
     async def conversation_index_update(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.conversation_index_update(**kwargs)
+        return await self._client_call(lambda client: client.conversation_index_update(**kwargs))
 
     async def profiling_report(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.profiling_report(**kwargs)
+        return await self._client_call(lambda client: client.profiling_report(**kwargs))
 
     async def day_summary(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.day_summary(**kwargs)
+        return await self._client_call(lambda client: client.day_summary(**kwargs))
 
     async def briefing(self, **kwargs: Any) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.briefing(**kwargs)
+        return await self._client_call(lambda client: client.briefing(**kwargs))
 
     async def context_checkpoint(
         self,
@@ -1764,12 +1692,12 @@ class RemnicMemoryProvider(HermesMemoryProvider):  # type: ignore[misc]
         context: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        if not self._client:
-            return {"error": "Not connected to Remnic"}
-        return await self._client.context_checkpoint(
-            session_key=sessionKey,
-            context=context,
-            **kwargs,
+        return await self._client_call(
+            lambda client: client.context_checkpoint(
+                session_key=sessionKey,
+                context=context,
+                **kwargs,
+            )
         )
 
 

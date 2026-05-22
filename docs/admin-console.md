@@ -25,17 +25,21 @@ itself is a static `index.html` + `app.js` shell shipped under
 - **Review Queue** — governance review queue with confirm / reject /
   archive dispositions.
 - **Entity Explorer** — search and inspect entities.
-- **Memory Graph** — static force-directed view of the multi-graph
-  adjacency from `GET /engram/v1/graph/snapshot` (issue #691).
+- **Memory Graph** — live force-directed view of the multi-graph
+  adjacency from `GET /engram/v1/graph/snapshot` plus incremental
+  updates from `GET /engram/v1/graph/events` (issue #691).
 - **Maintenance** — JSON dump of the current maintenance summary.
 
 ## Memory Graph pane (#691 PR 3/5)
 
-The graph pane fetches a read-only snapshot from
+The graph pane fetches a read-only baseline snapshot from
 `GET /engram/v1/graph/snapshot` and renders it with a small vanilla
-force-directed simulation (no new runtime dependencies). Updates are
-**static** in this revision — every refresh re-fetches and re-runs
-the layout. Live patch streaming ships in PR 5/5.
+force-directed simulation (no new runtime dependencies). After the
+snapshot loads, the pane opens an SSE stream at
+`GET /engram/v1/graph/events` and applies incremental node/edge
+mutations in memory so new graph changes appear without a full
+re-fetch. The **Refresh** control still re-fetches the baseline snapshot
+and restarts the stream.
 
 Controls:
 

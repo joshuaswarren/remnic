@@ -58,6 +58,8 @@ interface TokenEntry {
   token: string;
 }
 
+type PersistRollbackManifest = () => Promise<void>;
+
 const MARKER_FILE = ".migrated-from-engram";
 const LOCK_FILE = ".migration.lock";
 const ROLLBACK_MANIFEST = ".rollback.json";
@@ -163,11 +165,32 @@ async function pathExistsNoFollow(filePath: string): Promise<boolean> {
   }
 }
 
+async function assertExistingRegularFileNoFollow(filePath: string, label: string): Promise<void> {
+  const fileStat = await lstat(filePath);
+  if (fileStat.isSymbolicLink()) {
+    throw new Error(`${label} must not be a symlink: ${filePath}`);
+  }
+  if (!fileStat.isFile()) {
+    throw new Error(`${label} must be a regular file: ${filePath}`);
+  }
+}
+
+async function isExistingRegularFileNoFollow(filePath: string): Promise<boolean> {
+  try {
+    const fileStat = await lstat(filePath);
+    return fileStat.isFile() && !fileStat.isSymbolicLink();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 async function copyTreeMissing(
   source: string,
   destination: string,
   copied: string[],
   manifest: RollbackManifest,
+  persistManifest?: PersistRollbackManifest,
   isRoot = true,
 ): Promise<void> {
   if (!existsSync(source)) return;
@@ -190,6 +213,7 @@ async function copyTreeMissing(
         path.join(destination, entry.name),
         copied,
         manifest,
+        persistManifest,
         false,
       );
     }
@@ -199,7 +223,7 @@ async function copyTreeMissing(
   if (await pathExistsNoFollow(destination)) return;
   await ensureParent(destination);
   await copyFile(source, destination);
-  await recordCreatedPath(destination, manifest);
+  await recordCreatedPath(destination, manifest, persistManifest);
   copied.push(destination);
 }
 
@@ -251,6 +275,7 @@ function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
 
 async function rewriteTokensIfPresent(filePath: string): Promise<number> {
   if (!existsSync(filePath)) return 0;
+  await assertExistingRegularFileNoFollow(filePath, "Remnic token store");
   await secureTokenFilePermissions(filePath);
   let raw: Record<string, unknown>;
   try {
@@ -294,8 +319,13 @@ async function mergeLegacyTokens(
   homeDir: string,
   manifest: RollbackManifest,
   backupExisting: boolean,
+  persistManifest?: PersistRollbackManifest,
 ): Promise<number> {
+  if (existsSync(legacyTokensPath)) {
+    await assertExistingRegularFileNoFollow(legacyTokensPath, "legacy Engram token store");
+  }
   if (!existsSync(remnicTokensPath)) return 0;
+  await assertExistingRegularFileNoFollow(remnicTokensPath, "Remnic token store");
   await secureTokenFilePermissions(remnicTokensPath);
   if (!existsSync(legacyTokensPath)) return rewriteTokensIfPresent(remnicTokensPath);
 
@@ -325,7 +355,7 @@ async function mergeLegacyTokens(
     });
 
     if (backupExisting) {
-      await backupFile(remnicTokensPath, originalRemnic, homeDir, manifest);
+      await backupFile(remnicTokensPath, originalRemnic, homeDir, manifest, persistManifest);
     }
 
     await writeTokenStoreFile(
@@ -364,7 +394,7 @@ async function mergeLegacyTokens(
   if (!changed) return rewritten;
 
   if (backupExisting) {
-    await backupFile(remnicTokensPath, originalRemnic, homeDir, manifest);
+    await backupFile(remnicTokensPath, originalRemnic, homeDir, manifest, persistManifest);
   }
 
   await writeTokenStoreFile(
@@ -378,8 +408,10 @@ async function rewriteJsonFile(
   targetPath: string,
   homeDir: string,
   manifest: RollbackManifest,
+  persistManifest?: PersistRollbackManifest,
 ): Promise<boolean> {
   if (!existsSync(targetPath)) return false;
+  if (!(await isExistingRegularFileNoFollow(targetPath))) return false;
 
   const original = await readFile(targetPath, "utf8");
   let parsed: unknown;
@@ -408,7 +440,7 @@ async function rewriteJsonFile(
   const next = `${rewritten}\n`;
   if (!changed && next === original) return false;
 
-  await backupFile(targetPath, original, homeDir, manifest);
+  await backupFile(targetPath, original, homeDir, manifest, persistManifest);
   await writeFile(targetPath, next, "utf8");
   return true;
 }
@@ -418,6 +450,7 @@ async function backupFile(
   originalContent: string,
   homeDir: string,
   manifest: RollbackManifest,
+  persistManifest?: PersistRollbackManifest,
 ): Promise<void> {
   if (manifest.entries.some((entry) => entry.targetPath === targetPath && entry.backupPath)) {
     return;
@@ -433,11 +466,17 @@ async function backupFile(
     await chmod(backupPath, originalMode);
   }
   manifest.entries.push({ targetPath, backupPath });
+  await persistManifest?.();
 }
 
-async function recordCreatedPath(filePath: string, manifest: RollbackManifest): Promise<void> {
+async function recordCreatedPath(
+  filePath: string,
+  manifest: RollbackManifest,
+  persistManifest?: PersistRollbackManifest,
+): Promise<void> {
   if (manifest.entries.some((entry) => entry.targetPath === filePath)) return;
   manifest.entries.push({ targetPath: filePath, createdByMigration: true });
+  await persistManifest?.();
 }
 
 function defaultConnectorConfigPaths(homeDir: string, cwd: string): string[] {
@@ -454,11 +493,12 @@ async function updateConnectorConfigs(
   cwd: string,
   options: MigrationOptions | undefined,
   manifest: RollbackManifest,
+  persistManifest?: PersistRollbackManifest,
 ): Promise<string[]> {
   const updated: string[] = [];
   const candidates = options?.connectorConfigPaths ?? defaultConnectorConfigPaths(homeDir, cwd);
   for (const targetPath of candidates) {
-    if (await rewriteJsonFile(targetPath, homeDir, manifest)) {
+    if (await rewriteJsonFile(targetPath, homeDir, manifest, persistManifest)) {
       updated.push(targetPath);
     }
   }
@@ -469,10 +509,12 @@ async function copyLegacyConfig(
   homeDir: string,
   copied: string[],
   manifest: RollbackManifest,
+  persistManifest?: PersistRollbackManifest,
 ): Promise<void> {
   const source = legacyConfigPath(homeDir);
   const destination = remnicConfigPath(homeDir);
   if (!existsSync(source) || existsSync(destination)) return;
+  if (!(await isExistingRegularFileNoFollow(source))) return;
   await ensureParent(destination);
   const original = await readFile(source, "utf8");
   let next = rewriteRemnicText(original);
@@ -487,7 +529,7 @@ async function copyLegacyConfig(
     // Keep rewritten text when config is not JSON.
   }
   await writeFile(destination, `${next.trimEnd()}\n`, "utf8");
-  await recordCreatedPath(destination, manifest);
+  await recordCreatedPath(destination, manifest, persistManifest);
   copied.push(destination);
 }
 
@@ -499,6 +541,7 @@ async function migrateServices(
   homeDir: string,
   options: MigrationOptions | undefined,
   manifest: RollbackManifest,
+  persistManifest?: PersistRollbackManifest,
 ): Promise<string[]> {
   const logger = resolveLogger(options);
   const exec = resolveExec(options);
@@ -509,10 +552,11 @@ async function migrateServices(
     const legacyPlist = path.join(homeDir, "Library", "LaunchAgents", "ai.engram.daemon.plist");
     const remnicPlist = path.join(homeDir, "Library", "LaunchAgents", "ai.remnic.daemon.plist");
     if (existsSync(legacyPlist) && !existsSync(remnicPlist)) {
+      if (!(await isExistingRegularFileNoFollow(legacyPlist))) return servicesReinstalled;
       const next = rewriteServiceText(await readFile(legacyPlist, "utf8"));
       await ensureParent(remnicPlist);
       await writeFile(remnicPlist, next, "utf8");
-      await recordCreatedPath(remnicPlist, manifest);
+      await recordCreatedPath(remnicPlist, manifest, persistManifest);
       try {
         exec("launchctl", ["unload", legacyPlist]);
       } catch {
@@ -533,10 +577,11 @@ async function migrateServices(
     const legacyUnit = path.join(homeDir, ".config", "systemd", "user", "engram.service");
     const remnicUnit = path.join(homeDir, ".config", "systemd", "user", "remnic.service");
     if (existsSync(legacyUnit) && !existsSync(remnicUnit)) {
+      if (!(await isExistingRegularFileNoFollow(legacyUnit))) return servicesReinstalled;
       const next = rewriteServiceText(await readFile(legacyUnit, "utf8"));
       await ensureParent(remnicUnit);
       await writeFile(remnicUnit, next, "utf8");
-      await recordCreatedPath(remnicUnit, manifest);
+      await recordCreatedPath(remnicUnit, manifest, persistManifest);
       try {
         exec("systemctl", ["--user", "stop", "engram.service"]);
         exec("systemctl", ["--user", "disable", "engram.service"]);
@@ -738,16 +783,18 @@ export async function migrateFromEngram(options?: MigrationOptions): Promise<Mig
       };
     }
 
-    const manifest: RollbackManifest = {
+    const manifest: RollbackManifest = await readRollbackManifest(homeDir) ?? {
       version: 1,
       createdAt: new Date().toISOString(),
       entries: [],
     };
+    const persistManifest = () => writeRollbackManifest(homeDir, manifest);
 
     logger("First run after Engram -> Remnic rename. Migrating...");
     await mkdir(remnicRoot(homeDir), { recursive: true });
-    await copyTreeMissing(legacyRoot(homeDir), remnicRoot(homeDir), copied, manifest);
-    await copyLegacyConfig(homeDir, copied, manifest);
+    await persistManifest();
+    await copyTreeMissing(legacyRoot(homeDir), remnicRoot(homeDir), copied, manifest, persistManifest);
+    await copyLegacyConfig(homeDir, copied, manifest, persistManifest);
 
     const legacyTokens = path.join(legacyRoot(homeDir), "tokens.json");
     const remnicTokens = path.join(remnicRoot(homeDir), "tokens.json");
@@ -760,18 +807,19 @@ export async function migrateFromEngram(options?: MigrationOptions): Promise<Mig
         homeDir,
         manifest,
         true,
+        persistManifest,
       );
     }
     if (existsSync(remnicTokens)) {
       logger("tokens copied to ~/.remnic/tokens.json (legacy prefixes rewritten)");
     }
 
-    const updatedConfigs = await updateConnectorConfigs(homeDir, cwd, options, manifest);
+    const updatedConfigs = await updateConnectorConfigs(homeDir, cwd, options, manifest, persistManifest);
     for (const updated of updatedConfigs) {
       logger(`Updated connector config: ${updated}`);
     }
 
-    servicesReinstalled = await migrateServices(homeDir, options, manifest);
+    servicesReinstalled = await migrateServices(homeDir, options, manifest, persistManifest);
     await writeRollbackManifest(homeDir, manifest);
     await writeFile(markerPath(homeDir), `${new Date().toISOString()}\n`, "utf8");
     logger("Migration complete. Welcome to Remnic.");

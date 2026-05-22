@@ -45,7 +45,7 @@ type PromotionCandidate = {
   id: string;
   sourceType: "action-outcome" | "mistake-pattern" | "rubric" | "causal-pattern";
   subject: string;
-  category: "principle" | "rule";
+  category: "principle" | "rule" | "preference";
   content: string;
   score: number;
   rationale: string;
@@ -142,7 +142,7 @@ export interface CompoundingPromotionReport {
   promoted: Array<{
     id: string;
     candidateId: string;
-    category: "principle" | "rule";
+    category: "principle" | "rule" | "preference";
     content: string;
     confidence: number;
     tags: string[];

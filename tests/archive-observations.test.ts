@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { archiveObservations } from "../src/maintenance/archive-observations.js";
 
 async function createFile(baseDir: string, relativePath: string, content: string): Promise<void> {
@@ -59,6 +59,25 @@ test("archiveObservations copies then removes old observation artifacts", async 
     const archived = await readFile(path.join(result.archiveRoot, rel), "utf-8");
     assert.equal(archived, `payload:${rel}`);
   }
+});
+
+test("archiveObservations skips symlinked roots outside memoryDir", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-archive-observations-symlink-memory-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "engram-archive-observations-symlink-outside-"));
+  const outsideFile = "main/default/2026-01-01.jsonl";
+  await createFile(outsideDir, outsideFile, "outside payload\n");
+  await symlink(outsideDir, path.join(memoryDir, "transcripts"), "dir");
+
+  const result = await archiveObservations({
+    memoryDir,
+    now: new Date("2026-02-26T00:00:00.000Z"),
+    retentionDays: 14,
+    dryRun: false,
+  });
+
+  assert.equal(result.scannedFiles, 0);
+  assert.equal(result.archivedFiles, 0);
+  assert.equal(await readFile(path.join(outsideDir, outsideFile), "utf-8"), "outside payload\n");
 });
 
 test("archiveObservations ignores recent and non-dated files", async () => {

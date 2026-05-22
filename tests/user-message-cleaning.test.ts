@@ -1,34 +1,30 @@
-import test from "node:test";
 import assert from "node:assert/strict";
-import { cleanUserMessage } from "../src/user-message-cleaning.js";
+import test from "node:test";
 
-test("cleanUserMessage removes legacy and remnic memory context headers", () => {
-  const remnicPayload = [
-    "Before",
-    "## Memory Context (Remnic)",
-    "",
-    "Remember this",
-    "",
-    "## Next Section",
-    "After",
-  ].join("\n");
-  const engramPayload = [
-    "Before",
-    "## Memory Context (Engram)",
-    "",
-    "Remember this",
-    "",
-    "## Next Section",
-    "After",
-  ].join("\n");
+import { cleanUserMessage } from "../src/user-message-cleaning.ts";
 
-  const cleanedRemnic = cleanUserMessage(remnicPayload);
-  const cleanedEngram = cleanUserMessage(engramPayload);
+test("cleanUserMessage preserves user-authored trailing message IDs", () => {
+  assert.equal(
+    cleanUserMessage("Please document this literal marker: [message_id: user-kept]"),
+    "Please document this literal marker: [message_id: user-kept]",
+  );
+});
 
-  assert.equal(cleanedRemnic.includes("Memory Context (Remnic)"), false);
-  assert.equal(cleanedEngram.includes("Memory Context (Engram)"), false);
-  assert.equal(cleanedRemnic.includes("Remember this"), false);
-  assert.equal(cleanedEngram.includes("Remember this"), false);
-  assert.equal(cleanedRemnic.includes("## Next Section\nAfter"), true);
-  assert.equal(cleanedEngram.includes("## Next Section\nAfter"), true);
+test("cleanUserMessage removes message IDs only with a platform header", () => {
+  assert.equal(
+    cleanUserMessage("[OpenClaw user id:123 2026-05-22] Remember the deployment [message_id: host-1]"),
+    "Remember the deployment",
+  );
+});
+
+test("cleanUserMessage only strips markdown memory context as a leading preamble", () => {
+  assert.equal(
+    cleanUserMessage("User text\n\n## Memory Context (Remnic)\nKeep this literal section."),
+    "User text\n\n## Memory Context (Remnic)\nKeep this literal section.",
+  );
+
+  assert.equal(
+    cleanUserMessage("## Memory Context (Remnic)\nInjected recall\n## Request\nDo the work"),
+    "## Request\nDo the work",
+  );
 });

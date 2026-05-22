@@ -348,6 +348,106 @@ test("LongMemEval search_hits falls back to session-scoped search", async () => 
   }
 });
 
+test("LongMemEval search_hits survives rejecting unscoped search", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-lme-search-reject-"));
+  try {
+    await writeFile(
+      path.join(tempDir, "longmemeval_oracle.json"),
+      JSON.stringify([
+        {
+          question_id: "search-reject-1",
+          question_type: "single-session-user",
+          question: "What city does the user live in?",
+          answer: "Paris",
+          question_date: "2025-01-01",
+          haystack_sessions: [
+            [{ role: "user", content: "I moved to Paris last year." }],
+          ],
+          haystack_session_ids: ["city-session"],
+          haystack_dates: ["2025-01-01"],
+          answer_session_ids: ["city-session"],
+        },
+      ]),
+      "utf8",
+    );
+
+    const searchSessionIds: Array<string | undefined> = [];
+    const result = await runLongMemEvalBenchmark({
+      benchmark: longMemEvalDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          return "I moved to Paris last year.";
+        },
+        async search(_query, _limit, sessionId) {
+          searchSessionIds.push(sessionId);
+          if (sessionId === undefined) {
+            throw new Error("global search unavailable");
+          }
+          return sessionId === "city-session"
+            ? [
+                {
+                  turnIndex: 0,
+                  role: "user",
+                  snippet: "I moved to Paris last year.",
+                  sessionId,
+                },
+              ]
+            : [];
+        },
+        async reset() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond() {
+            return {
+              text: "Paris",
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "smoke-responder",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "smoke-judge",
+            };
+          },
+          async scoreBinaryPrompt() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "smoke-judge",
+            };
+          },
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.deepEqual(searchSessionIds, [undefined, "city-session"]);
+    assert.equal(task.scores.f1, 1);
+    assert.equal(task.scores.judge_accuracy, 1);
+    assert.equal(task.scores.search_hits, 1);
+    assert.equal(task.details.directSearchHits, 1);
+    assert.equal(task.details.recallEvidenceHits, 0);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("LongMemEval search_hits counts recalled evidence when direct search is empty", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-lme-recall-hit-"));
   try {

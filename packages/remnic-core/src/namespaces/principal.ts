@@ -1,4 +1,16 @@
 import type { PluginConfig } from "../types.js";
+import { isLikelyUnsafeRegex } from "../routing/engine.js";
+
+const MAX_REGEX_SESSION_KEY_LENGTH = 512;
+
+function compileSafePrincipalRegex(pattern: string): RegExp | null {
+  if (isLikelyUnsafeRegex(pattern)) return null;
+  try {
+    return new RegExp(pattern);
+  } catch {
+    return null;
+  }
+}
 
 export function resolvePrincipal(sessionKey: string | undefined, config: PluginConfig): string {
   if (!config.namespacesEnabled) return "default";
@@ -17,12 +29,12 @@ export function resolvePrincipal(sessionKey: string | undefined, config: PluginC
       if (sk === r.match) return r.principal;
     }
   } else if (mode === "regex") {
-    for (const r of rules) {
-      try {
-        const re = new RegExp(r.match);
-        if (re.test(sk)) return r.principal;
-      } catch {
-        // ignore invalid regex
+    if (sk.length <= MAX_REGEX_SESSION_KEY_LENGTH) {
+      for (const r of rules) {
+        const re = compileSafePrincipalRegex(r.match);
+        if (re?.test(sk)) {
+          return r.principal;
+        }
       }
     }
   }
@@ -83,4 +95,3 @@ export function recallNamespacesForPrincipal(principal: string, config: PluginCo
 
   return out;
 }
-

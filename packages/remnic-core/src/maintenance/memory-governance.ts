@@ -139,7 +139,7 @@ export interface RestoreMemoryGovernanceRunOptions {
   now?: Date;
 }
 
-const RULE_VERSION = "memory-governance.v2";
+export const RULE_VERSION = "memory-governance.v2";
 const SEMANTIC_DUPLICATE_MIN_TOKENS = 6;
 const SEMANTIC_DUPLICATE_MIN_JACCARD = 0.66;
 const QUALITY_SCORE_WEIGHTS: Record<MemoryGovernanceReasonCode, number> = {
@@ -860,10 +860,12 @@ export async function runMemoryGovernance(
           relatedMemoryIds: reviewEntry?.relatedMemoryIds ?? [],
           correlationId: traceId,
         });
-        if (!archivedPath) continue;
+        if (!archivedPath) {
+          continue;
+        }
+        restoreEntry.applied = true;
         restoreEntry.currentPath = archivedPath;
         restoreEntry.expectedCurrentRaw = await safeRead(archivedPath) ?? undefined;
-        restoreEntry.applied = true;
         await persistRestoreManifest(options.memoryDir, restoreManifest);
         appliedActions.push({
           ...action,
@@ -885,9 +887,11 @@ export async function runMemoryGovernance(
         relatedMemoryIds: reviewEntry?.relatedMemoryIds ?? [],
         correlationId: traceId,
       });
-      if (!updated) continue;
-      restoreEntry.expectedCurrentRaw = await safeRead(memory.path) ?? undefined;
+      if (!updated) {
+        continue;
+      }
       restoreEntry.applied = true;
+      restoreEntry.expectedCurrentRaw = await safeRead(memory.path) ?? undefined;
       await persistRestoreManifest(options.memoryDir, restoreManifest);
       appliedActions.push({
         ...action,

@@ -6,6 +6,20 @@ import net from "node:net";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { GraphDashboardServer } from "../src/dashboard-runtime.js";
 
+async function waitForCondition(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 1_500,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("condition was not met before timeout");
+}
+
 function waitForSocketChunk(socket: net.Socket): Promise<string> {
   return new Promise((resolve, reject) => {
     const onData = (chunk: Buffer) => {
@@ -93,6 +107,103 @@ test("dashboard server serves health, graph, static assets, and websocket upgrad
     const upgradeResponse = await waitForSocketChunk(socket);
     assert.match(upgradeResponse, /101 Switching Protocols/);
     socket.destroy();
+  } finally {
+    await server.stop();
+  }
+});
+
+test("dashboard server rejects non-loopback binds without an auth token", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-dashboard-server-bind-auth-"));
+  const server = new GraphDashboardServer({
+    memoryDir,
+    host: "0.0.0.0",
+    port: 0,
+    publicDir: path.join(process.cwd(), "dashboard", "public"),
+  });
+
+  await assert.rejects(
+    () => server.start(),
+    /dashboard auth token is required when binding to a non-loopback host/,
+  );
+});
+
+test("dashboard server requires bearer auth for API access when token is configured", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-dashboard-server-http-auth-"));
+  const graphDir = path.join(memoryDir, "state", "graphs");
+  await mkdir(graphDir, { recursive: true });
+  await writeFile(
+    path.join(graphDir, "entity.jsonl"),
+    JSON.stringify({
+      from: "facts/2026-02-28/a.md",
+      to: "facts/2026-02-28/b.md",
+      type: "entity",
+      weight: 1,
+      label: "project",
+      ts: "2026-02-28T10:00:00.000Z",
+    }) + "\n",
+    "utf-8",
+  );
+
+  const server = new GraphDashboardServer({
+    memoryDir,
+    host: "0.0.0.0",
+    port: 0,
+    publicDir: path.join(process.cwd(), "dashboard", "public"),
+    authToken: "secret-token",
+  });
+  const started = await server.start();
+  try {
+    const base = `http://127.0.0.1:${started.port}`;
+    const unauthenticatedHealth = await fetch(`${base}/api/health`);
+    assert.equal(unauthenticatedHealth.status, 401);
+    const unauthenticatedGraph = await fetch(`${base}/api/graph`);
+    assert.equal(unauthenticatedGraph.status, 401);
+
+    const graphRes = await fetch(`${base}/api/graph`, {
+      headers: { Authorization: "Bearer secret-token" },
+    });
+    assert.equal(graphRes.status, 200);
+    const graph = await graphRes.json() as { stats: { edges: number; nodes: number } };
+    assert.equal(graph.stats.edges, 1);
+    assert.equal(graph.stats.nodes, 2);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("dashboard server watches graph files created after startup", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-dashboard-server-late-graphs-"));
+  const server = new GraphDashboardServer({
+    memoryDir,
+    host: "127.0.0.1",
+    port: 0,
+    publicDir: path.join(process.cwd(), "dashboard", "public"),
+    watchDebounceMs: 50,
+  });
+  const started = await server.start();
+  try {
+    assert.equal(started.watching, true);
+    const graphDir = path.join(memoryDir, "state", "graphs");
+    await mkdir(graphDir, { recursive: true });
+    await writeFile(
+      path.join(graphDir, "entity.jsonl"),
+      JSON.stringify({
+        from: "facts/2026-02-28/a.md",
+        to: "facts/2026-02-28/b.md",
+        type: "entity",
+        weight: 1,
+        label: "project",
+        ts: "2026-02-28T10:00:00.000Z",
+      }) + "\n",
+      "utf-8",
+    );
+
+    const base = `http://${started.host}:${started.port}`;
+    await waitForCondition(async () => {
+      const graphRes = await fetch(`${base}/api/graph`);
+      const graph = await graphRes.json() as { stats: { edges: number } };
+      return graph.stats.edges === 1;
+    });
   } finally {
     await server.stop();
   }

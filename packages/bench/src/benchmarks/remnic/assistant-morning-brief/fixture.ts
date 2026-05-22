@@ -69,11 +69,21 @@ export const ASSISTANT_MORNING_BRIEF_SCENARIOS: AssistantScenario[] = [
       facts: [
         ...ALEX_GRAPH.facts,
         {
+          id: "fact-atlas-rollback-saturday-update",
+          summary:
+            "Updated Saturday 10:30 after Friday: Atlas rollback runbook added database restore owner and rollback validation checklist.",
+          tags: ["project-atlas", "changed-since-friday", "runbook"],
+        },
+        {
           id: "fact-stale-q1-retro",
           summary:
             "Q1 retrospective document was last edited three months ago; no open actions remain.",
           tags: ["stale"],
         },
+      ],
+      openThreads: [
+        "Saturday 10:30 update: Atlas rollback runbook now has database restore ownership assigned; validation checklist still needs Alex's review.",
+        ...ALEX_GRAPH.openThreads,
       ],
     },
   },

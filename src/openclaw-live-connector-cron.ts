@@ -1,4 +1,4 @@
-import { ensureCronJob } from "./maintenance/memory-governance-cron.js";
+import { ensureCronJob } from "@remnic/core/maintenance/memory-governance-cron";
 import type { LiveConnectorsConfig } from "./types.js";
 
 const LIVE_CONNECTOR_CRON_ID = "engram-live-connectors-sync";

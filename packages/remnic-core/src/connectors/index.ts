@@ -530,6 +530,20 @@ const BUILTIN_CONNECTORS: ConnectorManifest[] = [
 // ── Registry management ───────────────────────────────────────────────────
 
 const REGISTRY_DIR_NAME = ".engram-connectors";
+const CONNECTOR_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function isValidConnectorId(connectorId: unknown): connectorId is string {
+  return typeof connectorId === "string" && CONNECTOR_ID_PATTERN.test(connectorId);
+}
+
+function isConnectorManifest(value: unknown): value is ConnectorManifest {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    isValidConnectorId((value as { id?: unknown }).id)
+  );
+}
 
 export function getRegistryPath(): string {
   const xdgConfigHome = readEnvVar("XDG_CONFIG_HOME");
@@ -552,28 +566,35 @@ export function loadRegistry(): ConnectorRegistry {
     return registry;
   }
 
-  const raw = fs.readFileSync(regPath, "utf8");
   try {
+    const raw = fs.readFileSync(regPath, "utf8");
     const parsed = JSON.parse(raw);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !Array.isArray((parsed as { connectors?: unknown }).connectors)
+    ) {
+      throw new Error("invalid registry schema");
+    }
     // Built-ins always take precedence over persisted entries with the same ID.
     // This ensures that upgraded manifests (e.g. newly-added requiresToken: true)
     // are never shadowed by stale registry.json entries from an older version.
     // Only connectors whose IDs are NOT in BUILTIN_CONNECTORS are preserved from
     // the persisted file — those are genuine user-added custom connectors.
     const builtinIds = new Set(BUILTIN_CONNECTORS.map((b) => b.id));
-    const customOnly = (parsed.connectors ?? []).filter((c: ConnectorManifest) => !builtinIds.has(c.id));
+    const customOnly = (parsed as { connectors: unknown[] }).connectors.filter(
+      (c): c is ConnectorManifest => isConnectorManifest(c) && !builtinIds.has(c.id),
+    );
     const merged = [...BUILTIN_CONNECTORS, ...customOnly];
     return {
       connectors: merged,
       registryPath: regPath,
     };
   } catch {
-    const registry: ConnectorRegistry = {
+    return {
       connectors: BUILTIN_CONNECTORS,
       registryPath: regPath,
     };
-    saveRegistry(registry);
-    return registry;
   }
 }
 
@@ -601,7 +622,9 @@ export function listConnectors(): {
           const config = JSON.parse(
             fs.readFileSync(path.join(connectorsDir, entry), "utf8"),
           );
-          installedIds.add(config.connectorId as string);
+          if (isValidConnectorId(config.connectorId)) {
+            installedIds.add(config.connectorId);
+          }
         } catch {
           // ignore malformed configs
         }
@@ -647,6 +670,9 @@ export function listConnectors(): {
 // for a connector — connector.json never contains it.
 
 export function getConnectorToken(connectorId: string): string | undefined {
+  if (!isValidConnectorId(connectorId)) {
+    return undefined;
+  }
   try {
     return loadTokenStore().tokens.find((t) => t.connector === connectorId)?.token;
   } catch {
@@ -696,6 +722,16 @@ function compactConnectorConfigOverrides(rawUserConfig: Record<string, unknown>)
 // ── Install connector ───────────────────────────────────────────────────────
 
 export function installConnector(options: InstallOptions): InstallResult {
+  if (!isValidConnectorId(options.connectorId)) {
+    return {
+      connectorId: options.connectorId,
+      status: "error",
+      message:
+        `Invalid connector ID ${JSON.stringify(options.connectorId)}. ` +
+        "Connector IDs must match [A-Za-z0-9][A-Za-z0-9._-]*.",
+    };
+  }
+
   const registry = loadRegistry();
   const manifest = registry.connectors.find((c) => c.id === options.connectorId);
 
@@ -1567,6 +1603,17 @@ export function installConnector(options: InstallOptions): InstallResult {
 
 export function removeConnector(connectorId: string): RemoveResult {
   const configDir = getConnectorsDir();
+  if (!isValidConnectorId(connectorId)) {
+    return {
+      connectorId,
+      configPath: configDir,
+      status: "skipped",
+      reason: "invalid-connector-id",
+      message:
+        `Removal aborted: invalid connector ID ${JSON.stringify(connectorId)}. ` +
+        "Connector IDs must match [A-Za-z0-9][A-Za-z0-9._-]*.",
+    };
+  }
   const configPath = path.join(configDir, `${connectorId}.json`);
 
   // For codex-cli, read the saved config BEFORE touching anything so we have
@@ -2088,19 +2135,43 @@ function sanitizeHermesPort(port: number | string): number {
 }
 
 /**
- * Write a file with owner-only (0o600) permissions.
+ * Atomically write a file with owner-only (0o600) permissions.
  *
- * Used for any file that may contain a bearer token. writeFileSync's `mode`
- * option only applies when the file is newly created, so we also chmod
- * afterwards to tighten permissions on pre-existing files. The chmod is
- * best-effort on platforms that don't support POSIX modes.
+ * Used for any file that may contain a bearer token. Write to a unique temp file
+ * in the destination directory, chmod the temp file, then rename into place so a
+ * failed write cannot truncate or corrupt the existing connector config.
  */
 function writeSecretFileSync(filePath: string, data: string): void {
-  fs.writeFileSync(filePath, data, { mode: 0o600 });
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const tmpPath = path.join(
+    dir,
+    `.${base}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  let wroteTemp = false;
   try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    /* best-effort on non-POSIX filesystems */
+    fs.writeFileSync(tmpPath, data, { mode: 0o600, flag: "wx" });
+    wroteTemp = true;
+    try {
+      fs.chmodSync(tmpPath, 0o600);
+    } catch {
+      /* best-effort on non-POSIX filesystems */
+    }
+    fs.renameSync(tmpPath, filePath);
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch {
+      /* best-effort on non-POSIX filesystems */
+    }
+  } catch (err) {
+    if (wroteTemp) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        /* best-effort temp cleanup */
+      }
+    }
+    throw err;
   }
 }
 

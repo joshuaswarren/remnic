@@ -75,17 +75,17 @@ export const RETRIEVAL_GRAPH_FIXTURE: GraphBenchCase[] = [
     id: "supersession-branches",
     title: "Branching supersession",
     description:
-      "A memory superseded by two different newer memories should rank " +
-      "both successors when the older memory is seeded (supersedes edge " +
-      "propagates mass from newer → older).",
+      "Two different newer memories that supersede the same canonical " +
+      "memory should surface their shared predecessor when both branch " +
+      "tips are seeded (supersedes edges propagate mass newer → older).",
     memories: [
       { id: "canonical" },
       { id: "update-1", supersedes: "canonical" },
       { id: "update-2", supersedes: "canonical" },
       { id: "unrelated" },
     ],
-    seedIds: ["update-1"],
-    expectedIds: ["update-1", "canonical"],
+    seedIds: ["update-1", "update-2"],
+    expectedIds: ["update-1", "update-2", "canonical"],
   },
   {
     id: "mixed-multihop",

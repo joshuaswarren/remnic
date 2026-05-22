@@ -183,6 +183,58 @@ describe("parseChatGPTExport", () => {
     assert.equal(turns[1]?.content, "Second user turn (active)");
   });
 
+  it("follows message-level parent links when mapping nodes omit parent", () => {
+    const conv = {
+      current_node: "msg-3",
+      mapping: {
+        "msg-1": {
+          id: "msg-1",
+          message: {
+            id: "msg-1",
+            author: { role: "user" },
+            content: { parts: ["First message-parent user turn"] },
+            create_time: 1000,
+          },
+        },
+        "msg-2": {
+          id: "msg-2",
+          message: {
+            id: "msg-2",
+            parent: "msg-1",
+            author: { role: "assistant" },
+            content: { parts: ["Reply"] },
+            create_time: 1100,
+          },
+        },
+        "msg-3": {
+          id: "msg-3",
+          message: {
+            id: "msg-3",
+            parent: "msg-2",
+            author: { role: "user" },
+            content: { parts: ["Second message-parent user turn"] },
+            create_time: 1200,
+          },
+        },
+        "msg-abandoned": {
+          id: "msg-abandoned",
+          message: {
+            id: "msg-abandoned",
+            parent: "msg-1",
+            author: { role: "user" },
+            content: { parts: ["ABANDONED message-parent branch"] },
+            create_time: 1050,
+          },
+        },
+      },
+    };
+    const turns = collectUserTurnsFromConversation(conv);
+    assert.deepEqual(
+      turns.map((turn) => turn.content),
+      ["First message-parent user turn", "Second message-parent user turn"],
+    );
+  });
+
   it("falls back to sorted traversal when current_node is missing", () => {
     const conv = {
       mapping: {

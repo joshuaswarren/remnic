@@ -6,17 +6,13 @@ import { execSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { LegacyBenchmarkResult } from "./adapters/types.js";
+import { resolveContainedPath, sanitizeFilenameSegment } from "./filename-safety.js";
 import { writeLeaderboardArtifactsForResult } from "./leaderboard-export.js";
 import { isSecretKey } from "./security/secret-keys.js";
 import type { BenchmarkResult } from "./types.js";
 
 const REDACTED_SECRET = "[REDACTED]";
 const PROCESS_GIT_SHA = readGitSha();
-
-function sanitizeFilenameSegment(value: string): string {
-  const sanitized = value.trim().replace(/[^a-zA-Z0-9._-]/g, "_");
-  return sanitized.length > 0 ? sanitized : "unknown";
-}
 
 export function redactBenchmarkResultSecrets<T>(value: T): T {
   return redactSecrets(value) as T;
@@ -94,17 +90,21 @@ export async function writeBenchmarkResult(
   result: BenchmarkResult,
   outputDir: string,
 ): Promise<string> {
-  await mkdir(outputDir, { recursive: true });
+  const outputRoot = path.resolve(outputDir);
+  await mkdir(outputRoot, { recursive: true });
 
+  const safeBenchmark = sanitizeFilenameSegment(result.meta.benchmark);
   const safeRemnicVersion = sanitizeFilenameSegment(result.meta.remnicVersion);
-  const timestamp = result.meta.timestamp.replace(/[:.]/g, "-");
-  const filePath = path.join(
-    outputDir,
-    `${result.meta.benchmark}-v${safeRemnicVersion}-${timestamp}.json`,
+  const timestamp = sanitizeFilenameSegment(
+    result.meta.timestamp.replace(/[:.]/g, "-"),
+  );
+  const filePath = resolveContainedPath(
+    outputRoot,
+    `${safeBenchmark}-v${safeRemnicVersion}-${timestamp}.json`,
   );
   const leaderboardArtifacts = await writeLeaderboardArtifactsForResult(
     result,
-    outputDir,
+    outputRoot,
   ).catch((error: unknown) => [
     {
       benchmark: result.meta.benchmark,

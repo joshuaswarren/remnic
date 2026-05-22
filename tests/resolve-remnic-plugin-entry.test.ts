@@ -1,12 +1,12 @@
 /**
- * Regression tests for {@link resolveRemnicPluginEntry} and the shim's
+ * Regression tests for {@link resolveRemnicOpenClawPluginEntry} and the shim's
  * access-cli `preferredId` plumbing (#403).
  *
  * Context:
  *   OpenClaw gates memory plugin registration on `plugins.slots.memory`
  *   matching the plugin id.  Remnic ships two plugin ids:
- *     - canonical:  "openclaw-remnic" (PLUGIN_ID)
- *     - legacy shim: "openclaw-engram" (LEGACY_PLUGIN_ID)
+ *     - canonical:  "openclaw-remnic"
+ *     - legacy shim: "openclaw-engram"
  *
  *   When a user runs the shim binary `engram-access` and has both config
  *   blocks in `plugins.entries` with no `plugins.slots.memory` override, the
@@ -15,10 +15,10 @@
  *   policy, corrupting migration.
  *
  *   An earlier revision of the split refactor called
- *   `resolveRemnicPluginEntry(raw)` without a `preferredId`, so the shim CLI
- *   fell through to `PLUGIN_ID` first.  Codex P1 flagged this.  The fix
+ *   `resolveRemnicOpenClawPluginEntry(raw)` without a `preferredId`, so the
+ *   shim CLI fell through to the canonical id first.  Codex P1 flagged this. The fix
  *   threads `preferredId` through runCli → main → buildRuntime →
- *   loadPluginConfig → resolveRemnicPluginEntry, and the shim's bin wrapper
+ *   loadPluginConfig → resolveRemnicOpenClawPluginEntry, and the shim's bin wrapper
  *   hardcodes `preferredId: "openclaw-engram"`.
  *
  *   These tests lock that behaviour in place.
@@ -30,10 +30,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  LEGACY_PLUGIN_ID,
-  PLUGIN_ID,
-  resolveRemnicPluginEntry,
-} from "../packages/remnic-core/src/plugin-id.js";
+  REMNIC_OPENCLAW_LEGACY_PLUGIN_ID,
+  REMNIC_OPENCLAW_PLUGIN_ID,
+  resolveRemnicOpenClawPluginEntry,
+} from "../packages/plugin-openclaw/src/plugin-id.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,10 +56,10 @@ function configWithBothEntries() {
   return {
     plugins: {
       entries: {
-        [PLUGIN_ID]: {
+        [REMNIC_OPENCLAW_PLUGIN_ID]: {
           config: { memoryDir: "/tmp/canonical", marker: "canonical" },
         },
-        [LEGACY_PLUGIN_ID]: {
+        [REMNIC_OPENCLAW_LEGACY_PLUGIN_ID]: {
           config: { memoryDir: "/tmp/legacy", marker: "legacy" },
         },
       },
@@ -67,31 +67,31 @@ function configWithBothEntries() {
   };
 }
 
-test("resolveRemnicPluginEntry returns undefined for non-object input", () => {
-  assert.equal(resolveRemnicPluginEntry(null), undefined);
-  assert.equal(resolveRemnicPluginEntry(undefined), undefined);
-  assert.equal(resolveRemnicPluginEntry("nope"), undefined);
-  assert.equal(resolveRemnicPluginEntry(42), undefined);
+test("resolveRemnicOpenClawPluginEntry returns undefined for non-object input", () => {
+  assert.equal(resolveRemnicOpenClawPluginEntry(null), undefined);
+  assert.equal(resolveRemnicOpenClawPluginEntry(undefined), undefined);
+  assert.equal(resolveRemnicOpenClawPluginEntry("nope"), undefined);
+  assert.equal(resolveRemnicOpenClawPluginEntry(42), undefined);
 });
 
-test("resolveRemnicPluginEntry returns undefined when plugins.entries is missing", () => {
-  assert.equal(resolveRemnicPluginEntry({}), undefined);
-  assert.equal(resolveRemnicPluginEntry({ plugins: {} }), undefined);
-  assert.equal(resolveRemnicPluginEntry({ plugins: { entries: null } }), undefined);
+test("resolveRemnicOpenClawPluginEntry returns undefined when plugins.entries is missing", () => {
+  assert.equal(resolveRemnicOpenClawPluginEntry({}), undefined);
+  assert.equal(resolveRemnicOpenClawPluginEntry({ plugins: {} }), undefined);
+  assert.equal(resolveRemnicOpenClawPluginEntry({ plugins: { entries: null } }), undefined);
 });
 
-test("resolveRemnicPluginEntry prefers canonical entry when no preferredId and no slot", () => {
-  const entry = resolveRemnicPluginEntry(configWithBothEntries());
+test("resolveRemnicOpenClawPluginEntry prefers canonical entry when no preferredId and no slot", () => {
+  const entry = resolveRemnicOpenClawPluginEntry(configWithBothEntries());
   assert.ok(entry, "entry must be defined");
   const cfg = entry["config"] as { marker: string };
   assert.equal(cfg.marker, "canonical");
 });
 
-test("resolveRemnicPluginEntry returns legacy entry when preferredId='openclaw-engram' and no slot (#403)", () => {
+test("resolveRemnicOpenClawPluginEntry returns legacy entry when preferredId='openclaw-engram' and no slot (#403)", () => {
   // This is the regression test for the shim access-cli Codex P1.  When the
   // shim binary passes its own plugin id, the helper must pick the legacy
   // entry even though both blocks exist.
-  const entry = resolveRemnicPluginEntry(configWithBothEntries(), LEGACY_PLUGIN_ID);
+  const entry = resolveRemnicOpenClawPluginEntry(configWithBothEntries(), REMNIC_OPENCLAW_LEGACY_PLUGIN_ID);
   assert.ok(entry, "entry must be defined");
   const cfg = entry["config"] as { marker: string };
   assert.equal(
@@ -101,38 +101,38 @@ test("resolveRemnicPluginEntry returns legacy entry when preferredId='openclaw-e
   );
 });
 
-test("resolveRemnicPluginEntry returns canonical entry when preferredId='openclaw-remnic' and no slot", () => {
-  const entry = resolveRemnicPluginEntry(configWithBothEntries(), PLUGIN_ID);
+test("resolveRemnicOpenClawPluginEntry returns canonical entry when preferredId='openclaw-remnic' and no slot", () => {
+  const entry = resolveRemnicOpenClawPluginEntry(configWithBothEntries(), REMNIC_OPENCLAW_PLUGIN_ID);
   assert.ok(entry, "entry must be defined");
   const cfg = entry["config"] as { marker: string };
   assert.equal(cfg.marker, "canonical");
 });
 
-test("resolveRemnicPluginEntry ignores unknown preferredId (safety guard)", () => {
+test("resolveRemnicOpenClawPluginEntry ignores unknown preferredId (safety guard)", () => {
   // An unexpected preferredId must fall through to the hardcoded canonical
   // fallback — never trust a caller-supplied value that isn't a known
   // Remnic id.
-  const entry = resolveRemnicPluginEntry(configWithBothEntries(), "some-other-plugin");
+  const entry = resolveRemnicOpenClawPluginEntry(configWithBothEntries(), "some-other-plugin");
   assert.ok(entry, "entry must be defined");
   const cfg = entry["config"] as { marker: string };
   assert.equal(cfg.marker, "canonical");
 });
 
-test("resolveRemnicPluginEntry honours plugins.slots.memory over preferredId", () => {
+test("resolveRemnicOpenClawPluginEntry honours plugins.slots.memory over preferredId", () => {
   const raw = {
     plugins: {
-      slots: { memory: PLUGIN_ID },
+      slots: { memory: REMNIC_OPENCLAW_PLUGIN_ID },
       entries: configWithBothEntries().plugins.entries,
     },
   };
   // Even though the shim says "use legacy", the active slot forces canonical.
-  const entry = resolveRemnicPluginEntry(raw, LEGACY_PLUGIN_ID);
+  const entry = resolveRemnicOpenClawPluginEntry(raw, REMNIC_OPENCLAW_LEGACY_PLUGIN_ID);
   assert.ok(entry, "entry must be defined");
   const cfg = entry["config"] as { marker: string };
   assert.equal(cfg.marker, "canonical");
 });
 
-test("resolveRemnicPluginEntry ignores foreign slot and honours preferredId", () => {
+test("resolveRemnicOpenClawPluginEntry ignores foreign slot and honours preferredId", () => {
   // Mixed-plugin installs: plugins.slots.memory points at a non-Remnic plugin.
   // The slot must be ignored so we don't accidentally apply someone else's
   // config to Remnic.  With the foreign slot ignored, preferredId still wins.
@@ -142,23 +142,23 @@ test("resolveRemnicPluginEntry ignores foreign slot and honours preferredId", ()
       entries: configWithBothEntries().plugins.entries,
     },
   };
-  const entry = resolveRemnicPluginEntry(raw, LEGACY_PLUGIN_ID);
+  const entry = resolveRemnicOpenClawPluginEntry(raw, REMNIC_OPENCLAW_LEGACY_PLUGIN_ID);
   assert.ok(entry, "entry must be defined");
   const cfg = entry["config"] as { marker: string };
   assert.equal(cfg.marker, "legacy");
 });
 
-test("resolveRemnicPluginEntry falls back to legacy entry when only legacy exists and no preferredId", () => {
+test("resolveRemnicOpenClawPluginEntry falls back to legacy entry when only legacy exists and no preferredId", () => {
   const raw = {
     plugins: {
       entries: {
-        [LEGACY_PLUGIN_ID]: {
+        [REMNIC_OPENCLAW_LEGACY_PLUGIN_ID]: {
           config: { memoryDir: "/tmp/legacy", marker: "legacy" },
         },
       },
     },
   };
-  const entry = resolveRemnicPluginEntry(raw);
+  const entry = resolveRemnicOpenClawPluginEntry(raw);
   assert.ok(entry, "entry must be defined");
   const cfg = entry["config"] as { marker: string };
   assert.equal(cfg.marker, "legacy");
@@ -173,7 +173,7 @@ test("shim engram-access bin wrapper passes preferredId='openclaw-engram' to run
   assert.match(
     src,
     /preferredId:\s*"openclaw-engram"/,
-    "shim bin wrapper must pass preferredId='openclaw-engram' so resolveRemnicPluginEntry targets the legacy entry for shim CLI users — see #403",
+    "shim bin wrapper must pass preferredId='openclaw-engram' so the OpenClaw resolver targets the legacy entry for shim CLI users — see #403",
   );
   assert.match(
     src,

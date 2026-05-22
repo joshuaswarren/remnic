@@ -11,6 +11,7 @@ import {
   LiveConnectorRegistryError,
   listConnectorStates,
   readConnectorState,
+  withConnectorStateLock,
   writeConnectorState,
   type ConnectorConfig,
   type ConnectorCursor,
@@ -621,6 +622,40 @@ test("state store: truncates oversized lastSyncError", async (t) => {
   });
   assert.ok(written.lastSyncError);
   assert.ok(written.lastSyncError!.length <= 1024);
+});
+
+test("state store: serializes connector state locks for one connector", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const events: string[] = [];
+  let releaseFirst!: () => void;
+  const firstCanFinish = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  const first = withConnectorStateLock(memoryDir, "drive", async () => {
+    events.push("first:start");
+    await firstCanFinish;
+    events.push("first:end");
+    return "first";
+  });
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+  const second = withConnectorStateLock(memoryDir, "drive", async () => {
+    events.push("second:start");
+    return "second";
+  });
+
+  await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(events, ["first:start"]);
+  releaseFirst();
+
+  assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
+  assert.deepEqual(events, ["first:start", "first:end", "second:start"]);
+  assert.equal(
+    fs.existsSync(path.join(memoryDir, "state", "connector-locks", "drive.lock")),
+    false,
+  );
 });
 
 test("state store: rejects corrupt JSON loudly via readConnectorState", async (t) => {

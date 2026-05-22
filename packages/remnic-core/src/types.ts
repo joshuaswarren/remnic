@@ -1222,6 +1222,30 @@ export interface PluginConfig {
   localLlmDisableThinking: boolean;
   // Gateway config for fallback AI
   gatewayConfig?: GatewayConfig;
+  /**
+   * Optional host-supplied resolver for provider API keys. Core never discovers
+   * host runtimes directly; adapters inject their native secret resolver here.
+   */
+  providerApiKeyResolver?: (params: {
+    provider: string;
+    cfg?: unknown;
+    agentDir?: string;
+  }) => Promise<{ apiKey?: string; source?: string; mode?: string } | null>;
+  /**
+   * Optional host-supplied resolver for request-ready model auth, including
+   * provider transforms such as OAuth token exchange or base URL overrides.
+   */
+  runtimeAuthForModelResolver?: (params: {
+    model: { provider: string; id: string; api?: string; baseUrl?: string };
+    cfg?: unknown;
+    workspaceDir?: string;
+  }) => Promise<{
+    apiKey?: string;
+    baseUrl?: string;
+    source?: string;
+    mode?: string;
+    profileId?: string;
+  } | null>;
   // Gateway model source (v9.2) — route LLM calls through gateway agent model chain
   modelSource: "plugin" | "gateway";
   gatewayAgentId: string;
@@ -2032,6 +2056,7 @@ export interface BufferTurn {
   parts?: import("./message-parts/index.js").LcmMessagePartInput[];
   rawContent?: unknown;
   sourceFormat?: import("./message-parts/index.js").MessagePartSourceFormat;
+  importProvenance?: import("./bulk-import/types.js").ImportTurnProvenance;
 }
 
 export interface BufferEntryState {

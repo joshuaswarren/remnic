@@ -46,6 +46,14 @@ const PREFERENCE_EXTRACTORS: Array<{
   pattern: RegExp;
   transform: (match: RegExpMatchArray, content: string) => string;
 }> = [
+  // "Avoids X" / negated use/work/code statements → negative preference
+  {
+    pattern: /(?:avoids?|dislikes?|hates?|does\s+not\s+like|doesn'?t\s+like|never\s+uses?|does\s+not\s+uses?|doesn'?t\s+uses?|does\s+not\s+use|doesn'?t\s+use|never\s+works?\s+(?:with|in)|does\s+not\s+works?\s+(?:with|in)|doesn'?t\s+works?\s+(?:with|in)|never\s+codes?\s+(?:in|with)|does\s+not\s+codes?\s+(?:in|with)|doesn'?t\s+codes?\s+(?:in|with)|refuses\s+to\s+(?:use|work\s+(?:with|in)|code\s+(?:in|with)))\s+(.+?)$/im,
+    transform: (match) => {
+      const subject = match[1].replace(/\.$/, "").trim();
+      return `The user would not prefer ${subject}`;
+    },
+  },
   // Direct preference statements
   {
     pattern: /(?:prefers?|enjoys?|likes?|loves?|favou?rs?)\s+(.+?)(?:\s+(?:for|when|in|over)\s+(.+?))?$/im,
@@ -62,14 +70,6 @@ const PREFERENCE_EXTRACTORS: Array<{
       const tool = match[1].replace(/\.$/, "").trim();
       const context = match[2] ? ` for ${match[2].replace(/\.$/, "").trim()}` : "";
       return `The user prefers to use ${tool}${context}`;
-    },
-  },
-  // "Avoids X" / "Dislikes X" → negative preference
-  {
-    pattern: /(?:avoids?|dislikes?|hates?|doesn'?t\s+like|never\s+uses?)\s+(.+?)$/im,
-    transform: (match) => {
-      const subject = match[1].replace(/\.$/, "").trim();
-      return `The user would not prefer ${subject}`;
     },
   },
   // "Interested in X" → preference for X-related content

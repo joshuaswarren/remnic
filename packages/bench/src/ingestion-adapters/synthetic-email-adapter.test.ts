@@ -67,10 +67,30 @@ test("synthetic email ingestion adapter produces a scoreable graph and writes th
     assert.equal(drained, true);
     assert.equal(entityScores.overall, 1);
     assert.equal(linkScores.f1, 1);
+    assert.equal(graph.links[0]?.source, "Sarah Chen");
+    assert.equal(graph.links[0]?.target, "Nexus Technologies");
+    assert.ok(graph.pages.length > 0);
+    for (const page of graph.pages) {
+      assert.deepEqual(page.sourceRefs, ["inbox.mbox"]);
+    }
+    const projectHorizon = graph.pages.find((page) => page.title === "Project Horizon");
+    assert.ok(projectHorizon);
+    assert.notDeepEqual(projectHorizon.sourceRefs, projectHorizon.seeAlso);
     assert.equal(schemaScores.overall, 1);
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
   }
+});
+
+test("email gold backlinks match name-based extracted endpoints", () => {
+  const score = backlinkF1(
+    [{ source: "Sarah Chen", target: "Nexus Technologies", relation: "works-at" }],
+    emailFixture.generate().goldGraph.links,
+  );
+
+  assert.equal(score.precision, 1);
+  assert.ok(score.recall > 0);
+  assert.ok(score.f1 > 0);
 });
 
 test("synthetic email ingestion adapter records system ingestion errors", async () => {
@@ -141,6 +161,30 @@ test("synthetic email ingestion adapter derives graph entries from the ingested 
       graph.pages.some((page) => page.title === "Nexus Technologies"),
       false,
     );
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test("synthetic email ingestion adapter does not match entity names embedded inside larger words", async () => {
+  const fixtureDir = await mkdtemp(path.join(await realTempDir(), "remnic-ingestion-boundary-"));
+
+  try {
+    await writeFile(
+      path.join(fixtureDir, "partial.txt"),
+      "The SarahChenille sample and NexusTechnologiesExtra codename are unrelated words.",
+      "utf8",
+    );
+
+    const adapter = createSyntheticEmailIngestionAdapter();
+    await adapter.ingest(fixtureDir);
+    const graph = await adapter.getMemoryGraph();
+    const entityNames = graph.entities.map((entity) => entity.name);
+
+    assert.equal(entityNames.includes("Sarah Chen"), false);
+    assert.equal(entityNames.includes("Nexus Technologies"), false);
+    assert.equal(graph.pages.some((page) => page.title === "Sarah Chen"), false);
+    assert.equal(graph.pages.some((page) => page.title === "Nexus Technologies"), false);
   } finally {
     await rm(fixtureDir, { recursive: true, force: true });
   }

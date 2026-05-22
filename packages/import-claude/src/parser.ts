@@ -163,6 +163,10 @@ export function parseClaudeExport(
   if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>;
     let sawKnownSection = false;
+    const hasConversationsSection = Object.prototype.hasOwnProperty.call(
+      obj,
+      "conversations",
+    );
     const convs = obj.conversations;
     if (Array.isArray(convs)) {
       sawKnownSection = true;
@@ -173,7 +177,13 @@ export function parseClaudeExport(
           throw new Error("Non-conversation entry in conversations array");
         }
       }
+    } else if (hasConversationsSection && options.strict) {
+      throw new Error("Claude export conversations section must be an array.");
     }
+    const hasProjectsSection = Object.prototype.hasOwnProperty.call(
+      obj,
+      "projects",
+    );
     const projects = obj.projects;
     if (Array.isArray(projects)) {
       sawKnownSection = true;
@@ -184,6 +194,8 @@ export function parseClaudeExport(
           throw new Error("Non-project entry in projects array");
         }
       }
+    } else if (hasProjectsSection && options.strict) {
+      throw new Error("Claude export projects section must be an array.");
     }
     // Strict mode: if the object has neither `conversations` nor `projects`,
     // bail rather than silently returning an empty struct. Non-strict mode

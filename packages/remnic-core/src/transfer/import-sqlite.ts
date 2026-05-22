@@ -1,10 +1,10 @@
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
 import { SQLITE_SCHEMA_VERSION } from "./sqlite-schema.js";
 import {
   fileExists,
   prepareSafeArchiveRoot,
   resolveSafeArchiveTarget,
+  writeSafeArchiveTarget,
 } from "./fs-utils.js";
 import { parseConflictPolicy, type ConflictPolicy } from "./conflict-policy.js";
 import { openBetterSqlite3 } from "../runtime/better-sqlite.js";
@@ -34,7 +34,7 @@ export async function importSqlite(opts: ImportSqliteOptions): Promise<{ written
   const fromAbs = path.resolve(opts.fromFile);
   const db = openBetterSqlite3(fromAbs, { readonly: true });
 
-  const written: Array<{ abs: string; content: string }> = [];
+  const written: Array<{ relPath: string; content: string }> = [];
   let skipped = 0;
 
   try {
@@ -83,7 +83,7 @@ export async function importSqlite(opts: ImportSqliteOptions): Promise<{ written
           }
         }
       }
-      written.push({ abs: absTarget, content: r.content });
+      written.push({ relPath: r.path_rel, content: r.content });
     }
   } finally {
     db.close();
@@ -92,8 +92,7 @@ export async function importSqlite(opts: ImportSqliteOptions): Promise<{ written
   if (opts.dryRun) return { written: 0, skipped };
 
   for (const w of written) {
-    await mkdir(path.dirname(w.abs), { recursive: true });
-    await writeFile(w.abs, w.content, "utf-8");
+    await writeSafeArchiveTarget(memoryRoot, w.relPath, w.content);
   }
 
   return { written: written.length, skipped };

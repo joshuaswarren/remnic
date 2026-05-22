@@ -1,10 +1,13 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   lstat,
   mkdir,
+  open,
   readdir,
   readFile,
   realpath,
+  rename,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -180,6 +183,54 @@ export async function resolveSafeArchiveTarget(
     root.errorPrefix,
   );
   return targetAbs;
+}
+
+export async function writeSafeArchiveTarget(
+  root: SafeArchiveRoot,
+  relPath: string,
+  content: string | Uint8Array,
+): Promise<void> {
+  const targetAbs = await resolveSafeArchiveTarget(root, relPath);
+  const parentAbs = path.dirname(targetAbs);
+  await mkdir(parentAbs, { recursive: true });
+  await assertRealpathInsideRoot(
+    root.real,
+    parentAbs,
+    relPath,
+    root.errorPrefix,
+  );
+  const parentStat = await lstat(parentAbs);
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()) {
+    throw new Error(
+      `${root.errorPrefix}: record path parent is not a safe directory: ${relPath}`,
+    );
+  }
+  const targetStat = await lstat(targetAbs).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (targetStat?.isSymbolicLink()) {
+    throw new Error(
+      `${root.errorPrefix}: record path targets a symlink: ${relPath}`,
+    );
+  }
+
+  const tempAbs = path.join(parentAbs, `.remnic-import-${process.pid}-${randomUUID()}.tmp`);
+  let renamed = false;
+  try {
+    const handle = await open(tempAbs, "wx", 0o600);
+    try {
+      await handle.writeFile(content);
+    } finally {
+      await handle.close();
+    }
+    await rename(tempAbs, targetAbs);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      await rm(tempAbs, { force: true }).catch(() => undefined);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

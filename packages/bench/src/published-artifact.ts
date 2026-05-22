@@ -343,6 +343,8 @@ export function parseBenchmarkArtifact(raw: string): BenchmarkArtifact {
   const env = requireObject(record, "env");
   requireString(env, "node");
   requireString(env, "os");
+  requireOptionalString(env, "arch", "env.arch");
+  requireOptionalString(record, "note", "note");
   const metrics = requireObject(record, "metrics");
   for (const [key, value] of Object.entries(metrics)) {
     if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -361,6 +363,7 @@ export function parseBenchmarkArtifact(raw: string): BenchmarkArtifact {
       throw new Error(`BenchmarkArtifact perTaskScores[${index}] must be an object.`);
     }
     requireString(task as Record<string, unknown>, "taskId");
+    requireOptionalString(task as Record<string, unknown>, "category", `perTaskScores[${index}].category`);
     const scoreRecord = (task as Record<string, unknown>).scores;
     if (
       !scoreRecord ||
@@ -464,6 +467,16 @@ function requireString(
 ): void {
   if (typeof record[field] !== "string") {
     throw new Error(`BenchmarkArtifact field "${field}" must be a string.`);
+  }
+}
+
+function requireOptionalString(
+  record: Record<string, unknown>,
+  field: string,
+  label: string,
+): void {
+  if (record[field] !== undefined && typeof record[field] !== "string") {
+    throw new Error(`BenchmarkArtifact field "${label}" must be a string when provided.`);
   }
 }
 

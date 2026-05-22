@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { writeLeaderboardArtifactsForResult } from "./leaderboard-export.ts";
 import {
   redactBenchmarkResultSecrets,
   sanitizeBenchmarkResultForJson,
@@ -212,6 +213,62 @@ test("writeBenchmarkResult preserves main result when leaderboard sidecar write 
     assert.match(raw, /"benchmark": "ama-bench"/);
     assert.match(raw, /"format": "leaderboard-artifact-error"/);
     assert.match(raw, /"records": 0/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeBenchmarkResult confines benchmark-derived filenames to output directory", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-reporter-"));
+  try {
+    const result = buildResult();
+    result.meta.benchmark = "../outside/evil";
+    result.meta.timestamp = "../2026/04/25T02:52:05.982Z";
+
+    const filePath = await writeBenchmarkResult(result, dir);
+    const relativePath = path.relative(dir, filePath);
+
+    assert.equal(path.isAbsolute(relativePath), false);
+    assert.equal(relativePath === "..", false);
+    assert.equal(relativePath.startsWith(`..${path.sep}`), false);
+    assert.equal(
+      path.basename(filePath),
+      ".._outside_evil-v9.3.169---_2026_04_25T02-52-05-982Z.json",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeLeaderboardArtifactsForResult confines timestamp-derived filenames to output directory", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-leaderboard-"));
+  try {
+    const result = buildResult();
+    result.meta.timestamp = "../2026/04/25T02:52:05.982Z";
+    result.results.tasks = [
+      {
+        taskId: "ama-q1",
+        question: "What happened?",
+        expected: "opened the app",
+        actual: "opened the app",
+        scores: { llm_judge: 1 },
+        latencyMs: 1,
+        tokens: { input: 0, output: 0 },
+        details: { episodeId: 1 },
+      },
+    ];
+
+    const artifacts = await writeLeaderboardArtifactsForResult(result, dir);
+    assert.equal(artifacts.length, 1);
+    const relativePath = path.relative(dir, artifacts[0].path);
+
+    assert.equal(path.isAbsolute(relativePath), false);
+    assert.equal(relativePath === "..", false);
+    assert.equal(relativePath.startsWith(`..${path.sep}`), false);
+    assert.equal(
+      path.basename(artifacts[0].path),
+      "ama-bench---_2026_04_25T02-52-05-982Z-answers.jsonl",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

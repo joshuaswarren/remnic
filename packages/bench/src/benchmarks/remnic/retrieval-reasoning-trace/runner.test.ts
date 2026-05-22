@@ -74,6 +74,25 @@ test("fixture: has both positive and negative cases", () => {
   assert.ok(negatives >= 3, `expected >=3 negative cases, got ${negatives}`);
 });
 
+test("fixture: positive cases name the expected boosted trace id", () => {
+  const expectedByCase = new Map([
+    ["pos-latency-howto", "trace-latency"],
+    ["pos-oauth-step-by-step", "trace-oauth-loop"],
+    ["pos-troubleshoot-oauth", "trace-oauth-loop"],
+    ["pos-figure-out-latency", "trace-latency"],
+    ["pos-reason-through", "trace-latency"],
+  ]);
+
+  for (const c of REASONING_TRACE_BENCH_FIXTURE) {
+    if (!c.expectsTraceTopAfterBoost) continue;
+    assert.equal(
+      c.expectedTopWithBoost,
+      expectedByCase.get(c.id),
+      `case ${c.id}: expected boosted trace id mismatch`,
+    );
+  }
+});
+
 test("definition: benchmark metadata is ready and available", () => {
   assert.equal(retrievalReasoningTraceDefinition.id, "retrieval-reasoning-trace");
   assert.equal(retrievalReasoningTraceDefinition.tier, "remnic");
@@ -112,6 +131,28 @@ test("runner: full-mode run produces boost_recall_at_1 > 0 and boost_noop_preser
     classification && classification.mean === 1,
     `heuristic_classification_correct should be 1, got ${classification?.mean}`,
   );
+
+  const expectedBoostedTopByCase = new Map([
+    ["pos-latency-howto", "trace-latency"],
+    ["pos-oauth-step-by-step", "trace-oauth-loop"],
+    ["pos-troubleshoot-oauth", "trace-oauth-loop"],
+    ["pos-figure-out-latency", "trace-latency"],
+    ["pos-reason-through", "trace-latency"],
+  ]);
+  for (const task of result.results.tasks) {
+    if (!expectedBoostedTopByCase.has(task.taskId)) continue;
+    assert.match(task.actual, /boosted-top=trace-/);
+    assert.equal(
+      task.actual.includes(`boosted-top=${expectedBoostedTopByCase.get(task.taskId)}`),
+      true,
+      `case ${task.taskId}: expected boosted top ${expectedBoostedTopByCase.get(task.taskId)}, got ${task.actual}`,
+    );
+    assert.equal(
+      task.scores.boost_recall_at_1,
+      1,
+      `case ${task.taskId}: expected exact-trace recall score`,
+    );
+  }
 });
 
 test("runner: quick mode exercises at least one positive AND one negative case", async () => {
@@ -132,6 +173,32 @@ test("runner: quick mode exercises at least one positive AND one negative case",
   assert.ok(
     result.results.aggregates.boost_noop_preserved,
     "quick mode must exercise the negative guard path",
+  );
+});
+
+test("runner: quick mode emits per-task completion callbacks", async () => {
+  const progress: Array<{ taskId: string; completedCount: number; totalCount: number }> = [];
+  const result = await runRetrievalReasoningTraceBenchmark({
+    benchmark: retrievalReasoningTraceDefinition,
+    mode: "quick",
+    runCount: 1,
+    adapterMode: "direct",
+    onTaskComplete(task, completedCount, totalCount) {
+      progress.push({ taskId: task.taskId, completedCount, totalCount });
+    },
+  } as Parameters<typeof runRetrievalReasoningTraceBenchmark>[0]);
+
+  assert.deepEqual(
+    progress.map((entry) => entry.completedCount),
+    [1, 2],
+  );
+  assert.deepEqual(
+    progress.map((entry) => entry.totalCount),
+    [result.results.tasks.length, result.results.tasks.length],
+  );
+  assert.deepEqual(
+    progress.map((entry) => entry.taskId),
+    result.results.tasks.map((task) => task.taskId),
   );
 });
 

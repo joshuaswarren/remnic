@@ -52,6 +52,19 @@ export interface LaunchctlProcess {
   ) => Buffer | string;
 }
 
+export interface ReadVerifiedDaemonPidOptions {
+  pidFiles: readonly string[];
+  expectedServerBin: string;
+  readFileSync?: (file: string, encoding: BufferEncoding) => string;
+  unlinkSync?: (file: string) => void;
+  processKill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
+  execFileSync?: (
+    command: string,
+    args: string[],
+    options: childProcess.ExecFileSyncOptionsWithStringEncoding,
+  ) => string;
+}
+
 const thisModuleDir = path.dirname(fileURLToPath(import.meta.url));
 
 export function launchdLoadPlist(
@@ -141,6 +154,93 @@ function isCandidateReady(
 
 export function resolveServerBin(options: ResolveServerBinOptions = {}): string {
   return resolveServerBinDetails(options).path;
+}
+
+export function readVerifiedDaemonPid(
+  options: ReadVerifiedDaemonPidOptions,
+): number | undefined {
+  const readFileSync = options.readFileSync ?? fs.readFileSync;
+  const unlinkSync = options.unlinkSync ?? fs.unlinkSync;
+  const processKill = options.processKill ?? process.kill;
+  const execFileSync =
+    options.execFileSync ??
+    ((command, args, execOptions) =>
+      childProcess.execFileSync(command, args, execOptions));
+
+  for (const file of options.pidFiles) {
+    let pid: number | undefined;
+    try {
+      pid = parseDaemonPid(readFileSync(file, "utf8"));
+    } catch {
+      continue;
+    }
+    if (pid === undefined) {
+      removePidFileBestEffort(file, unlinkSync);
+      continue;
+    }
+    try {
+      processKill(pid, 0);
+    } catch {
+      removePidFileBestEffort(file, unlinkSync);
+      continue;
+    }
+
+    const command = readProcessCommand(pid, execFileSync);
+    if (
+      command !== undefined &&
+      doesProcessCommandLookLikeRemnicDaemon(command, options.expectedServerBin)
+    ) {
+      return pid;
+    }
+    removePidFileBestEffort(file, unlinkSync);
+  }
+  return undefined;
+}
+
+export function doesProcessCommandLookLikeRemnicDaemon(
+  command: string,
+  expectedServerBin: string,
+): boolean {
+  const normalizedCommand = command.trim();
+  const normalizedExpected = path.resolve(expandTilde(expectedServerBin));
+  return (
+    normalizedCommand.includes(normalizedExpected) ||
+    /(?:^|\s|[/\\])(?:remnic-server|engram-server)(?:\.js)?(?:\s|$)/.test(normalizedCommand) ||
+    /@remnic[/\\]server[/\\]/.test(normalizedCommand) ||
+    /packages[/\\]remnic-server[/\\](?:bin[/\\]remnic-server\.js|dist[/\\]index\.js|src[/\\]index\.ts)/.test(normalizedCommand)
+  );
+}
+
+function parseDaemonPid(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const pid = Number(trimmed);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+function readProcessCommand(
+  pid: number,
+  execFileSync: NonNullable<ReadVerifiedDaemonPidOptions["execFileSync"]>,
+): string | undefined {
+  try {
+    return execFileSync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function removePidFileBestEffort(
+  file: string,
+  unlinkSync: NonNullable<ReadVerifiedDaemonPidOptions["unlinkSync"]>,
+): void {
+  try {
+    unlinkSync(file);
+  } catch {
+    // ignore
+  }
 }
 
 export function inspectLaunchdPlist(

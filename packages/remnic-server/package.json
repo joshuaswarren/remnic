@@ -4,8 +4,10 @@
   "description": "Standalone Remnic memory server — HTTP + MCP without OpenClaw",
   "type": "module",
   "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
@@ -22,7 +24,7 @@
     "provenance": true
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --target es2022 --platform node --outDir dist && node scripts/verify-bin.mjs",
+    "build": "npm run check-types && tsup src/index.ts --format esm --target es2022 --platform node --outDir dist --dts && node scripts/verify-bin.mjs",
     "verify:bin": "node scripts/verify-bin.mjs",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
@@ -32,6 +34,7 @@
     "@remnic/core": "workspace:^"
   },
   "devDependencies": {
+    "@remnic/core": "workspace:^",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },

@@ -51,11 +51,9 @@ test("gateway_start log line format contains id= and memoryDir= fields", async (
 test("plugin definition id is openclaw-remnic (post PR #405 rename)", async () => {
   const src = await readFile(path.join(ROOT, "src", "index.ts"), "utf-8");
   // The plugin definition id is what will appear in the gateway_start log.
-  // After PR #405 merged, the canonical id is openclaw-remnic. The id constant
-  // is imported from plugin-id.ts (PLUGIN_ID = "openclaw-remnic"), so we check
-  // for the PLUGIN_ID reference or the literal string in the plugin definition.
+  // After PR #405 merged, the canonical id is openclaw-remnic.
   assert.ok(
-    src.includes("id: PLUGIN_ID") || src.includes('id: "openclaw-remnic"'),
-    "plugin definition must use the canonical openclaw-remnic id (via PLUGIN_ID or literal)",
+    src.includes("id: REMNIC_OPENCLAW_PLUGIN_ID") || src.includes('id: "openclaw-remnic"'),
+    "plugin definition must use the canonical openclaw-remnic id",
   );
 });

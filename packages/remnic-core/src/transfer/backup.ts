@@ -3,7 +3,7 @@ import { mkdir, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 import { exportMarkdownBundle } from "./export-md.js";
 import { encryptCapsuleFile } from "./capsule-crypto.js";
-import { isTransferPathExcluded } from "./exclusions.js";
+import { computeTransferOutputRel, isTransferPathExcluded } from "./exclusions.js";
 
 export interface BackupOptions {
   memoryDir: string;
@@ -43,13 +43,14 @@ export async function backupMemoryDir(opts: BackupOptions): Promise<string> {
     const { readFile } = await import("node:fs/promises");
 
     const memoryDirAbs = path.resolve(opts.memoryDir);
+    const outputRelPosix = computeTransferOutputRel(memoryDirAbs, outDirAbs);
     const filesAbs = await listFilesRecursive(memoryDirAbs);
     const includeTranscripts = opts.includeTranscripts === true;
 
     const records: Array<{ path: string; content: string }> = [];
     for (const abs of filesAbs) {
       const relPosix = toPosixRelPath(abs, memoryDirAbs);
-      if (isTransferPathExcluded(relPosix, { includeTranscripts })) continue;
+      if (isTransferPathExcluded(relPosix, { includeTranscripts, outputRelPosix })) continue;
       const content = await readFile(abs, "utf-8");
       records.push({ path: relPosix, content });
     }
@@ -67,11 +68,21 @@ export async function backupMemoryDir(opts: BackupOptions): Promise<string> {
     await writeFile(tempGzPath, gz);
 
     // Encrypt and remove plaintext.
-    const { encPath } = await encryptCapsuleFile({
-      sourceGzPath: tempGzPath,
-      memoryDir: opts.memoryDir,
-    });
-    await unlink(tempGzPath);
+    let encPath: string;
+    try {
+      ({ encPath } = await encryptCapsuleFile({
+        sourceGzPath: tempGzPath,
+        memoryDir: opts.memoryDir,
+      }));
+      await unlink(tempGzPath);
+    } catch (error) {
+      try {
+        await unlink(tempGzPath);
+      } catch {
+        // Best-effort cleanup: do not leave a plaintext backup after failed encryption.
+      }
+      throw error;
+    }
 
     if (opts.retentionDays && opts.retentionDays > 0) {
       await enforceRetention(outDirAbs, opts.retentionDays);

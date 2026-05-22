@@ -26,7 +26,10 @@ import type {
   ChatGPTSavedMemory,
   ParsedChatGPTExport,
 } from "./parser.js";
-import { collectUserTurnsFromConversation } from "./parser.js";
+import {
+  collectUserTurnsFromConversation,
+  normalizeChatGPTTimestamp,
+} from "./parser.js";
 
 export const CHATGPT_SOURCE_LABEL = "chatgpt";
 
@@ -81,7 +84,9 @@ function savedMemoryToImported(
 ): ImportedMemory | undefined {
   const content = entry.content.trim();
   if (content.length === 0) return undefined;
-  const sourceTimestamp = entry.updated_at ?? entry.created_at;
+  const sourceTimestamp =
+    normalizeChatGPTTimestamp(entry.updated_at) ??
+    normalizeChatGPTTimestamp(entry.created_at);
   return {
     content,
     sourceLabel: CHATGPT_SOURCE_LABEL,
@@ -114,21 +119,21 @@ function conversationToSummary(
   const body = userTurns.map((t) => `- ${t.content}`).join("\n");
   let content = titleLine + body;
   if (content.length > maxChars) {
-    // Reserve 3 chars for the "..." suffix. If the titleLine alone already
-    // exceeds maxChars (pathological — a very long title with a small cap),
-    // truncate the titleLine itself rather than letting content exceed
-    // maxChars.
-    const suffix = "...";
-    if (titleLine.length + suffix.length >= maxChars) {
-      content = titleLine.slice(0, Math.max(0, maxChars - suffix.length)) + suffix;
+    const effectiveMaxChars = Math.max(0, Math.floor(maxChars));
+    const suffix = effectiveMaxChars >= 3 ? "..." : "";
+    const available = effectiveMaxChars - suffix.length;
+    if (titleLine.length + suffix.length >= effectiveMaxChars) {
+      content = titleLine.slice(0, Math.max(0, available)) + suffix;
     } else {
-      const remaining = maxChars - titleLine.length - suffix.length;
+      const remaining = available - titleLine.length;
       const bodyTruncated = body.slice(0, Math.max(0, remaining));
       content = titleLine + bodyTruncated + suffix;
     }
   }
 
-  const sourceTimestamp = firstTimestamp(userTurns);
+  const sourceTimestamp = firstTimestamp(userTurns)
+    ?? normalizeChatGPTTimestamp(conversation.update_time)
+    ?? normalizeChatGPTTimestamp(conversation.create_time);
   return {
     content,
     sourceLabel: CHATGPT_SOURCE_LABEL,

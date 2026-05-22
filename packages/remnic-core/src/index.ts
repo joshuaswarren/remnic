@@ -17,10 +17,10 @@
  */
 
 // ---------------------------------------------------------------------------
-// Plugin identity
+// Plugin entry resolution
 // ---------------------------------------------------------------------------
 
-export { PLUGIN_ID, LEGACY_PLUGIN_ID, resolveRemnicPluginEntry } from "./plugin-id.js";
+export { resolvePluginEntry, type PluginEntryResolverOptions } from "./plugin-entry-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -1017,7 +1017,10 @@ export {
   clearBulkImportSources,
   runBulkImportPipeline,
   formatBatchTranscript,
+  validateBatchSize,
+  resolveBulkImportContext,
   type ProcessBatchFn,
+  type ProcessBatchContext,
   type ProcessBatchResult,
 } from "./bulk-import/index.js";
 

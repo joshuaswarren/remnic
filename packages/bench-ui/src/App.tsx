@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { HashRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
 import type { BenchResultSummaryPayload } from "./bench-data";
@@ -24,6 +24,7 @@ const navigationItems = [
 const emptyPayload: BenchResultSummaryPayload = {
   resultsDir: "",
   summaries: [],
+  skippedFiles: [],
 };
 
 function AppShell({
@@ -91,6 +92,16 @@ function AppShell({
           <div className="topbar-copy">
             <p>{payload.resultsDir || "Awaiting local benchmark result files"}</p>
             {error ? <p className="error-copy">{error}</p> : null}
+            {(payload.skippedFiles?.length ?? 0) > 0 ? (
+              <p className="warning-copy">
+                {payload.skippedFiles!.length} result file
+                {payload.skippedFiles!.length === 1 ? "" : "s"} skipped:{" "}
+                {payload.skippedFiles!
+                  .slice(0, 3)
+                  .map((entry) => entry.filePath.split(/[\\/]/u).pop() || entry.filePath)
+                  .join(", ")}
+              </p>
+            ) : null}
           </div>
         </header>
 
@@ -118,8 +129,11 @@ export function App() {
   const [payload, setPayload] = useState<BenchResultSummaryPayload>(emptyPayload);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
 
-  async function loadPayload(): Promise<void> {
+  const loadPayload = useCallback(async (): Promise<void> => {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
     setLoading(true);
     setError(null);
 
@@ -130,18 +144,22 @@ export function App() {
       }
 
       const next = (await response.json()) as BenchResultSummaryPayload;
+      if (requestId !== requestIdRef.current) return;
       setPayload(next);
     } catch (cause) {
+      if (requestId !== requestIdRef.current) return;
       setError(cause instanceof Error ? cause.message : String(cause));
       setPayload(emptyPayload);
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) {
+        setLoading(false);
+      }
     }
-  }
+  }, []);
 
   useEffect(() => {
     void loadPayload();
-  }, []);
+  }, [loadPayload]);
 
   const defaultBenchmark = listBenchmarks(payload)[0] ?? "longmemeval";
 
@@ -168,7 +186,7 @@ export function App() {
           <Route path="/providers" element={<Providers payload={payload} />} />
           <Route
             path="/benchmark"
-            element={<Navigate to={`/benchmark/${defaultBenchmark}`} replace />}
+            element={<Navigate to={`/benchmark/${encodeURIComponent(defaultBenchmark)}`} replace />}
           />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>

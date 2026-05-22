@@ -13,6 +13,8 @@ describe("parseConfig", () => {
     const config = parseConfig(validRaw);
     assert.equal(config.wecloneApiUrl, "http://localhost:8000/v1");
     assert.equal(config.proxyPort, 8100);
+    assert.equal(config.proxyBindHost, "127.0.0.1");
+    assert.equal(config.allowPublicBind, false);
     assert.equal(config.remnicDaemonUrl, "http://localhost:4318");
     assert.equal(config.sessionStrategy, DEFAULT_CONFIG.sessionStrategy);
     assert.equal(config.wecloneModelName, DEFAULT_CONFIG.wecloneModelName);
@@ -99,6 +101,27 @@ describe("parseConfig", () => {
   it("accepts proxyPort at lower boundary (1)", () => {
     const config = parseConfig({ ...validRaw, proxyPort: 1 });
     assert.equal(config.proxyPort, 1);
+  });
+
+  it("rejects all-interface proxy bind hosts without explicit opt-in", () => {
+    assert.throws(
+      () => parseConfig({ ...validRaw, proxyBindHost: "0.0.0.0" }),
+      /allowPublicBind/,
+    );
+    assert.throws(
+      () => parseConfig({ ...validRaw, proxyBindHost: "::" }),
+      /allowPublicBind/,
+    );
+  });
+
+  it("accepts all-interface proxy bind hosts with explicit opt-in", () => {
+    const config = parseConfig({
+      ...validRaw,
+      proxyBindHost: "0.0.0.0",
+      allowPublicBind: true,
+    });
+    assert.equal(config.proxyBindHost, "0.0.0.0");
+    assert.equal(config.allowPublicBind, true);
   });
 
   it("rejects missing remnicDaemonUrl", () => {

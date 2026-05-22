@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { LcmEngine } from "./lcm/engine.js";
+import { extractLcmConfig, LcmEngine } from "./lcm/engine.js";
 import { openLcmDatabase } from "./lcm/schema.js";
 import type { PluginConfig } from "./types.js";
 
@@ -131,6 +131,23 @@ function deferred<T = void>() {
   });
   return { promise, resolve, reject };
 }
+
+test("LCM config clamps invalid batch sizes away from non-progressing values", () => {
+  const cfg = extractLcmConfig({
+    ...createPluginConfig("/tmp/remnic-lcm-config-test"),
+    lcmLeafBatchSize: 0,
+    lcmRollupFanIn: 0,
+    lcmFreshTailTurns: -2,
+    lcmMaxDepth: Number.NaN,
+    lcmDeterministicMaxTokens: -1,
+  } as unknown as PluginConfig);
+
+  assert.equal(cfg.leafBatchSize, 1);
+  assert.equal(cfg.rollupFanIn, 2);
+  assert.equal(cfg.freshTailTurns, 1);
+  assert.equal(cfg.maxDepth, 5);
+  assert.equal(cfg.deterministicMaxTokens, 1);
+});
 
 test("LCM deterministically compresses mechanical telemetry without calling the summarizer", async () => {
   const memoryDir = await mkdtemp(
@@ -406,6 +423,75 @@ test("waitForSessionObserveIdle resolves once the target session drains even if 
       engine.observeQueueInFlightCount > 0 || engine.observeQueueDepth > 0,
     );
     await engine.waitForObserveQueueIdle();
+  } finally {
+    releaseSummarize.resolve();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("pre-compaction lifecycle waits for queued observe work before summarizing and recording", async () => {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "engram-lcm-compaction-observe-order-"),
+  );
+  const summarizeStarted = deferred<void>();
+  const releaseSummarize = deferred<void>();
+
+  try {
+    const engine = new LcmEngine(createPluginConfig(memoryDir), async () => {
+      summarizeStarted.resolve();
+      await releaseSummarize.promise;
+      return "summary";
+    });
+
+    await engine.ensureInitialized();
+    engine.enqueueObserveMessages("session-compact", [
+      { role: "user", content: "queued boundary marker" },
+    ]);
+
+    let flushResolved = false;
+    let recordResolved = false;
+    const flushPromise = engine.preCompactionFlush("session-compact").then(() => {
+      flushResolved = true;
+    });
+    const recordPromise = engine
+      .recordCompaction("session-compact", 100, 50)
+      .then(() => {
+        recordResolved = true;
+      });
+
+    await summarizeStarted.promise;
+    await Promise.resolve();
+
+    assert.equal(flushResolved, false);
+    assert.equal(recordResolved, false);
+
+    releaseSummarize.resolve();
+    await Promise.all([flushPromise, recordPromise]);
+
+    const archived = await engine.searchContextFull(
+      "queued boundary",
+      10,
+      "session-compact",
+    );
+    assert.equal(archived.length, 1);
+
+    const db = openLcmDatabase(memoryDir);
+    try {
+      const row = db
+        .prepare(
+          "SELECT msg_before, tokens_before, tokens_after FROM lcm_compaction_events WHERE session_id = ?",
+        )
+        .get("session-compact") as {
+          msg_before: number;
+          tokens_before: number;
+          tokens_after: number;
+        };
+      assert.equal(row.msg_before, 0);
+      assert.equal(row.tokens_before, 100);
+      assert.equal(row.tokens_after, 50);
+    } finally {
+      db.close();
+    }
   } finally {
     releaseSummarize.resolve();
     await rm(memoryDir, { recursive: true, force: true });

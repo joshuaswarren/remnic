@@ -89,7 +89,7 @@ function listenOnEphemeralPort(): Promise<{ server: net.Server; port: number }> 
   return new Promise((resolveServer, reject) => {
     const server = net.createServer();
     server.once("error", reject);
-    server.listen(0, () => {
+    server.listen(0, "127.0.0.1", () => {
       server.off("error", reject);
       const address = server.address();
       assert.ok(address && typeof address === "object");
@@ -211,6 +211,15 @@ describe("remnic-weclone-proxy CLI", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it("rejects --config when the next token is another option", () => {
+    const result = runCliWithArgs(["--config", "--unknown"]);
+
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Error: --config requires a path argument/);
+    assert.doesNotMatch(result.stderr, /Config not found/);
   });
 
   it("expands tilde in REMNIC_HOME default config paths", () => {

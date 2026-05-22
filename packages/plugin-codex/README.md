@@ -14,7 +14,7 @@ Three discrete steps. None is automated end-to-end today; each writes to a diffe
 
     This writes `~/.remnic/connectors/codex-cli.json` (Remnic's connector-state file), stores a bearer token, and calls `@remnic/core`'s `installCodexMemoryExtension` which materializes `~/.codex/memories_extensions/remnic/instructions.md` (the local-only phase-2 consolidation guide; see the file-table row below). It does NOT write `~/.codex/config.toml` and it does NOT deploy `.codex-plugin/`, `hooks/`, or `skills/`.
 
-2. **Add Remnic as an MCP server in `~/.codex/config.toml`.** Paste the TOML block from the "MCP setup" section below, replacing `{{REMNIC_TOKEN}}` with the token from step 1. Without this step Codex has no way to talk to the Remnic daemon.
+2. **Add Remnic as an MCP server in `~/.codex/config.toml`.** Paste the TOML block from the "MCP setup" section below unchanged, then set `REMNIC_AUTH_TOKEN` in Codex's environment to the bearer token generated in step 1. Without this step Codex has no way to talk to the Remnic daemon.
 
 3. **Install this package and load it through Codex's plugin system** so the hooks, skills, and `.codex-plugin` manifest are actually active:
 
@@ -57,7 +57,7 @@ bearer_token_env_var = "REMNIC_AUTH_TOKEN"
 http_headers = { "X-Engram-Client-Id" = "codex" }
 ```
 
-Then export the token Codex looks up. `remnic token generate` prints a multi-line status block (not just the raw token), so either:
+Then export the token Codex looks up. Use the bearer token printed by `remnic connectors install codex-cli`. If you need to mint a replacement, `remnic token generate` prints a multi-line status block (not just the raw token), so either:
 
 Copy the `Token:` value from:
 
@@ -84,10 +84,11 @@ See `docs/integration/connector-setup.md` in the Remnic repo for the canonical s
 
 ## Agent note
 
-If you're an AI agent scaffolding a Codex integration: **do not** hand-edit `~/.codex/` directly. The full setup has two components:
+If you're an AI agent scaffolding a Codex integration: **do not** hand-edit `~/.codex/` directly. The full setup has three components:
 
-1. `remnic connectors install codex-cli` (drives `@remnic/core`'s `installCodexMemoryExtension`) handles the MCP config, token rotation, and writes `memories_extensions/remnic/instructions.md`. It does NOT deploy `.codex-plugin/`, `hooks/`, or `skills/`.
-2. Load this package into Codex via Codex's own plugin loader to activate the hooks and skills.
+1. `remnic connectors install codex-cli` mints/stores the Remnic bearer token, records connector state, and drives `@remnic/core`'s `installCodexMemoryExtension` to write `memories_extensions/remnic/instructions.md`. It does NOT write `~/.codex/config.toml` and does NOT deploy `.codex-plugin/`, `hooks/`, or `skills/`.
+2. Add the MCP TOML block above unchanged and expose the generated token as `REMNIC_AUTH_TOKEN`.
+3. Load this package into Codex via Codex's own plugin loader to activate the hooks and skills.
 
 `bin/materialize.cjs` is a runtime helper called only by the Codex `Stop` hook to refresh `~/.codex/memories` from the live Remnic store at session end; it's not an installer and not wired into any `remnic` CLI command, so re-running it manually won't recover a broken plugin install.
 

@@ -161,9 +161,10 @@ export function createConversationIndexRuntime(
   },
 ): ConversationIndexRuntime {
   const qmd = createConversationSearchBackend(config) as ConversationQmdRuntime | undefined;
-  const faiss =
-    config.conversationIndexEnabled && config.conversationIndexBackend === "faiss"
-      ? new FaissConversationIndexAdapter({
+  let faiss: FaissConversationIndexAdapter | undefined;
+  if (config.conversationIndexEnabled && config.conversationIndexBackend === "faiss") {
+    try {
+      faiss = new FaissConversationIndexAdapter({
           memoryDir: config.memoryDir,
           scriptPath: config.conversationIndexFaissScriptPath,
           pythonBin: config.conversationIndexFaissPythonBin,
@@ -174,8 +175,11 @@ export function createConversationIndexRuntime(
           healthTimeoutMs: config.conversationIndexFaissHealthTimeoutMs,
           maxBatchSize: config.conversationIndexFaissMaxBatchSize,
           maxSearchK: config.conversationIndexFaissMaxSearchK,
-        })
-      : undefined;
+      });
+    } catch (err) {
+      log.warn(`Conversation index FAISS adapter disabled: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   const backend = createConversationIndexBackend({
     enabled: config.conversationIndexEnabled,

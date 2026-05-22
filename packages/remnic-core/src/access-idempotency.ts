@@ -1,6 +1,6 @@
 import { mkdir, open, readFile, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 type AccessIdempotencyEntry = {
   recordedAt: string;
@@ -13,6 +13,7 @@ type AccessIdempotencyTestHooks = {
   lockTimeoutMs?: number;
   staleLockMs?: number;
   lockHeartbeatMs?: number;
+  beforeStaleLockUnlink?: () => Promise<void> | void;
 };
 
 let testHooks: AccessIdempotencyTestHooks | null = null;
@@ -171,8 +172,10 @@ export class AccessIdempotencyStore {
     const startedAt = Date.now();
 
     while (true) {
+      const ownerToken = `${process.pid}:${randomUUID()}`;
       try {
         const handle = await open(lockPath, "wx");
+        await handle.writeFile(ownerToken, "utf-8");
         let heartbeat: NodeJS.Timeout | null = null;
         if (lockHeartbeatMs > 0) {
           heartbeat = setInterval(() => {
@@ -187,14 +190,24 @@ export class AccessIdempotencyStore {
             clearInterval(heartbeat);
           }
           await handle.close().catch(() => undefined);
-          await unlink(lockPath).catch(() => undefined);
+          await unlinkLockIfOwner(lockPath, ownerToken);
         }
       } catch (error) {
         if (!isAlreadyExistsError(error)) throw error;
         try {
           const lockStat = await stat(lockPath);
+          const lockOwner = await readLockOwner(lockPath);
           if (Date.now() - lockStat.mtimeMs > staleLockMs) {
-            await unlink(lockPath).catch(() => undefined);
+            await testHooks?.beforeStaleLockUnlink?.();
+            const removed = await unlinkStaleLockIfUnchanged({
+              lockPath,
+              observedOwner: lockOwner,
+              observedMtimeMs: lockStat.mtimeMs,
+              staleLockMs,
+            });
+            if (!removed) {
+              await sleep(10);
+            }
             continue;
           }
         } catch {
@@ -225,6 +238,40 @@ export class AccessIdempotencyStore {
 
 function isAlreadyExistsError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+}
+
+async function readLockOwner(lockPath: string): Promise<string | null> {
+  try {
+    return await readFile(lockPath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+async function unlinkLockIfOwner(lockPath: string, ownerToken: string): Promise<void> {
+  const currentOwner = await readLockOwner(lockPath);
+  if (currentOwner !== ownerToken) return;
+  await unlink(lockPath).catch(() => undefined);
+}
+
+async function unlinkStaleLockIfUnchanged(options: {
+  lockPath: string;
+  observedOwner: string | null;
+  observedMtimeMs: number;
+  staleLockMs: number;
+}): Promise<boolean> {
+  let currentStat: Awaited<ReturnType<typeof stat>>;
+  try {
+    currentStat = await stat(options.lockPath);
+  } catch {
+    return true;
+  }
+  if (currentStat.mtimeMs !== options.observedMtimeMs) return false;
+  if (Date.now() - currentStat.mtimeMs <= options.staleLockMs) return false;
+  const currentOwner = await readLockOwner(options.lockPath);
+  if (currentOwner !== options.observedOwner) return false;
+  await unlink(options.lockPath);
+  return true;
 }
 
 function sleep(ms: number): Promise<void> {

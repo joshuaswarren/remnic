@@ -192,6 +192,21 @@ function pairPath(memoryDir: string, pairId: string): string {
   return path.join(reviewDir(memoryDir), `${pairId}.json`);
 }
 
+function isSafeReviewJsonFile(memoryDir: string, filePath: string): boolean {
+  const root = path.resolve(reviewDir(memoryDir));
+  const resolved = path.resolve(filePath);
+  const relative = path.relative(root, resolved);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return false;
+  }
+
+  try {
+    return fs.lstatSync(resolved).isFile();
+  } catch {
+    return false;
+  }
+}
+
 function ensureDir(memoryDir: string): void {
   const dir = reviewDir(memoryDir);
   if (!fs.existsSync(dir)) {
@@ -260,13 +275,14 @@ export function writePair(
   if (isTerminalResolution(existing?.resolution)) {
     return existing!;
   }
-  if (existing?.resolution === "both-valid" && options.cooldownDays === undefined) {
+  const contentChanged = Boolean(existing && suppliedMemoryHashesChanged(existing, pair));
+  if (existing?.resolution === "both-valid" && options.cooldownDays === undefined && !contentChanged) {
     return existing;
   }
 
   // Preserve active deferrals, but allow expired deferrals to be refreshed.
   const existingDeferralExpired = Boolean(existing && isDeferred(existing) && !isDeferralActive(existing));
-  if (existing && isDeferralActive(existing)) {
+  if (existing && isDeferralActive(existing) && !contentChanged) {
     return existing;
   }
 
@@ -281,7 +297,7 @@ export function writePair(
   const dormantContentChanged = Boolean(
     existing
     && existingDormantCooldownActive
-    && suppliedMemoryHashesChanged(existing, pair),
+    && contentChanged,
   );
   const existingDormantExpired = Boolean(
     existing
@@ -294,7 +310,7 @@ export function writePair(
     && !existingDeferralExpired
     && (
       (existingDormantCooldownActive && !dormantContentChanged)
-      || (!existingDormantExpired && !dormantContentChanged && existing.confidence >= pair.confidence)
+      || (!existingDormantExpired && !contentChanged && existing.confidence >= pair.confidence)
     )
   ) {
     return existing;
@@ -303,11 +319,11 @@ export function writePair(
   const full: ContradictionPair = {
     ...pair,
     pairId,
-    lastReviewedAt: (existingDeferralExpired || existingDormantExpired || dormantContentChanged)
+    lastReviewedAt: (existingDeferralExpired || existingDormantExpired || contentChanged)
       ? pair.lastReviewedAt
       : (existing?.lastReviewedAt ?? pair.lastReviewedAt),
     resolution: undefined,
-    deferredUntil: (existingDeferralExpired || existingDormantExpired || dormantContentChanged)
+    deferredUntil: (existingDeferralExpired || existingDormantExpired || contentChanged)
       ? undefined
       : existing?.deferredUntil,
   };
@@ -347,6 +363,7 @@ export function writePairs(
 export function readPair(memoryDir: string, pairId: string): ContradictionPair | null {
   const filePath = pairPath(memoryDir, pairId);
   try {
+    if (!isSafeReviewJsonFile(memoryDir, filePath)) return null;
     const raw = fs.readFileSync(filePath, "utf-8");
     const parsed = JSON.parse(raw);
     if (typeof parsed === "object" && parsed !== null && Array.isArray(parsed.memoryIds)) {
@@ -384,7 +401,9 @@ export function listPairs(
     if (!entry.endsWith(".json")) continue;
 
     try {
-      const raw = fs.readFileSync(path.join(dir, entry), "utf-8");
+      const filePath = path.join(dir, entry);
+      if (!isSafeReviewJsonFile(memoryDir, filePath)) continue;
+      const raw = fs.readFileSync(filePath, "utf-8");
       const pair = JSON.parse(raw) as ContradictionPair;
 
       if (typeof pair !== "object" || pair === null) continue;
@@ -429,6 +448,7 @@ export function migrateUnscopedPairsToNamespace(memoryDir: string, namespace: st
     const filePath = path.join(dir, entry);
 
     try {
+      if (!isSafeReviewJsonFile(memoryDir, filePath)) continue;
       const raw = fs.readFileSync(filePath, "utf-8");
       const pair = JSON.parse(raw) as ContradictionPair;
       if (typeof pair !== "object" || pair === null) continue;
@@ -445,6 +465,10 @@ export function migrateUnscopedPairsToNamespace(memoryDir: string, namespace: st
           writePairFile(targetPath, migratedPair);
           fs.rmSync(filePath, { force: true });
         } else {
+          if (!isSafeReviewJsonFile(memoryDir, targetPath)) {
+            hadMigrationFailure = true;
+            continue;
+          }
           const existing = readPair(memoryDir, pairId);
           writePairFile(targetPath, existing ? mergeMigratedPair(existing, migratedPair, options) : migratedPair);
           fs.rmSync(filePath, { force: true });

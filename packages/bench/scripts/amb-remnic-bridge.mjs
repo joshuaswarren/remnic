@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import readline from "node:readline";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_RECALL_BUDGET_CHARS = 36_000;
 const DEFAULT_MAX_DOCUMENT_CONTEXT_CHARS = 12_000;
@@ -47,7 +48,7 @@ function normalizeRole(role) {
   return "user";
 }
 
-function parseAmbDocumentMessages(document) {
+export function parseAmbDocumentMessages(document) {
   const content = String(document.content ?? "");
   const messages = [];
   const context = clipText(
@@ -70,7 +71,7 @@ function parseAmbDocumentMessages(document) {
     });
   }
 
-  const turnPattern = /(?:^|\n\n)(\[[^\]]+\]\s*)?(User|Assistant|System):\s*/g;
+  const turnPattern = /(?:^|\n)(\[[^\]]+\]\s*)?(User|Assistant|System):[ \t]*/g;
   const matches = [...content.matchAll(turnPattern)];
   if (matches.length === 0) {
     if (content.trim().length > 0) {
@@ -102,10 +103,29 @@ function stableIdForText(prefix, text) {
 }
 
 function writeJson(value) {
-  process.stdout.write(`${JSON.stringify(value)}\n`);
+  return new Promise((resolve, reject) => {
+    process.stdout.write(`${JSON.stringify(value)}\n`, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
 }
 
 async function loadCreateRemnicAdapter() {
+  if (process.env.REMNIC_AMB_TEST_STUB_ADAPTER === "1") {
+    return async () => ({
+      async store() {},
+      async recall() {
+        return "";
+      },
+      async reset() {},
+      async drain() {},
+      async destroy() {},
+    });
+  }
   const module = await import("../dist/index.js");
   if (typeof module.createRemnicAdapter !== "function") {
     throw new Error("Remnic bench adapter build does not export createRemnicAdapter");
@@ -169,7 +189,7 @@ async function main() {
           await adapter.store(sessionForUser(userId), messages);
         }
         await adapter.drain?.();
-        writeJson({
+        await writeJson({
           ok: true,
           documents: documents.length,
           messages: storedMessages,
@@ -186,7 +206,7 @@ async function main() {
           recallBudgetChars,
         );
         const trimmed = content.trim();
-        writeJson({
+        await writeJson({
           ok: true,
           session_id: sessionId,
           session_prefix: sessionPrefix,
@@ -204,16 +224,16 @@ async function main() {
         });
       } else if (request.command === "reset") {
         await adapter.reset?.();
-        writeJson({ ok: true });
+        await writeJson({ ok: true });
       } else if (request.command === "cleanup") {
         await adapter.destroy?.();
-        writeJson({ ok: true });
-        process.exit(0);
+        await writeJson({ ok: true });
+        return;
       } else {
         throw new Error(`Unknown command: ${request.command}`);
       }
     } catch (error) {
-      writeJson({
+      await writeJson({
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -223,11 +243,13 @@ async function main() {
   await adapter.destroy?.();
 }
 
-main().catch((error) => {
-  writeJson({
-    ok: false,
-    fatal: true,
-    error: error instanceof Error ? error.message : String(error),
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(async (error) => {
+    await writeJson({
+      ok: false,
+      fatal: true,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exitCode = 1;
   });
-  process.exitCode = 1;
-});
+}

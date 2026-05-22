@@ -261,6 +261,26 @@
       "remnic-source": "./src/briefing.ts",
       "import": "./dist/briefing.js"
     },
+    "./bulk-import": {
+      "types": "./src/bulk-import/index.ts",
+      "remnic-source": "./src/bulk-import/index.ts",
+      "import": "./dist/bulk-import/index.js"
+    },
+    "./bulk-import.js": {
+      "types": "./src/bulk-import/index.ts",
+      "remnic-source": "./src/bulk-import/index.ts",
+      "import": "./dist/bulk-import/index.js"
+    },
+    "./bulk-import/index": {
+      "types": "./src/bulk-import/index.ts",
+      "remnic-source": "./src/bulk-import/index.ts",
+      "import": "./dist/bulk-import/index.js"
+    },
+    "./bulk-import/index.js": {
+      "types": "./src/bulk-import/index.ts",
+      "remnic-source": "./src/bulk-import/index.ts",
+      "import": "./dist/bulk-import/index.js"
+    },
     "./buffer": {
       "types": "./src/buffer.ts",
       "remnic-source": "./src/buffer.ts",
@@ -1031,6 +1051,26 @@
       "remnic-source": "./src/index.ts",
       "import": "./dist/index.js"
     },
+    "./importers": {
+      "types": "./src/importers/index.ts",
+      "remnic-source": "./src/importers/index.ts",
+      "import": "./dist/importers/index.js"
+    },
+    "./importers.js": {
+      "types": "./src/importers/index.ts",
+      "remnic-source": "./src/importers/index.ts",
+      "import": "./dist/importers/index.js"
+    },
+    "./importers/index": {
+      "types": "./src/importers/index.ts",
+      "remnic-source": "./src/importers/index.ts",
+      "import": "./dist/importers/index.js"
+    },
+    "./importers/index.js": {
+      "types": "./src/importers/index.ts",
+      "remnic-source": "./src/importers/index.ts",
+      "import": "./dist/importers/index.js"
+    },
     "./intent": {
       "types": "./src/intent.ts",
       "remnic-source": "./src/intent.ts",
@@ -1572,12 +1612,12 @@
       "import": "./dist/opik-exporter.js"
     },
     "./orchestrator": {
-      "types": "./dist/orchestrator.d.ts",
+      "types": "./src/orchestrator.ts",
       "remnic-source": "./src/orchestrator.ts",
       "import": "./dist/orchestrator.js"
     },
     "./orchestrator.js": {
-      "types": "./dist/orchestrator.d.ts",
+      "types": "./src/orchestrator.ts",
       "remnic-source": "./src/orchestrator.ts",
       "import": "./dist/orchestrator.js"
     },
@@ -1601,15 +1641,35 @@
       "remnic-source": "./src/patterns-cli.ts",
       "import": "./dist/patterns-cli.js"
     },
-    "./plugin-id": {
-      "types": "./src/plugin-id.ts",
-      "remnic-source": "./src/plugin-id.ts",
-      "import": "./dist/plugin-id.js"
+    "./peers": {
+      "types": "./src/peers/index.ts",
+      "remnic-source": "./src/peers/index.ts",
+      "import": "./dist/peers/index.js"
     },
-    "./plugin-id.js": {
-      "types": "./src/plugin-id.ts",
-      "remnic-source": "./src/plugin-id.ts",
-      "import": "./dist/plugin-id.js"
+    "./peers.js": {
+      "types": "./src/peers/index.ts",
+      "remnic-source": "./src/peers/index.ts",
+      "import": "./dist/peers/index.js"
+    },
+    "./peers/index": {
+      "types": "./src/peers/index.ts",
+      "remnic-source": "./src/peers/index.ts",
+      "import": "./dist/peers/index.js"
+    },
+    "./peers/index.js": {
+      "types": "./src/peers/index.ts",
+      "remnic-source": "./src/peers/index.ts",
+      "import": "./dist/peers/index.js"
+    },
+    "./plugin-entry-resolver": {
+      "types": "./src/plugin-entry-resolver.ts",
+      "remnic-source": "./src/plugin-entry-resolver.ts",
+      "import": "./dist/plugin-entry-resolver.js"
+    },
+    "./plugin-entry-resolver.js": {
+      "types": "./src/plugin-entry-resolver.ts",
+      "remnic-source": "./src/plugin-entry-resolver.ts",
+      "import": "./dist/plugin-entry-resolver.js"
     },
     "./policy-runtime": {
       "types": "./src/policy-runtime.ts",
@@ -2813,6 +2873,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3"
   },
   "license": "MIT",

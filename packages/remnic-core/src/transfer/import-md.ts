@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import {
   fileExists,
   listFilesRecursive,
@@ -7,6 +7,7 @@ import {
   readJsonFile,
   resolveSafeArchiveTarget,
   toPosixRelPath,
+  writeSafeArchiveTarget,
 } from "./fs-utils.js";
 import { parseConflictPolicy, type ConflictPolicy } from "./conflict-policy.js";
 import { validateManifestRecords } from "./integrity.js";
@@ -43,7 +44,7 @@ export async function importMarkdownBundle(opts: ImportMdOptions): Promise<{ wri
   }
   validateManifestRecords(manifest, records, "importMarkdownBundle");
 
-  const writes: Array<{ abs: string; content: Uint8Array }> = [];
+  const writes: Array<{ relPath: string; content: Uint8Array }> = [];
   let skipped = 0;
 
   for (const record of records) {
@@ -70,14 +71,13 @@ export async function importMarkdownBundle(opts: ImportMdOptions): Promise<{ wri
       }
     }
 
-    writes.push({ abs: dstAbs, content });
+    writes.push({ relPath: relPosix, content });
   }
 
   if (opts.dryRun) return { written: 0, skipped };
 
   for (const w of writes) {
-    await mkdir(path.dirname(w.abs), { recursive: true });
-    await writeFile(w.abs, w.content);
+    await writeSafeArchiveTarget(targetRoot, w.relPath, w.content);
   }
 
   return { written: writes.length, skipped };

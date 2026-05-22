@@ -22,7 +22,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile, readFile, mkdir, stat } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, mkdir, stat, readdir } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { gzipSync, gunzipSync } from "node:zlib";
@@ -231,12 +231,6 @@ test("exportCapsule with encrypt=true + importCapsule roundtrip restores all fil
     );
     assert.equal(exportResult.encryptedArchivePath, exportResult.archivePath);
 
-    // Cross-machine restore scenario: the destination machine uses the same
-    // passphrase as the source. For this unit test, we simply pass srcDir as
-    // the memoryDir for the import — the key was registered there and is still
-    // in the keyring. In production, the operator runs `secure-store init` +
-    // `unlock` on the destination with the same passphrase; the recorded KDF
-    // derives the same key because the salt is embedded in the sealed envelope.
     const importResult = await importCapsule({
       archivePath: exportResult.archivePath,
       root: dstDir,
@@ -256,6 +250,77 @@ test("exportCapsule with encrypt=true + importCapsule roundtrip restores all fil
     keyring.lockAll();
     await rm(srcDir, { recursive: true, force: true });
     await rm(dstDir, { recursive: true, force: true });
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("encrypted format-v2 capsule restores from passphrase without source keyring", async () => {
+  const srcDir = await makeTempDir();
+  const dstDir = await makeTempDir();
+  const outDir = await makeTempDir();
+  try {
+    await makeMemoryDir(srcDir);
+    await initAndUnlockStore(srcDir);
+
+    const exportResult = await exportCapsule({
+      name: "test-capsule-passphrase",
+      root: srcDir,
+      outDir,
+      pluginVersion: "0.0.0-test",
+      encrypt: true,
+      memoryDir: srcDir,
+      now: 1_700_000_000_500,
+    });
+
+    keyring.lockAll();
+
+    const importResult = await importCapsule({
+      archivePath: exportResult.archivePath,
+      root: dstDir,
+      mode: "skip",
+      passphrase: TEST_PASSPHRASE,
+    });
+
+    assert.equal(importResult.imported.length, 2);
+    assert.equal(importResult.skipped.length, 0);
+
+    const aContent = await readFile(path.join(dstDir, "facts", "a.md"), "utf-8");
+    assert.ok(aContent.includes("Fact A content."));
+    const bContent = await readFile(path.join(dstDir, "facts", "b.md"), "utf-8");
+    assert.ok(bContent.includes("Fact B content."));
+  } finally {
+    keyring.lockAll();
+    await rm(srcDir, { recursive: true, force: true });
+    await rm(dstDir, { recursive: true, force: true });
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("exportCapsule with encrypt=true removes plaintext archive when encryption fails", async () => {
+  const srcDir = await makeTempDir();
+  const outDir = await makeTempDir();
+  try {
+    await makeMemoryDir(srcDir);
+
+    await assert.rejects(
+      async () =>
+        exportCapsule({
+          name: "locked-capsule",
+          root: srcDir,
+          outDir,
+          pluginVersion: "0.0.0-test",
+          encrypt: true,
+          memoryDir: srcDir,
+          now: 1_700_000_000_700,
+        }),
+      /Secure-store is locked/,
+    );
+
+    const files = await readdir(outDir);
+    assert.equal(files.some((name) => name.endsWith(".capsule.json.gz")), false);
+  } finally {
+    keyring.lockAll();
+    await rm(srcDir, { recursive: true, force: true });
     await rm(outDir, { recursive: true, force: true });
   }
 });
@@ -439,6 +504,8 @@ test("backupMemoryDir with encrypt=true and locked store throws clear error", as
       /Secure-store is locked/,
       "should surface locked error when store not unlocked",
     );
+    const files = await readdir(backupDir);
+    assert.equal(files.some((name) => name.endsWith(".backup.json.gz")), false);
   } finally {
     keyring.lockAll();
     await rm(memDir, { recursive: true, force: true });
@@ -644,6 +711,38 @@ test("backupMemoryDir excludes .secure-store and .capsules directories from encr
     keyring.lockAll();
     await rm(memDir, { recursive: true, force: true });
     await rm(backupDir, { recursive: true, force: true });
+  }
+});
+
+test("backupMemoryDir excludes nested encrypted backup output directory", async () => {
+  const memDir = await makeTempDir();
+  try {
+    await makeMemoryDir(memDir);
+    await initAndUnlockStore(memDir);
+
+    const backupDir = path.join(memDir, "backups");
+    await mkdir(backupDir, { recursive: true });
+    await writeFile(path.join(backupDir, "old.backup.json.gz.enc"), Buffer.from("old backup"));
+
+    const encPath = await backupMemoryDir({
+      memoryDir: memDir,
+      outDir: backupDir,
+      pluginVersion: "0.0.0-test",
+      encrypt: true,
+    });
+
+    const { gzPath } = await decryptCapsuleFile({ encPath, memoryDir: memDir });
+    const gz = await readFile(gzPath);
+    const bundle = JSON.parse(gunzipSync(gz).toString("utf-8")) as {
+      records: Array<{ path: string }>;
+    };
+    const paths = bundle.records.map((record) => record.path);
+
+    assert.equal(paths.some((entry) => entry === "backups" || entry.startsWith("backups/")), false);
+    assert.equal(paths.some((entry) => entry.startsWith("facts/")), true);
+  } finally {
+    keyring.lockAll();
+    await rm(memDir, { recursive: true, force: true });
   }
 });
 

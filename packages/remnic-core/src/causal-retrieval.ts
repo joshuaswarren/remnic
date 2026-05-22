@@ -8,7 +8,7 @@
  */
 
 import type { CausalTrajectoryRecord } from "./causal-trajectory.js";
-import { searchCausalTrajectories } from "./causal-trajectory.js";
+import { readCausalTrajectoryRecords, searchCausalTrajectories } from "./causal-trajectory.js";
 import {
   readChainIndex,
   resolveChainsDir,
@@ -158,6 +158,16 @@ function formatRetrievalResult(result: CausalRetrievalResult): string {
   return `- ${direction} ${result.summary}${edgeInfo}${counterfactual}`;
 }
 
+function formatConnectedTrajectorySummary(
+  trajectoryId: string,
+  depth: number,
+  trajectoriesById: Map<string, CausalTrajectoryRecord>,
+): string {
+  const record = trajectoriesById.get(trajectoryId);
+  if (!record) return `Depth ${depth}: trajectory ${trajectoryId.slice(0, 12)}`;
+  return `Depth ${depth}: [${record.outcomeKind}] ${record.goal} → ${record.outcomeSummary}`;
+}
+
 export function formatCausalRetrievalSection(
   results: CausalRetrievalResult[],
   maxChars: number,
@@ -220,6 +230,9 @@ export async function retrieveCausalChains(options: {
 
     if (Object.keys(chainIndex.edges).length === 0) return null;
 
+    const { trajectories } = await readCausalTrajectoryRecords({ memoryDir, causalTrajectoryStoreDir });
+    const trajectoriesById = new Map(trajectories.map((trajectory) => [trajectory.trajectoryId, trajectory]));
+
     // 3. Walk chains from each seed
     const allResults: CausalRetrievalResult[] = [];
 
@@ -250,7 +263,7 @@ export async function retrieveCausalChains(options: {
           edgeType: u.edgeType,
           edgeConfidence: u.edgeConfidence,
           isCounterfactual: u.isCounterfactual,
-          summary: `Depth ${u.depth}: trajectory ${u.trajectoryId.slice(0, 12)}`,
+          summary: formatConnectedTrajectorySummary(u.trajectoryId, u.depth, trajectoriesById),
         });
       }
 
@@ -270,7 +283,7 @@ export async function retrieveCausalChains(options: {
           edgeType: d.edgeType,
           edgeConfidence: d.edgeConfidence,
           isCounterfactual: d.isCounterfactual,
-          summary: `Depth ${d.depth}: trajectory ${d.trajectoryId.slice(0, 12)}`,
+          summary: formatConnectedTrajectorySummary(d.trajectoryId, d.depth, trajectoriesById),
         });
       }
     }

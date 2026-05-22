@@ -77,7 +77,10 @@ export interface ConversationIndexBackend {
   readonly kind: "qmd" | "faiss";
   initialize(): Promise<ConversationIndexBackendInitResult>;
   search(query: string, maxResults: number): Promise<ConversationSearchResult[]>;
-  update(chunks: ConversationChunk[], options: { embed: boolean }): Promise<{ embedded: boolean }>;
+  update(
+    chunks: ConversationChunk[],
+    options: { embed: boolean; retentionCutoffMs?: number },
+  ): Promise<{ embedded: boolean }>;
   rebuild(chunks: ConversationChunk[], options: { embed: boolean }): Promise<{ embedded: boolean; rebuilt: boolean }>;
   health(): Promise<ConversationIndexBackendHealth>;
   inspect(): Promise<ConversationIndexBackendInspection>;
@@ -160,7 +163,7 @@ function createQmdBackend(
       if (!qmd || !qmd.isAvailable()) return [];
       return searchConversationIndex(qmd, query, maxResults);
     },
-    async update(_chunks: ConversationChunk[], options: { embed: boolean }) {
+    async update(_chunks: ConversationChunk[], options: { embed: boolean; retentionCutoffMs?: number }) {
       const qmd = getQmd();
       if (!qmd || !qmd.isAvailable()) return { embedded: false };
       await qmd.update();
@@ -247,13 +250,18 @@ function createFaissBackend(
     async search(query: string, maxResults: number) {
       return searchConversationIndexFaissFailOpen(getFaiss(), query, maxResults);
     },
-    async update(chunks: ConversationChunk[], _options: { embed: boolean }) {
-      await upsertConversationChunksFailOpen(getFaiss(), chunks);
+    async update(chunks: ConversationChunk[], options: { embed: boolean; retentionCutoffMs?: number }) {
+      await upsertConversationChunksFailOpen(getFaiss(), chunks, {
+        retentionCutoffMs: options.retentionCutoffMs,
+      });
       return { embedded: false };
     },
     async rebuild(chunks: ConversationChunk[], _options: { embed: boolean }) {
       const result = await rebuildConversationChunksFailOpen(getFaiss(), chunks);
-      return { embedded: false, rebuilt: result.skipped !== true };
+      return {
+        embedded: false,
+        rebuilt: result.skipped !== true && result.rebuilt === chunks.length,
+      };
     },
     async health() {
       const faiss = await failOpenFaissHealth(getFaiss());

@@ -4,10 +4,12 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  doesProcessCommandLookLikeRemnicDaemon,
   inspectLaunchdPlist,
   launchdLoadPlist,
   launchdUnloadPlist,
   readLaunchdProgramArguments,
+  readVerifiedDaemonPid,
   resolveServerBinDetails,
 } from "./daemon-service.js";
 
@@ -230,6 +232,69 @@ test("launchdUnloadPlist invokes launchctl with argv instead of a shell command"
   ]);
 });
 
+test("readVerifiedDaemonPid removes stale pid files for unrelated live processes", () => {
+  const removed: string[] = [];
+  const pid = readVerifiedDaemonPid({
+    pidFiles: ["/tmp/remnic.pid"],
+    expectedServerBin: "/repo/packages/remnic-server/bin/remnic-server.js",
+    readFileSync: () => "12345\n",
+    processKill: (candidatePid, signal) => {
+      assert.equal(candidatePid, 12345);
+      assert.equal(signal, 0);
+      return true;
+    },
+    execFileSync: () => "/usr/bin/python3 unrelated.py\n",
+    unlinkSync: (file) => {
+      removed.push(file);
+    },
+  });
+
+  assert.equal(pid, undefined);
+  assert.deepEqual(removed, ["/tmp/remnic.pid"]);
+});
+
+test("readVerifiedDaemonPid accepts a live remnic-server command", () => {
+  const removed: string[] = [];
+  const pid = readVerifiedDaemonPid({
+    pidFiles: ["/tmp/remnic.pid"],
+    expectedServerBin: "/repo/packages/remnic-server/bin/remnic-server.js",
+    readFileSync: () => "23456\n",
+    processKill: () => true,
+    execFileSync: () =>
+      "/opt/homebrew/bin/node /repo/packages/remnic-server/bin/remnic-server.js\n",
+    unlinkSync: (file) => {
+      removed.push(file);
+    },
+  });
+
+  assert.equal(pid, 23456);
+  assert.deepEqual(removed, []);
+});
+
+test("doesProcessCommandLookLikeRemnicDaemon recognizes package and workspace server paths", () => {
+  assert.equal(
+    doesProcessCommandLookLikeRemnicDaemon(
+      "node /opt/homebrew/lib/node_modules/@remnic/server/bin/remnic-server.js",
+      "/different/server.js",
+    ),
+    true,
+  );
+  assert.equal(
+    doesProcessCommandLookLikeRemnicDaemon(
+      "npx tsx /repo/packages/remnic-server/src/index.ts",
+      "/different/server.js",
+    ),
+    true,
+  );
+  assert.equal(
+    doesProcessCommandLookLikeRemnicDaemon(
+      "node /usr/local/bin/unrelated-service",
+      "/repo/packages/remnic-server/bin/remnic-server.js",
+    ),
+    false,
+  );
+});
+
 test("inspectLaunchdPlist fails when installed plist points to missing server binary", () => {
   const plistPath = "/Users/test/Library/LaunchAgents/ai.remnic.daemon.plist";
   const missingServer = "/opt/homebrew/lib/node_modules/@remnic/server/dist/bin/remnic-server.js";
@@ -277,7 +342,7 @@ test("inspectLaunchdPlist rejects an existing package import entry that does not
 
 test("inspectLaunchdPlist accepts an existing built server binary", () => {
   const plistPath = "/Users/test/Library/LaunchAgents/ai.remnic.daemon.plist";
-  const server = "/opt/homebrew/lib/node_modules/@remnic/server/dist/bin/remnic-server.js";
+  const server = "/opt/homebrew/lib/node_modules/@remnic/server/bin/remnic-server.js";
   const result = inspectLaunchdPlist(plistPath, {
     existsSync: (candidate) => candidate === plistPath || candidate === server,
     readFileSync: () => `
@@ -293,7 +358,7 @@ test("inspectLaunchdPlist accepts an existing built server binary", () => {
 
   assert.equal(result.installed, true);
   assert.equal(result.ok, true);
-  assert.match(result.detail, /dist\/bin\/remnic-server\.js/);
+  assert.match(result.detail, /@remnic\/server\/bin\/remnic-server\.js/);
 });
 
 test("inspectLaunchdPlist recognizes legacy engram-server index paths", () => {

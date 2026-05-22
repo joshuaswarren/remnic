@@ -39,6 +39,8 @@ export const ALL_CATEGORY_KEYS: string[] = [
  * Falls back to `facts/` for unknown categories.
  */
 export function getCategoryDir(memoryDir: string, category: string): string {
-  const dir = CATEGORY_DIR_MAP[category];
+  const dir = Object.hasOwn(CATEGORY_DIR_MAP, category)
+    ? CATEGORY_DIR_MAP[category]
+    : undefined;
   return dir ? path.join(memoryDir, dir) : path.join(memoryDir, "facts");
 }

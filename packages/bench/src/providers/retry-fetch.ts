@@ -28,6 +28,24 @@ const DEFAULTS: Required<RetryFetchOptions> = {
   max429WaitMs: 0,
 };
 
+function normalizeRetryFetchOptions(options?: RetryFetchOptions): Required<RetryFetchOptions> {
+  const normalized = {
+    maxAttempts: options?.maxAttempts ?? DEFAULTS.maxAttempts,
+    baseBackoffMs: options?.baseBackoffMs ?? DEFAULTS.baseBackoffMs,
+    timeoutMs: options?.timeoutMs ?? DEFAULTS.timeoutMs,
+    max429WaitMs: options?.max429WaitMs ?? DEFAULTS.max429WaitMs,
+  };
+  if (!Number.isInteger(normalized.maxAttempts) || normalized.maxAttempts <= 0) {
+    throw new Error("retryFetch maxAttempts must be a positive integer");
+  }
+  for (const field of ["baseBackoffMs", "timeoutMs", "max429WaitMs"] as const) {
+    if (!Number.isFinite(normalized[field]) || normalized[field] < 0) {
+      throw new Error(`retryFetch ${field} must be a finite non-negative number`);
+    }
+  }
+  return normalized;
+}
+
 /** Maximum time to wait on a single Retry-After value (seconds). */
 const MAX_RETRY_AFTER_S = 600;
 
@@ -107,7 +125,7 @@ export async function retryFetch(
   init: RequestInit,
   options?: RetryFetchOptions,
 ): Promise<Response> {
-  const opts = { ...DEFAULTS, ...options };
+  const opts = normalizeRetryFetchOptions(options);
   let lastError: Error | null = null;
   let last429Response: Response | null = null;
   let last429IsStale = false;
@@ -177,12 +195,15 @@ export async function retryFetch(
           return response;
         }
 
-        // Only cancel the body when we're going to retry.
-        await response.body?.cancel();
-        last429Response = response;
+        const retryAfter = parseRetryAfterMs(response.headers.get("retry-after"));
+        const body = await response.text();
+        last429Response = new Response(body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: new Headers(response.headers),
+        });
         last429IsStale = false;
 
-        const retryAfter = parseRetryAfterMs(response.headers.get("retry-after"));
         let waitMs =
           retryAfter != null
             ? Math.max(retryAfter, 100)
@@ -262,17 +283,8 @@ export async function retryFetch(
       last429IsStale = true;
       callerSignal?.removeEventListener("abort", onCallerAbort);
 
-      if (attempt >= opts.maxAttempts && remainingExtendedBudgetMs() > 0) {
-        const waitMs = Math.min(
-          Math.max(opts.baseBackoffMs * Math.pow(2, attempt - 1), 100),
-          remainingExtendedBudgetMs(),
-        );
-        console.error(
-          `[transient] ${lastError.message} (attempt ${attempt}/${opts.maxAttempts}) ` +
-            `within extended provider budget, pausing ${Math.round(waitMs / 1000)}s before retry…`,
-        );
-        await abortAwareSleep(waitMs, callerSignal);
-        continue;
+      if (attempt >= opts.maxAttempts) {
+        throw lastError;
       }
     }
 

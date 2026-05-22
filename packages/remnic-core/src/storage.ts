@@ -2483,6 +2483,15 @@ export class StorageManager {
   private get entitiesDir(): string {
     return path.join(this.baseDir, "entities");
   }
+  private resolveEntityFilePath(name: string): string | null {
+    if (typeof name !== "string") return null;
+    const filePath = path.resolve(this.entitiesDir, `${name}.md`);
+    const relative = path.relative(this.entitiesDir, filePath);
+    if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+      return null;
+    }
+    return filePath;
+  }
   private readStorageSecureFile(filePath: string): Promise<string> {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
@@ -4177,8 +4186,12 @@ export class StorageManager {
   }
 
   async readEntity(name: string): Promise<string> {
+    const filePath = this.resolveEntityFilePath(name);
+    if (filePath === null) {
+      return "";
+    }
     try {
-      return await this.readStorageSecureFile(path.join(this.entitiesDir, `${name}.md`));
+      return await this.readStorageSecureFile(filePath);
     } catch (err) {
       if (err instanceof SecureStoreLockedError) throw err;
       if (!isErrnoCode(err, "ENOENT")) throw err;

@@ -5,6 +5,31 @@ import { RunTable } from "../components/RunTable";
 
 const ranges: TrendRange[] = ["7d", "30d", "90d", "all"];
 
+export function reconcileRunFilters(
+  payload: BenchResultSummaryPayload,
+  filters: RunFilters,
+): RunFilters {
+  const benchmarks = new Set(listBenchmarks(payload));
+  const systemProviders = new Set(listProviders(payload, "systemProvider"));
+  const judgeProviders = new Set(listProviders(payload, "judgeProvider"));
+
+  return {
+    ...filters,
+    benchmark:
+      filters.benchmark === "all" || benchmarks.has(filters.benchmark)
+        ? filters.benchmark
+        : "all",
+    systemProvider:
+      filters.systemProvider === "all" || systemProviders.has(filters.systemProvider)
+        ? filters.systemProvider
+        : "all",
+    judgeProvider:
+      filters.judgeProvider === "all" || judgeProviders.has(filters.judgeProvider)
+        ? filters.judgeProvider
+        : "all",
+  };
+}
+
 export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
   const [filters, setFilters] = useState<RunFilters>({
     benchmark: "all",
@@ -13,7 +38,11 @@ export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
     mode: "all",
     range: "all",
   });
-  const filtered = filterRuns(payload, filters);
+  const reconciledFilters = reconcileRunFilters(payload, filters);
+  const benchmarks = listBenchmarks(payload);
+  const systemProviders = listProviders(payload, "systemProvider");
+  const judgeProviders = listProviders(payload, "judgeProvider");
+  const filtered = filterRuns(payload, reconciledFilters);
 
   return (
     <section className="page">
@@ -29,11 +58,11 @@ export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
         <label>
           <span>Benchmark</span>
           <select
-            value={filters.benchmark}
+            value={reconciledFilters.benchmark}
             onChange={(event) => setFilters((current) => ({ ...current, benchmark: event.target.value }))}
           >
             <option value="all">All benchmarks</option>
-            {listBenchmarks(payload).map((benchmark) => (
+            {benchmarks.map((benchmark) => (
               <option key={benchmark} value={benchmark}>
                 {benchmark}
               </option>
@@ -43,13 +72,13 @@ export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
         <label>
           <span>System provider</span>
           <select
-            value={filters.systemProvider}
+            value={reconciledFilters.systemProvider}
             onChange={(event) =>
               setFilters((current) => ({ ...current, systemProvider: event.target.value }))
             }
           >
             <option value="all">All systems</option>
-            {listProviders(payload, "systemProvider").map((provider) => (
+            {systemProviders.map((provider) => (
               <option key={provider} value={provider}>
                 {provider}
               </option>
@@ -59,13 +88,13 @@ export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
         <label>
           <span>Judge provider</span>
           <select
-            value={filters.judgeProvider}
+            value={reconciledFilters.judgeProvider}
             onChange={(event) =>
               setFilters((current) => ({ ...current, judgeProvider: event.target.value }))
             }
           >
             <option value="all">All judges</option>
-            {listProviders(payload, "judgeProvider").map((provider) => (
+            {judgeProviders.map((provider) => (
               <option key={provider} value={provider}>
                 {provider}
               </option>
@@ -75,7 +104,7 @@ export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
         <label>
           <span>Mode</span>
           <select
-            value={filters.mode}
+            value={reconciledFilters.mode}
             onChange={(event) => setFilters((current) => ({ ...current, mode: event.target.value }))}
           >
             <option value="all">All modes</option>
@@ -86,7 +115,7 @@ export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
         <label>
           <span>Range</span>
           <select
-            value={filters.range}
+            value={reconciledFilters.range}
             onChange={(event) =>
               setFilters((current) => ({ ...current, range: event.target.value as TrendRange }))
             }
@@ -104,3 +133,4 @@ export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
     </section>
   );
 }
+import * as React from "react";

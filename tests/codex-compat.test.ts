@@ -75,6 +75,28 @@ test("resolveCodexSessionIdentity collapses Codex sessions onto provider thread 
   assert.equal(identity.messageCount, 17);
 });
 
+test("resolveCodexSessionIdentity prefers explicit Codex event thread over unrelated context thread", () => {
+  const cfg = parseConfig({ codexCompat: { enabled: true } });
+  const identity = resolveCodexSessionIdentity({
+    sessionKey: "raw",
+    ctx: {
+      providerThreadId: "host-thread",
+      provider: { id: "openai", model: "gpt-5.4" },
+    },
+    event: {
+      codexThreadId: "codex-thread",
+    },
+    codexCompat: cfg.codexCompat,
+  });
+
+  assert.equal(identity.isCodex, true);
+  assert.equal(identity.providerThreadId, "codex-thread");
+  assert.equal(
+    identity.logicalSessionKey,
+    codexLogicalSessionKey("codex-thread"),
+  );
+});
+
 test("resolveCodexSessionIdentity does not infer message count from hook message arrays", () => {
   const cfg = parseConfig({ codexCompat: { enabled: true } });
   const identity = resolveCodexSessionIdentity({

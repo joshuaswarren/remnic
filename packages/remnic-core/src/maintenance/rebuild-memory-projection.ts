@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, rename, rm, stat } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { StorageManager } from "../storage.js";
 import {
   listMemoryGovernanceRuns,
@@ -40,6 +40,7 @@ import {
   normalizeProjectionTags,
 } from "../memory-projection-format.js";
 import { openBetterSqlite3 } from "../runtime/better-sqlite.js";
+import { commitPreparedFileAtomically } from "./atomic-file.js";
 
 export interface RebuildMemoryProjectionOptions {
   memoryDir: string;
@@ -118,15 +119,22 @@ export interface RepairMemoryProjectionResult {
   rebuild?: RebuildMemoryProjectionResult;
 }
 
-async function backupExistingProjection(
+function isNodeError(err: unknown): err is NodeJS.ErrnoException {
+  return typeof err === "object" && err !== null && "code" in err;
+}
+
+export async function backupExistingProjection(
   memoryDir: string,
   outputPath: string,
   now: Date,
 ): Promise<string | undefined> {
   try {
     await stat(outputPath);
-  } catch {
-    return undefined;
+  } catch (err) {
+    if (isNodeError(err) && err.code === "ENOENT") {
+      return undefined;
+    }
+    throw err;
   }
 
   const backupPath = path.join(
@@ -137,8 +145,6 @@ async function backupExistingProjection(
     "state",
     "memory-projection.sqlite",
   );
-  await mkdir(path.dirname(backupPath), { recursive: true });
-  await rename(outputPath, backupPath);
   return backupPath;
 }
 
@@ -330,7 +336,7 @@ function isTimestampInProjectionScope(
   const parsed = new Date(timestamp);
   if (Number.isNaN(parsed.getTime())) return false;
   if (scope.updatedAfter && parsed.getTime() < new Date(scope.updatedAfter).getTime()) return false;
-  if (scope.updatedBefore && parsed.getTime() > new Date(scope.updatedBefore).getTime()) return false;
+  if (scope.updatedBefore && parsed.getTime() >= new Date(scope.updatedBefore).getTime()) return false;
   return true;
 }
 
@@ -463,7 +469,11 @@ async function loadAuthoritativeProjectionSnapshot(options: {
   // Force a fresh disk read — projection verify/rebuild must see the true
   // on-disk state, not a potentially stale in-process cache.
   storage.invalidateAllMemoriesCacheForDir();
-  const allMemories = [...await storage.readAllMemories(), ...await storage.readArchivedMemories()]
+  const allMemories = [
+    ...await storage.readAllMemories(),
+    ...await storage.readAllColdMemories(),
+    ...await storage.readArchivedMemories(),
+  ]
     .sort((a, b) => a.frontmatter.id.localeCompare(b.frontmatter.id));
   const lifecycleEvents = await storage.readAllMemoryLifecycleEvents();
   const { events, usedLifecycleLedger } = loadTimelineEvents(allMemories, lifecycleEvents);
@@ -954,6 +964,9 @@ export async function rebuildMemoryProjection(
     let nextNativeKnowledgeRows = snapshot.nativeKnowledgeRows;
     let nextGovernance = snapshot.governance;
     if (hasScopedProjectionFilter(snapshot.scope)) {
+      nextCurrentRows = snapshot.scopedCurrentRows;
+      nextTimelineRows = snapshot.scopedTimelineRows;
+      nextEntityMentionRows = snapshot.scopedEntityMentionRows;
       const projectedCurrent = readProjectedCurrentRows(options.memoryDir);
       const projectedTimeline = readProjectedTimelineRows(options.memoryDir);
       const projectedEntityMentions = readProjectedEntityMentionRows(options.memoryDir);
@@ -1013,7 +1026,7 @@ export async function rebuildMemoryProjection(
       snapshot.usedLifecycleLedger,
     );
     backupPath = await backupExistingProjection(options.memoryDir, outputPath, now);
-    await rename(tempPath, outputPath);
+    backupPath = await commitPreparedFileAtomically(tempPath, outputPath, backupPath);
   }
 
   return {

@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canReadNamespace } from "./principal.js";
+import { canReadNamespace, resolvePrincipal } from "./principal.js";
 import type { PluginConfig } from "../types.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -26,6 +26,7 @@ import type { PluginConfig } from "../types.js";
 function makeConfig(
   namespacesEnabled: boolean,
   policies: Array<{ name: string; readPrincipals: string[]; writePrincipals: string[] }> = [],
+  overrides: Partial<PluginConfig> = {},
 ): PluginConfig {
   return {
     namespacesEnabled,
@@ -46,6 +47,7 @@ function makeConfig(
     consolidation: { enabled: false },
     extraction: { enabled: false },
     lcm: { enabled: false },
+    ...overrides,
   } as unknown as PluginConfig;
 }
 
@@ -192,4 +194,38 @@ test("canReadNamespace: namespacesEnabled=true + no policy for namespace → all
   assert.equal(canReadNamespace("alice", "default", config), true, "default namespace is implicitly readable");
   assert.equal(canReadNamespace("alice", "shared", config), true, "shared namespace is implicitly readable");
   assert.equal(canReadNamespace("alice", "unknown-ns", config), false, "unknown namespace without policy is denied");
+});
+
+test("resolvePrincipal: safe regex rules can resolve a principal", () => {
+  const config = makeConfig(true, [], {
+    principalFromSessionKeyMode: "regex",
+    principalFromSessionKeyRules: [
+      { match: "^codex-session$", principal: "codex" },
+    ],
+  });
+
+  assert.equal(resolvePrincipal("codex-session", config), "codex");
+});
+
+test("resolvePrincipal: unsafe regex rules are skipped without evaluating crafted session keys", () => {
+  const config = makeConfig(true, [], {
+    principalFromSessionKeyMode: "regex",
+    principalFromSessionKeyRules: [
+      { match: "(a+)+$", principal: "blocked" },
+    ],
+  });
+  const craftedSessionKey = `${"a".repeat(10_000)}!`;
+
+  assert.equal(resolvePrincipal(craftedSessionKey, config), "default");
+});
+
+test("resolvePrincipal: regex rules are skipped for overlong session keys", () => {
+  const config = makeConfig(true, [], {
+    principalFromSessionKeyMode: "regex",
+    principalFromSessionKeyRules: [
+      { match: "^a+$", principal: "blocked" },
+    ],
+  });
+
+  assert.equal(resolvePrincipal("a".repeat(1_000), config), "default");
 });

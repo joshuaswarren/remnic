@@ -7,7 +7,12 @@ import {
   buildChatCompletionTokenLimit,
   shouldAssumeOpenAiChatCompletions,
 } from "./openai-chat-compat.js";
-import { resolveProviderApiKey, getGatewayRuntimeAuthForModel } from "./resolve-provider-secret.js";
+import {
+  resolveProviderApiKey,
+  getGatewayRuntimeAuthForModel,
+  type GetRuntimeAuthForModelFn,
+  type ResolveApiKeyFn,
+} from "./resolve-provider-secret.js";
 import { loadModelsJsonProviders } from "./models-json.js";
 import { callCodexCliFallback } from "./codex-cli-fallback.js";
 import { resolveHomeDir } from "./runtime/env.js";
@@ -36,8 +41,31 @@ export interface FallbackLlmResponse {
 
 export interface FallbackLlmRuntimeContext {
   agentDir?: string;
+  getRuntimeAuthForModel?: GetRuntimeAuthForModelFn | null;
+  resolveApiKeyForProvider?: ResolveApiKeyFn | null;
   workspaceDir?: string;
 }
+
+export function fallbackLlmRuntimeContextFromConfig(
+  config: Pick<
+    GatewayBackedRuntimeConfig,
+    "providerApiKeyResolver" | "runtimeAuthForModelResolver" | "workspaceDir"
+  >,
+  overrides: FallbackLlmRuntimeContext = {},
+): FallbackLlmRuntimeContext {
+  return {
+    workspaceDir: config.workspaceDir,
+    resolveApiKeyForProvider: config.providerApiKeyResolver,
+    getRuntimeAuthForModel: config.runtimeAuthForModelResolver,
+    ...overrides,
+  };
+}
+
+type GatewayBackedRuntimeConfig = {
+  providerApiKeyResolver?: ResolveApiKeyFn | null;
+  runtimeAuthForModelResolver?: GetRuntimeAuthForModelFn | null;
+  workspaceDir?: string;
+};
 
 interface ModelRef {
   providerId: string;
@@ -488,7 +516,9 @@ export class FallbackLlmClient {
     model: ModelRef,
   ): Promise<{ apiKey?: string; baseUrl?: string } | null> {
     try {
-      const getRuntimeAuth = await getGatewayRuntimeAuthForModel();
+      const getRuntimeAuth = await getGatewayRuntimeAuthForModel({
+        getRuntimeAuthForModel: this.runtimeContext.getRuntimeAuthForModel,
+      });
       if (!getRuntimeAuth) return null;
 
       const result = await getRuntimeAuth({
@@ -526,6 +556,9 @@ export class FallbackLlmClient {
       model.providerConfig.apiKey,
       this.gatewayConfig,
       this.runtimeContext.agentDir,
+      {
+        resolveApiKeyForProvider: this.runtimeContext.resolveApiKeyForProvider,
+      },
     );
   }
 

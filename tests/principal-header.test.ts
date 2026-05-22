@@ -91,6 +91,37 @@ test("trustPrincipalHeader=false (default): X-Engram-Principal header is ignored
   }
 });
 
+test("trustPrincipalHeader=false: adapter detection cannot trust X-Engram-Principal", async () => {
+  const captured: (string | undefined)[] = [];
+  const server = new EngramAccessHttpServer({
+    service: createFakeService(captured),
+    host: "127.0.0.1",
+    port: 0,
+    authToken: AUTH_TOKEN,
+    principal: "constructor-principal",
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+
+  try {
+    const res = await fetch(`${base}/engram/v1/memories`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AUTH_TOKEN}`,
+        "Content-Type": "application/json",
+        "X-Engram-Client-Id": "codex",
+        "X-Engram-Principal": "agent-override",
+      },
+      body: JSON.stringify({ content: "test memory", category: "fact" }),
+    });
+    assert.equal(res.status, 201);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0], "constructor-principal");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("trustPrincipalHeader=true: X-Engram-Principal header value is used as principal", async () => {
   const captured: (string | undefined)[] = [];
   const server = new EngramAccessHttpServer({

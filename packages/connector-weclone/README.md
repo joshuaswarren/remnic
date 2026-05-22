@@ -11,6 +11,8 @@ avatar remembers what happened yesterday and sounds like you while doing it.
 - Runs as a local OpenAI-compatible HTTP proxy in front of a WeClone API server.
 - On every `POST /v1/chat/completions`, calls Remnic `/engram/v1/recall` and injects
   retrieved memory into the system prompt before forwarding to WeClone.
+- Preserves OpenAI-compatible message metadata and end-to-end request headers
+  while injecting memory; only the injected system-message content is rewritten.
 - After WeClone responds, calls `/engram/v1/observe` fire-and-forget so the turn is
   buffered for extraction.
 - Forwards all other OpenAI-compatible endpoints (`/v1/models`, uploads, etc.)
@@ -67,6 +69,8 @@ The proxy config file accepts the following fields:
 | `wecloneApiUrl` | `http://localhost:8000/v1` | Base URL of the WeClone API. Both path-prefixed (`/v1`, `/weclone/v1`) and bare origins are supported. |
 | `wecloneModelName` | `weclone-avatar` | Optional fine-tuned model name passed through to WeClone. |
 | `proxyPort` | `8100` | Local port the proxy listens on. |
+| `proxyBindHost` | `127.0.0.1` | Host/interface the proxy binds to. Defaults to loopback only. |
+| `allowPublicBind` | `false` | Must be `true` to bind `proxyBindHost` to `0.0.0.0` or `::`. |
 | `remnicDaemonUrl` | `http://localhost:4318` | URL of the Remnic daemon exposing `/engram/v1/recall` and `/engram/v1/observe`. |
 | `remnicAuthToken` | — | Bearer token for the Remnic daemon. Populated by `remnic connectors install weclone`. |
 | `sessionStrategy` | `single` | `single` uses one shared memory session; `caller-id` maps each caller (via `X-Caller-Id` header or `user` field) to its own namespace. |
@@ -80,6 +84,7 @@ The proxy config file accepts the following fields:
 {
   "wecloneApiUrl": "http://localhost:8000/v1",
   "proxyPort": 8100,
+  "proxyBindHost": "127.0.0.1",
   "remnicDaemonUrl": "http://localhost:4318",
   "remnicAuthToken": "${REMNIC_TOKEN}",
   "sessionStrategy": "caller-id",

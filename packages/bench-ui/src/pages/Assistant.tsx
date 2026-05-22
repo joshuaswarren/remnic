@@ -1,5 +1,6 @@
+import * as React from "react";
 import { useMemo, useState } from "react";
-import type { BenchResultSummaryPayload } from "../bench-data";
+import type { BenchResultSummary, BenchResultSummaryPayload } from "../bench-data";
 import {
   ASSISTANT_BENCHMARK_IDS,
   benchmarkRuns,
@@ -11,6 +12,21 @@ import {
 import { AssistantDimensionChart } from "../components/AssistantDimensionChart";
 import { AssistantSpotCheckViewer } from "../components/AssistantSpotCheckViewer";
 
+export function resolveAssistantUiSelection(
+  payload: BenchResultSummaryPayload,
+  activeBenchmark: string,
+  selectedRunId: string | null,
+): { runsForActive: BenchResultSummary[]; selectedRun: BenchResultSummary | null } {
+  const runsForActive = benchmarkRuns(payload, activeBenchmark);
+  return {
+    runsForActive,
+    selectedRun:
+      runsForActive.find((run) => run.id === selectedRunId) ??
+      runsForActive[0] ??
+      null,
+  };
+}
+
 export function Assistant({
   payload,
 }: {
@@ -19,15 +35,11 @@ export function Assistant({
   const latestByBenchmark = getLatestAssistantRunByBenchmark(payload);
   const firstId = ASSISTANT_BENCHMARK_IDS[0];
   const [activeBenchmark, setActiveBenchmark] = useState<string>(firstId);
-  const runsForActive = useMemo(
-    () => benchmarkRuns(payload, activeBenchmark),
-    [payload, activeBenchmark],
-  );
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const selectedRun =
-    runsForActive.find((run) => run.id === selectedRunId) ??
-    runsForActive[0] ??
-    null;
+  const { runsForActive, selectedRun } = useMemo(
+    () => resolveAssistantUiSelection(payload, activeBenchmark, selectedRunId),
+    [payload, activeBenchmark, selectedRunId],
+  );
   const bars = getAssistantDimensionBars(selectedRun);
 
   return (

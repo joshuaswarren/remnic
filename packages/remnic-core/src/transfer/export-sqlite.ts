@@ -18,32 +18,33 @@ export async function exportSqlite(opts: ExportSqliteOptions): Promise<void> {
   const outputRelPosix = computeTransferOutputRel(memDirAbs, outAbs);
 
   const filesAbs = await listFilesRecursive(memDirAbs);
+  const rows: Array<{ rel: string; bytes: number; sha256: string; content: string }> = [];
+  for (const abs of filesAbs) {
+    const relPosix = toPosixRelPath(abs, memDirAbs);
+    if (isTransferPathExcluded(relPosix, { includeTranscripts, outputRelPosix })) continue;
+    const { content, sha256, bytes } = await readUtf8FileStrict(abs);
+    rows.push({ rel: relPosix, bytes, sha256, content });
+  }
+
   const db = openBetterSqlite3(outAbs);
   try {
     db.exec("PRAGMA journal_mode=WAL;");
     db.exec(SQLITE_TABLES_SQL);
 
     const insertMeta = db.prepare("INSERT OR REPLACE INTO meta(key,value) VALUES (?,?)");
-    insertMeta.run("schemaVersion", String(SQLITE_SCHEMA_VERSION));
-    insertMeta.run("createdAt", new Date().toISOString());
-    insertMeta.run("pluginVersion", opts.pluginVersion);
-    insertMeta.run("includesTranscripts", includeTranscripts ? "true" : "false");
-
     const insertFile = db.prepare(
       "INSERT OR REPLACE INTO files(path_rel, bytes, sha256, content) VALUES (?,?,?,?)",
     );
 
     const tx = db.transaction((rows: Array<{ rel: string; bytes: number; sha256: string; content: string }>) => {
+      db.prepare("DELETE FROM meta").run();
+      db.prepare("DELETE FROM files").run();
+      insertMeta.run("schemaVersion", String(SQLITE_SCHEMA_VERSION));
+      insertMeta.run("createdAt", new Date().toISOString());
+      insertMeta.run("pluginVersion", opts.pluginVersion);
+      insertMeta.run("includesTranscripts", includeTranscripts ? "true" : "false");
       for (const r of rows) insertFile.run(r.rel, r.bytes, r.sha256, r.content);
     });
-
-    const rows: Array<{ rel: string; bytes: number; sha256: string; content: string }> = [];
-    for (const abs of filesAbs) {
-      const relPosix = toPosixRelPath(abs, memDirAbs);
-      if (isTransferPathExcluded(relPosix, { includeTranscripts, outputRelPosix })) continue;
-      const { content, sha256, bytes } = await readUtf8FileStrict(abs);
-      rows.push({ rel: relPosix, bytes, sha256, content });
-    }
 
     tx(rows);
   } finally {

@@ -10,6 +10,20 @@ import {
 } from "../bench-data";
 import { IntegrityBadge } from "./IntegrityBadge";
 
+export function formatRunPrimaryScore(run: Pick<BenchResultSummary, "primaryMetric" | "primaryScore">): string {
+  return formatMetricValue(run.primaryScore, run.primaryMetric ?? undefined);
+}
+
+export function formatRunPrimaryDelta(
+  run: Pick<BenchResultSummary, "primaryMetric"> & { delta?: number | null },
+): string {
+  return formatDelta(run.delta ?? null, run.primaryMetric ?? undefined);
+}
+
+export function benchmarkRoute(benchmark: string): string {
+  return `/benchmark/${encodeURIComponent(benchmark)}`;
+}
+
 export function RunTable({
   runs,
   showDelta = true,
@@ -51,7 +65,7 @@ export function RunTable({
               </td>
               <td>
                 <div className="run-cell">
-                  <Link className="inline-link" to={`/benchmark/${run.benchmark}`}>
+                  <Link className="inline-link" to={benchmarkRoute(run.benchmark)}>
                     {humanizeIdentifier(run.benchmark)}
                   </Link>
                   <span>{run.mode}</span>
@@ -63,8 +77,8 @@ export function RunTable({
                   <span>{run.judgeProvider}</span>
                 </div>
               </td>
-              <td>{formatMetricValue(run.primaryScore)}</td>
-              {showDelta ? <td>{formatDelta(run.delta ?? null)}</td> : null}
+              <td>{formatRunPrimaryScore(run)}</td>
+              {showDelta ? <td>{formatRunPrimaryDelta(run)}</td> : null}
               <td>
                 <IntegrityBadge summary={run.integrity} />
               </td>
@@ -77,3 +91,4 @@ export function RunTable({
     </div>
   );
 }
+import * as React from "react";

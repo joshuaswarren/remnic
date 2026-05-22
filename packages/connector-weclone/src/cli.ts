@@ -69,7 +69,7 @@ async function main(): Promise<void> {
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--config") {
-      if (!args[i + 1]) {
+      if (!args[i + 1] || args[i + 1].startsWith("-")) {
         console.error("Error: --config requires a path argument");
         process.exit(1);
       }

@@ -262,6 +262,49 @@ test("Pipeline: rate limiting prevents calls beyond limit", async () => {
   assert.equal(rateLimited.length, 3);
 });
 
+test("Pipeline: rate limiting persists across pipeline invocations", async () => {
+  let callCount = 0;
+  const provider: EnrichmentProvider = {
+    id: "persistent-limited",
+    costTier: "cheap",
+    async enrich() {
+      callCount++;
+      return [{ text: "fact", source: "persistent-limited", confidence: 0.5, category: "fact" }];
+    },
+    async isAvailable() {
+      return true;
+    },
+  };
+
+  const registry = new EnrichmentProviderRegistry();
+  registry.register(provider);
+
+  const config = enabledConfig({
+    providers: [
+      {
+        id: "persistent-limited",
+        enabled: true,
+        costTier: "cheap",
+        rateLimit: { maxPerMinute: 100, maxPerDay: 1 },
+      },
+    ],
+    importanceThresholds: {
+      critical: ["persistent-limited"],
+      high: ["persistent-limited"],
+      normal: ["persistent-limited"],
+      low: ["persistent-limited"],
+    },
+  });
+
+  const first = await runEnrichmentPipeline([makeEntity()], registry, config, NOOP_LOG);
+  const second = await runEnrichmentPipeline([makeEntity()], registry, config, NOOP_LOG);
+
+  assert.equal(callCount, 1);
+  assert.equal(first[0].candidatesFound, 1);
+  assert.equal(second[0].candidatesFound, 0);
+  assert.equal(second[0].acceptedCandidates.length, 0);
+});
+
 test("Pipeline: max candidates trims excess", async () => {
   const candidates: EnrichmentCandidate[] = Array.from({ length: 30 }, (_, i) => ({
     text: `Fact ${i}`,
@@ -285,6 +328,42 @@ test("Pipeline: max candidates trims excess", async () => {
   assert.equal(results[0].acceptedCandidates.length, 10);
   assert.equal(results[0].acceptedCandidates[0].text, "Fact 0");
   assert.equal(results[0].acceptedCandidates[9].text, "Fact 9");
+});
+
+test("Pipeline: maxCandidatesPerEntity is shared across providers for one entity", async () => {
+  const registry = new EnrichmentProviderRegistry();
+  registry.register(makeMockProvider("provider-a", "cheap", [
+    { text: "A fact", source: "provider-a", confidence: 0.5, category: "fact" },
+  ]));
+  registry.register(makeMockProvider("provider-b", "cheap", [
+    { text: "B fact", source: "provider-b", confidence: 0.5, category: "fact" },
+  ]));
+
+  const config = enabledConfig({
+    maxCandidatesPerEntity: 1,
+    providers: [
+      { id: "provider-a", enabled: true, costTier: "cheap" },
+      { id: "provider-b", enabled: true, costTier: "cheap" },
+    ],
+    importanceThresholds: {
+      critical: ["provider-a", "provider-b"],
+      high: ["provider-a", "provider-b"],
+      normal: ["provider-a", "provider-b"],
+      low: ["provider-a", "provider-b"],
+    },
+  });
+
+  const results = await runEnrichmentPipeline([makeEntity()], registry, config, NOOP_LOG);
+  const acceptedCount = results.reduce(
+    (sum, result) => sum + result.acceptedCandidates.length,
+    0,
+  );
+
+  assert.equal(acceptedCount, 1);
+  assert.deepEqual(
+    results.flatMap((result) => result.acceptedCandidates.map((candidate) => candidate.text)),
+    ["A fact"],
+  );
 });
 
 test("Pipeline: maxCandidatesPerEntity = 0 rejects all candidates", async () => {
@@ -421,6 +500,49 @@ test("Audit: entries written and readable", async () => {
   }
 });
 
+test("Audit: since filtering compares timestamp instants", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "enrichment-audit-"));
+  try {
+    await appendAuditEntry(tmpDir, {
+      timestamp: "2024-01-01T00:30:00+01:00",
+      entityName: "Before Boundary",
+      provider: "web-search",
+      candidateText: "This happened before midnight UTC.",
+      accepted: true,
+    });
+    await appendAuditEntry(tmpDir, {
+      timestamp: "2024-01-01T00:00:00Z",
+      entityName: "At Boundary",
+      provider: "web-search",
+      candidateText: "This happened at midnight UTC.",
+      accepted: true,
+    });
+    await appendAuditEntry(tmpDir, {
+      timestamp: "2024-01-01T01:00:00+01:00",
+      entityName: "Also At Boundary",
+      provider: "web-search",
+      candidateText: "This also happened at midnight UTC.",
+      accepted: true,
+    });
+    await appendAuditEntry(tmpDir, {
+      timestamp: "2023-12-31T23:30:00-01:00",
+      entityName: "After Boundary",
+      provider: "web-search",
+      candidateText: "This happened after midnight UTC despite the earlier local date.",
+      accepted: true,
+    });
+
+    const filtered = await readAuditLog(tmpDir, "2024-01-01T00:00:00Z");
+
+    assert.deepEqual(
+      filtered.map((entry) => entry.entityName),
+      ["At Boundary", "Also At Boundary", "After Boundary"],
+    );
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("Audit: reading from nonexistent directory returns empty", async () => {
   const entries = await readAuditLog("/tmp/nonexistent-enrichment-audit-dir-" + Date.now());
   assert.equal(entries.length, 0);
@@ -457,7 +579,7 @@ test("WebSearchProvider: returns candidates from injected searchFn", async () =>
   assert.deepEqual(results[0].tags, ["web-search"]);
 });
 
-test("WebSearchProvider: gracefully handles searchFn throwing", async () => {
+test("WebSearchProvider: propagates searchFn failures to the pipeline", async () => {
   const provider = new WebSearchProvider({
     searchFn: async () => {
       throw new Error("Network error");
@@ -466,8 +588,51 @@ test("WebSearchProvider: gracefully handles searchFn throwing", async () => {
 
   assert.equal(await provider.isAvailable(), true);
 
-  const results = await provider.enrich(makeEntity());
-  assert.equal(results.length, 0);
+  await assert.rejects(
+    provider.enrich(makeEntity()),
+    /Network error/,
+  );
+});
+
+test("Pipeline: WebSearchProvider backend failures enter provider error handling", async () => {
+  const provider = new WebSearchProvider({
+    searchFn: async () => {
+      throw new Error("503");
+    },
+  });
+  const registry = new EnrichmentProviderRegistry();
+  registry.register(provider);
+
+  const config = enabledConfig({
+    providers: [{ id: "web-search", enabled: true, costTier: "cheap" }],
+    importanceThresholds: {
+      critical: ["web-search"],
+      high: ["web-search"],
+      normal: ["web-search"],
+      low: ["web-search"],
+    },
+  });
+  const errors: string[] = [];
+  const log = {
+    ...NOOP_LOG,
+    error(message: string) {
+      errors.push(message);
+    },
+  };
+
+  const results = await runEnrichmentPipeline(
+    [makeEntity({ name: "Maya", importanceLevel: "high" })],
+    registry,
+    config,
+    log,
+  );
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].provider, "web-search");
+  assert.equal(results[0].candidatesFound, 0);
+  assert.equal(results[0].candidatesAccepted, 0);
+  assert.equal(results[0].acceptedCandidates.length, 0);
+  assert.match(errors[0] ?? "", /provider web-search failed for Maya: 503/);
 });
 
 // ---------------------------------------------------------------------------

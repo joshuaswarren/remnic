@@ -16,6 +16,13 @@ import type { DiscoveredExtension, ExtensionSchema } from "./types.js";
 /** Total token budget for all discovered extension instructions combined. */
 export const REMNIC_EXTENSIONS_TOTAL_TOKEN_LIMIT = 5_000;
 
+/** Per-extension instructions read cap, using the same 4 chars/token budget heuristic. */
+export const REMNIC_EXTENSION_INSTRUCTIONS_BYTE_LIMIT =
+  REMNIC_EXTENSIONS_TOTAL_TOKEN_LIMIT * 4;
+
+/** Optional schemas are metadata only; refuse unusually large schema files. */
+export const REMNIC_EXTENSION_SCHEMA_BYTE_LIMIT = 64 * 1024;
+
 /** Maximum number of example files collected per extension. */
 const MAX_EXAMPLES_PER_EXTENSION = 10;
 
@@ -131,11 +138,15 @@ export async function discoverMemoryExtensions(
     }
     let instructions: string;
     try {
-      instructions = await readFile(instructionsPath, "utf-8");
-    } catch {
-      log.warn?.(
-        `[memory-extensions] skipping "${entry}": missing instructions.md`,
+      instructions = await readUtf8FileWithinLimit(
+        instructionsPath,
+        REMNIC_EXTENSION_INSTRUCTIONS_BYTE_LIMIT,
       );
+    } catch (err) {
+      const reason = err instanceof FileTooLargeError
+        ? `instructions.md exceeds ${REMNIC_EXTENSION_INSTRUCTIONS_BYTE_LIMIT} bytes`
+        : "missing instructions.md";
+      log.warn?.(`[memory-extensions] skipping "${entry}": ${reason}`);
       continue;
     }
 
@@ -148,7 +159,10 @@ export async function discoverMemoryExtensions(
       );
     } else {
       try {
-        const schemaRaw = await readFile(schemaPath, "utf-8");
+        const schemaRaw = await readUtf8FileWithinLimit(
+          schemaPath,
+          REMNIC_EXTENSION_SCHEMA_BYTE_LIMIT,
+        );
         const parsed = JSON.parse(schemaRaw);
         if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
           schema = validateSchema(parsed);
@@ -161,6 +175,10 @@ export async function discoverMemoryExtensions(
         // File doesn't exist → fine, no warning needed
         if (isFileNotFoundError(err)) {
           // schema remains undefined
+        } else if (err instanceof FileTooLargeError) {
+          log.warn?.(
+            `[memory-extensions] "${entry}": schema.json exceeds ${REMNIC_EXTENSION_SCHEMA_BYTE_LIMIT} bytes, ignoring schema`,
+          );
         } else {
           log.warn?.(
             `[memory-extensions] "${entry}": malformed schema.json, ignoring schema`,
@@ -174,13 +192,34 @@ export async function discoverMemoryExtensions(
     const examplesPaths: string[] = [];
     const examplesDir = path.join(entryPath, "examples");
     try {
+      const examplesStat = await lstat(examplesDir);
+      if (examplesStat.isSymbolicLink()) {
+        log.warn?.(
+          `[memory-extensions] "${entry}": examples/ is a symlink, ignoring examples`,
+        );
+        throw new Error("skip symlinked examples directory");
+      }
+      if (!examplesStat.isDirectory()) {
+        throw new Error("skip non-directory examples path");
+      }
       const exampleEntries = await readdir(examplesDir);
       const mdFiles = exampleEntries
         .filter((f) => f.endsWith(".md"))
         .sort()
         .slice(0, MAX_EXAMPLES_PER_EXTENSION);
       for (const f of mdFiles) {
-        examplesPaths.push(path.join(examplesDir, f));
+        const examplePath = path.join(examplesDir, f);
+        const exampleStat = await lstat(examplePath);
+        if (exampleStat.isSymbolicLink()) {
+          log.warn?.(
+            `[memory-extensions] "${entry}": examples/${f} is a symlink, ignoring example`,
+          );
+          continue;
+        }
+        if (!exampleStat.isFile()) {
+          continue;
+        }
+        examplesPaths.push(examplePath);
       }
     } catch {
       // No examples dir — fine
@@ -204,6 +243,24 @@ export async function discoverMemoryExtensions(
   });
 
   return extensions;
+}
+
+class FileTooLargeError extends Error {
+  constructor(filePath: string, limitBytes: number, actualBytes: number) {
+    super(`${filePath} is ${actualBytes} bytes; limit is ${limitBytes} bytes`);
+    this.name = "FileTooLargeError";
+  }
+}
+
+async function readUtf8FileWithinLimit(filePath: string, limitBytes: number): Promise<string> {
+  const stat = await lstat(filePath);
+  if (!stat.isFile()) {
+    throw new Error(`${filePath} is not a file`);
+  }
+  if (stat.size > limitBytes) {
+    throw new FileTooLargeError(filePath, limitBytes, stat.size);
+  }
+  return readFile(filePath, "utf-8");
 }
 
 function validateSchema(raw: Record<string, unknown>): ExtensionSchema {

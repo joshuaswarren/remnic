@@ -27,3 +27,4 @@ export function IntegrityBadge({ summary }: { summary: BenchIntegritySummary }) 
     </span>
   );
 }
+import * as React from "react";

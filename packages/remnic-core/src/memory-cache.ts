@@ -181,6 +181,7 @@ export function clearMemoryCache(baseDir?: string): void {
     invalidateCachedEntities(baseDir);
     episodeMapByDir.delete(baseDir);
     ruleMemoriesByDir.delete(baseDir);
+    qmdSearchCache.clear();
   } else {
     hotCacheByDir.clear();
     archiveCacheByDir.clear();

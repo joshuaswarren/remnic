@@ -86,6 +86,142 @@ async function withEnv(
   }
 }
 
+test("removeConnector rejects path-like connector IDs before building config paths", async (t) => {
+  const sandbox = makeSandbox(t);
+  const outsidePath = path.join(sandbox.root, "outside.json");
+  fs.writeFileSync(outsidePath, "must survive\n");
+
+  await withEnv(
+    {
+      HOME: sandbox.home,
+      USERPROFILE: sandbox.home,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+    },
+    () => {
+      const result = removeConnector(`../../${path.basename(outsidePath, ".json")}`);
+
+      assert.equal(result.status, "skipped");
+      assert.equal(result.reason, "invalid-connector-id");
+      assert.equal(fs.readFileSync(outsidePath, "utf8"), "must survive\n");
+    },
+  );
+});
+
+test("installConnector rejects path-like connector IDs before building config paths", async (t) => {
+  const sandbox = makeSandbox(t);
+  const outsidePath = path.join(sandbox.root, "outside.json");
+  fs.writeFileSync(outsidePath, "must survive\n");
+
+  await withEnv(
+    {
+      HOME: sandbox.home,
+      USERPROFILE: sandbox.home,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+    },
+    () => {
+      const result = installConnector({
+        connectorId: `../../${path.basename(outsidePath, ".json")}`,
+      });
+
+      assert.equal(result.status, "error");
+      assert.match(result.message, /Invalid connector ID/);
+      assert.equal(fs.readFileSync(outsidePath, "utf8"), "must survive\n");
+    },
+  );
+});
+
+test("loadRegistry does not overwrite malformed registry.json", async (t) => {
+  const sandbox = makeSandbox(t);
+
+  await withEnv(
+    {
+      HOME: sandbox.home,
+      USERPROFILE: sandbox.home,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+    },
+    () => {
+      const regDir = path.join(sandbox.xdgConfigHome, "engram", ".engram-connectors");
+      fs.mkdirSync(regDir, { recursive: true });
+      const regPath = path.join(regDir, "registry.json");
+      const malformed = "{ invalid registry json\n";
+      fs.writeFileSync(regPath, malformed);
+
+      const registry = loadRegistry();
+
+      assert.ok(registry.connectors.some((connector) => connector.id === "codex-cli"));
+      assert.equal(fs.readFileSync(regPath, "utf8"), malformed);
+    },
+  );
+});
+
+test("loadRegistry filters custom connectors with invalid IDs", async (t) => {
+  const sandbox = makeSandbox(t);
+
+  await withEnv(
+    {
+      HOME: sandbox.home,
+      USERPROFILE: sandbox.home,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+    },
+    () => {
+      const regDir = path.join(sandbox.xdgConfigHome, "engram", ".engram-connectors");
+      fs.mkdirSync(regDir, { recursive: true });
+      const regPath = path.join(regDir, "registry.json");
+      fs.writeFileSync(
+        regPath,
+        JSON.stringify(
+          {
+            connectors: [
+              {
+                id: "custom-agent",
+                name: "Custom Agent",
+                version: "1.0.0",
+                description: "valid custom connector",
+                capabilities: {
+                  observe: false,
+                  recall: true,
+                  store: false,
+                  search: false,
+                  entities: false,
+                  realtimeSync: false,
+                  batch: false,
+                  connectionType: "http",
+                },
+              },
+              {
+                id: "../../outside",
+                name: "Path Escape",
+                version: "1.0.0",
+                description: "invalid custom connector",
+                capabilities: {
+                  observe: false,
+                  recall: true,
+                  store: false,
+                  search: false,
+                  entities: false,
+                  realtimeSync: false,
+                  batch: false,
+                  connectionType: "http",
+                },
+              },
+            ],
+          },
+          null,
+          2,
+        ),
+      );
+
+      const registry = loadRegistry();
+
+      assert.ok(registry.connectors.some((connector) => connector.id === "custom-agent"));
+      assert.equal(
+        registry.connectors.some((connector) => connector.id === "../../outside"),
+        false,
+      );
+    },
+  );
+});
+
 test("installConnector persists resolved codexHome from $CODEX_HOME", async (t) => {
   const sandbox = makeSandbox(t);
 
@@ -1152,16 +1288,17 @@ test(
         fs.mkdirSync(connectorsDir, { recursive: true });
         const configPath = path.join(connectorsDir, "codex-cli.json");
 
-        // Monkey-patch fs.writeFileSync to throw only when writing the codex-cli
-        // config file — this simulates a disk-full / EPERM condition that happens
-        // AFTER installCodexMemoryExtension() has already completed.
-        const originalWriteFileSync = fs.writeFileSync.bind(fs);
+        // Monkey-patch the atomic final rename to throw only when publishing the
+        // codex-cli config file. writeSecretFileSync now writes a temp file first,
+        // then renames into place, so this simulates a final commit failure that
+        // happens AFTER installCodexMemoryExtension() has already completed.
+        const originalRenameSync = fs.renameSync.bind(fs);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const mock = t.mock.method(fs, "writeFileSync", (...args: [any, any, any?]) => {
-          if (String(args[0]) === configPath) {
+        const mock = t.mock.method(fs, "renameSync", (...args: [any, any]) => {
+          if (String(args[1]) === configPath) {
             throw new Error("ENOSPC: no space left on device (simulated)");
           }
-          return originalWriteFileSync(...args);
+          return originalRenameSync(...args);
         });
 
         const result = installConnector({

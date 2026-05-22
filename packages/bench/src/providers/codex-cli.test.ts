@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -815,13 +815,18 @@ test("codex-cli provider writes full diagnostics only when explicitly requested"
     );
 
     const [file] = await readdir(diagnosticsDir);
+    const diagnosticPath = path.join(diagnosticsDir, file!);
     const diagnostic = JSON.parse(
-      await readFile(path.join(diagnosticsDir, file!), "utf8"),
+      await readFile(diagnosticPath, "utf8"),
     ) as Record<string, unknown>;
 
     assert.match(String(diagnostic.fullPrompt), /diagnostic prompt/);
     assert.equal((diagnostic.result as { status: number }).status, 124);
     assert.match(String(diagnostic.error), /Codex CLI completion failed/);
+    if (process.platform !== "win32") {
+      assert.equal((await stat(diagnosticPath)).mode & 0o777, 0o600);
+      assert.equal((await stat(diagnosticsDir)).mode & 0o777, 0o700);
+    }
   } finally {
     await rm(diagnosticsDir, { force: true, recursive: true });
   }

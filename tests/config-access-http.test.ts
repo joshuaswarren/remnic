@@ -5,9 +5,11 @@ import { parseConfig } from "../src/config.js";
 test("parseConfig sets local HTTP access defaults", () => {
   const originalRemnic = process.env.OPENCLAW_REMNIC_ACCESS_TOKEN;
   const original = process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN;
+  const originalRemnicPrincipal = process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL;
   const originalPrincipal = process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL;
   delete process.env.OPENCLAW_REMNIC_ACCESS_TOKEN;
   delete process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN;
+  delete process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL;
   delete process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL;
   try {
     const cfg = parseConfig({ openaiApiKey: "sk-test" });
@@ -35,15 +37,22 @@ test("parseConfig sets local HTTP access defaults", () => {
     } else {
       process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL = originalPrincipal;
     }
+    if (originalRemnicPrincipal === undefined) {
+      delete process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL;
+    } else {
+      process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL = originalRemnicPrincipal;
+    }
   }
 });
 
 test("parseConfig supports explicit local HTTP access config and env fallback", () => {
   const originalRemnic = process.env.OPENCLAW_REMNIC_ACCESS_TOKEN;
   const original = process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN;
+  const originalRemnicPrincipal = process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL;
   const originalPrincipal = process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL;
   process.env.OPENCLAW_REMNIC_ACCESS_TOKEN = "remnic-env-token";
   process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN = "engram-env-token";
+  process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL = "remnic-env-principal";
   process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL = "env-principal";
   process.env.ENGRAM_ACCESS_TEST_TOKEN = "config-token";
   process.env.ENGRAM_ACCESS_TEST_PRINCIPAL = "config-principal";
@@ -75,9 +84,10 @@ test("parseConfig supports explicit local HTTP access config and env fallback", 
       },
     });
     assert.equal(envCfg.agentAccessHttp.authToken, "remnic-env-token");
-    assert.equal(envCfg.agentAccessHttp.principal, "env-principal");
+    assert.equal(envCfg.agentAccessHttp.principal, "remnic-env-principal");
 
     delete process.env.OPENCLAW_REMNIC_ACCESS_TOKEN;
+    delete process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL;
     const legacyEnvCfg = parseConfig({
       openaiApiKey: "sk-test",
       agentAccessHttp: {
@@ -85,6 +95,7 @@ test("parseConfig supports explicit local HTTP access config and env fallback", 
       },
     });
     assert.equal(legacyEnvCfg.agentAccessHttp.authToken, "engram-env-token");
+    assert.equal(legacyEnvCfg.agentAccessHttp.principal, "env-principal");
   } finally {
     delete process.env.ENGRAM_ACCESS_TEST_TOKEN;
     delete process.env.ENGRAM_ACCESS_TEST_PRINCIPAL;
@@ -97,6 +108,48 @@ test("parseConfig supports explicit local HTTP access config and env fallback", 
       delete process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN;
     } else {
       process.env.OPENCLAW_ENGRAM_ACCESS_TOKEN = original;
+    }
+    if (originalPrincipal === undefined) {
+      delete process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL;
+    } else {
+      process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL = originalPrincipal;
+    }
+    if (originalRemnicPrincipal === undefined) {
+      delete process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL;
+    } else {
+      process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL = originalRemnicPrincipal;
+    }
+  }
+});
+
+test("parseConfig prefers remnic access principal env over legacy OpenClaw principal", () => {
+  const originalRemnicPrincipal = process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL;
+  const originalPrincipal = process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL;
+  process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL = "reader";
+  process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL = "legacy-reader";
+  try {
+    const cfg = parseConfig({
+      openaiApiKey: "sk-test",
+      agentAccessHttp: {
+        enabled: true,
+      },
+    });
+
+    assert.equal(cfg.agentAccessHttp.principal, "reader");
+
+    delete process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL;
+    const legacyCfg = parseConfig({
+      openaiApiKey: "sk-test",
+      agentAccessHttp: {
+        enabled: true,
+      },
+    });
+    assert.equal(legacyCfg.agentAccessHttp.principal, "legacy-reader");
+  } finally {
+    if (originalRemnicPrincipal === undefined) {
+      delete process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL;
+    } else {
+      process.env.OPENCLAW_REMNIC_ACCESS_PRINCIPAL = originalRemnicPrincipal;
     }
     if (originalPrincipal === undefined) {
       delete process.env.OPENCLAW_ENGRAM_ACCESS_PRINCIPAL;

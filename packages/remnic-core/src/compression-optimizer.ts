@@ -50,10 +50,13 @@ function clamp(value: number, min: number, max: number): number {
 function parseRecallQuality(reason: string | undefined): "good" | "poor" | "unknown" {
   if (!reason) return "unknown";
   const text = reason.toLowerCase();
-  if (/(recall[_\s-]?good|quality[:=]\s*(good|high)|improv(ed|e)|resolved)/i.test(text)) {
+  if (/\bunresolved\b|\b(?:not|never|no|without)\s+(?:yet\s+)?resolved\b/.test(text)) {
+    return "poor";
+  }
+  if (/(recall[_\s-]?good|quality[:=]\s*(good|high)|\bimprov(?:e|ed|ing)\b|\bresolved\b)/.test(text)) {
     return "good";
   }
-  if (/(recall[_\s-]?poor|quality[:=]\s*(poor|low)|degrad(ed|e)|miss(ed|ing)|irrelevant)/i.test(text)) {
+  if (/(recall[_\s-]?poor|quality[:=]\s*(poor|low)|\bdegrad(?:e|ed|ing)\b|\bmiss(?:ed|ing)\b|\birrelevant\b)/.test(text)) {
     return "poor";
   }
   return "unknown";

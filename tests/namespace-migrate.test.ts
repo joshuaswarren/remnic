@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import type { PluginConfig } from "../src/types.js";
@@ -9,6 +9,7 @@ import {
   runNamespaceMigration,
   verifyNamespaces,
 } from "../src/namespaces/migrate.js";
+import { NamespaceStorageRouter } from "../src/namespaces/storage.js";
 
 function tmpDir(prefix: string): string {
   return path.join(
@@ -203,4 +204,55 @@ test("runNamespaceMigration moves legacy entries into target namespace", async (
 
   const migratedEntries = await readdir(path.join(memoryDir, "namespaces", "default"));
   assert.deepEqual(migratedEntries.sort(), ["facts", "profile.md"]);
+});
+
+test("runNamespaceMigration rolls back completed moves when a later move fails", async () => {
+  const memoryDir = tmpDir("engram-namespace-migrate-rollback");
+  await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+  await writeFile(path.join(memoryDir, "facts", "a.md"), "Fact A\n", "utf-8");
+  await mkdir(path.join(memoryDir, "entities"), { recursive: true });
+  await writeFile(path.join(memoryDir, "entities", "b.md"), "Entity B\n", "utf-8");
+
+  const config = baseConfig(memoryDir);
+  await assert.rejects(
+    () =>
+      runNamespaceMigration({
+        config,
+        to: "default",
+        async renameFn(from, to) {
+          if (from.endsWith(`${path.sep}entities`)) {
+            throw new Error("synthetic rename failure");
+          }
+          const fs = await import("node:fs/promises");
+          await fs.rename(from, to);
+        },
+      }),
+    /rolled back.*synthetic rename failure/,
+  );
+
+  assert.equal(await readFile(path.join(memoryDir, "facts", "a.md"), "utf-8"), "Fact A\n");
+  assert.equal(await readFile(path.join(memoryDir, "entities", "b.md"), "utf-8"), "Entity B\n");
+});
+
+test("runNamespaceMigration rejects symlinked namespace reservation paths", async () => {
+  const memoryDir = tmpDir("engram-namespace-migrate-symlink");
+  const outside = tmpDir("engram-namespace-outside");
+  await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+  await mkdir(outside, { recursive: true });
+  await symlink(outside, path.join(memoryDir, "namespaces"));
+
+  await assert.rejects(
+    () => runNamespaceMigration({ config: baseConfig(memoryDir), to: "default" }),
+    /symlinked namespaces directory/,
+  );
+});
+
+test("default namespace router keeps legacy root when partial migrated root exists", async () => {
+  const memoryDir = tmpDir("engram-namespace-partial-default");
+  await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+  await mkdir(path.join(memoryDir, "namespaces", "default", "entities"), { recursive: true });
+
+  const router = new NamespaceStorageRouter(baseConfig(memoryDir));
+  const storage = await router.storageFor("default");
+  assert.equal(storage.dir, memoryDir);
 });

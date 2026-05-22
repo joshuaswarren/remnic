@@ -193,6 +193,80 @@ test("deriveCausalPromotionCandidates reads trajectories from parsed config stor
   assert.deepEqual(candidates[0].provenance, ["traj-config-a", "traj-config-b"]);
 });
 
+test("deriveCausalPromotionCandidates returns LLM-derived preference candidates", async (t) => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-consol-pref-candidate-"));
+
+  await recordCausalTrajectory({
+    memoryDir,
+    record: {
+      schemaVersion: 1,
+      trajectoryId: "traj-pref-a",
+      recordedAt: new Date("2026-05-01T10:00:00.000Z").toISOString(),
+      sessionKey: "session-a",
+      goal: "Get a concise deployment status",
+      actionSummary: "Asked for a short status update",
+      observationSummary: "The concise answer was accepted",
+      outcomeKind: "success",
+      outcomeSummary: "Concise status worked",
+    },
+  });
+  await recordCausalTrajectory({
+    memoryDir,
+    record: {
+      schemaVersion: 1,
+      trajectoryId: "traj-pref-b",
+      recordedAt: new Date("2026-05-02T10:00:00.000Z").toISOString(),
+      sessionKey: "session-b",
+      goal: "Get another concise status",
+      actionSummary: "Requested only blockers and verification",
+      observationSummary: "The short update resolved the handoff",
+      outcomeKind: "success",
+      outcomeSummary: "Short status update was enough",
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                rules: [],
+                preferences: [
+                  {
+                    statement: "The user would prefer concise status updates.",
+                    confidence: 0.9,
+                    evidence: ["traj-pref-a", "traj-pref-b"],
+                  },
+                ],
+              }),
+            },
+          },
+        ],
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    )) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const candidates = await deriveCausalPromotionCandidates({
+    memoryDir,
+    config: { minRecurrence: 2, minSessions: 1, successThreshold: 0.7 },
+    gatewayConfig: testGatewayConfig(),
+  });
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0]?.category, "preference");
+  assert.equal(candidates[0]?.content, "The user would prefer concise status updates.");
+  assert.deepEqual(candidates[0]?.provenance, ["traj-pref-a", "traj-pref-b"]);
+});
+
 test("synthesizeCausalPreferencesViaLlm returns null for empty store", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-pref-empty-"));
   const result = await synthesizeCausalPreferencesViaLlm({ memoryDir });

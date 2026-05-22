@@ -150,6 +150,26 @@ test("LcmArchive FTS search finds matching content", () => {
   }
 });
 
+test("LcmArchive search normalizes non-positive limits", () => {
+  const dir = createTempDir();
+  try {
+    const db = openLcmDatabase(dir);
+    const archive = new LcmArchive(db);
+
+    archive.appendMessage("session-1", 0, "user", "Deploy the application");
+    archive.appendMessage("session-1", 1, "assistant", "Deploying now");
+
+    assert.deepEqual(archive.search("deploy", -1), []);
+    assert.deepEqual(archive.search("deploy", 0), []);
+    assert.deepEqual(archive.searchWithContent("deploy", -1), []);
+    assert.deepEqual(archive.searchWithContent("deploy", 0), []);
+
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("LcmArchive searchWithContent returns focused excerpt", () => {
   const dir = createTempDir();
   try {
@@ -210,19 +230,29 @@ test("LcmArchive pruneOldMessages removes old entries", () => {
   const dir = createTempDir();
   try {
     const db = openLcmDatabase(dir);
+    db.pragma("foreign_keys = OFF");
     const archive = new LcmArchive(db);
 
     // Insert a message with old timestamp
-    db.prepare(`
+    const inserted = db.prepare(`
       INSERT INTO lcm_messages (session_id, turn_index, role, content, token_count, created_at)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run("session-1", 0, "user", "Old message", 3, "2020-01-01T00:00:00.000Z");
+    const oldMessageId = Number(inserted.lastInsertRowid);
+    db.prepare(`
+      INSERT INTO lcm_message_parts (message_id, ordinal, kind, payload, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(oldMessageId, 0, "text", JSON.stringify({ text: "Old message" }), "2020-01-01T00:00:00.000Z");
 
     archive.appendMessage("session-1", 1, "user", "New message");
 
     const pruned = archive.pruneOldMessages(1); // 1 day retention
     assert.equal(pruned, 1);
     assert.equal(archive.getMessageCount("session-1"), 1);
+    const orphanedParts = db
+      .prepare("SELECT COUNT(*) AS count FROM lcm_message_parts WHERE message_id = ?")
+      .get(oldMessageId) as { count: number };
+    assert.equal(orphanedParts.count, 0);
 
     db.close();
   } finally {

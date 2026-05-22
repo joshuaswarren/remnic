@@ -2300,6 +2300,7 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   const cleanAmbRepo = path.join(tmpDir, "clean-amb-repo");
   const dirtyAmbRepo = path.join(tmpDir, "dirty-amb-repo");
   const patchedAmbRepo = path.join(tmpDir, "patched-amb-repo");
+  const scoringPatchedAmbRepo = path.join(tmpDir, "scoring-patched-amb-repo");
   const nonGitAmbRepo = path.join(tmpDir, "non-git-amb-repo");
   const patchedManifestPath = path.join(tmpDir, "patched-winning-manifest.json");
   const verifier = path.join(repoRoot, "scripts", "bench", "verify-amb-sota.mjs");
@@ -2307,13 +2308,17 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   await initCleanGitRepo(cleanAmbRepo);
   await initCleanGitRepo(dirtyAmbRepo);
   await initCleanGitRepo(patchedAmbRepo);
+  await initCleanGitRepo(scoringPatchedAmbRepo);
   const dirtyAmbCommit = gitOutput(dirtyAmbRepo, ["rev-parse", "HEAD"]);
   const patchedAmbCommit = gitOutput(patchedAmbRepo, ["rev-parse", "HEAD"]);
+  const scoringPatchedAmbCommit = gitOutput(scoringPatchedAmbRepo, ["rev-parse", "HEAD"]);
   await writeFile(path.join(dirtyAmbRepo, "untracked.txt"), "dirty\n");
   await mkdir(path.join(patchedAmbRepo, "src", "memory_bench", "memory"), { recursive: true });
   await mkdir(path.join(patchedAmbRepo, "src", "memory_bench", "llm"), { recursive: true });
   await writeFile(path.join(patchedAmbRepo, "src", "memory_bench", "memory", "remnic.py"), "patched\n");
   await writeFile(path.join(patchedAmbRepo, "src", "memory_bench", "llm", "codex.py"), "patched\n");
+  await mkdir(path.join(scoringPatchedAmbRepo, "src", "memory_bench"), { recursive: true });
+  await writeFile(path.join(scoringPatchedAmbRepo, "src", "memory_bench", "judge.py"), "score inflation\n");
   await mkdir(nonGitAmbRepo, { recursive: true });
 
   await writeFile(
@@ -2933,6 +2938,26 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
   assert.equal(patchedManifest.amb.dirty, true);
   assert.equal(patchedManifest.amb.expectedCommit, patchedAmbCommit);
   assert.equal(patchedManifest.amb.acceptedDirtyReason, "remnic_amb_installer_patches");
+
+  const scoringPatchedAmbProvenance = spawnSync(process.execPath, [
+    verifier,
+    "--result",
+    winningPath,
+    "--external-results",
+    externalPath,
+    "--min-queries",
+    "100",
+    "--amb-dir",
+    scoringPatchedAmbRepo,
+    "--allow-remnic-amb-patches",
+    "--amb-expected-commit",
+    scoringPatchedAmbCommit,
+  ], {
+    encoding: "utf8",
+  });
+  assert.equal(scoringPatchedAmbProvenance.status, 2);
+  assert.match(scoringPatchedAmbProvenance.stderr, /unexpected changes: src\/memory_bench\/judge\.py/);
+  assert.equal(scoringPatchedAmbProvenance.stdout, "");
 
   const winning = spawnSync(process.execPath, [
     verifier,

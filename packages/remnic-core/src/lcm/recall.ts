@@ -75,9 +75,11 @@ function selectBestCoverage(
   fromTurn: number,
   toTurn: number,
 ): SummaryNode[] {
-  // Filter to nodes that overlap with the requested range
+  // Filter to nodes fully contained in the requested range. Straddling nodes
+  // would duplicate protected fresh-tail turns while still emitting their full
+  // summary text and range label.
   const candidates = allNodes.filter(
-    (n) => n.msg_start <= toTurn && n.msg_end >= fromTurn,
+    (n) => n.msg_start >= fromTurn && n.msg_end <= toTurn,
   );
 
   if (candidates.length === 0) return [];
@@ -89,15 +91,13 @@ function selectBestCoverage(
   });
 
   // Greedily select non-overlapping nodes, preferring deeper coverage.
-  // Clamp msg_end to toTurn to prevent deep nodes from extending
-  // past the requested range (e.g., into the fresh tail region).
   const selected: SummaryNode[] = [];
   let coveredUpTo = fromTurn - 1;
 
   for (const node of candidates) {
     if (node.msg_start > coveredUpTo) {
       selected.push(node);
-      coveredUpTo = Math.min(node.msg_end, toTurn);
+      coveredUpTo = node.msg_end;
       if (coveredUpTo >= toTurn) break;
     }
   }

@@ -193,13 +193,21 @@ export function runSecureStoreLock(options: SecureStoreLockOptions): SecureStore
 
 // ─── migrate ─────────────────────────────────────────────────────────
 
-export interface SecureStoreMigrateOptions extends SecureStoreHandlerCommon {}
+export interface SecureStoreMigrateOptions extends SecureStoreHandlerCommon {
+  /**
+   * Optional passphrase reader for standalone CLI migration. A prior
+   * `secure-store unlock` command only unlocks that process-local keyring, so
+   * standalone migrate can prompt and install the key in this process instead
+   * of pretending another process still has it.
+   */
+  readPassphrase?: PassphraseReader;
+}
 
 export type SecureStoreMigrateReport =
   | ({ ok: true } & MigrateResult)
   | ({
       ok: false;
-      reason: "not-initialized" | "locked" | "file-errors";
+      reason: "not-initialized" | "locked" | "wrong-passphrase" | "file-errors";
     } & MigrateResult);
 
 export async function runSecureStoreMigrate(
@@ -218,11 +226,26 @@ export async function runSecureStoreMigrate(
   }
 
   const id = options.keyringId ?? secureStoreDir(memoryDir);
-  const key = keyring.getKey(id);
+  const key = keyring.getKey(id) ?? await unlockForThisProcess({
+    memoryDir,
+    header,
+    keyringId: id,
+    readPassphrase: options.readPassphrase,
+    now: options.now,
+  });
   if (key === null) {
     return {
       ok: false,
       reason: "locked",
+      encrypted: 0,
+      skipped: 0,
+      errors: [],
+    };
+  }
+  if (key === "wrong-passphrase") {
+    return {
+      ok: false,
+      reason: "wrong-passphrase",
       encrypted: 0,
       skipped: 0,
       errors: [],
@@ -238,13 +261,20 @@ export async function runSecureStoreMigrate(
 
 // ─── disable/decrypt ─────────────────────────────────────────────────
 
-export interface SecureStoreDisableOptions extends SecureStoreHandlerCommon {}
+export interface SecureStoreDisableOptions extends SecureStoreHandlerCommon {
+  /**
+   * Optional passphrase reader for standalone CLI decrypt/disable. See
+   * SecureStoreMigrateOptions.readPassphrase for the process-local keyring
+   * contract.
+   */
+  readPassphrase?: PassphraseReader;
+}
 
 export type SecureStoreDisableReport =
   | ({ ok: true } & DecryptResult)
   | ({
       ok: false;
-      reason: "not-initialized" | "locked" | "file-errors";
+      reason: "not-initialized" | "locked" | "wrong-passphrase" | "file-errors";
     } & DecryptResult);
 
 export async function runSecureStoreDisable(
@@ -263,11 +293,26 @@ export async function runSecureStoreDisable(
   }
 
   const id = options.keyringId ?? secureStoreDir(memoryDir);
-  const key = keyring.getKey(id);
+  const key = keyring.getKey(id) ?? await unlockForThisProcess({
+    memoryDir,
+    header,
+    keyringId: id,
+    readPassphrase: options.readPassphrase,
+    now: options.now,
+  });
   if (key === null) {
     return {
       ok: false,
       reason: "locked",
+      decrypted: 0,
+      skipped: 0,
+      errors: [],
+    };
+  }
+  if (key === "wrong-passphrase") {
+    return {
+      ok: false,
+      reason: "wrong-passphrase",
       decrypted: 0,
       skipped: 0,
       errors: [],
@@ -352,4 +397,23 @@ function resolveParams(
   if (override !== undefined) return override;
   if (algorithm === "scrypt") return { ...DEFAULT_SCRYPT_PARAMS };
   return { ...DEFAULT_ARGON2ID_PARAMS };
+}
+
+async function unlockForThisProcess(options: {
+  memoryDir: string;
+  header: SecureStoreHeader;
+  keyringId: string;
+  readPassphrase?: PassphraseReader;
+  now?: () => Date;
+}): Promise<Buffer | null | "wrong-passphrase"> {
+  if (!options.readPassphrase) return null;
+  const passphrase = await options.readPassphrase("Enter passphrase: ");
+  validatePassphrase(passphrase);
+  const candidateKey = deriveKeyFromHeader(options.header, passphrase);
+  if (!verifyKey(options.header, candidateKey)) {
+    candidateKey.fill(0);
+    return "wrong-passphrase";
+  }
+  keyring.unlock(options.keyringId, candidateKey, options.now ?? (() => new Date()));
+  return candidateKey;
 }

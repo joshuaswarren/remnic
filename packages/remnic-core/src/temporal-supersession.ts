@@ -331,6 +331,14 @@ export async function applyTemporalSupersession(args: {
     if (memory.frontmatter.id === args.newMemoryId) continue;
     const dedupeKey = memory.frontmatter.id ?? memory.path;
     if (processedIds.has(dedupeKey)) continue;
+    const snapshotStatus = memory.frontmatter.status ?? "active";
+    if (snapshotStatus !== "active") {
+      // A stale non-active snapshot entry must not suppress an active copy of
+      // the same logical memory that appears later in another tier.  This can
+      // happen during hot/cold migration races where the hot snapshot is already
+      // superseded but the cold copy is still active and should be evaluated.
+      continue;
+    }
     // NOTE: do NOT call processedIds.add(dedupeKey) here.  We defer marking
     // the id as processed until AFTER the CAS re-read succeeds.  If we mark
     // it here and the re-read fails (e.g. the hot entry has already been

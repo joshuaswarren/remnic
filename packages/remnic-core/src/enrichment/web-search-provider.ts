@@ -42,12 +42,7 @@ export class WebSearchProvider implements EnrichmentProvider {
     if (!this.searchFn) return [];
 
     const query = `${entity.name} ${entity.type}`;
-    let snippets: string[];
-    try {
-      snippets = await this.searchFn(query);
-    } catch {
-      return [];
-    }
+    const snippets = await this.searchFn(query);
 
     return snippets
       .filter((s) => typeof s === "string" && s.trim().length > 0)

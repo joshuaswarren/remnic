@@ -211,6 +211,7 @@ export async function runContradictionDetectionBenchmark(
         categoryB: sample.categoryB,
       },
     });
+    options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, cases.length);
   }
 
   // Per-verdict metrics

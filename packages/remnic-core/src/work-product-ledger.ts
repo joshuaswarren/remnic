@@ -116,7 +116,7 @@ export async function recordWorkProductLedgerEntry(options: {
   const entriesDir = path.join(rootDir, "entries", day);
   const filePath = path.join(entriesDir, `${validated.entryId}.json`);
   await mkdir(entriesDir, { recursive: true });
-  await writeFile(filePath, JSON.stringify(validated, null, 2), "utf8");
+  await writeFile(filePath, JSON.stringify(validated, null, 2), { encoding: "utf8", flag: "wx" });
   return filePath;
 }
 
