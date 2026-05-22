@@ -42,6 +42,28 @@ test("AI review gate fails on failed review-bot check runs", () => {
   assert.equal(result.blockers[0]?.alias, "cursor");
 });
 
+test("AI review gate blocks startup_failure review-bot check runs", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt,
+    issueComments: [
+      {
+        user: { login: "cursor" },
+        body: `PASS for ${headSha}`,
+        created_at: "2026-05-21T12:00:01.000Z",
+      },
+    ],
+    checkRuns: [
+      { app: { slug: "cursor" }, conclusion: "startup_failure", head_sha: headSha },
+    ],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.blockers[0]?.alias, "cursor");
+  assert.equal(result.blockers[0]?.state, "startup_failure");
+});
+
 test("AI review gate ignores failed check runs from non-reviewer apps", () => {
   const result = evaluateAiReviewGate({
     groups,

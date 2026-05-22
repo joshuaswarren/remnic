@@ -4,6 +4,7 @@ const BAD_CHECK_CONCLUSIONS = new Set([
   "failure",
   "skipped",
   "stale",
+  "startup_failure",
   "timed_out",
 ]);
 const POSITIVE_CHECK_CONCLUSIONS = new Set(["success", "neutral"]);
