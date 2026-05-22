@@ -21,16 +21,14 @@
  * touches this module.
  */
 
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
-import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { expandTildePath } from "../../utils/path.js";
 
-import {
-  isValidConnectorId,
-  type ConnectorCursor,
-} from "./framework.js";
+import { type ConnectorCursor, isValidConnectorId } from "./framework.js";
 
 /**
  * Status of the most recent sync attempt for a connector.
@@ -70,13 +68,10 @@ const CONNECTORS_DIR_NAME = "connectors";
 const CONNECTOR_LOCKS_DIR_NAME = "connector-locks";
 const MAX_ERROR_LENGTH = 1024;
 const CONNECTOR_LOCK_STALE_MS = 10 * 60 * 1000;
+const CONNECTOR_LOCK_HEARTBEAT_MS = Math.max(1_000, Math.floor(CONNECTOR_LOCK_STALE_MS / 4));
 const CONNECTOR_LOCK_TIMEOUT_MS = 60 * 1000;
 const CONNECTOR_LOCK_RETRY_MS = 50;
-const VALID_SYNC_STATUSES: ReadonlySet<ConnectorSyncStatus> = new Set([
-  "success",
-  "error",
-  "never",
-]);
+const VALID_SYNC_STATUSES: ReadonlySet<ConnectorSyncStatus> = new Set(["success", "error", "never"]);
 
 /**
  * Internal error thrown when a state file's JSON is unparseable or its shape
@@ -89,6 +84,18 @@ class ConnectorStateCorruptionError extends Error {
     super(message);
     this.name = "ConnectorStateCorruptionError";
   }
+}
+
+interface ConnectorLockLease {
+  readonly path: string;
+  readonly token: string;
+}
+
+interface ConnectorLockMetadata {
+  readonly pid: number;
+  readonly token: string;
+  readonly createdAt: string;
+  readonly refreshedAt: string;
 }
 
 /**
@@ -115,7 +122,7 @@ function resolveConnectorLocksDir(memoryDir: string): string {
 function resolveConnectorStatePath(memoryDir: string, id: string): string {
   if (!isValidConnectorId(id)) {
     throw new TypeError(
-      `invalid connector id ${JSON.stringify(id)} — must match /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/`,
+      `invalid connector id ${JSON.stringify(id)} — must match /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/`
     );
   }
   return path.join(resolveConnectorsDir(memoryDir), `${id}.json`);
@@ -124,7 +131,7 @@ function resolveConnectorStatePath(memoryDir: string, id: string): string {
 function resolveConnectorLockPath(memoryDir: string, id: string): string {
   if (!isValidConnectorId(id)) {
     throw new TypeError(
-      `invalid connector id ${JSON.stringify(id)} — must match /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/`,
+      `invalid connector id ${JSON.stringify(id)} — must match /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/`
     );
   }
   return path.join(resolveConnectorLocksDir(memoryDir), `${id}.lock`);
@@ -160,6 +167,54 @@ function isConnectorStateShape(value: unknown): value is ConnectorState {
   return true;
 }
 
+function isConnectorLockMetadata(value: unknown): value is ConnectorLockMetadata {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.pid === "number" &&
+    Number.isInteger(v.pid) &&
+    v.pid > 0 &&
+    typeof v.token === "string" &&
+    v.token.length > 0 &&
+    typeof v.createdAt === "string" &&
+    typeof v.refreshedAt === "string"
+  );
+}
+
+function connectorLockMetadata(token: string, createdAt = new Date().toISOString()): ConnectorLockMetadata {
+  return {
+    pid: process.pid,
+    token,
+    createdAt,
+    refreshedAt: new Date().toISOString(),
+  };
+}
+
+async function readConnectorLockMetadata(lockPath: string): Promise<ConnectorLockMetadata | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(lockPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isConnectorLockMetadata(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isLiveProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
 /**
  * Reject any path component along `<memoryDir>/state/connectors/<id>.json`
  * that is a symlink. Without this guard, a symlink in any of those
@@ -181,9 +236,7 @@ async function assertNoSymlinkOnPath(memoryDir: string, filePath: string): Promi
   const rel = path.relative(root, target);
   // path.relative() yields a "../..." prefix when target escapes root.
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error(
-      `connector state path ${target} escapes memory root ${root}`,
-    );
+    throw new Error(`connector state path ${target} escapes memory root ${root}`);
   }
   // Walk every component from root to target (inclusive) and lstat each.
   const segments = rel.length === 0 ? [] : rel.split(path.sep);
@@ -205,33 +258,26 @@ async function assertNoSymlinkOnPath(memoryDir: string, filePath: string): Promi
       throw err;
     }
     if (stat.isSymbolicLink()) {
-      throw new Error(
-        `connector state path component ${component} is a symlink; refusing to follow`,
-      );
+      throw new Error(`connector state path component ${component} is a symlink; refusing to follow`);
     }
   }
 }
 
-async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<string | null> {
+async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<ConnectorLockLease | null> {
   const dir = resolveConnectorLocksDir(memoryDir);
   const lockPath = resolveConnectorLockPath(memoryDir, id);
   await assertNoSymlinkOnPath(memoryDir, lockPath);
   await fs.mkdir(dir, { recursive: true });
   let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
   let acquiredLockFile = false;
+  const token = randomUUID();
   try {
     handle = await fs.open(lockPath, "wx", 0o600);
     acquiredLockFile = true;
-    await handle.writeFile(
-      JSON.stringify({
-        pid: process.pid,
-        createdAt: new Date().toISOString(),
-      }),
-      "utf8",
-    );
+    await handle.writeFile(`${JSON.stringify(connectorLockMetadata(token))}\n`, "utf8");
     await handle.close();
     handle = null;
-    return lockPath;
+    return { path: lockPath, token };
   } catch (err) {
     if (acquiredLockFile) {
       if (handle !== null) {
@@ -247,7 +293,7 @@ async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<s
         if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
           throw new AggregateError(
             [err, cleanupErr],
-            `failed to initialize connector state lock at ${lockPath}; cleanup also failed`,
+            `failed to initialize connector state lock at ${lockPath}; cleanup also failed`
           );
         }
       }
@@ -266,9 +312,7 @@ async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<s
       throw statErr;
     }
     if (stat.isSymbolicLink()) {
-      throw new Error(
-        `connector state path component ${lockPath} is a symlink; refusing to follow`,
-      );
+      throw new Error(`connector state path component ${lockPath} is a symlink; refusing to follow`);
     }
     if (Date.now() - stat.mtimeMs > CONNECTOR_LOCK_STALE_MS) {
       await unlinkStaleConnectorLock(lockPath);
@@ -278,7 +322,25 @@ async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<s
   }
 }
 
+async function shouldUnlinkStaleConnectorLock(lockPath: string, stat: import("node:fs").Stats): Promise<boolean> {
+  if (Date.now() - stat.mtimeMs <= CONNECTOR_LOCK_STALE_MS) return false;
+  const metadata = await readConnectorLockMetadata(lockPath);
+  if (metadata !== null && isLiveProcess(metadata.pid)) return false;
+  return true;
+}
+
 async function unlinkStaleConnectorLock(lockPath: string): Promise<void> {
+  let stat: import("node:fs").Stats;
+  try {
+    stat = await fs.lstat(lockPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(`connector state path component ${lockPath} is a symlink; refusing to follow`);
+  }
+  if (!(await shouldUnlinkStaleConnectorLock(lockPath, stat))) return;
   try {
     await fs.unlink(lockPath);
   } catch (err) {
@@ -288,31 +350,50 @@ async function unlinkStaleConnectorLock(lockPath: string): Promise<void> {
   }
 }
 
-export async function withConnectorStateLock<T>(
-  memoryDir: string,
-  id: string,
-  run: () => Promise<T>,
-): Promise<T> {
+async function refreshConnectorLock(lease: ConnectorLockLease): Promise<boolean> {
+  const metadata = await readConnectorLockMetadata(lease.path);
+  if (metadata?.token !== lease.token) return false;
+  await fs.writeFile(lease.path, `${JSON.stringify(connectorLockMetadata(lease.token, metadata.createdAt))}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  return true;
+}
+
+async function releaseConnectorLock(lease: ConnectorLockLease): Promise<void> {
+  const metadata = await readConnectorLockMetadata(lease.path);
+  if (metadata?.token !== lease.token) return;
+  try {
+    await fs.unlink(lease.path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+}
+
+export async function withConnectorStateLock<T>(memoryDir: string, id: string, run: () => Promise<T>): Promise<T> {
   const deadline = Date.now() + CONNECTOR_LOCK_TIMEOUT_MS;
-  let lockPath: string | null = null;
-  while (lockPath === null) {
-    lockPath = await tryAcquireConnectorLock(memoryDir, id);
-    if (lockPath !== null) break;
+  let lease: ConnectorLockLease | null = null;
+  while (lease === null) {
+    lease = await tryAcquireConnectorLock(memoryDir, id);
+    if (lease !== null) break;
     if (Date.now() >= deadline) {
       throw new Error(`timed out waiting for connector "${id}" state lock`);
     }
     await delay(CONNECTOR_LOCK_RETRY_MS);
   }
+  const heartbeat = setInterval(() => {
+    void refreshConnectorLock(lease).catch(() => {
+      // Release remains token-guarded; failed refresh should not mask sync work.
+    });
+  }, CONNECTOR_LOCK_HEARTBEAT_MS);
+  heartbeat.unref?.();
   try {
     return await run();
   } finally {
-    try {
-      await fs.unlink(lockPath);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw err;
-      }
-    }
+    clearInterval(heartbeat);
+    await releaseConnectorLock(lease);
   }
 }
 
@@ -325,10 +406,7 @@ export async function withConnectorStateLock<T>(
  * Rejects symlinks anywhere on the path so a planted symlink can't redirect
  * reads outside the memory root. (PR #724 review.)
  */
-export async function readConnectorState(
-  memoryDir: string,
-  id: string,
-): Promise<ConnectorState | null> {
+export async function readConnectorState(memoryDir: string, id: string): Promise<ConnectorState | null> {
   const filePath = resolveConnectorStatePath(memoryDir, id);
   await assertNoSymlinkOnPath(memoryDir, filePath);
   let raw: string;
@@ -343,17 +421,15 @@ export async function readConnectorState(
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new ConnectorStateCorruptionError(
-      `connector state at ${filePath} is not valid JSON: ${(err as Error).message}`,
+      `connector state at ${filePath} is not valid JSON: ${(err as Error).message}`
     );
   }
   if (!isConnectorStateShape(parsed)) {
-    throw new ConnectorStateCorruptionError(
-      `connector state at ${filePath} does not match ConnectorState shape`,
-    );
+    throw new ConnectorStateCorruptionError(`connector state at ${filePath} does not match ConnectorState shape`);
   }
   if (parsed.id !== id) {
     throw new ConnectorStateCorruptionError(
-      `connector state at ${filePath} has mismatched id ${JSON.stringify(parsed.id)}; expected ${JSON.stringify(id)}`,
+      `connector state at ${filePath} has mismatched id ${JSON.stringify(parsed.id)}; expected ${JSON.stringify(id)}`
     );
   }
   return parsed;
@@ -369,16 +445,16 @@ export async function readConnectorState(
 export async function writeConnectorState(
   memoryDir: string,
   id: string,
-  state: Omit<ConnectorState, "updatedAt">,
+  state: Omit<ConnectorState, "updatedAt">
 ): Promise<ConnectorState> {
   if (!isValidConnectorId(id)) {
     throw new TypeError(
-      `invalid connector id ${JSON.stringify(id)} — must match /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/`,
+      `invalid connector id ${JSON.stringify(id)} — must match /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/`
     );
   }
   if (state.id !== id) {
     throw new Error(
-      `writeConnectorState(): state.id ${JSON.stringify(state.id)} does not match id argument ${JSON.stringify(id)}`,
+      `writeConnectorState(): state.id ${JSON.stringify(state.id)} does not match id argument ${JSON.stringify(id)}`
     );
   }
   // Full boundary validation. Persisting an out-of-shape record would brick
@@ -387,13 +463,11 @@ export async function writeConnectorState(
   // bypassing TS types must be rejected here, not later. (PR #724 review.)
   if (!VALID_SYNC_STATUSES.has(state.lastSyncStatus as ConnectorSyncStatus)) {
     throw new Error(
-      `writeConnectorState(): lastSyncStatus must be one of ${[...VALID_SYNC_STATUSES].join(", ")}, got ${JSON.stringify(state.lastSyncStatus)}`,
+      `writeConnectorState(): lastSyncStatus must be one of ${[...VALID_SYNC_STATUSES].join(", ")}, got ${JSON.stringify(state.lastSyncStatus)}`
     );
   }
   if (state.lastSyncAt !== null && typeof state.lastSyncAt !== "string") {
-    throw new Error(
-      `writeConnectorState(): lastSyncAt must be a string or null, got ${typeof state.lastSyncAt}`,
-    );
+    throw new Error(`writeConnectorState(): lastSyncAt must be a string or null, got ${typeof state.lastSyncAt}`);
   }
   if (state.cursor !== null) {
     if (typeof state.cursor !== "object") {
@@ -404,9 +478,7 @@ export async function writeConnectorState(
       typeof state.cursor.value !== "string" ||
       typeof state.cursor.updatedAt !== "string"
     ) {
-      throw new Error(
-        `writeConnectorState(): cursor must have string kind, value, and updatedAt`,
-      );
+      throw new Error(`writeConnectorState(): cursor must have string kind, value, and updatedAt`);
     }
   }
   if (
@@ -414,9 +486,7 @@ export async function writeConnectorState(
     !Number.isInteger(state.totalDocsImported) ||
     state.totalDocsImported < 0
   ) {
-    throw new Error(
-      `writeConnectorState(): totalDocsImported must be a non-negative integer`,
-    );
+    throw new Error(`writeConnectorState(): totalDocsImported must be a non-negative integer`);
   }
   if (state.lastSyncError !== undefined && typeof state.lastSyncError !== "string") {
     throw new Error(`writeConnectorState(): lastSyncError must be a string when provided`);
@@ -524,3 +594,5 @@ export function _connectorStatePathForTest(memoryDir: string, id: string): strin
 }
 
 export const _unlinkStaleConnectorLockForTest = unlinkStaleConnectorLock;
+export const _tryAcquireConnectorLockForTest = tryAcquireConnectorLock;
+export const _releaseConnectorLockForTest = releaseConnectorLock;

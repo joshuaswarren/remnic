@@ -6,23 +6,25 @@ import test from "node:test";
 
 import {
   CONNECTOR_ID_PATTERN,
-  isValidConnectorId,
-  LiveConnectorRegistry,
-  LiveConnectorRegistryError,
-  listConnectorStates,
-  readConnectorState,
-  withConnectorStateLock,
-  writeConnectorState,
   type ConnectorConfig,
   type ConnectorCursor,
   type ConnectorDocument,
   type ConnectorSyncStatus,
   type LiveConnector,
+  LiveConnectorRegistry,
+  LiveConnectorRegistryError,
   type SyncIncrementalArgs,
   type SyncIncrementalResult,
+  isValidConnectorId,
+  listConnectorStates,
+  readConnectorState,
+  withConnectorStateLock,
+  writeConnectorState,
 } from "./index.js";
 import {
   _connectorStatePathForTest,
+  _releaseConnectorLockForTest,
+  _tryAcquireConnectorLockForTest,
   _unlinkStaleConnectorLockForTest,
 } from "./state-store.js";
 
@@ -98,12 +100,12 @@ test("isValidConnectorId accepts well-formed ids", () => {
 test("isValidConnectorId rejects malformed ids", () => {
   for (const id of [
     "",
-    "Drive",          // uppercase
-    "-leading-dash",  // must start with alphanumeric
+    "Drive", // uppercase
+    "-leading-dash", // must start with alphanumeric
     "trailing-dash-",
     "white space",
     "slash/y",
-    "a".repeat(65),   // > 64
+    "a".repeat(65), // > 64
     null,
     undefined,
     42,
@@ -150,26 +152,14 @@ test("registry: register, get, list, unregister, size", () => {
 test("registry: rejects duplicate ids", () => {
   const reg = new LiveConnectorRegistry();
   reg.register(new MockConnector("dup"));
-  assert.throws(
-    () => reg.register(new MockConnector("dup")),
-    LiveConnectorRegistryError,
-  );
+  assert.throws(() => reg.register(new MockConnector("dup")), LiveConnectorRegistryError);
 });
 
 test("registry: rejects invalid ids", () => {
   const reg = new LiveConnectorRegistry();
-  assert.throws(
-    () => reg.register(new MockConnector("Bad-Caps")),
-    LiveConnectorRegistryError,
-  );
-  assert.throws(
-    () => reg.register(new MockConnector("-leading-dash")),
-    LiveConnectorRegistryError,
-  );
-  assert.throws(
-    () => reg.register(new MockConnector("a".repeat(65))),
-    LiveConnectorRegistryError,
-  );
+  assert.throws(() => reg.register(new MockConnector("Bad-Caps")), LiveConnectorRegistryError);
+  assert.throws(() => reg.register(new MockConnector("-leading-dash")), LiveConnectorRegistryError);
+  assert.throws(() => reg.register(new MockConnector("a".repeat(65))), LiveConnectorRegistryError);
 });
 
 test("registry: rejects connectors missing required fields", () => {
@@ -186,7 +176,7 @@ test("registry: rejects connectors missing required fields", () => {
           nextCursor: { kind: "x", value: "0", updatedAt: new Date().toISOString() },
         }),
       } as unknown as LiveConnector),
-    LiveConnectorRegistryError,
+    LiveConnectorRegistryError
   );
 
   assert.throws(
@@ -197,13 +187,10 @@ test("registry: rejects connectors missing required fields", () => {
         validateConfig: () => ({}),
         // missing syncIncremental
       } as unknown as LiveConnector),
-    LiveConnectorRegistryError,
+    LiveConnectorRegistryError
   );
 
-  assert.throws(
-    () => reg.register(null as unknown as LiveConnector),
-    LiveConnectorRegistryError,
-  );
+  assert.throws(() => reg.register(null as unknown as LiveConnector), LiveConnectorRegistryError);
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -298,7 +285,10 @@ test("state store: listConnectorStates enumerates and is sorted", async (t) => {
   });
 
   const states = await listConnectorStates(memoryDir);
-  assert.deepEqual(states.map((s) => s.id), ["alpha", "mike", "zeta"]);
+  assert.deepEqual(
+    states.map((s) => s.id),
+    ["alpha", "mike", "zeta"]
+  );
 });
 
 test("state store: listConnectorStates returns [] for missing dir", async (t) => {
@@ -325,7 +315,10 @@ test("state store: listConnectorStates skips non-matching files", async (t) => {
   fs.writeFileSync(path.join(dir, "corrupt.json"), "{ not valid");
 
   const states = await listConnectorStates(memoryDir);
-  assert.deepEqual(states.map((s) => s.id), ["real"]);
+  assert.deepEqual(
+    states.map((s) => s.id),
+    ["real"]
+  );
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -377,7 +370,7 @@ test("state store: previous good state is preserved when a new write fails", asy
       lastSyncStatus: "never",
       totalDocsImported: 0,
     }),
-    /does not match/,
+    /does not match/
   );
 
   // The good file must still be readable and unchanged.
@@ -389,10 +382,7 @@ test("state store: previous good state is preserved when a new write fails", asy
 
 test("state store: rejects invalid id at boundary", async (t) => {
   const memoryDir = makeMemoryDir(t);
-  await assert.rejects(
-    () => readConnectorState(memoryDir, "Bad-Caps"),
-    /invalid connector id/,
-  );
+  await assert.rejects(() => readConnectorState(memoryDir, "Bad-Caps"), /invalid connector id/);
   await assert.rejects(
     () =>
       writeConnectorState(memoryDir, "../escape" as string, {
@@ -402,7 +392,7 @@ test("state store: rejects invalid id at boundary", async (t) => {
         lastSyncStatus: "never",
         totalDocsImported: 0,
       }),
-    /invalid connector id/,
+    /invalid connector id/
   );
 });
 
@@ -422,7 +412,7 @@ test("state store: rejects invalid lastSyncStatus at boundary (PR #724 review)",
         lastSyncStatus: "BOGUS" as unknown as ConnectorSyncStatus,
         totalDocsImported: 0,
       } as unknown as Parameters<typeof writeConnectorState>[2]),
-    /lastSyncStatus must be one of/,
+    /lastSyncStatus must be one of/
   );
   // And the file must NOT have been written.
   const after = await readConnectorState(memoryDir, "drive");
@@ -441,7 +431,7 @@ test("state store: rejects malformed cursor at boundary (PR #724 review)", async
         lastSyncStatus: "success",
         totalDocsImported: 0,
       }),
-    /cursor must have string/,
+    /cursor must have string/
   );
 });
 
@@ -462,7 +452,10 @@ test("state store: listConnectorStates skips corrupt files but rethrows EACCES (
   fs.writeFileSync(path.join(dir, "corrupt.json"), "{ not valid json");
   // Listing succeeds, returning only the good record.
   const states = await listConnectorStates(memoryDir);
-  assert.deepEqual(states.map((s) => s.id), ["good"]);
+  assert.deepEqual(
+    states.map((s) => s.id),
+    ["good"]
+  );
 
   // Now make one of the files unreadable (EACCES). On platforms that respect
   // chmod for the current user (POSIX, when not running as root), this
@@ -481,7 +474,7 @@ test("state store: listConnectorStates skips corrupt files but rethrows EACCES (
     });
     await assert.rejects(
       () => listConnectorStates(memoryDir),
-      (err: NodeJS.ErrnoException) => err.code === "EACCES" || err.code === "EPERM",
+      (err: NodeJS.ErrnoException) => err.code === "EACCES" || err.code === "EPERM"
     );
   }
 });
@@ -497,7 +490,7 @@ test("state store: rejects negative totalDocsImported", async (t) => {
         lastSyncStatus: "never",
         totalDocsImported: -1,
       }),
-    /non-negative integer/,
+    /non-negative integer/
   );
 });
 
@@ -514,7 +507,7 @@ test("state store: rejects fractional totalDocsImported (PR #724 review)", async
         lastSyncStatus: "never",
         totalDocsImported: 3.7,
       }),
-    /non-negative integer/,
+    /non-negative integer/
   );
   // And the read-shape check must reject a hand-crafted file with a float.
   const dir = path.join(memoryDir, "state", "connectors");
@@ -528,12 +521,9 @@ test("state store: rejects fractional totalDocsImported (PR #724 review)", async
       lastSyncStatus: "never",
       totalDocsImported: 3.7,
       updatedAt: new Date().toISOString(),
-    }),
+    })
   );
-  await assert.rejects(
-    () => readConnectorState(memoryDir, "drive"),
-    /does not match ConnectorState shape/,
-  );
+  await assert.rejects(() => readConnectorState(memoryDir, "drive"), /does not match ConnectorState shape/);
 });
 
 test("state store: refuses symlinked state file (PR #724 review)", async (t) => {
@@ -562,7 +552,7 @@ test("state store: refuses symlinked state file (PR #724 review)", async (t) => 
       lastSyncStatus: "never",
       totalDocsImported: 999,
       updatedAt: new Date().toISOString(),
-    }),
+    })
   );
   // Plant the symlink where the connector state would live.
   const dir = path.join(memoryDir, "state", "connectors");
@@ -570,10 +560,7 @@ test("state store: refuses symlinked state file (PR #724 review)", async (t) => 
   const linkPath = path.join(dir, "drive.json");
   fs.symlinkSync(outsideFile, linkPath);
 
-  await assert.rejects(
-    () => readConnectorState(memoryDir, "drive"),
-    /symlink/,
-  );
+  await assert.rejects(() => readConnectorState(memoryDir, "drive"), /symlink/);
   await assert.rejects(
     () =>
       writeConnectorState(memoryDir, "drive", {
@@ -583,7 +570,7 @@ test("state store: refuses symlinked state file (PR #724 review)", async (t) => 
         lastSyncStatus: "never",
         totalDocsImported: 0,
       }),
-    /symlink/,
+    /symlink/
   );
 });
 
@@ -602,14 +589,8 @@ test("state store: refuses symlinked state directory (PR #724 review)", async (t
   fs.mkdirSync(path.join(memoryDir, "state"), { recursive: true });
   fs.symlinkSync(outside, path.join(memoryDir, "state", "connectors"));
 
-  await assert.rejects(
-    () => listConnectorStates(memoryDir),
-    /symlink/,
-  );
-  await assert.rejects(
-    () => readConnectorState(memoryDir, "drive"),
-    /symlink/,
-  );
+  await assert.rejects(() => listConnectorStates(memoryDir), /symlink/);
+  await assert.rejects(() => readConnectorState(memoryDir, "drive"), /symlink/);
 });
 
 test("state store: truncates oversized lastSyncError", async (t) => {
@@ -655,10 +636,7 @@ test("state store: serializes connector state locks for one connector", async (t
 
   assert.deepEqual(await Promise.all([first, second]), ["first", "second"]);
   assert.deepEqual(events, ["first:start", "first:end", "second:start"]);
-  assert.equal(
-    fs.existsSync(path.join(memoryDir, "state", "connector-locks", "drive.lock")),
-    false,
-  );
+  assert.equal(fs.existsSync(path.join(memoryDir, "state", "connector-locks", "drive.lock")), false);
 });
 
 test("state store: treats already-removed stale locks as benign", async (t) => {
@@ -668,6 +646,44 @@ test("state store: treats already-removed stale locks as benign", async (t) => {
   fs.mkdirSync(lockDir, { recursive: true });
 
   await _unlinkStaleConnectorLockForTest(lockPath);
+});
+
+test("state store: does not evict a stale-looking lock held by a live process", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const lockDir = path.join(memoryDir, "state", "connector-locks");
+  const lockPath = path.join(lockDir, "drive.lock");
+  fs.mkdirSync(lockDir, { recursive: true });
+  const staleDate = new Date(Date.now() - 11 * 60 * 1000);
+  fs.writeFileSync(
+    lockPath,
+    `${JSON.stringify({
+      pid: process.pid,
+      token: "live-lock",
+      createdAt: staleDate.toISOString(),
+      refreshedAt: staleDate.toISOString(),
+    })}\n`
+  );
+  fs.utimesSync(lockPath, staleDate, staleDate);
+
+  assert.equal(await _tryAcquireConnectorLockForTest(memoryDir, "drive"), null);
+  assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, "live-lock");
+});
+
+test("state store: release only removes the matching connector lock token", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const lease = await _tryAcquireConnectorLockForTest(memoryDir, "drive");
+  assert.ok(lease);
+  const replacement = {
+    pid: process.pid,
+    token: "replacement-lock",
+    createdAt: new Date().toISOString(),
+    refreshedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(lease.path, `${JSON.stringify(replacement)}\n`);
+
+  await _releaseConnectorLockForTest(lease);
+
+  assert.equal(JSON.parse(fs.readFileSync(lease.path, "utf8")).token, "replacement-lock");
 });
 
 test("state store: removes connector lock when lock metadata write fails", async (t) => {
@@ -687,16 +703,13 @@ test("state store: removes connector lock when lock metadata write fails", async
   try {
     await assert.rejects(
       () => withConnectorStateLock(memoryDir, "drive", async () => "unreachable"),
-      /simulated lock write failure/,
+      /simulated lock write failure/
     );
   } finally {
     fileHandlePrototype.writeFile = originalWriteFile;
   }
 
-  assert.equal(
-    fs.existsSync(path.join(memoryDir, "state", "connector-locks", "drive.lock")),
-    false,
-  );
+  assert.equal(fs.existsSync(path.join(memoryDir, "state", "connector-locks", "drive.lock")), false);
 });
 
 async function waitForTest(predicate: () => boolean): Promise<void> {
@@ -714,10 +727,7 @@ test("state store: rejects corrupt JSON loudly via readConnectorState", async (t
   const dir = path.join(memoryDir, "state", "connectors");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "drive.json"), "{ not valid json");
-  await assert.rejects(
-    () => readConnectorState(memoryDir, "drive"),
-    /not valid JSON/,
-  );
+  await assert.rejects(() => readConnectorState(memoryDir, "drive"), /not valid JSON/);
 });
 
 test("state store: rejects null parsed result", async (t) => {
@@ -726,10 +736,7 @@ test("state store: rejects null parsed result", async (t) => {
   const dir = path.join(memoryDir, "state", "connectors");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "drive.json"), "null");
-  await assert.rejects(
-    () => readConnectorState(memoryDir, "drive"),
-    /does not match ConnectorState shape/,
-  );
+  await assert.rejects(() => readConnectorState(memoryDir, "drive"), /does not match ConnectorState shape/);
 });
 
 // ───────────────────────────────────────────────────────────────────────────
