@@ -257,6 +257,10 @@ jobs:
               context.payload.pull_request?.number ??
               context.payload.check_run?.pull_requests?.[0]?.number;
             if (!pr) {
+              if (context.eventName === 'check_run') {
+                core.notice('Skipping check_run event with no associated pull request.');
+                return;
+              }
               core.setFailed('Unable to determine pull request number.');
               return;
             }
