@@ -41,6 +41,10 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
     await write(root, ".offline-sync/state/local.json", "state");
     await write(root, "state/fact-hashes.txt", "derived");
     await write(root, "state/fact-hashes.ready", "v1");
+    await write(root, "state/last_graph_recall.json", "{}");
+    await write(root, "state/last_intent.json", "{}");
+    await write(root, "state/last_qmd_recall.json", "{}");
+    await write(root, "state/last_recall.json", "{}");
     await write(root, "state/lcm.sqlite", "live db");
     await write(root, "state/lcm.sqlite-shm", "live shm");
     await write(root, "state/lcm.sqlite-wal", "live wal");
@@ -68,6 +72,60 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
       withoutTranscripts.files.map((file) => file.path),
       ["assets/blob.bin", "facts/a.md", "facts/fact-hashes.txt"],
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync excludes volatile retrieval debug snapshots without deleting existing local copies", async () => {
+  const root = await tempDir("remnic-offline-debug-snapshots");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/last_graph_recall.json", "graph");
+    await write(root, "state/last_intent.json", "intent");
+    await write(root, "state/last_qmd_recall.json", "qmd");
+    await write(root, "state/last_recall.json", "recall");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+    });
+
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
+    await assert.rejects(
+      () =>
+        buildOfflineSyncSnapshotForPaths({
+          root,
+          sourceId: "remote",
+          paths: ["state/last_graph_recall.json"],
+          includeContent: true,
+        }),
+      /offline sync snapshot path is excluded: state\/last_graph_recall\.json/,
+    );
+    await assert.rejects(
+      () =>
+        readOfflineSyncFileContentChunk({
+          root,
+          path: "state/last_graph_recall.json",
+        }),
+      /offline sync file content path is excluded: state\/last_graph_recall\.json/,
+    );
+
+    const oldGraph = Buffer.from("old graph");
+    const pull = await applyOfflineSyncSnapshot({
+      root,
+      snapshot,
+      baseFiles: [{
+        path: "state/last_graph_recall.json",
+        sha256: createHash("sha256").update(oldGraph).digest("hex"),
+        bytes: oldGraph.byteLength,
+        mtimeMs: 0,
+      }],
+    });
+
+    assert.equal(pull.deleted, 0);
+    assert.equal(await readUtf8(root, "state/last_graph_recall.json"), "graph");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

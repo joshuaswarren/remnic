@@ -153,6 +153,10 @@ const EXCLUDED_FILE_NAMES = new Set([
 const EXCLUDED_REL_PATHS = new Set([
   "state/fact-hashes.ready",
   "state/fact-hashes.txt",
+  "state/last_graph_recall.json",
+  "state/last_intent.json",
+  "state/last_qmd_recall.json",
+  "state/last_recall.json",
   "state/lcm.sqlite",
   "state/lcm.sqlite-shm",
   "state/lcm.sqlite-wal",
