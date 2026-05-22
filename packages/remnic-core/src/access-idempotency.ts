@@ -13,6 +13,7 @@ type AccessIdempotencyTestHooks = {
   lockTimeoutMs?: number;
   staleLockMs?: number;
   lockHeartbeatMs?: number;
+  beforeLockOwnerWrite?: (lockPath: string, ownerToken: string) => Promise<void> | void;
   beforeStaleLockUnlink?: () => Promise<void> | void;
 };
 
@@ -175,7 +176,14 @@ export class AccessIdempotencyStore {
       const ownerToken = `${process.pid}:${randomUUID()}`;
       try {
         const handle = await open(lockPath, "wx");
-        await handle.writeFile(ownerToken, "utf-8");
+        try {
+          await testHooks?.beforeLockOwnerWrite?.(lockPath, ownerToken);
+          await handle.writeFile(ownerToken, "utf-8");
+        } catch (error) {
+          await handle.close().catch(() => undefined);
+          await unlink(lockPath).catch(() => undefined);
+          throw error;
+        }
         let heartbeat: NodeJS.Timeout | null = null;
         if (lockHeartbeatMs > 0) {
           heartbeat = setInterval(() => {

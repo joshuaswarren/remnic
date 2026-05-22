@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { AccessIdempotencyStore, setAccessIdempotencyTestHooks } from "../src/access-idempotency.js";
 
 test("access idempotency store refreshes when another process writes a key", async () => {
@@ -302,6 +302,44 @@ test("access idempotency stale lock cleanup does not delete a fresh contender lo
       releaseSecondCallback?.();
       await Promise.all([firstLock, secondLock]);
       assert.equal(firstCallbackEntered, true);
+    } finally {
+      setAccessIdempotencyTestHooks(null);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("access idempotency key lock cleans up when owner token write fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-idempotency-owner-write-"));
+  try {
+    const store = new AccessIdempotencyStore(memoryDir);
+    const key = "shared-key";
+    const keyHash = createHash("sha256").update(key).digest("hex");
+    const lockPath = path.join(memoryDir, "state", "access-idempotency-locks", `${keyHash}.lock`);
+    let writeAttempts = 0;
+
+    setAccessIdempotencyTestHooks({
+      beforeLockOwnerWrite: () => {
+        writeAttempts += 1;
+        if (writeAttempts === 1) {
+          throw new Error("simulated owner token write failure");
+        }
+      },
+    });
+
+    try {
+      await assert.rejects(
+        store.withKeyLock(key, async () => undefined),
+        /simulated owner token write failure/,
+      );
+      await assert.rejects(access(lockPath), /ENOENT/);
+
+      let acquired = false;
+      await store.withKeyLock(key, async () => {
+        acquired = true;
+      });
+      assert.equal(acquired, true);
     } finally {
       setAccessIdempotencyTestHooks(null);
     }
