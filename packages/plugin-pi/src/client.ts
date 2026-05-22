@@ -151,6 +151,11 @@ export class RemnicClient {
         throw new RemnicHttpError(response.status, typeof payload?.error === "string" ? payload.error : response.statusText);
       }
       return payload as T;
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw new Error(`Remnic request timed out after ${this.config.requestTimeoutMs}ms`);
+      }
+      throw err;
     } finally {
       clearTimeout(timeout);
     }
@@ -173,4 +178,8 @@ export class RemnicClient {
 
 function isMcpTool(value: unknown): value is McpTool {
   return !!value && typeof value === "object" && typeof (value as { name?: unknown }).name === "string";
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && (err.name === "AbortError" || err.message === "This operation was aborted");
 }

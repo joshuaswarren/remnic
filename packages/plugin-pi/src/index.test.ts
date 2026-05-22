@@ -627,7 +627,7 @@ function baseConfig(): RemnicPiConfig {
     compactionEnabled: true,
     mcpToolsEnabled: true,
     statusEnabled: true,
-    requestTimeoutMs: 5000,
+    requestTimeoutMs: 60000,
   };
 }
 

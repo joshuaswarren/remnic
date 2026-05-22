@@ -96,6 +96,20 @@ test("loadConfig reads a tilde-expanded env config path", () => {
   }
 });
 
+test("loadConfig defaults request timeout high enough for warmed-up recall", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-default-timeout-"));
+  const configPath = path.join(root, "remnic.config.json");
+  try {
+    fs.writeFileSync(configPath, JSON.stringify({}));
+
+    const config = loadConfig({ configPath, env: {} });
+
+    assert.equal(config.requestTimeoutMs, 60000);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("loadConfig merges file values and coerces boolean-like strings", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-"));
   const configPath = path.join(root, "remnic.config.json");

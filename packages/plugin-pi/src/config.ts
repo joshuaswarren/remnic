@@ -37,7 +37,7 @@ const DEFAULT_CONFIG: RemnicPiConfig = {
   compactionEnabled: true,
   mcpToolsEnabled: true,
   statusEnabled: true,
-  requestTimeoutMs: 5000,
+  requestTimeoutMs: 60000,
 };
 
 function defaultConfigPath(env: NodeJS.ProcessEnv): string {

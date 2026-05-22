@@ -238,6 +238,99 @@ test("offline sync excludes runtime-derived state without deleting existing loca
   }
 });
 
+test("offline sync ignores runtime-derived records from older peers", async () => {
+  const root = await tempDir("remnic-offline-legacy-runtime-state");
+  try {
+    const fact = Buffer.from("alpha");
+    const runtime = Buffer.from("legacy runtime");
+    const runtimeSha = createHash("sha256").update(runtime).digest("hex");
+    const factSha = createHash("sha256").update(fact).digest("hex");
+
+    const pull = await applyOfflineSyncSnapshot({
+      root,
+      snapshot: {
+        format: "remnic.offline-sync.snapshot.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "old-remote",
+        includeTranscripts: true,
+        files: [
+          {
+            path: "state/buffer.json",
+            sha256: runtimeSha,
+            bytes: runtime.byteLength,
+            mtimeMs: 0,
+            contentBase64: runtime.toString("base64"),
+          },
+          {
+            path: "facts/a.md",
+            sha256: factSha,
+            bytes: fact.byteLength,
+            mtimeMs: 0,
+            contentBase64: fact.toString("base64"),
+          },
+        ],
+      },
+    });
+
+    assert.equal(pull.upserted, 1);
+    assert.equal(await readUtf8(root, "facts/a.md"), "alpha");
+    await assert.rejects(
+      () => readFile(path.join(root, "state", "buffer.json")),
+      /ENOENT/,
+    );
+
+    const remote = await tempDir("remnic-offline-legacy-runtime-remote");
+    try {
+      const push = await applyOfflineSyncChangeset({
+        root: remote,
+        changeset: {
+          format: "remnic.offline-sync.changeset.v1",
+          schemaVersion: 1,
+          createdAt: new Date().toISOString(),
+          sourceId: "old-laptop",
+          includeTranscripts: true,
+          changes: [
+            {
+              type: "upsert",
+              path: "state/memory-lifecycle-ledger.jsonl",
+              file: {
+                path: "state/memory-lifecycle-ledger.jsonl",
+                sha256: runtimeSha,
+                bytes: runtime.byteLength,
+                mtimeMs: 0,
+                contentBase64: runtime.toString("base64"),
+              },
+            },
+            {
+              type: "upsert",
+              path: "facts/a.md",
+              file: {
+                path: "facts/a.md",
+                sha256: factSha,
+                bytes: fact.byteLength,
+                mtimeMs: 0,
+                contentBase64: fact.toString("base64"),
+              },
+            },
+          ],
+        },
+      });
+
+      assert.equal(push.appliedUpserts, 1);
+      assert.equal(await readUtf8(remote, "facts/a.md"), "alpha");
+      await assert.rejects(
+        () => readFile(path.join(remote, "state", "memory-lifecycle-ledger.jsonl")),
+        /ENOENT/,
+      );
+    } finally {
+      await rm(remote, { recursive: true, force: true });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline sync pending summary returns counts without materializing changed content", async () => {
   const root = await tempDir("remnic-offline-pending-summary");
   try {
