@@ -628,6 +628,21 @@ export class EngramAccessHttpServer {
 
     if (
       req.method === "POST" &&
+      (pathname === "/engram/v1/offline-sync/files" || pathname === "/remnic/v1/offline-sync/files")
+    ) {
+      const body = await this.readValidatedBody(req, "offlineSyncFiles");
+      const result = await this.service.offlineSyncFiles({
+        namespace: this.resolveNamespace(req, body.namespace),
+        principal: this.resolveRequestPrincipal(req),
+        includeTranscripts: body.includeTranscripts,
+        paths: body.paths,
+      });
+      this.respondJson(res, 200, result);
+      return;
+    }
+
+    if (
+      req.method === "POST" &&
       (pathname === "/engram/v1/offline-sync/apply" || pathname === "/remnic/v1/offline-sync/apply")
     ) {
       const body = await this.readValidatedBody(req, "offlineSyncApply");

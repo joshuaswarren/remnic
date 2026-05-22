@@ -127,6 +127,14 @@ export interface OfflineSyncFileWriteTarget extends OfflineSyncFileTarget {
   content: Buffer;
 }
 
+interface OfflineSyncFileRecordOptions {
+  root: SafeArchiveRoot;
+  relPath: string;
+  filePath: string;
+  includeContent: boolean;
+  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+}
+
 const SYNC_INTERNAL_DIR = ".offline-sync";
 const EXCLUDED_FILE_NAMES = new Set([
   ".sync-state.json",
@@ -406,6 +414,24 @@ function filterBaseFilesForMode(
   return files.filter((file) => !shouldExcludeRelPath(file.path, includeTranscripts));
 }
 
+async function readOfflineSyncFileRecord(
+  options: OfflineSyncFileRecordOptions,
+): Promise<OfflineSyncFileRecord> {
+  const relPath = validateArchiveRelativePath(options.relPath, "offlineSyncFile.path");
+  const bytes = options.readFile
+    ? await options.readFile({ root: options.root.abs, path: relPath, filePath: options.filePath })
+    : await readFile(options.filePath);
+  const digest = sha256Buffer(bytes);
+  const st = await stat(options.filePath);
+  return {
+    path: relPath,
+    sha256: digest.sha256,
+    bytes: digest.bytes,
+    mtimeMs: st.mtimeMs,
+    ...(options.includeContent ? { contentBase64: bytes.toString("base64") } : {}),
+  };
+}
+
 export async function buildOfflineSyncSnapshot(options: {
   root: string;
   sourceId: string;
@@ -432,22 +458,64 @@ export async function buildOfflineSyncSnapshot(options: {
         continue;
       }
       if (!entry.isFile()) continue;
-      const bytes = options.readFile
-        ? await options.readFile({ root: root.abs, path: relPosix, filePath: abs })
-        : await readFile(abs);
-      const digest = sha256Buffer(bytes);
-      const st = await stat(abs);
-      files.push({
-        path: validateArchiveRelativePath(relPosix, "buildOfflineSyncSnapshot"),
-        sha256: digest.sha256,
-        bytes: digest.bytes,
-        mtimeMs: st.mtimeMs,
-        ...(options.includeContent === true ? { contentBase64: bytes.toString("base64") } : {}),
-      });
+      files.push(await readOfflineSyncFileRecord({
+        root,
+        relPath: relPosix,
+        filePath: abs,
+        includeContent: options.includeContent === true,
+        readFile: options.readFile,
+      }));
     }
   }
 
   await walk(root.abs);
+
+  return {
+    format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+    schemaVersion: 1,
+    createdAt: (options.now ?? new Date()).toISOString(),
+    sourceId: normalizeSourceId(options.sourceId, "sourceId"),
+    includeTranscripts,
+    files: files.sort(compareByPath),
+  };
+}
+
+export async function buildOfflineSyncSnapshotForPaths(options: {
+  root: string;
+  sourceId: string;
+  paths: readonly string[];
+  includeContent?: boolean;
+  includeTranscripts?: boolean;
+  now?: Date;
+  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+}): Promise<OfflineSyncSnapshot> {
+  const rootAbs = path.resolve(options.root);
+  const root = await prepareSafeArchiveRoot(rootAbs, "buildOfflineSyncSnapshotForPaths", "root");
+  const includeTranscripts = options.includeTranscripts !== false;
+  const files: OfflineSyncFileRecord[] = [];
+  const seen = new Set<string>();
+
+  for (const rawPath of options.paths) {
+    const relPath = normalizeRelativePath(rawPath, "paths[]");
+    if (seen.has(relPath)) continue;
+    seen.add(relPath);
+    if (shouldExcludeRelPath(relPath, includeTranscripts)) {
+      throw new Error(`offline sync snapshot path is excluded: ${relPath}`);
+    }
+    const filePath = await resolveSafeArchiveTarget(root, relPath);
+    const st = await lstat(filePath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!st || st.isSymbolicLink() || !st.isFile()) continue;
+    files.push(await readOfflineSyncFileRecord({
+      root,
+      relPath,
+      filePath,
+      includeContent: options.includeContent === true,
+      readFile: options.readFile,
+    }));
+  }
 
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
@@ -475,7 +543,7 @@ export async function buildOfflineSyncChangeset(options: {
   const current = await buildOfflineSyncSnapshot({
     root: options.root,
     sourceId: options.sourceId,
-    includeContent: true,
+    includeContent: false,
     includeTranscripts,
     now: options.now,
     readFile: options.readFile,
@@ -487,11 +555,24 @@ export async function buildOfflineSyncChangeset(options: {
     const baseEntry = base.get(relPath);
     const currentEntry = currentMap.get(relPath);
     if (currentEntry && currentEntry.sha256 !== baseEntry?.sha256) {
+      const file = await buildOfflineSyncSnapshotForPaths({
+        root: options.root,
+        sourceId: options.sourceId,
+        paths: [relPath],
+        includeContent: true,
+        includeTranscripts,
+        now: options.now,
+        readFile: options.readFile,
+      });
+      const record = file.files[0];
+      if (!record || typeof record.contentBase64 !== "string" || record.sha256 !== currentEntry.sha256) {
+        throw new Error(`offline sync file changed while building changeset: ${relPath}`);
+      }
       changes.push({
         type: "upsert",
         path: relPath,
         ...(baseEntry ? { baseSha256: baseEntry.sha256 } : {}),
-        file: currentEntry as OfflineSyncFileRecord & { contentBase64: string },
+        file: record as OfflineSyncFileRecord & { contentBase64: string },
       });
       continue;
     }
@@ -535,13 +616,15 @@ export async function applyOfflineSyncSnapshot(options: {
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
   deleteFile?: (target: OfflineSyncFileTarget) => Promise<void>;
 }): Promise<OfflineSyncApplySnapshotResult> {
-  const snapshot = normalizeOfflineSyncSnapshot(options.snapshot, { requireContent: true });
+  const snapshot = normalizeOfflineSyncSnapshot(options.snapshot);
   const baseMap = byPath(filterBaseFilesForMode(
     normalizeFileStates(options.baseFiles),
     snapshot.includeTranscripts,
   ));
   const incomingMap = byPath(snapshot.files);
-  const incomingBuffers = verifyRecordContents(snapshot.files, "offline sync snapshot");
+  const incomingBuffers = verifyRecordContents(snapshot.files, "offline sync snapshot", {
+    requireContent: false,
+  });
   const root = await ensureSyncRoot(options.root, "applyOfflineSyncSnapshot");
   const current = await buildOfflineSyncSnapshot({
     root: root.abs,
@@ -582,7 +665,9 @@ export async function applyOfflineSyncSnapshot(options: {
           reason: "local_deleted_remote_modified",
           baseSha256: base.sha256,
           incomingSha256: incoming.sha256,
-          incomingBuffer: incomingBuffers.get(relPath),
+          incomingBuffer: options.writeConflictCopies === false
+            ? incomingBuffers.get(relPath)
+            : requiredBuffer(incomingBuffers, relPath),
           writeConflictCopies: options.writeConflictCopies !== false,
           sourceId: snapshot.sourceId,
           writeFile: options.writeFile,
@@ -615,7 +700,9 @@ export async function applyOfflineSyncSnapshot(options: {
         baseSha256: base?.sha256,
         localSha256: currentEntry?.sha256,
         incomingSha256: incoming.sha256,
-        incomingBuffer: incomingBuffers.get(relPath),
+        incomingBuffer: options.writeConflictCopies === false
+          ? incomingBuffers.get(relPath)
+          : requiredBuffer(incomingBuffers, relPath),
         writeConflictCopies: options.writeConflictCopies !== false,
         sourceId: snapshot.sourceId,
         writeFile: options.writeFile,
@@ -774,10 +861,12 @@ export async function applyOfflineSyncChangeset(options: {
 function verifyRecordContents(
   records: readonly OfflineSyncFileRecord[],
   context: string,
+  options: { requireContent?: boolean } = {},
 ): Map<string, Buffer> {
   const buffers = new Map<string, Buffer>();
   for (const record of records) {
     if (typeof record.contentBase64 !== "string") {
+      if (options.requireContent === false) continue;
       throw new Error(`${context}: contentBase64 is required for ${record.path}`);
     }
     const buffer = Buffer.from(record.contentBase64, "base64");

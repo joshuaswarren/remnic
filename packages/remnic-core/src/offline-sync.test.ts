@@ -9,6 +9,7 @@ import {
   applyOfflineSyncSnapshot,
   buildOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
+  buildOfflineSyncSnapshotForPaths,
 } from "./offline-sync.js";
 import { isEncryptedFile } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
@@ -100,6 +101,130 @@ test("offline changeset pushes local edits when the remote is still at the share
     assert.equal(push.conflicts.length, 0);
     assert.equal(await readUtf8(remote, "facts/base.md"), "base plus local");
     assert.equal(await readUtf8(remote, "facts/local-only.md"), "new local fact");
+  } finally {
+    await rm(remote, { recursive: true, force: true });
+    await rm(local, { recursive: true, force: true });
+  }
+});
+
+test("offline changeset only carries content for changed local files", async () => {
+  const local = await tempDir("remnic-offline-changeset-content");
+  try {
+    await write(local, "facts/unchanged.md", "same");
+    await write(local, "facts/changed.md", "before");
+    const base = await buildOfflineSyncSnapshot({
+      root: local,
+      sourceId: "remote",
+      includeContent: false,
+    });
+
+    await write(local, "facts/changed.md", "after");
+    await write(local, "facts/empty.md", "");
+    const changeset = await buildOfflineSyncChangeset({
+      root: local,
+      sourceId: "laptop",
+      baseFiles: base.files,
+    });
+
+    assert.deepEqual(
+      changeset.changes.map((change) => change.path),
+      ["facts/changed.md", "facts/empty.md"],
+    );
+    const empty = changeset.changes.find((change) => change.path === "facts/empty.md");
+    assert.equal(empty?.type, "upsert");
+    if (empty?.type === "upsert") {
+      assert.equal(empty.file.contentBase64, "");
+    }
+    assert.equal(JSON.stringify(changeset).includes("same"), false);
+  } finally {
+    await rm(local, { recursive: true, force: true });
+  }
+});
+
+test("offline pull accepts metadata-only snapshots when files are unchanged", async () => {
+  const remote = await tempDir("remnic-offline-metadata-remote");
+  const local = await tempDir("remnic-offline-metadata-local");
+  try {
+    await write(remote, "facts/shared.md", "base");
+    const initial = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    const firstPull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: initial,
+    });
+    const metadataOnly = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: false,
+    });
+
+    const secondPull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: metadataOnly,
+      baseFiles: firstPull.nextBaseFiles,
+    });
+
+    assert.equal(secondPull.conflicts.length, 0);
+    assert.equal(secondPull.upserted, 0);
+    assert.equal(secondPull.skipped, 1);
+  } finally {
+    await rm(remote, { recursive: true, force: true });
+    await rm(local, { recursive: true, force: true });
+  }
+});
+
+test("offline pull applies snapshots with content only for remote-changed files", async () => {
+  const remote = await tempDir("remnic-offline-partial-remote");
+  const local = await tempDir("remnic-offline-partial-local");
+  try {
+    await write(remote, "facts/shared.md", "base");
+    await write(remote, "facts/stable.md", "unchanged");
+    const initial = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: true,
+    });
+    const firstPull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: initial,
+    });
+
+    await write(remote, "facts/shared.md", "remote edit");
+    const metadataOnly = await buildOfflineSyncSnapshot({
+      root: remote,
+      sourceId: "remote",
+      includeContent: false,
+    });
+    const changedContent = await buildOfflineSyncSnapshotForPaths({
+      root: remote,
+      sourceId: "remote",
+      paths: ["facts/shared.md"],
+      includeContent: true,
+    });
+    const contentByPath = new Map(
+      changedContent.files.map((file) => [file.path, file.contentBase64]),
+    );
+    const hydrated = {
+      ...metadataOnly,
+      files: metadataOnly.files.map((file) => {
+        const contentBase64 = contentByPath.get(file.path);
+        return contentBase64 === undefined ? file : { ...file, contentBase64 };
+      }),
+    };
+
+    const secondPull = await applyOfflineSyncSnapshot({
+      root: local,
+      snapshot: hydrated,
+      baseFiles: firstPull.nextBaseFiles,
+    });
+
+    assert.equal(secondPull.upserted, 1);
+    assert.equal(secondPull.conflicts.length, 0);
+    assert.equal(await readUtf8(local, "facts/shared.md"), "remote edit");
+    assert.equal(await readUtf8(local, "facts/stable.md"), "unchanged");
   } finally {
     await rm(remote, { recursive: true, force: true });
     await rm(local, { recursive: true, force: true });

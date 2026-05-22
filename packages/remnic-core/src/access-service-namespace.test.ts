@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, symlink } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { EngramAccessService } from "./access-service.js";
+import { EngramAccessInputError, EngramAccessService } from "./access-service.js";
 import type { StorageManager } from "./storage.js";
 import type { PluginConfig } from "./types.js";
 
@@ -120,4 +123,64 @@ test("memoryBrowse resolves namespace storage for read principals", async () => 
   assert.equal(result.namespace, "team");
   assert.equal(result.count, 0);
   assert.deepEqual(getStorageCalls, ["team"]);
+});
+
+test("offlineSyncFiles reports invalid requested paths as input errors", async () => {
+  const { service } = makeService();
+  (service as unknown as {
+    orchestrator: {
+      config: PluginConfig;
+      getStorage(namespace: string): Promise<StorageManager>;
+    };
+  }).orchestrator.getStorage = async () => ({
+    dir: os.tmpdir(),
+    async readOfflineSyncFile() {
+      throw new Error("should not read invalid paths");
+    },
+  } as unknown as StorageManager);
+
+  await assert.rejects(
+    () =>
+      service.offlineSyncFiles({
+        namespace: "team",
+        principal: "reader",
+        paths: ["../escape"],
+      }),
+    (error: unknown) =>
+      error instanceof EngramAccessInputError &&
+      /paths\[\]: record path contains unsafe segments/.test(error.message),
+  );
+});
+
+test("offlineSyncFiles reports symlink requested paths as input errors", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-files-symlink-"));
+  try {
+    await symlink("/tmp", path.join(root, "linked"));
+    const { service } = makeService();
+    (service as unknown as {
+      orchestrator: {
+        config: PluginConfig;
+        getStorage(namespace: string): Promise<StorageManager>;
+      };
+    }).orchestrator.getStorage = async () => ({
+      dir: root,
+      async readOfflineSyncFile() {
+        throw new Error("should not read symlink paths");
+      },
+    } as unknown as StorageManager);
+
+    await assert.rejects(
+      () =>
+        service.offlineSyncFiles({
+          namespace: "team",
+          principal: "reader",
+          paths: ["linked"],
+        }),
+      (error: unknown) =>
+        error instanceof EngramAccessInputError &&
+        /buildOfflineSyncSnapshotForPaths: record path targets a symlink/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

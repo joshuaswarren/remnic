@@ -138,6 +138,7 @@ import {
 import {
   applyOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
+  buildOfflineSyncSnapshotForPaths,
   type OfflineSyncApplyChangesetResult,
   type OfflineSyncSnapshot,
 } from "./offline-sync.js";
@@ -616,6 +617,13 @@ export interface EngramAccessOfflineSyncSnapshotRequest {
   includeContent?: boolean;
 }
 
+export interface EngramAccessOfflineSyncFilesRequest {
+  namespace?: string;
+  principal?: string;
+  includeTranscripts?: boolean;
+  paths: string[];
+}
+
 export interface EngramAccessOfflineSyncApplyRequest {
   namespace?: string;
   principal?: string;
@@ -623,6 +631,10 @@ export interface EngramAccessOfflineSyncApplyRequest {
 }
 
 export interface EngramAccessOfflineSyncSnapshotResponse extends OfflineSyncSnapshot {
+  namespace: string;
+}
+
+export interface EngramAccessOfflineSyncFilesResponse extends OfflineSyncSnapshot {
   namespace: string;
 }
 
@@ -5566,6 +5578,38 @@ export class EngramAccessService {
       namespace: resolvedNamespace,
       ...snapshot,
     };
+  }
+
+  async offlineSyncFiles(
+    options: EngramAccessOfflineSyncFilesRequest,
+  ): Promise<EngramAccessOfflineSyncFilesResponse> {
+    const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
+    try {
+      const snapshot = await buildOfflineSyncSnapshotForPaths({
+        root: storage.dir,
+        sourceId: `remnic:${resolvedNamespace}:${storageHash}`,
+        paths: options.paths,
+        includeContent: true,
+        includeTranscripts: options.includeTranscripts !== false,
+        readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+      });
+      return {
+        namespace: resolvedNamespace,
+        ...snapshot,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.startsWith("paths[]:") ||
+        message.startsWith("buildOfflineSyncSnapshotForPaths: record path ") ||
+        message.startsWith("offline sync snapshot path is excluded:")
+      ) {
+        throw new EngramAccessInputError(message);
+      }
+      throw error;
+    }
   }
 
   async offlineSyncApply(
