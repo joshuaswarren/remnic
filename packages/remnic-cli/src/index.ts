@@ -134,6 +134,7 @@ import {
   offlineSyncStateFromSnapshot,
   readOfflineSyncState,
   summarizeOfflineSyncChangeset,
+  summarizeOfflineSyncPendingChanges,
   writeOfflineSyncState,
   type OfflineSyncFileState,
   type OfflineSyncFileWriteTarget,
@@ -6423,14 +6424,13 @@ Environment fallbacks:
       });
     }
     const storageIo = await createOfflineStorageIo(memoryDir);
-    const changeset = await buildOfflineSyncChangeset({
+    const summary = await summarizeOfflineSyncPendingChanges({
       root: memoryDir,
       sourceId: localOfflineSourceId(memoryDir),
       baseFiles: state?.baseFiles ?? [],
       includeTranscripts,
       readFile: storageIo.readFile,
     });
-    const summary = summarizeOfflineSyncChangeset(changeset);
     if (json) {
       console.log(JSON.stringify({ statePath: statePath ?? null, state, pending: summary }, null, 2));
     } else {

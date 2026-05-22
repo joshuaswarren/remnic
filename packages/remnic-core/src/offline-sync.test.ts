@@ -12,6 +12,7 @@ import {
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotForPaths,
   readOfflineSyncFileContentChunk,
+  summarizeOfflineSyncPendingChanges,
 } from "./offline-sync.js";
 import { isEncryptedFile } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
@@ -176,19 +177,103 @@ test("offline sync excludes live LCM sqlite artifacts without deleting existing 
   }
 });
 
+test("offline sync excludes runtime-derived state without deleting existing local copies", async () => {
+  const root = await tempDir("remnic-offline-runtime-state");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/buffer-surprise-ledger.jsonl", "surprise");
+    await write(root, "state/buffer.json", "buffer");
+    await write(root, "state/buffer.json.tmp-123-456", "tmp");
+    await write(root, "state/embeddings.json", "embeddings");
+    await write(root, "state/index_tags.json", "tags");
+    await write(root, "state/index_time.json", "time");
+    await write(root, "state/memory-lifecycle-ledger.jsonl", "ledger");
+    await write(root, "state/memory-projection.sqlite", "projection");
+    await write(root, "state/memory-projection.sqlite-shm", "projection-shm");
+    await write(root, "state/memory-projection.sqlite-wal", "projection-wal");
+    await write(root, "state/recall_impressions.jsonl", "impressions");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+    });
+
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
+    await assert.rejects(
+      () =>
+        buildOfflineSyncSnapshotForPaths({
+          root,
+          sourceId: "remote",
+          paths: ["state/memory-lifecycle-ledger.jsonl"],
+          includeContent: true,
+        }),
+      /offline sync snapshot path is excluded: state\/memory-lifecycle-ledger\.jsonl/,
+    );
+    await assert.rejects(
+      () =>
+        readOfflineSyncFileContentChunk({
+          root,
+          path: "state/buffer.json.tmp-123-456",
+        }),
+      /offline sync file content path is excluded: state\/buffer\.json\.tmp-123-456/,
+    );
+
+    const oldLedger = Buffer.from("old ledger");
+    const pull = await applyOfflineSyncSnapshot({
+      root,
+      snapshot,
+      baseFiles: [{
+        path: "state/memory-lifecycle-ledger.jsonl",
+        sha256: createHash("sha256").update(oldLedger).digest("hex"),
+        bytes: oldLedger.byteLength,
+        mtimeMs: 0,
+      }],
+    });
+
+    assert.equal(pull.deleted, 0);
+    assert.equal(await readUtf8(root, "state/memory-lifecycle-ledger.jsonl"), "ledger");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync pending summary returns counts without materializing changed content", async () => {
+  const root = await tempDir("remnic-offline-pending-summary");
+  try {
+    await write(root, "facts/a.md", "updated");
+    await write(root, "facts/b.md", "new");
+    const baseA = createHash("sha256").update("old").digest("hex");
+    const baseDeleted = createHash("sha256").update("deleted").digest("hex");
+
+    const summary = await summarizeOfflineSyncPendingChanges({
+      root,
+      sourceId: "local",
+      baseFiles: [
+        { path: "facts/a.md", sha256: baseA, bytes: 3, mtimeMs: 0 },
+        { path: "facts/deleted.md", sha256: baseDeleted, bytes: 7, mtimeMs: 0 },
+      ],
+    });
+
+    assert.deepEqual(summary, { upserts: 2, deletes: 1, total: 3 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline sync reads bounded file content chunks with metadata", async () => {
   const root = await tempDir("remnic-offline-file-content");
   try {
-    await write(root, "state/memory-lifecycle-ledger.jsonl", "alpha\nbeta\ngamma\n");
+    await write(root, "artifacts/large.txt", "alpha\nbeta\ngamma\n");
 
     const chunk = await readOfflineSyncFileContentChunk({
       root,
-      path: "state/memory-lifecycle-ledger.jsonl",
+      path: "artifacts/large.txt",
       offset: 6,
       length: 5,
     });
 
-    assert.equal(chunk.path, "state/memory-lifecycle-ledger.jsonl");
+    assert.equal(chunk.path, "artifacts/large.txt");
     assert.equal(chunk.offset, 6);
     assert.equal(chunk.chunkBytes, 5);
     assert.equal(chunk.content.toString("utf-8"), "beta\n");

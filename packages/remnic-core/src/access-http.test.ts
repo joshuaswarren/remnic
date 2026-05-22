@@ -418,7 +418,7 @@ test("HTTP offline file-content forwards range options and returns binary metada
         body: JSON.stringify({
           namespace: "team",
           includeTranscripts: false,
-          path: "state/memory-lifecycle-ledger.jsonl",
+          path: "artifacts/large.txt",
           offset: 8,
           length: 5,
         }),
@@ -430,7 +430,7 @@ test("HTTP offline file-content forwards range options and returns binary metada
     assert.equal(body.toString("utf-8"), "hello");
     assert.equal(response.headers.get("content-type"), "application/octet-stream");
     assert.equal(response.headers.get("x-remnic-namespace"), "team");
-    assert.equal(response.headers.get("x-remnic-file-path"), "state%2Fmemory-lifecycle-ledger.jsonl");
+    assert.equal(response.headers.get("x-remnic-file-path"), "artifacts%2Flarge.txt");
     assert.equal(response.headers.get("x-remnic-file-sha256"), "a".repeat(64));
     assert.equal(response.headers.get("x-remnic-file-bytes"), "12");
     assert.equal(response.headers.get("x-remnic-file-mtime-ms"), "1234");
@@ -440,7 +440,7 @@ test("HTTP offline file-content forwards range options and returns binary metada
       namespace: "team",
       principal: "reader",
       includeTranscripts: false,
-      path: "state/memory-lifecycle-ledger.jsonl",
+      path: "artifacts/large.txt",
       offset: 8,
       length: 5,
     }]);
