@@ -217,8 +217,11 @@ async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<s
   const lockPath = resolveConnectorLockPath(memoryDir, id);
   await assertNoSymlinkOnPath(memoryDir, lockPath);
   await fs.mkdir(dir, { recursive: true });
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+  let acquiredLockFile = false;
   try {
-    const handle = await fs.open(lockPath, "wx", 0o600);
+    handle = await fs.open(lockPath, "wx", 0o600);
+    acquiredLockFile = true;
     await handle.writeFile(
       JSON.stringify({
         pid: process.pid,
@@ -227,8 +230,29 @@ async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<s
       "utf8",
     );
     await handle.close();
+    handle = null;
     return lockPath;
   } catch (err) {
+    if (acquiredLockFile) {
+      if (handle !== null) {
+        try {
+          await handle.close();
+        } catch {
+          // The original write/close failure is more actionable.
+        }
+      }
+      try {
+        await fs.unlink(lockPath);
+      } catch (cleanupErr) {
+        if ((cleanupErr as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw new AggregateError(
+            [err, cleanupErr],
+            `failed to initialize connector state lock at ${lockPath}; cleanup also failed`,
+          );
+        }
+      }
+      throw err;
+    }
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
       throw err;
     }

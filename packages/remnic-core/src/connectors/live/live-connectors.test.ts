@@ -670,6 +670,35 @@ test("state store: treats already-removed stale locks as benign", async (t) => {
   await _unlinkStaleConnectorLockForTest(lockPath);
 });
 
+test("state store: removes connector lock when lock metadata write fails", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const probePath = path.join(memoryDir, "probe.lock");
+  const probeHandle = await fs.promises.open(probePath, "w");
+  const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+    writeFile: typeof probeHandle.writeFile;
+  };
+  const originalWriteFile = fileHandlePrototype.writeFile;
+  await probeHandle.close();
+
+  fileHandlePrototype.writeFile = async function writeFileFailure() {
+    throw Object.assign(new Error("simulated lock write failure"), { code: "EIO" });
+  };
+
+  try {
+    await assert.rejects(
+      () => withConnectorStateLock(memoryDir, "drive", async () => "unreachable"),
+      /simulated lock write failure/,
+    );
+  } finally {
+    fileHandlePrototype.writeFile = originalWriteFile;
+  }
+
+  assert.equal(
+    fs.existsSync(path.join(memoryDir, "state", "connector-locks", "drive.lock")),
+    false,
+  );
+});
+
 async function waitForTest(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (!predicate()) {
