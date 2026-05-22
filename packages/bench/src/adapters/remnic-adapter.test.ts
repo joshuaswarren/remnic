@@ -271,6 +271,7 @@ test("direct adapter cleans up late replay writes after timeout abort", async ()
     if (turns[0]?.sessionKey !== sessionId) {
       return originalIngestReplayBatch.call(this, turns, options);
     }
+    const sessionKey = turns[0]?.sessionKey;
     assert.ok(options?.abortSignal, "adapter must pass replay abort signal into core");
     await releaseReplay.promise;
     await this.storage.writeMemory(
