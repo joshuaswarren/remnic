@@ -64,6 +64,58 @@ test("AI review gate blocks startup_failure review-bot check runs", () => {
   assert.equal(result.blockers[0]?.state, "startup_failure");
 });
 
+test("AI review gate uses the latest current-head review state per alias", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("codex"),
+    headSha,
+    headCommittedAt,
+    reviews: [
+      {
+        user: { login: "codex" },
+        state: "APPROVED",
+        commit_id: headSha,
+        submitted_at: "2026-05-21T12:00:01.000Z",
+      },
+      {
+        user: { login: "codex" },
+        state: "CHANGES_REQUESTED",
+        commit_id: headSha,
+        submitted_at: "2026-05-21T12:00:02.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.blockers[0]?.alias, "codex");
+  assert.equal(result.blockers[0]?.state, "CHANGES_REQUESTED");
+});
+
+test("AI review gate accepts a later current-head approval after changes requested", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("codex"),
+    headSha,
+    headCommittedAt,
+    reviews: [
+      {
+        user: { login: "codex" },
+        state: "CHANGES_REQUESTED",
+        commit_id: headSha,
+        submitted_at: "2026-05-21T12:00:01.000Z",
+      },
+      {
+        user: { login: "codex" },
+        state: "APPROVED",
+        commit_id: headSha,
+        submitted_at: "2026-05-21T12:00:02.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+  assert.equal(result.present[0]?.kind, "review");
+});
+
 test("AI review gate ignores failed check runs from non-reviewer apps", () => {
   const result = evaluateAiReviewGate({
     groups,

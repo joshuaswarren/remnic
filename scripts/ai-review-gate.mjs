@@ -8,6 +8,7 @@ const BAD_CHECK_CONCLUSIONS = new Set([
   "timed_out",
 ]);
 const POSITIVE_CHECK_CONCLUSIONS = new Set(["success", "neutral"]);
+const NEGATIVE_REVIEW_STATES = new Set(["CHANGES_REQUESTED"]);
 const NEGATIVE_VERDICT_PATTERN =
   /\b(?:changes\s+requested|do\s+not\s+merge|fail(?:ed|ing|ure)?|block(?:ed|ing|er)?|reject(?:ed|ing)?|(?:not|no|never|cannot|can['’]?t|isn['’]?t)\s+(?:a\s+)?(?:pass|approved|lgtm))\b/i;
 const POSITIVE_VERDICT_PATTERN = /\b(?:PASS|APPROVED|LGTM)\b/i;
@@ -27,6 +28,16 @@ function checkRunTime(checkRun) {
       checkRun.updated_at ??
       checkRun.started_at ??
       checkRun.created_at ??
+      "",
+  );
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function activityTime(activity) {
+  const parsed = Date.parse(
+    activity.submitted_at ??
+      activity.created_at ??
+      activity.updated_at ??
       "",
   );
   return Number.isFinite(parsed) ? parsed : 0;
@@ -104,11 +115,25 @@ export function evaluateAiReviewGate({
   const blockers = [];
   const configuredAliases = new Set(groups.flat());
 
+  const latestReviews = new Map();
   for (const review of reviews) {
     const login = normalizeLogin(review.user?.login);
-    if (!login || review.state !== "APPROVED") continue;
+    if (!login || !configuredAliases.has(login)) continue;
     if (!isCurrentActivity(review, headSha, headCommittedAt)) continue;
-    positiveByAlias.set(login, { alias: login, kind: "review", state: review.state });
+    const previous = latestReviews.get(login);
+    if (!previous || activityTime(review) >= activityTime(previous)) {
+      latestReviews.set(login, review);
+    }
+  }
+
+  for (const [login, review] of latestReviews) {
+    if (review.state === "APPROVED") {
+      positiveByAlias.set(login, { alias: login, kind: "review", state: review.state });
+      continue;
+    }
+    if (NEGATIVE_REVIEW_STATES.has(review.state)) {
+      blockers.push({ alias: login, kind: "review", state: review.state });
+    }
   }
 
   for (const comment of [...issueComments, ...reviewComments]) {
