@@ -27,13 +27,6 @@ jobs:
           echo "Waiting 3 minutes for AI reviewers to analyse the diff..."
           sleep 180
 
-      - name: Checkout trusted gate helper
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: trusted-gate-helper
-          persist-credentials: false
-
       - name: Check AI review bot activity
         uses: actions/github-script@v7
         env:
@@ -43,6 +36,217 @@ jobs:
             cursor-bugbot[bot]|cursor[bot]|cursor-bugbot|cursor
         with:
           script: |
+            const BAD_CHECK_CONCLUSIONS = new Set([
+              'action_required',
+              'cancelled',
+              'failure',
+              'skipped',
+              'stale',
+              'startup_failure',
+              'timed_out',
+            ]);
+            const POSITIVE_CHECK_CONCLUSIONS = new Set(['success', 'neutral']);
+            const NEGATIVE_REVIEW_STATES = new Set(['CHANGES_REQUESTED']);
+            const NEGATIVE_VERDICT_PATTERN =
+              /\b(?:changes\s+requested|do\s+not\s+merge|fail(?:ed|ing|ure)?|block(?:ed|ing|er)?|reject(?:ed|ing)?|(?:not|no|never|cannot|can['’]?t|isn['’]?t)\s+(?:a\s+)?(?:pass|approved|lgtm))\b/i;
+            const POSITIVE_VERDICT_PATTERN = /\b(?:PASS|APPROVED|LGTM)\b/i;
+
+            function normalizeLogin(value) {
+              return typeof value === 'string' ? value.trim().toLowerCase() : '';
+            }
+
+            function bodyHasPositiveVerdict(body) {
+              if (typeof body !== 'string') return false;
+              return !NEGATIVE_VERDICT_PATTERN.test(body) && POSITIVE_VERDICT_PATTERN.test(body);
+            }
+
+            function checkRunTime(checkRun) {
+              const parsed = Date.parse(
+                checkRun.completed_at ??
+                  checkRun.updated_at ??
+                  checkRun.started_at ??
+                  checkRun.created_at ??
+                  '',
+              );
+              return Number.isFinite(parsed) ? parsed : 0;
+            }
+
+            function activityTime(activity) {
+              const parsed = Date.parse(
+                activity.submitted_at ??
+                  activity.created_at ??
+                  activity.updated_at ??
+                  '',
+              );
+              return Number.isFinite(parsed) ? parsed : 0;
+            }
+
+            function isCurrentActivity(activity, headSha, headCommittedAt) {
+              const shortSha = headSha?.slice(0, 7);
+              const body = typeof activity.body === 'string' ? activity.body : '';
+              if (headSha && (body.includes(headSha) || (shortSha && body.includes(shortSha)))) {
+                return true;
+              }
+              if (activity.commit_id && headSha) {
+                return activity.commit_id === headSha;
+              }
+              if (activity.original_commit_id && headSha) {
+                return activity.original_commit_id === headSha;
+              }
+              const parsedActivityTime = Date.parse(activity.submitted_at ?? activity.created_at ?? '');
+              const parsedHeadTime = Date.parse(headCommittedAt ?? '');
+              return Number.isFinite(parsedActivityTime) &&
+                Number.isFinite(parsedHeadTime) &&
+                parsedActivityTime >= parsedHeadTime;
+            }
+
+            function isCurrentCheckRun(checkRun, headSha, headCommittedAt) {
+              const checkHeadSha = checkRun.head_sha ?? checkRun.headSha;
+              if (headSha && typeof checkHeadSha === 'string' && checkHeadSha.trim()) {
+                return checkHeadSha === headSha;
+              }
+              const checkTime = Date.parse(
+                checkRun.completed_at ??
+                  checkRun.updated_at ??
+                  checkRun.started_at ??
+                  checkRun.created_at ??
+                  '',
+              );
+              const headTime = Date.parse(headCommittedAt ?? '');
+              return Number.isFinite(checkTime) &&
+                Number.isFinite(headTime) &&
+                checkTime >= headTime;
+            }
+
+            function parseReviewerGroups(raw) {
+              return String(raw ?? '')
+                .split(',')
+                .map((group) =>
+                  group
+                    .split('|')
+                    .map(normalizeLogin)
+                    .filter(Boolean),
+                )
+                .filter((group) => group.length > 0);
+            }
+
+            function evaluateAiReviewGate({
+              groups,
+              headSha,
+              headCommittedAt,
+              reviews = [],
+              issueComments = [],
+              reviewComments = [],
+              checkRuns = [],
+            }) {
+              if (!Array.isArray(groups) || groups.length === 0) {
+                return {
+                  ok: false,
+                  reason: 'No required AI reviewer groups configured.',
+                  present: [],
+                  missing: [],
+                  blockers: [],
+                };
+              }
+
+              const positiveByAlias = new Map();
+              const blockers = [];
+              const configuredAliases = new Set(groups.flat());
+
+              const latestReviews = new Map();
+              for (const review of reviews) {
+                const login = normalizeLogin(review.user?.login);
+                if (!login || !configuredAliases.has(login)) continue;
+                if (!isCurrentActivity(review, headSha, headCommittedAt)) continue;
+                const previous = latestReviews.get(login);
+                if (!previous || activityTime(review) >= activityTime(previous)) {
+                  latestReviews.set(login, review);
+                }
+              }
+
+              for (const [login, review] of latestReviews) {
+                if (review.state === 'APPROVED') {
+                  positiveByAlias.set(login, { alias: login, kind: 'review', state: review.state });
+                  continue;
+                }
+                if (NEGATIVE_REVIEW_STATES.has(review.state)) {
+                  blockers.push({ alias: login, kind: 'review', state: review.state });
+                }
+              }
+
+              for (const comment of [...issueComments, ...reviewComments]) {
+                const login = normalizeLogin(comment.user?.login);
+                if (!login || !bodyHasPositiveVerdict(comment.body)) continue;
+                if (!isCurrentActivity(comment, headSha, headCommittedAt)) continue;
+                positiveByAlias.set(login, { alias: login, kind: 'comment', state: 'POSITIVE_COMMENT' });
+              }
+
+              const latestCheckRuns = new Map();
+              for (const checkRun of checkRuns) {
+                if (!isCurrentCheckRun(checkRun, headSha, headCommittedAt)) continue;
+                const checkName = normalizeLogin(checkRun.name) || 'unnamed-check';
+                const aliases = [checkRun.app?.slug, checkRun.app?.name]
+                  .map(normalizeLogin)
+                  .filter((alias) => alias && configuredAliases.has(alias));
+                for (const alias of aliases) {
+                  const key = `${alias}\0${checkName}`;
+                  const previous = latestCheckRuns.get(key);
+                  if (!previous || checkRunTime(checkRun) >= checkRunTime(previous)) {
+                    latestCheckRuns.set(key, { ...checkRun, alias });
+                  }
+                }
+              }
+
+              for (const checkRun of latestCheckRuns.values()) {
+                const conclusion = normalizeLogin(checkRun.conclusion);
+                const alias = checkRun.alias;
+                if (BAD_CHECK_CONCLUSIONS.has(conclusion)) {
+                  blockers.push({ alias, kind: 'check_run', state: conclusion || 'unknown' });
+                } else if (POSITIVE_CHECK_CONCLUSIONS.has(conclusion)) {
+                  positiveByAlias.set(alias, { alias, kind: 'check_run', state: conclusion });
+                }
+              }
+
+              const present = [];
+              const missing = [];
+              for (const group of groups) {
+                const matchedAlias = group.find((alias) => positiveByAlias.has(alias));
+                if (matchedAlias) {
+                  present.push({ group, ...positiveByAlias.get(matchedAlias) });
+                } else {
+                  missing.push(group);
+                }
+              }
+
+              if (blockers.length > 0) {
+                return {
+                  ok: false,
+                  reason: `AI reviewer check run failed or was not positive: ${blockers.map((b) => `${b.alias}(${b.state})`).join(', ')}`,
+                  present,
+                  missing,
+                  blockers,
+                };
+              }
+
+              if (missing.length > 0) {
+                return {
+                  ok: false,
+                  reason: `Missing required positive AI review groups: ${missing.map((group) => group.join(' OR ')).join('; ')}`,
+                  present,
+                  missing,
+                  blockers,
+                };
+              }
+
+              return {
+                ok: true,
+                reason: 'AI review gate satisfied.',
+                present,
+                missing,
+                blockers,
+              };
+            }
+
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
@@ -54,10 +258,6 @@ jobs:
             }
 
             const groupsRaw = process.env.REQUIRED_AI_REVIEWER_GROUPS || '';
-            const { pathToFileURL } = require('url');
-            const { evaluateAiReviewGate, parseReviewerGroups } = await import(
-              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/trusted-gate-helper/scripts/ai-review-gate.mjs`).href
-            );
             const groups = parseReviewerGroups(groupsRaw);
 
             if (groups.length === 0) {
