@@ -1178,6 +1178,13 @@ test("access HTTP server resolves the admin console shell independently of cwd",
     assert.equal(uiRes.status, 200);
     const html = await uiRes.text();
     assert.match(html, /Remnic Admin Console/);
+
+    const assetRes = await fetch(`${base}/engram/ui/app.js`);
+    assert.equal(assetRes.status, 200);
+    assert.match(assetRes.headers.get("content-type") ?? "", /application\/javascript/);
+
+    const apiRes = await fetch(`${base}/engram/v1/health`);
+    assert.equal(apiRes.status, 401);
   } finally {
     await server.stop();
     process.chdir(originalCwd);
