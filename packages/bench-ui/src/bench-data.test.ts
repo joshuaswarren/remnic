@@ -80,7 +80,7 @@ test("deltaPolarityClass preserves polarity for higher-is-better metrics", () =>
   assert.equal(deltaPolarityClass(null, "accuracy"), "");
 });
 
-test("buildProviderRows aggregates duplicate benchmark cells independent of input order", () => {
+test("buildProviderRows uses the latest duplicate benchmark cell independent of input order", () => {
   const low = summary({ id: "low", primaryScore: 0.1 });
   const high = summary({ id: "high", primaryScore: 0.9 });
   const other = summary({
@@ -93,7 +93,7 @@ test("buildProviderRows aggregates duplicate benchmark cells independent of inpu
   const secondOrder = buildProviderRows({ resultsDir: "/tmp/results", summaries: [high, other, low] });
 
   assert.equal(firstOrder[0]?.averageScore, 0.5);
-  assert.equal(firstOrder[0]?.benchmarkScores["bench-a"], 0.5);
+  assert.equal(firstOrder[0]?.benchmarkScores["bench-a"], 0.9);
   assert.equal(firstOrder[0]?.benchmarkScores["bench-b"], null);
   assert.deepEqual(secondOrder[0]?.benchmarkScores, firstOrder[0]?.benchmarkScores);
 });
