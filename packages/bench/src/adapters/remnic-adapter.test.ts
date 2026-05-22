@@ -271,13 +271,12 @@ test("direct adapter cleans up late replay writes after timeout abort", async ()
     if (turns[0]?.sessionKey !== sessionId) {
       return originalIngestReplayBatch.call(this, turns, options);
     }
-    const sessionKey = turns[0]?.sessionKey;
     assert.ok(options?.abortSignal, "adapter must pass replay abort signal into core");
     await releaseReplay.promise;
     await this.storage.writeMemory(
       "fact",
       "Remember the aborted late replay code is garnet-99.",
-      { source: "extraction", sessionKey },
+      { source: "extraction" },
     );
     lateWriteFinished = true;
   };
@@ -368,8 +367,9 @@ test("direct adapter observes timeout guard abort control before drain work", as
   controller.abort(new Error("caller aborted remnic drain"));
 
   try {
+    assert.ok(guarded.drain, "guarded adapter must expose drain");
     await assert.rejects(
-      () => guarded.drain?.({ signal: controller.signal }),
+      () => guarded.drain!({ signal: controller.signal }),
       /caller aborted remnic drain/,
     );
   } finally {

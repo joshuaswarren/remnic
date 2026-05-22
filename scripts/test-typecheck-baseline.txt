@@ -1,9 +1,6 @@
 packages/bench-ui/src/components/RunTable.test.ts(4,78): TS6142
 packages/bench-ui/src/pages/Compare.test.ts(5,68): TS6142
 packages/bench-ui/src/pages/Compare.test.ts(68,19): TS7006
-packages/bench/src/adapters/remnic-adapter.test.ts(279,40): TS2353
-packages/bench/src/adapters/remnic-adapter.test.ts(279,40): TS18004
-packages/bench/src/adapters/remnic-adapter.test.ts(371,7): TS2769
 packages/bench/src/benchmarks/published/beam/runner.test.ts(147,13): TS2322
 packages/bench/src/benchmarks/published/beam/runner.test.ts(240,13): TS2322
 packages/bench/src/benchmarks/published/beam/runner.test.ts(362,13): TS2322
