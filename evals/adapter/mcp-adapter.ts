@@ -72,13 +72,14 @@ export async function createMcpAdapter(
   const { baseUrl, authToken, timeoutMs } = options;
   const rpcOpts = { authToken, timeoutMs };
   let runPrefix = createRunPrefix();
-  const qualifySessionId = (sessionId: string): string => `${runPrefix}:${sessionId}`;
-  const stripRunPrefix = (sessionId: string): string =>
-    sessionId.startsWith(`${runPrefix}:`)
-      ? sessionId.slice(runPrefix.length + 1)
+  const qualifySessionId = (sessionId: string, prefix = runPrefix): string =>
+    `${prefix}:${sessionId}`;
+  const stripRunPrefix = (sessionId: string, prefix = runPrefix): string =>
+    sessionId.startsWith(`${prefix}:`)
+      ? sessionId.slice(prefix.length + 1)
       : sessionId;
-  const isCurrentRunSession = (sessionId: string): boolean =>
-    sessionId.startsWith(`${runPrefix}:`);
+  const isCurrentRunSession = (sessionId: string, prefix = runPrefix): boolean =>
+    sessionId.startsWith(`${prefix}:`);
 
   // Health check
   try {
@@ -121,9 +122,10 @@ export async function createMcpAdapter(
       sessionId?: string,
     ): Promise<SearchResult[]> {
       const requestedLimit = Math.max(1, Math.floor(limit));
+      const searchRunPrefix = runPrefix;
       const qualifiedSessionId =
         typeof sessionId === "string" && sessionId.length > 0
-          ? qualifySessionId(sessionId)
+          ? qualifySessionId(sessionId, searchRunPrefix)
           : undefined;
       const result = await mcpRequest(
         baseUrl,
@@ -133,7 +135,7 @@ export async function createMcpAdapter(
           limit: requestedLimit,
           ...(qualifiedSessionId
             ? { sessionId: qualifiedSessionId }
-            : { sessionPrefix: `${runPrefix}:` }),
+            : { sessionPrefix: `${searchRunPrefix}:` }),
         },
         rpcOpts,
       );
@@ -145,11 +147,11 @@ export async function createMcpAdapter(
           snippet: typeof r.snippet === "string" ? r.snippet : "",
           sessionId: typeof r.session_id === "string" ? r.session_id : "",
         }))
-        .filter((entry) => isCurrentRunSession(entry.sessionId))
+        .filter((entry) => isCurrentRunSession(entry.sessionId, searchRunPrefix))
         .slice(0, requestedLimit)
         .map((entry) => ({
           ...entry,
-          sessionId: stripRunPrefix(entry.sessionId),
+          sessionId: stripRunPrefix(entry.sessionId, searchRunPrefix),
         }));
     },
 

@@ -247,10 +247,20 @@ async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<s
       );
     }
     if (Date.now() - stat.mtimeMs > CONNECTOR_LOCK_STALE_MS) {
-      await fs.unlink(lockPath);
+      await unlinkStaleConnectorLock(lockPath);
       return null;
     }
     return null;
+  }
+}
+
+async function unlinkStaleConnectorLock(lockPath: string): Promise<void> {
+  try {
+    await fs.unlink(lockPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
   }
 }
 
@@ -488,3 +498,5 @@ export async function listConnectorStates(memoryDir: string): Promise<ConnectorS
 export function _connectorStatePathForTest(memoryDir: string, id: string): string {
   return resolveConnectorStatePath(memoryDir, id);
 }
+
+export const _unlinkStaleConnectorLockForTest = unlinkStaleConnectorLock;

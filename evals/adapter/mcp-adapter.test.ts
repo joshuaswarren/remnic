@@ -183,6 +183,76 @@ test("MCP adapter scopes global search to current run sessions before limiting",
   }
 });
 
+test("MCP adapter keeps in-flight search bound to its request run prefix", async () => {
+  const stored = new Map<string, Message[]>();
+  const releaseSearch = createDeferredForTest();
+  const searchStarted = createDeferredForTest();
+  const server = http.createServer(async (req, res) => {
+    if (req.url === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (req.url !== "/rpc" || req.method !== "POST") {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+
+    const body = await readRequestJson(req);
+    const params = (body.params ?? {}) as Record<string, unknown>;
+    let result: unknown = null;
+
+    if (body.method === "engram.lcm.observe") {
+      stored.set(String(params.sessionId ?? ""), params.messages as Message[]);
+      result = { accepted: (params.messages as Message[]).length };
+    } else if (body.method === "engram.lcm.search") {
+      const sessionPrefix =
+        typeof params.sessionPrefix === "string" ? params.sessionPrefix : "";
+      searchStarted.resolve();
+      await releaseSearch.promise;
+      result = [...stored.entries()]
+        .filter(([sessionId]) => sessionId.startsWith(sessionPrefix))
+        .flatMap(([sessionId, messages]) =>
+          messages.map((message, index) => ({
+            turn_index: index,
+            role: message.role,
+            snippet: message.content,
+            session_id: sessionId,
+          })),
+        );
+    } else if (body.method === "engram.lcm.recall") {
+      result = "";
+    } else if (body.method === "engram.lcm.stats") {
+      result = { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: body.id ?? 1, result }));
+  });
+
+  try {
+    const baseUrl = await listen(server);
+    const adapter = await createMcpAdapter({ baseUrl });
+
+    await adapter.store("current", [
+      { role: "user", content: "delayed search marker" },
+    ]);
+    const search = adapter.search("delayed search marker", 10);
+    await searchStarted.promise;
+    await adapter.reset();
+    releaseSearch.resolve();
+
+    const results = await search;
+    assert.equal(results.length, 1);
+    assert.equal(results[0]?.sessionId, "current");
+
+    await adapter.destroy();
+  } finally {
+    await close(server);
+  }
+});
+
 async function readRequestJson(req: http.IncomingMessage): Promise<{
   id?: unknown;
   method?: string;
@@ -193,6 +263,17 @@ async function readRequestJson(req: http.IncomingMessage): Promise<{
     raw += String(chunk);
   }
   return JSON.parse(raw) as { id?: unknown; method?: string; params?: unknown };
+}
+
+function createDeferredForTest(): {
+  promise: Promise<void>;
+  resolve: () => void;
+} {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
 }
 
 async function listen(server: http.Server): Promise<string> {

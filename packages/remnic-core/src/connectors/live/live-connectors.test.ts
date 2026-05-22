@@ -21,7 +21,10 @@ import {
   type SyncIncrementalArgs,
   type SyncIncrementalResult,
 } from "./index.js";
-import { _connectorStatePathForTest } from "./state-store.js";
+import {
+  _connectorStatePathForTest,
+  _unlinkStaleConnectorLockForTest,
+} from "./state-store.js";
 
 /**
  * Mock `LiveConnector`. Exists primarily as a compile-time assertion that
@@ -639,7 +642,7 @@ test("state store: serializes connector state locks for one connector", async (t
     return "first";
   });
 
-  await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  await waitForTest(() => events.includes("first:start"));
 
   const second = withConnectorStateLock(memoryDir, "drive", async () => {
     events.push("second:start");
@@ -657,6 +660,25 @@ test("state store: serializes connector state locks for one connector", async (t
     false,
   );
 });
+
+test("state store: treats already-removed stale locks as benign", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const lockDir = path.join(memoryDir, "state", "connector-locks");
+  const lockPath = path.join(lockDir, "drive.lock");
+  fs.mkdirSync(lockDir, { recursive: true });
+
+  await _unlinkStaleConnectorLockForTest(lockPath);
+});
+
+async function waitForTest(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("timed out waiting for test condition");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 test("state store: rejects corrupt JSON loudly via readConnectorState", async (t) => {
   const memoryDir = makeMemoryDir(t);
