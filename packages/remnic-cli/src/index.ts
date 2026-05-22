@@ -5664,6 +5664,7 @@ interface OfflineFileContentChunk {
 }
 
 const OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES = 16 * 1024 * 1024;
+const OFFLINE_SYNC_FILES_CONTENT_MAX_BATCH_BYTES = 8 * 1024 * 1024;
 
 function parseOfflineHeaderNumber(headers: Headers, name: string): number {
   const raw = headers.get(name);
@@ -5786,20 +5787,20 @@ function offlineFileStateMap(
   return new Map(files.map((file) => [file.path, file]));
 }
 
-function offlineSnapshotContentPathsForApply(options: {
+function offlineSnapshotContentFilesForApply(options: {
   snapshot: OfflineSyncSnapshot;
   baseFiles: readonly OfflineSyncFileState[];
   currentFiles?: readonly OfflineSyncFileState[];
-}): string[] {
+}): OfflineSyncFileState[] {
   const base = offlineFileStateMap(options.baseFiles);
   const current = options.currentFiles ? offlineFileStateMap(options.currentFiles) : null;
-  const paths: string[] = [];
+  const files: OfflineSyncFileState[] = [];
   for (const incoming of options.snapshot.files) {
     if (current?.get(incoming.path)?.sha256 === incoming.sha256) continue;
     if (base.get(incoming.path)?.sha256 === incoming.sha256) continue;
-    paths.push(incoming.path);
+    files.push(incoming);
   }
-  return paths.sort();
+  return files.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 function shouldDirectHydrateOfflineFile(options: {
@@ -5916,19 +5917,31 @@ async function directHydrateLargeOfflineFiles(args: {
   return hydrated;
 }
 
-function chunkOfflineFilePaths(paths: readonly string[]): string[][] {
-  const chunks: string[][] = [];
-  let current: string[] = [];
-  let currentBytes = 256;
-  for (const relPath of paths) {
-    const cost = Buffer.byteLength(JSON.stringify(relPath), "utf-8") + 1;
-    if (current.length > 0 && (current.length >= 1000 || currentBytes + cost > 96_000)) {
+export function chunkOfflineFileContentBatches(
+  files: readonly OfflineSyncFileState[],
+): OfflineSyncFileState[][] {
+  const chunks: OfflineSyncFileState[][] = [];
+  let current: OfflineSyncFileState[] = [];
+  let currentPathBytes = 256;
+  let currentContentBytes = 0;
+  for (const file of files) {
+    const pathCost = Buffer.byteLength(JSON.stringify(file.path), "utf-8") + 1;
+    if (
+      current.length > 0 &&
+      (
+        current.length >= 1000 ||
+        currentPathBytes + pathCost > 96_000 ||
+        currentContentBytes + file.bytes > OFFLINE_SYNC_FILES_CONTENT_MAX_BATCH_BYTES
+      )
+    ) {
       chunks.push(current);
       current = [];
-      currentBytes = 256;
+      currentPathBytes = 256;
+      currentContentBytes = 0;
     }
-    current.push(relPath);
-    currentBytes += cost;
+    current.push(file);
+    currentPathBytes += pathCost;
+    currentContentBytes += file.bytes;
   }
   if (current.length > 0) chunks.push(current);
   return chunks;
@@ -5953,23 +5966,23 @@ async function hydrateOfflineSnapshotContent(args: {
   baseFiles: readonly OfflineSyncFileState[];
   currentFiles?: readonly OfflineSyncFileState[];
 }): Promise<OfflineSyncSnapshot & { namespace?: string }> {
-  const neededPaths = offlineSnapshotContentPathsForApply({
+  const neededFiles = offlineSnapshotContentFilesForApply({
     snapshot: args.snapshot,
     baseFiles: args.baseFiles,
     currentFiles: args.currentFiles,
   });
-  if (neededPaths.length === 0) return args.snapshot;
+  if (neededFiles.length === 0) return args.snapshot;
 
   const expectedByPath = new Map(args.snapshot.files.map((file) => [file.path, file]));
   const contentByPath = new Map<string, string>();
   try {
-    for (const batch of chunkOfflineFilePaths(neededPaths)) {
+    for (const batch of chunkOfflineFileContentBatches(neededFiles)) {
       const partial = await fetchOfflineFiles({
         remoteUrl: args.remoteUrl,
         token: args.token,
         namespace: args.namespace,
         includeTranscripts: args.includeTranscripts,
-        paths: batch,
+        paths: batch.map((file) => file.path),
       });
       for (const file of partial.files) {
         const expected = expectedByPath.get(file.path);
@@ -5994,7 +6007,9 @@ async function hydrateOfflineSnapshotContent(args: {
     });
   }
 
-  const missing = neededPaths.filter((relPath) => !contentByPath.has(relPath));
+  const missing = neededFiles
+    .map((file) => file.path)
+    .filter((relPath) => !contentByPath.has(relPath));
   if (missing.length > 0) {
     throw new Error(
       `remote offline content response omitted ${missing.length} changed file${missing.length === 1 ? "" : "s"}; retry sync`,
