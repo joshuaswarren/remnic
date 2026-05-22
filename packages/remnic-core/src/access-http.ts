@@ -643,6 +643,34 @@ export class EngramAccessHttpServer {
 
     if (
       req.method === "POST" &&
+      (
+        pathname === "/engram/v1/offline-sync/file-content" ||
+        pathname === "/remnic/v1/offline-sync/file-content"
+      )
+    ) {
+      const body = await this.readValidatedBody(req, "offlineSyncFileContent");
+      const result = await this.service.offlineSyncFileContent({
+        namespace: this.resolveNamespace(req, body.namespace),
+        principal: this.resolveRequestPrincipal(req),
+        includeTranscripts: body.includeTranscripts,
+        path: body.path,
+        offset: body.offset,
+        length: body.length,
+      });
+      this.respondBinary(res, 200, result.content, {
+        "x-remnic-namespace": encodeURIComponent(result.namespace),
+        "x-remnic-file-path": encodeURIComponent(result.path),
+        "x-remnic-file-sha256": result.sha256,
+        "x-remnic-file-bytes": String(result.bytes),
+        "x-remnic-file-mtime-ms": String(result.mtimeMs),
+        "x-remnic-chunk-offset": String(result.offset),
+        "x-remnic-chunk-bytes": String(result.chunkBytes),
+      });
+      return;
+    }
+
+    if (
+      req.method === "POST" &&
       (pathname === "/engram/v1/offline-sync/apply" || pathname === "/remnic/v1/offline-sync/apply")
     ) {
       const body = await this.readValidatedBody(req, "offlineSyncApply");
@@ -1796,6 +1824,25 @@ export class EngramAccessHttpServer {
     res.statusCode = status;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("content-length", String(Buffer.byteLength(body)));
+    const cid = correlationIdStore.getStore();
+    if (cid) {
+      res.setHeader("x-request-id", cid);
+    }
+    res.end(body);
+  }
+
+  private respondBinary(
+    res: ServerResponse,
+    status: number,
+    body: Buffer,
+    headers: Record<string, string> = {},
+  ): void {
+    res.statusCode = status;
+    res.setHeader("content-type", "application/octet-stream");
+    res.setHeader("content-length", String(body.length));
+    for (const [key, value] of Object.entries(headers)) {
+      res.setHeader(key, value);
+    }
     const cid = correlationIdStore.getStore();
     if (cid) {
       res.setHeader("x-request-id", cid);

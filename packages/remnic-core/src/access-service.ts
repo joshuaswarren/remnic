@@ -139,7 +139,9 @@ import {
   applyOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotForPaths,
+  readOfflineSyncFileContentChunk,
   type OfflineSyncApplyChangesetResult,
+  type OfflineSyncFileContentChunk,
   type OfflineSyncSnapshot,
 } from "./offline-sync.js";
 import {
@@ -624,6 +626,15 @@ export interface EngramAccessOfflineSyncFilesRequest {
   paths: string[];
 }
 
+export interface EngramAccessOfflineSyncFileContentRequest {
+  namespace?: string;
+  principal?: string;
+  includeTranscripts?: boolean;
+  path: string;
+  offset?: number;
+  length?: number;
+}
+
 export interface EngramAccessOfflineSyncApplyRequest {
   namespace?: string;
   principal?: string;
@@ -635,6 +646,10 @@ export interface EngramAccessOfflineSyncSnapshotResponse extends OfflineSyncSnap
 }
 
 export interface EngramAccessOfflineSyncFilesResponse extends OfflineSyncSnapshot {
+  namespace: string;
+}
+
+export interface EngramAccessOfflineSyncFileContentResponse extends OfflineSyncFileContentChunk {
   namespace: string;
 }
 
@@ -5605,6 +5620,39 @@ export class EngramAccessService {
         message.startsWith("paths[]:") ||
         message.startsWith("buildOfflineSyncSnapshotForPaths: record path ") ||
         message.startsWith("offline sync snapshot path is excluded:")
+      ) {
+        throw new EngramAccessInputError(message);
+      }
+      throw error;
+    }
+  }
+
+  async offlineSyncFileContent(
+    options: EngramAccessOfflineSyncFileContentRequest,
+  ): Promise<EngramAccessOfflineSyncFileContentResponse> {
+    const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    try {
+      const chunk = await readOfflineSyncFileContentChunk({
+        root: storage.dir,
+        path: options.path,
+        offset: options.offset,
+        length: options.length,
+        includeTranscripts: options.includeTranscripts !== false,
+        readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+      });
+      return {
+        namespace: resolvedNamespace,
+        ...chunk,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        message.startsWith("path:") ||
+        message.startsWith("offset ") ||
+        message.startsWith("offset must ") ||
+        message.startsWith("length ") ||
+        message.startsWith("offline sync file content ")
       ) {
         throw new EngramAccessInputError(message);
       }

@@ -11,6 +11,7 @@ import {
   buildOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotForPaths,
+  readOfflineSyncFileContentChunk,
 } from "./offline-sync.js";
 import { isEncryptedFile } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
@@ -112,6 +113,41 @@ test("offline sync excludes live LCM sqlite artifacts without deleting existing 
 
     assert.equal(pull.deleted, 0);
     assert.equal(await readUtf8(root, "state/lcm.sqlite"), "live db");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync reads bounded file content chunks with metadata", async () => {
+  const root = await tempDir("remnic-offline-file-content");
+  try {
+    await write(root, "state/memory-lifecycle-ledger.jsonl", "alpha\nbeta\ngamma\n");
+
+    const chunk = await readOfflineSyncFileContentChunk({
+      root,
+      path: "state/memory-lifecycle-ledger.jsonl",
+      offset: 6,
+      length: 5,
+    });
+
+    assert.equal(chunk.path, "state/memory-lifecycle-ledger.jsonl");
+    assert.equal(chunk.offset, 6);
+    assert.equal(chunk.chunkBytes, 5);
+    assert.equal(chunk.content.toString("utf-8"), "beta\n");
+    assert.equal(chunk.bytes, Buffer.byteLength("alpha\nbeta\ngamma\n"));
+    assert.equal(
+      chunk.sha256,
+      createHash("sha256").update("alpha\nbeta\ngamma\n").digest("hex"),
+    );
+
+    await assert.rejects(
+      () =>
+        readOfflineSyncFileContentChunk({
+          root,
+          path: "state/lcm.sqlite",
+        }),
+      /offline sync file content path is excluded: state\/lcm\.sqlite/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

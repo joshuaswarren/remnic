@@ -25,6 +25,7 @@ import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 export const OFFLINE_SYNC_SNAPSHOT_FORMAT = "remnic.offline-sync.snapshot.v1";
 export const OFFLINE_SYNC_CHANGESET_FORMAT = "remnic.offline-sync.changeset.v1";
 export const OFFLINE_SYNC_STATE_VERSION = 1;
+export const OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES = 64 * 1024 * 1024;
 
 export interface OfflineSyncFileState {
   path: string;
@@ -124,6 +125,12 @@ export interface OfflineSyncFileTarget {
 }
 
 export interface OfflineSyncFileWriteTarget extends OfflineSyncFileTarget {
+  content: Buffer;
+}
+
+export interface OfflineSyncFileContentChunk extends OfflineSyncFileState {
+  offset: number;
+  chunkBytes: number;
   content: Buffer;
 }
 
@@ -527,6 +534,60 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
     sourceId: normalizeSourceId(options.sourceId, "sourceId"),
     includeTranscripts,
     files: files.sort(compareByPath),
+  };
+}
+
+export async function readOfflineSyncFileContentChunk(options: {
+  root: string;
+  path: string;
+  offset?: number;
+  length?: number;
+  includeTranscripts?: boolean;
+  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+}): Promise<OfflineSyncFileContentChunk> {
+  const rootAbs = path.resolve(options.root);
+  const root = await prepareSafeArchiveRoot(rootAbs, "readOfflineSyncFileContentChunk", "root");
+  const includeTranscripts = options.includeTranscripts !== false;
+  const relPath = normalizeRelativePath(options.path, "path");
+  if (shouldExcludeRelPath(relPath, includeTranscripts)) {
+    throw new Error(`offline sync file content path is excluded: ${relPath}`);
+  }
+  const offset = options.offset === undefined
+    ? 0
+    : assertNonNegativeInteger(options.offset, "offset");
+  const requestedLength = options.length === undefined
+    ? OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES
+    : assertNonNegativeInteger(options.length, "length");
+  if (requestedLength < 1 || requestedLength > OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES) {
+    throw new Error(
+      `length must be an integer from 1 to ${OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES}`,
+    );
+  }
+  const filePath = await resolveSafeArchiveTarget(root, relPath);
+  const st = await lstat(filePath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!st || st.isSymbolicLink() || !st.isFile()) {
+    throw new Error(`offline sync file content path not found: ${relPath}`);
+  }
+  const content = options.readFile
+    ? await options.readFile({ root: root.abs, path: relPath, filePath })
+    : await readFile(filePath);
+  if (offset > content.length) {
+    throw new Error(`offset must be <= file size for ${relPath}`);
+  }
+  const digest = sha256Buffer(content);
+  const end = Math.min(content.length, offset + requestedLength);
+  const chunk = content.subarray(offset, end);
+  return {
+    path: relPath,
+    sha256: digest.sha256,
+    bytes: digest.bytes,
+    mtimeMs: st.mtimeMs,
+    offset,
+    chunkBytes: chunk.length,
+    content: Buffer.from(chunk),
   };
 }
 

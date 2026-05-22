@@ -680,6 +680,7 @@ export {
 
 export {
   OFFLINE_SYNC_CHANGESET_FORMAT,
+  OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
   OFFLINE_SYNC_SNAPSHOT_FORMAT,
   OFFLINE_SYNC_STATE_VERSION,
   applyOfflineSyncChangeset,
@@ -692,6 +693,7 @@ export {
   normalizeOfflineSyncChangeset,
   normalizeOfflineSyncSnapshot,
   offlineSyncStateFromSnapshot,
+  readOfflineSyncFileContentChunk,
   readOfflineSyncState,
   summarizeOfflineSyncChangeset,
   writeOfflineSyncState,
@@ -701,6 +703,7 @@ export {
   type OfflineSyncChangeset,
   type OfflineSyncConflict,
   type OfflineSyncFileRecord,
+  type OfflineSyncFileContentChunk,
   type OfflineSyncFileState,
   type OfflineSyncFileTarget,
   type OfflineSyncFileWriteTarget,

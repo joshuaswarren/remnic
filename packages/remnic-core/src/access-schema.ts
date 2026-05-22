@@ -10,6 +10,7 @@ import {
 } from "./action-confidence.js";
 import { isValidCapsuleSince } from "./transfer/capsule-export.js";
 import { CAPSULE_ID_PATTERN } from "./transfer/types.js";
+import { OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES } from "./offline-sync.js";
 
 // ---------------------------------------------------------------------------
 // Error formatting
@@ -386,6 +387,14 @@ export const offlineSyncFilesRequestSchema = z.object({
     .max(5000, "paths must contain 5000 or fewer entries"),
 });
 
+export const offlineSyncFileContentRequestSchema = z.object({
+  namespace: namespaceSchema,
+  includeTranscripts: z.boolean().optional(),
+  path: z.string().trim().min(1, "path must be non-empty").max(4096),
+  offset: z.number().int().min(0).optional(),
+  length: z.number().int().min(1).max(OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES).optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Action confidence
 // ---------------------------------------------------------------------------
@@ -453,6 +462,7 @@ export type CapsuleImportRequest = z.infer<typeof capsuleImportRequestSchema>;
 export type CapsuleListRequest = z.infer<typeof capsuleListRequestSchema>;
 export type OfflineSyncApplyRequest = z.infer<typeof offlineSyncApplyRequestSchema>;
 export type OfflineSyncFilesRequest = z.infer<typeof offlineSyncFilesRequestSchema>;
+export type OfflineSyncFileContentRequest = z.infer<typeof offlineSyncFileContentRequestSchema>;
 export type ActionConfidenceRequest = z.infer<typeof actionConfidenceRequestSchema>;
 
 // ---------------------------------------------------------------------------
@@ -477,6 +487,7 @@ export type SchemaName =
   | "capsuleImport"
   | "capsuleList"
   | "offlineSyncFiles"
+  | "offlineSyncFileContent"
   | "offlineSyncApply"
   | "actionConfidence";
 
@@ -498,6 +509,7 @@ export type SchemaTypeFor<N extends SchemaName> =
   : N extends "capsuleImport" ? CapsuleImportRequest
   : N extends "capsuleList" ? CapsuleListRequest
   : N extends "offlineSyncFiles" ? OfflineSyncFilesRequest
+  : N extends "offlineSyncFileContent" ? OfflineSyncFileContentRequest
   : N extends "offlineSyncApply" ? OfflineSyncApplyRequest
   : N extends "actionConfidence" ? ActionConfidenceRequest
   : never;
@@ -520,6 +532,7 @@ const schemas: Record<SchemaName, z.ZodTypeAny> = {
   capsuleImport: capsuleImportRequestSchema,
   capsuleList: capsuleListRequestSchema,
   offlineSyncFiles: offlineSyncFilesRequestSchema,
+  offlineSyncFileContent: offlineSyncFileContentRequestSchema,
   offlineSyncApply: offlineSyncApplyRequestSchema,
   actionConfidence: actionConfidenceRequestSchema,
 };

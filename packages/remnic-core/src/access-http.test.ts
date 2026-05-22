@@ -359,6 +359,96 @@ test("HTTP offline files forwards namespace and requested paths", async () => {
   }
 });
 
+test("HTTP offline file-content forwards range options and returns binary metadata", async () => {
+  const calls: Array<{
+    namespace: string | undefined;
+    principal: string | undefined;
+    includeTranscripts: boolean | undefined;
+    path: string;
+    offset: number | undefined;
+    length: number | undefined;
+  }> = [];
+  const service = {
+    offlineSyncFileContent: async (options: {
+      namespace?: string;
+      principal?: string;
+      includeTranscripts?: boolean;
+      path: string;
+      offset?: number;
+      length?: number;
+    }) => {
+      calls.push({
+        namespace: options.namespace,
+        principal: options.principal,
+        includeTranscripts: options.includeTranscripts,
+        path: options.path,
+        offset: options.offset,
+        length: options.length,
+      });
+      return {
+        namespace: options.namespace ?? "default",
+        path: options.path,
+        sha256: "a".repeat(64),
+        bytes: 12,
+        mtimeMs: 1234,
+        offset: options.offset ?? 0,
+        chunkBytes: 5,
+        content: Buffer.from("hello"),
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "reader",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/file-content`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          namespace: "team",
+          includeTranscripts: false,
+          path: "state/memory-lifecycle-ledger.jsonl",
+          offset: 8,
+          length: 5,
+        }),
+      },
+    );
+    const body = Buffer.from(await response.arrayBuffer());
+
+    assert.equal(response.status, 200);
+    assert.equal(body.toString("utf-8"), "hello");
+    assert.equal(response.headers.get("content-type"), "application/octet-stream");
+    assert.equal(response.headers.get("x-remnic-namespace"), "team");
+    assert.equal(response.headers.get("x-remnic-file-path"), "state%2Fmemory-lifecycle-ledger.jsonl");
+    assert.equal(response.headers.get("x-remnic-file-sha256"), "a".repeat(64));
+    assert.equal(response.headers.get("x-remnic-file-bytes"), "12");
+    assert.equal(response.headers.get("x-remnic-file-mtime-ms"), "1234");
+    assert.equal(response.headers.get("x-remnic-chunk-offset"), "8");
+    assert.equal(response.headers.get("x-remnic-chunk-bytes"), "5");
+    assert.deepEqual(calls, [{
+      namespace: "team",
+      principal: "reader",
+      includeTranscripts: false,
+      path: "state/memory-lifecycle-ledger.jsonl",
+      offset: 8,
+      length: 5,
+    }]);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP offline snapshot rejects invalid boolean query values", async () => {
   let calls = 0;
   const service = {

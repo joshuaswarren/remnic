@@ -125,6 +125,7 @@ import {
   formatProcedureStatsText,
   parseXrayCliOptions,
   renderXray,
+  OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
   applyOfflineSyncSnapshot,
   buildOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
@@ -134,6 +135,7 @@ import {
   summarizeOfflineSyncChangeset,
   writeOfflineSyncState,
   type OfflineSyncFileState,
+  type OfflineSyncFileWriteTarget,
   type OfflineSyncSnapshot,
   type OfflineSyncState,
   buildActionConfidenceInputFromOptions,
@@ -5650,6 +5652,83 @@ async function fetchOfflineFiles(args: {
   );
 }
 
+interface OfflineFileContentChunk {
+  path: string;
+  sha256: string;
+  bytes: number;
+  mtimeMs: number;
+  offset: number;
+  chunkBytes: number;
+  content: Buffer;
+}
+
+const OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES = 16 * 1024 * 1024;
+
+function parseOfflineHeaderNumber(headers: Headers, name: string): number {
+  const raw = headers.get(name);
+  if (raw === null) throw new Error(`offline file content response omitted ${name}`);
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`offline file content response had invalid ${name}: ${raw}`);
+  }
+  return parsed;
+}
+
+async function fetchOfflineFileContentChunk(args: {
+  remoteUrl: string;
+  token: string;
+  namespace?: string;
+  includeTranscripts: boolean;
+  path: string;
+  offset: number;
+  length: number;
+}): Promise<OfflineFileContentChunk> {
+  const response = await fetch(
+    offlineEndpoint(args.remoteUrl, "/remnic/v1/offline-sync/file-content"),
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${args.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        namespace: args.namespace,
+        includeTranscripts: args.includeTranscripts,
+        path: args.path,
+        offset: args.offset,
+        length: args.length,
+      }),
+    },
+  );
+  if (!response.ok) {
+    let detail = "";
+    try {
+      detail = await response.text();
+    } catch {
+      detail = "";
+    }
+    throw new Error(
+      `offline sync file-content request failed: ${response.status} ${response.statusText}${detail ? ` - ${detail.slice(0, 500)}` : ""}`,
+    );
+  }
+  const encodedPath = response.headers.get("x-remnic-file-path");
+  const relPath = encodedPath ? decodeURIComponent(encodedPath) : args.path;
+  const content = Buffer.from(await response.arrayBuffer());
+  const chunkBytes = parseOfflineHeaderNumber(response.headers, "x-remnic-chunk-bytes");
+  if (content.length !== chunkBytes) {
+    throw new Error(`offline file content response length mismatch for ${relPath}`);
+  }
+  return {
+    path: relPath,
+    sha256: response.headers.get("x-remnic-file-sha256") ?? "",
+    bytes: parseOfflineHeaderNumber(response.headers, "x-remnic-file-bytes"),
+    mtimeMs: parseOfflineHeaderNumber(response.headers, "x-remnic-file-mtime-ms"),
+    offset: parseOfflineHeaderNumber(response.headers, "x-remnic-chunk-offset"),
+    chunkBytes,
+    content,
+  };
+}
+
 function resolvedOfflineSnapshotNamespace(
   snapshot: { namespace?: string },
   requestedNamespace?: string,
@@ -5719,6 +5798,109 @@ function offlineSnapshotContentPathsForApply(options: {
     paths.push(incoming.path);
   }
   return paths.sort();
+}
+
+function shouldDirectHydrateOfflineFile(options: {
+  incoming: OfflineSyncFileState;
+  base?: OfflineSyncFileState;
+  current?: OfflineSyncFileState;
+}): boolean {
+  if (options.incoming.bytes < OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES) return false;
+  if (options.current?.sha256 === options.incoming.sha256) return false;
+  if (options.current && options.base && options.current.sha256 === options.base.sha256) {
+    return true;
+  }
+  return !options.current && !options.base;
+}
+
+async function fetchOfflineFileContent(args: {
+  remoteUrl: string;
+  token: string;
+  namespace?: string;
+  includeTranscripts: boolean;
+  expected: OfflineSyncFileState;
+}): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  const hash = createHash("sha256");
+  let offset = 0;
+  while (offset < args.expected.bytes) {
+    const chunk = await fetchOfflineFileContentChunk({
+      remoteUrl: args.remoteUrl,
+      token: args.token,
+      namespace: args.namespace,
+      includeTranscripts: args.includeTranscripts,
+      path: args.expected.path,
+      offset,
+      length: Math.min(
+        OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
+        args.expected.bytes - offset,
+      ),
+    });
+    if (
+      chunk.path !== args.expected.path ||
+      chunk.sha256 !== args.expected.sha256 ||
+      chunk.bytes !== args.expected.bytes ||
+      chunk.mtimeMs !== args.expected.mtimeMs ||
+      chunk.offset !== offset ||
+      chunk.chunkBytes !== chunk.content.length
+    ) {
+      throw new Error(`remote file changed while fetching offline content: ${args.expected.path}`);
+    }
+    if (chunk.chunkBytes === 0) {
+      throw new Error(`remote offline content chunk was empty before EOF: ${args.expected.path}`);
+    }
+    chunks.push(chunk.content);
+    hash.update(chunk.content);
+    offset += chunk.chunkBytes;
+  }
+  const content = Buffer.concat(chunks, offset);
+  const digest = hash.digest("hex");
+  if (digest !== args.expected.sha256 || content.length !== args.expected.bytes) {
+    throw new Error(`remote offline content checksum mismatch for ${args.expected.path}`);
+  }
+  return content;
+}
+
+async function directHydrateLargeOfflineFiles(args: {
+  remoteUrl: string;
+  token: string;
+  namespace?: string;
+  includeTranscripts: boolean;
+  snapshot: OfflineSyncSnapshot & { namespace?: string };
+  baseFiles: readonly OfflineSyncFileState[];
+  currentFiles: readonly OfflineSyncFileState[];
+  memoryDir: string;
+  writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
+}): Promise<Set<string>> {
+  if (!args.writeFile) return new Set();
+  const base = offlineFileStateMap(args.baseFiles);
+  const current = offlineFileStateMap(args.currentFiles);
+  const hydrated = new Set<string>();
+  const candidates = args.snapshot.files
+    .filter((incoming) =>
+      shouldDirectHydrateOfflineFile({
+        incoming,
+        base: base.get(incoming.path),
+        current: current.get(incoming.path),
+      }))
+    .sort((left, right) => right.bytes - left.bytes || left.path.localeCompare(right.path));
+  for (const incoming of candidates) {
+    const content = await fetchOfflineFileContent({
+      remoteUrl: args.remoteUrl,
+      token: args.token,
+      namespace: args.namespace,
+      includeTranscripts: args.includeTranscripts,
+      expected: incoming,
+    });
+    await args.writeFile({
+      root: args.memoryDir,
+      path: incoming.path,
+      filePath: path.resolve(args.memoryDir, incoming.path),
+      content,
+    });
+    hydrated.add(incoming.path);
+  }
+  return hydrated;
 }
 
 function chunkOfflineFilePaths(paths: readonly string[]): string[][] {
@@ -5973,7 +6155,7 @@ async function runOfflineSyncOnce(options: {
     includeTranscripts: options.includeTranscripts,
     readFile: storageIo.readFile,
   });
-  const remoteSnapshot = await hydrateOfflineSnapshotContent({
+  const directHydratedPaths = await directHydrateLargeOfflineFiles({
     remoteUrl: options.remoteUrl,
     token: options.token,
     namespace: syncNamespace,
@@ -5981,6 +6163,26 @@ async function runOfflineSyncOnce(options: {
     snapshot: remoteSnapshotMetadata,
     baseFiles,
     currentFiles: currentSnapshot.files,
+    memoryDir: options.memoryDir,
+    writeFile: storageIo.writeFile,
+  });
+  const applyCurrentSnapshot = directHydratedPaths.size > 0
+    ? await buildOfflineSyncSnapshot({
+        root: options.memoryDir,
+        sourceId: localOfflineSourceId(options.memoryDir),
+        includeContent: false,
+        includeTranscripts: options.includeTranscripts,
+        readFile: storageIo.readFile,
+      })
+    : currentSnapshot;
+  const remoteSnapshot = await hydrateOfflineSnapshotContent({
+    remoteUrl: options.remoteUrl,
+    token: options.token,
+    namespace: syncNamespace,
+    includeTranscripts: options.includeTranscripts,
+    snapshot: remoteSnapshotMetadata,
+    baseFiles,
+    currentFiles: applyCurrentSnapshot.files,
   });
   const resolvedNamespace = resolvedOfflineSnapshotNamespace(remoteSnapshot, syncNamespace);
   let pull: Awaited<ReturnType<typeof applyOfflineSyncSnapshot>>;
