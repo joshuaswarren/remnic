@@ -33,7 +33,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@remnic/core": "^1.1.12",
+    "@remnic/core": "workspace:^",
     "@remnic/plugin-pi": "^1.0.0",
     "@remnic/server": "^1.0.5",
     "yaml": "^2.4.2"
