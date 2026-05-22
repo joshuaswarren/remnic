@@ -860,6 +860,7 @@ export class EngramMcpServer {
           properties: {
             query: { type: "string", description: "Search query" },
             sessionKey: { type: "string", description: "Optional session filter" },
+            sessionPrefix: { type: "string", description: "Optional session prefix filter" },
             namespace: { type: "string" },
             limit: { type: "number", description: "Max results to return" },
           },
@@ -2498,6 +2499,7 @@ export class EngramMcpServer {
         return this.service.lcmSearch({
           query: typeof args.query === "string" ? args.query : "",
           sessionKey: typeof args.sessionKey === "string" ? args.sessionKey : undefined,
+          sessionPrefix: typeof args.sessionPrefix === "string" ? args.sessionPrefix : undefined,
           namespace: typeof args.namespace === "string" ? args.namespace : undefined,
           limit: typeof args.limit === "number" && Number.isFinite(args.limit) ? args.limit : undefined,
           authenticatedPrincipal: effectivePrincipal,

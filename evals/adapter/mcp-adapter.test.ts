@@ -35,8 +35,14 @@ test("MCP adapter reset isolates later searches from prior run sessions", async 
           : 10;
       const sessionId =
         typeof params.sessionId === "string" ? params.sessionId : undefined;
+      const sessionPrefix =
+        typeof params.sessionPrefix === "string" ? params.sessionPrefix : undefined;
       const rows = [...stored.entries()]
-        .filter(([storedSessionId]) => !sessionId || storedSessionId === sessionId)
+        .filter(([storedSessionId]) =>
+          sessionId
+            ? storedSessionId === sessionId
+            : !sessionPrefix || storedSessionId.startsWith(sessionPrefix),
+        )
         .flatMap(([storedSessionId, messages]) =>
           messages
             .filter((message) => message.content.includes(query))
@@ -120,9 +126,15 @@ test("MCP adapter scopes global search to current run sessions before limiting",
           : 10;
       const sessionId =
         typeof params.sessionId === "string" ? params.sessionId : undefined;
-      requestedSessionIds.push(sessionId ?? "");
+      const sessionPrefix =
+        typeof params.sessionPrefix === "string" ? params.sessionPrefix : undefined;
+      requestedSessionIds.push(sessionId ?? sessionPrefix ?? "");
       const rows = [...stored.entries()]
-        .filter(([storedSessionId]) => !sessionId || storedSessionId === sessionId)
+        .filter(([storedSessionId]) =>
+          sessionId
+            ? storedSessionId === sessionId
+            : !sessionPrefix || storedSessionId.startsWith(sessionPrefix),
+        )
         .flatMap(([storedSessionId, messages]) =>
           messages
             .filter((message) => message.content.includes(query))
@@ -163,6 +175,7 @@ test("MCP adapter scopes global search to current run sessions before limiting",
     assert.equal(results.length, 1);
     assert.equal(results[0]?.sessionId, "current");
     assert.ok(requestedSessionIds.every((sessionId) => sessionId !== ""));
+    assert.ok(requestedSessionIds.some((sessionId) => sessionId.startsWith("eval-")));
 
     await adapter.destroy();
   } finally {

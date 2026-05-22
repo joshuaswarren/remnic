@@ -60,6 +60,10 @@ function normalizeSearchLimit(limit: number, fallback = 10, max = 50): number {
   return Math.min(max, normalized);
 }
 
+function escapeSqlLike(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
 export class LcmArchive {
   constructor(private readonly db: Database.Database) {}
 
@@ -200,7 +204,7 @@ export class LcmArchive {
   }
 
   /** Full-text search across all messages. */
-  search(query: string, limit: number, sessionId?: string): LcmSearchResult[] {
+  search(query: string, limit: number, sessionId?: string, sessionPrefix?: string): LcmSearchResult[] {
     try {
       const ftsQuery = sanitizeFtsQuery(query);
       if (!ftsQuery) return [];
@@ -222,6 +226,18 @@ export class LcmArchive {
           LIMIT ?
         `;
         params.push(sessionId, cappedLimit);
+      } else if (sessionPrefix) {
+        sql = `
+          SELECT m.turn_index, m.role, snippet(lcm_messages_fts, 0, '>>>', '<<<', '...', 48) as snippet,
+                 m.session_id, rank
+          FROM lcm_messages_fts f
+          JOIN lcm_messages m ON m.id = f.rowid
+          WHERE lcm_messages_fts MATCH ?
+            AND m.session_id LIKE ? ESCAPE '\\'
+          ORDER BY rank
+          LIMIT ?
+        `;
+        params.push(`${escapeSqlLike(sessionPrefix)}%`, cappedLimit);
       } else {
         sql = `
           SELECT m.turn_index, m.role, snippet(lcm_messages_fts, 0, '>>>', '<<<', '...', 48) as snippet,
@@ -261,7 +277,7 @@ export class LcmArchive {
    * Returns ~1000-char windows centered on query term matches.
    * Deduplicates by message id and returns results sorted by FTS rank.
    */
-  searchWithContent(query: string, limit: number, sessionId?: string, excerptChars = 1000): LcmSearchWithContentResult[] {
+  searchWithContent(query: string, limit: number, sessionId?: string, excerptChars = 1000, sessionPrefix?: string): LcmSearchWithContentResult[] {
     try {
       const ftsQuery = sanitizeFtsQuery(query);
       if (!ftsQuery) return [];
@@ -289,6 +305,17 @@ export class LcmArchive {
           LIMIT ?
         `;
         params.push(sessionId, cappedLimit);
+      } else if (sessionPrefix) {
+        sql = `
+          SELECT m.id, m.turn_index, m.role, m.content, m.session_id, rank
+          FROM lcm_messages_fts f
+          JOIN lcm_messages m ON m.id = f.rowid
+          WHERE lcm_messages_fts MATCH ?
+            AND m.session_id LIKE ? ESCAPE '\\'
+          ORDER BY rank
+          LIMIT ?
+        `;
+        params.push(`${escapeSqlLike(sessionPrefix)}%`, cappedLimit);
       } else {
         sql = `
           SELECT m.id, m.turn_index, m.role, m.content, m.session_id, rank

@@ -432,6 +432,7 @@ export class LcmEngine {
     query: string,
     limit: number,
     sessionId?: string,
+    sessionPrefix?: string,
   ): Promise<
     Array<{
       turn_index: number;
@@ -443,8 +444,10 @@ export class LcmEngine {
     if (!this.config.enabled) return [];
     const normalizedSessionId = normalizeOptionalLcmSessionId(sessionId);
     if (sessionId !== undefined && !normalizedSessionId) return [];
+    const normalizedSessionPrefix = normalizeOptionalLcmSessionId(sessionPrefix);
+    if (sessionPrefix !== undefined && !normalizedSessionPrefix) return [];
     await this.ensureInitialized();
-    return this.archive!.search(query, limit, normalizedSessionId);
+    return this.archive!.search(query, limit, normalizedSessionId, normalizedSessionPrefix);
   }
 
   /** Search via FTS returning full message content (not snippets). */
@@ -452,6 +455,7 @@ export class LcmEngine {
     query: string,
     limit: number,
     sessionId?: string,
+    sessionPrefix?: string,
   ): Promise<
     Array<{
       id: number;
@@ -465,8 +469,16 @@ export class LcmEngine {
     if (!this.config.enabled) return [];
     const normalizedSessionId = normalizeOptionalLcmSessionId(sessionId);
     if (sessionId !== undefined && !normalizedSessionId) return [];
+    const normalizedSessionPrefix = normalizeOptionalLcmSessionId(sessionPrefix);
+    if (sessionPrefix !== undefined && !normalizedSessionPrefix) return [];
     await this.ensureInitialized();
-    return this.archive!.searchWithContent(query, limit, normalizedSessionId);
+    return this.archive!.searchWithContent(
+      query,
+      limit,
+      normalizedSessionId,
+      1000,
+      normalizedSessionPrefix,
+    );
   }
 
   /** Get a compressed summary of a turn range. */

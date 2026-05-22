@@ -809,6 +809,7 @@ export interface EngramAccessObserveResponse {
 export interface EngramAccessLcmSearchRequest {
   query: string;
   sessionKey?: string;
+  sessionPrefix?: string;
   namespace?: string;
   limit?: number;
   authenticatedPrincipal?: string;
@@ -3910,10 +3911,14 @@ export class EngramAccessService {
     const lcmSessionKey = request.sessionKey && namespace !== this.orchestrator.config.defaultNamespace
       ? `${namespace}:${request.sessionKey}`
       : request.sessionKey;
+    const lcmSessionPrefix = request.sessionPrefix && namespace !== this.orchestrator.config.defaultNamespace
+      ? `${namespace}:${request.sessionPrefix}`
+      : request.sessionPrefix;
     const rawResults = await this.orchestrator.lcmEngine.searchContextFull(
       request.query,
       limit,
       lcmSessionKey,
+      lcmSessionPrefix,
     );
 
     const results = rawResults.map((r: { session_id: string; content: string; turn_index: number }) => ({

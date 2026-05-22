@@ -1023,6 +1023,7 @@ export class EngramAccessHttpServer {
       const response = await this.service.lcmSearch({
         query: body.query,
         sessionKey: body.sessionKey,
+        sessionPrefix: body.sessionPrefix,
         namespace: this.resolveNamespace(req, body.namespace),
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
         limit: body.limit,
