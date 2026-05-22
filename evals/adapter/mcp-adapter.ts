@@ -162,10 +162,19 @@ export async function createMcpAdapter(
     },
 
     async getStats(sessionId?: string): Promise<MemoryStats> {
+      const statsRunPrefix = runPrefix;
+      const qualifiedSessionId =
+        typeof sessionId === "string" && sessionId.length > 0
+          ? qualifySessionId(sessionId, statsRunPrefix)
+          : undefined;
       const result = await mcpRequest(
         baseUrl,
         "engram.lcm.stats",
-        { sessionId: sessionId ? qualifySessionId(sessionId) : undefined },
+        {
+          ...(qualifiedSessionId
+            ? { sessionId: qualifiedSessionId }
+            : { sessionPrefix: `${statsRunPrefix}:` }),
+        },
         rpcOpts,
       );
       const r = result as Record<string, unknown> | null;

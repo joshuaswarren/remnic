@@ -92,6 +92,23 @@ export function parseReviewerGroups(raw) {
     .filter((group) => group.length > 0);
 }
 
+export function associatedPullRequestNumbers(payload = {}) {
+  const directPr = Number(payload.pull_request?.number);
+  if (Number.isInteger(directPr) && directPr > 0) {
+    return [directPr];
+  }
+
+  return [
+    ...new Set(
+      (Array.isArray(payload.check_run?.pull_requests)
+        ? payload.check_run.pull_requests
+        : [])
+        .map((pullRequest) => Number(pullRequest?.number))
+        .filter((number) => Number.isInteger(number) && number > 0),
+    ),
+  ];
+}
+
 export function evaluateAiReviewGate({
   groups,
   headSha,

@@ -62,7 +62,7 @@ test("MCP adapter reset isolates later searches from prior run sessions", async 
         .map((message) => message.content)
         .join("\n");
     } else if (body.method === "engram.lcm.stats") {
-      result = { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+      result = statsForStoredSessions(stored, params);
     }
 
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -77,10 +77,12 @@ test("MCP adapter reset isolates later searches from prior run sessions", async 
       { role: "user", content: "old unique marker" },
     ]);
     assert.equal((await adapter.search("old unique marker", 10)).length, 1);
+    assert.equal((await adapter.getStats()).totalMessages, 1);
 
     await adapter.reset();
     assert.deepEqual(await adapter.search("old unique marker", 10), []);
     assert.equal(await adapter.recall("shared-session", "old unique marker"), "");
+    assert.equal((await adapter.getStats()).totalMessages, 0);
 
     await adapter.store("shared-session", [
       { role: "user", content: "new unique marker" },
@@ -88,6 +90,8 @@ test("MCP adapter reset isolates later searches from prior run sessions", async 
     const currentResults = await adapter.search("new unique marker", 10);
     assert.equal(currentResults.length, 1);
     assert.equal(currentResults[0]?.sessionId, "shared-session");
+    assert.equal((await adapter.getStats()).totalMessages, 1);
+    assert.equal((await adapter.getStats("shared-session")).totalMessages, 1);
 
     await adapter.destroy();
   } finally {
@@ -326,6 +330,28 @@ function createDeferredForTest(): {
     resolve = r;
   });
   return { promise, resolve };
+}
+
+function statsForStoredSessions(
+  stored: Map<string, Message[]>,
+  params: Record<string, unknown>,
+): { totalMessages: number; totalSummaryNodes: number; maxDepth: number } {
+  const sessionId =
+    typeof params.sessionId === "string" ? params.sessionId : undefined;
+  const sessionPrefix =
+    typeof params.sessionPrefix === "string" ? params.sessionPrefix : undefined;
+  const totalMessages = [...stored.entries()]
+    .filter(([storedSessionId]) =>
+      sessionId
+        ? storedSessionId === sessionId
+        : !sessionPrefix || storedSessionId.startsWith(sessionPrefix),
+    )
+    .reduce((count, [, messages]) => count + messages.length, 0);
+  return {
+    totalMessages,
+    totalSummaryNodes: 0,
+    maxDepth: totalMessages > 0 ? 0 : -1,
+  };
 }
 
 async function listen(server: http.Server): Promise<string> {

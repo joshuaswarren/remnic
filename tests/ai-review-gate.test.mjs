@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  associatedPullRequestNumbers,
   evaluateAiReviewGate,
   parseReviewerGroups,
 } from "../scripts/ai-review-gate.mjs";
@@ -9,6 +10,33 @@ import {
 const groups = parseReviewerGroups("cursor-bugbot[bot]|cursor, codex[bot]|codex");
 const headSha = "abc1234567890";
 const headCommittedAt = "2026-05-21T12:00:00.000Z";
+
+test("AI review gate resolves every pull request associated with a check_run event", () => {
+  assert.deepEqual(
+    associatedPullRequestNumbers({
+      check_run: {
+        pull_requests: [
+          { number: 17 },
+          { number: "18" },
+          { number: 17 },
+          { number: 0 },
+          { number: "not-a-number" },
+        ],
+      },
+    }),
+    [17, 18],
+  );
+});
+
+test("AI review gate prefers the direct pull_request event number", () => {
+  assert.deepEqual(
+    associatedPullRequestNumbers({
+      pull_request: { number: 42 },
+      check_run: { pull_requests: [{ number: 99 }] },
+    }),
+    [42],
+  );
+});
 
 test("AI review gate passes only when every required group has positive current-head activity", () => {
   const result = evaluateAiReviewGate({
