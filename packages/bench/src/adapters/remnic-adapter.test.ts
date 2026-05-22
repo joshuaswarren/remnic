@@ -276,7 +276,7 @@ test("direct adapter cleans up late replay writes after timeout abort", async ()
     await this.storage.writeMemory(
       "fact",
       "Remember the aborted late replay code is garnet-99.",
-      { source: "aborted-replay-test", sessionKey },
+      { source: "extraction", sessionKey },
     );
     lateWriteFinished = true;
   };

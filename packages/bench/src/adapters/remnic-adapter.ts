@@ -1085,6 +1085,38 @@ async function rememberNewBenchCoreMemories(
   }
 }
 
+async function withBenchCoreMemorySource(
+  orchestrator: Orchestrator,
+  sessionId: string,
+  task: () => Promise<void>,
+): Promise<void> {
+  type BenchWriteMemory = Orchestrator["storage"]["writeMemory"];
+  const storage = orchestrator.storage as unknown as { writeMemory: BenchWriteMemory };
+  const originalWriteMemory = storage.writeMemory;
+  const writeMemory = originalWriteMemory.bind(orchestrator.storage);
+  const source = benchCoreMemorySource(sessionId);
+
+  storage.writeMemory = async (
+    ...args: Parameters<BenchWriteMemory>
+  ): Promise<string> => {
+    const [category, content, options] = args;
+    const requestedSource = options?.source;
+    return writeMemory(category, content, {
+      ...(options ?? {}),
+      source:
+        !requestedSource || requestedSource === "extraction"
+          ? source
+          : requestedSource,
+    });
+  };
+
+  try {
+    await task();
+  } finally {
+    storage.writeMemory = originalWriteMemory;
+  }
+}
+
 async function clearBenchCoreSessionMemories(
   orchestrator: Orchestrator,
   sessionId: string,
@@ -1603,8 +1635,14 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           const trackedIds = new Set(coreSessionMemoryIds.get(sessionId) ?? []);
           const baselineIds = replayBaselineCoreMemoryIds();
           if (baselineIds) {
-            for (const memoryId of await readBenchCoreMemoryIds(state.orchestrator)) {
-              if (!baselineIds.has(memoryId)) trackedIds.add(memoryId);
+            const source = benchCoreMemorySource(sessionId);
+            for (const memory of await readBenchCoreMemories(state.orchestrator)) {
+              if (
+                !baselineIds.has(memory.frontmatter.id) &&
+                memory.frontmatter.source === source
+              ) {
+                trackedIds.add(memory.frontmatter.id);
+              }
             }
           }
           await clearBenchCoreSessionMemories(
@@ -1711,13 +1749,17 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           );
           replayBaselineCoreMemoryIds = beforeCoreMemoryIds;
           try {
-            replayIngestion = withBenchEntityStructuredFactCapture(
+            replayIngestion = withBenchCoreMemorySource(
               replayOrchestrator,
               sessionId,
-              () => replayOrchestrator.ingestReplayBatch(replayTurns, {
-                archiveLcm: false,
-                abortSignal: control?.signal,
-              }),
+              () => withBenchEntityStructuredFactCapture(
+                replayOrchestrator,
+                sessionId,
+                () => replayOrchestrator.ingestReplayBatch(replayTurns, {
+                  archiveLcm: false,
+                  abortSignal: control?.signal,
+                }),
+              ),
             );
             await withBenchPhaseAbort(
               replayIngestion,
