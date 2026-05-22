@@ -27,8 +27,12 @@ jobs:
           echo "Waiting 3 minutes for AI reviewers to analyse the diff..."
           sleep 180
 
-      - name: Checkout gate helper
+      - name: Checkout trusted gate helper
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-gate-helper
+          persist-credentials: false
 
       - name: Check AI review bot activity
         uses: actions/github-script@v7
@@ -52,7 +56,7 @@ jobs:
             const groupsRaw = process.env.REQUIRED_AI_REVIEWER_GROUPS || '';
             const { pathToFileURL } = require('url');
             const { evaluateAiReviewGate, parseReviewerGroups } = await import(
-              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/ai-review-gate.mjs`).href
+              pathToFileURL(`${process.env.GITHUB_WORKSPACE}/trusted-gate-helper/scripts/ai-review-gate.mjs`).href
             );
             const groups = parseReviewerGroups(groupsRaw);
 
