@@ -186,15 +186,18 @@ Enforcement:
 Before merging any PR that uses Cursor/Bugbot review:
 
 1. Required checks are green.
-2. `Cursor Bugbot` is not `pending`/`in_progress`/`neutral`/`skipping`.
-3. PR has an explicit positive Cursor verdict comment (`PASS`).
+2. `Cursor Bugbot` is not `pending`/`in_progress`/`skipping`.
+3. PR has a current-head Cursor signal: either a successful check run, a
+   neutral completed Bugbot check run, or an explicit positive Cursor verdict
+   comment (`PASS`).
 4. No unresolved Cursor-authored review threads remain.
 
-Do not merge on `NEUTRAL` without an explicit positive verdict + zero unresolved Cursor threads.
-The CI AI review gate enforces the same direction: failed, neutral, skipped,
-timed-out, or otherwise non-positive review-bot check runs block the gate, and
-each configured required AI reviewer group must report positive activity on the
-current head.
+Do not merge on `NEUTRAL` while unresolved Cursor threads remain. The CI AI
+review gate treats a neutral completed review-bot check run as current-head
+review activity only after the unresolved-thread guard is clean; failed,
+skipped, timed-out, or otherwise negative review-bot check runs still block the
+gate, and each configured required AI reviewer group must report current-head
+activity.
 
 Repository automation:
 - `npm run hooks:install` configures git hooks that enforce this gate locally.
