@@ -130,6 +130,7 @@ import {
   buildOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
   defaultOfflineSyncStatePath,
+  normalizeOfflineSyncSnapshot,
   offlineSyncStateFromSnapshot,
   readOfflineSyncState,
   summarizeOfflineSyncChangeset,
@@ -5873,10 +5874,11 @@ async function directHydrateLargeOfflineFiles(args: {
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
 }): Promise<Set<string>> {
   if (!args.writeFile) return new Set();
+  const snapshot = normalizeOfflineSyncSnapshot(args.snapshot);
   const base = offlineFileStateMap(args.baseFiles);
   const current = offlineFileStateMap(args.currentFiles);
   const hydrated = new Set<string>();
-  const candidates = args.snapshot.files
+  const candidates = snapshot.files
     .filter((incoming) =>
       shouldDirectHydrateOfflineFile({
         incoming,
