@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -39,6 +40,9 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
     await write(root, ".offline-sync/state/local.json", "state");
     await write(root, "state/fact-hashes.txt", "derived");
     await write(root, "state/fact-hashes.ready", "v1");
+    await write(root, "state/lcm.sqlite", "live db");
+    await write(root, "state/lcm.sqlite-shm", "live shm");
+    await write(root, "state/lcm.sqlite-wal", "live wal");
 
     const snapshot = await buildOfflineSyncSnapshot({
       root,
@@ -63,6 +67,51 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
       withoutTranscripts.files.map((file) => file.path),
       ["assets/blob.bin", "facts/a.md", "facts/fact-hashes.txt"],
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync excludes live LCM sqlite artifacts without deleting existing local copies", async () => {
+  const root = await tempDir("remnic-offline-lcm-sqlite");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/lcm.sqlite", "live db");
+    await write(root, "state/lcm.sqlite-shm", "live shm");
+    await write(root, "state/lcm.sqlite-wal", "live wal");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+    });
+
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
+    await assert.rejects(
+      () =>
+        buildOfflineSyncSnapshotForPaths({
+          root,
+          sourceId: "remote",
+          paths: ["state/lcm.sqlite"],
+          includeContent: true,
+        }),
+      /offline sync snapshot path is excluded: state\/lcm\.sqlite/,
+    );
+
+    const oldDb = Buffer.from("old live db");
+    const pull = await applyOfflineSyncSnapshot({
+      root,
+      snapshot,
+      baseFiles: [{
+        path: "state/lcm.sqlite",
+        sha256: createHash("sha256").update(oldDb).digest("hex"),
+        bytes: oldDb.byteLength,
+        mtimeMs: 0,
+      }],
+    });
+
+    assert.equal(pull.deleted, 0);
+    assert.equal(await readUtf8(root, "state/lcm.sqlite"), "live db");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
