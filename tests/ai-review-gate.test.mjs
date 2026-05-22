@@ -42,6 +42,22 @@ test("AI review gate fails on failed review-bot check runs", () => {
   assert.equal(result.blockers[0]?.alias, "cursor");
 });
 
+test("AI review gate ignores failed check runs from non-reviewer apps", () => {
+  const result = evaluateAiReviewGate({
+    groups,
+    headSha,
+    headCommittedAt,
+    checkRuns: [
+      { app: { slug: "cursor" }, conclusion: "success", head_sha: headSha },
+      { app: { slug: "codex" }, conclusion: "success", head_sha: headSha },
+      { app: { slug: "github-actions", name: "GitHub Actions" }, conclusion: "failure", head_sha: headSha },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+});
+
 test("AI review gate fails on neutral review-bot check runs", () => {
   const result = evaluateAiReviewGate({
     groups,

@@ -4,7 +4,10 @@ import path from "node:path";
 
 const version = process.argv[2];
 const dryRun = process.argv.includes("--dry-run");
-const versionPattern = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const semverIdentifier = String.raw`(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)`;
+const versionPattern = new RegExp(
+  String.raw`^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-${semverIdentifier}(?:\.${semverIdentifier})*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`,
+);
 
 if (!version || !versionPattern.test(version)) {
   console.error("Usage: node scripts/set-release-version.mjs <semver> [--dry-run]");

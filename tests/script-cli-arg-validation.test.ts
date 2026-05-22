@@ -51,3 +51,13 @@ test("eval-baseline-ci-gate rejects missing --snapshot-id value before consuming
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /--snapshot-id requires a value/);
 });
+
+test("set-release-version accepts prerelease and build metadata SemVer", () => {
+  const result = runScript("scripts/set-release-version.mjs", [
+    "1.0.0-rc.1+001",
+    "--dry-run",
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /1\.0\.0-rc\.1\+001/);
+});

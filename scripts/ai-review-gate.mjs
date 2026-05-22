@@ -89,6 +89,7 @@ export function evaluateAiReviewGate({
 
   const positiveByAlias = new Map();
   const blockers = [];
+  const configuredAliases = new Set(groups.flat());
 
   for (const review of reviews) {
     const login = normalizeLogin(review.user?.login);
@@ -109,7 +110,7 @@ export function evaluateAiReviewGate({
     const conclusion = normalizeLogin(checkRun.conclusion);
     const aliases = [checkRun.app?.slug, checkRun.app?.name]
       .map(normalizeLogin)
-      .filter(Boolean);
+      .filter((alias) => alias && configuredAliases.has(alias));
     for (const alias of aliases) {
       if (BAD_CHECK_CONCLUSIONS.has(conclusion)) {
         blockers.push({ alias, kind: "check_run", state: conclusion || "unknown" });
