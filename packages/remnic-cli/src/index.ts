@@ -5814,6 +5814,16 @@ function shouldDirectHydrateOfflineFile(options: {
   return !options.current && !options.base;
 }
 
+function resolveOfflineDirectHydrationPath(memoryDir: string, relPath: string): string {
+  const base = path.resolve(memoryDir);
+  const target = path.resolve(base, relPath);
+  const relative = path.relative(base, target);
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`offline sync direct hydration path escapes memory dir: ${relPath}`);
+  }
+  return target;
+}
+
 async function fetchOfflineFileContent(args: {
   remoteUrl: string;
   token: string;
@@ -5897,7 +5907,7 @@ async function directHydrateLargeOfflineFiles(args: {
     await args.writeFile({
       root: args.memoryDir,
       path: incoming.path,
-      filePath: path.resolve(args.memoryDir, incoming.path),
+      filePath: resolveOfflineDirectHydrationPath(args.memoryDir, incoming.path),
       content,
     });
     hydrated.add(incoming.path);
