@@ -29,6 +29,7 @@ const BASE_CONFIG = {
   workspaceDir: "/tmp/remnic-bench-workspace",
   lcmEnabled: true as const,
 };
+const BENCH_TEST_RM_RETRY_OPTIONS = { maxRetries: 5, retryDelay: 50 } as const;
 
 function benchReplaySourceForTest(sessionId: string): string {
   return `bench-replay-${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}`;
@@ -182,7 +183,7 @@ test("adapter QMD wrapper resolves relative binaries and isolates QMD env", asyn
     assert.doesNotMatch(marker, /openclaw-engram/);
   } finally {
     await adapter.destroy();
-    await rm(fakeRoot, { recursive: true, force: true });
+    await rm(fakeRoot, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -212,7 +213,7 @@ test("direct adapter can use a caller-owned memory directory", async () => {
   try {
     assert.equal((await stat(memoryDir)).isDirectory(), true);
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -349,7 +350,7 @@ test("direct adapter cleans up late replay writes after timeout abort", async ()
     releaseReplay.resolve();
     await adapter.destroy();
     Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -429,7 +430,7 @@ test("direct adapter reset clears caller-owned memory directory", async () => {
     assert.doesNotMatch(afterReset, /violet-19/);
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -465,8 +466,8 @@ test("direct adapter rejects symlinked caller-owned memory directories before in
     );
     assert.equal(await readFile(sentinelPath, "utf8"), "preserve symlink target data");
   } finally {
-    await rm(parentDir, { recursive: true, force: true });
-    await rm(protectedDir, { recursive: true, force: true });
+    await rm(parentDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(protectedDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -488,8 +489,8 @@ test("direct adapter rejects symlinked parent directories before creating state"
     );
     assert.equal(await readFile(sentinelPath, "utf8"), "preserve symlink parent data");
   } finally {
-    await rm(parentDir, { recursive: true, force: true });
-    await rm(protectedDir, { recursive: true, force: true });
+    await rm(parentDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(protectedDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -516,7 +517,7 @@ test("direct adapter allows caller-owned memory directories under macOS /tmp ali
     assert.match(recalled, /silver-94/);
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -532,7 +533,7 @@ test("direct adapter rejects dangling symlink directories before creating state"
       /must not be a symlink path/,
     );
   } finally {
-    await rm(parentDir, { recursive: true, force: true });
+    await rm(parentDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -550,8 +551,8 @@ test("direct adapter rejects symlinked caller-owned Remnic state children", asyn
     );
     assert.equal(await readFile(sentinelPath, "utf8"), "preserve symlink child data");
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(protectedDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(protectedDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -569,8 +570,8 @@ test("direct adapter rejects symlinked caller-owned search index children", asyn
     );
     assert.equal(await readFile(sentinelPath, "utf8"), "preserve search index symlink data");
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(protectedDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(protectedDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -593,8 +594,8 @@ test("direct adapter rejects symlinked custom caller-owned search index children
     );
     assert.equal(await readFile(sentinelPath, "utf8"), "preserve custom search index symlink data");
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(protectedDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(protectedDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -612,8 +613,8 @@ test("direct adapter rejects custom caller-owned search index paths outside memo
       /search index paths must stay inside memoryDir\/sandboxDir/,
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(outsideDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(outsideDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -637,8 +638,8 @@ test("direct adapter rejects custom search index paths under symlinked parents",
     );
     assert.equal(await readFile(sentinelPath, "utf8"), "preserve custom search parent symlink data");
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(protectedDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(protectedDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -658,8 +659,8 @@ test("direct adapter rejects nested symlinks in caller-owned Remnic state childr
     );
     assert.equal(await readFile(sentinelPath, "utf8"), "preserve nested symlink data");
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(protectedDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+    await rm(protectedDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -718,7 +719,7 @@ test("direct adapter session reset preserves other caller-owned sessions", async
     );
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -786,7 +787,7 @@ test("direct adapter session reset clears caller-owned hourly summaries", async 
     );
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -828,7 +829,7 @@ test("direct adapter session reset rejects summary path traversal", async () => 
     );
   } finally {
     await adapter.destroy();
-    await rm(parentDir, { recursive: true, force: true });
+    await rm(parentDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -904,7 +905,7 @@ test("direct adapter session reset clears caller-owned core replay state", async
     );
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -965,7 +966,7 @@ test("direct adapter session reset clears caller-owned verbatim artifacts", asyn
     );
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1062,7 +1063,7 @@ test("direct adapter session reset clears caller-owned entity timeline state", a
     assert.doesNotMatch(preexistingStructuredEntity, /basalt-29/);
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1171,7 +1172,7 @@ test("direct adapter session reset clears replay structured entity facts", async
   } finally {
     Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
     await adapter?.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1234,7 +1235,7 @@ test("direct adapter scoped reset waits for background core replay", async () =>
     releaseReplay.resolve();
     Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1287,7 +1288,7 @@ test("direct adapter scoped reset marks partial replay writes after rejection", 
   } finally {
     Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1362,7 +1363,7 @@ test("direct adapter drain checks extraction idle after background replay comple
     Orchestrator.prototype.waitForExtractionIdle = originalWaitForExtractionIdle;
     Orchestrator.prototype.waitForConsolidationIdle = originalWaitForConsolidationIdle;
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1428,7 +1429,7 @@ test("direct adapter full reset waits for background core replay before rebuild"
     releaseReplay.resolve();
     Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1503,7 +1504,7 @@ test("direct adapter attributes concurrent background replay memories by session
     releaseFirstReplay.resolve();
     Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1588,7 +1589,7 @@ test("direct adapter normalizes session IDs for scoped reset", async () => {
     );
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1630,7 +1631,7 @@ test("direct adapter session reset clears caller-owned cold replay state", async
     );
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1694,7 +1695,7 @@ test("direct adapter session reset tracks replay-created cold memories", async (
   } finally {
     Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
     await adapter?.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1727,7 +1728,7 @@ test("direct adapter full reset clears caller-owned core state when replay is sk
     );
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -1767,7 +1768,7 @@ test("direct adapter scoped reset clears caller-owned core state when replay is 
     );
   } finally {
     await adapter.destroy();
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 
@@ -3168,7 +3169,7 @@ test("runtime-backed adapter preserves source timestamps for historical recall",
     );
   } finally {
     await adapter.destroy();
-    await rm(sandboxDir, { recursive: true, force: true });
+    await rm(sandboxDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
   }
 });
 

@@ -76,7 +76,7 @@ See [Procedural memory](./procedural-memory.md) for configuration, mining, and t
 
 ### Direct-answer retrieval tier (issue #518)
 
-> **Status (current release): observation mode.** The direct-answer tier runs by default and annotates `LastRecallSnapshot.tierExplain` without short-circuiting the QMD path. Set `recallDirectAnswerEnabled: false` to opt out.
+> **Status (current release): opt-in observation mode.** The direct-answer tier annotates `LastRecallSnapshot.tierExplain` without short-circuiting the QMD path when `recallDirectAnswerEnabled: true` is configured.
 
 Behavior: when **`recallDirectAnswerEnabled`** is true, Remnic runs a lightweight eligibility gate alongside QMD to decide whether a single validated memory can answer the query. The current release records *which tier would have served the query* onto the caller's last-recall snapshot so CLI / HTTP / MCP surfaces can surface the decision. A later slice will flip the short-circuit bit and return the direct-answer winner before QMD runs.
 
@@ -100,7 +100,7 @@ Planned eligibility ladder (in order, unchanged between observation and short-ci
 
 Config keys:
 
-- `recallDirectAnswerEnabled` (default `true`) — master switch; set to `false` to opt out of observation mode
+- `recallDirectAnswerEnabled` (default `false`) — master switch; set to `true` to opt in to observation mode
 - `recallDirectAnswerTokenOverlapFloor` (default `0.55`, `0` to disable the gate)
 - `recallDirectAnswerImportanceFloor` (default `0.7`, `0` to disable the gate)
 - `recallDirectAnswerAmbiguityMargin` (default `0.15`)

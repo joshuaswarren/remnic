@@ -179,6 +179,7 @@ type BenchRecallEngine = {
 };
 
 const BENCH_TEARDOWN_DEFERRED_READY_WAIT_MS = 500;
+const BENCH_RM_RETRY_OPTIONS = { maxRetries: 5, retryDelay: 50 } as const;
 const DEFAULT_BENCH_DRAIN_TIMEOUT_MS = 5 * 60_000;
 const CORE_EXPLICIT_CUE_MAX_CHARS = 18_000;
 const CORE_EXPLICIT_CUE_MAX_ITEM_CHARS = 2_400;
@@ -694,15 +695,27 @@ async function removeBenchQmdSandbox(sandbox: BenchQmdSandbox): Promise<void> {
     return;
   }
   await Promise.all([
-    rm(sandbox.cacheDir, { recursive: true, force: true }),
-    rm(sandbox.configDir, { recursive: true, force: true }),
+    rm(sandbox.cacheDir, {
+      recursive: true,
+      force: true,
+      ...BENCH_RM_RETRY_OPTIONS,
+    }),
+    rm(sandbox.configDir, {
+      recursive: true,
+      force: true,
+      ...BENCH_RM_RETRY_OPTIONS,
+    }),
   ]);
 }
 
 async function clearCallerOwnedBenchState(memoryDir: string): Promise<void> {
   await Promise.all(
     BENCH_REMNIC_STATE_CHILDREN.map((entry) =>
-      rm(path.join(memoryDir, entry), { recursive: true, force: true }),
+      rm(path.join(memoryDir, entry), {
+        recursive: true,
+        force: true,
+        ...BENCH_RM_RETRY_OPTIONS,
+      }),
     ),
   );
 }
@@ -1592,7 +1605,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         // still be removed even if a sqlite/config artifact is busy.
       }
       if (state.ownsTempDir) {
-        await rm(state.tempDir, { recursive: true, force: true });
+        await rm(state.tempDir, {
+          recursive: true,
+          force: true,
+          ...BENCH_RM_RETRY_OPTIONS,
+        });
       }
     };
 
@@ -1622,21 +1639,24 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       replayCompletion: () => Promise<void> | undefined,
       replayBaselineCoreMemoryIds: () => Set<string> | undefined,
     ): void => {
-      void Promise.all([
+      const cleanupEngine = getEngine();
+      const cleanupOrchestrator = state.orchestrator;
+      const cleanupColdCollection = state.qmdSandbox.coldCollection;
+      const cleanupTempDir = state.tempDir;
+      const cleanupTask = Promise.all([
         replayExtraction.catch(() => undefined),
         replayCompletion()?.catch(() => undefined) ?? Promise.resolve(),
       ])
         .catch(() => undefined)
         .then(async () => {
-          const engine = getEngine();
-          if (typeof engine.clearSession === "function") {
-            await engine.clearSession(sessionId).catch(() => undefined);
+          if (typeof cleanupEngine.clearSession === "function") {
+            await cleanupEngine.clearSession(sessionId).catch(() => undefined);
           }
           const trackedIds = new Set(coreSessionMemoryIds.get(sessionId) ?? []);
           const baselineIds = replayBaselineCoreMemoryIds();
           if (baselineIds) {
             const source = benchCoreMemorySource(sessionId);
-            for (const memory of await readBenchCoreMemories(state.orchestrator)) {
+            for (const memory of await readBenchCoreMemories(cleanupOrchestrator)) {
               if (
                 !baselineIds.has(memory.frontmatter.id) &&
                 memory.frontmatter.source === source
@@ -1646,19 +1666,31 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             }
           }
           await clearBenchCoreSessionMemories(
-            state.orchestrator,
+            cleanupOrchestrator,
             sessionId,
             trackedIds,
-            state.qmdSandbox.coldCollection,
+            cleanupColdCollection,
           );
           coreSessionMemoryIds.delete(sessionId);
           await Promise.all([
-            clearBenchTranscriptSession(state.tempDir, sessionId),
-            clearBenchSummarySession(state.tempDir, sessionId),
+            clearBenchTranscriptSession(cleanupTempDir, sessionId),
+            clearBenchSummarySession(cleanupTempDir, sessionId),
           ]);
           sessionTurnCounters.delete(sessionId);
         })
         .catch(() => undefined);
+      let trackedCleanup: Promise<void>;
+      trackedCleanup = cleanupTask.finally(() => {
+        if (coreReplaySessionChains.get(sessionId) === trackedCleanup) {
+          coreReplaySessionChains.delete(sessionId);
+        }
+      });
+      coreReplaySessionChains.set(sessionId, trackedCleanup);
+      coreReplayChain = coreReplayChain
+        .catch(() => undefined)
+        .then(() => trackedCleanup)
+        .catch(() => undefined);
+      void trackedCleanup;
     };
 
     return {
