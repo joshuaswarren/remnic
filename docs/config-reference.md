@@ -156,7 +156,7 @@ See [Search Backends](search-backends.md) for detailed configuration and compari
 | `entitySummaryEnabled` | `true` | Maintain synthesized entity summaries used by retrieval and tooling |
 | `recallBudgetChars` | `maxMemoryTokens * 4` | Hard cap for total assembled recall context (final safety trim before system prompt injection) |
 | `recallPipeline` | `(built-in ordered defaults)` | Ordered section controls for recall assembly, including per-section caps and knobs |
-| `recallDirectAnswerEnabled` | `true` | Enable the direct-answer retrieval tier (issue #518). The tier runs in observation mode by default: it annotates recall tier explain data without short-circuiting the QMD path. Set `recallDirectAnswerEnabled: false` to opt out. See [Retrieval Explain](./retrieval-explain.md). |
+| `recallDirectAnswerEnabled` | `false` | Opt in to the direct-answer retrieval tier (issue #518). When enabled, the tier runs in observation mode: it annotates recall tier explain data without short-circuiting the QMD path. See [Retrieval Explain](./retrieval-explain.md). |
 | `recallDirectAnswerTokenOverlapFloor` | `0.55` | Minimum query↔memory token-overlap ratio required for direct-answer eligibility. Set to `0` to disable the gate. |
 | `recallDirectAnswerImportanceFloor` | `0.7` | Minimum calibrated importance score required for direct-answer eligibility. Set to `0` to disable the gate. `verificationState: "user_confirmed"` bypasses this check. |
 | `recallDirectAnswerAmbiguityMargin` | `0.15` | If the second-best candidate scores within this ratio of the top, direct-answer defers to the hybrid tier. |

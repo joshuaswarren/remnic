@@ -2782,7 +2782,7 @@
       },
       "recallDirectAnswerEnabled": {
         "type": "boolean",
-        "default": true,
+        "default": false,
         "description": "When true, recall runs the direct-answer tier in observation mode: annotates LastRecallSnapshot.tierExplain with which tier would have served the query (issue #518). Does not short-circuit the QMD path in the current release."
       },
       "recallDisclosureEscalation": {
@@ -5192,7 +5192,7 @@
     },
     "recallDirectAnswerEnabled": {
       "label": "Direct-Answer Retrieval Tier",
-      "help": "Route validated high-trust queries to a fast direct-answer path before QMD (issue #518)."
+      "help": "Opt in to the direct-answer retrieval tier for validated high-trust queries before QMD (issue #518)."
     },
     "recallDisclosureEscalation": {
       "label": "Disclosure Auto-Escalation",

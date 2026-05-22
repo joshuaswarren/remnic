@@ -1507,13 +1507,11 @@ export function parseConfig(raw: unknown): PluginConfig {
     temporalSupersessionEnabled: cfg.temporalSupersessionEnabled !== false, // On by default
     temporalSupersessionIncludeInRecall:
       cfg.temporalSupersessionIncludeInRecall === true, // Off by default
-    // Direct-answer retrieval tier (issue #518).  Default on — the
-    // tier runs in observation mode: it annotates
-    // LastRecallSnapshot.tierExplain but never short-circuits the
-    // QMD path.  Operators can opt out with
-    // recallDirectAnswerEnabled=false.
+    // Direct-answer retrieval tier (issue #518).  Default off so the
+    // recall path keeps least-privileged behavior unless operators
+    // explicitly opt in.
     recallDirectAnswerEnabled:
-      coerceBool(cfg.recallDirectAnswerEnabled) ?? true,
+      coerceBool(cfg.recallDirectAnswerEnabled) ?? false,
     // Disclosure auto-escalation (issue #677 PR 4/4).  Default `manual`
     // so pre-#677 callers see unchanged behavior.  Reject anything
     // outside the allow-list rather than silently defaulting (CLAUDE.md
