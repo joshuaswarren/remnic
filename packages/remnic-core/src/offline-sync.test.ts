@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -639,6 +639,39 @@ test("offline sync stages chunked uploads through storage hooks", async () => {
     const rawTarget = await readFile(path.join(root, "state/lcm.sqlite"));
     assert.match(rawTarget.toString("utf-8"), /^ENC:/);
     assert.equal(decode(rawTarget).toString("utf-8"), "new durable sqlite content");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync prunes stale staged uploads when starting a new upload", async () => {
+  const root = await tempDir("remnic-offline-file-content-prune");
+  try {
+    const staleKey = `${"a".repeat(64)}.part`;
+    const staleDir = path.join(root, ".offline-sync", "uploads", staleKey);
+    await mkdir(staleDir, { recursive: true });
+    await writeFile(path.join(staleDir, "00000000000000000000.part"), "abandoned");
+    const staleTime = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    await utimes(path.join(staleDir, "00000000000000000000.part"), staleTime, staleTime);
+    await utimes(staleDir, staleTime, staleTime);
+
+    const next = Buffer.from("new durable sqlite content");
+    const nextSha = createHash("sha256").update(next).digest("hex");
+    const first = await applyOfflineSyncFileContentChunk({
+      root,
+      sourceId: "laptop",
+      path: "state/lcm.sqlite",
+      sha256: nextSha,
+      bytes: next.byteLength,
+      mtimeMs: 123,
+      offset: 0,
+      content: next.subarray(0, 8),
+    });
+
+    assert.equal(first.done, false);
+    const uploadEntries = await readdir(path.join(root, ".offline-sync", "uploads"));
+    assert.equal(uploadEntries.includes(staleKey), false);
+    assert.equal(uploadEntries.length, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

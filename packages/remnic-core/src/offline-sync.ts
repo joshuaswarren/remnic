@@ -167,6 +167,7 @@ interface OfflineSyncFileRecordOptions {
 }
 
 const SYNC_INTERNAL_DIR = ".offline-sync";
+const OFFLINE_SYNC_UPLOAD_STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const EXCLUDED_FILE_NAMES = new Set([
   ".sync-state.json",
 ]);
@@ -1187,6 +1188,9 @@ export async function applyOfflineSyncFileContentChunk(options: {
   if (offset > bytes || offset + options.content.length > bytes) {
     throw new Error(`content chunk range exceeds declared file size for ${relPath}`);
   }
+  if (offset === 0) {
+    await pruneOfflineUploadStaging(root);
+  }
 
   const upload = await writeOfflineUploadChunk({
     root,
@@ -1366,23 +1370,26 @@ async function writeOfflineUploadChunk(options: {
   if (options.writeFile && !options.readFile) {
     throw new Error("offline sync upload chunk storage hooks require both readFile and writeFile");
   }
-  if (options.writeFile) {
-    const uploadRoot = {
-      ...(await offlineUploadPath(options.root, options)),
-      kind: "chunks" as const,
-    };
-    if (options.offset === 0) {
-      await rm(uploadRoot.filePath, { recursive: true, force: true }).catch(() => {});
-    } else {
-      const existing = await stat(uploadRoot.filePath).catch((error: unknown) => {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-        throw error;
-      });
-      if (!existing || !existing.isDirectory()) {
-        throw new Error(`offline sync upload is missing initial chunk for ${options.relPath}`);
-      }
+  const uploadRoot = {
+    ...(await offlineUploadPath(options.root, options)),
+    kind: "chunks" as const,
+  };
+  if (options.offset === 0) {
+    await rm(uploadRoot.filePath, { recursive: true, force: true }).catch(() => {});
+  } else {
+    const existing = await stat(uploadRoot.filePath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!existing || !existing.isDirectory()) {
+      throw new Error(`offline sync upload is missing initial chunk for ${options.relPath}`);
     }
-    const chunk = await offlineUploadChunkPath(options.root, { ...options, offset: options.offset });
+  }
+  const chunk = await offlineUploadChunkPath(options.root, { ...options, offset: options.offset });
+
+  if (options.writeFile) {
+    // Storage-backed services provide these hooks so secure-store deployments
+    // keep staged partial uploads encrypted at rest.
     await writeOfflineUploadContent({
       root: options.root,
       relPath: chunk.relPath,
@@ -1393,46 +1400,38 @@ async function writeOfflineUploadChunk(options: {
     return uploadRoot;
   }
 
-  const { relPath, filePath } = await offlineUploadPath(options.root, options);
-  await mkdir(path.dirname(filePath), { recursive: true });
-  if (options.offset === 0) {
-    const existing = await stat(filePath).catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    });
-    if (existing?.isDirectory()) {
-      await rm(filePath, { recursive: true, force: true });
-    }
-    const handle = await open(filePath, "w", 0o600);
-    try {
-      if (options.content.length > 0) {
-        await handle.write(options.content, 0, options.content.length, 0);
-      }
-    } finally {
-      await handle.close();
-    }
-    return { kind: "single", relPath, filePath };
-  }
-
-  const existing = await stat(filePath).catch((error: unknown) => {
+  await mkdir(path.dirname(chunk.filePath), { recursive: true });
+  const existingChunk = await lstat(chunk.filePath).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   });
-  if (!existing || !existing.isFile()) {
-    throw new Error(`offline sync upload is missing initial chunk for ${options.relPath}`);
+  if (existingChunk?.isSymbolicLink()) {
+    throw new Error(`offline sync upload chunk is a symlink: ${chunk.relPath}`);
   }
-  if (existing.size !== options.offset) {
-    throw new Error(
-      `offline sync upload offset mismatch for ${options.relPath}: expected ${existing.size}, got ${options.offset}`,
-    );
-  }
-  const handle = await open(filePath, "r+");
-  try {
-    await handle.write(options.content, 0, options.content.length, options.offset);
-  } finally {
-    await handle.close();
-  }
-  return { kind: "single", relPath, filePath };
+  await writeFile(chunk.filePath, options.content, { mode: 0o600 });
+  return uploadRoot;
+}
+
+async function pruneOfflineUploadStaging(root: SafeArchiveRoot): Promise<void> {
+  const uploadsRelPath = `${SYNC_INTERNAL_DIR}/uploads`;
+  const uploadsPath = await resolveSafeArchiveTarget(root, uploadsRelPath);
+  const entries = await readdir(uploadsPath, { withFileTypes: true }).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  });
+  const now = Date.now();
+  await Promise.all(entries.map(async (entry) => {
+    if (!/^[a-f0-9]{64}\.part$/i.test(entry.name)) return;
+    const relPath = `${uploadsRelPath}/${entry.name}`;
+    const filePath = await resolveSafeArchiveTarget(root, relPath);
+    const info = await lstat(filePath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (!info) return;
+    if (now - info.mtimeMs <= OFFLINE_SYNC_UPLOAD_STAGING_MAX_AGE_MS) return;
+    await rm(filePath, { recursive: true, force: true });
+  }));
 }
 
 async function readOfflineUploadStagingContent(options: {
