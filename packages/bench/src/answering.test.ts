@@ -286,6 +286,51 @@ test("agentic-memory answering does not retry unknown without explicit trajector
   assert.deepEqual(result.tokens, { input: 3, output: 1 });
 });
 
+test("strict answering retries unknown when structured benchmark evidence is present", async () => {
+  const questions: string[] = [];
+  const result = await answerBenchmarkQuestion({
+    question: "Which item should be selected?",
+    recalledText: [
+      "## Current MemoryArena task prompt",
+      "Available Options:",
+      "- A lemon cupcake topper.",
+      "- A Dessert Rose Sprinkle Mix.",
+      "",
+      "## Prior completed MemoryArena subtasks",
+      "Subtask 1: Selected item attributes: Vanilla Cake Mix",
+    ].join("\n"),
+    answerMode: "strict",
+    retryUnknownWithEvidence: true,
+    responder: {
+      async respond(question) {
+        questions.push(question);
+        if (questions.length === 1) {
+          return {
+            text: "unknown",
+            tokens: { input: 7, output: 1 },
+            latencyMs: 3,
+            model: "first-model",
+          };
+        }
+        assert.match(question, /prior answer was only "unknown"/);
+        assert.match(question, /benchmark evidence/);
+        return {
+          text: "item: A Dessert Rose Sprinkle Mix",
+          tokens: { input: 8, output: 6 },
+          latencyMs: 5,
+          model: "retry-model",
+        };
+      },
+    },
+  });
+
+  assert.equal(questions.length, 2);
+  assert.equal(result.finalAnswer, "item: A Dessert Rose Sprinkle Mix");
+  assert.deepEqual(result.tokens, { input: 15, output: 7 });
+  assert.equal(result.latencyMs, 8);
+  assert.equal(result.model, "retry-model");
+});
+
 test("agentic-memory answering preserves the first unknown answer when the optional retry fails", async () => {
   let calls = 0;
   const result = await answerBenchmarkQuestion({

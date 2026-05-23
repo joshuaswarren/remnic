@@ -163,6 +163,7 @@ export async function runMemoryArenaBenchmark(
             recalledText: options.system.responder ? answerContext : recalledText,
             responder: options.system.responder,
             answerMode: "strict",
+            retryUnknownWithEvidence: true,
           });
           const domainScores = scoreMemoryArenaDomainAnswer(
             task.category,
