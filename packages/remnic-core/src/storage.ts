@@ -2510,6 +2510,11 @@ export class StorageManager {
     await this.invalidateAfterOfflineSyncMutation(target);
   }
 
+  async writeOfflineSyncStagingFile(filePath: string, content: Buffer): Promise<void> {
+    const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncStagingFile");
+    await writeMaybeEncryptedFile(target, content, this.resolveWriteKey(), {}, this.baseDir);
+  }
+
   async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
     await writeMaybeEncryptedFileFromChunks(target, chunks, this.resolveWriteKey(), {}, this.baseDir);

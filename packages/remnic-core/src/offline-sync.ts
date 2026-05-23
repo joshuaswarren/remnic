@@ -135,6 +135,8 @@ export interface OfflineSyncFileWriteChunksTarget extends OfflineSyncFileTarget 
   chunks: AsyncIterable<Buffer>;
 }
 
+export interface OfflineSyncFileStagingWriteTarget extends OfflineSyncFileWriteTarget {}
+
 export interface OfflineSyncFileContentChunk extends Omit<OfflineSyncFileState, "sha256"> {
   sha256?: string;
   offset: number;
@@ -1161,6 +1163,7 @@ export async function applyOfflineSyncFileContentChunk(options: {
   includeTranscripts?: boolean;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
+  writeStagingFile?: (target: OfflineSyncFileStagingWriteTarget) => Promise<void>;
   writeFileChunks?: (target: OfflineSyncFileWriteChunksTarget) => Promise<void>;
 }): Promise<OfflineSyncApplyFileContentChunkResult> {
   const root = await ensureSyncRoot(options.root, "applyOfflineSyncFileContentChunk");
@@ -1196,6 +1199,9 @@ export async function applyOfflineSyncFileContentChunk(options: {
   if (options.writeFile && !options.writeFileChunks) {
     throw new Error("offline sync upload storage hooks require writeFileChunks");
   }
+  if (options.writeFile && !options.writeStagingFile) {
+    throw new Error("offline sync upload storage hooks require writeStagingFile");
+  }
   if (offset === 0) {
     await pruneOfflineUploadStaging(root);
   }
@@ -1210,6 +1216,7 @@ export async function applyOfflineSyncFileContentChunk(options: {
     content: options.content,
     readFile: options.readFile,
     writeFile: options.writeFile,
+    writeStagingFile: options.writeStagingFile,
   });
   const done = offset + options.content.length === bytes;
   const baseResult = {
@@ -1371,9 +1378,10 @@ async function writeOfflineUploadChunk(options: {
   content: Buffer;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
+  writeStagingFile?: (target: OfflineSyncFileStagingWriteTarget) => Promise<void>;
 }): Promise<OfflineUploadStaging> {
-  if (options.writeFile && !options.readFile) {
-    throw new Error("offline sync upload chunk storage hooks require both readFile and writeFile");
+  if ((options.writeFile || options.writeStagingFile) && !options.readFile) {
+    throw new Error("offline sync upload chunk storage hooks require readFile");
   }
   const uploadRoot = {
     ...(await offlineUploadPath(options.root, options)),
@@ -1392,15 +1400,16 @@ async function writeOfflineUploadChunk(options: {
   }
   const chunk = await offlineUploadChunkPath(options.root, { ...options, offset: options.offset });
 
-  if (options.writeFile) {
+  const writeStagingFile = options.writeStagingFile ?? options.writeFile;
+  if (writeStagingFile) {
     // Storage-backed services provide these hooks so secure-store deployments
-    // keep staged partial uploads encrypted at rest.
+    // keep staged partial uploads encrypted at rest without mutating indexes.
     await writeOfflineUploadContent({
       root: options.root,
       relPath: chunk.relPath,
       filePath: chunk.filePath,
       content: options.content,
-      writeFile: options.writeFile,
+      writeFile: writeStagingFile,
     });
     return uploadRoot;
   }

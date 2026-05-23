@@ -582,7 +582,15 @@ test("offline sync stages chunked uploads through storage hooks", async () => {
     return text.startsWith("ENC:") ? Buffer.from(text.slice(4), "base64") : content;
   };
   const readHook = async ({ filePath }: { filePath: string }) => decode(await readFile(filePath));
+  let stagingWrites = 0;
+  let mutationWrites = 0;
+  const writeStagingHook = async ({ filePath, content }: { filePath: string; content: Buffer }) => {
+    stagingWrites += 1;
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, encode(content));
+  };
   const writeHook = async ({ filePath, content }: { filePath: string; content: Buffer }) => {
+    mutationWrites += 1;
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, encode(content));
   };
@@ -616,9 +624,12 @@ test("offline sync stages chunked uploads through storage hooks", async () => {
       content: next.subarray(0, 8),
       readFile: readHook,
       writeFile: writeHook,
+      writeStagingFile: writeStagingHook,
       writeFileChunks: writeChunksHook,
     });
     assert.equal(first.done, false);
+    assert.equal(stagingWrites, 1);
+    assert.equal(mutationWrites, 0);
     const uploadEntries = await readdir(path.join(root, ".offline-sync", "uploads"));
     assert.equal(uploadEntries.length, 1);
     const uploadChunkEntries = await readdir(path.join(root, ".offline-sync", "uploads", uploadEntries[0]));
@@ -645,9 +656,12 @@ test("offline sync stages chunked uploads through storage hooks", async () => {
       content: next.subarray(8),
       readFile: readHook,
       writeFile: writeHook,
+      writeStagingFile: writeStagingHook,
       writeFileChunks: writeChunksHook,
     });
     assert.equal(second.applied, true);
+    assert.equal(stagingWrites, 2);
+    assert.equal(mutationWrites, 1);
     assert.equal((await readdir(path.join(root, ".offline-sync", "uploads"))).length, 0);
     const rawTarget = await readFile(path.join(root, "state/lcm.sqlite"));
     assert.match(rawTarget.toString("utf-8"), /^ENC:/);
@@ -1237,6 +1251,7 @@ test("offline sync applies and snapshots through secure storage hooks", async ()
       content: sqlite.subarray(0, 8),
       readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
       writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+      writeStagingFile: async ({ filePath, content }) => storage.writeOfflineSyncStagingFile(filePath, content),
       writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
     });
     assert.equal(first.done, false);
@@ -1251,6 +1266,7 @@ test("offline sync applies and snapshots through secure storage hooks", async ()
       content: sqlite.subarray(8),
       readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
       writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+      writeStagingFile: async ({ filePath, content }) => storage.writeOfflineSyncStagingFile(filePath, content),
       writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
     });
     assert.equal(second.applied, true);
