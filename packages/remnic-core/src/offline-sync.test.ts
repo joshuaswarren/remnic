@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -569,6 +569,68 @@ test("offline sync applies chunked file content with base conflict checks", asyn
     assert.equal(conflict.applied, false);
     assert.equal(conflict.conflict?.reason, "remote_changed_for_local_update");
     assert.equal(await readUtf8(root, "state/lcm.sqlite"), "new durable sqlite content");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline sync stages chunked uploads through storage hooks", async () => {
+  const root = await tempDir("remnic-offline-file-content-hooks");
+  const encode = (content: Buffer) => Buffer.from(`ENC:${content.toString("base64")}`);
+  const decode = (content: Buffer) => {
+    const text = content.toString("utf-8");
+    return text.startsWith("ENC:") ? Buffer.from(text.slice(4), "base64") : content;
+  };
+  const readHook = async ({ filePath }: { filePath: string }) => decode(await readFile(filePath));
+  const writeHook = async ({ filePath, content }: { filePath: string; content: Buffer }) => {
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, encode(content));
+  };
+
+  try {
+    await write(root, "state/lcm.sqlite", "old");
+    const oldSha = createHash("sha256").update("old").digest("hex");
+    const next = Buffer.from("new durable sqlite content");
+    const nextSha = createHash("sha256").update(next).digest("hex");
+
+    const first = await applyOfflineSyncFileContentChunk({
+      root,
+      sourceId: "laptop",
+      path: "state/lcm.sqlite",
+      sha256: nextSha,
+      bytes: next.byteLength,
+      mtimeMs: 123,
+      offset: 0,
+      baseSha256: oldSha,
+      content: next.subarray(0, 8),
+      readFile: readHook,
+      writeFile: writeHook,
+    });
+    assert.equal(first.done, false);
+    const uploadEntries = await readdir(path.join(root, ".offline-sync", "uploads"));
+    assert.equal(uploadEntries.length, 1);
+    const rawUpload = await readFile(path.join(root, ".offline-sync", "uploads", uploadEntries[0]));
+    assert.match(rawUpload.toString("utf-8"), /^ENC:/);
+    assert.equal(rawUpload.includes(next.subarray(0, 8)), false);
+
+    const second = await applyOfflineSyncFileContentChunk({
+      root,
+      sourceId: "laptop",
+      path: "state/lcm.sqlite",
+      sha256: nextSha,
+      bytes: next.byteLength,
+      mtimeMs: 123,
+      offset: 8,
+      baseSha256: oldSha,
+      content: next.subarray(8),
+      readFile: readHook,
+      writeFile: writeHook,
+    });
+    assert.equal(second.applied, true);
+    assert.equal((await readdir(path.join(root, ".offline-sync", "uploads"))).length, 0);
+    const rawTarget = await readFile(path.join(root, "state/lcm.sqlite"));
+    assert.match(rawTarget.toString("utf-8"), /^ENC:/);
+    assert.equal(decode(rawTarget).toString("utf-8"), "new durable sqlite content");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

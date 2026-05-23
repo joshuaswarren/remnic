@@ -678,11 +678,10 @@ export class EngramAccessHttpServer {
       )
     ) {
       const namespaceParam = parsed.searchParams.get("namespace");
+      this.ensureWriteRateLimitAvailable();
       const content = await this.readBinaryBody(req, OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES);
       const bytes = this.readRequiredIntegerHeader(req, "x-remnic-file-bytes");
       const offset = this.readOptionalIntegerHeader(req, "x-remnic-chunk-offset") ?? 0;
-      const isFinalChunk = offset + content.length === bytes;
-      if (isFinalChunk) this.ensureWriteRateLimitAvailable();
       const result = await this.service.offlineSyncApplyFileContent({
         namespace: this.resolveNamespace(
           req,
@@ -703,9 +702,7 @@ export class EngramAccessHttpServer {
         baseSha256: this.readOptionalHeader(req, "x-remnic-base-sha256"),
         content,
       });
-      if (isFinalChunk && (result.applied || result.skipped)) {
-        this.recordWriteRateLimitHit();
-      }
+      this.recordWriteRateLimitHit();
       this.respondJson(res, 200, result);
       return;
     }

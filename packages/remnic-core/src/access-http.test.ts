@@ -557,7 +557,7 @@ test("HTTP offline apply-file-content forwards binary chunks and metadata", asyn
   }
 });
 
-test("HTTP offline apply-file-content rate limits completed writes", async () => {
+test("HTTP offline apply-file-content rate limits accepted chunks", async () => {
   let calls = 0;
   const service = {
     offlineSyncApplyFileContent: async (options: {

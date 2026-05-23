@@ -5942,9 +5942,7 @@ async function pushOfflineFileContent(args: {
       content: chunk.content,
     });
     if (finalResult.conflict) {
-      throw new Error(
-        `offline sync large-file push conflict for ${args.file.path}: ${finalResult.conflict.reason}`,
-      );
+      return finalResult;
     }
     offset += chunk.chunkBytes;
     if (args.file.bytes === 0) break;
@@ -5997,9 +5995,7 @@ async function pushOfflineFileContentFromBufferedRead(args: {
       content: Buffer.from(content.subarray(offset, end)),
     });
     if (finalResult.conflict) {
-      throw new Error(
-        `offline sync large-file push conflict for ${args.file.path}: ${finalResult.conflict.reason}`,
-      );
+      return finalResult;
     }
     if (content.length === 0) break;
     offset = end;
@@ -6360,6 +6356,7 @@ async function runOfflineSyncOnce(options: {
   let directPushAppliedUpserts = 0;
   let directPushSkipped = 0;
   let directPushNamespace: string | undefined;
+  const directPushConflicts: Array<{ path: string; reason: string; conflictPath?: string }> = [];
   const directPushedPaths = new Set<string>();
   for (const file of offlineDirectPushFiles({
     currentFiles: currentSnapshotForPush.files,
@@ -6378,8 +6375,16 @@ async function runOfflineSyncOnce(options: {
     });
     directPushNamespace = result.namespace ?? directPushNamespace;
     directPushedPaths.add(file.path);
-    if (result.applied) directPushAppliedUpserts += 1;
-    if (result.skipped) directPushSkipped += 1;
+    if (result.conflict) {
+      directPushConflicts.push({
+        path: result.conflict.path,
+        reason: result.conflict.reason,
+        ...(result.conflict.conflictPath ? { conflictPath: result.conflict.conflictPath } : {}),
+      });
+    } else {
+      if (result.applied) directPushAppliedUpserts += 1;
+      if (result.skipped) directPushSkipped += 1;
+    }
   }
   const changeset = await buildOfflineSyncChangeset({
     root: options.memoryDir,
@@ -6403,7 +6408,7 @@ async function runOfflineSyncOnce(options: {
         appliedUpserts: (pushedInline?.appliedUpserts ?? 0) + directPushAppliedUpserts,
         appliedDeletes: pushedInline?.appliedDeletes ?? 0,
         skipped: (pushedInline?.skipped ?? 0) + directPushSkipped,
-        conflicts: pushedInline?.conflicts ?? [],
+        conflicts: [...directPushConflicts, ...(pushedInline?.conflicts ?? [])],
       }
     : null;
   const remoteSnapshotMetadata = await fetchOfflineSnapshot({

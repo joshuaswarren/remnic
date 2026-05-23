@@ -1189,6 +1189,8 @@ export async function applyOfflineSyncFileContentChunk(options: {
     bytes,
     offset,
     content: options.content,
+    readFile: options.readFile,
+    writeFile: options.writeFile,
   });
   const done = offset + options.content.length === bytes;
   const baseResult = {
@@ -1208,7 +1210,13 @@ export async function applyOfflineSyncFileContentChunk(options: {
     };
   }
 
-  const finalContent = await readFile(uploadPath);
+  const uploadRelPath = offlineUploadRelPath({ sourceId, relPath, sha256, bytes });
+  const finalContent = await readOfflineUploadContent({
+    root,
+    relPath: uploadRelPath,
+    filePath: uploadPath,
+    readFile: options.readFile,
+  });
   const digest = sha256Buffer(finalContent);
   if (digest.sha256 !== sha256 || digest.bytes !== bytes) {
     await unlink(uploadPath).catch(() => {});
@@ -1294,7 +1302,7 @@ export async function applyOfflineSyncFileContentChunk(options: {
   }
 }
 
-function offlineUploadPath(root: SafeArchiveRoot, options: {
+function offlineUploadRelPath(options: {
   sourceId: string;
   relPath: string;
   sha256: string;
@@ -1306,7 +1314,20 @@ function offlineUploadPath(root: SafeArchiveRoot, options: {
     options.sha256,
     String(options.bytes),
   ].join("\0"));
-  return path.join(root.abs, SYNC_INTERNAL_DIR, "uploads", `${key}.part`);
+  return `${SYNC_INTERNAL_DIR}/uploads/${key}.part`;
+}
+
+async function offlineUploadPath(root: SafeArchiveRoot, options: {
+  sourceId: string;
+  relPath: string;
+  sha256: string;
+  bytes: number;
+}): Promise<{ relPath: string; filePath: string }> {
+  const relPath = offlineUploadRelPath(options);
+  return {
+    relPath,
+    filePath: await resolveSafeArchiveTarget(root, relPath),
+  };
 }
 
 async function writeOfflineUploadChunk(options: {
@@ -1317,8 +1338,43 @@ async function writeOfflineUploadChunk(options: {
   bytes: number;
   offset: number;
   content: Buffer;
+  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+  writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
 }): Promise<string> {
-  const filePath = offlineUploadPath(options.root, options);
+  if (options.writeFile && !options.readFile) {
+    throw new Error("offline sync upload chunk storage hooks require both readFile and writeFile");
+  }
+  const { relPath, filePath } = await offlineUploadPath(options.root, options);
+  if (options.writeFile) {
+    const existing = options.offset === 0
+      ? Buffer.alloc(0)
+      : await readOfflineUploadContent({
+          root: options.root,
+          relPath,
+          filePath,
+          readFile: options.readFile,
+        }).catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw error;
+        });
+    if (existing === null) {
+      throw new Error(`offline sync upload is missing initial chunk for ${options.relPath}`);
+    }
+    if (existing.length !== options.offset) {
+      throw new Error(
+        `offline sync upload offset mismatch for ${options.relPath}: expected ${existing.length}, got ${options.offset}`,
+      );
+    }
+    await writeOfflineUploadContent({
+      root: options.root,
+      relPath,
+      filePath,
+      content: Buffer.concat([existing, options.content], options.offset + options.content.length),
+      writeFile: options.writeFile,
+    });
+    return filePath;
+  }
+
   await mkdir(path.dirname(filePath), { recursive: true });
   if (options.offset === 0) {
     const handle = await open(filePath, "w", 0o600);
@@ -1351,6 +1407,37 @@ async function writeOfflineUploadChunk(options: {
     await handle.close();
   }
   return filePath;
+}
+
+async function readOfflineUploadContent(options: {
+  root: SafeArchiveRoot;
+  relPath: string;
+  filePath: string;
+  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+}): Promise<Buffer> {
+  if (options.readFile) {
+    return options.readFile({
+      root: options.root.abs,
+      path: options.relPath,
+      filePath: options.filePath,
+    });
+  }
+  return readFile(options.filePath);
+}
+
+async function writeOfflineUploadContent(options: {
+  root: SafeArchiveRoot;
+  relPath: string;
+  filePath: string;
+  content: Buffer;
+  writeFile: (target: OfflineSyncFileWriteTarget) => Promise<void>;
+}): Promise<void> {
+  await options.writeFile({
+    root: options.root.abs,
+    path: options.relPath,
+    filePath: options.filePath,
+    content: options.content,
+  });
 }
 
 async function deleteSafeFile(
