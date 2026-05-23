@@ -6,6 +6,7 @@ import {
   readdir,
   readFile,
   rename,
+  rm,
   stat,
   unlink,
   writeFile,
@@ -149,6 +150,12 @@ export interface OfflineSyncApplyFileContentChunkResult {
   skipped: boolean;
   conflict?: OfflineSyncConflict;
   currentFile?: OfflineSyncFileState;
+}
+
+interface OfflineUploadStaging {
+  kind: "single" | "chunks";
+  relPath: string;
+  filePath: string;
 }
 
 interface OfflineSyncFileRecordOptions {
@@ -1181,7 +1188,7 @@ export async function applyOfflineSyncFileContentChunk(options: {
     throw new Error(`content chunk range exceeds declared file size for ${relPath}`);
   }
 
-  const uploadPath = await writeOfflineUploadChunk({
+  const upload = await writeOfflineUploadChunk({
     root,
     sourceId,
     relPath,
@@ -1210,16 +1217,14 @@ export async function applyOfflineSyncFileContentChunk(options: {
     };
   }
 
-  const uploadRelPath = offlineUploadRelPath({ sourceId, relPath, sha256, bytes });
-  const finalContent = await readOfflineUploadContent({
+  const finalContent = await readOfflineUploadStagingContent({
     root,
-    relPath: uploadRelPath,
-    filePath: uploadPath,
+    upload,
     readFile: options.readFile,
   });
   const digest = sha256Buffer(finalContent);
   if (digest.sha256 !== sha256 || digest.bytes !== bytes) {
-    await unlink(uploadPath).catch(() => {});
+    await cleanupOfflineUpload(upload).catch(() => {});
     throw new Error(`offline sync upload checksum mismatch for ${relPath}`);
   }
 
@@ -1298,7 +1303,7 @@ export async function applyOfflineSyncFileContentChunk(options: {
       currentFile: uploadedState,
     };
   } finally {
-    await unlink(uploadPath).catch(() => {});
+    await cleanupOfflineUpload(upload).catch(() => {});
   }
 }
 
@@ -1322,9 +1327,26 @@ async function offlineUploadPath(root: SafeArchiveRoot, options: {
   relPath: string;
   sha256: string;
   bytes: number;
-}): Promise<{ relPath: string; filePath: string }> {
+}): Promise<OfflineUploadStaging> {
   const relPath = offlineUploadRelPath(options);
   return {
+    kind: "single",
+    relPath,
+    filePath: await resolveSafeArchiveTarget(root, relPath),
+  };
+}
+
+async function offlineUploadChunkPath(root: SafeArchiveRoot, options: {
+  sourceId: string;
+  relPath: string;
+  sha256: string;
+  bytes: number;
+  offset: number;
+}): Promise<OfflineUploadStaging> {
+  const uploadRelPath = offlineUploadRelPath(options);
+  const relPath = `${uploadRelPath}/${String(options.offset).padStart(20, "0")}.part`;
+  return {
+    kind: "chunks",
     relPath,
     filePath: await resolveSafeArchiveTarget(root, relPath),
   };
@@ -1340,43 +1362,47 @@ async function writeOfflineUploadChunk(options: {
   content: Buffer;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
-}): Promise<string> {
+}): Promise<OfflineUploadStaging> {
   if (options.writeFile && !options.readFile) {
     throw new Error("offline sync upload chunk storage hooks require both readFile and writeFile");
   }
-  const { relPath, filePath } = await offlineUploadPath(options.root, options);
   if (options.writeFile) {
-    const existing = options.offset === 0
-      ? Buffer.alloc(0)
-      : await readOfflineUploadContent({
-          root: options.root,
-          relPath,
-          filePath,
-          readFile: options.readFile,
-        }).catch((error: unknown) => {
-          if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-          throw error;
-        });
-    if (existing === null) {
-      throw new Error(`offline sync upload is missing initial chunk for ${options.relPath}`);
+    const uploadRoot = {
+      ...(await offlineUploadPath(options.root, options)),
+      kind: "chunks" as const,
+    };
+    if (options.offset === 0) {
+      await rm(uploadRoot.filePath, { recursive: true, force: true }).catch(() => {});
+    } else {
+      const existing = await stat(uploadRoot.filePath).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      });
+      if (!existing || !existing.isDirectory()) {
+        throw new Error(`offline sync upload is missing initial chunk for ${options.relPath}`);
+      }
     }
-    if (existing.length !== options.offset) {
-      throw new Error(
-        `offline sync upload offset mismatch for ${options.relPath}: expected ${existing.length}, got ${options.offset}`,
-      );
-    }
+    const chunk = await offlineUploadChunkPath(options.root, { ...options, offset: options.offset });
     await writeOfflineUploadContent({
       root: options.root,
-      relPath,
-      filePath,
-      content: Buffer.concat([existing, options.content], options.offset + options.content.length),
+      relPath: chunk.relPath,
+      filePath: chunk.filePath,
+      content: options.content,
       writeFile: options.writeFile,
     });
-    return filePath;
+    return uploadRoot;
   }
 
+  const { relPath, filePath } = await offlineUploadPath(options.root, options);
   await mkdir(path.dirname(filePath), { recursive: true });
   if (options.offset === 0) {
+    const existing = await stat(filePath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    });
+    if (existing?.isDirectory()) {
+      await rm(filePath, { recursive: true, force: true });
+    }
     const handle = await open(filePath, "w", 0o600);
     try {
       if (options.content.length > 0) {
@@ -1385,7 +1411,7 @@ async function writeOfflineUploadChunk(options: {
     } finally {
       await handle.close();
     }
-    return filePath;
+    return { kind: "single", relPath, filePath };
   }
 
   const existing = await stat(filePath).catch((error: unknown) => {
@@ -1406,7 +1432,62 @@ async function writeOfflineUploadChunk(options: {
   } finally {
     await handle.close();
   }
-  return filePath;
+  return { kind: "single", relPath, filePath };
+}
+
+async function readOfflineUploadStagingContent(options: {
+  root: SafeArchiveRoot;
+  upload: OfflineUploadStaging;
+  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+}): Promise<Buffer> {
+  if (options.upload.kind === "single") {
+    return readOfflineUploadContent({
+      root: options.root,
+      relPath: options.upload.relPath,
+      filePath: options.upload.filePath,
+      readFile: options.readFile,
+    });
+  }
+
+  const entries = await readdir(options.upload.filePath);
+  const chunkNames = entries
+    .filter((entry) => /^\d{20}\.part$/.test(entry))
+    .sort();
+  if (chunkNames.length === 0) {
+    throw new Error(`offline sync upload is missing chunks for ${options.upload.relPath}`);
+  }
+  const chunks: Buffer[] = [];
+  let expectedOffset = 0;
+  for (const chunkName of chunkNames) {
+    const offset = Number(chunkName.slice(0, 20));
+    if (!Number.isSafeInteger(offset) || offset !== expectedOffset) {
+      throw new Error(
+        `offline sync upload offset mismatch for ${options.upload.relPath}: expected ${expectedOffset}, got ${offset}`,
+      );
+    }
+    const relPath = `${options.upload.relPath}/${chunkName}`;
+    const filePath = await resolveSafeArchiveTarget(options.root, relPath);
+    const content = await readOfflineUploadContent({
+      root: options.root,
+      relPath,
+      filePath,
+      readFile: options.readFile,
+    });
+    chunks.push(content);
+    expectedOffset += content.length;
+  }
+  return Buffer.concat(chunks, expectedOffset);
+}
+
+async function cleanupOfflineUpload(upload: OfflineUploadStaging): Promise<void> {
+  if (upload.kind === "chunks") {
+    await rm(upload.filePath, { recursive: true, force: true });
+    return;
+  }
+  await unlink(upload.filePath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  });
 }
 
 async function readOfflineUploadContent(options: {

@@ -609,7 +609,15 @@ test("offline sync stages chunked uploads through storage hooks", async () => {
     assert.equal(first.done, false);
     const uploadEntries = await readdir(path.join(root, ".offline-sync", "uploads"));
     assert.equal(uploadEntries.length, 1);
-    const rawUpload = await readFile(path.join(root, ".offline-sync", "uploads", uploadEntries[0]));
+    const uploadChunkEntries = await readdir(path.join(root, ".offline-sync", "uploads", uploadEntries[0]));
+    assert.deepEqual(uploadChunkEntries, ["00000000000000000000.part"]);
+    const rawUpload = await readFile(path.join(
+      root,
+      ".offline-sync",
+      "uploads",
+      uploadEntries[0],
+      uploadChunkEntries[0],
+    ));
     assert.match(rawUpload.toString("utf-8"), /^ENC:/);
     assert.equal(rawUpload.includes(next.subarray(0, 8)), false);
 
