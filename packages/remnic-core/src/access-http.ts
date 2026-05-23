@@ -9,6 +9,7 @@ import { log } from "./logger.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { EngramMcpServer } from "./access-mcp.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
+import { OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES } from "./offline-sync.js";
 import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { isRecallDisclosure } from "./types.js";
 import { isTrustZoneName, type TrustZoneName, type TrustZoneRecordKind, type TrustZoneSourceClass } from "./trust-zones.js";
@@ -666,6 +667,39 @@ export class EngramAccessHttpServer {
         "x-remnic-chunk-bytes": String(result.chunkBytes),
         ...(result.sha256 ? { "x-remnic-file-sha256": result.sha256 } : {}),
       });
+      return;
+    }
+
+    if (
+      req.method === "POST" &&
+      (
+        pathname === "/engram/v1/offline-sync/apply-file-content" ||
+        pathname === "/remnic/v1/offline-sync/apply-file-content"
+      )
+    ) {
+      const namespaceParam = parsed.searchParams.get("namespace");
+      const content = await this.readBinaryBody(req, OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES);
+      const result = await this.service.offlineSyncApplyFileContent({
+        namespace: this.resolveNamespace(
+          req,
+          namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined,
+        ),
+        principal: this.resolveRequestPrincipal(req),
+        includeTranscripts: this.parseOptionalBooleanHeader(
+          req,
+          "x-remnic-include-transcripts",
+          true,
+        ),
+        sourceId: this.readRequiredDecodedHeader(req, "x-remnic-source-id"),
+        path: this.readRequiredDecodedHeader(req, "x-remnic-file-path"),
+        sha256: this.readRequiredHeader(req, "x-remnic-file-sha256"),
+        bytes: this.readRequiredIntegerHeader(req, "x-remnic-file-bytes"),
+        mtimeMs: this.readRequiredNumberHeader(req, "x-remnic-file-mtime-ms"),
+        offset: this.readOptionalIntegerHeader(req, "x-remnic-chunk-offset"),
+        baseSha256: this.readOptionalHeader(req, "x-remnic-base-sha256"),
+        content,
+      });
+      this.respondJson(res, 200, result);
       return;
     }
 
@@ -1909,6 +1943,83 @@ export class EngramAccessHttpServer {
       throw new HttpError(400, "invalid_json_object", "invalid_json_object");
     }
     return parsed as Record<string, unknown>;
+  }
+
+  private async readBinaryBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for await (const chunk of req) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buffer.length;
+      if (total > maxBytes) {
+        throw new HttpError(413, "request_body_too_large", "request_body_too_large");
+      }
+      chunks.push(buffer);
+    }
+    return Buffer.concat(chunks, total);
+  }
+
+  private readRequiredHeader(req: IncomingMessage, name: string): string {
+    const value = this.readOptionalHeader(req, name);
+    if (value === undefined || value.length === 0) {
+      throw new EngramAccessInputError(`${name} header is required`);
+    }
+    return value;
+  }
+
+  private readOptionalHeader(req: IncomingMessage, name: string): string | undefined {
+    const raw = req.headers[name.toLowerCase()];
+    if (Array.isArray(raw)) return raw[0]?.trim() || undefined;
+    return raw?.trim() || undefined;
+  }
+
+  private readRequiredDecodedHeader(req: IncomingMessage, name: string): string {
+    const raw = this.readRequiredHeader(req, name);
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      throw new EngramAccessInputError(`${name} header is not valid percent-encoded input`);
+    }
+  }
+
+  private readRequiredIntegerHeader(req: IncomingMessage, name: string): number {
+    const raw = this.readRequiredHeader(req, name);
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new EngramAccessInputError(`${name} header must be a non-negative integer`);
+    }
+    return parsed;
+  }
+
+  private readOptionalIntegerHeader(req: IncomingMessage, name: string): number | undefined {
+    const raw = this.readOptionalHeader(req, name);
+    if (raw === undefined) return undefined;
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new EngramAccessInputError(`${name} header must be a non-negative integer`);
+    }
+    return parsed;
+  }
+
+  private readRequiredNumberHeader(req: IncomingMessage, name: string): number {
+    const raw = this.readRequiredHeader(req, name);
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new EngramAccessInputError(`${name} header must be a non-negative finite number`);
+    }
+    return parsed;
+  }
+
+  private parseOptionalBooleanHeader(
+    req: IncomingMessage,
+    name: string,
+    defaultValue: boolean,
+  ): boolean {
+    const raw = this.readOptionalHeader(req, name);
+    if (raw === undefined) return defaultValue;
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+    throw new EngramAccessInputError(`${name} header must be one of: true, false`);
   }
 
   private async readValidatedBody<S extends SchemaName>(req: IncomingMessage, schemaName: S): Promise<SchemaTypeFor<S>> {

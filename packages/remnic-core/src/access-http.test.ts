@@ -449,6 +449,114 @@ test("HTTP offline file-content forwards range options and returns binary metada
   }
 });
 
+test("HTTP offline apply-file-content forwards binary chunks and metadata", async () => {
+  const calls: Array<{
+    namespace: string | undefined;
+    principal: string | undefined;
+    includeTranscripts: boolean | undefined;
+    sourceId: string;
+    path: string;
+    sha256: string;
+    bytes: number;
+    mtimeMs: number;
+    offset: number | undefined;
+    baseSha256: string | undefined;
+    content: string;
+  }> = [];
+  const service = {
+    offlineSyncApplyFileContent: async (options: {
+      namespace?: string;
+      principal?: string;
+      includeTranscripts?: boolean;
+      sourceId: string;
+      path: string;
+      sha256: string;
+      bytes: number;
+      mtimeMs: number;
+      offset?: number;
+      baseSha256?: string;
+      content: Buffer;
+    }) => {
+      calls.push({
+        namespace: options.namespace,
+        principal: options.principal,
+        includeTranscripts: options.includeTranscripts,
+        sourceId: options.sourceId,
+        path: options.path,
+        sha256: options.sha256,
+        bytes: options.bytes,
+        mtimeMs: options.mtimeMs,
+        offset: options.offset,
+        baseSha256: options.baseSha256,
+        content: options.content.toString("utf-8"),
+      });
+      return {
+        namespace: options.namespace ?? "default",
+        path: options.path,
+        sha256: options.sha256,
+        bytes: options.bytes,
+        mtimeMs: options.mtimeMs,
+        offset: options.offset ?? 0,
+        chunkBytes: options.content.length,
+        done: true,
+        applied: true,
+        skipped: false,
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "writer",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/apply-file-content?namespace=team`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/octet-stream",
+          "x-remnic-include-transcripts": "false",
+          "x-remnic-source-id": encodeURIComponent("laptop:test"),
+          "x-remnic-file-path": encodeURIComponent("state/lcm.sqlite"),
+          "x-remnic-file-sha256": "b".repeat(64),
+          "x-remnic-file-bytes": "5",
+          "x-remnic-file-mtime-ms": "1234",
+          "x-remnic-chunk-offset": "8",
+          "x-remnic-base-sha256": "a".repeat(64),
+        },
+        body: Buffer.from("hello"),
+      },
+    );
+    const body = await response.json() as { namespace?: string; applied?: boolean; chunkBytes?: number };
+
+    assert.equal(response.status, 200);
+    assert.equal(body.namespace, "team");
+    assert.equal(body.applied, true);
+    assert.equal(body.chunkBytes, 5);
+    assert.deepEqual(calls, [{
+      namespace: "team",
+      principal: "writer",
+      includeTranscripts: false,
+      sourceId: "laptop:test",
+      path: "state/lcm.sqlite",
+      sha256: "b".repeat(64),
+      bytes: 5,
+      mtimeMs: 1234,
+      offset: 8,
+      baseSha256: "a".repeat(64),
+      content: "hello",
+    }]);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP offline snapshot rejects invalid boolean query values", async () => {
   let calls = 0;
   const service = {

@@ -136,10 +136,12 @@ import {
   type CapsuleListEntry,
 } from "./capsule-cli.js";
 import {
+  applyOfflineSyncFileContentChunk,
   applyOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotForPaths,
   readOfflineSyncFileContentChunk,
+  type OfflineSyncApplyFileContentChunkResult,
   type OfflineSyncApplyChangesetResult,
   type OfflineSyncFileContentChunk,
   type OfflineSyncSnapshot,
@@ -635,6 +637,20 @@ export interface EngramAccessOfflineSyncFileContentRequest {
   length?: number;
 }
 
+export interface EngramAccessOfflineSyncApplyFileContentRequest {
+  namespace?: string;
+  principal?: string;
+  includeTranscripts?: boolean;
+  sourceId: string;
+  path: string;
+  sha256: string;
+  bytes: number;
+  mtimeMs: number;
+  offset?: number;
+  baseSha256?: string;
+  content: Buffer;
+}
+
 export interface EngramAccessOfflineSyncApplyRequest {
   namespace?: string;
   principal?: string;
@@ -650,6 +666,10 @@ export interface EngramAccessOfflineSyncFilesResponse extends OfflineSyncSnapsho
 }
 
 export interface EngramAccessOfflineSyncFileContentResponse extends OfflineSyncFileContentChunk {
+  namespace: string;
+}
+
+export interface EngramAccessOfflineSyncApplyFileContentResponse extends OfflineSyncApplyFileContentChunkResult {
   namespace: string;
 }
 
@@ -5654,6 +5674,43 @@ export class EngramAccessService {
         message.startsWith("length ") ||
         message.startsWith("offline sync file content ")
       ) {
+        throw new EngramAccessInputError(message);
+      }
+      throw error;
+    }
+  }
+
+  async offlineSyncApplyFileContent(
+    options: EngramAccessOfflineSyncApplyFileContentRequest,
+  ): Promise<EngramAccessOfflineSyncApplyFileContentResponse> {
+    const resolvedNamespace = this.resolveWritableNamespace(
+      options.namespace,
+      undefined,
+      options.principal,
+    );
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    try {
+      const result = await applyOfflineSyncFileContentChunk({
+        root: storage.dir,
+        sourceId: options.sourceId,
+        path: options.path,
+        sha256: options.sha256,
+        bytes: options.bytes,
+        mtimeMs: options.mtimeMs,
+        offset: options.offset,
+        baseSha256: options.baseSha256,
+        content: options.content,
+        includeTranscripts: options.includeTranscripts !== false,
+        readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+        writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+      });
+      return {
+        namespace: resolvedNamespace,
+        ...result,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("offline sync") || message.startsWith("path:")) {
         throw new EngramAccessInputError(message);
       }
       throw error;
