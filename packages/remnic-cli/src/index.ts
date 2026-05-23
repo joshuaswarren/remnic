@@ -5899,6 +5899,11 @@ async function pushOfflineFileContent(args: {
   baseSha256?: string;
   readFile?: Parameters<typeof readOfflineSyncFileContentChunk>[0]["readFile"];
 }): Promise<OfflineSyncApplyFileContentChunkResult & { namespace?: string }> {
+  if (args.readFile) {
+    return pushOfflineFileContentFromBufferedRead(args as typeof args & {
+      readFile: NonNullable<typeof args.readFile>;
+    });
+  }
   let offset = 0;
   let finalResult: (OfflineSyncApplyFileContentChunkResult & { namespace?: string }) | null = null;
   while (offset < args.file.bytes || (args.file.bytes === 0 && offset === 0)) {
@@ -5943,6 +5948,61 @@ async function pushOfflineFileContent(args: {
     }
     offset += chunk.chunkBytes;
     if (args.file.bytes === 0) break;
+  }
+  if (!finalResult?.done) {
+    throw new Error(`offline sync large-file push did not finish for ${args.file.path}`);
+  }
+  return finalResult;
+}
+
+async function pushOfflineFileContentFromBufferedRead(args: {
+  remoteUrl: string;
+  token: string;
+  namespace?: string;
+  includeTranscripts: boolean;
+  memoryDir: string;
+  sourceId: string;
+  file: OfflineSyncFileState;
+  baseSha256?: string;
+  readFile: NonNullable<Parameters<typeof readOfflineSyncFileContentChunk>[0]["readFile"]>;
+}): Promise<OfflineSyncApplyFileContentChunkResult & { namespace?: string }> {
+  const filePath = resolveOfflineDirectHydrationPath(args.memoryDir, args.file.path);
+  const stat = fs.statSync(filePath);
+  if (stat.mtimeMs !== args.file.mtimeMs) {
+    throw new Error(`local file changed while pushing offline content: ${args.file.path}`);
+  }
+  const content = await args.readFile({
+    root: path.resolve(args.memoryDir),
+    path: args.file.path,
+    filePath,
+  });
+  const digest = createHash("sha256").update(content).digest("hex");
+  if (digest !== args.file.sha256 || content.length !== args.file.bytes) {
+    throw new Error(`local file changed while pushing offline content: ${args.file.path}`);
+  }
+
+  let offset = 0;
+  let finalResult: (OfflineSyncApplyFileContentChunkResult & { namespace?: string }) | null = null;
+  while (offset < content.length || (content.length === 0 && offset === 0)) {
+    const end = Math.min(content.length, offset + OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES);
+    finalResult = await postOfflineFileContentChunk({
+      remoteUrl: args.remoteUrl,
+      token: args.token,
+      namespace: args.namespace,
+      includeTranscripts: args.includeTranscripts,
+      sourceId: args.sourceId,
+      file: args.file,
+      baseSha256: args.baseSha256,
+      offset,
+      content: Buffer.from(content.subarray(offset, end)),
+    });
+    if (finalResult.conflict) {
+      throw new Error(
+        `offline sync large-file push conflict for ${args.file.path}: ${finalResult.conflict.reason}`,
+      );
+    }
+    if (content.length === 0) break;
+    offset = end;
   }
   if (!finalResult?.done) {
     throw new Error(`offline sync large-file push did not finish for ${args.file.path}`);

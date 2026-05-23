@@ -557,6 +557,74 @@ test("HTTP offline apply-file-content forwards binary chunks and metadata", asyn
   }
 });
 
+test("HTTP offline apply-file-content rate limits completed writes", async () => {
+  let calls = 0;
+  const service = {
+    offlineSyncApplyFileContent: async (options: {
+      namespace?: string;
+      path: string;
+      sha256: string;
+      bytes: number;
+      mtimeMs: number;
+      offset?: number;
+      content: Buffer;
+    }) => {
+      calls += 1;
+      return {
+        namespace: options.namespace ?? "default",
+        path: options.path,
+        sha256: options.sha256,
+        bytes: options.bytes,
+        mtimeMs: options.mtimeMs,
+        offset: options.offset ?? 0,
+        chunkBytes: options.content.length,
+        done: true,
+        applied: true,
+        skipped: false,
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "writer",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    let lastStatus = 0;
+    for (let i = 0; i < 31; i += 1) {
+      const response = await fetch(
+        `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/apply-file-content?namespace=team`,
+        {
+          method: "POST",
+          headers: {
+            authorization: "Bearer test-token",
+            "content-type": "application/octet-stream",
+            "x-remnic-source-id": encodeURIComponent("laptop:test"),
+            "x-remnic-file-path": encodeURIComponent(`state/file-${i}.bin`),
+            "x-remnic-file-sha256": "b".repeat(64),
+            "x-remnic-file-bytes": "5",
+            "x-remnic-file-mtime-ms": "1234",
+            "x-remnic-chunk-offset": "0",
+          },
+          body: new Blob([new Uint8Array(Buffer.from("hello"))]),
+        },
+      );
+      lastStatus = response.status;
+      if (!response.ok) break;
+      await response.arrayBuffer();
+    }
+
+    assert.equal(lastStatus, 429);
+    assert.equal(calls, 30);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP offline snapshot rejects invalid boolean query values", async () => {
   let calls = 0;
   const service = {
