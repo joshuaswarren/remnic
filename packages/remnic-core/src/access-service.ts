@@ -5703,6 +5703,7 @@ export class EngramAccessService {
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+        writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
       });
       return {
         namespace: resolvedNamespace,

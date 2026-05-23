@@ -43,10 +43,21 @@
  * Naming: `secure-fs.ts` (not `vault-fs.ts`) — see `kdf.ts` naming note.
  */
 
-import { lstat, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { createCipheriv, randomBytes } from "node:crypto";
+import { lstat, mkdir, open as openFile, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { generateSalt, open, seal } from "./cipher.js";
+import {
+  AUTH_TAG_LENGTH,
+  ENVELOPE_HEADER_SIZE,
+  ENVELOPE_LAYOUT,
+  ENVELOPE_SALT_LENGTH,
+  ENVELOPE_VERSION,
+  IV_LENGTH,
+  generateSalt,
+  open as openEnvelope,
+  seal,
+} from "./cipher.js";
 
 // ---------------------------------------------------------------------------
 // Error classes
@@ -157,13 +168,20 @@ export function decryptFileBody(buf: Buffer, key: Buffer, aad?: Buffer): Buffer 
   }
   const envelope = buf.subarray(MAGIC_HEADER_SIZE);
   try {
-    return open(key, envelope, aad ? { aad } : {});
+    return openEnvelope(key, envelope, aad ? { aad } : {});
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new SecureStoreDecryptError(
       `secure-store decryption failed: ${msg}`,
     );
   }
+}
+
+function buildHeaderAad(salt: Uint8Array): Buffer {
+  const out = Buffer.alloc(1 + ENVELOPE_SALT_LENGTH);
+  out.writeUInt8(ENVELOPE_VERSION, 0);
+  Buffer.from(salt).copy(out, 1);
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +308,69 @@ export async function writeMaybeEncryptedFile(
     }
   } else {
     await writeFile(filePath, data, { mode });
+  }
+}
+
+export async function writeMaybeEncryptedFileFromChunks(
+  filePath: string,
+  chunks: AsyncIterable<Buffer>,
+  key: Buffer | null,
+  options: WriteMaybeEncryptedFileOptions = {},
+  memoryDir?: string,
+): Promise<void> {
+  const { mode = 0o600, atomic = true } = options;
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const writePath = atomic ? `${filePath}.tmp-${process.pid}-${Date.now()}` : filePath;
+  let completed = false;
+  try {
+    const handle = await openFile(writePath, "w", mode);
+    try {
+      if (key !== null) {
+        const salt = generateSalt();
+        const iv = randomBytes(IV_LENGTH);
+        const header = Buffer.alloc(MAGIC_HEADER_SIZE + ENVELOPE_HEADER_SIZE);
+        MAGIC_BYTES.copy(header, 0);
+        header.writeUInt8(FILE_FORMAT_VERSION, MAGIC_BYTES.length);
+        header.writeUInt8(FILE_FORMAT_FLAGS, MAGIC_BYTES.length + 1);
+        const envelopeOffset = MAGIC_HEADER_SIZE;
+        header.writeUInt8(ENVELOPE_VERSION, envelopeOffset + ENVELOPE_LAYOUT.version);
+        salt.copy(header, envelopeOffset + ENVELOPE_LAYOUT.salt);
+        iv.copy(header, envelopeOffset + ENVELOPE_LAYOUT.iv);
+        await handle.write(header);
+
+        const cipher = createCipheriv("aes-256-gcm", key, iv, { authTagLength: AUTH_TAG_LENGTH });
+        const aad = filePathAad(filePath, memoryDir);
+        cipher.setAAD(Buffer.concat([buildHeaderAad(salt), aad]));
+        for await (const chunk of chunks) {
+          if (chunk.length === 0) continue;
+          const encrypted = cipher.update(chunk);
+          if (encrypted.length > 0) await handle.write(encrypted);
+        }
+        const final = cipher.final();
+        if (final.length > 0) await handle.write(final);
+        const authTag = cipher.getAuthTag();
+        await handle.write(
+          authTag,
+          0,
+          authTag.length,
+          MAGIC_HEADER_SIZE + ENVELOPE_LAYOUT.authTag,
+        );
+      } else {
+        for await (const chunk of chunks) {
+          if (chunk.length > 0) await handle.write(chunk);
+        }
+      }
+    } finally {
+      await handle.close();
+    }
+    if (atomic) {
+      await rename(writePath, filePath);
+    }
+    completed = true;
+  } finally {
+    if (!completed && atomic) {
+      await unlink(writePath).catch(() => {});
+    }
   }
 }
 

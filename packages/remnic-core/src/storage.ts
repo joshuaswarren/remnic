@@ -14,6 +14,7 @@ import {
   readMaybeEncryptedFileBuffer,
   readMaybeEncryptedFile,
   writeMaybeEncryptedFile,
+  writeMaybeEncryptedFileFromChunks,
 } from "./secure-store/secure-fs.js";
 import {
   isConsolidationOperator,
@@ -2506,6 +2507,12 @@ export class StorageManager {
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
     await writeMaybeEncryptedFile(target, content, this.resolveWriteKey(), {}, this.baseDir);
+    await this.invalidateAfterOfflineSyncMutation(target);
+  }
+
+  async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
+    const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
+    await writeMaybeEncryptedFileFromChunks(target, chunks, this.resolveWriteKey(), {}, this.baseDir);
     await this.invalidateAfterOfflineSyncMutation(target);
   }
 

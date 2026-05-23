@@ -586,6 +586,17 @@ test("offline sync stages chunked uploads through storage hooks", async () => {
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, encode(content));
   };
+  const writeChunksHook = async ({
+    filePath,
+    chunks,
+  }: {
+    filePath: string;
+    chunks: AsyncIterable<Buffer>;
+  }) => {
+    const content: Buffer[] = [];
+    for await (const chunk of chunks) content.push(chunk);
+    await writeHook({ filePath, content: Buffer.concat(content) });
+  };
 
   try {
     await write(root, "state/lcm.sqlite", "old");
@@ -605,6 +616,7 @@ test("offline sync stages chunked uploads through storage hooks", async () => {
       content: next.subarray(0, 8),
       readFile: readHook,
       writeFile: writeHook,
+      writeFileChunks: writeChunksHook,
     });
     assert.equal(first.done, false);
     const uploadEntries = await readdir(path.join(root, ".offline-sync", "uploads"));
@@ -633,6 +645,7 @@ test("offline sync stages chunked uploads through storage hooks", async () => {
       content: next.subarray(8),
       readFile: readHook,
       writeFile: writeHook,
+      writeFileChunks: writeChunksHook,
     });
     assert.equal(second.applied, true);
     assert.equal((await readdir(path.join(root, ".offline-sync", "uploads"))).length, 0);
@@ -1210,6 +1223,43 @@ test("offline sync applies and snapshots through secure storage hooks", async ()
       "secret fact",
     );
     assert.equal(snapshot.files[0]?.bytes, Buffer.byteLength("secret fact"));
+
+    const sqlite = Buffer.from("streamed durable sqlite content");
+    const sqliteSha = createHash("sha256").update(sqlite).digest("hex");
+    const first = await applyOfflineSyncFileContentChunk({
+      root,
+      sourceId: "laptop",
+      path: "state/lcm.sqlite",
+      sha256: sqliteSha,
+      bytes: sqlite.byteLength,
+      mtimeMs: 321,
+      offset: 0,
+      content: sqlite.subarray(0, 8),
+      readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+      writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+      writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
+    });
+    assert.equal(first.done, false);
+    const second = await applyOfflineSyncFileContentChunk({
+      root,
+      sourceId: "laptop",
+      path: "state/lcm.sqlite",
+      sha256: sqliteSha,
+      bytes: sqlite.byteLength,
+      mtimeMs: 321,
+      offset: 8,
+      content: sqlite.subarray(8),
+      readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+      writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
+      writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
+    });
+    assert.equal(second.applied, true);
+    const rawSqlite = await readFile(path.join(root, "state", "lcm.sqlite"));
+    assert.equal(isEncryptedFile(rawSqlite), true);
+    assert.equal(
+      (await storage.readOfflineSyncFile(path.join(root, "state", "lcm.sqlite"))).toString("utf8"),
+      "streamed durable sqlite content",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(source, { recursive: true, force: true });
