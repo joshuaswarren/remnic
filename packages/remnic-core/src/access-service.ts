@@ -5710,7 +5710,18 @@ export class EngramAccessService {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.startsWith("offline sync") || message.startsWith("path:")) {
+      if (
+        message.startsWith("offline sync") ||
+        message.startsWith("path:") ||
+        message.startsWith("sourceId must ") ||
+        message.startsWith("sha256 must ") ||
+        message.startsWith("baseSha256 must ") ||
+        message.startsWith("bytes must ") ||
+        message.startsWith("mtimeMs must ") ||
+        message.startsWith("offset must ") ||
+        message.startsWith("content chunk ") ||
+        message === "content must be a Buffer"
+      ) {
         throw new EngramAccessInputError(message);
       }
       throw error;
