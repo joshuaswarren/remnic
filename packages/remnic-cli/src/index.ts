@@ -6471,6 +6471,27 @@ function secureStoreEnvelopeHeaderAad(salt: Uint8Array): Buffer {
   return out;
 }
 
+export function formatOfflineLargeFilePushFailureMessage(
+  failures: readonly { path: string; error: string }[],
+): string {
+  const paths = failures
+    .slice(0, 5)
+    .map((failure) => `${failure.path}: ${failure.error}`)
+    .join("; ");
+  const suffix = failures.length > 5 ? `; +${failures.length - 5} more` : "";
+  return `offline sync large-file push failed for ${failures.length} file${failures.length === 1 ? "" : "s"}: ${paths}${suffix}`;
+}
+
+class OfflineLargeFilePushError extends Error {
+  readonly failures: readonly { path: string; error: string }[];
+
+  constructor(failures: readonly { path: string; error: string }[]) {
+    super(formatOfflineLargeFilePushFailureMessage(failures));
+    this.name = "OfflineLargeFilePushError";
+    this.failures = failures;
+  }
+}
+
 async function runOfflineSyncOnce(options: {
   memoryDir: string;
   remoteUrl: string;
@@ -6483,9 +6504,7 @@ async function runOfflineSyncOnce(options: {
   statePath: string;
   namespace?: string;
   prepared: boolean;
-  pushed: (Awaited<ReturnType<typeof pushOfflineChanges>> & {
-    failedLargeFiles?: Array<{ path: string; error: string }>;
-  }) | null;
+  pushed: Awaited<ReturnType<typeof pushOfflineChanges>> | null;
   pull: Awaited<ReturnType<typeof applyOfflineSyncSnapshot>>;
   pendingSummary: ReturnType<typeof summarizeOfflineSyncChangeset>;
   remoteFileCount: number;
@@ -6549,13 +6568,11 @@ async function runOfflineSyncOnce(options: {
   let directPushNamespace: string | undefined;
   const directPushConflicts: Array<{ path: string; reason: string; conflictPath?: string }> = [];
   const directPushedPaths = new Set<string>();
-  const directPushExcludedPaths = new Set<string>();
   const directPushFailures: Array<{ path: string; error: string }> = [];
   for (const file of offlineDirectPushFiles({
     currentFiles: currentSnapshotForPush.files,
     baseFiles,
   })) {
-    directPushExcludedPaths.add(file.path);
     let result: OfflineSyncApplyFileContentChunkResult & { namespace?: string };
     try {
       result = await pushOfflineFileContent({
@@ -6590,11 +6607,14 @@ async function runOfflineSyncOnce(options: {
       if (result.skipped) directPushSkipped += 1;
     }
   }
+  if (directPushFailures.length > 0) {
+    throw new OfflineLargeFilePushError(directPushFailures);
+  }
   const changeset = await buildOfflineSyncChangeset({
     root: options.memoryDir,
     sourceId: localSourceId,
     baseFiles,
-    excludePaths: [...directPushExcludedPaths],
+    excludePaths: [...directPushedPaths],
     includeTranscripts: options.includeTranscripts,
     readFile: storageIo.readFile,
   });
@@ -6606,14 +6626,13 @@ async function runOfflineSyncOnce(options: {
         changeset,
       })
     : null;
-  const pushed = directPushExcludedPaths.size > 0 || pushedInline
+  const pushed = directPushedPaths.size > 0 || pushedInline
     ? {
         namespace: pushedInline?.namespace ?? directPushNamespace ?? syncNamespace ?? "",
         appliedUpserts: (pushedInline?.appliedUpserts ?? 0) + directPushAppliedUpserts,
         appliedDeletes: pushedInline?.appliedDeletes ?? 0,
         skipped: (pushedInline?.skipped ?? 0) + directPushSkipped,
         conflicts: [...directPushConflicts, ...(pushedInline?.conflicts ?? [])],
-        ...(directPushFailures.length > 0 ? { failedLargeFiles: directPushFailures } : {}),
       }
     : null;
   const remoteSnapshotMetadata = await fetchOfflineSnapshot({
@@ -6848,7 +6867,7 @@ Environment fallbacks:
       console.log(JSON.stringify(result, null, 2));
     } else {
       console.log(`Offline sync complete${result.prepared ? " (initialized state)" : ""}.`);
-      console.log(`Pushed: ${result.pushed ? `${result.pushed.appliedUpserts} upserts, ${result.pushed.appliedDeletes} deletes, ${result.pushed.conflicts.length} conflicts, ${result.pushed.failedLargeFiles?.length ?? 0} large-file failures` : "nothing pending"}`);
+      console.log(`Pushed: ${result.pushed ? `${result.pushed.appliedUpserts} upserts, ${result.pushed.appliedDeletes} deletes, ${result.pushed.conflicts.length} conflicts` : "nothing pending"}`);
       console.log(`Pulled: ${result.pull.upserted} upserts, ${result.pull.deleted} deletes, ${result.pull.conflicts.length} conflicts`);
       console.log(`Pending local before push: ${result.pendingSummary.total}`);
       console.log(`Namespace: ${result.namespace ?? "(default)"}`);
@@ -6911,7 +6930,7 @@ Environment fallbacks:
           statePathExplicit,
         });
         console.log(
-          `[${new Date().toISOString()}] sync ok: pushed=${result.pushed ? result.pushed.appliedUpserts + result.pushed.appliedDeletes : 0}, pulled=${result.pull.upserted + result.pull.deleted}, conflicts=${(result.pushed?.conflicts.length ?? 0) + result.pull.conflicts.length}, largeFileFailures=${result.pushed?.failedLargeFiles?.length ?? 0}`,
+          `[${new Date().toISOString()}] sync ok: pushed=${result.pushed ? result.pushed.appliedUpserts + result.pushed.appliedDeletes : 0}, pulled=${result.pull.upserted + result.pull.deleted}, conflicts=${(result.pushed?.conflicts.length ?? 0) + result.pull.conflicts.length}`,
         );
       } catch (error) {
         console.log(`[${new Date().toISOString()}] sync waiting: ${error instanceof Error ? error.message : String(error)}`);

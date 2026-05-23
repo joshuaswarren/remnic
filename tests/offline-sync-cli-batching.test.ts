@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { chunkOfflineFileContentBatches } from "../packages/remnic-cli/src/index.js";
+import {
+  chunkOfflineFileContentBatches,
+  formatOfflineLargeFilePushFailureMessage,
+} from "../packages/remnic-cli/src/index.js";
 import type { OfflineSyncFileState } from "@remnic/core";
 
 function file(path: string, bytes: number): OfflineSyncFileState {
@@ -35,5 +38,14 @@ test("offline sync file content batches keep oversized single files fetchable", 
   assert.deepEqual(
     batches.map((batch) => batch.map((entry) => entry.path)),
     [["facts/large.md"], ["facts/small.md"]],
+  );
+});
+
+test("offline sync large-file push failures are explicit", () => {
+  assert.equal(
+    formatOfflineLargeFilePushFailureMessage([
+      { path: "state/lcm.sqlite", error: "offline sync request failed: 500" },
+    ]),
+    "offline sync large-file push failed for 1 file: state/lcm.sqlite: offline sync request failed: 500",
   );
 });
