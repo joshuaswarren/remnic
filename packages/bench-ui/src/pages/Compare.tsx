@@ -32,15 +32,46 @@ export function filterComparableCandidateRuns(
   );
 }
 
+export function reconcileCompareSelection(
+  payload: BenchResultSummaryPayload,
+  selection: { baselineId: string; candidateId: string },
+): { baselineId: string; candidateId: string } {
+  const defaults = pickDefaultCompareIds(payload);
+  const summariesById = new Map(payload.summaries.map((summary) => [summary.id, summary]));
+  let baselineId = selection.baselineId;
+  if (!baselineId || !summariesById.has(baselineId)) {
+    baselineId = defaults.baselineId ?? "";
+  }
+
+  const baselineSummary = summariesById.get(baselineId) ?? null;
+  const candidateOptions = filterComparableCandidateRuns(payload, baselineSummary);
+  const candidateIds = new Set(candidateOptions.map((summary) => summary.id));
+  let candidateId = selection.candidateId;
+  if (!candidateId || !candidateIds.has(candidateId)) {
+    if (defaults.candidateId && candidateIds.has(defaults.candidateId)) {
+      candidateId = defaults.candidateId;
+    } else {
+      candidateId = candidateOptions[0]?.id ?? "";
+    }
+  }
+
+  return { baselineId, candidateId };
+}
+
 export function Compare({ payload }: { payload: BenchResultSummaryPayload }) {
   const defaults = pickDefaultCompareIds(payload);
   const [baselineId, setBaselineId] = useState<string>(defaults.baselineId ?? "");
   const [candidateId, setCandidateId] = useState<string>(defaults.candidateId ?? "");
 
   useEffect(() => {
-    setBaselineId(defaults.baselineId ?? "");
-    setCandidateId(defaults.candidateId ?? "");
-  }, [defaults.baselineId, defaults.candidateId]);
+    const next = reconcileCompareSelection(payload, { baselineId, candidateId });
+    if (next.baselineId !== baselineId) {
+      setBaselineId(next.baselineId);
+    }
+    if (next.candidateId !== candidateId) {
+      setCandidateId(next.candidateId);
+    }
+  }, [payload, baselineId, candidateId]);
 
   const baselineSummary =
     payload.summaries.find((summary) => summary.id === baselineId) ?? null;

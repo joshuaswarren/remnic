@@ -206,15 +206,6 @@ async function readConnectorLockMetadata(lockPath: string): Promise<ConnectorLoc
   }
 }
 
-function isLiveProcess(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code !== "ESRCH";
-  }
-}
-
 /**
  * Reject any path component along `<memoryDir>/state/connectors/<id>.json`
  * that is a symlink. Without this guard, a symlink in any of those
@@ -325,8 +316,10 @@ async function tryAcquireConnectorLock(memoryDir: string, id: string): Promise<C
 async function shouldUnlinkStaleConnectorLock(lockPath: string, stat: import("node:fs").Stats): Promise<boolean> {
   if (Date.now() - stat.mtimeMs <= CONNECTOR_LOCK_STALE_MS) return false;
   const metadata = await readConnectorLockMetadata(lockPath);
-  if (metadata !== null && isLiveProcess(metadata.pid)) return false;
-  return true;
+  if (metadata === null) return true;
+  const refreshedAtMs = Date.parse(metadata.refreshedAt);
+  if (!Number.isFinite(refreshedAtMs)) return true;
+  return Date.now() - refreshedAtMs > CONNECTOR_LOCK_STALE_MS;
 }
 
 async function unlinkStaleConnectorLock(lockPath: string): Promise<void> {

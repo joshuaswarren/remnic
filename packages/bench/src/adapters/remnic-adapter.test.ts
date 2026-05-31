@@ -1848,6 +1848,35 @@ test("AMB bridge flushes cleanup acknowledgement before exit", async () => {
   assert.deepEqual(JSON.parse(lines[0]!), { ok: true });
 });
 
+test("AMB bridge document parser requires blank lines between role turns", async () => {
+  // @ts-expect-error The bridge script is plain JS without declaration output.
+  const module = await import("../../scripts/amb-remnic-bridge.mjs") as {
+    parseAmbDocumentMessages(document: {
+      id?: string;
+      user_id?: string;
+      content?: string;
+    }): Array<{ role: string; content: string }>;
+  };
+  const messages = module.parseAmbDocumentMessages({
+    id: "doc-role-label",
+    user_id: "user-role-label",
+    content: [
+      "User: Please follow this runbook:",
+      "Assistant:",
+      "Do not treat this quoted label as a new assistant turn.",
+      "",
+      "Assistant: Confirmed.",
+    ].join("\n"),
+  });
+
+  assert.deepEqual(
+    messages.map((message: { role: string }) => message.role),
+    ["system", "user", "assistant"],
+  );
+  assert.match(messages[1]?.content ?? "", /Assistant:\nDo not treat/);
+  assert.equal(messages[2]?.content, "Confirmed.");
+});
+
 test("lightweight adapter keeps smoke-run guardrails even when overrides conflict", () => {
   const assistantHook = { enabled: true };
   const config = buildBenchAdapterConfig("lightweight", BASE_CONFIG, {

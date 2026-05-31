@@ -440,6 +440,10 @@ export class WorkStorage {
   }
 
   async deleteProject(id: string): Promise<boolean> {
+    return this.enqueueProjectMutation(id, async () => this.deleteProjectUnlocked(id));
+  }
+
+  private async deleteProjectUnlocked(id: string): Promise<boolean> {
     const existing = await this.getProject(id);
     if (!existing) return false;
     const unlinkedTasks: WorkTask[] = [];

@@ -648,7 +648,28 @@ test("state store: treats already-removed stale locks as benign", async (t) => {
   await _unlinkStaleConnectorLockForTest(lockPath);
 });
 
-test("state store: does not evict a stale-looking lock held by a live process", async (t) => {
+test("state store: does not evict a freshly refreshed lock held by a live process", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const lockDir = path.join(memoryDir, "state", "connector-locks");
+  const lockPath = path.join(lockDir, "drive.lock");
+  fs.mkdirSync(lockDir, { recursive: true });
+  const freshDate = new Date();
+  fs.writeFileSync(
+    lockPath,
+    `${JSON.stringify({
+      pid: process.pid,
+      token: "live-lock",
+      createdAt: freshDate.toISOString(),
+      refreshedAt: freshDate.toISOString(),
+    })}\n`
+  );
+  fs.utimesSync(lockPath, freshDate, freshDate);
+
+  assert.equal(await _tryAcquireConnectorLockForTest(memoryDir, "drive"), null);
+  assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, "live-lock");
+});
+
+test("state store: evicts an unrefreshed stale lock even when the pid is live", async (t) => {
   const memoryDir = makeMemoryDir(t);
   const lockDir = path.join(memoryDir, "state", "connector-locks");
   const lockPath = path.join(lockDir, "drive.lock");
@@ -658,7 +679,7 @@ test("state store: does not evict a stale-looking lock held by a live process", 
     lockPath,
     `${JSON.stringify({
       pid: process.pid,
-      token: "live-lock",
+      token: "reused-pid-lock",
       createdAt: staleDate.toISOString(),
       refreshedAt: staleDate.toISOString(),
     })}\n`
@@ -666,7 +687,7 @@ test("state store: does not evict a stale-looking lock held by a live process", 
   fs.utimesSync(lockPath, staleDate, staleDate);
 
   assert.equal(await _tryAcquireConnectorLockForTest(memoryDir, "drive"), null);
-  assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, "live-lock");
+  assert.equal(fs.existsSync(lockPath), false);
 });
 
 test("state store: release only removes the matching connector lock token", async (t) => {
