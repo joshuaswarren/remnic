@@ -343,7 +343,12 @@ function isRetryableBenchmarkEvidenceHeading(heading: string): boolean {
 }
 
 function isNoEvidenceLine(line: string): boolean {
-  const normalized = line.toLowerCase();
+  const normalized = stripTrailingSentencePunctuation(
+    stripWrappingQuotes(line),
+  ).trim().toLowerCase();
+  if (normalized === "unknown" || normalized === "the answer is unknown") {
+    return true;
+  }
   return NO_EVIDENCE_PREFIXES.some((prefix) =>
     normalized === prefix || normalized.startsWith(`${prefix} `),
   );

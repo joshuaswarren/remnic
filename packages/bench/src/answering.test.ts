@@ -362,6 +362,35 @@ test("strict answering does not retry unknown from a MemoryArena prompt alone", 
   assert.equal(result.model, "first-model");
 });
 
+test("strict answering does not retry unknown from section-level unknown evidence", async () => {
+  let calls = 0;
+  const result = await answerBenchmarkQuestion({
+    question: "Which item should be selected?",
+    recalledText: [
+      "## Remnic memory context",
+      "unknown",
+    ].join("\n"),
+    answerMode: "strict",
+    retryUnknownWithEvidence: true,
+    responder: {
+      async respond() {
+        calls += 1;
+        return {
+          text: "unknown",
+          tokens: { input: 7, output: 1 },
+          latencyMs: 3,
+          model: "first-model",
+        };
+      },
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(result.finalAnswer, "unknown");
+  assert.deepEqual(result.tokens, { input: 7, output: 1 });
+  assert.equal(result.model, "first-model");
+});
+
 test("agentic-memory answering preserves the first unknown answer when the optional retry fails", async () => {
   let calls = 0;
   const result = await answerBenchmarkQuestion({
