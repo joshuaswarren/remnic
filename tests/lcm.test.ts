@@ -511,6 +511,27 @@ test("LcmSummarizer does not create incomplete batches", async () => {
   }
 });
 
+test("LcmArchive search honors public access limit up to 100", () => {
+  const dir = createTempDir();
+  try {
+    const db = openLcmDatabase(dir);
+    const archive = new LcmArchive(db);
+
+    for (let i = 0; i < 120; i += 1) {
+      archive.appendMessage("session-1", i, "user", `deploy marker ${i}`);
+    }
+
+    assert.equal(archive.search("deploy", 75).length, 75);
+    assert.equal(archive.searchWithContent("deploy", 75).length, 75);
+    assert.equal(archive.search("deploy", 150).length, 100);
+    assert.equal(archive.searchWithContent("deploy", 150).length, 100);
+
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── Recall Tests ──
 
 test("assembleCompressedHistory returns empty string for empty archive", () => {

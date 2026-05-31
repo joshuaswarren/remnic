@@ -53,7 +53,9 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-function normalizeSearchLimit(limit: number, fallback = 10, max = 50): number {
+const PUBLIC_LCM_SEARCH_LIMIT = 100;
+
+function normalizeSearchLimit(limit: number, fallback = 10, max = PUBLIC_LCM_SEARCH_LIMIT): number {
   if (typeof limit !== "number" || !Number.isFinite(limit)) return fallback;
   const normalized = Math.floor(limit);
   if (normalized <= 0) return 0;
