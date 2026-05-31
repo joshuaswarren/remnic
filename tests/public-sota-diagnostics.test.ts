@@ -2005,9 +2005,13 @@ test("public SOTA status exposes active run and MemoryArena session states", asy
   assert.match(source, /benchmarkSession: activeRunStatus\.benchmarkSession/);
   assert.match(source, /monitorSession: activeRunStatus\.monitorSession/);
   assert.match(source, /monitorSessionName: activeRunStatus\.monitorSessionName/);
+  assert.match(source, /finished: activeRunStatus\.diagnostics\?\.finished/);
+  assert.match(source, /transientRetryFailures: activeRunStatus\.diagnostics\?\.transientRetryFailures/);
   assert.match(source, /benchmarkSession: memoryArenaStatus\.benchmarkSession/);
   assert.match(source, /monitorSession: memoryArenaStatus\.monitorSession/);
   assert.match(source, /monitorSessionName: memoryArenaStatus\.monitorSessionName/);
+  assert.match(source, /finished: memoryArenaStatus\.diagnostics\?\.finished/);
+  assert.match(source, /transientRetryFailures: memoryArenaStatus\.diagnostics\?\.transientRetryFailures/);
 });
 
 test("public SOTA health check accepts run-suffixed MemoryArena watcher sessions", async () => {
@@ -2281,6 +2285,8 @@ test("active public run diagnostics ignore transient retry failures", async () =
     );
     const status = JSON.parse(stdout);
     assert.equal(status.diagnostics.total, 2);
+    assert.equal(status.diagnostics.finished, 1);
+    assert.equal(status.diagnostics.transientRetryFailures, 1);
     assert.equal(status.diagnostics.errors, 0);
     assert.equal(status.diagnostics.nonzero, 0);
     assert.equal(status.diagnostics.sampleErrors, 0);

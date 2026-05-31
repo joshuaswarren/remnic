@@ -114,6 +114,8 @@ function newestDiagnostics(diagDir, count, lifecycleStart) {
       errors: 0,
       nonzero: 0,
       inFlight: 0,
+      finished: 0,
+      transientRetryFailures: 0,
       sampleErrors: 0,
       sampleNonzero: 0,
       inFlightRecords: [],
@@ -132,6 +134,8 @@ function newestDiagnostics(diagDir, count, lifecycleStart) {
   let errors = 0;
   let nonzero = 0;
   let inFlight = 0;
+  let finished = 0;
+  let transientRetryFailures = 0;
   let beforeLifecycleStart = 0;
   const parsedRecords = records.flatMap((entry) => {
     try {
@@ -146,6 +150,9 @@ function newestDiagnostics(diagDir, count, lifecycleStart) {
         return [];
       }
       const transientRetryFailure = record.retry?.transientFailure === true;
+      if (transientRetryFailure) {
+        transientRetryFailures += 1;
+      }
       if (!transientRetryFailure && (record.error || record.parseError)) {
         errors += 1;
       }
@@ -154,6 +161,8 @@ function newestDiagnostics(diagDir, count, lifecycleStart) {
       }
       if (!record.finishedAt) {
         inFlight += 1;
+      } else if (!transientRetryFailure) {
+        finished += 1;
       }
       return [record];
     } catch (error) {
@@ -182,6 +191,8 @@ function newestDiagnostics(diagDir, count, lifecycleStart) {
     errors,
     nonzero,
     inFlight,
+    finished,
+    transientRetryFailures,
     sampleErrors: sample.filter((record) => record.retry?.transientFailure !== true && (record.error || record.parseError)).length,
     sampleNonzero: sample.filter((record) => record.retry?.transientFailure !== true && record.result && record.result.status !== 0).length,
     inFlightRecords: sample
@@ -311,6 +322,7 @@ const runLogTail = runLogLines.slice(-500);
 const progressLines = linesSinceLifecycleStart(runLogLines, lifecycleStart);
 const monitorPath = path.join(resultsDir, 'monitor-30m.log');
 const monitorStat = fs.existsSync(monitorPath) ? fs.statSync(monitorPath) : undefined;
+const diagnostics = newestDiagnostics(path.join(resultsDir, 'codex-cli-diagnostics'), 30, lifecycleStart);
 const summary = {
   runId,
   benchmark,
@@ -339,7 +351,7 @@ const summary = {
         tail: readLines(monitorPath, 12),
       }
     : null,
-  diagnostics: newestDiagnostics(path.join(resultsDir, 'codex-cli-diagnostics'), 30, lifecycleStart),
+  diagnostics,
   checkedAt: new Date(checkedAtMs).toISOString(),
 };
 
