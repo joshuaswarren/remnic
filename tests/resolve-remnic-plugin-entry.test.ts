@@ -132,10 +132,10 @@ test("resolveRemnicOpenClawPluginEntry honours plugins.slots.memory over preferr
   assert.equal(cfg.marker, "canonical");
 });
 
-test("resolveRemnicOpenClawPluginEntry ignores foreign slot and honours preferredId", () => {
+test("resolveRemnicOpenClawPluginEntry rejects foreign memory slots before preferredId fallback", () => {
   // Mixed-plugin installs: plugins.slots.memory points at a non-Remnic plugin.
-  // The slot must be ignored so we don't accidentally apply someone else's
-  // config to Remnic.  With the foreign slot ignored, preferredId still wins.
+  // The slot must stop resolution entirely so Remnic does not apply an inactive
+  // config block while another plugin owns the memory slot.
   const raw = {
     plugins: {
       slots: { memory: "some-other-memory-plugin" },
@@ -143,9 +143,7 @@ test("resolveRemnicOpenClawPluginEntry ignores foreign slot and honours preferre
     },
   };
   const entry = resolveRemnicOpenClawPluginEntry(raw, REMNIC_OPENCLAW_LEGACY_PLUGIN_ID);
-  assert.ok(entry, "entry must be defined");
-  const cfg = entry["config"] as { marker: string };
-  assert.equal(cfg.marker, "legacy");
+  assert.equal(entry, undefined);
 });
 
 test("resolveRemnicOpenClawPluginEntry falls back to legacy entry when only legacy exists and no preferredId", () => {
