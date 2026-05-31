@@ -1728,6 +1728,96 @@ test("MemoryArena normalizes item-selection answers to the expected visible opti
   }
 });
 
+test("MemoryArena does not normalize ambiguous expected visible-option ties", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-memory-arena-"));
+  const datasetPath = path.join(tempDir, "shopping.jsonl");
+  const previousNormalize =
+    process.env.REMNIC_BENCH_MEMORY_ARENA_NORMALIZE_VISIBLE_SELECTIONS;
+  let responderCalled = false;
+
+  try {
+    process.env.REMNIC_BENCH_MEMORY_ARENA_NORMALIZE_VISIBLE_SELECTIONS = "1";
+    await writeFile(
+      datasetPath,
+      JSON.stringify({
+        id: 43,
+        category: "shopping",
+        questions: [
+          [
+            "Which rose sprinkle mix should be selected?",
+            "- A Budget Rose Sprinkle Mix.",
+            "- A Premium Rose Sprinkle Mix.",
+          ].join("\n"),
+        ],
+        answers: [
+          {
+            target_asin: "B00PREMIUM",
+            attributes: ["rose sprinkle mix"],
+          },
+        ],
+      }) + "\n",
+      "utf8",
+    );
+
+    const result = await runMemoryArenaBenchmark({
+      benchmark: memoryArenaDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          return "The expected visible option is ambiguous.";
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond() {
+            responderCalled = true;
+            return {
+              text: "item: A Budget Rose Sprinkle Mix.",
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "fallback-responder",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 0;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 0,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "judge-smoke",
+            };
+          },
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.equal(responderCalled, true);
+    assert.equal(task.actual, "item: A Budget Rose Sprinkle Mix.");
+    assert.equal(task.details?.responderModel, "fallback-responder");
+  } finally {
+    if (previousNormalize === undefined) {
+      delete process.env.REMNIC_BENCH_MEMORY_ARENA_NORMALIZE_VISIBLE_SELECTIONS;
+    } else {
+      process.env.REMNIC_BENCH_MEMORY_ARENA_NORMALIZE_VISIBLE_SELECTIONS =
+        previousNormalize;
+    }
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("MemoryArena group travel scoring accepts multi-token values under the right day when labels vary", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-memory-arena-"));
   const datasetPath = path.join(tempDir, "group_travel_planner.jsonl");

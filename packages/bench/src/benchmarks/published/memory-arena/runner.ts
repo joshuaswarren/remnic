@@ -2148,10 +2148,14 @@ function resolveMemoryArenaExpectedVisibleSelectionAnswer(
     return undefined;
   }
   const visibleOptions = extractMemoryArenaVisibleOptions(question);
-  const [expectedOption] = selectVisibleOptionsForExpectation(
+  const expectedOptions = selectVisibleOptionsForExpectation(
     visibleOptions,
     expectations[0]!,
   );
+  if (expectedOptions.length !== 1) {
+    return undefined;
+  }
+  const [expectedOption] = expectedOptions;
   if (expectedOption === undefined) {
     return undefined;
   }
