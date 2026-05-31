@@ -44,6 +44,10 @@ export function reconcileCompareSelection(
   }
 
   const baselineSummary = summariesById.get(baselineId) ?? null;
+  if (!baselineSummary) {
+    return { baselineId, candidateId: "" };
+  }
+
   const candidateOptions = filterComparableCandidateRuns(payload, baselineSummary);
   const candidateIds = new Set(candidateOptions.map((summary) => summary.id));
   let candidateId = selection.candidateId;
@@ -78,13 +82,9 @@ export function Compare({ payload }: { payload: BenchResultSummaryPayload }) {
   const candidateSummary =
     payload.summaries.find((summary) => summary.id === candidateId) ?? null;
 
-  useEffect(() => {
-    if (baselineSummary && candidateSummary && !canCompareBenchRuns(baselineSummary, candidateSummary)) {
-      setCandidateId("");
-    }
-  }, [baselineSummary, candidateSummary]);
-
-  const candidateOptions = filterComparableCandidateRuns(payload, baselineSummary);
+  const candidateOptions = baselineSummary
+    ? filterComparableCandidateRuns(payload, baselineSummary)
+    : [];
 
   const comparison = canCompareBenchRuns(baselineSummary, candidateSummary)
     ? buildCompareModel(payload, baselineId, candidateId)

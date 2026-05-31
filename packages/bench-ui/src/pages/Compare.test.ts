@@ -127,3 +127,30 @@ test("reconcileCompareSelection repairs selections whose runs disappeared", asyn
     candidateId: candidate.id,
   });
 });
+
+test("reconcileCompareSelection keeps candidate empty without a valid baseline", async () => {
+  // @ts-ignore This TS test imports a TSX page module in the root test-typecheck baseline.
+  const module = await import("./Compare") as {
+    reconcileCompareSelection(
+      payload: { resultsDir: string; summaries: BenchResultSummary[] },
+      selection: { baselineId: string; candidateId: string },
+    ): { baselineId: string; candidateId: string };
+  };
+  const onlyRun = summary({ id: "only-run", benchmark: "bench-a" });
+
+  const next = module.reconcileCompareSelection(
+    {
+      resultsDir: "/tmp/results",
+      summaries: [onlyRun],
+    },
+    {
+      baselineId: "",
+      candidateId: onlyRun.id,
+    },
+  );
+
+  assert.deepEqual(next, {
+    baselineId: "",
+    candidateId: "",
+  });
+});
