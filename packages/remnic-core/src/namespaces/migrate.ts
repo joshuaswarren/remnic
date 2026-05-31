@@ -4,6 +4,7 @@ import type { PluginConfig } from "../types.js";
 import { NamespaceStorageRouter } from "./storage.js";
 import { namespaceCollectionName } from "./search.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
+import { namespaceIdentityToken } from "./identity.js";
 
 const LEGACY_NAMESPACE_CHILDREN = [
   "facts",
@@ -155,7 +156,11 @@ export async function runNamespaceMigration(options: {
     throw new Error(`Invalid namespace: ${options.to}`);
   }
 
-  const targetRoot = path.join(options.config.memoryDir, "namespaces", targetNamespace);
+  const targetRoot = path.join(
+    options.config.memoryDir,
+    "namespaces",
+    namespaceIdentityToken(targetNamespace),
+  );
   const moved: NamespaceMigrationMove[] = [];
   const renamePath = options.renameFn ?? rename;
 

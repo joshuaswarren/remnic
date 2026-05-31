@@ -181,7 +181,7 @@ test("verifyNamespaces reports legacy data before migration", async () => {
 
 test("verifyNamespaces flags missing and empty namespace roots", async () => {
   const memoryDir = tmpDir("engram-namespace-verify-missing");
-  await mkdir(path.join(memoryDir, "namespaces", "shared"), { recursive: true });
+  await Promise.all([mkdir(path.join(memoryDir, "namespaces", "ns-64656661756c74", "facts"), { recursive: true }), mkdir(path.join(memoryDir, "namespaces", "ns-736861726564"), { recursive: true })]);
 
   const report = await verifyNamespaces({ config: baseConfig(memoryDir) });
   assert.equal(report.ok, false);
@@ -202,7 +202,7 @@ test("runNamespaceMigration moves legacy entries into target namespace", async (
   const rootEntries = await readdir(memoryDir);
   assert.deepEqual(rootEntries.sort(), ["namespaces"]);
 
-  const migratedEntries = await readdir(path.join(memoryDir, "namespaces", "default"));
+  const migratedEntries = await readdir(path.join(memoryDir, "namespaces", "ns-64656661756c74"));
   assert.deepEqual(migratedEntries.sort(), ["facts", "profile.md"]);
 });
 
