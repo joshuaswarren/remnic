@@ -281,8 +281,28 @@ function hasConcreteBenchmarkEvidence(recalledText: string): boolean {
   if (/^unknown$/i.test(stripTrailingSentencePunctuation(normalized))) {
     return false;
   }
-  return /##\s+(?:Current MemoryArena task prompt|Prior completed MemoryArena subtasks|Remnic memory context|Explicit Cue Evidence|Search evidence)\b/i
-    .test(normalized);
+  return hasNonEmptyBenchmarkEvidenceSection(normalized);
+}
+
+function hasNonEmptyBenchmarkEvidenceSection(recalledText: string): boolean {
+  let inRetryableSection = false;
+  for (const line of recalledText.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const heading = /^##\s+(.+?)\s*$/.exec(trimmed);
+    if (heading !== null) {
+      inRetryableSection = /^(?:Prior completed MemoryArena subtasks|Remnic memory context|Explicit Cue Evidence|Search evidence)\b/i
+        .test(heading[1] ?? "");
+      continue;
+    }
+    if (!inRetryableSection || trimmed.length === 0) {
+      continue;
+    }
+    if (/^no\s+(?:exact|matching|relevant|usable|prior|search|memory)\b/i.test(trimmed)) {
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 function stripWrappingQuotes(value: string): string {
