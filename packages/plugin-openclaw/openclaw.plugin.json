@@ -281,7 +281,7 @@
       },
       "qmdSupportedVersion": {
         "type": "string",
-        "default": "2.5.1",
+        "default": "2.5.3",
         "description": "Highest QMD version this Remnic build will auto-install"
       },
       "qmdAutoUpgradeEnabled": {
@@ -4944,7 +4944,7 @@
     "qmdSupportedVersion": {
       "label": "QMD Supported Version",
       "advanced": true,
-      "placeholder": "2.5.1"
+      "placeholder": "2.5.3"
     },
     "qmdAutoUpgradeEnabled": {
       "label": "QMD Auto Upgrade",

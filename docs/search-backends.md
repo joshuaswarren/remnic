@@ -19,12 +19,12 @@ QMD provides the highest quality retrieval through hybrid BM25 + vector + LLM re
 
 ### Setup
 
-Install QMD. Remnic currently supports QMD `2.5.1` and detects the installed
+Install QMD. Remnic currently supports QMD `2.5.3` and detects the installed
 version with `qmd --version` at runtime:
 
 ```bash
-npm install -g @tobilu/qmd@2.5.1
-# or: bun install -g @tobilu/qmd@2.5.1
+npm install -g @tobilu/qmd@2.5.3
+# or: bun install -g @tobilu/qmd@2.5.3
 qmd --version
 ```
 
@@ -50,8 +50,8 @@ qmd update && qmd embed
   "qmdEnabled": true,
   "qmdCollection": "openclaw-engram",
   "qmdMaxResults": 8,
-  "qmdSupportedVersion": "2.5.1",
-  "qmdAutoUpgradeEnabled": false, // opt-in: npm install -g @tobilu/qmd@2.5.1
+  "qmdSupportedVersion": "2.5.3",
+  "qmdAutoUpgradeEnabled": false, // opt-in: npm install -g @tobilu/qmd@2.5.3
   "qmdChunkStrategy": "auto",
   // Leave qmdIndexName unset unless you intentionally use a separate QMD DB.
   // Existing Remnic/OpenClaw installs usually keep data in QMD's default "index".
@@ -62,7 +62,7 @@ qmd update && qmd embed
 }
 ```
 
-When QMD `2.5.1` is installed, Remnic uses the newer capability set when
+When QMD `2.5.3` is installed, Remnic uses the newer capability set when
 available: `qmd doctor` diagnostics, version-matched skill metadata, structured
 MCP `lex`/`vec`/`hyde` searches, candidate-limit forwarding, rerank toggles,
 AST-aware chunking for CLI/embed paths, scoped collection embedding, model/env
@@ -70,6 +70,14 @@ overrides (`QMD_EMBED_MODEL`, `QMD_RERANK_MODEL`, `QMD_GENERATE_MODEL`,
 `QMD_FORCE_CPU`, `QMD_LLAMA_GPU`, `QMD_EMBED_PARALLELISM`), named index selection
 via `qmdIndexName`, and absolute snippet line numbers. Older QMD installs
 continue to work with unsupported flags omitted.
+
+Remnic also detects QMD `2.5.3`'s preferred `--format json` output selector
+for `qmd query`/`qmd search` subprocess calls. QMD `2.5.3` adds richer
+human/agent retrieval output (`get` line-range suffixes, default line-numbered
+`get`/`multi-get`, `#docid` headers, and `--full-path` for direct filesystem
+paths), but Remnic keeps its machine-readable search path on QMD's JSON output
+and preserves docids for provenance and dedupe. QMD `2.5.1` and older installs
+continue to receive the legacy `--json` aliases.
 
 Do not set `qmdIndexName` during upgrades unless you have confirmed the existing
 QMD data lives in that named index. QMD's default index is named `index` and is
@@ -91,7 +99,8 @@ QMD version coverage:
 | `2.0.0` | Uses the v2 MCP `query` tool shape and unified search semantics; legacy `search`/`vsearch` daemon tools are avoided. |
 | `2.0.1` | Detects the skill-install generation, but leaves user/global agent skill installation explicit. |
 | `2.1.0` | Enables AST chunk strategy on CLI/embed paths, rerank toggles, candidate limits, per-collection model config compatibility, and JSON line capture. |
-| `2.5.1` | Enables doctor/status diagnostics, version-matched skills, structured MCP `lex`/`vec`/`hyde` searches, absolute snippet lines, scoped embed behavior, and QMD model/GPU env controls. |
+| `2.5.0` | Enables doctor/status diagnostics, version-matched skills, structured MCP `lex`/`vec`/`hyde` searches, absolute snippet lines, scoped embed behavior, and QMD model/GPU env controls. |
+| `2.5.3` | Uses QMD's preferred `--format json` selector for `query`/`search` subprocess calls and inherits QMD's line-range, docid-header, full-path, launcher, and Metal-teardown fixes. Remnic keeps legacy `--json` for older QMD versions. |
 
 ### QMD Daemon Mode
 
@@ -106,7 +115,7 @@ Engram automatically prefers the shared MCP session when available and falls bac
 | `qmdDaemonRecheckIntervalMs` | `60000` | Re-probe interval after failure |
 | `qmdIntentHintsEnabled` | `false` | Forward inferred recall intent into QMD unified search when supported |
 | `qmdExplainEnabled` | `false` | Capture QMD explain traces into `memory_qmd_debug` snapshots |
-| `qmdSupportedVersion` | `2.5.1` | Highest QMD version this Remnic build will auto-install |
+| `qmdSupportedVersion` | `2.5.3` | Highest QMD version this Remnic build will auto-install |
 | `qmdAutoUpgradeEnabled` | `false` | Opt-in auto-upgrade for PATH/fallback QMD installs |
 | `qmdAutoUpgradeCheckIntervalMs` | `86400000` | Minimum interval between auto-upgrade attempts |
 | `qmdChunkStrategy` | `auto` | Forward QMD's AST-aware chunk strategy when supported |

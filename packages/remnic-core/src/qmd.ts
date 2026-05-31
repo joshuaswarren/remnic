@@ -73,6 +73,7 @@ export interface QmdCapabilities {
   scopedEmbed: boolean;
   safeStatusDeviceProbe: boolean;
   mcpIndexSelection: boolean;
+  outputFormatFlag: boolean;
 }
 
 export interface QmdVersionStatus {
@@ -104,7 +105,7 @@ const QMD_PROBE_TIMEOUT_MS = 8_000;
 const QMD_UPDATE_BACKOFF_MS = 15 * 60 * 1000; // 15m
 const QMD_EMBED_BACKOFF_MS = 60 * 60 * 1000; // 60m
 const QMD_CLI_WARN_THROTTLE_MS = 15 * 60 * 1000; // 15m
-export const QMD_SUPPORTED_VERSION = "2.5.1";
+export const QMD_SUPPORTED_VERSION = "2.5.3";
 const QMD_PACKAGE_NAME = "@tobilu/qmd";
 const QMD_AUTO_UPGRADE_TIMEOUT_MS = 120_000;
 const QMD_AUTO_UPGRADE_CHECK_INTERVAL_MS = 24 * 60 * 60_000;
@@ -312,6 +313,7 @@ export function resolveQmdCapabilities(version: string | null): QmdCapabilities 
     scopedEmbed: atLeast([2, 5, 0]),
     safeStatusDeviceProbe: atLeast([2, 5, 0]),
     mcpIndexSelection: atLeast([2, 5, 0]),
+    outputFormatFlag: atLeast([2, 5, 3]),
   };
 }
 
@@ -1763,6 +1765,14 @@ export class QmdClient implements SearchBackend {
     }
   }
 
+  private addQmdJsonOutputArgs(args: string[]): void {
+    if (this.qmdCapabilities.outputFormatFlag) {
+      args.push("--format", "json");
+    } else {
+      args.push("--json");
+    }
+  }
+
   private addResolvedSearchOptionsToMcpArgs(
     args: Record<string, unknown>,
     options?: SearchQueryOptions,
@@ -1779,7 +1789,7 @@ export class QmdClient implements SearchBackend {
     if (options?.rerank === false) {
       args.rerank = false;
     }
-    // QMD 2.5.1 MCP query does not expose chunkStrategy even though CLI/SDK
+    // QMD MCP query does not expose chunkStrategy even though CLI/SDK
     // search and embed do. Keep chunk strategy on CLI/embed paths only.
   }
 
@@ -2220,7 +2230,9 @@ export class QmdClient implements SearchBackend {
 
     const startedAtMs = Date.now();
     try {
-      const args = ["query", query, "-c", collection, "--json", "-n", String(maxResults)];
+      const args = ["query", query, "-c", collection];
+      this.addQmdJsonOutputArgs(args);
+      args.push("-n", String(maxResults));
       this.addResolvedSearchOptionsToArgs(args, options);
       const { stdout } = await this.runQmdCommand(args, QMD_TIMEOUT_MS, signal);
       const durationMs = Date.now() - startedAtMs;
@@ -2249,11 +2261,10 @@ export class QmdClient implements SearchBackend {
     if (this.available === false) return [];
     const startedAtMs = Date.now();
     try {
-      const { stdout } = await this.runQmdCommand(
-        ["search", query, "-c", collection, "--json", "-n", String(maxResults)],
-        QMD_TIMEOUT_MS,
-        signal,
-      );
+      const args = ["search", query, "-c", collection];
+      this.addQmdJsonOutputArgs(args);
+      args.push("-n", String(maxResults));
+      const { stdout } = await this.runQmdCommand(args, QMD_TIMEOUT_MS, signal);
       log.debug(`QMD bm25: ${Date.now() - startedAtMs}ms`);
       return parseQmdSearchStdout(stdout);
     } catch (err) {
@@ -2300,7 +2311,9 @@ export class QmdClient implements SearchBackend {
 
     const startedAtMs = Date.now();
     try {
-      const args = ["query", query, "--json", "-n", String(maxResults)];
+      const args = ["query", query];
+      this.addQmdJsonOutputArgs(args);
+      args.push("-n", String(maxResults));
       this.addResolvedSearchOptionsToArgs(args, options);
       const { stdout } = await this.runQmdCommand(args, QMD_TIMEOUT_MS, signal);
       const durationMs = Date.now() - startedAtMs;

@@ -119,7 +119,7 @@ See [Search Backends](search-backends.md) for detailed configuration and compari
 | `qmdColdCollection` | `openclaw-engram-cold` | QMD collection name used for cold-tier recall |
 | `qmdColdMaxResults` | `8` | Final result cap for cold-tier recall before merging into the normal ranking pipeline |
 | `qmdPath` | `(auto)` | Absolute path to `qmd` binary (bypasses PATH) |
-| `qmdSupportedVersion` | `2.5.1` | Highest QMD version this Remnic build will auto-install |
+| `qmdSupportedVersion` | `2.5.3` | Highest QMD version this Remnic build will auto-install |
 | `qmdAutoUpgradeEnabled` | `false` | Opt-in auto-upgrade for PATH/fallback QMD installs; explicit `qmdPath` is never overwritten |
 | `qmdAutoUpgradeCheckIntervalMs` | `86400000` | Minimum interval between auto-upgrade attempts |
 | `qmdChunkStrategy` | `auto` | QMD chunk strategy to forward when the installed QMD supports it (`auto` or `regex`) |

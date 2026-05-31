@@ -55,6 +55,9 @@ moment, skill, rule, entity, and more.
 Search: hybrid BM25 + vector + reranking via QMD. Six backend options:
 QMD (default), Orama (embedded JS), LanceDB (embedded native Arrow),
 Meilisearch (server), Remote (HTTP REST), Noop (extraction only).
+Current QMD target: @tobilu/qmd 2.5.3. Remnic probes qmd --version and gates
+newer flags; QMD 2.5.3+ uses --format json for query/search subprocess output,
+while older supported QMD installs keep legacy --json.
 
 KEY FEATURES
 

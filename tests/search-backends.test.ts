@@ -105,8 +105,8 @@ describe("search backend factory", () => {
   it("QMD 2.x supported options include structured searches but keep MCP-unsupported chunking out of args", async () => {
     const { QmdClient, resolveQmdCapabilities } = await import("../src/qmd.js");
     const client = new QmdClient("test-collection", 10);
-    (client as any).cliVersion = "qmd 2.5.1";
-    (client as any).qmdCapabilities = resolveQmdCapabilities("qmd 2.5.1");
+    (client as any).cliVersion = "qmd 2.5.3";
+    (client as any).qmdCapabilities = resolveQmdCapabilities("qmd 2.5.3");
     assert.deepEqual(
       client.resolveSupportedSearchOptions({
         intent: "goal:review",

@@ -13,22 +13,22 @@ import {
 } from "./qmd.js";
 
 test("parseQmdVersion extracts semantic version from qmd output", () => {
-  assert.deepEqual(parseQmdVersion("qmd 2.5.1 (abcdef)"), [2, 5, 1]);
+  assert.deepEqual(parseQmdVersion("qmd 2.5.3 (abcdef)"), [2, 5, 3]);
   assert.deepEqual(parseQmdVersion("v2.1.0"), [2, 1, 0]);
   assert.equal(parseQmdVersion("Unknown command: doctor"), null);
 });
 
 test("parseQmdVersionOutput prefers qmd-labelled semantic version lines", () => {
   assert.equal(
-    parseQmdVersionOutput("bun 1.2.0\nqmd 2.5.1 (abcdef)", ""),
-    "qmd 2.5.1 (abcdef)",
+    parseQmdVersionOutput("bun 1.2.0\nqmd 2.5.3 (abcdef)", ""),
+    "qmd 2.5.3 (abcdef)",
   );
   assert.equal(parseQmdVersionOutput("wrapper ready", "v2.1.0"), "v2.1.0");
   assert.equal(parseQmdVersionOutput("", ""), null);
 });
 
 test("resolveQmdCapabilities gates qmd 2.5 features by installed version", () => {
-  const current = resolveQmdCapabilities("qmd 2.5.1 (abcdef)");
+  const current = resolveQmdCapabilities("qmd 2.5.3 (abcdef)");
   assert.equal(current.v2McpQueryTool, true);
   assert.equal(current.structuredSearches, true);
   assert.equal(current.chunkStrategy, true);
@@ -41,6 +41,7 @@ test("resolveQmdCapabilities gates qmd 2.5 features by installed version", () =>
   assert.equal(current.embedParallelism, true);
   assert.equal(current.modelEnvConsistency, true);
   assert.equal(current.scopedEmbed, true);
+  assert.equal(current.outputFormatFlag, true);
 
   const older = resolveQmdCapabilities("qmd 2.1.0 (abcdef)");
   assert.equal(older.v2McpQueryTool, true);
@@ -51,6 +52,11 @@ test("resolveQmdCapabilities gates qmd 2.5 features by installed version", () =>
   assert.equal(older.absoluteSnippetLines, false);
   assert.equal(older.forceCpu, false);
   assert.equal(older.scopedEmbed, false);
+  assert.equal(older.outputFormatFlag, false);
+
+  const v251 = resolveQmdCapabilities("qmd 2.5.1");
+  assert.equal(v251.doctor, true);
+  assert.equal(v251.outputFormatFlag, false);
 
   const v20 = resolveQmdCapabilities("qmd 2.0.0");
   assert.equal(v20.stableSdk, true);
@@ -62,10 +68,10 @@ test("resolveQmdCapabilities gates qmd 2.5 features by installed version", () =>
 });
 
 test("shouldAutoUpgradeQmd only upgrades below Remnic supported version", () => {
-  assert.equal(shouldAutoUpgradeQmd("qmd 2.1.0", "2.5.1"), true);
-  assert.equal(shouldAutoUpgradeQmd("qmd 2.5.1", "2.5.1"), false);
-  assert.equal(shouldAutoUpgradeQmd("qmd 2.6.0", "2.5.1"), false);
-  assert.equal(shouldAutoUpgradeQmd("not installed", "2.5.1"), false);
+  assert.equal(shouldAutoUpgradeQmd("qmd 2.1.0", "2.5.3"), true);
+  assert.equal(shouldAutoUpgradeQmd("qmd 2.5.3", "2.5.3"), false);
+  assert.equal(shouldAutoUpgradeQmd("qmd 2.6.0", "2.5.3"), false);
+  assert.equal(shouldAutoUpgradeQmd("not installed", "2.5.3"), false);
 });
 
 test("getQmdCommandName preserves write command detection behind qmd 2.5 index prefix", () => {
@@ -93,7 +99,7 @@ test("QmdClient applies chunk strategy to normal and forced embed args", async (
   const client = new QmdClient("test", 5, {
     qmdChunkStrategy: "regex",
   });
-  (client as any).qmdCapabilities = resolveQmdCapabilities("qmd 2.5.1");
+  (client as any).qmdCapabilities = resolveQmdCapabilities("qmd 2.5.3");
   assert.deepEqual((client as any).buildEmbedArgs("memory"), [
     "embed",
     "-c",
@@ -108,6 +114,55 @@ test("QmdClient applies chunk strategy to normal and forced embed args", async (
     "memory",
     "--chunk-strategy",
     "regex",
+  ]);
+});
+
+test("QmdClient uses QMD 2.5.3 --format json for query subprocess output", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const client = new QmdClient("test", 5) as any;
+  client.available = true;
+  client.qmdCapabilities = resolveQmdCapabilities("qmd 2.5.3");
+  let observedArgs: string[] = [];
+  client.runQmdCommand = async (args: string[]) => {
+    observedArgs = args;
+    return { stdout: "[]", stderr: "" };
+  };
+
+  await client.searchViaSubprocess("memory query", "memory", 3);
+
+  assert.deepEqual(observedArgs, [
+    "query",
+    "memory query",
+    "-c",
+    "memory",
+    "--format",
+    "json",
+    "-n",
+    "3",
+  ]);
+});
+
+test("QmdClient keeps legacy --json for older QMD query subprocess output", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const client = new QmdClient("test", 5) as any;
+  client.available = true;
+  client.qmdCapabilities = resolveQmdCapabilities("qmd 2.5.1");
+  let observedArgs: string[] = [];
+  client.runQmdCommand = async (args: string[]) => {
+    observedArgs = args;
+    return { stdout: "[]", stderr: "" };
+  };
+
+  await client.searchViaSubprocess("memory query", "memory", 3);
+
+  assert.deepEqual(observedArgs, [
+    "query",
+    "memory query",
+    "-c",
+    "memory",
+    "--json",
+    "-n",
+    "3",
   ]);
 });
 
@@ -184,7 +239,7 @@ test("QmdClient auto-upgrade throttle key is scoped by qmd target", async () => 
 
 test("parseConfig exposes qmd 2.5 integration defaults and opt-in auto upgrade", () => {
   const defaults = parseConfig({});
-  assert.equal(defaults.qmdSupportedVersion, "2.5.1");
+  assert.equal(defaults.qmdSupportedVersion, "2.5.3");
   assert.equal(defaults.qmdAutoUpgradeEnabled, false);
   assert.equal(defaults.qmdChunkStrategy, "auto");
   assert.equal(defaults.qmdQueryRerankEnabled, true);

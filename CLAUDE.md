@@ -182,7 +182,7 @@ grep "\[engram\]" ~/.openclaw/logs/gateway.log
 5. **SIGUSR1 doesn't fire gateway_start** — use `launchctl kickstart -k` for full restart
 6. **profile.md injected everywhere** — keep under 600 lines or consolidation triggers
 7. **QMD `query` is intentional** — DO NOT change from `query` to `search` or `vsearch`. The `query` command provides LLM expansion + reranking that Remnic relies on. Remnic's own reranking was disabled because `qmd query` handles it.
-8. **QMD local patches** — PRs #166, #112, #117 are applied locally to `~/.bun/install/global/node_modules/qmd/`. These will be overwritten by `bun install -g github:tobi/qmd` — reapply if needed until merged upstream.
+8. **QMD version gates** — Remnic targets `@tobilu/qmd` 2.5.3, probes `qmd --version`, and must keep older QMD installs working by omitting unsupported flags. Use `--format json` for QMD 2.5.3+ query/search subprocess calls; keep legacy `--json` for older versions.
 9. **Legacy env var fallback chains** — always try `REMNIC_*` first, then fall back to `ENGRAM_*`. This applies to config parsing, hook scripts, and daemon label lookups.
 10. **Never interpolate unsanitized values into shell scripts** — pass host/port/config values via environment variables, never via string interpolation into script command strings.
 11. **Scope globals per plugin ID** — runtime orchestrator mirrors, CLI dedupe guards, and capability caches must be keyed by `serviceId` when multiple instances can coexist.

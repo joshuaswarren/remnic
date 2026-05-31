@@ -79,18 +79,21 @@ grep '\[engram\]' ~/.openclaw/logs/gateway.log | tail -5
 
 [QMD](https://github.com/tobi/qmd) provides hybrid BM25 + vector + reranking search. Without it, Remnic falls back to semantic embedding search (using your OpenAI key when available) and then recency-ordered file reads.
 
-**QMD 2.5.1 is the current supported target.** QMD 1.x still works, but 2.0+
+**QMD 2.5.3 is the current supported target.** QMD 1.x still works, but 2.0+
 resolves several known issues natively (session ID crash, model override env
-vars, join performance), and 2.5.1 adds runtime diagnostics, structured MCP
+vars, join performance), 2.5.0 adds runtime diagnostics, structured MCP
 searches, safer indexing, model/GPU env controls, and absolute snippet line
-numbers that Remnic can detect and use. Install via npm or bun:
+numbers, and 2.5.3 adds the preferred `--format` selector plus line-range,
+docid-header, full-path, launcher, and Metal-teardown fixes. Remnic detects the
+installed QMD version and only uses newer flags when available. Install via npm
+or bun:
 
 ```bash
-npm install -g @tobilu/qmd@2.5.1
-# or: bun install -g @tobilu/qmd@2.5.1
+npm install -g @tobilu/qmd@2.5.3
+# or: bun install -g @tobilu/qmd@2.5.3
 
 # Verify
-qmd --version  # should show 2.5.1
+qmd --version  # should show 2.5.3
 ```
 
 Add to `~/.config/qmd/index.yml`:
@@ -118,12 +121,21 @@ Enable in your plugin config:
 
 ### Upgrading QMD
 
-QMD 2.5.1 is a drop-in upgrade from older 2.x installs. Existing collections,
+QMD 2.5.3 is a drop-in upgrade from older 2.x installs. Existing collections,
 indexes, and config files work without changes. Remnic detects the installed
 version at startup and enables newer features only when the installed binary
 supports them.
 
 **What changed:**
+- QMD `2.5.3`: `qmd query`/`qmd search` prefer `--format json`; Remnic uses that
+  form only for 2.5.3+ and keeps legacy `--json` for older QMD installs.
+- QMD `2.5.3`: `qmd get`/`qmd multi-get` output is line-numbered by default,
+  includes `#docid` headers, accepts `:from:count` line ranges, and supports
+  `--full-path` for direct filesystem paths. These are useful for humans and
+  agents reading QMD directly; Remnic's search path keeps JSON output with
+  docids for provenance and dedupe.
+- QMD `2.5.2`/`2.5.3`: global launcher fixes improve Windows, pnpm-global,
+  Node/Bun source-mode selection, and macOS Metal teardown behavior.
 - Unified `search()` replaces the old query/search/structuredSearch split internally
 - MCP server rewritten as a clean SDK consumer (same external contract)
 - Source reorganized into `src/cli/` and `src/mcp/` subdirectories
@@ -139,15 +151,15 @@ supports them.
 
 ```bash
 # 1. Install the supported QMD target
-npm install -g @tobilu/qmd@2.5.1
-# or: bun install -g @tobilu/qmd@2.5.1
+npm install -g @tobilu/qmd@2.5.3
+# or: bun install -g @tobilu/qmd@2.5.3
 
 # 2. If native bindings need repair, rebuild better-sqlite3 manually
 cd ~/.bun/install/global/node_modules/better-sqlite3
 npm rebuild better-sqlite3
 
 # 3. Verify
-qmd --version       # 2.5.1
+qmd --version       # 2.5.3
 qmd doctor          # available on QMD 2.5+
 qmd status           # should show existing collections
 
@@ -156,7 +168,7 @@ launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 
 # 5. Verify Remnic picked up the new QMD version
 grep "cliVersion" ~/.openclaw/logs/gateway.log | tail -1
-# Should show: cliVersion=qmd 2.5.1
+# Should show: cliVersion=qmd 2.5.3
 ```
 
 To let Remnic perform this upgrade for PATH/fallback installs, set
