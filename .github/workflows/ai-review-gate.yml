@@ -24,8 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Wait for AI reviewers on push events
-        if: github.event_name == 'pull_request'
+      - name: Wait for AI reviewers to settle
+        if: github.event_name == 'pull_request' || github.event_name == 'check_run'
         run: |
           echo "Waiting 3 minutes for AI reviewers to analyse the diff..."
           sleep 180
