@@ -190,8 +190,19 @@ async function patchMemory(
   }
   if (metadataChanged) {
     let frontmatterWritten: boolean;
+    const frontmatterMemory = contentChanged
+      ? {
+          ...memory,
+          content: persistedContent,
+          frontmatter: {
+            ...memory.frontmatter,
+            ...patch,
+            tags: uniqueTags(patch.tags ?? memory.frontmatter.tags ?? []),
+          },
+        }
+      : memory;
     try {
-      frontmatterWritten = await storage.writeMemoryFrontmatter(memory, {
+      frontmatterWritten = await storage.writeMemoryFrontmatter(frontmatterMemory, {
         ...patch,
         tags: uniqueTags(patch.tags ?? memory.frontmatter.tags ?? []),
         updated: new Date().toISOString(),

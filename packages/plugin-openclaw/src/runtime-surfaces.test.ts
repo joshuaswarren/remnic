@@ -513,6 +513,59 @@ test("syncHeartbeatSurfaceEntries does not report or reindex partial metadata wr
   );
 });
 
+test("syncHeartbeatSurfaceEntries preserves updated content when frontmatter rewrites the file", async () => {
+  const storage = makeStorage([
+    makeMemory({
+      id: "principle-1",
+      category: "principle",
+      content: "check-test-suite\n\nRun the suite and report new failures.",
+      tags: ["ci", "tests", "heartbeat", "procedural", "check-test-suite"],
+      source: "heartbeat.md",
+      memoryKind: "procedural",
+      structuredAttributes: {
+        remnicSurfaceType: "heartbeat",
+        remnicHeartbeatEntryId: "heartbeat-a",
+        relatedHeartbeatSlug: "check-test-suite",
+        remnicHeartbeatJournalPath: "/workspace/HEARTBEAT.md",
+        remnicHeartbeatSourceOffset: "20",
+        remnicHeartbeatSchedule: "hourly",
+      },
+    }),
+  ]);
+  const originalWriteMemoryFrontmatter = storage.writeMemoryFrontmatter;
+  storage.writeMemoryFrontmatter = async (memory, patch) => {
+    const current = storage.memories.find((entry) => entry.frontmatter.id === memory.frontmatter.id);
+    if (current) {
+      current.content = memory.content;
+    }
+    return originalWriteMemoryFrontmatter(memory, patch);
+  };
+
+  const result = await syncHeartbeatSurfaceEntries({
+    storage,
+    entries: [
+      {
+        id: "heartbeat-a",
+        slug: "check-test-suite",
+        title: "check-test-suite",
+        body: "Run the suite, compare to the last run, and report new failures.",
+        schedule: "every 2 hours",
+        tags: ["ci", "tests", "diff"],
+        sourceOffset: 48,
+      },
+    ],
+    journalPath: "/workspace/HEARTBEAT.md",
+  });
+
+  assert.deepEqual(result, { created: 0, updated: 1, linked: 0 });
+  assert.match(storage.memories[0]?.content ?? "", /compare to the last run/);
+  assert.match(storage.memories[0]?.content ?? "", /remnicheartbeatschedule: every 2 hours/);
+  assert.equal(
+    storage.memories[0]?.frontmatter.structuredAttributes?.remnicHeartbeatSchedule,
+    "every 2 hours",
+  );
+});
+
 test("syncHeartbeatSurfaceEntries rolls back content when metadata write throws", async () => {
   const storage = makeStorage([
     makeMemory({
