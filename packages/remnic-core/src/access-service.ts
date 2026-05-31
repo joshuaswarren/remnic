@@ -7,6 +7,7 @@ import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-i
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
+import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { WorkStorage } from "./work/storage.js";
 import {
   exportWorkBoardMarkdown,
@@ -1722,11 +1723,11 @@ export class EngramAccessService {
     if (this.orchestrator.getCodingContextForSession(sessionKey)) return;
     // projectTag takes priority over cwd.
     if (typeof options.projectTag === "string" && options.projectTag.trim().length > 0) {
-      const tag = options.projectTag.trim();
+      const projectId = projectTagProjectId(options.projectTag);
       this.orchestrator.setCodingContextForSession(sessionKey, {
-        projectId: `tag:${tag}`,
+        projectId,
         branch: null,
-        rootPath: `tag:${tag}`,
+        rootPath: projectId,
         defaultBranch: null,
       });
       return;
