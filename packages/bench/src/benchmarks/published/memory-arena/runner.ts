@@ -2476,11 +2476,13 @@ function findPlanFieldTokenWindow(
     const contextStart = dayContext?.startIndex ?? Math.max(0, index - 32);
     if (expectedField.fieldTokens.length > 0) {
       const nearestFieldLabel =
-        findNearestPlanFieldLabel(predictedTokens, contextStart, index) ?? [];
-      if (!tokensEqual(nearestFieldLabel, expectedField.fieldTokens)) {
+        findNearestPlanFieldLabel(predictedTokens, contextStart, index);
+      if (nearestFieldLabel === undefined) {
         if (expectedField.tokens.length < 2) {
           continue;
         }
+      } else if (!tokensEqual(nearestFieldLabel, expectedField.fieldTokens)) {
+        continue;
       }
     }
     return index;
