@@ -278,31 +278,75 @@ function hasConcreteBenchmarkEvidence(recalledText: string): boolean {
   if (normalized.length === 0) {
     return false;
   }
-  if (/^unknown$/i.test(stripTrailingSentencePunctuation(normalized))) {
+  if (stripTrailingSentencePunctuation(normalized).toLowerCase() === "unknown") {
     return false;
   }
   return hasNonEmptyBenchmarkEvidenceSection(normalized);
 }
 
+const RETRYABLE_BENCHMARK_EVIDENCE_HEADINGS = [
+  "prior completed memoryarena subtasks",
+  "remnic memory context",
+  "explicit cue evidence",
+  "search evidence",
+] as const;
+
+const NO_EVIDENCE_PREFIXES = [
+  "no exact",
+  "no matching",
+  "no relevant",
+  "no usable",
+  "no prior",
+  "no search",
+  "no memory",
+] as const;
+
 function hasNonEmptyBenchmarkEvidenceSection(recalledText: string): boolean {
   let inRetryableSection = false;
-  for (const line of recalledText.split(/\r?\n/)) {
+  for (const line of recalledText.split("\n")) {
     const trimmed = line.trim();
-    const heading = /^##\s+(.+?)\s*$/.exec(trimmed);
-    if (heading !== null) {
-      inRetryableSection = /^(?:Prior completed MemoryArena subtasks|Remnic memory context|Explicit Cue Evidence|Search evidence)\b/i
-        .test(heading[1] ?? "");
+    const heading = parseMarkdownHeadingText(trimmed);
+    if (heading !== undefined) {
+      inRetryableSection = isRetryableBenchmarkEvidenceHeading(heading);
       continue;
     }
     if (!inRetryableSection || trimmed.length === 0) {
       continue;
     }
-    if (/^no\s+(?:exact|matching|relevant|usable|prior|search|memory)\b/i.test(trimmed)) {
+    if (isNoEvidenceLine(trimmed)) {
       continue;
     }
     return true;
   }
   return false;
+}
+
+function parseMarkdownHeadingText(trimmedLine: string): string | undefined {
+  if (!trimmedLine.startsWith("##")) {
+    return undefined;
+  }
+  let index = 2;
+  if (trimmedLine[index] !== " " && trimmedLine[index] !== "\t") {
+    return undefined;
+  }
+  while (trimmedLine[index] === " " || trimmedLine[index] === "\t") {
+    index += 1;
+  }
+  return trimmedLine.slice(index).trim();
+}
+
+function isRetryableBenchmarkEvidenceHeading(heading: string): boolean {
+  const normalized = heading.toLowerCase();
+  return RETRYABLE_BENCHMARK_EVIDENCE_HEADINGS.some((prefix) =>
+    normalized === prefix || normalized.startsWith(`${prefix} `),
+  );
+}
+
+function isNoEvidenceLine(line: string): boolean {
+  const normalized = line.toLowerCase();
+  return NO_EVIDENCE_PREFIXES.some((prefix) =>
+    normalized === prefix || normalized.startsWith(`${prefix} `),
+  );
 }
 
 function stripWrappingQuotes(value: string): string {
