@@ -44,11 +44,6 @@ function activityTime(activity) {
 }
 
 function isCurrentActivity(activity, headSha, headCommittedAt) {
-  const shortSha = headSha?.slice(0, 7);
-  const body = typeof activity.body === "string" ? activity.body : "";
-  if (headSha && (body.includes(headSha) || (shortSha && body.includes(shortSha)))) {
-    return true;
-  }
   if (activity.commit_id && headSha) {
     return activity.commit_id === headSha;
   }

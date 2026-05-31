@@ -27,10 +27,10 @@ export function resolvePluginEntry(
 
   const allowedIds = new Set(options.candidateIds);
   const slotId = options.getSlotId?.(root);
-  const activeId =
-    typeof slotId === "string" && allowedIds.has(slotId)
-      ? slotId
-      : undefined;
+  if (typeof slotId === "string" && !allowedIds.has(slotId)) {
+    return undefined;
+  }
+  const activeId = typeof slotId === "string" ? slotId : undefined;
   const ownId =
     !activeId &&
     typeof options.preferredId === "string" &&
