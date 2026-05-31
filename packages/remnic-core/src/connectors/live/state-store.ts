@@ -86,6 +86,13 @@ class ConnectorStateCorruptionError extends Error {
   }
 }
 
+export class ConnectorStateLockLostError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConnectorStateLockLostError";
+  }
+}
+
 interface ConnectorLockLease {
   readonly path: string;
   readonly token: string;
@@ -96,6 +103,10 @@ interface ConnectorLockMetadata {
   readonly token: string;
   readonly createdAt: string;
   readonly refreshedAt: string;
+}
+
+interface ConnectorStateLockOptions {
+  readonly heartbeatMs?: number;
 }
 
 /**
@@ -384,7 +395,12 @@ async function releaseConnectorLock(lease: ConnectorLockLease): Promise<void> {
   }
 }
 
-export async function withConnectorStateLock<T>(memoryDir: string, id: string, run: () => Promise<T>): Promise<T> {
+async function withConnectorStateLockInternal<T>(
+  memoryDir: string,
+  id: string,
+  run: (abortSignal: AbortSignal) => Promise<T>,
+  options: ConnectorStateLockOptions = {}
+): Promise<T> {
   const deadline = Date.now() + CONNECTOR_LOCK_TIMEOUT_MS;
   let lease: ConnectorLockLease | null = null;
   while (lease === null) {
@@ -395,18 +411,55 @@ export async function withConnectorStateLock<T>(memoryDir: string, id: string, r
     }
     await delay(CONNECTOR_LOCK_RETRY_MS);
   }
+  const abortController = new AbortController();
+  let rejectLockLost!: (err: Error) => void;
+  let lockLost = false;
+  const lockLostPromise = new Promise<never>((_resolve, reject) => {
+    rejectLockLost = reject;
+  });
+  const failLostLock = (message: string): void => {
+    if (lockLost) return;
+    lockLost = true;
+    const err = new ConnectorStateLockLostError(message);
+    abortController.abort(err);
+    rejectLockLost(err);
+  };
   const heartbeat = setInterval(() => {
-    void refreshConnectorLock(lease).catch(() => {
-      // Release remains token-guarded; failed refresh should not mask sync work.
-    });
-  }, CONNECTOR_LOCK_HEARTBEAT_MS);
+    void refreshConnectorLock(lease)
+      .then((refreshed) => {
+        if (!refreshed) {
+          failLostLock(`lost connector "${id}" state lock`);
+        }
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        failLostLock(`lost connector "${id}" state lock: ${message}`);
+      });
+  }, options.heartbeatMs ?? CONNECTOR_LOCK_HEARTBEAT_MS);
   heartbeat.unref?.();
   try {
-    return await run();
+    return await Promise.race([run(abortController.signal), lockLostPromise]);
   } finally {
     clearInterval(heartbeat);
     await releaseConnectorLock(lease);
   }
+}
+
+export async function withConnectorStateLock<T>(
+  memoryDir: string,
+  id: string,
+  run: (abortSignal: AbortSignal) => Promise<T>
+): Promise<T> {
+  return withConnectorStateLockInternal(memoryDir, id, run);
+}
+
+export async function _withConnectorStateLockForTest<T>(
+  memoryDir: string,
+  id: string,
+  run: (abortSignal: AbortSignal) => Promise<T>,
+  options: ConnectorStateLockOptions
+): Promise<T> {
+  return withConnectorStateLockInternal(memoryDir, id, run, options);
 }
 
 /**

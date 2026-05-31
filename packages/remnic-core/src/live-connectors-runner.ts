@@ -15,6 +15,7 @@ import {
   GOOGLE_DRIVE_DEFAULT_POLL_INTERVAL_MS,
   NOTION_CONNECTOR_ID,
   NOTION_DEFAULT_POLL_INTERVAL_MS,
+  ConnectorStateLockLostError,
   readConnectorState,
   withConnectorStateLock,
   writeConnectorState,
@@ -211,7 +212,8 @@ export async function runLiveConnectorsOnce(options: {
     let lastStateWrittenAt: Date | undefined;
     try {
       const connector = definition.createConnector();
-      runResult = await withConnectorStateLock(options.memoryDir, definition.id, async () => {
+      runResult = await withConnectorStateLock(options.memoryDir, definition.id, async (lockSignal) => {
+        const pollAbortSignal = combineAbortSignals(options.abortSignal, lockSignal);
         const lockedState = await readConnectorState(options.memoryDir, definition.id);
         if (!force && !isConnectorDue(lockedState, definition.pollIntervalMs, checkAt)) {
           return { docsImported: 0 };
@@ -224,10 +226,15 @@ export async function runLiveConnectorsOnce(options: {
             connector.syncIncremental({
               cursor,
               config: validatedConfig,
-              abortSignal: options.abortSignal,
+              abortSignal: pollAbortSignal,
             }),
-          ingestFn: options.ingestDocuments,
+          ingestFn: async (docs) => {
+            throwIfAborted(pollAbortSignal);
+            await options.ingestDocuments(docs);
+            throwIfAborted(pollAbortSignal);
+          },
           writeCursorFn: (writeState) => {
+            throwIfAborted(pollAbortSignal);
             const writeAt = resolveNow(options.now);
             return writeConnectorState(options.memoryDir, definition.id, {
               id: definition.id,
@@ -261,17 +268,19 @@ export async function runLiveConnectorsOnce(options: {
       let stateWriteError: string | undefined;
       let writtenErrorState: ConnectorState | undefined;
       const errorAt = resolveNow(options.now);
-      try {
-        writtenErrorState = await writeConnectorErrorState({
-          memoryDir: options.memoryDir,
-          connectorId: definition.id,
-          state,
-          error: message,
-          now: errorAt,
-        });
-      } catch (writeErr) {
-        stateWriteError =
-          writeErr instanceof Error ? writeErr.message : String(writeErr);
+      if (!(err instanceof ConnectorStateLockLostError)) {
+        try {
+          writtenErrorState = await writeConnectorErrorState({
+            memoryDir: options.memoryDir,
+            connectorId: definition.id,
+            state,
+            error: message,
+            now: errorAt,
+          });
+        } catch (writeErr) {
+          stateWriteError =
+            writeErr instanceof Error ? writeErr.message : String(writeErr);
+        }
       }
       const reportedState = writtenErrorState ?? state;
       results.push({
@@ -385,6 +394,41 @@ function runItemFromResult(
     lastSyncAt: reportedLastSyncAt,
     nextDueAt: reportedNextDueAt,
   };
+}
+
+function combineAbortSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const activeSignals = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  if (activeSignals.length === 0) return undefined;
+  if (activeSignals.length === 1) return activeSignals[0];
+  const abortSignalAny = (AbortSignal as typeof AbortSignal & {
+    any?: (signals: AbortSignal[]) => AbortSignal;
+  }).any;
+  if (abortSignalAny !== undefined) {
+    return abortSignalAny(activeSignals);
+  }
+  const controller = new AbortController();
+  const abort = (signal: AbortSignal): void => {
+    if (!controller.signal.aborted) {
+      controller.abort(signal.reason);
+    }
+  };
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      abort(signal);
+      break;
+    }
+    signal.addEventListener("abort", () => abort(signal), { once: true });
+  }
+  return controller.signal;
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return;
+  const reason = signal.reason;
+  if (reason instanceof Error) {
+    throw reason;
+  }
+  throw new Error(reason === undefined ? "operation aborted" : String(reason));
 }
 
 async function writeConnectorErrorState(options: {

@@ -27,6 +27,7 @@ import {
   _releaseConnectorLockForTest,
   _tryAcquireConnectorLockForTest,
   _unlinkStaleConnectorLockForTest,
+  _withConnectorStateLockForTest,
 } from "./state-store.js";
 
 /**
@@ -706,6 +707,49 @@ test("state store: release only removes the matching connector lock token", asyn
   await _releaseConnectorLockForTest(lease);
 
   assert.equal(JSON.parse(fs.readFileSync(lease.path, "utf8")).token, "replacement-lock");
+});
+
+test("state store: aborts scoped work when heartbeat loses the connector lock", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const lockPath = path.join(memoryDir, "state", "connector-locks", "drive.lock");
+  let scopedSignal: AbortSignal | undefined;
+  let resolveStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve;
+  });
+
+  const lockedWork = _withConnectorStateLockForTest(
+    memoryDir,
+    "drive",
+    async (abortSignal) => {
+      scopedSignal = abortSignal;
+      resolveStarted();
+      await new Promise<never>((_resolve, reject) => {
+        abortSignal.addEventListener(
+          "abort",
+          () => {
+            reject(abortSignal.reason);
+          },
+          { once: true },
+        );
+      });
+    },
+    { heartbeatMs: 5 },
+  );
+
+  await started;
+  await waitForTest(() => fs.existsSync(lockPath));
+  const replacement = {
+    pid: process.pid,
+    token: "replacement-lock",
+    createdAt: new Date().toISOString(),
+    refreshedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(lockPath, `${JSON.stringify(replacement)}\n`);
+
+  await assert.rejects(lockedWork, /lost connector "drive" state lock/);
+  assert.equal(scopedSignal?.aborted, true);
+  assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, "replacement-lock");
 });
 
 test("state store: refreshing an unlinked stale lease does not overwrite a newer lock owner", async (t) => {
