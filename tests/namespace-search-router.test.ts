@@ -300,7 +300,7 @@ test("namespaceCollectionName keeps legacy default collection and derives namesp
       defaultNamespace: "default",
       useLegacyDefaultCollection: true,
     }),
-    "openclaw-engram--ns--shared",
+    "openclaw-engram--ns-736861726564",
   );
 
   assert.equal(
@@ -308,11 +308,11 @@ test("namespaceCollectionName keeps legacy default collection and derives namesp
       defaultNamespace: "default",
       useLegacyDefaultCollection: false,
     }),
-    "openclaw-engram--ns--default",
+    "openclaw-engram--ns-64656661756c74",
   );
 });
 
-test("NamespaceSearchRouter scopes backends by namespace root and dedupes merged results", async () => {
+test("NamespaceSearchRouter scopes backends by namespace root and keeps namespace-scoped results", async () => {
   const memoryDir = tmpDir("engram-ns-search");
   const cfg = baseConfig(memoryDir);
   const seenConfigs: Array<{ memoryDir: string; collection: string }> = [];
@@ -337,7 +337,7 @@ test("NamespaceSearchRouter scopes backends by namespace root and dedupes merged
         collection: backendCfg.qmdCollection,
       });
       const backend =
-        backendCfg.qmdCollection.endsWith("shared")
+        backendCfg.qmdCollection === "openclaw-engram--ns-736861726564"
           ? backendForResultSet([
               { docid: "shared-1", path: "/tmp/shared.md", score: 0.8, snippet: "shared" },
               { docid: "dup", path: "/tmp/dup.md", score: 0.6, snippet: "shared dup" },
@@ -362,15 +362,18 @@ test("NamespaceSearchRouter scopes backends by namespace root and dedupes merged
     seenConfigs,
     [
       { memoryDir, collection: "openclaw-engram" },
-      { memoryDir: path.join(memoryDir, "namespaces", "shared"), collection: "openclaw-engram--ns--shared" },
+      { memoryDir: path.join(memoryDir, "namespaces", "shared"), collection: "openclaw-engram--ns-736861726564" },
     ],
   );
-  assert.equal(results.length, 3);
-  assert.equal(results[0]?.path, "/tmp/default.md");
-  assert.equal(results[1]?.path, "/tmp/shared.md");
-  assert.equal(results[2]?.path, "/tmp/dup.md");
-  assert.equal(results[2]?.score, 0.7);
-  assert.equal(results[2]?.snippet, "default dup");
+  assert.deepEqual(
+    results.map((result) => [result.path, result.score, result.snippet]),
+    [
+      ["/tmp/default.md", 0.9, "default"],
+      ["/tmp/shared.md", 0.8, "shared"],
+      ["/tmp/dup.md", 0.7, "default dup"],
+      ["/tmp/dup.md", 0.6, "shared dup"],
+    ],
+  );
 });
 
 test("NamespaceSearchRouter derives a namespaced collection for migrated default roots", async () => {
@@ -401,7 +404,7 @@ test("NamespaceSearchRouter derives a namespaced collection for migrated default
     mode: "hybrid",
   });
 
-  assert.equal(seenCollection, "openclaw-engram--ns--default");
+  assert.equal(seenCollection, "openclaw-engram--ns-64656661756c74");
 });
 
 test("NamespaceSearchRouter forwards search options to backend search mode", async () => {
@@ -461,7 +464,7 @@ test("NamespaceSearchRouter skips namespaces whose collection is missing", async
         },
       ]),
       ensureCollection: async () =>
-        backendCfg.qmdCollection.endsWith("shared") ? "missing" : "present",
+        backendCfg.qmdCollection === "openclaw-engram--ns-736861726564" ? "missing" : "present",
     }),
   );
 
@@ -497,7 +500,7 @@ test("NamespaceSearchRouter runs maintenance only for present namespace collecti
       const backend: FakeSearchBackend = {
         ...backendForResultSet([]),
         ensureCollection: async () =>
-          backendCfg.qmdCollection.endsWith("shared") ? "missing" : "present",
+          backendCfg.qmdCollection === "openclaw-engram--ns-736861726564" ? "missing" : "present",
       };
       backends.set(backendCfg.qmdCollection, backend);
       return backend;
@@ -508,7 +511,7 @@ test("NamespaceSearchRouter runs maintenance only for present namespace collecti
   await router.embedNamespaces(["default", "shared"]);
 
   assert.deepEqual(backends.get("openclaw-engram")?.calls, ["update", "embed"]);
-  assert.deepEqual(backends.get("openclaw-engram--ns--shared")?.calls ?? [], []);
+  assert.deepEqual(backends.get("openclaw-engram--ns-736861726564")?.calls ?? [], []);
 });
 
 test("NamespaceSearchRouter forwards execution options to namespace updates", async () => {
