@@ -66,6 +66,9 @@ node "${PACKAGE_SCRIPT}" \
   --out-dir "${OUT_DIR}" \
   --target-map "${TARGET_MAP}"
 
-node "${VERIFY_SCRIPT}" "${OUT_DIR}" "${TARGET_MAP}"
+if ! node "${VERIFY_SCRIPT}" "${OUT_DIR}" "${TARGET_MAP}"; then
+  echo "remediation-required: MemoryArena evidence verification failed for ${OUT_DIR}" >&2
+  exit 4
+fi
 
 echo "ready: verified MemoryArena evidence at ${OUT_DIR}"

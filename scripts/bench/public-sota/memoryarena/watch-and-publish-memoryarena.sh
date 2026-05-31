@@ -69,24 +69,34 @@ while :; do
   if [[ "${complete_status}" -ne 0 ]]; then
     if [[ "${complete_status}" -eq 4 ]]; then
       remediation_file="${RESULTS_DIR}/memory-arena-remediation-required.md"
+      remediation_reason="$(grep -E '^(not-sota:|remediation-required:)' <<< "${complete_output}" | tail -1 || true)"
+      if [[ -z "${remediation_reason}" ]]; then
+        remediation_reason="completion helper exited ${complete_status}"
+      fi
       cat > "${remediation_file}" <<EOF
 # MemoryArena Remediation Required
 
 Detected: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-The MemoryArena run completed but did not meet all checked SOTA targets.
+The MemoryArena run completed, but the public SOTA completion helper reported
+a remediation-required condition.
+
+Reason: ${remediation_reason}
 
 Next required action:
 
-1. Inspect the comparison output under
+1. If the reason is \`not-sota\`, inspect the comparison output under
    \`${EVIDENCE_ROOT}/${RUN_ID}/memory-arena-sota-comparison.raw.json\`.
-2. Identify whether the miss is due to a benchmark harness issue or Remnic
+2. If the reason mentions evidence verification, inspect the packaged evidence
+   under \`${EVIDENCE_ROOT}/${RUN_ID}\` and fix the evidence or verifier path
+   before rerunning the benchmark.
+3. Identify whether the issue is due to a benchmark harness issue or Remnic
    behavior.
-3. Make only changes that preserve real-world user behavior.
-4. Run focused tests for the changed behavior.
-5. Rerun MemoryArena with Codex CLI \`gpt-5.5\`, reasoning effort \`xhigh\`,
-   and service tier \`fast\`.
-6. Re-run this watcher or the completion/stage/publish helpers after rerun.
+4. Make only changes that preserve real-world user behavior.
+5. Run focused tests for the changed behavior.
+6. Rerun MemoryArena with Codex CLI \`gpt-5.5\`, reasoning effort \`xhigh\`,
+   and service tier \`fast\` when the raw benchmark result itself must change.
+7. Re-run this watcher or the completion/stage/publish helpers after rerun.
 EOF
       log "remediation-required: wrote ${remediation_file}"
       log "stopping: MemoryArena completion helper exited ${complete_status}"

@@ -1929,6 +1929,42 @@ test("MemoryArena transition helper retries active-session launch collisions", a
   assert.match(source, /exit 0[\s\S]*if \[\[ "\$\{launch_status\}" -ne 0 \]\]; then/);
 });
 
+test("public SOTA completion helpers keep packaging retryable and classify verification failures as remediation", async () => {
+  const generic = await readFile(
+    path.join("scripts", "bench", "public-sota", "complete-public-benchmark-if-ready.sh"),
+    "utf8",
+  );
+  const memoryArena = await readFile(
+    path.join("scripts", "bench", "public-sota", "memoryarena", "complete-memoryarena-if-ready.sh"),
+    "utf8",
+  );
+
+  assert.match(generic, /node "\$\{PACKAGE_SCRIPT\}"/);
+  assert.doesNotMatch(generic, /remediation-required: \$\{benchmark\} evidence packaging failed/);
+  assert.match(generic, /if ! node "\$\{VERIFY_SCRIPT\}" "\$\{OUT_DIR\}" "\$\{TARGET_MAP\}" "\$\{benchmark\}"; then[\s\S]*remediation-required: \$\{benchmark\} evidence verification failed[\s\S]*exit 4/);
+  assert.match(memoryArena, /node "\$\{PACKAGE_SCRIPT\}"/);
+  assert.doesNotMatch(memoryArena, /remediation-required: MemoryArena evidence packaging failed/);
+  assert.match(memoryArena, /if ! node "\$\{VERIFY_SCRIPT\}" "\$\{OUT_DIR\}" "\$\{TARGET_MAP\}"; then[\s\S]*remediation-required: MemoryArena evidence verification failed[\s\S]*exit 4/);
+});
+
+test("public SOTA publish watchers distinguish SOTA misses from evidence verification remediation", async () => {
+  const generic = await readFile(
+    path.join("scripts", "bench", "public-sota", "watch-public-benchmark-publish.sh"),
+    "utf8",
+  );
+  const memoryArena = await readFile(
+    path.join("scripts", "bench", "public-sota", "memoryarena", "watch-and-publish-memoryarena.sh"),
+    "utf8",
+  );
+
+  for (const source of [generic, memoryArena]) {
+    assert.match(source, /remediation_reason="\$\(grep -E '\^\(not-sota:\|remediation-required:\)' <<< "\$\{complete_output\}" \| tail -1 \|\| true\)"/);
+    assert.match(source, /If the reason is \\`not-sota\\`, inspect the comparison output/);
+    assert.match(source, /If the reason mentions evidence verification, inspect the packaged evidence/);
+    assert.doesNotMatch(source, /run completed but did not meet all checked SOTA targets/);
+  }
+});
+
 test("next public benchmark launcher falls back to a base-branch worktree with datasets", async () => {
   const source = await readFile(
     path.join("scripts", "bench", "public-sota", "launch-next-public-benchmark.sh"),
