@@ -298,8 +298,10 @@ const RETRYABLE_BENCHMARK_EVIDENCE_HEADINGS = [
   "prior completed memoryarena subtasks",
   "remnic memory context",
   "remnic recall pipeline",
+  "raw messages",
   "explicit cue evidence",
   "search evidence",
+  "webshop environment observations for current options",
 ] as const;
 
 const NO_EVIDENCE_PREFIXES = [

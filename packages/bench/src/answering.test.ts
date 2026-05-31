@@ -473,6 +473,44 @@ test("strict answering retries unknown from nested Remnic recall pipeline eviden
   assert.equal(result.model, "retry-model");
 });
 
+test("strict answering retries unknown from MemoryArena fallback evidence headings", async () => {
+  const questions: string[] = [];
+  const result = await answerBenchmarkQuestion({
+    question: "Which item should be selected?",
+    recalledText: [
+      "## WebShop environment observations for current options",
+      "Option: Dessert Rose Sprinkle Mix",
+    ].join("\n"),
+    answerMode: "strict",
+    retryUnknownWithEvidence: true,
+    responder: {
+      async respond(question) {
+        questions.push(question);
+        if (questions.length === 1) {
+          return {
+            text: "unknown",
+            tokens: { input: 7, output: 1 },
+            latencyMs: 3,
+            model: "first-model",
+          };
+        }
+        assert.match(question, /benchmark evidence/);
+        return {
+          text: "item: Dessert Rose Sprinkle Mix",
+          tokens: { input: 8, output: 5 },
+          latencyMs: 4,
+          model: "retry-model",
+        };
+      },
+    },
+  });
+
+  assert.equal(questions.length, 2);
+  assert.equal(result.finalAnswer, "item: Dessert Rose Sprinkle Mix");
+  assert.deepEqual(result.tokens, { input: 15, output: 6 });
+  assert.equal(result.model, "retry-model");
+});
+
 test("agentic-memory answering preserves the first unknown answer when the optional retry fails", async () => {
   let calls = 0;
   const result = await answerBenchmarkQuestion({
