@@ -116,6 +116,11 @@ if [[ "${benchmark}" == "memory-arena" ]]; then
   fi
 fi
 
+(
+  cd "${LAUNCH_REPO_ROOT}"
+  pnpm --filter @remnic/bench build
+)
+
 git_sha="$(git -C "${LAUNCH_REPO_ROOT}" rev-parse HEAD)"
 short_sha="${git_sha:0:8}"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
