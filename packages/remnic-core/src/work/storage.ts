@@ -372,10 +372,10 @@ export class WorkStorage {
       await rm(this.taskPath(id));
       return true;
     } catch (error) {
+      if (isErrnoCode(error, "ENOENT")) return false;
       if (removedProjectLink && existing.projectId) {
         await this.addTaskIdToProject(existing.projectId, id).catch(() => undefined);
       }
-      if (isErrnoCode(error, "ENOENT")) return false;
       throw error;
     }
   }

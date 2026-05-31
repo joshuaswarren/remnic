@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { WorkStorage } from "../src/work/storage.js";
 
 test("work storage task CRUD persists owner and status metadata", async () => {
@@ -174,6 +174,30 @@ test("work storage clears task links when deleting a project", async () => {
   const orphaned = await storage.getTask(task.id);
   assert.ok(orphaned);
   assert.equal(orphaned?.projectId, null);
+});
+
+test("work storage does not relink a task after a concurrent delete wins", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-work-storage-concurrent-delete-task-"));
+  const storage = new WorkStorage(memoryDir);
+
+  const project = await storage.createProject({ name: "Concurrent delete project" });
+  const task = await storage.createTask({ title: "Deleted concurrently", projectId: project.id });
+  const taskPath = path.join(memoryDir, "work", "tasks", `${task.id}.md`);
+  const internals = storage as unknown as {
+    removeTaskIdFromProject(projectId: string, taskId: string, now?: Date): Promise<void>;
+  };
+  const originalRemoveTaskIdFromProject = internals.removeTaskIdFromProject.bind(storage);
+  internals.removeTaskIdFromProject = async (projectId: string, taskId: string, now?: Date) => {
+    await originalRemoveTaskIdFromProject(projectId, taskId, now);
+    await rm(taskPath);
+  };
+
+  const removed = await storage.deleteTask(task.id);
+  assert.equal(removed, false);
+
+  const fetchedProject = await storage.getProject(project.id);
+  assert.ok(fetchedProject);
+  assert.deepEqual(fetchedProject.taskIds, []);
 });
 
 test("work storage generates collision-resistant ids for same timestamp/title", async () => {
