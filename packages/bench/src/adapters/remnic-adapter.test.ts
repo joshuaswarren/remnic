@@ -354,6 +354,87 @@ test("direct adapter cleans up late replay writes after timeout abort", async ()
   }
 });
 
+test("direct adapter keeps replay queue blocked until aborted ingestion settles", async () => {
+  const firstSessionId = "abort-replay-queue-first";
+  const secondSessionId = "abort-replay-queue-second";
+  const releaseFirstReplay = createDeferredForTest();
+  const firstReplayStarted = createDeferredForTest();
+  const events: string[] = [];
+  const originalIngestReplayBatch = Orchestrator.prototype.ingestReplayBatch;
+
+  Orchestrator.prototype.ingestReplayBatch = async function patchedQueuedIngestReplayBatch(
+    this: Orchestrator,
+    turns: Parameters<Orchestrator["ingestReplayBatch"]>[0],
+    options?: Parameters<Orchestrator["ingestReplayBatch"]>[1],
+  ): Promise<void> {
+    const sessionKey = turns[0]?.sessionKey;
+    if (sessionKey === firstSessionId) {
+      events.push("first:start");
+      firstReplayStarted.resolve();
+      await releaseFirstReplay.promise;
+      events.push("first:end");
+      return;
+    }
+    if (sessionKey === secondSessionId) {
+      events.push("second:start");
+    }
+    return originalIngestReplayBatch.call(this, turns, options);
+  };
+
+  const adapter = await createRemnicAdapter({
+    replayExtractionMode: "await",
+    configOverrides: {
+      transcriptEnabled: true,
+      extractionMinUserTurns: 0,
+    },
+  });
+
+  try {
+    const controller = new AbortController();
+    const firstStore = adapter.store(
+      firstSessionId,
+      [
+        {
+          role: "user",
+          content: "Remember the first aborted replay queue marker.",
+        },
+      ],
+      { signal: controller.signal },
+    );
+    await firstReplayStarted.promise;
+
+    controller.abort(new Error("caller aborted replay queue"));
+    await assert.rejects(
+      () => Promise.race([
+        firstStore,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error("store abort did not surface before replay settled"));
+          }, 250);
+        }),
+      ]),
+      /caller aborted replay queue/,
+    );
+
+    const secondStore = adapter.store(secondSessionId, [
+      {
+        role: "user",
+        content: "Remember the second replay queue marker.",
+      },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(events, ["first:start"]);
+
+    releaseFirstReplay.resolve();
+    await secondStore;
+    assert.deepEqual(events, ["first:start", "first:end", "second:start"]);
+  } finally {
+    releaseFirstReplay.resolve();
+    await adapter.destroy();
+    Orchestrator.prototype.ingestReplayBatch = originalIngestReplayBatch;
+  }
+});
+
 test("direct adapter observes timeout guard abort control before drain work", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {

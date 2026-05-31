@@ -1793,11 +1793,18 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                 }),
               ),
             );
-            await withBenchPhaseAbort(
-              replayIngestion,
-              control,
-              "store",
-            );
+            try {
+              await withBenchPhaseAbort(
+                replayIngestion,
+                control,
+                "store",
+              );
+            } catch (error) {
+              if (isBenchPhaseAborted(control)) {
+                await replayIngestion.catch(() => undefined);
+              }
+              throw error;
+            }
           } finally {
             if (!isBenchPhaseAborted(control)) {
               await rememberNewBenchCoreMemories(
