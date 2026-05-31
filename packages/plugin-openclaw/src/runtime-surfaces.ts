@@ -189,29 +189,43 @@ async function patchMemory(
     changed = true;
   }
   if (metadataChanged) {
-    if (
-      !(await storage.writeMemoryFrontmatter(memory, {
+    let frontmatterWritten: boolean;
+    try {
+      frontmatterWritten = await storage.writeMemoryFrontmatter(memory, {
         ...patch,
         tags: uniqueTags(patch.tags ?? memory.frontmatter.tags ?? []),
         updated: new Date().toISOString(),
-      }))
-    ) {
+      });
+    } catch (error) {
       if (contentChanged) {
-        const rolledBack = await storage.updateMemory(
-          memory.frontmatter.id,
-          memory.content,
-        );
-        if (!rolledBack) {
-          throw new Error(
-            `surface memory ${memory.frontmatter.id} content was updated but frontmatter update failed and rollback failed`,
-          );
-        }
+        await rollbackPatchedContent(storage, memory);
+      }
+      throw error;
+    }
+    if (!frontmatterWritten) {
+      if (contentChanged) {
+        await rollbackPatchedContent(storage, memory);
       }
       return false;
     }
     changed = true;
   }
   return changed;
+}
+
+async function rollbackPatchedContent(
+  storage: RuntimeSurfaceStorage,
+  memory: MemoryFile,
+): Promise<void> {
+  const rolledBack = await storage.updateMemory(
+    memory.frontmatter.id,
+    memory.content,
+  );
+  if (!rolledBack) {
+    throw new Error(
+      `surface memory ${memory.frontmatter.id} content was updated but frontmatter update failed and rollback failed`,
+    );
+  }
 }
 
 function makeSurfaceMemorySnapshot(params: {

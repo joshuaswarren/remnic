@@ -18,6 +18,47 @@ const repoRoot = process.cwd();
 const packagePaths = ["package.json"];
 const packagesDir = path.join(repoRoot, "packages");
 
+async function readJson(jsonPath) {
+  return JSON.parse(await readFile(jsonPath, "utf8"));
+}
+
+async function writeJson(jsonPath, value) {
+  await writeFile(jsonPath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function companionManifestPaths(relativePackageJsonPath) {
+  const packageDir = path.dirname(relativePackageJsonPath);
+  const paths = [];
+  if (packageDir !== ".") {
+    paths.push(path.join(packageDir, "openclaw.plugin.json"));
+  }
+  if (packageDir === path.join("packages", "plugin-openclaw")) {
+    paths.push("openclaw.plugin.json");
+  }
+  return paths;
+}
+
+async function syncCompanionManifestVersion(relativePath) {
+  const changed = [];
+  for (const relativeManifestPath of companionManifestPaths(relativePath)) {
+    const absoluteManifestPath = path.join(repoRoot, relativeManifestPath);
+    let manifest;
+    try {
+      manifest = await readJson(absoluteManifestPath);
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      throw error;
+    }
+    if (manifest.version === version) continue;
+    manifest.version = version;
+    changed.push(`${relativeManifestPath} (${manifest.id ?? "openclaw manifest"})`);
+    if (!dryRun) {
+      await writeJson(absoluteManifestPath, manifest);
+    }
+  }
+  return changed;
+}
+
 for (const entry of await readdir(packagesDir, { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
   packagePaths.push(path.join("packages", entry.name, "package.json"));
@@ -30,7 +71,7 @@ for (const relativePath of packagePaths) {
   const absolutePath = path.join(repoRoot, relativePath);
   let packageJson;
   try {
-    packageJson = JSON.parse(await readFile(absolutePath, "utf8"));
+    packageJson = await readJson(absolutePath);
   } catch (error) {
     if (error?.code === "ENOENT") continue;
     throw error;
@@ -44,15 +85,16 @@ for (const relativePath of packagePaths) {
   changed.push(`${relativePath} (${packageJson.name ?? "unnamed"})`);
 
   if (!dryRun) {
-    await writeFile(absolutePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    await writeJson(absolutePath, packageJson);
   }
+  changed.push(...await syncCompanionManifestVersion(relativePath));
 }
 
 if (changed.length === 0) {
   console.log(`All publishable packages already target ${version}.`);
 } else {
   const action = dryRun ? "Would update" : "Updated";
-  console.log(`${action} ${changed.length} package version(s) to ${version}:`);
+  console.log(`${action} ${changed.length} package/manifest version(s) to ${version}:`);
   for (const entry of changed) {
     console.log(`- ${entry}`);
   }

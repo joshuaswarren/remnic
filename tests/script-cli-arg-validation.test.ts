@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
@@ -16,6 +18,14 @@ function runScript(script: string, args: string[]) {
     },
     timeout: 30_000,
   });
+}
+
+async function writeJson(filePath: string, value: unknown): Promise<void> {
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function readJson(filePath: string): Promise<Record<string, unknown>> {
+  return JSON.parse(await readFile(filePath, "utf8")) as Record<string, unknown>;
 }
 
 test("codex-materialize rejects missing --memory-dir value before consuming --json", () => {
@@ -60,4 +70,66 @@ test("set-release-version accepts prerelease and build metadata SemVer", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /1\.0\.0-rc\.1\+001/);
+});
+
+test("set-release-version syncs OpenClaw companion manifests", async () => {
+  const repo = await mkdtemp(path.join(os.tmpdir(), "remnic-release-version-"));
+  try {
+    await mkdir(path.join(repo, "packages", "plugin-openclaw"), { recursive: true });
+    await mkdir(path.join(repo, "packages", "shim-openclaw-engram"), { recursive: true });
+    await writeJson(path.join(repo, "package.json"), {
+      private: true,
+      version: "0.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "plugin-openclaw", "package.json"), {
+      name: "@remnic/plugin-openclaw",
+      version: "1.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "plugin-openclaw", "openclaw.plugin.json"), {
+      id: "openclaw-remnic",
+      version: "1.0.0",
+    });
+    await writeJson(path.join(repo, "openclaw.plugin.json"), {
+      id: "openclaw-remnic",
+      version: "1.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "shim-openclaw-engram", "package.json"), {
+      name: "@remnic/openclaw-engram",
+      version: "1.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "shim-openclaw-engram", "openclaw.plugin.json"), {
+      id: "openclaw-engram",
+      version: "1.0.0",
+    });
+
+    const result = spawnSync(process.execPath, [
+      path.join(repoRoot, "scripts", "set-release-version.mjs"),
+      "1.2.3",
+    ], {
+      cwd: repo,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      (await readJson(path.join(repo, "packages", "plugin-openclaw", "package.json"))).version,
+      "1.2.3",
+    );
+    assert.equal(
+      (await readJson(path.join(repo, "packages", "plugin-openclaw", "openclaw.plugin.json"))).version,
+      "1.2.3",
+    );
+    assert.equal((await readJson(path.join(repo, "openclaw.plugin.json"))).version, "1.2.3");
+    assert.equal(
+      (await readJson(path.join(repo, "packages", "shim-openclaw-engram", "package.json"))).version,
+      "1.2.3",
+    );
+    assert.equal(
+      (await readJson(path.join(repo, "packages", "shim-openclaw-engram", "openclaw.plugin.json"))).version,
+      "1.2.3",
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
 });

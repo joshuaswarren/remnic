@@ -513,6 +513,71 @@ test("syncHeartbeatSurfaceEntries does not report or reindex partial metadata wr
   );
 });
 
+test("syncHeartbeatSurfaceEntries rolls back content when metadata write throws", async () => {
+  const storage = makeStorage([
+    makeMemory({
+      id: "principle-1",
+      category: "principle",
+      content: "check-test-suite\n\nRun the suite and report new failures.",
+      tags: ["ci", "tests", "heartbeat", "procedural", "check-test-suite"],
+      source: "heartbeat.md",
+      memoryKind: "procedural",
+      structuredAttributes: {
+        remnicSurfaceType: "heartbeat",
+        remnicHeartbeatEntryId: "heartbeat-a",
+        relatedHeartbeatSlug: "check-test-suite",
+        remnicHeartbeatJournalPath: "/workspace/HEARTBEAT.md",
+        remnicHeartbeatSourceOffset: "20",
+        remnicHeartbeatSchedule: "hourly",
+      },
+    }),
+  ]);
+  let contentWrites = 0;
+  let frontmatterWrites = 0;
+  const originalContent = storage.memories[0]!.content;
+  const originalAttributes = {
+    ...storage.memories[0]!.frontmatter.structuredAttributes,
+  };
+  const originalUpdateMemory = storage.updateMemory;
+  storage.updateMemory = async (id, content) => {
+    contentWrites += 1;
+    return originalUpdateMemory(id, content);
+  };
+  storage.writeMemoryFrontmatter = async () => {
+    frontmatterWrites += 1;
+    throw new Error("metadata disk write failed");
+  };
+  const reindexed: string[] = [];
+
+  await assert.rejects(
+    syncHeartbeatSurfaceEntries({
+      storage,
+      entries: [
+        {
+          id: "heartbeat-a",
+          slug: "check-test-suite",
+          title: "check-test-suite",
+          body: "Run the suite, compare to the last run, and report new failures.",
+          schedule: "every 2 hours",
+          tags: ["ci", "tests", "diff"],
+          sourceOffset: 48,
+        },
+      ],
+      journalPath: "/workspace/HEARTBEAT.md",
+      reindexMemory: async (id) => {
+        reindexed.push(id);
+      },
+    }),
+    /metadata disk write failed/,
+  );
+
+  assert.equal(contentWrites, 2);
+  assert.equal(frontmatterWrites, 1);
+  assert.deepEqual(reindexed, []);
+  assert.equal(storage.memories[0]?.content, originalContent);
+  assert.deepEqual(storage.memories[0]?.frontmatter.structuredAttributes, originalAttributes);
+});
+
 test("syncHeartbeatSurfaceEntries does not commit metadata when content update fails", async () => {
   const storage = makeStorage([
     makeMemory({
