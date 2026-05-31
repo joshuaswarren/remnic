@@ -98,7 +98,7 @@ Remnic supports OpenClaw releases from at least the previous 60 days. As of
 May 31, 2026, that window starts on April 1, 2026. The OpenClaw installer
 floor remains the single supported `>=2026.4.1` shape, while the peer and
 plugin-API compatibility ranges explicitly include reviewed prerelease hosts in
-that window. The adapter records `2026.5.31-beta.2` as the latest reviewed
+that window. The adapter records `2026.5.31-beta.3` as the latest reviewed
 build target.
 
 When OpenClaw adds a new manifest or setup surface, Remnic should add that new
@@ -186,12 +186,12 @@ surfaces:
   diagnostic while preserving older host behavior.
 - `securityDisclosure` is intentionally documented here instead of shipped as a
   manifest field; current OpenClaw native manifests do not list it.
-- OpenClaw 2026.5.20-beta.2 through 2026.5.31-beta.2 keep Remnic's SDK hook,
+- OpenClaw 2026.5.20-beta.2 through 2026.5.31-beta.3 keep Remnic's SDK hook,
   tool-contract, memory-slot, ClawHub install, gateway model, and security-scan
   surfaces compatible. Remnic stays on the full `definePluginEntry` SDK path
   instead of the simple `defineToolPlugin` helper because the adapter combines
   memory-slot hooks, lifecycle handlers, command metadata, public artifacts,
-  and runtime tools. The package metadata records `2026.5.31-beta.2` as the
+  and runtime tools. The package metadata records `2026.5.31-beta.3` as the
   reviewed OpenClaw build target while keeping the broad stable and prerelease
   peer/plugin-API range required by Remnic's rolling 60-day support policy.
   `openclaw.install.minHostVersion` remains the single `>=2026.4.1` floor that
@@ -202,21 +202,23 @@ registration when a runtime tool is missing from the manifest contract.
 
 ### 2026.5.31 Compatibility Sweep
 
-Issues #1203 through #1237 and follow-up release issues #1241 and #1242 were
+Issues #1203 through #1237 and follow-up release issues #1241, #1242, and #1245 were
 reviewed as one compatibility window. The merged offline-sync and QMD issues in
 that range are already present on `main`; the remaining OpenClaw sentinel issues
 converge on the latest upstream contract:
 
 - SDK surface: `npm run check:openclaw-sdk-surface -- --package-root
-  /tmp/openclaw-2026.5.31-beta.2` passes with the existing snapshot
+  /tmp/openclaw-2026.5.31-beta.3` passes with the existing snapshot
   (`14 registrars, 22 hooks, 2 manifest contracts`).
-- Plugin scanner: OpenClaw `2026.5.31-beta.2`'s packaged scanner passes with
+- Plugin scanner: OpenClaw `2026.5.31-beta.3`'s packaged scanner passes with
   `scanned=20 critical=0 warn=0` for `packages/plugin-openclaw`.
 - New host features: OpenClaw beta.2 adds `configSignals.overlayMapPath`, SMS
   channel docs, native Codex first-party marketplace docs, and provider usage /
-  no-auth media provider clarifications. Remnic does not need new runtime code
-  for those host features, and keeps its existing config signals and gateway
-  provider delegation intact.
+  no-auth media provider clarifications. Beta.3 adds explicit
+  `MessagePresentationAction` command/callback semantics for channel controls.
+  Remnic does not need new runtime code for those host features, and keeps its
+  existing config signals, gateway provider delegation, and text-first memory
+  command surfaces intact.
 - Install/source resolution: document explicit
   `openclaw plugins install clawhub:@remnic/plugin-openclaw` because bare names
   can be npm-first during the OpenClaw launch cutover.

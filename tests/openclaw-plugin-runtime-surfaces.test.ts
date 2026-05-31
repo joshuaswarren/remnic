@@ -166,13 +166,14 @@ const OPENCLAW_SUPPORT_FLOOR_RANGE = [
   "2026.5.31-alpha.1",
   "2026.5.31-beta.1",
   "2026.5.31-beta.2",
+  "2026.5.31-beta.3",
 ].join(" || ");
 const OPENCLAW_MIN_HOST_VERSION_FLOOR = ">=2026.4.1";
 const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/plugin-openclaw/package.json",
     name: "@remnic/plugin-openclaw",
-    buildVersion: "2026.5.31-beta.2",
+    buildVersion: "2026.5.31-beta.3",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@remnic/plugin-openclaw",
@@ -181,7 +182,7 @@ const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/shim-openclaw-engram/package.json",
     name: "@joshuaswarren/openclaw-engram",
-    buildVersion: "2026.5.31-beta.2",
+    buildVersion: "2026.5.31-beta.3",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@joshuaswarren/openclaw-engram",
@@ -566,6 +567,7 @@ test("OpenClaw support range accepts the stable floor and reviewed prerelease ho
     "2026.5.31-alpha.1",
     "2026.5.31-beta.1",
     "2026.5.31-beta.2",
+    "2026.5.31-beta.3",
   ]) {
     assert.equal(
       semver.satisfies(version, OPENCLAW_SUPPORT_FLOOR_RANGE),

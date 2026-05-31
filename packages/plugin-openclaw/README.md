@@ -48,7 +48,7 @@ May 31, 2026 compatibility sweep, that means OpenClaw `2026.4.1` and newer.
 The package metadata therefore keeps the installer compatibility floor at the
 single `>=2026.4.1` shape OpenClaw setup expects, while the peer and plugin-API
 compatibility ranges explicitly include reviewed prerelease hosts in that
-window. The adapter separately records `2026.5.31-beta.2` as the latest
+window. The adapter separately records `2026.5.31-beta.3` as the latest
 reviewed OpenClaw build target.
 
 When adding newer OpenClaw manifest surfaces, keep older-compatible metadata in
@@ -187,10 +187,10 @@ Last compatibility sweep: May 31, 2026. The SDK surface check passed against
 surface for `openclaw@2026.5.19-beta.1`, which covers the intervening
 `2026.5.16-beta.6`, `2026.5.16-beta.7`, and `2026.5.18-beta.1` release line
 for the Remnic adapter surfaces. The May 31 sweep checked source tags
-`v2026.5.31-alpha.1` through `v2026.5.31-beta.2` and the issue window from
-#1203 through #1242, excluding unrelated issue #1211. The existing SDK
+`v2026.5.31-alpha.1` through `v2026.5.31-beta.3` and the issue window from
+#1203 through #1245, excluding unrelated issue #1211. The existing SDK
 snapshot still matched (`14 registrars, 22 hooks, 2 manifest contracts`) and
-OpenClaw `2026.5.31-beta.2`'s packaged plugin scanner reported
+OpenClaw `2026.5.31-beta.3`'s packaged plugin scanner reported
 `scanned=20 critical=0 warn=0` for the Remnic plugin.
 
 OpenClaw 2026.5.16 package-entry discovery prefers explicit built runtime
@@ -231,13 +231,18 @@ because the adapter owns mixed memory-slot hooks, lifecycle handlers, slash
 command metadata, public artifacts, and runtime tools rather than only static
 tools.
 
-OpenClaw 2026.5.20-beta.2 through 2026.5.31-beta.2 keep the Remnic-required
+OpenClaw 2026.5.20-beta.2 through 2026.5.31-beta.3 keep the Remnic-required
 plugin install, ClawHub fallback, manifest contract, hook, memory-slot, gateway
 LLM, and plugin security-scan surfaces compatible. The package metadata now
-records `2026.5.31-beta.2` as the reviewed OpenClaw build target and keeps
+records `2026.5.31-beta.3` as the reviewed OpenClaw build target and keeps
 the stable `>=2026.4.1` installer floor plus reviewed prerelease peer/plugin-API
 hosts eligible, covering the previous 60 days of compatible OpenClaw hosts
 while still taking advantage of the newer setup descriptor metadata.
+
+OpenClaw 2026.5.31-beta.3 adds explicit command/callback semantics for
+message-presentation controls. Remnic's current memory commands are text-first
+and do not emit channel control buttons or selects, so no runtime adapter change
+is required.
 
 Native memory registrars are tracked separately in
 [`docs/plugins/openclaw-native-memory-registrars.md`](../../docs/plugins/openclaw-native-memory-registrars.md).
