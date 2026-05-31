@@ -268,6 +268,50 @@ async function unlinkStaleLockIfUnchanged(options: {
   observedMtimeMs: number;
   staleLockMs: number;
 }): Promise<boolean> {
+  const reclaimPath = `${options.lockPath}.reclaim`;
+  const reclaimHandle = await openStaleReclaimLock(reclaimPath, options.staleLockMs);
+  if (!reclaimHandle) return false;
+  try {
+    await reclaimHandle.writeFile(`${process.pid}:${Date.now()}`, "utf-8");
+    return await unlinkStaleLockIfStillOwned(options);
+  } finally {
+    await reclaimHandle.close().catch(() => undefined);
+    await unlink(reclaimPath).catch(() => undefined);
+  }
+}
+
+async function openStaleReclaimLock(
+  reclaimPath: string,
+  staleLockMs: number,
+): Promise<Awaited<ReturnType<typeof open>> | null> {
+  try {
+    return await open(reclaimPath, "wx");
+  } catch (error) {
+    if (!isAlreadyExistsError(error)) throw error;
+  }
+
+  try {
+    const reclaimStat = await stat(reclaimPath);
+    if (Date.now() - reclaimStat.mtimeMs <= staleLockMs) return null;
+    await unlink(reclaimPath);
+  } catch {
+    return null;
+  }
+
+  try {
+    return await open(reclaimPath, "wx");
+  } catch (error) {
+    if (isAlreadyExistsError(error)) return null;
+    throw error;
+  }
+}
+
+async function unlinkStaleLockIfStillOwned(options: {
+  lockPath: string;
+  observedOwner: string | null;
+  observedMtimeMs: number;
+  staleLockMs: number;
+}): Promise<boolean> {
   let currentStat: Awaited<ReturnType<typeof stat>>;
   try {
     currentStat = await stat(options.lockPath);
