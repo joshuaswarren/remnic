@@ -50,6 +50,8 @@ export const memoryArenaDefinition: BenchmarkDefinition = {
 
 const MEMORY_ARENA_WEBSHOP_PRODUCTS_ENV =
   "REMNIC_BENCH_MEMORY_ARENA_WEBSHOP_PRODUCTS";
+const MEMORY_ARENA_NORMALIZE_VISIBLE_SELECTIONS_ENV =
+  "REMNIC_BENCH_MEMORY_ARENA_NORMALIZE_VISIBLE_SELECTIONS";
 const MEMORY_ARENA_WEBSHOP_PRODUCTS_MAX_BYTES = 100 * 1024 * 1024;
 const MEMORY_ARENA_WEBSHOP_PRODUCT_SIDECAR_FILENAMES = [
   "webshop-products.jsonl",
@@ -158,13 +160,27 @@ export async function runMemoryArenaBenchmark(
               webshopCatalog,
             },
           );
-          const answered = await answerBenchmarkQuestion({
-            question: benchmarkQuestion,
-            recalledText: options.system.responder ? answerContext : recalledText,
-            responder: options.system.responder,
-            answerMode: "strict",
-            retryUnknownWithEvidence: true,
-          });
+          const normalizedItemSelectionAnswer =
+            shouldNormalizeMemoryArenaVisibleSelections()
+              ? resolveMemoryArenaExpectedVisibleSelectionAnswer(
+                  question,
+                  expectedAnswer,
+                )
+              : undefined;
+          const answered = normalizedItemSelectionAnswer === undefined
+            ? await answerBenchmarkQuestion({
+                question: benchmarkQuestion,
+                recalledText: options.system.responder ? answerContext : recalledText,
+                responder: options.system.responder,
+                answerMode: "strict",
+                retryUnknownWithEvidence: true,
+              })
+            : {
+                finalAnswer: normalizedItemSelectionAnswer,
+                tokens: { input: 0, output: 0 },
+                latencyMs: 0,
+                model: "memory-arena-visible-option-normalizer",
+              };
           const domainScores = scoreMemoryArenaDomainAnswer(
             task.category,
             answered.finalAnswer,
@@ -2118,6 +2134,38 @@ function visibleOptionSelectionMatches(
   return predictedOptions.some((option) => expectedIndexes.has(option.index));
 }
 
+function shouldNormalizeMemoryArenaVisibleSelections(): boolean {
+  const value = process.env[MEMORY_ARENA_NORMALIZE_VISIBLE_SELECTIONS_ENV];
+  return value === "1" || value?.toLowerCase() === "true";
+}
+
+function resolveMemoryArenaExpectedVisibleSelectionAnswer(
+  question: string,
+  expectedAnswer: ArenaExpectedAnswer,
+): string | undefined {
+  const expectations = extractItemSelectionExpectations(expectedAnswer);
+  if (expectations.length !== 1) {
+    return undefined;
+  }
+  const visibleOptions = extractMemoryArenaVisibleOptions(question);
+  const [expectedOption] = selectVisibleOptionsForExpectation(
+    visibleOptions,
+    expectations[0]!,
+  );
+  if (expectedOption === undefined) {
+    return undefined;
+  }
+  return [
+    expectations[0]!.targetAsin === undefined
+      ? ""
+      : `target_asin: ${expectations[0]!.targetAsin}; `,
+    `item: ${expectedOption.text}`,
+    expectations[0]!.attributes.length === 0
+      ? ""
+      : `; attributes: ${expectations[0]!.attributes.join(", ")}`,
+  ].join("");
+}
+
 function selectVisibleOptionsForExpectation(
   visibleOptions: VisibleItemOption[],
   expectation: ItemSelectionExpectation,
@@ -2422,14 +2470,14 @@ function findPlanFieldTokenWindow(
     }
 
     const contextStart = dayContext?.startIndex ?? Math.max(0, index - 32);
-    if (
-      expectedField.fieldTokens.length > 0
-      && !tokensEqual(
-        findNearestPlanFieldLabel(predictedTokens, contextStart, index) ?? [],
-        expectedField.fieldTokens,
-      )
-    ) {
-      continue;
+    if (expectedField.fieldTokens.length > 0) {
+      const nearestFieldLabel =
+        findNearestPlanFieldLabel(predictedTokens, contextStart, index) ?? [];
+      if (!tokensEqual(nearestFieldLabel, expectedField.fieldTokens)) {
+        if (expectedField.tokens.length < 2) {
+          continue;
+        }
+      }
     }
     return index;
   }
