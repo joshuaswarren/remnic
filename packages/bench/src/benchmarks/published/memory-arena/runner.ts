@@ -2591,13 +2591,16 @@ function findImmediatePlanFieldLabel(
   startIndex: number,
   beforeIndex: number,
 ): string[] | undefined {
-  for (const labelTokens of PLAN_FIELD_LABEL_TOKEN_SEQUENCES) {
-    const minLabelStart = Math.max(
-      startIndex,
-      beforeIndex - labelTokens.length - MAX_PLAN_FIELD_LABEL_CONNECTOR_TOKENS,
-    );
-    const maxLabelStart = beforeIndex - labelTokens.length;
-    for (let labelStart = maxLabelStart; labelStart >= minLabelStart; labelStart -= 1) {
+  const maxLabelLength = PLAN_FIELD_LABEL_TOKEN_SEQUENCES[0]?.length ?? 1;
+  const minLabelStart = Math.max(
+    startIndex,
+    beforeIndex - maxLabelLength - MAX_PLAN_FIELD_LABEL_CONNECTOR_TOKENS,
+  );
+  for (let labelStart = beforeIndex - 1; labelStart >= minLabelStart; labelStart -= 1) {
+    for (const labelTokens of PLAN_FIELD_LABEL_TOKEN_SEQUENCES) {
+      if (labelStart + labelTokens.length > beforeIndex) {
+        continue;
+      }
       if (!labelTokens.every((token, offset) => tokens[labelStart + offset] === token)) {
         continue;
       }
