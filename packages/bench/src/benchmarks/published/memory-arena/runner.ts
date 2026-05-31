@@ -2314,6 +2314,21 @@ const PLAN_FIELD_KEYS = [
 const PLAN_FIELD_LABEL_TOKEN_SEQUENCES = PLAN_FIELD_KEYS
   .map((key) => tokenizePlanText(key.replace(/_/g, " ")))
   .sort((a, b) => b.length - a.length);
+const PLAN_FIELD_LABEL_VALUE_CONNECTOR_TOKENS = new Set([
+  "are",
+  "as",
+  "be",
+  "for",
+  "in",
+  "is",
+  "scheduled",
+  "set",
+  "to",
+  "was",
+  "were",
+  "will",
+]);
+const MAX_PLAN_FIELD_LABEL_CONNECTOR_TOKENS = 3;
 const WEEKDAY_PLAN_DAY_TOKENS = new Set([
   "monday",
   "tuesday",
@@ -2590,12 +2605,22 @@ function findImmediatePlanFieldLabel(
   beforeIndex: number,
 ): string[] | undefined {
   for (const labelTokens of PLAN_FIELD_LABEL_TOKEN_SEQUENCES) {
-    const labelStart = beforeIndex - labelTokens.length;
-    if (labelStart < startIndex) {
-      continue;
-    }
-    if (labelTokens.every((token, offset) => tokens[labelStart + offset] === token)) {
-      return labelTokens;
+    const minLabelStart = Math.max(
+      startIndex,
+      beforeIndex - labelTokens.length - MAX_PLAN_FIELD_LABEL_CONNECTOR_TOKENS,
+    );
+    const maxLabelStart = beforeIndex - labelTokens.length;
+    for (let labelStart = maxLabelStart; labelStart >= minLabelStart; labelStart -= 1) {
+      if (!labelTokens.every((token, offset) => tokens[labelStart + offset] === token)) {
+        continue;
+      }
+      const connectorTokens = tokens.slice(
+        labelStart + labelTokens.length,
+        beforeIndex,
+      );
+      if (connectorTokens.every((token) => PLAN_FIELD_LABEL_VALUE_CONNECTOR_TOKENS.has(token))) {
+        return labelTokens;
+      }
     }
   }
   return undefined;
