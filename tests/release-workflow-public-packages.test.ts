@@ -197,7 +197,7 @@ test("@remnic/server bin verifier rejects missing bin targets", async () => {
   }
 });
 
-test("OpenClaw security scan wrapper handles minified scanner exports", async () => {
+test("OpenClaw security scan wrapper handles minified skill scanner exports", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-openclaw-scan-"));
   try {
     const openclawDir = path.join(tempDir, "openclaw");
@@ -233,6 +233,46 @@ test("OpenClaw security scan wrapper handles minified scanner exports", async ()
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /OpenClaw 2026\.5\.16-beta\.3 scanner:/);
     assert.match(result.stdout, /scanned=1 critical=0 warn=0/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("OpenClaw security scan wrapper handles current scanner bundle names", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-openclaw-scan-"));
+  try {
+    const openclawDir = path.join(tempDir, "openclaw");
+    const openclawDistDir = path.join(openclawDir, "dist");
+    const pluginDir = path.join(tempDir, "plugin");
+    await mkdir(openclawDistDir, { recursive: true });
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(
+      path.join(openclawDir, "package.json"),
+      JSON.stringify({ name: "openclaw", version: "2026.5.30-beta.1", type: "module" }),
+    );
+    await writeFile(
+      path.join(openclawDistDir, "scanner-fake.js"),
+      [
+        "export async function scanDirectoryWithSummary(dirPath) {",
+        "  return { scannedFiles: 2, critical: 0, warn: 1, findings: [{ severity: 'warn', message: 'demo', file: dirPath, line: 1 }] };",
+        "}",
+      ].join("\n"),
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/openclaw-plugin-security-scan.mjs", pluginDir],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, OPENCLAW_PACKAGE_DIR: openclawDir },
+        encoding: "utf8",
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /OpenClaw 2026\.5\.30-beta\.1 scanner:/);
+    assert.match(result.stdout, /warn\tdemo\t/);
+    assert.match(result.stdout, /scanned=2 critical=0 warn=1/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

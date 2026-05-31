@@ -1,12 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const PACKAGES_DIR = path.join(ROOT, "packages");
+const require = createRequire(import.meta.url);
+const semver = require("semver") as {
+  satisfies(version: string, range: string): boolean;
+};
+
+const OPENCLAW_MIN_HOST_VERSION_FLOOR = ">=2026.4.1";
+const OPENCLAW_SUPPORT_PROBE_VERSIONS = [
+  "2026.4.1",
+  "2026.4.9-beta.1",
+  "2026.5.30-beta.1",
+  "2026.5.31-alpha.1",
+];
 
 // Expected packages after the monorepo migration
 const EXPECTED_PACKAGES = [
@@ -148,17 +161,39 @@ test("plugin-openclaw publishes under the Remnic scope", () => {
   );
 });
 
-test("published OpenClaw packages require an OpenClaw release with registerCommand support", () => {
+test("published OpenClaw packages support the rolling 60-day OpenClaw window", () => {
   for (const packageDir of ["plugin-openclaw", "shim-openclaw-engram"]) {
     const pkgJsonPath = path.join(PACKAGES_DIR, packageDir, "package.json");
     assert.ok(fs.existsSync(pkgJsonPath), `${packageDir}/package.json must exist`);
 
     const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
+    const peerRange = pkg.peerDependencies?.openclaw;
+    const pluginApiRange = pkg.openclaw?.compat?.pluginApi;
+
+    assert.equal(typeof peerRange, "string", `${packageDir} must declare an OpenClaw peer range`);
     assert.equal(
-      pkg.peerDependencies?.openclaw,
-      ">=2026.5.16-beta.1",
-      `${packageDir} must require openclaw >=2026.5.16-beta.1`,
+      pluginApiRange,
+      peerRange,
+      `${packageDir} must keep openclaw.compat.pluginApi aligned with peerDependencies.openclaw`,
     );
+    assert.equal(
+      pkg.openclaw?.install?.minHostVersion,
+      OPENCLAW_MIN_HOST_VERSION_FLOOR,
+      `${packageDir} must keep minHostVersion as the stable 60-day support floor`,
+    );
+
+    for (const version of OPENCLAW_SUPPORT_PROBE_VERSIONS) {
+      assert.equal(
+        semver.satisfies(version, peerRange),
+        true,
+        `${packageDir} peer range must accept OpenClaw ${version}`,
+      );
+      assert.equal(
+        semver.satisfies(version, pluginApiRange),
+        true,
+        `${packageDir} plugin API range must accept OpenClaw ${version}`,
+      );
+    }
   }
 });
 

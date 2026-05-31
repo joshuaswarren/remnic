@@ -20,11 +20,11 @@ Canonical upstream references for this adapter:
 openclaw plugins install clawhub:@remnic/plugin-openclaw
 ```
 
-OpenClaw 2026.5.2+ resolves bare plugin package names through ClawHub first and
-then falls back to npm. Remnic is published on ClawHub as
-`@remnic/plugin-openclaw` under the `remnic` publisher, so the explicit
-`clawhub:` prefix keeps fresh installs deterministic. For npm-only fallback or
-rollback versions, use the explicit `npm:` source prefix, such as
+OpenClaw 2026.5.30-beta.1 changed the launch-cutover behavior so bare plugin
+package names are npm-first in some install paths. Remnic is published on
+ClawHub as `@remnic/plugin-openclaw` under the `remnic` publisher, so the
+explicit `clawhub:` prefix keeps fresh installs deterministic. For npm-only
+fallback or rollback versions, use the explicit `npm:` source prefix, such as
 `npm:@remnic/plugin-openclaw@<version>`.
 
 Or use the Remnic installer:
@@ -92,6 +92,21 @@ Minimal configuration:
 The plugin only runs actively when `plugins.slots.memory` points at its own
 plugin id.
 
+## Compatibility Policy
+
+Remnic supports OpenClaw releases from at least the previous 60 days. As of
+May 31, 2026, that window starts on April 1, 2026. The OpenClaw installer
+floor remains the single supported `>=2026.4.1` shape, while the peer and
+plugin-API compatibility ranges explicitly include reviewed prerelease hosts in
+that window. The adapter records `2026.5.31-alpha.1` as the latest reviewed
+build target.
+
+When OpenClaw adds a new manifest or setup surface, Remnic should add that new
+surface without dropping older metadata that still helps hosts inside the
+60-day window. Only raise the compatibility floor when an upstream breaking
+change makes the older host impossible to support, and document the exception
+in this file and the agent-facing notes.
+
 ## Architecture Rule
 
 Do not move OpenClaw-specific contracts into `@remnic/core`. The OpenClaw adapter should consume core contracts and map them onto OpenClaw. When OpenClaw already has a native command surface, tool registration path, memory lifecycle hook, or plugin manifest feature, use that upstream primitive instead of inventing a duplicate Remnic abstraction.
@@ -147,34 +162,70 @@ OpenClaw runtime surfaces currently wired by the plugin:
 - `llm_output`
 - `subagent_spawning` / `subagent_ended`
 
-The plugin manifest advertises compatibility on two surfaces:
+The plugin manifest advertises compatibility on current and older OpenClaw
+surfaces:
 
-- `supports` stays in place for OpenClaw 2026.4-era slot and lifecycle routing.
+- `kind: "memory"` declares Remnic as an exclusive memory-slot plugin.
+- `supports` remains as compatibility metadata for OpenClaw 2026.4 and early
+  2026.5 slot/lifecycle routing. Current OpenClaw ignores it for contract
+  promotion, but older hosts can still use it to discover the memory-slot,
+  active-memory, heartbeat, command, and reset surfaces.
 - `contracts.tools` declares every Remnic-owned tool name for OpenClaw 2026.5+
   descriptor planning and tool ownership validation.
-- `setup.requiresRuntime: false` is explicit; Remnic does not claim OpenAI
-  provider setup ownership.
+- `setup.requiresRuntime: false` is explicit so setup/onboarding can use
+  descriptor metadata without executing Remnic runtime code.
+- `setup.providers[].envVars` mirrors the optional plugin-mode `OPENAI_API_KEY`
+  signal for OpenClaw's current generic auth/status lookup path.
 - `activation.onStartup: false` is explicit so startup activation remains
   intentional.
 - `providerAuthChoices` advertises the optional plugin-mode OpenAI API key
   for onboarding and CLI surfaces.
-- `providerAuthEnvVars.openai` is retained only as compatibility metadata for
-  OpenClaw's pre-runtime env-var auth probes; it does not reintroduce provider
-  setup ownership.
-- `setup.providers` is intentionally omitted because OpenClaw treats setup
-  provider ids as globally unique provider ownership metadata, and Remnic does
-  not own the `openai` provider.
-- OpenClaw 2026.5.16-beta.6 through 2026.5.19-beta.1 keep these runtime
+- `providerAuthEnvVars.openai` remains as compatibility metadata for older
+  OpenClaw pre-runtime auth probes. It is mirrored by
+  `setup.providers[].envVars`, which suppresses the current deprecation
+  diagnostic while preserving older host behavior.
+- `securityDisclosure` is intentionally documented here instead of shipped as a
+  manifest field; current OpenClaw native manifests do not list it.
+- OpenClaw 2026.5.20-beta.2 through 2026.5.31-alpha.1 keep Remnic's SDK hook,
+  tool-contract, memory-slot, ClawHub install, gateway model, and security-scan
   surfaces compatible. Remnic stays on the full `definePluginEntry` SDK path
   instead of the simple `defineToolPlugin` helper because the adapter combines
   memory-slot hooks, lifecycle handlers, command metadata, public artifacts,
-  and runtime tools. Newer OpenClaw hosts enforce their Node.js `>=22.19.0`
-  runtime floor at the host level while Remnic keeps the package-level host
-  range broad for older advertised 2026.5.16 runtimes.
+  and runtime tools. The package metadata records `2026.5.31-alpha.1` as the
+  reviewed OpenClaw build target while keeping the broad stable and prerelease
+  peer/plugin-API range required by Remnic's rolling 60-day support policy.
+  `openclaw.install.minHostVersion` remains the single `>=2026.4.1` floor that
+  OpenClaw setup expects.
 
-Keep the supported blocks. `contracts.tools` is additive for older OpenClaw runtimes, but
-OpenClaw 2026.5 rejects plugin tool registration when a runtime tool is missing
-from the manifest contract.
+Keep `contracts.tools` complete. OpenClaw 2026.5 rejects plugin tool
+registration when a runtime tool is missing from the manifest contract.
+
+### 2026.5.31 Compatibility Sweep
+
+Issues #1203 through #1237 were reviewed as one compatibility window. The
+merged offline-sync and QMD issues in that range are already present on `main`;
+the remaining OpenClaw sentinel issues converge on the latest upstream contract:
+
+- SDK surface: `npm run check:openclaw-sdk-surface -- --package-root
+  /tmp/openclaw-2026.5.31-alpha.1` passes with the existing snapshot
+  (`14 registrars, 22 hooks, 2 manifest contracts`).
+- Install/source resolution: document explicit
+  `openclaw plugins install clawhub:@remnic/plugin-openclaw` because bare names
+  can be npm-first during the OpenClaw launch cutover.
+- Auth metadata: use `setup.providers[].envVars` plus
+  `providerAuthChoices`, and keep `providerAuthEnvVars` mirrored for older
+  OpenClaw auth probes.
+- Manifest shape: keep `kind: "memory"`, `contracts.tools`, `commandAliases`,
+  `activation`, and the legacy `supports` compatibility block; do not restore
+  unsupported top-level `securityDisclosure`.
+- Compatibility window: keep package ranges at or below the active 60-day
+  floor and explicitly list reviewed prerelease hosts in peer/plugin-API ranges
+  because default npm semver range checks exclude prereleases. Keep installer
+  `minHostVersion` as a single floor. On May 31, 2026 that floor is OpenClaw
+  `2026.4.1`.
+- Runtime behavior: Remnic core semantics remain in `@remnic/core`; the
+  OpenClaw adapter only translates hooks, commands, memory-slot behavior, and
+  gateway/provider metadata.
 
 ## Reset Flush Contract
 

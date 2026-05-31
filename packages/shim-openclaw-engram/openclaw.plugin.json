@@ -5,11 +5,17 @@
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
-    "requiresRuntime": false
-  },
-  "providerAuthEnvVars": {
-    "openai": [
-      "OPENAI_API_KEY"
+    "requiresRuntime": false,
+    "providers": [
+      {
+        "id": "openai",
+        "authMethods": [
+          "api-key"
+        ],
+        "envVars": [
+          "OPENAI_API_KEY"
+        ]
+      }
     ]
   },
   "providerAuthChoices": [
@@ -30,25 +36,10 @@
       ]
     }
   ],
-  "securityDisclosure": {
-    "conversationAccess": "As a memory-slot plugin, Remnic hooks can observe conversation turns, tool-use metadata, LLM output metadata, and local memory files so they can be indexed, summarized, recalled, and exposed through memory tools.",
-    "modelProviderCredentials": {
-      "recommendedMode": "Use modelSource=gateway to route LLM-backed memory work through OpenClaw gateway agents instead of a Remnic-owned API key.",
-      "dynamicCredentialSources": [
-        "OpenClaw runtime auth resolver for configured model providers",
-        "~/.openclaw/agents/main/agent/models.json provider entries",
-        "provider-specific environment variables such as <PROVIDER>_API_KEY and <PROVIDER>_TOKEN"
-      ],
-      "providerModeData": [
-        "conversation excerpts",
-        "memory excerpts",
-        "summaries",
-        "embedding inputs",
-        "active-recall query inputs",
-        "benchmark and evaluation inputs"
-      ],
-      "externalProviderGuidance": "Do not set openaiApiKey or provider environment variables for Remnic if all LLM-backed memory operations should stay on the OpenClaw gateway path. When plugin/provider mode is configured, selected conversation and memory excerpts may be sent to the configured provider for extraction, consolidation, summarization, embeddings, active recall, or benchmark judging."
-    }
+  "providerAuthEnvVars": {
+    "openai": [
+      "OPENAI_API_KEY"
+    ]
   },
   "supports": {
     "memorySlot": true,

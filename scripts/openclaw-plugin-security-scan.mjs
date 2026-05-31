@@ -48,12 +48,12 @@ function findScannerModule(openclawPackageDir) {
   }
 
   const candidates = fs.readdirSync(distDir)
-    .filter((entry) => /^skill-scanner-.*\.js$/.test(entry))
+    .filter((entry) => /^(?:skill-)?scanner-.*\.js$/.test(entry))
     .sort()
     .map((entry) => path.join(distDir, entry));
 
   if (candidates.length === 0) {
-    throw new Error(`OpenClaw skill scanner module not found under ${distDir}`);
+    throw new Error(`OpenClaw scanner module not found under ${distDir}`);
   }
 
   return candidates[0];

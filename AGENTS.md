@@ -33,6 +33,31 @@ Use these as the canonical starting points for adapter work:
 - Keep standalone and shared-core behavior testable without booting OpenClaw, Hermes, or another host.
 - If a change touches both core semantics and a host adapter, land the core contract first and make the adapter consume it second.
 
+## OpenClaw Compatibility Window
+
+Remnic must support OpenClaw releases from at least the previous 60 days.
+Recalculate this window from the current date before changing OpenClaw adapter
+metadata. For this May 31, 2026 PR, the required floor is April 1, 2026 /
+OpenClaw `2026.4.1`.
+
+- Do not raise `peerDependencies.openclaw`, `openclaw.compat.pluginApi`, or
+  `openclaw.install.minHostVersion` above the active 60-day floor unless a
+  documented upstream breaking change makes older hosts impossible to support.
+  Keep `openclaw.install.minHostVersion` as a single `>=x.y.z` floor for the
+  OpenClaw installer contract. Include reviewed prerelease OpenClaw versions
+  explicitly in `peerDependencies.openclaw` and `openclaw.compat.pluginApi`,
+  because default npm semver range checks do not admit prereleases from a
+  stable-only floor.
+- Preserve additive compatibility metadata for older hosts when adding newer
+  OpenClaw manifest surfaces. For example, keep `supports` and
+  `providerAuthEnvVars` while also adding newer `setup.providers[].envVars`.
+- If the latest OpenClaw prefers a newer manifest field, add it in parallel
+  with older-compatible metadata whenever OpenClaw ignores unknown fields
+  safely.
+- Document the recalculated floor and any deliberate exception in
+  `docs/plugins/openclaw.md`, `packages/plugin-openclaw/README.md`, `llms.txt`,
+  and the relevant package metadata tests.
+
 ## Cleaner PR Workflow (Mandatory)
 
 These rules are the default workflow for all agents and contributors.

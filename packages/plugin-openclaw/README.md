@@ -41,6 +41,20 @@ Then restart the gateway:
 launchctl kickstart -k gui/501/ai.openclaw.gateway
 ```
 
+## Compatibility Policy
+
+Remnic supports OpenClaw releases from at least the previous 60 days. For the
+May 31, 2026 compatibility sweep, that means OpenClaw `2026.4.1` and newer.
+The package metadata therefore keeps the installer compatibility floor at the
+single `>=2026.4.1` shape OpenClaw setup expects, while the peer and plugin-API
+compatibility ranges explicitly include reviewed prerelease hosts in that
+window. The adapter separately records `2026.5.31-alpha.1` as the latest
+reviewed OpenClaw build target.
+
+When adding newer OpenClaw manifest surfaces, keep older-compatible metadata in
+place for hosts inside that 60-day window unless an upstream breaking change is
+documented and unavoidable.
+
 ## Benchmarking The OpenClaw Chain
 
 The benchmark CLI can now exercise the real OpenClaw-backed answer path instead
@@ -164,7 +178,7 @@ CI jobs that provision OpenClaw should use
 `npm run check:openclaw-sdk-surface:required` or pass
 `-- --require --package-root <path>` so a missing SDK fails instead of skipping.
 
-Last compatibility sweep: May 19, 2026. The SDK surface check passed against
+Last compatibility sweep: May 31, 2026. The SDK surface check passed against
 `openclaw@2026.5.3`, `openclaw@2026.5.3-1`, `openclaw@2026.5.4-beta.1`,
 `openclaw@2026.5.4-beta.2`, `openclaw@2026.5.4-beta.3`,
 `openclaw@2026.5.4`, `openclaw@2026.5.5`, `openclaw@2026.5.6`,
@@ -172,9 +186,10 @@ Last compatibility sweep: May 19, 2026. The SDK surface check passed against
 `openclaw@2026.5.16-beta.4`. The May 19 sweep also checked the source SDK
 surface for `openclaw@2026.5.19-beta.1`, which covers the intervening
 `2026.5.16-beta.6`, `2026.5.16-beta.7`, and `2026.5.18-beta.1` release line
-for the Remnic adapter surfaces.
-Keep the peer range broad unless an upstream release removes a runtime surface
-Remnic actively uses.
+for the Remnic adapter surfaces. The May 31 sweep checked source tag
+`v2026.5.31-alpha.1` and the issue window from #1203 through #1237; the
+existing SDK snapshot still matched (`14 registrars, 22 hooks, 2 manifest
+contracts`).
 
 OpenClaw 2026.5.16 package-entry discovery prefers explicit built runtime
 entries for installed packages. The published Remnic adapter declares
@@ -183,25 +198,30 @@ extension entry, and its package install metadata advertises
 `openclaw.install.clawhubSpec: "clawhub:@remnic/plugin-openclaw"`,
 `openclaw.install.npmSpec: "@remnic/plugin-openclaw"`, and
 `openclaw.install.defaultChoice: "clawhub"`. That keeps OpenClaw setup,
-repair, and update flows ClawHub-first while preserving npm as the fallback
-install surface and `>=2026.5.16-beta.1` as the minimum supported host range.
-The manifest also declares `activation.onStartup: false`, leaves provider
-ownership to the host, exposes the optional plugin-mode OpenAI key through
-`providerAuthChoices`, and keeps `providerAuthEnvVars.openai` as compatibility
-metadata for OpenClaw's pre-runtime env-var auth probes.
+repair, and update flows ClawHub-first while preserving npm as the fallback.
+OpenClaw 2026.5.30-beta.1 may resolve bare package names npm-first during the
+launch cutover, so operator docs should keep the explicit `clawhub:` prefix for
+deterministic installs.
 
-OpenClaw 2026.5.16-beta.3 keeps those install and auth ownership contracts
-intact. The sweep confirmed that Remnic still relies on host-owned gateway
-restart/reload behavior after plugin install changes, uses `gateway_stop`
-instead of the deprecated `deactivate` cleanup alias, and should not claim
-OpenAI `setup.providers` ownership because gateway/provider configuration
-remains host-owned.
+The manifest declares `activation.onStartup: false`, exposes the optional
+plugin-mode OpenAI key through `providerAuthChoices`, and mirrors the
+`OPENAI_API_KEY` env signal through `setup.providers[].envVars` for current
+OpenClaw auth/status discovery. It keeps `providerAuthEnvVars.openai` mirrored
+for older OpenClaw pre-runtime auth probes; current OpenClaw does not warn
+because the env var is also present on `setup.providers[].envVars`.
+Memory-slot selection is carried by `kind: "memory"` plus the normal
+`plugins.slots.memory` config, and the legacy `supports` block remains for
+OpenClaw 2026.4 / early 2026.5 slot and lifecycle routing. Privacy and
+provider-data disclosures live in docs and package metadata instead of the
+unsupported top-level `securityDisclosure` manifest field.
 
-OpenClaw 2026.5.16-beta.4 treats `setup.providers[].id` as provider ownership
-metadata with globally unique ids. Remnic does not own the `openai` provider,
-so the canonical manifest keeps OpenAI API-key metadata on `providerAuthChoices`
-and the compatibility `providerAuthEnvVars.openai` surface instead of declaring
-`setup.providers`.
+Earlier 2026.5.16 sweeps confirmed that Remnic still relies on host-owned
+gateway restart/reload behavior after plugin install changes, uses
+`gateway_stop` instead of the deprecated `deactivate` cleanup alias, and stays
+on host-owned gateway/provider routing by default. Current OpenClaw setup/auth
+surfaces read env-var status from `setup.providers[].envVars`, so Remnic mirrors
+the optional plugin-mode OpenAI key there without adding top-level provider
+ownership metadata.
 
 OpenClaw 2026.5.16-beta.6 added `defineToolPlugin` and the authoring CLI for
 simple typed tool-only plugins. Remnic intentionally stays on `definePluginEntry`
@@ -209,16 +229,13 @@ because the adapter owns mixed memory-slot hooks, lifecycle handlers, slash
 command metadata, public artifacts, and runtime tools rather than only static
 tools.
 
-OpenClaw 2026.5.16-beta.7 through 2026.5.19-beta.1 keep the Remnic-required
+OpenClaw 2026.5.20-beta.2 through 2026.5.31-alpha.1 keep the Remnic-required
 plugin install, ClawHub fallback, manifest contract, hook, memory-slot, gateway
-LLM, and plugin security-scan surfaces compatible. Those newer OpenClaw hosts
-raise their runtime floor to Node.js `>=22.19.0`, but the Remnic adapter package
-keeps its broad host peer range so older advertised 2026.5.16 hosts do not
-select a package with an incompatible package-level engine gate. The manifest
-continues to avoid `setup.providers.openai`; OpenClaw still treats provider ids
-there as ownership metadata, while Remnic only advertises an optional
-plugin-mode OpenAI key through `providerAuthChoices` and the deprecated
-`providerAuthEnvVars.openai` compatibility probe.
+LLM, and plugin security-scan surfaces compatible. The package metadata now
+records `2026.5.31-alpha.1` as the reviewed OpenClaw build target and keeps
+the stable `>=2026.4.1` installer floor plus reviewed prerelease peer/plugin-API
+hosts eligible, covering the previous 60 days of compatible OpenClaw hosts
+while still taking advantage of the newer setup descriptor metadata.
 
 Native memory registrars are tracked separately in
 [`docs/plugins/openclaw-native-memory-registrars.md`](../../docs/plugins/openclaw-native-memory-registrars.md).

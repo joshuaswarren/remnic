@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
+const semver = require("semver") as {
+  satisfies(version: string, range: string): boolean;
+};
 const ROOT = path.resolve(__dirname, "..");
 const REQUIRED_RUNTIME_SURFACE_KEYS = [
   "openclawToolsEnabled",
@@ -46,11 +51,126 @@ const OPENCLAW_MANIFEST_PATHS = [
   "packages/plugin-openclaw/openclaw.plugin.json",
   "packages/shim-openclaw-engram/openclaw.plugin.json",
 ];
+// May 31, 2026 rolling 60-day policy floor: April 1, 2026 / OpenClaw 2026.4.1.
+const OPENCLAW_SUPPORT_FLOOR_RANGE = [
+  ">=2026.4.1",
+  "2026.4.7-1",
+  "2026.4.9-beta.1",
+  "2026.4.11-beta.1",
+  "2026.4.12-beta.1",
+  "2026.4.14-beta.1",
+  "2026.4.15-beta.1",
+  "2026.4.15-beta.2",
+  "2026.4.19-beta.1",
+  "2026.4.19-beta.2",
+  "2026.4.20-beta.1",
+  "2026.4.20-beta.2",
+  "2026.4.22-beta.1",
+  "2026.4.23-beta.1",
+  "2026.4.23-beta.2",
+  "2026.4.23-beta.3",
+  "2026.4.23-beta.4",
+  "2026.4.23-beta.5",
+  "2026.4.23-beta.6",
+  "2026.4.24-beta.1",
+  "2026.4.24-beta.2",
+  "2026.4.24-beta.3",
+  "2026.4.24-beta.4",
+  "2026.4.24-beta.5",
+  "2026.4.24-beta.6",
+  "2026.4.25-beta.1",
+  "2026.4.25-beta.2",
+  "2026.4.25-beta.3",
+  "2026.4.25-beta.4",
+  "2026.4.25-beta.5",
+  "2026.4.25-beta.6",
+  "2026.4.25-beta.7",
+  "2026.4.25-beta.8",
+  "2026.4.25-beta.9",
+  "2026.4.25-beta.10",
+  "2026.4.25-beta.11",
+  "2026.4.26-beta.1",
+  "2026.4.27-beta.1",
+  "2026.4.29-beta.1",
+  "2026.4.29-beta.2",
+  "2026.4.29-beta.3",
+  "2026.4.29-beta.4",
+  "2026.4.30-beta.1",
+  "2026.5.2-beta.1",
+  "2026.5.2-beta.2",
+  "2026.5.2-beta.3",
+  "2026.5.3-1",
+  "2026.5.3-beta.1",
+  "2026.5.3-beta.2",
+  "2026.5.3-beta.3",
+  "2026.5.3-beta.4",
+  "2026.5.4-beta.1",
+  "2026.5.4-beta.2",
+  "2026.5.4-beta.3",
+  "2026.5.5-beta.1",
+  "2026.5.5-beta.2",
+  "2026.5.6-beta.1",
+  "2026.5.7-beta.1",
+  "2026.5.9-beta.1",
+  "2026.5.10-beta.1",
+  "2026.5.10-beta.2",
+  "2026.5.10-beta.3",
+  "2026.5.10-beta.4",
+  "2026.5.10-beta.5",
+  "2026.5.10-beta.6",
+  "2026.5.12-beta.1",
+  "2026.5.12-beta.2",
+  "2026.5.12-beta.3",
+  "2026.5.12-beta.4",
+  "2026.5.12-beta.5",
+  "2026.5.12-beta.6",
+  "2026.5.12-beta.7",
+  "2026.5.12-beta.8",
+  "2026.5.14-beta.1",
+  "2026.5.14-beta.2",
+  "2026.5.16-beta.1",
+  "2026.5.16-beta.2",
+  "2026.5.16-beta.3",
+  "2026.5.16-beta.4",
+  "2026.5.16-beta.5",
+  "2026.5.16-beta.6",
+  "2026.5.16-beta.7",
+  "2026.5.18-beta.1",
+  "2026.5.19-alpha.1",
+  "2026.5.19-beta.1",
+  "2026.5.19-beta.2",
+  "2026.5.20-beta.1",
+  "2026.5.20-beta.2",
+  "2026.5.21-alpha.1",
+  "2026.5.21-beta.1",
+  "2026.5.22-beta.1",
+  "2026.5.23-alpha.1",
+  "2026.5.24-alpha.1",
+  "2026.5.24-beta.1",
+  "2026.5.24-beta.2",
+  "2026.5.25-alpha.1",
+  "2026.5.25-alpha.2",
+  "2026.5.25-beta.1",
+  "2026.5.26-beta.1",
+  "2026.5.26-beta.2",
+  "2026.5.27-alpha.1",
+  "2026.5.27-beta.1",
+  "2026.5.28-alpha.1",
+  "2026.5.28-beta.1",
+  "2026.5.28-beta.2",
+  "2026.5.28-beta.3",
+  "2026.5.28-beta.4",
+  "2026.5.29-alpha.1",
+  "2026.5.30-beta.1",
+  "2026.5.30-beta.2",
+  "2026.5.31-alpha.1",
+].join(" || ");
+const OPENCLAW_MIN_HOST_VERSION_FLOOR = ">=2026.4.1";
 const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/plugin-openclaw/package.json",
     name: "@remnic/plugin-openclaw",
-    buildVersion: "2026.5.19-beta.1",
+    buildVersion: "2026.5.31-alpha.1",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@remnic/plugin-openclaw",
@@ -59,7 +179,7 @@ const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/shim-openclaw-engram/package.json",
     name: "@joshuaswarren/openclaw-engram",
-    buildVersion: "2026.5.19-beta.1",
+    buildVersion: "2026.5.31-alpha.1",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@joshuaswarren/openclaw-engram",
@@ -117,9 +237,10 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
     assert.equal(configSchema.recallPlannerModel?.default, "gpt-5.5");
   });
 
-  test(`${manifestPath} advertises the v2026.4.10 runtime capability surfaces`, () => {
+  test(`${manifestPath} keeps memory-slot compatibility metadata for older OpenClaw hosts`, () => {
     const manifest = readManifest(manifestPath);
 
+    assert.equal(manifest.kind, "memory");
     assert.deepEqual(manifest.supports, {
       memorySlot: true,
       dreamingSlot: true,
@@ -128,6 +249,7 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
       commandsList: true,
       beforeReset: true,
     });
+    assert.equal("securityDisclosure" in manifest, false);
   });
 
   test(`${manifestPath} declares the OpenClaw 2026.5 tool contract`, () => {
@@ -183,20 +305,26 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
     assert.deepEqual(
       manifest.setup,
       {
+        providers: [
+          {
+            id: "openai",
+            authMethods: ["api-key"],
+            envVars: ["OPENAI_API_KEY"],
+          },
+        ],
         requiresRuntime: false,
       },
     );
     assert.equal(
-      "providers" in (manifest.setup ?? {}),
-      false,
-      "Remnic must not claim OpenAI provider setup ownership",
+      "providerAuthEnvVars" in manifest,
+      true,
+      "providerAuthEnvVars remains for older OpenClaw auth probes and must be mirrored by setup.providers[].envVars",
     );
     assert.deepEqual(
       manifest.providerAuthEnvVars,
       {
         openai: ["OPENAI_API_KEY"],
       },
-      "providerAuthEnvVars remains compatibility metadata for pre-runtime OpenClaw auth probes",
     );
     const expectedAuthChoice = manifest.id === "openclaw-engram"
       ? {
@@ -410,7 +538,7 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
       "OpenClaw 2026.5.12+ package discovery should have an explicit built runtime entrypoint",
     );
     assert.deepEqual(openclaw.compat, {
-      pluginApi: ">=2026.5.16-beta.1",
+      pluginApi: OPENCLAW_SUPPORT_FLOOR_RANGE,
     });
     assert.deepEqual(openclaw.build, {
       openclawVersion: expectation.buildVersion,
@@ -419,10 +547,29 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
     assert.deepEqual(openclaw.install, {
       ...expectation.install,
       defaultChoice: "clawhub",
-      minHostVersion: ">=2026.5.16-beta.1",
+      minHostVersion: OPENCLAW_MIN_HOST_VERSION_FLOOR,
     });
+    assert.equal(
+      packageJson.peerDependencies?.openclaw,
+      OPENCLAW_SUPPORT_FLOOR_RANGE,
+    );
   });
 }
+
+test("OpenClaw support range accepts the stable floor and reviewed prerelease hosts", () => {
+  for (const version of [
+    "2026.4.1",
+    "2026.4.9-beta.1",
+    "2026.5.30-beta.1",
+    "2026.5.31-alpha.1",
+  ]) {
+    assert.equal(
+      semver.satisfies(version, OPENCLAW_SUPPORT_FLOOR_RANGE),
+      true,
+      `${version} must satisfy the default semver support range`,
+    );
+  }
+});
 
 test("root and package OpenClaw manifests stay byte-identical", () => {
   const root = JSON.stringify(readManifest("openclaw.plugin.json"));

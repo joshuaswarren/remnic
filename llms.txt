@@ -31,6 +31,17 @@ OpenClaw adapter note:
   `initGateTimeoutMs` as the per-hook timeout on SDKs that support hook
   options. The same config bounds Remnic's internal cold-start init gate for
   recall and day summaries. Default: 30000ms; accepted range: 1000-120000ms.
+  Current OpenClaw compatibility target: 2026.5.31-alpha.1, with package
+  metadata floor >=2026.4.1. Keep openclaw.install.minHostVersion as one
+  installer floor, and put explicit reviewed prerelease versions in
+  peerDependencies.openclaw and openclaw.compat.pluginApi because default npm
+  semver range checks exclude prereleases. Keep the manifest on current native
+  fields: kind="memory", contracts.tools, commandAliases, activation,
+  setup.requiresRuntime=false, setup.providers[].envVars for optional
+  OPENAI_API_KEY, and providerAuthChoices. Also keep providerAuthEnvVars and
+  supports mirrored for older OpenClaw hosts. Do not restore unsupported
+  top-level securityDisclosure; document privacy/provider behavior in docs
+  instead.
 
 Three-phase flow:
   1. Recall   Before each agent turn, inject relevant memories into context.
@@ -201,10 +212,11 @@ QUICK START (OPENCLAW)
   launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
   remnic doctor
 
-  OpenClaw 2026.5.2+ resolves bare plugin package names through ClawHub before
-  npm fallback. Remnic is published on ClawHub as @remnic/plugin-openclaw; for
-  npm-only fallback or rollback versions, use the explicit npm source prefix
-  npm:@remnic/plugin-openclaw@<version>.
+  OpenClaw 2026.5.30-beta.1 may resolve bare plugin package names through npm
+  first during the launch cutover. Remnic is published on ClawHub as
+  @remnic/plugin-openclaw; use explicit clawhub:@remnic/plugin-openclaw for
+  deterministic installs, and explicit npm:@remnic/plugin-openclaw@<version>
+  for npm-only fallback or rollback versions.
 
   ClawHub publish note: publish @remnic/plugin-openclaw from the built
   ClawPack/npm tarball, not from the raw GitHub source folder. Run
@@ -214,13 +226,18 @@ QUICK START (OPENCLAW)
 
 OPENCLAW PLUGIN COMPATIBILITY
 
-  The OpenClaw adapter keeps both manifest compatibility surfaces:
-  supports: legacy/current slot, active-memory, heartbeat, command, and reset
-  routing for OpenClaw 2026.4-era runtimes.
-  setup.providers must stay omitted because Remnic does not own host provider
-  ids. providerAuthEnvVars remains for older OpenClaw builds during the
-  upstream deprecation window. Keep it synchronized with providerAuthChoices
-  and configSchema.openaiApiKey.
+  Policy: Remnic supports OpenClaw releases from at least the previous 60 days.
+  Recalculate the floor from the current date before changing package metadata.
+  As of May 31, 2026, the floor is April 1, 2026 / OpenClaw 2026.4.1.
+
+  Current manifest shape for OpenClaw 2026.5.31+:
+  kind: "memory" selects the exclusive memory slot.
+  setup.providers[].envVars advertises optional plugin-mode OPENAI_API_KEY
+  discovery. providerAuthChoices keeps the custom onboarding/CLI metadata.
+  providerAuthEnvVars must remain mirrored for older pre-runtime auth probes.
+  supports must remain for OpenClaw 2026.4 / early 2026.5 slot and lifecycle
+  routing. Top-level securityDisclosure is not a current native manifest field
+  and must stay omitted.
   contracts.tools: required by OpenClaw 2026.5+ plugin descriptor planning and
   tool ownership validation. Add every Remnic-owned registerTool name here when
   adding OpenClaw tools, including conditional LCM aliases.
