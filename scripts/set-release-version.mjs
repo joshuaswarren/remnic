@@ -79,7 +79,10 @@ for (const relativePath of packagePaths) {
 
   const isRoot = relativePath === "package.json";
   if (!isRoot && packageJson.private === true) continue;
-  if (packageJson.version === version) continue;
+  if (packageJson.version === version) {
+    changed.push(...await syncCompanionManifestVersion(relativePath));
+    continue;
+  }
 
   packageJson.version = version;
   changed.push(`${relativePath} (${packageJson.name ?? "unnamed"})`);

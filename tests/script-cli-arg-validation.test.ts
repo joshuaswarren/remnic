@@ -83,7 +83,7 @@ test("set-release-version syncs OpenClaw companion manifests", async () => {
     });
     await writeJson(path.join(repo, "packages", "plugin-openclaw", "package.json"), {
       name: "@remnic/plugin-openclaw",
-      version: "1.0.0",
+      version: "1.2.3",
     });
     await writeJson(path.join(repo, "packages", "plugin-openclaw", "openclaw.plugin.json"), {
       id: "openclaw-remnic",
