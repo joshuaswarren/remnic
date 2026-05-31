@@ -135,7 +135,7 @@ const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
     "includeTranscripts",
     "encrypt",
   ],
-  capsuleImport: ["archivePath", "namespace", "mode"],
+  capsuleImport: ["archivePath", "namespace", "mode", "passphrase"],
   capsuleList: ["namespace"],
 };
 
@@ -163,6 +163,12 @@ function parseMcpRequest<N extends SchemaName>(
       ? `${validation.error.error}: ${details}`
       : validation.error.error,
   );
+}
+
+function getObjectProperties(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
 async function getMcpServerVersion(): Promise<string> {
@@ -612,6 +618,10 @@ export class EngramMcpServer {
               type: "string",
               enum: ["skip", "overwrite", "fork"],
               description: "Conflict handling mode. Defaults to skip.",
+            },
+            passphrase: {
+              type: "string",
+              description: "Passphrase for encrypted capsule archives.",
             },
           },
           required: ["archivePath"],
@@ -1834,10 +1844,18 @@ export class EngramMcpServer {
           }
           argumentsObject = params.arguments as Record<string, unknown>;
         }
-        if (!("namespace" in argumentsObject) && options?.namespaceOverride) {
+        if (
+          !("namespace" in argumentsObject) &&
+          options?.namespaceOverride &&
+          this.toolAcceptsArgument(name, "namespace")
+        ) {
           argumentsObject = { ...argumentsObject, namespace: options.namespaceOverride };
         }
-        if (!("sessionKey" in argumentsObject) && options?.sessionKeyOverride) {
+        if (
+          !("sessionKey" in argumentsObject) &&
+          options?.sessionKeyOverride &&
+          this.toolAcceptsArgument(name, "sessionKey")
+        ) {
           argumentsObject = { ...argumentsObject, sessionKey: options.sessionKeyOverride };
         }
         const effectivePrincipal = options?.principalOverride ?? this.authenticatedPrincipal;
@@ -1959,6 +1977,16 @@ export class EngramMcpServer {
     const body = JSON.stringify(payload);
     const message = `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n${body}`;
     output.write(message);
+  }
+
+  private toolAcceptsArgument(name: string, key: string): boolean {
+    const tool = this.tools.find((entry) => entry.name === name);
+    const inputSchema = getObjectProperties(tool?.inputSchema);
+    const properties = getObjectProperties(inputSchema?.properties);
+    if (properties && Object.prototype.hasOwnProperty.call(properties, key)) {
+      return true;
+    }
+    return inputSchema?.additionalProperties === true;
   }
 
   /**
@@ -2371,6 +2399,7 @@ export class EngramMcpServer {
           namespace: body.namespace,
           principal: effectivePrincipal,
           mode: body.mode,
+          passphrase: body.passphrase,
         });
       }
       case "engram.capsule_list": {

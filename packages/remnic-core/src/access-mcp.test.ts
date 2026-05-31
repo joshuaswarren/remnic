@@ -262,6 +262,80 @@ test("MCP memory write tools reject malformed arguments before dispatch", async 
   }
 });
 
+test("MCP session override is injected only into tools that accept sessionKey", async () => {
+  let capsuleListArgs: Record<string, unknown> | undefined;
+  let observeArgs: Record<string, unknown> | undefined;
+  const service = {
+    ...makeMockService(),
+    capsuleList: async (args: Record<string, unknown>) => {
+      capsuleListArgs = args;
+      return { capsules: [] };
+    },
+    observe: async (args: Record<string, unknown>) => {
+      observeArgs = args;
+      return { ok: true };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const capsuleResponse = await server.handleRequest(
+    makeToolRequest("engram.capsule_list"),
+    { sessionKeyOverride: "adapter-session" },
+  );
+  const observeResponse = await server.handleRequest(
+    makeToolRequest("engram.observe", {
+      messages: [{ role: "user", content: "hello" }],
+    }),
+    { sessionKeyOverride: "adapter-session" },
+  );
+
+  assert.deepEqual(capsuleListArgs, {
+    namespace: undefined,
+    principal: undefined,
+  });
+  assert.deepEqual(observeArgs, {
+    sessionKey: "adapter-session",
+    messages: [{ role: "user", content: "hello", parts: undefined, rawContent: undefined, sourceFormat: undefined }],
+    namespace: undefined,
+    authenticatedPrincipal: undefined,
+    skipExtraction: false,
+    cwd: undefined,
+    projectTag: undefined,
+  });
+  assert.equal((capsuleResponse as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+  assert.equal((observeResponse as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+});
+
+test("MCP capsule import forwards encrypted archive passphrase", async () => {
+  let received: Record<string, unknown> | undefined;
+  const service = {
+    ...makeMockService(),
+    capsuleImport: async (args: Record<string, unknown>) => {
+      received = args;
+      return { imported: true };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest(
+    makeToolRequest("engram.capsule_import", {
+      archivePath: "~/capsules/team.capsule.json.gz.enc",
+      namespace: "team",
+      mode: "overwrite",
+      passphrase: "correct horse battery staple",
+    }),
+  );
+
+  assert.deepEqual(received, {
+    archivePath: path.join(os.homedir(), "capsules/team.capsule.json.gz.enc"),
+    namespace: "team",
+    principal: undefined,
+    mode: "overwrite",
+    passphrase: "correct horse battery staple",
+  });
+  assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+});
+
 test("MCP contradiction scan uses writable namespace resolver", async () => {
   const resolverCalls: Array<{ namespace: string | undefined; principal: string | undefined }> = [];
   const storage = {
