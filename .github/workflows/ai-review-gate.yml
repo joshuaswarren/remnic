@@ -19,7 +19,8 @@ permissions:
 jobs:
   ai-reviewers:
     if: >-
-      (github.event_name == 'check_run' && github.event.check_run.app.slug != 'github-actions') ||
+      (github.event_name == 'check_run' &&
+        contains(fromJSON('["kilo-code-bot","kiloconnect","kilo","codex","openai-codex","codex-reviewer","chatgpt-codex-connector","cursor-bugbot","cursor"]'), github.event.check_run.app.slug)) ||
       (github.event_name != 'check_run' && github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10

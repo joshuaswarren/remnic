@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -10,6 +11,13 @@ import {
 const groups = parseReviewerGroups("cursor-bugbot[bot]|cursor, codex[bot]|codex");
 const headSha = "abc1234567890";
 const headCommittedAt = "2026-05-21T12:00:00.000Z";
+
+test("AI review gate workflow only runs check_run events for reviewer apps", () => {
+  const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
+
+  assert.match(workflow, /contains\(fromJSON\('\["kilo-code-bot"/);
+  assert.doesNotMatch(workflow, /github\.event\.check_run\.app\.slug != 'github-actions'/);
+});
 
 test("AI review gate resolves every pull request associated with a check_run event", () => {
   assert.deepEqual(
