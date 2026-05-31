@@ -55,7 +55,7 @@ test("namespace storage prefers tokenized roots that contain migrated data", asy
     const beforeMigration = await router.storageFor("team-beta");
     assert.equal(beforeMigration.dir, path.join(memoryDir, "namespaces", "team-beta"));
 
-    await mkdir(path.join(memoryDir, "namespaces", "ns-7465616d2d62657461", "facts"), {
+    await mkdir(path.join(memoryDir, "namespaces", "ns-7465616d2d62657461", "preferences"), {
       recursive: true,
     });
     const afterMigration = await router.storageFor("team-beta");

@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { StorageManager } from "../storage.js";
 import type { PluginConfig } from "../types.js";
+import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
 
 async function exists(p: string): Promise<boolean> {
@@ -15,17 +16,13 @@ async function exists(p: string): Promise<boolean> {
 }
 
 const LEGACY_NAMESPACE_CHILDREN = [
-  "facts",
-  "corrections",
+  ...ALL_CATEGORY_DIRS,
   "entities",
-  "questions",
   "artifacts",
   "identity",
   "state",
   "config",
   "summaries",
-  "procedures",
-  "reasoning-traces",
   "profile.md",
 ] as const;
 

@@ -5,22 +5,16 @@ import { NamespaceStorageRouter } from "./storage.js";
 import { namespaceCollectionName } from "./search.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { namespaceIdentityFromToken, namespaceIdentityToken } from "./identity.js";
+import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
 const LEGACY_NAMESPACE_CHILDREN = [
-  "facts",
-  "corrections",
+  ...ALL_CATEGORY_DIRS,
   "entities",
-  "questions",
   "artifacts",
   "identity",
   "state",
   "config",
   "summaries",
-  "procedures",
-  // Issue #564 PR 3: reasoning_trace memories live in their own subtree.
-  // Must be included here so namespace migration moves existing traces
-  // into the target namespace root alongside other memory data.
-  "reasoning-traces",
   "profile.md",
 ] as const;
 
