@@ -1944,9 +1944,11 @@ test("next public benchmark launcher falls back to a base-branch worktree with d
   assert.match(source, /"\$\{branch\}" == "refs\/heads\/\$\{BASE_BRANCH\}"/);
   assert.match(source, /-d "\$\{worktree\}\/evals\/datasets\/\$\{benchmark\}"/);
   assert.match(source, /LAUNCH_REPO_ROOT="\$\(resolve_launch_repo_root\)"/);
+  assert.match(source, /refuse_if_active_scoring_session\(\)[\s\S]*active_scoring_session="\$\(find_active_scoring_session\)"/);
+  assert.match(source, /refuse_if_active_scoring_session\n\nif ! git -C "\$\{LAUNCH_REPO_ROOT\}" rev-parse --show-toplevel/);
   assert.match(source, /cd "\$\{LAUNCH_REPO_ROOT\}"/);
   assert.match(source, /pnpm --filter @remnic\/bench build/);
-  assert.match(source, /pnpm --filter @remnic\/bench build[\s\S]*git_sha="\$\(git -C "\$\{LAUNCH_REPO_ROOT\}" rev-parse HEAD\)"/);
+  assert.match(source, /pnpm --filter @remnic\/bench build\n\)\n\nrefuse_if_active_scoring_session\n\ngit_sha="\$\(git -C "\$\{LAUNCH_REPO_ROOT\}" rev-parse HEAD\)"/);
   assert.doesNotMatch(source, /LAUNCH_REPO_ROOT="\$\{LAUNCH_REPO_ROOT:-\$\{REPO_ROOT\}\}"/);
 });
 

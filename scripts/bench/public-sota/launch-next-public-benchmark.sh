@@ -56,14 +56,22 @@ resolve_launch_repo_root() {
 
 LAUNCH_REPO_ROOT="$(resolve_launch_repo_root)"
 
-active_scoring_session="$(tmux list-sessions -F '#S' 2>/dev/null \
-  | grep -E '^public-.*-codex-.*[0-9]{8}T[0-9]{6}Z$' \
-  | head -1 || true)"
+find_active_scoring_session() {
+  tmux list-sessions -F '#S' 2>/dev/null \
+    | grep -E '^public-.*-codex-.*[0-9]{8}T[0-9]{6}Z$' \
+    | head -1 || true
+}
 
-if [[ -n "${active_scoring_session}" ]]; then
-  echo "Refusing to launch: active public benchmark scoring session ${active_scoring_session} is still running." >&2
-  exit 3
-fi
+refuse_if_active_scoring_session() {
+  local active_scoring_session
+  active_scoring_session="$(find_active_scoring_session)"
+  if [[ -n "${active_scoring_session}" ]]; then
+    echo "Refusing to launch: active public benchmark scoring session ${active_scoring_session} is still running." >&2
+    exit 3
+  fi
+}
+
+refuse_if_active_scoring_session
 
 if ! git -C "${LAUNCH_REPO_ROOT}" rev-parse --show-toplevel >/dev/null 2>&1; then
   echo "Launch repo is not a git checkout: ${LAUNCH_REPO_ROOT}" >&2
@@ -120,6 +128,8 @@ fi
   cd "${LAUNCH_REPO_ROOT}"
   pnpm --filter @remnic/bench build
 )
+
+refuse_if_active_scoring_session
 
 git_sha="$(git -C "${LAUNCH_REPO_ROOT}" rev-parse HEAD)"
 short_sha="${git_sha:0:8}"
