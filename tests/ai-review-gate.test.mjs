@@ -86,7 +86,7 @@ test("AI review gate fails on failed review-bot check runs", () => {
   assert.equal(result.blockers[0]?.alias, "cursor");
 });
 
-test("AI review gate allows failed aliases when another alias in the OR group passed", () => {
+test("AI review gate preserves failed aliases when another alias in the OR group passed", () => {
   const result = evaluateAiReviewGate({
     groups: parseReviewerGroups("cursor-bugbot|cursor, codex"),
     headSha,
@@ -98,9 +98,9 @@ test("AI review gate allows failed aliases when another alias in the OR group pa
     ],
   });
 
-  assert.equal(result.ok, true);
+  assert.equal(result.ok, false);
   assert.deepEqual(result.missing, []);
-  assert.deepEqual(result.blockers, []);
+  assert.equal(result.blockers[0]?.alias, "cursor");
   assert.equal(result.present[0]?.alias, "cursor-bugbot");
 });
 
@@ -346,6 +346,25 @@ test("AI review gate accepts explicit positive comments on the current head", ()
 
   assert.equal(result.ok, true);
   assert.equal(result.present[0]?.kind, "comment");
+});
+
+test("AI review gate ignores positive comments from unconfigured aliases", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt,
+    issueComments: [
+      {
+        user: { login: "random-reviewer" },
+        body: "PASS",
+        created_at: "2026-05-21T12:00:01.000Z",
+        updated_at: "2026-05-21T12:00:01.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /Missing required positive AI review groups/);
 });
 
 test("AI review gate ignores stale comments that mention the current head SHA", () => {

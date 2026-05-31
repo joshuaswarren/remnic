@@ -232,14 +232,7 @@ jobs:
                 }
               }
 
-              const effectiveBlockers = blockers.filter(
-                (blocker) =>
-                  !groups.some(
-                    (group) =>
-                      group.includes(blocker.alias) &&
-                      group.some((alias) => alias !== blocker.alias && positiveByAlias.has(alias)),
-                  ),
-              );
+              const effectiveBlockers = blockers;
 
               if (effectiveBlockers.length > 0) {
                 return {

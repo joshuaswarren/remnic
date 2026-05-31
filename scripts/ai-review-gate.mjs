@@ -150,7 +150,7 @@ export function evaluateAiReviewGate({
 
   for (const comment of [...issueComments, ...reviewComments]) {
     const login = normalizeLogin(comment.user?.login);
-    if (!login || !bodyHasPositiveVerdict(comment.body)) continue;
+    if (!login || !configuredAliases.has(login) || !bodyHasPositiveVerdict(comment.body)) continue;
     if (!isCurrentActivity(comment, headSha, headCommittedAt)) continue;
     positiveByAlias.set(login, { alias: login, kind: "comment", state: "POSITIVE_COMMENT" });
   }
@@ -192,14 +192,7 @@ export function evaluateAiReviewGate({
     }
   }
 
-  const effectiveBlockers = blockers.filter(
-    (blocker) =>
-      !groups.some(
-        (group) =>
-          group.includes(blocker.alias) &&
-          group.some((alias) => alias !== blocker.alias && positiveByAlias.has(alias)),
-      ),
-  );
+  const effectiveBlockers = blockers;
 
   if (effectiveBlockers.length > 0) {
     return {
