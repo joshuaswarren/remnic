@@ -2476,7 +2476,7 @@ function findPlanFieldTokenWindow(
     const contextStart = dayContext?.startIndex ?? Math.max(0, index - 32);
     if (expectedField.fieldTokens.length > 0) {
       const nearestFieldLabel =
-        findNearestPlanFieldLabel(predictedTokens, contextStart, index);
+        findImmediatePlanFieldLabel(predictedTokens, contextStart, index);
       if (nearestFieldLabel === undefined) {
         if (expectedField.tokens.length < 2) {
           continue;
@@ -2584,20 +2584,18 @@ function buildStandalonePlanDayContext(
   };
 }
 
-function findNearestPlanFieldLabel(
+function findImmediatePlanFieldLabel(
   tokens: string[],
   startIndex: number,
   beforeIndex: number,
 ): string[] | undefined {
-  for (let endIndex = beforeIndex - 1; endIndex >= startIndex; endIndex -= 1) {
-    for (const labelTokens of PLAN_FIELD_LABEL_TOKEN_SEQUENCES) {
-      const labelStart = endIndex - labelTokens.length + 1;
-      if (labelStart < startIndex) {
-        continue;
-      }
-      if (labelTokens.every((token, offset) => tokens[labelStart + offset] === token)) {
-        return labelTokens;
-      }
+  for (const labelTokens of PLAN_FIELD_LABEL_TOKEN_SEQUENCES) {
+    const labelStart = beforeIndex - labelTokens.length;
+    if (labelStart < startIndex) {
+      continue;
+    }
+    if (labelTokens.every((token, offset) => tokens[labelStart + offset] === token)) {
+      return labelTokens;
     }
   }
   return undefined;

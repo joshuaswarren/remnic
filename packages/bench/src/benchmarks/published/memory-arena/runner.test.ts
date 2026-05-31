@@ -1972,6 +1972,84 @@ test("MemoryArena group travel scoring rejects values under the wrong known fiel
   }
 });
 
+test("MemoryArena group travel scoring accepts synonym labels after prior known fields", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-memory-arena-"));
+  const datasetPath = path.join(tempDir, "group_travel_planner.jsonl");
+
+  try {
+    await writeFile(
+      datasetPath,
+      JSON.stringify({
+        id: 45,
+        category: "group_travel_planner",
+        questions: ["Create the day 2 plan."],
+        answers: [
+          {
+            days: "day 2",
+            lunch: "Blue Harbor Cafe",
+          },
+        ],
+      }) + "\n",
+      "utf8",
+    );
+
+    const result = await runMemoryArenaBenchmark({
+      benchmark: memoryArenaDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          return "The group is planning day 2.";
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond() {
+            return {
+              text: [
+                "=== Traveler Plan ===",
+                "Day 2:",
+                "Current City: Paris",
+                "Meal: Blue Harbor Cafe",
+              ].join("\n"),
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "travel-responder",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "judge-smoke",
+            };
+          },
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.equal(task.scores.plan_field_recall, 1);
+    assert.equal(task.scores.soft_process_score, 1);
+    assert.equal(task.scores.process_score, 1);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("MemoryArena item-selection token overlap matches common -ies singulars", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-memory-arena-"));
   const datasetPath = path.join(tempDir, "shopping.jsonl");
