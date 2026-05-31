@@ -4,6 +4,8 @@
  * Validates user-provided config and applies defaults for optional fields.
  */
 
+import * as net from "node:net";
+
 export interface MemoryInjectionConfig {
   maxTokens: number;
   position: "system-append" | "system-prepend";
@@ -42,7 +44,34 @@ export const DEFAULT_CONFIG: WeCloneConnectorConfig = {
 
 const VALID_SESSION_STRATEGIES = ["caller-id", "single"] as const;
 const VALID_POSITIONS = ["system-append", "system-prepend"] as const;
-const PUBLIC_BIND_HOSTS = new Set(["0.0.0.0", "::"]);
+
+function normalizeBindHostForValidation(host: string): string {
+  const trimmed = host.trim().toLowerCase();
+  return trimmed.startsWith("[") && trimmed.endsWith("]")
+    ? trimmed.slice(1, -1)
+    : trimmed;
+}
+
+function isAllZeroIpv6Address(host: string): boolean {
+  if (net.isIP(host) !== 6) return false;
+  const parts = host.split("::");
+  if (parts.length > 2) return false;
+
+  const head = parts[0] ? parts[0].split(":") : [];
+  const tail = parts.length === 2 && parts[1] ? parts[1].split(":") : [];
+  const explicitGroupCount = head.length + tail.length;
+  const zeroFillCount = parts.length === 2 ? 8 - explicitGroupCount : 0;
+  if (parts.length === 1 && explicitGroupCount !== 8) return false;
+  if (parts.length === 2 && zeroFillCount < 1) return false;
+
+  const groups = [...head, ...Array.from({ length: zeroFillCount }, () => "0"), ...tail];
+  return groups.length === 8 && groups.every((group) => Number.parseInt(group || "0", 16) === 0);
+}
+
+function isPublicBindHost(host: string): boolean {
+  const normalized = normalizeBindHostForValidation(host);
+  return normalized === "0.0.0.0" || isAllZeroIpv6Address(normalized);
+}
 
 function parseOptionalPositiveInteger(
   obj: Record<string, unknown>,
@@ -117,7 +146,7 @@ export function parseConfig(raw: unknown): WeCloneConnectorConfig {
     throw new Error("Config 'proxyBindHost' must be a non-empty string when provided");
   }
   const allowPublicBind = obj.allowPublicBind === true;
-  if (PUBLIC_BIND_HOSTS.has(proxyBindHost) && !allowPublicBind) {
+  if (isPublicBindHost(proxyBindHost) && !allowPublicBind) {
     throw new Error(
       "Config 'proxyBindHost' cannot bind to all interfaces unless allowPublicBind is true",
     );

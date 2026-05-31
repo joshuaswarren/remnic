@@ -721,6 +721,8 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
           const decoder = new TextDecoder();
           let streamBuffer = "";
           let assistantContent = "";
+          let streamedResponseBytes = 0;
+          let streamLimitExceeded = false;
           let observationTextBytes = 0;
           let observationDisabled = false;
           const disableObservationBuffer = () => {
@@ -755,6 +757,12 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
               if (clientClosed) break;
               const { done, value } = await reader.read();
               if (done) break;
+              streamedResponseBytes += value.byteLength;
+              if (streamedResponseBytes > maxResponseBytes) {
+                streamLimitExceeded = true;
+                await reader.cancel().catch(() => {});
+                break;
+              }
               const wrote = await writeResponseChunkRespectingBackpressure(res, value);
               if (!wrote) {
                 clientClosed = true;
@@ -784,7 +792,7 @@ export function createWeCloneProxy(config: WeCloneConnectorConfig): WeCloneProxy
               res.end();
             }
           }
-          if (clientClosed) return;
+          if (clientClosed || streamLimitExceeded) return;
 
           // Best-effort: reconstruct assistant content for observation
           try {

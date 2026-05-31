@@ -756,6 +756,69 @@ describe("WeCloneProxy", () => {
     assert.equal(observeCount, 0, "oversized streams should not be buffered for observe");
   });
 
+  it("stops forwarding streaming responses after the configured response byte cap", async () => {
+    const firstChunk = 'data: {"choices":[{"delta":{"content":"small"},"index":0}]}\n\n';
+    const oversizedChunk = 'data: {"choices":[{"delta":{"content":"too-large"},"index":0}]}\n\n';
+    const maxResponseBytes = Buffer.byteLength(firstChunk);
+
+    const weclone = await createMockServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        });
+        res.write(firstChunk);
+        setTimeout(() => {
+          res.write(oversizedChunk);
+          res.end("data: [DONE]\n\n");
+        }, 20);
+      });
+    });
+    cleanups.push(weclone.close);
+
+    let observeCount = 0;
+    let requestCount = 0;
+    const remnic = await createMockServer((_req, res) => {
+      requestCount++;
+      if (requestCount > 1) observeCount++;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(requestCount === 1 ? JSON.stringify({ results: [] }) : JSON.stringify({ ok: true }));
+    });
+    cleanups.push(remnic.close);
+
+    const proxy = createWeCloneProxy(
+      testConfig(weclone.port, remnic.port, {
+        maxResponseBytes,
+      })
+    );
+    await proxy.start();
+    cleanups.push(() => proxy.stop());
+
+    const res = await fetch(
+      `http://127.0.0.1:${proxy.port}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "weclone-avatar",
+          stream: true,
+          messages: [{ role: "user", content: "stream please" }],
+        }),
+      }
+    );
+
+    assert.equal(res.status, 200);
+    const streamedBody = await res.text();
+    assert.ok(streamedBody.includes('"content":"small"'));
+    assert.ok(!streamedBody.includes("too-large"));
+    assert.ok(Buffer.byteLength(streamedBody) <= maxResponseBytes);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(observeCount, 0, "truncated streams should not be observed");
+  });
+
   it("does not expose error details in 502 responses", async () => {
     // WeClone is unreachable (no mock server started on this port)
     const fakeWeclonePort = 59999;
