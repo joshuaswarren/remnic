@@ -144,6 +144,46 @@ test("adapter sandbox QMD index settings cannot be overridden by runtime config"
   assert.equal(lightweight.qmdPath, "/tmp/remnic-bench-qmd");
 });
 
+test("runtime-backed adapter waits for full reset rebuild to settle after abort", async () => {
+  const adapter = await createLightweightAdapter();
+  const originalInitialize = Orchestrator.prototype.initialize;
+  const rebuildStarted = createDeferredForTest();
+  const rebuildCanFinish = createDeferredForTest();
+
+  Orchestrator.prototype.initialize = async function patchedInitialize() {
+    rebuildStarted.resolve();
+    await rebuildCanFinish.promise;
+    return originalInitialize.call(this);
+  };
+
+  try {
+    const controller = new AbortController();
+    const resetPromise = adapter.reset(undefined, { signal: controller.signal });
+    await Promise.race([
+      rebuildStarted.promise,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error("timed out waiting for reset rebuild")), 1_000),
+      ),
+    ]);
+
+    controller.abort(new Error("reset deadline"));
+    let resetSettled = false;
+    void resetPromise.catch(() => {
+      resetSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(resetSettled, false);
+
+    rebuildCanFinish.resolve();
+    await assert.rejects(resetPromise, /reset deadline/);
+    assert.equal(resetSettled, true);
+  } finally {
+    Orchestrator.prototype.initialize = originalInitialize;
+    rebuildCanFinish.resolve();
+    await adapter.destroy();
+  }
+});
+
 test("adapter QMD wrapper resolves relative binaries and isolates QMD env", async () => {
   const fakeRoot = await mkdtemp(path.join(tmpdir(), "remnic-fake-qmd-"));
   const fakeQmdPath = path.join(fakeRoot, "qmd");

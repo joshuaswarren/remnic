@@ -243,6 +243,10 @@ type BenchEntityStorageView = {
   bumpMemoryStatusVersion?: () => void;
 };
 
+type BenchPhaseAbortOptions = {
+  waitForCompletionOnAbort?: boolean;
+};
+
 function normalizeReplaySourceValidAtMode(
   value: RemnicAdapterOptions["replaySourceValidAtMode"],
 ): "historical" | "batch" {
@@ -2364,7 +2368,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
 
         if (state.ownsTempDir) {
-          await withBenchPhaseAbort(rebuild(), control, "reset");
+          await withBenchPhaseAbort(rebuild(), control, "reset", {
+            waitForCompletionOnAbort: true,
+          });
           return;
         }
 
@@ -2373,6 +2379,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             rebuild({ clearCallerOwnedBenchState: true }),
             control,
             "reset",
+            { waitForCompletionOnAbort: true },
           );
           return;
         }
@@ -2488,6 +2495,7 @@ async function withBenchPhaseAbort<T>(
   promise: Promise<T>,
   control: BenchPhaseControl | undefined,
   phase: string,
+  options: BenchPhaseAbortOptions = {},
 ): Promise<T> {
   const signal = control?.signal;
   if (!signal) return promise;
@@ -2502,6 +2510,11 @@ async function withBenchPhaseAbort<T>(
   });
   try {
     return await Promise.race([promise, abortPromise]);
+  } catch (err) {
+    if (options.waitForCompletionOnAbort === true && signal.aborted) {
+      await promise.catch(() => undefined);
+    }
+    throw err;
   } finally {
     if (abortHandler) {
       signal.removeEventListener("abort", abortHandler);

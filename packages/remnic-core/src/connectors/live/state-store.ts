@@ -437,8 +437,14 @@ async function withConnectorStateLockInternal<T>(
       });
   }, options.heartbeatMs ?? CONNECTOR_LOCK_HEARTBEAT_MS);
   heartbeat.unref?.();
+  const runPromise = run(abortController.signal);
   try {
-    return await Promise.race([run(abortController.signal), lockLostPromise]);
+    return await Promise.race([runPromise, lockLostPromise]);
+  } catch (err) {
+    if (err instanceof ConnectorStateLockLostError) {
+      await runPromise.catch(() => undefined);
+    }
+    throw err;
   } finally {
     clearInterval(heartbeat);
     await releaseConnectorLock(lease);

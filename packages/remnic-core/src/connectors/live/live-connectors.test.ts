@@ -713,6 +713,7 @@ test("state store: aborts scoped work when heartbeat loses the connector lock", 
   const memoryDir = makeMemoryDir(t);
   const lockPath = path.join(memoryDir, "state", "connector-locks", "drive.lock");
   let scopedSignal: AbortSignal | undefined;
+  let scopedWorkSettled = false;
   let resolveStarted!: () => void;
   const started = new Promise<void>((resolve) => {
     resolveStarted = resolve;
@@ -728,7 +729,10 @@ test("state store: aborts scoped work when heartbeat loses the connector lock", 
         abortSignal.addEventListener(
           "abort",
           () => {
-            reject(abortSignal.reason);
+            setTimeout(() => {
+              scopedWorkSettled = true;
+              reject(abortSignal.reason);
+            }, 20);
           },
           { once: true },
         );
@@ -748,6 +752,7 @@ test("state store: aborts scoped work when heartbeat loses the connector lock", 
   fs.writeFileSync(lockPath, `${JSON.stringify(replacement)}\n`);
 
   await assert.rejects(lockedWork, /lost connector "drive" state lock/);
+  assert.equal(scopedWorkSettled, true);
   assert.equal(scopedSignal?.aborted, true);
   assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, "replacement-lock");
 });
