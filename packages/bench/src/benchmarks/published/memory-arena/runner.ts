@@ -2314,22 +2314,8 @@ const PLAN_FIELD_KEYS = [
 const PLAN_FIELD_LABEL_TOKEN_SEQUENCES = PLAN_FIELD_KEYS
   .map((key) => tokenizePlanText(key.replace(/_/g, " ")))
   .sort((a, b) => b.length - a.length);
-const PLAN_FIELD_LABEL_VALUE_CONNECTOR_TOKENS = new Set([
-  "are",
-  "as",
-  "at",
-  "be",
-  "for",
-  "in",
-  "is",
-  "scheduled",
-  "set",
-  "to",
-  "was",
-  "were",
-  "will",
-]);
 const MAX_PLAN_FIELD_LABEL_CONNECTOR_TOKENS = 3;
+const PLAN_MEAL_FIELD_LABEL_TOKENS = new Set(["breakfast", "lunch", "dinner"]);
 const WEEKDAY_PLAN_DAY_TOKENS = new Set([
   "monday",
   "tuesday",
@@ -2619,12 +2605,28 @@ function findImmediatePlanFieldLabel(
         labelStart + labelTokens.length,
         beforeIndex,
       );
-      if (connectorTokens.every((token) => PLAN_FIELD_LABEL_VALUE_CONNECTOR_TOKENS.has(token))) {
+      if (!hasInterveningPlanFieldCue(labelTokens, connectorTokens)) {
         return labelTokens;
       }
     }
   }
   return undefined;
+}
+
+function hasInterveningPlanFieldCue(
+  labelTokens: string[],
+  connectorTokens: string[],
+): boolean {
+  if (connectorTokens.length === 0) {
+    return false;
+  }
+  if (
+    !labelTokens.some((token) => PLAN_MEAL_FIELD_LABEL_TOKENS.has(token))
+    && connectorTokens.includes("meal")
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function extractCompactPlanDayToken(token: string): string | undefined {

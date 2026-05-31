@@ -2094,7 +2094,7 @@ test("MemoryArena group travel scoring rejects wrong known labels with connector
               text: [
                 "=== Traveler Plan ===",
                 "Day 2:",
-                "Dinner at Blue Harbor Cafe",
+                "Dinner reservation at Blue Harbor Cafe",
               ].join("\n"),
               tokens: { input: 1, output: 1 },
               latencyMs: 1,
