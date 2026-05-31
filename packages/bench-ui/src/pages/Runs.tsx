@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { BenchResultSummaryPayload, RunFilters, TrendRange } from "../bench-data";
 import { filterRuns, listBenchmarks, listProviders } from "../bench-data";
 import { RunTable } from "../components/RunTable";
@@ -31,6 +31,16 @@ export function reconcileRunFilters(
   };
 }
 
+function areRunFiltersEqual(a: RunFilters, b: RunFilters): boolean {
+  return (
+    a.benchmark === b.benchmark &&
+    a.systemProvider === b.systemProvider &&
+    a.judgeProvider === b.judgeProvider &&
+    a.mode === b.mode &&
+    a.range === b.range
+  );
+}
+
 export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
   const [filters, setFilters] = useState<RunFilters>({
     benchmark: "all",
@@ -40,6 +50,12 @@ export function Runs({ payload }: { payload: BenchResultSummaryPayload }) {
     range: "all",
   });
   const reconciledFilters = reconcileRunFilters(payload, filters);
+  useEffect(() => {
+    setFilters((current) => {
+      const next = reconcileRunFilters(payload, current);
+      return areRunFiltersEqual(current, next) ? current : next;
+    });
+  }, [payload]);
   const benchmarks = listBenchmarks(payload);
   const systemProviders = listProviders(payload, "systemProvider");
   const judgeProviders = listProviders(payload, "judgeProvider");
