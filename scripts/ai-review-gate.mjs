@@ -192,13 +192,22 @@ export function evaluateAiReviewGate({
     }
   }
 
-  if (blockers.length > 0) {
+  const effectiveBlockers = blockers.filter(
+    (blocker) =>
+      !groups.some(
+        (group) =>
+          group.includes(blocker.alias) &&
+          group.some((alias) => alias !== blocker.alias && positiveByAlias.has(alias)),
+      ),
+  );
+
+  if (effectiveBlockers.length > 0) {
     return {
       ok: false,
-      reason: `AI reviewer check run failed or was not positive: ${blockers.map((b) => `${b.alias}(${b.state})`).join(", ")}`,
+      reason: `AI reviewer check run failed or was not positive: ${effectiveBlockers.map((b) => `${b.alias}(${b.state})`).join(", ")}`,
       present,
       missing,
-      blockers,
+      blockers: effectiveBlockers,
     };
   }
 
@@ -208,7 +217,7 @@ export function evaluateAiReviewGate({
       reason: `Missing required positive AI review groups: ${missing.map((group) => group.join(" OR ")).join("; ")}`,
       present,
       missing,
-      blockers,
+      blockers: effectiveBlockers,
     };
   }
 
@@ -217,6 +226,6 @@ export function evaluateAiReviewGate({
     reason: "AI review gate satisfied.",
     present,
     missing,
-    blockers,
+    blockers: effectiveBlockers,
   };
 }

@@ -86,6 +86,24 @@ test("AI review gate fails on failed review-bot check runs", () => {
   assert.equal(result.blockers[0]?.alias, "cursor");
 });
 
+test("AI review gate allows failed aliases when another alias in the OR group passed", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor-bugbot|cursor, codex"),
+    headSha,
+    headCommittedAt,
+    checkRuns: [
+      { app: { slug: "cursor" }, conclusion: "failure", head_sha: headSha },
+      { app: { slug: "cursor-bugbot" }, conclusion: "success", head_sha: headSha },
+      { app: { slug: "codex" }, conclusion: "success", head_sha: headSha },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.missing, []);
+  assert.deepEqual(result.blockers, []);
+  assert.equal(result.present[0]?.alias, "cursor-bugbot");
+});
+
 test("AI review gate blocks startup_failure review-bot check runs", () => {
   const result = evaluateAiReviewGate({
     groups: parseReviewerGroups("cursor"),
