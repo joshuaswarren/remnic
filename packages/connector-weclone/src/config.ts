@@ -52,25 +52,64 @@ function normalizeBindHostForValidation(host: string): string {
     : trimmed;
 }
 
-function isAllZeroIpv6Address(host: string): boolean {
-  if (net.isIP(host) !== 6) return false;
+function expandIpv6Groups(host: string): number[] | null {
+  if (net.isIP(host) !== 6) return null;
   const parts = host.split("::");
-  if (parts.length > 2) return false;
+  if (parts.length > 2) return null;
 
-  const head = parts[0] ? parts[0].split(":") : [];
-  const tail = parts.length === 2 && parts[1] ? parts[1].split(":") : [];
+  const parseGroups = (segment: string): number[] | null => {
+    if (!segment) return [];
+    const groups: number[] = [];
+    const rawGroups = segment.split(":");
+    for (let i = 0; i < rawGroups.length; i += 1) {
+      const group = rawGroups[i];
+      if (group.includes(".")) {
+        if (i !== rawGroups.length - 1 || net.isIP(group) !== 4) return null;
+        const octets = group.split(".").map((octet) => Number.parseInt(octet, 10));
+        groups.push((octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]);
+        continue;
+      }
+      if (!/^[0-9a-f]{1,4}$/i.test(group)) return null;
+      groups.push(Number.parseInt(group, 16));
+    }
+    return groups;
+  };
+
+  const head = parseGroups(parts[0] ?? "");
+  const tail = parts.length === 2 ? parseGroups(parts[1] ?? "") : [];
+  if (!head || !tail) return null;
   const explicitGroupCount = head.length + tail.length;
   const zeroFillCount = parts.length === 2 ? 8 - explicitGroupCount : 0;
-  if (parts.length === 1 && explicitGroupCount !== 8) return false;
-  if (parts.length === 2 && zeroFillCount < 1) return false;
+  if (parts.length === 1 && explicitGroupCount !== 8) return null;
+  if (parts.length === 2 && zeroFillCount < 1) return null;
 
-  const groups = [...head, ...Array.from({ length: zeroFillCount }, () => "0"), ...tail];
-  return groups.length === 8 && groups.every((group) => Number.parseInt(group || "0", 16) === 0);
+  const groups = [...head, ...Array.from({ length: zeroFillCount }, () => 0), ...tail];
+  return groups.length === 8 ? groups : null;
+}
+
+function isAllZeroIpv6Address(host: string): boolean {
+  const groups = expandIpv6Groups(host);
+  return groups !== null && groups.every((group) => group === 0);
+}
+
+function isIpv4MappedWildcardAddress(host: string): boolean {
+  const groups = expandIpv6Groups(host);
+  return (
+    groups !== null &&
+    groups.slice(0, 5).every((group) => group === 0) &&
+    groups[5] === 0xffff &&
+    groups[6] === 0 &&
+    groups[7] === 0
+  );
 }
 
 function isPublicBindHost(host: string): boolean {
   const normalized = normalizeBindHostForValidation(host);
-  return normalized === "0.0.0.0" || isAllZeroIpv6Address(normalized);
+  return (
+    normalized === "0.0.0.0" ||
+    isAllZeroIpv6Address(normalized) ||
+    isIpv4MappedWildcardAddress(normalized)
+  );
 }
 
 function parseOptionalPositiveInteger(

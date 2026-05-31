@@ -66,7 +66,11 @@ export class NamespaceStorageRouter {
       "namespaces",
       namespaceIdentityToken(this.config.defaultNamespace),
     );
-    const nsDir = (await exists(legacyNsDir)) ? legacyNsDir : tokenizedNsDir;
+    const tokenizedHasData =
+      (await exists(tokenizedNsDir)) && (await hasAnyLegacyData(tokenizedNsDir));
+    const nsDir = tokenizedHasData
+      ? tokenizedNsDir
+      : (await exists(legacyNsDir)) ? legacyNsDir : tokenizedNsDir;
     this.defaultNsRootResolved =
       (await exists(nsDir)) && !(await hasAnyLegacyData(this.config.memoryDir))
         ? nsDir
@@ -81,8 +85,11 @@ export class NamespaceStorageRouter {
       return this.defaultNsRootResolved ?? this.config.memoryDir;
     }
     const legacyRoot = path.join(this.config.memoryDir, "namespaces", namespace);
-    if (await exists(legacyRoot)) return legacyRoot;
-    return path.join(this.config.memoryDir, "namespaces", namespaceIdentityToken(namespace));
+    const tokenizedRoot = path.join(this.config.memoryDir, "namespaces", namespaceIdentityToken(namespace));
+    if ((await exists(tokenizedRoot)) && (await hasAnyLegacyData(tokenizedRoot))) {
+      return tokenizedRoot;
+    }
+    return (await exists(legacyRoot)) ? legacyRoot : tokenizedRoot;
   }
 
   async storageFor(namespace: string): Promise<StorageManager> {

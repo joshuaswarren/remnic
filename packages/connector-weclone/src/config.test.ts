@@ -120,6 +120,18 @@ describe("parseConfig", () => {
       () => parseConfig({ ...validRaw, proxyBindHost: "[0:0:0:0:0:0:0:0]" }),
       /allowPublicBind/,
     );
+    assert.throws(
+      () => parseConfig({ ...validRaw, proxyBindHost: "::ffff:0.0.0.0" }),
+      /allowPublicBind/,
+    );
+    assert.throws(
+      () => parseConfig({ ...validRaw, proxyBindHost: "[::ffff:0.0.0.0]" }),
+      /allowPublicBind/,
+    );
+    assert.throws(
+      () => parseConfig({ ...validRaw, proxyBindHost: "0:0:0:0:0:ffff:0.0.0.0" }),
+      /allowPublicBind/,
+    );
   });
 
   it("accepts all-interface proxy bind hosts with explicit opt-in", () => {
