@@ -71,7 +71,7 @@ export function parseAmbDocumentMessages(document) {
     });
   }
 
-  const turnPattern = /(?:^|\n[ \t]*\n)(\[[^\]]+\]\s*)?(User|Assistant|System):[ \t]*/g;
+  const turnPattern = /(?:^|\n[ \t]*\n|\n(?=(?:\[[^\]]+\]\s*)?(?:User|Assistant|System):[ \t]*[^\r\n]))(\[[^\]]+\]\s*)?(User|Assistant|System):[ \t]*/g;
   const matches = [...content.matchAll(turnPattern)];
   if (matches.length === 0) {
     if (content.trim().length > 0) {
