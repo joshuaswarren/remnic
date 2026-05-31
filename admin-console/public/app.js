@@ -1336,6 +1336,9 @@ function applyGraphEvent(event) {
   if (event.type === "node-added") {
     const existing = graphData.nodes.find((n) => n.id === p.nodeId);
     if (!existing) {
+      const canvas = $("graphCanvas");
+      const lw = canvas?.offsetWidth || 800;
+      const lh = canvas?.offsetHeight || 520;
       const node = {
         id: p.nodeId,
         label: p.label || p.nodeId,
@@ -1343,8 +1346,8 @@ function applyGraphEvent(event) {
         score: 1,
         lastUpdated: p.lastUpdated || event.ts,
         // Place new nodes at a random position near the canvas centre.
-        x: (Math.random() - 0.5) * 200,
-        y: (Math.random() - 0.5) * 200,
+        x: lw / 2 + (Math.random() - 0.5) * 200,
+        y: lh / 2 + (Math.random() - 0.5) * 200,
         vx: 0,
         vy: 0,
         _memoryId: null,
