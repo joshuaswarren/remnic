@@ -1851,8 +1851,13 @@ export class EngramMcpServer {
         ) {
           argumentsObject = { ...argumentsObject, namespace: options.namespaceOverride };
         }
+        const skipSessionKeyOverride =
+          toLegacyToolName(name) === "engram.lcm_search" &&
+          typeof argumentsObject.sessionPrefix === "string" &&
+          argumentsObject.sessionPrefix.length > 0;
         if (
           !("sessionKey" in argumentsObject) &&
+          !skipSessionKeyOverride &&
           options?.sessionKeyOverride &&
           this.toolAcceptsArgument(name, "sessionKey")
         ) {

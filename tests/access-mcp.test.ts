@@ -1027,3 +1027,50 @@ test("MCP server drains buffered requests in arrival order across overlapping da
     ["first", "second"],
   );
 });
+
+test("MCP session override preserves explicit LCM sessionPrefix searches", async () => {
+  const service = {
+    ...createFakeService(),
+    lcmSearch: async (request: { sessionKey?: string; sessionPrefix?: string }) => ({
+      request,
+      results: [],
+    }),
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const prefixSearch = await server.handleRequest(
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "engram.lcm_search",
+        arguments: { query: "handoff", sessionPrefix: "run-" },
+      },
+    },
+    { sessionKeyOverride: "adapter-session" },
+  );
+  const prefixResult = prefixSearch?.result as {
+    structuredContent: { request: { sessionKey?: string; sessionPrefix?: string } };
+  };
+  assert.equal(prefixResult.structuredContent.request.sessionKey, undefined);
+  assert.equal(prefixResult.structuredContent.request.sessionPrefix, "run-");
+
+  const exactSearch = await server.handleRequest(
+    {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: {
+        name: "engram.lcm_search",
+        arguments: { query: "handoff" },
+      },
+    },
+    { sessionKeyOverride: "adapter-session" },
+  );
+  const exactResult = exactSearch?.result as {
+    structuredContent: { request: { sessionKey?: string; sessionPrefix?: string } };
+  };
+  assert.equal(exactResult.structuredContent.request.sessionKey, "adapter-session");
+  assert.equal(exactResult.structuredContent.request.sessionPrefix, undefined);
+});
