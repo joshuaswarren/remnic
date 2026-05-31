@@ -4,7 +4,7 @@ import type { PluginConfig } from "../types.js";
 import { NamespaceStorageRouter } from "./storage.js";
 import { namespaceCollectionName } from "./search.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
-import { namespaceIdentityToken } from "./identity.js";
+import { namespaceIdentityFromToken, namespaceIdentityToken } from "./identity.js";
 
 const LEGACY_NAMESPACE_CHILDREN = [
   "facts",
@@ -81,8 +81,10 @@ async function discoverConfiguredNamespaces(
   try {
     const entries = await readdir(namespacesDir, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.isDirectory() && isSafeRouteNamespace(entry.name)) {
-        discovered.add(entry.name);
+      if (!entry.isDirectory()) continue;
+      const namespace = namespaceIdentityFromToken(entry.name) ?? entry.name;
+      if (isSafeRouteNamespace(namespace)) {
+        discovered.add(namespace);
       }
     }
   } catch {
