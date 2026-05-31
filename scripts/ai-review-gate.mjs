@@ -10,7 +10,7 @@ const BAD_CHECK_CONCLUSIONS = new Set([
 const POSITIVE_CHECK_CONCLUSIONS = new Set(["success", "neutral"]);
 const NEGATIVE_REVIEW_STATES = new Set(["CHANGES_REQUESTED"]);
 const NEGATIVE_VERDICT_PATTERN =
-  /\b(?:changes\s+requested|do\s+not\s+merge|fail(?:ed|ing|ure)?|block(?:ed|ing|er)?|reject(?:ed|ing)?|(?:not|no|never|cannot|can['’]?t|isn['’]?t)\s+(?:a\s+)?(?:pass|approved|lgtm))\b/i;
+  /\b(?:changes\s+requested|do\s+not\s+merge|(?:not|no|never|cannot|can['’]?t|isn['’]?t)\s+(?:a\s+)?(?:pass|approved|lgtm))\b/i;
 const POSITIVE_VERDICT_PATTERN = /\b(?:PASS|APPROVED|LGTM)\b/i;
 
 function normalizeLogin(value) {

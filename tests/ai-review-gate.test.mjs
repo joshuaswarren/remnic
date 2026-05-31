@@ -239,6 +239,25 @@ test("AI review gate rejects negative comments that contain positive tokens", ()
   assert.match(result.reason, /Missing required positive AI review groups/);
 });
 
+test("AI review gate accepts explicit PASS comments that mention failures are absent", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt,
+    issueComments: [
+      {
+        user: { login: "cursor" },
+        body: `PASS for ${headSha}; no failures found.`,
+        created_at: "2026-05-21T12:00:01.000Z",
+        updated_at: "2026-05-21T12:00:01.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.present[0]?.kind, "comment");
+});
+
 test("AI review gate fails when a required group is missing", () => {
   const result = evaluateAiReviewGate({
     groups,
