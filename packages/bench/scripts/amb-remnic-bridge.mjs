@@ -228,6 +228,7 @@ async function main() {
       } else if (request.command === "cleanup") {
         await adapter.destroy?.();
         await writeJson({ ok: true });
+        rl.close();
         return;
       } else {
         throw new Error(`Unknown command: ${request.command}`);

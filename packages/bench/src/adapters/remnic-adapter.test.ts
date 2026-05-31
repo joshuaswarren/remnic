@@ -1828,9 +1828,19 @@ test("AMB bridge flushes cleanup acknowledgement before exit", async () => {
     },
   );
 
-  child.stdin.end(`${JSON.stringify({ command: "cleanup" })}\n`);
+  child.stdin.write(`${JSON.stringify({ command: "cleanup" })}\n`);
 
-  const result = await exit;
+  let cleanupExitTimeout: NodeJS.Timeout | undefined;
+  const result = await Promise.race([
+    exit,
+    new Promise<never>((_, reject) => {
+      cleanupExitTimeout = setTimeout(() => {
+        child.kill();
+        reject(new Error("AMB bridge cleanup did not exit"));
+      }, 1_000);
+    }),
+  ]);
+  if (cleanupExitTimeout) clearTimeout(cleanupExitTimeout);
   assert.equal(result.code, 0, stderr);
   assert.equal(result.signal, null);
   const lines = stdout.trim().split("\n").filter(Boolean);
