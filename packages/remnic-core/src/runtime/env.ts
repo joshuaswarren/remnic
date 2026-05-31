@@ -21,7 +21,7 @@ export function readEnvVar(name: string): string | undefined {
   const env = getEnvMap();
   for (const candidate of legacyEnvCandidates(name)) {
     const value = env?.[candidate];
-    if (typeof value === "string") return value;
+    if (typeof value === "string" && value.length > 0) return value;
   }
   return undefined;
 }

@@ -23,6 +23,7 @@ import {
 } from "./index.js";
 import {
   _connectorStatePathForTest,
+  _refreshConnectorLockForTest,
   _releaseConnectorLockForTest,
   _tryAcquireConnectorLockForTest,
   _unlinkStaleConnectorLockForTest,
@@ -703,6 +704,43 @@ test("state store: release only removes the matching connector lock token", asyn
   fs.writeFileSync(lease.path, `${JSON.stringify(replacement)}\n`);
 
   await _releaseConnectorLockForTest(lease);
+
+  assert.equal(JSON.parse(fs.readFileSync(lease.path, "utf8")).token, "replacement-lock");
+});
+
+test("state store: refreshing an unlinked stale lease does not overwrite a newer lock owner", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const lease = await _tryAcquireConnectorLockForTest(memoryDir, "drive");
+  assert.ok(lease);
+  const probeHandle = await fs.promises.open(lease.path, "r");
+  const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+    readFile: (...args: unknown[]) => Promise<unknown>;
+  };
+  const originalReadFile = fileHandlePrototype.readFile;
+  await probeHandle.close();
+  const replacement = {
+    pid: process.pid,
+    token: "replacement-lock",
+    createdAt: new Date().toISOString(),
+    refreshedAt: new Date().toISOString(),
+  };
+  let replaced = false;
+
+  fileHandlePrototype.readFile = async function readFileAndReplace(...args: unknown[]) {
+    const result = await originalReadFile.apply(this, args);
+    if (!replaced) {
+      replaced = true;
+      fs.unlinkSync(lease.path);
+      fs.writeFileSync(lease.path, `${JSON.stringify(replacement)}\n`);
+    }
+    return result;
+  };
+
+  try {
+    assert.equal(await _refreshConnectorLockForTest(lease), true);
+  } finally {
+    fileHandlePrototype.readFile = originalReadFile;
+  }
 
   assert.equal(JSON.parse(fs.readFileSync(lease.path, "utf8")).token, "replacement-lock");
 });

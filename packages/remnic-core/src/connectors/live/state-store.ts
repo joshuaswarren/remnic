@@ -206,6 +206,15 @@ async function readConnectorLockMetadata(lockPath: string): Promise<ConnectorLoc
   }
 }
 
+function parseConnectorLockMetadata(raw: string): ConnectorLockMetadata | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isConnectorLockMetadata(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Reject any path component along `<memoryDir>/state/connectors/<id>.json`
  * that is a symlink. Without this guard, a symlink in any of those
@@ -344,13 +353,23 @@ async function unlinkStaleConnectorLock(lockPath: string): Promise<void> {
 }
 
 async function refreshConnectorLock(lease: ConnectorLockLease): Promise<boolean> {
-  const metadata = await readConnectorLockMetadata(lease.path);
-  if (metadata?.token !== lease.token) return false;
-  await fs.writeFile(lease.path, `${JSON.stringify(connectorLockMetadata(lease.token, metadata.createdAt))}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-  return true;
+  let handle: Awaited<ReturnType<typeof fs.open>>;
+  try {
+    handle = await fs.open(lease.path, "r+");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
+  }
+  try {
+    const metadata = parseConnectorLockMetadata(await handle.readFile("utf8"));
+    if (metadata?.token !== lease.token) return false;
+    const body = `${JSON.stringify(connectorLockMetadata(lease.token, metadata.createdAt))}\n`;
+    await handle.truncate(0);
+    await handle.write(body, 0, "utf8");
+    return true;
+  } finally {
+    await handle.close();
+  }
 }
 
 async function releaseConnectorLock(lease: ConnectorLockLease): Promise<void> {
@@ -588,4 +607,5 @@ export function _connectorStatePathForTest(memoryDir: string, id: string): strin
 
 export const _unlinkStaleConnectorLockForTest = unlinkStaleConnectorLock;
 export const _tryAcquireConnectorLockForTest = tryAcquireConnectorLock;
+export const _refreshConnectorLockForTest = refreshConnectorLock;
 export const _releaseConnectorLockForTest = releaseConnectorLock;
