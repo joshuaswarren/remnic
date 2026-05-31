@@ -81,9 +81,10 @@ export async function answerBenchmarkQuestion(options: {
     ? await options.responder
         .respond(
           buildUnknownRetryQuestion(question, answerFormat, {
-            evidenceLabel: answerMode === "agentic-memory"
-              ? "trajectory evidence"
-              : "benchmark evidence",
+            evidenceLabel: getUnknownRetryEvidenceLabel(
+              options.recalledText,
+              answerMode,
+            ),
           }),
           options.recalledText,
         )
@@ -271,6 +272,15 @@ function hasRetryableEvidenceForUnknownAnswer(
     return false;
   }
   return hasConcreteBenchmarkEvidence(recalledText);
+}
+
+function getUnknownRetryEvidenceLabel(
+  recalledText: string,
+  answerMode: BenchmarkAnswerMode,
+): string {
+  return answerMode === "agentic-memory" || hasExplicitTrajectoryEvidence(recalledText)
+    ? "trajectory evidence"
+    : "benchmark evidence";
 }
 
 function hasConcreteBenchmarkEvidence(recalledText: string): boolean {

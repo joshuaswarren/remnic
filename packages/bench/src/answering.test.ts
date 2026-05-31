@@ -331,6 +331,49 @@ test("strict answering retries unknown when structured benchmark evidence is pre
   assert.equal(result.model, "retry-model");
 });
 
+test("strict answering labels retries from trajectory markers as trajectory evidence", async () => {
+  const questions: string[] = [];
+  const result = await answerBenchmarkQuestion({
+    question: "Why did the agent move right after step 12?",
+    recalledText: [
+      "## Explicit Cue Evidence",
+      "[Action 12]: right",
+      "[Observation 12]: The wall is now one tile to the left.",
+    ].join("\n"),
+    answerMode: "strict",
+    retryUnknownWithEvidence: true,
+    responder: {
+      async respond(question) {
+        questions.push(question);
+        if (questions.length === 1) {
+          return {
+            text: "unknown",
+            tokens: { input: 7, output: 1 },
+            latencyMs: 3,
+            model: "first-model",
+          };
+        }
+        assert.match(question, /trajectory evidence/);
+        assert.doesNotMatch(question, /benchmark evidence/);
+        return {
+          text: "It moved right, making the wall shift left relative to the agent.",
+          tokens: { input: 8, output: 10 },
+          latencyMs: 4,
+          model: "retry-model",
+        };
+      },
+    },
+  });
+
+  assert.equal(questions.length, 2);
+  assert.equal(
+    result.finalAnswer,
+    "It moved right, making the wall shift left relative to the agent.",
+  );
+  assert.deepEqual(result.tokens, { input: 15, output: 11 });
+  assert.equal(result.model, "retry-model");
+});
+
 test("strict answering does not retry unknown from a MemoryArena prompt alone", async () => {
   let calls = 0;
   const result = await answerBenchmarkQuestion({
