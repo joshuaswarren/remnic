@@ -287,6 +287,7 @@ function hasConcreteBenchmarkEvidence(recalledText: string): boolean {
 const RETRYABLE_BENCHMARK_EVIDENCE_HEADINGS = [
   "prior completed memoryarena subtasks",
   "remnic memory context",
+  "remnic recall pipeline",
   "explicit cue evidence",
   "search evidence",
 ] as const;

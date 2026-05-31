@@ -2317,6 +2317,7 @@ const PLAN_FIELD_LABEL_TOKEN_SEQUENCES = PLAN_FIELD_KEYS
 const PLAN_FIELD_LABEL_VALUE_CONNECTOR_TOKENS = new Set([
   "are",
   "as",
+  "at",
   "be",
   "for",
   "in",
