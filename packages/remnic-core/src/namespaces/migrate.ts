@@ -76,13 +76,16 @@ async function discoverConfiguredNamespaces(
     config.sharedNamespace,
     ...config.namespacePolicies.map((policy) => policy.name),
   ]);
+  const configuredNamespaces = new Set(discovered);
 
   const namespacesDir = path.join(config.memoryDir, "namespaces");
   try {
     const entries = await readdir(namespacesDir, { withFileTypes: true });
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const namespace = namespaceIdentityFromToken(entry.name) ?? entry.name;
+      const namespace = configuredNamespaces.has(entry.name)
+        ? entry.name
+        : namespaceIdentityFromToken(entry.name) ?? entry.name;
       if (isSafeRouteNamespace(namespace)) {
         discovered.add(namespace);
       }

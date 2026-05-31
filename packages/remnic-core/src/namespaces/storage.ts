@@ -40,7 +40,8 @@ async function hasAnyLegacyData(rootDir: string): Promise<boolean> {
  * Storage routing for namespaces.
  *
  * Compatibility note:
- * - When namespaces are enabled, non-default namespaces live under `memoryDir/namespaces/<ns>`.
+ * - When namespaces are enabled, existing raw namespace roots are preserved.
+ *   New namespace roots use tokenized names under `memoryDir/namespaces/<token>`.
  * - The default namespace continues to use the legacy `memoryDir` root unless the caller
  *   has created `memoryDir/namespaces/<defaultNamespace>` (in which case we use that).
  *
@@ -59,11 +60,13 @@ export class NamespaceStorageRouter {
       return this.defaultNsRootResolved;
     }
 
-    const nsDir = path.join(
+    const legacyNsDir = path.join(this.config.memoryDir, "namespaces", this.config.defaultNamespace);
+    const tokenizedNsDir = path.join(
       this.config.memoryDir,
       "namespaces",
       namespaceIdentityToken(this.config.defaultNamespace),
     );
+    const nsDir = (await exists(legacyNsDir)) ? legacyNsDir : tokenizedNsDir;
     this.defaultNsRootResolved =
       (await exists(nsDir)) && !(await hasAnyLegacyData(this.config.memoryDir))
         ? nsDir
@@ -71,12 +74,14 @@ export class NamespaceStorageRouter {
     return this.defaultNsRootResolved;
   }
 
-  private namespaceRootSync(namespace: string): string {
+  private async namespaceRoot(namespace: string): Promise<string> {
     // NOTE: only used after defaultNamespaceRoot() resolution.
     if (!this.config.namespacesEnabled) return this.config.memoryDir;
     if (namespace === this.config.defaultNamespace) {
       return this.defaultNsRootResolved ?? this.config.memoryDir;
     }
+    const legacyRoot = path.join(this.config.memoryDir, "namespaces", namespace);
+    if (await exists(legacyRoot)) return legacyRoot;
     return path.join(this.config.memoryDir, "namespaces", namespaceIdentityToken(namespace));
   }
 
@@ -95,8 +100,8 @@ export class NamespaceStorageRouter {
       }
     } else {
       const cached = this.cache.get(ns);
-      if (cached) return cached;
-      root = this.namespaceRootSync(ns);
+      root = await this.namespaceRoot(ns);
+      if (cached && cached.dir === root) return cached;
     }
 
     const sm = new StorageManager(root, this.config.entitySchemas);

@@ -33,3 +33,30 @@ test("listNamespaces decodes tokenized namespace directories", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("listNamespaces preserves configured raw namespace names that look tokenized", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-migrate-"));
+  try {
+    const namespace = namespaceIdentityToken("team-beta");
+    await mkdir(path.join(memoryDir, "namespaces", namespace, "facts"), {
+      recursive: true,
+    });
+    const namespaces = await listNamespaces({
+      config: {
+        memoryDir,
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+        sharedNamespace: "shared",
+        namespacePolicies: [{ name: namespace, readPrincipals: ["*"], writePrincipals: ["*"] }],
+        qmdCollection: "remnic",
+        entitySchemas: {},
+        inlineSourceAttributionFormat: undefined,
+      } as unknown as PluginConfig,
+    });
+
+    assert.ok(namespaces.some((entry) => entry.namespace === namespace && entry.hasMemoryData));
+    assert.ok(!namespaces.some((entry) => entry.namespace === "team-beta"));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
