@@ -81,8 +81,8 @@ jobs:
               if (!conn.pageInfo?.hasNextPage) break;
               after = conn.pageInfo.endCursor;
             }
-            const unresolvedActive = threads.filter((t) => {
-              if (t.isResolved !== false || t.isOutdated !== false) return false;
+            const unresolvedThreads = threads.filter((t) => {
+              if (t.isResolved !== false) return false;
               // Exclude github-advanced-security (CodeQL) threads — these cannot be resolved
               // via the GitHub API and must be addressed through CodeQL configuration.
               const author = t.comments?.nodes?.[0]?.author?.login;
@@ -90,22 +90,23 @@ jobs:
               return true;
             });
 
-            if (unresolvedActive.length === 0) {
-              core.notice("No unresolved active review threads.");
+            if (unresolvedThreads.length === 0) {
+              core.notice("No unresolved review threads.");
               return;
             }
 
-            const summary = unresolvedActive
+            const summary = unresolvedThreads
               .slice(0, 10)
               .map((t, i) => {
                 const c = t.comments?.nodes?.[0];
                 const author = c?.author?.login ?? "unknown";
                 const path = c?.path ?? "unknown-file";
+                const state = t.isOutdated === true ? "outdated" : "active";
                 const url = c?.url ?? "";
-                return `${i + 1}. ${author} on ${path}${url ? ` (${url})` : ""}`;
+                return `${i + 1}. ${author} on ${path} (${state})${url ? ` ${url}` : ""}`;
               })
               .join("\n");
 
             core.setFailed(
-              `Found ${unresolvedActive.length} unresolved review thread(s). Resolve them before merge.\n${summary}`,
+              `Found ${unresolvedThreads.length} unresolved review thread(s). Resolve them before merge.\n${summary}`,
             );
