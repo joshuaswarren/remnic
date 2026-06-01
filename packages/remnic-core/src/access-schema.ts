@@ -294,7 +294,7 @@ export const trustZoneDemoSeedRequestSchema = z.object({
 export const lcmSearchRequestSchema = z.object({
   query: z.string().min(1, "query is required"),
   sessionKey: sessionKeySchema,
-  sessionPrefix: sessionKeySchema,
+  sessionPrefix: z.string().trim().min(1).max(512).optional(),
   namespace: namespaceSchema,
   limit: z.number().int().min(1).max(100).optional(),
 });

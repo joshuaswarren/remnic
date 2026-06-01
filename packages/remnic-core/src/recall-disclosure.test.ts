@@ -24,7 +24,7 @@ import {
   RECALL_DISCLOSURE_LEVELS,
   isRecallDisclosure,
 } from "./types.js";
-import { recallRequestSchema, validateRequest } from "./access-schema.js";
+import { lcmSearchRequestSchema, recallRequestSchema, validateRequest } from "./access-schema.js";
 import { EngramMcpServer } from "./access-mcp.js";
 import type { EngramAccessRecallRequest, EngramAccessService } from "./access-service.js";
 
@@ -87,6 +87,20 @@ test("validateRequest('recall') surfaces disclosure validation errors with struc
     assert.strictEqual(outcome.error.code, "validation_error");
     const fields = outcome.error.details.map((d) => d.field);
     assert.ok(fields.includes("disclosure"), `expected disclosure field error, got ${JSON.stringify(fields)}`);
+  }
+});
+
+test("lcmSearchRequestSchema accepts requests without sessionPrefix", () => {
+  const result = lcmSearchRequestSchema.safeParse({
+    query: "handoff",
+    sessionKey: "agent:main",
+    namespace: "default",
+    limit: 10,
+  });
+
+  assert.strictEqual(result.success, true);
+  if (result.success) {
+    assert.strictEqual(result.data.sessionPrefix, undefined);
   }
 });
 
