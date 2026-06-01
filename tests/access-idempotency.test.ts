@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, open, readFile, rm, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { AccessIdempotencyStore, setAccessIdempotencyTestHooks } from "../src/access-idempotency.js";
 
 test("access idempotency store refreshes when another process writes a key", async () => {
@@ -403,6 +403,47 @@ test("access idempotency store get waits for same-instance writes instead of clo
 
     const stored = await verifier.get("key-a", "hash-a");
     assert.deepEqual(stored.response, { accepted: true });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("access idempotency key lock release preserves a replacement lock path", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-idempotency-release-race-"));
+  try {
+    const store = new AccessIdempotencyStore(memoryDir);
+    const key = "shared-key";
+    const keyHash = createHash("sha256").update(key).digest("hex");
+    const lockPath = path.join(memoryDir, "state", "access-idempotency-locks", `${keyHash}.lock`);
+    const probeHandle = await open(path.join(memoryDir, "probe"), "w+");
+    const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+      readFile: (...args: unknown[]) => Promise<unknown>;
+    };
+    const originalReadFile = fileHandlePrototype.readFile;
+    await probeHandle.close();
+    let replaceDuringRelease = false;
+    let replaced = false;
+
+    fileHandlePrototype.readFile = async function readFileAndReplace(...args: unknown[]) {
+      const result = await originalReadFile.apply(this, args);
+      if (replaceDuringRelease && !replaced) {
+        replaced = true;
+        await unlink(lockPath);
+        await writeFile(lockPath, "replacement-owner", "utf8");
+      }
+      return result;
+    };
+
+    try {
+      await store.withKeyLock(key, async () => {
+        replaceDuringRelease = true;
+      });
+    } finally {
+      fileHandlePrototype.readFile = originalReadFile;
+    }
+
+    assert.equal(replaced, true);
+    assert.equal(await readFile(lockPath, "utf8"), "replacement-owner");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

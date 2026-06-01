@@ -257,9 +257,31 @@ async function readLockOwner(lockPath: string): Promise<string | null> {
 }
 
 async function unlinkLockIfOwner(lockPath: string, ownerToken: string): Promise<void> {
-  const currentOwner = await readLockOwner(lockPath);
-  if (currentOwner !== ownerToken) return;
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(lockPath, "r");
+  } catch {
+    return;
+  }
+  try {
+    const openedStat = await handle.stat();
+    const currentOwner = await handle.readFile("utf-8");
+    if (currentOwner !== ownerToken) return;
+    let currentStat: Awaited<ReturnType<typeof stat>>;
+    try {
+      currentStat = await stat(lockPath);
+    } catch {
+      return;
+    }
+    if (!isSameFileIdentity(openedStat, currentStat)) return;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
   await unlink(lockPath).catch(() => undefined);
+}
+
+function isSameFileIdentity(left: Awaited<ReturnType<typeof stat>>, right: Awaited<ReturnType<typeof stat>>): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 async function unlinkStaleLockIfUnchanged(options: {
