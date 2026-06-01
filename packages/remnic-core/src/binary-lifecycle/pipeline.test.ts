@@ -259,14 +259,24 @@ test("binary lifecycle blocks cleanup when manifest mirroredAt is invalid", asyn
       ],
     });
 
-    const result = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
-    const manifest = JSON.parse(
+    const firstResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    let manifest = JSON.parse(
       await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
     ) as { assets: Array<{ status: string }> };
 
-    assert.equal(result.cleaned, 0);
-    assert.match(result.errors.join("\n"), /manifest mirroredAt is invalid/);
+    assert.equal(firstResult.cleaned, 0);
+    assert.match(firstResult.errors.join("\n"), /manifest mirroredAt is invalid/);
     assert.equal(await readFile(path.join(memoryDir, "image.png"), "utf8"), "image");
+    assert.equal(manifest.assets[0]?.status, "error");
+
+    const secondResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string }> };
+
+    assert.equal(secondResult.redirected, 0);
+    assert.equal(secondResult.cleaned, 0);
+    assert.match(secondResult.errors.join("\n"), /manifest mirroredAt is invalid/);
     assert.equal(manifest.assets[0]?.status, "error");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

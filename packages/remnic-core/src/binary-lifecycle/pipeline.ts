@@ -275,6 +275,16 @@ async function stageRedirect(
           continue;
         }
 
+        if (!Number.isFinite(new Date(asset.mirroredAt).getTime())) {
+          const msg = `redirect blocked for ${asset.originalPath}: manifest mirroredAt is invalid`;
+          log.error(`[binary-lifecycle] ${msg}`);
+          errors.push(msg);
+          if (!dryRun) {
+            asset.status = "error";
+          }
+          continue;
+        }
+
         if (!dryRun) {
           asset.status = "redirected";
           asset.redirectedAt = new Date().toISOString();
