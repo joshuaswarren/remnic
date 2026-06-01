@@ -62,3 +62,17 @@ test("@remnic/import-gemini publishes @remnic/core as a peer dependency", () => 
   assert.equal(pkg.dependencies?.["@remnic/core"], undefined);
   assert.equal(pkg.devDependencies?.["@remnic/core"], "workspace:*");
 });
+
+test("@remnic/import-weclone publishes @remnic/core as a peer dependency", () => {
+  const pkg = readPackageJson(join(packagesDir, "import-weclone", "package.json")) as PackageJson & {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  const corePkg = readPackageJson(join(packagesDir, "remnic-core", "package.json"));
+  const peerSpec = pkg.peerDependencies?.["@remnic/core"];
+
+  assert.equal(pkg.name, "@remnic/import-weclone");
+  assert.equal(peerSpec, `^${corePkg.version}`);
+  assert.equal(pkg.dependencies?.["@remnic/core"], undefined);
+  assert.equal(pkg.devDependencies?.["@remnic/core"], "workspace:*");
+});
