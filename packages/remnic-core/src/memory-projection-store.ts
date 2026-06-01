@@ -404,6 +404,16 @@ function projectedBrowseRowFromCurrentRow(
   };
 }
 
+function projectedBrowsePathSqlClauses(): string[] {
+  return [
+    "path_rel <> ''",
+    "path_rel NOT LIKE '/%'",
+    "path_rel <> '..'",
+    "path_rel NOT LIKE '../%'",
+    "path_rel NOT LIKE '%/../%'",
+  ];
+}
+
 export function parseCurrentRow(
   memoryDir: string,
   row: Record<string, unknown> | undefined,
@@ -653,32 +663,52 @@ export function readProjectedMemoryBrowse(
       };
     }
 
-    // No query: filter unsafe legacy/corrupt path rows before pagination so
-    // invalid rows cannot consume page slots or inflate totals.
-    const rows = db
-      .prepare(`
-        SELECT
-          memory_id,
-          path_rel,
-          category,
-          status,
-          created_at,
-          updated_at,
-          entity_ref,
-          ${currentSelect.tagsJson},
-          ${currentSelect.previewText}
-        FROM memory_current
-        ${whereSql}
-        ORDER BY ${orderBySql}
-      `)
-      .all(...params) as Array<Record<string, unknown>>;
-    const filtered = rows
-      .map((row) => projectedBrowseRowFromCurrentRow(memoryDir, row))
-      .filter((row): row is ProjectedMemoryBrowseRow => row !== null);
-    const pageRows = filtered.slice(options.offset, options.offset + options.limit);
+    // No query: push lexical path safety into SQL so corrupt legacy rows do not
+    // inflate totals or force every browse request to materialize the table.
+    const browseWhereClauses = [...whereClauses, ...projectedBrowsePathSqlClauses()];
+    const browseWhereSql = `WHERE ${browseWhereClauses.join(" AND ")}`;
+    const totalRow = db
+      .prepare(`SELECT COUNT(*) AS total FROM memory_current ${browseWhereSql}`)
+      .get(...params) as { total?: unknown } | undefined;
+    const total = typeof totalRow?.total === "number" ? totalRow.total : 0;
+    const pageRows: ProjectedMemoryBrowseRow[] = [];
+    const fetchSize = Math.max(options.limit * 2, 50);
+    let validRowsSeen = 0;
+    let scanOffset = 0;
+
+    while (pageRows.length < options.limit) {
+      const rows = db
+        .prepare(`
+          SELECT
+            memory_id,
+            path_rel,
+            category,
+            status,
+            created_at,
+            updated_at,
+            entity_ref,
+            ${currentSelect.tagsJson},
+            ${currentSelect.previewText}
+          FROM memory_current
+          ${browseWhereSql}
+          ORDER BY ${orderBySql}
+          LIMIT ? OFFSET ?
+        `)
+        .all(...params, fetchSize, scanOffset) as Array<Record<string, unknown>>;
+      if (rows.length === 0) break;
+      scanOffset += rows.length;
+      for (const row of rows) {
+        const browseRow = projectedBrowseRowFromCurrentRow(memoryDir, row);
+        if (!browseRow) continue;
+        if (validRowsSeen >= options.offset) pageRows.push(browseRow);
+        validRowsSeen += 1;
+        if (pageRows.length >= options.limit) break;
+      }
+      if (rows.length < fetchSize) break;
+    }
 
     return {
-      total: filtered.length,
+      total,
       memories: pageRows,
     };
   });
