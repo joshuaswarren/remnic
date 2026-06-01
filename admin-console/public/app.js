@@ -1198,6 +1198,7 @@ async function loadMemoryGraph() {
 
   // Stop any running simulation.
   if (graphSim) { graphSim.stop(); graphSim = null; }
+  closeGraphEventSource();
 
   setStatus("graphStatus", "Fetching graph snapshot...");
 
@@ -1317,6 +1318,12 @@ const _ORPHAN_EDGE_QUEUE_MAX = 200;
  * the previous one before opening a new one.
  */
 let graphEventSource = null;
+
+function closeGraphEventSource() {
+  if (!graphEventSource) return;
+  try { graphEventSource.close(); } catch { /* ignore */ }
+  graphEventSource = null;
+}
 
 /**
  * Apply a single graph mutation event to the in-memory graphData and
@@ -1498,10 +1505,7 @@ function applyGraphEvent(event) {
  */
 function mountGraphEventSource() {
   // Close any previous connection first (e.g. after a graph refresh).
-  if (graphEventSource) {
-    try { graphEventSource.close(); } catch { /* ignore */ }
-    graphEventSource = null;
-  }
+  closeGraphEventSource();
 
   const token = readToken();
   if (!token) return; // no token → no stream; user can still use manual refresh

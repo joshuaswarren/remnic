@@ -125,6 +125,7 @@ async function loadAdminConsoleContext(pageSizeValue: string, extraElements: Rec
       results: Array<{ id: string; path?: string }>,
     ) => Map<string, string>,
     applyGraphEvent: vm.runInContext("applyGraphEvent", context) as (event: AppEvent) => void,
+    loadMemoryGraph: vm.runInContext("loadMemoryGraph", context) as () => Promise<void>,
     _orphanEdgeQueue: vm.runInContext("_orphanEdgeQueue", context) as OrphanEdge[],
     getContext: () => context,
   };
@@ -241,6 +242,28 @@ test("drawGraph is a no-op when graphData is null", async () => {
   assert.doesNotThrow(() => drawGraph());
   // Canvas context must not have been touched (no save calls).
   assert.equal(canvas._ctx.calls.length, 0);
+});
+
+test("loadMemoryGraph closes the live event stream when a reload returns an empty graph", async () => {
+  const { getContext, loadMemoryGraph } = await loadAdminConsoleContext("25", {
+    graphCanvas: new FakeCanvas(),
+    graphStatus: new FakeElement(),
+  });
+  const context = getContext();
+
+  vm.runInContext(
+    `
+      globalThis.__closedGraphEventSource = false;
+      graphEventSource = { close() { globalThis.__closedGraphEventSource = true; } };
+      fetchJson = async () => ({ nodes: [], edges: [], generatedAt: "2026-05-31T00:00:00.000Z" });
+    `,
+    context,
+  );
+
+  await loadMemoryGraph();
+
+  assert.equal(vm.runInContext("globalThis.__closedGraphEventSource", context), true);
+  assert.equal(vm.runInContext("graphEventSource", context), null);
 });
 
 test("graph pane HTML elements are present in index.html", async () => {
