@@ -1226,8 +1226,12 @@ async function loadMemoryGraph() {
   graphHighlightIds = new Map();
   closeGraphNodePanel();
 
+  // Reset colours on each fresh fetch so legend is consistent.
+  graphCategoryColors.clear();
+  graphCategoryColorIndex = 0;
+
   if (nodes.length === 0) {
-    graphData = null;
+    graphData = { nodes: [], edges: [] };
     const ctx = canvas.getContext("2d");
     if (ctx) {
       const dpr = window.devicePixelRatio || 1;
@@ -1244,13 +1248,12 @@ async function loadMemoryGraph() {
       ctx.fillText("No graph data — memory graph is empty.", lw / 2, lh / 2);
       ctx.restore();
     }
+    attachGraphInteractions(canvas);
+    renderGraphLegend();
+    mountGraphEventSource();
     setStatus("graphStatus", "Graph snapshot is empty.", "default");
     return;
   }
-
-  // Reset colours on each fresh fetch so legend is consistent.
-  graphCategoryColors.clear();
-  graphCategoryColorIndex = 0;
 
   // Pre-warm category colours in node order.
   for (const n of nodes) graphColorForCategory(n.kind);
@@ -1362,6 +1365,7 @@ function applyGraphEvent(event) {
       };
       graphData.nodes.push(node);
       graphColorForCategory(node.kind);
+      renderGraphLegend();
       // Drain any queued orphan edges now that a new node has arrived.
       // Iterate backwards so splicing by index is safe.
       let drainedAny = false;

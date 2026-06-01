@@ -10,6 +10,7 @@ class FakeElement {
   disabled = false;
   className = "";
   dataset: Record<string, string> = {};
+  style: Record<string, string> = {};
 
   addEventListener(): void {}
   appendChild(): void {}
@@ -26,6 +27,7 @@ class FakeCanvasContext {
   restore() { this.calls.push("restore"); }
   clearRect() { this.calls.push("clearRect"); }
   scale() {}
+  translate() {}
   beginPath() {}
   arc() {}
   fill() {}
@@ -244,10 +246,11 @@ test("drawGraph is a no-op when graphData is null", async () => {
   assert.equal(canvas._ctx.calls.length, 0);
 });
 
-test("loadMemoryGraph clears live graph reload state when a reload returns an empty graph", async () => {
+test("loadMemoryGraph keeps an empty snapshot subscribed for live graph events", async () => {
   const { getContext, loadMemoryGraph, _orphanEdgeQueue } = await loadAdminConsoleContext("25", {
     graphCanvas: new FakeCanvas(),
     graphStatus: new FakeElement(),
+    graphLegend: new FakeElement(),
   });
   const context = getContext();
   _orphanEdgeQueue.push({
@@ -260,6 +263,14 @@ test("loadMemoryGraph clears live graph reload state when a reload returns an em
     `
       globalThis.__closedGraphEventSource = false;
       graphEventSource = { close() { globalThis.__closedGraphEventSource = true; } };
+      globalThis.__graphEventSourceUrl = "";
+      EventSource = class {
+        constructor(url) {
+          globalThis.__graphEventSourceUrl = url;
+        }
+        close() {}
+      };
+      writeToken("graph-token");
       fetchJson = async () => ({ nodes: [], edges: [], generatedAt: "2026-05-31T00:00:00.000Z" });
     `,
     context,
@@ -268,8 +279,26 @@ test("loadMemoryGraph clears live graph reload state when a reload returns an em
   await loadMemoryGraph();
 
   assert.equal(vm.runInContext("globalThis.__closedGraphEventSource", context), true);
-  assert.equal(vm.runInContext("graphEventSource", context), null);
+  assert.notEqual(vm.runInContext("graphEventSource", context), null);
+  assert.equal(
+    vm.runInContext("globalThis.__graphEventSourceUrl", context),
+    "/engram/v1/graph/events?token=graph-token",
+  );
+  assert.equal(vm.runInContext("graphData.nodes.length", context), 0);
   assert.equal(_orphanEdgeQueue.length, 0);
+
+  vm.runInContext(
+    `
+      applyGraphEvent({
+        type: "node-added",
+        payload: { nodeId: "facts/live.md", kind: "fact", label: "Live" },
+        ts: "2026-05-31T00:00:01.000Z",
+      });
+    `,
+    context,
+  );
+
+  assert.equal(vm.runInContext("graphData.nodes.length", context), 1);
 });
 
 test("graph pane HTML elements are present in index.html", async () => {
