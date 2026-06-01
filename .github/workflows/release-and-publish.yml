@@ -300,10 +300,32 @@ jobs:
           git add packages/*/package.json packages/*/openclaw.plugin.json openclaw.plugin.json pnpm-lock.yaml
           git commit -m "chore(release): bump changed workspace packages [skip ci]"
 
+      - name: Resolve final release metadata
+        id: release_metadata
+        env:
+          TAG_EXISTS: ${{ steps.version.outputs.tag_exists }}
+          TAG_NAME: ${{ steps.version.outputs.tag_name }}
+        run: |
+          if [ "${TAG_EXISTS}" = "true" ]; then
+            {
+              echo "tag_exists=true"
+              echo "tag_name=${TAG_NAME}"
+              echo "new_version=${TAG_NAME#v}"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          FINAL_VERSION="$(node -p "require('./package.json').version")"
+          {
+            echo "tag_exists=false"
+            echo "tag_name=v${FINAL_VERSION}"
+            echo "new_version=${FINAL_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Promote CHANGELOG.md for release
         if: steps.version.outputs.tag_exists != 'true'
         env:
-          NEW_VERSION: ${{ steps.version.outputs.new_version }}
+          NEW_VERSION: ${{ steps.release_metadata.outputs.new_version }}
         run: |
           python3 - <<'PYEOF'
           import os, re
@@ -344,9 +366,14 @@ jobs:
         # so the job-level actor guard would fire — [skip ci] is a belt-and-suspenders guard).
         env:
           RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+          TAG_EXISTS: ${{ steps.release_metadata.outputs.tag_exists }}
         run: |
-          TAG="${{ steps.version.outputs.tag_name }}"
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+          TAG="${{ steps.release_metadata.outputs.tag_name }}"
+          if [ "${TAG_EXISTS}" = "true" ]; then
+            if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+              echo "::error title=Release tag missing::Version resolution selected existing tag ${TAG}, but it is not available locally."
+              exit 1
+            fi
             RELEASE_COMMIT="$(git rev-parse "refs/tags/${TAG}^{}")"
           else
             RELEASE_COMMIT="$(git rev-parse HEAD)"
@@ -369,12 +396,13 @@ jobs:
       - name: Ensure version tag on release commit
         id: release_tag
         env:
-          TAG: ${{ steps.version.outputs.tag_name }}
+          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+          TAG: ${{ steps.release_metadata.outputs.tag_name }}
           RELEASE_COMMIT: ${{ steps.release_commit.outputs.release_commit }}
           SOURCE_MAIN_SHA: ${{ steps.version.outputs.source_main_sha }}
         run: |
           FETCH_LOG="$(mktemp)"
-          trap 'rm -f "$FETCH_LOG"' EXIT
+          trap 'rm -f "$FETCH_LOG" ~/.ssh/release_deploy_key' EXIT
           REMOTE_TAG_EXISTS=false
           if git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>"${FETCH_LOG}"; then
             REMOTE_TAG_EXISTS=true
@@ -404,21 +432,26 @@ jobs:
               -m "source-main-sha: ${SOURCE_MAIN_SHA}"
           fi
 
-          git push origin "refs/tags/${TAG}"
+          mkdir -p ~/.ssh
+          echo "${RELEASE_DEPLOY_KEY}" > ~/.ssh/release_deploy_key
+          chmod 600 ~/.ssh/release_deploy_key
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/release_deploy_key -o StrictHostKeyChecking=no"
+          git push "git@github.com:${{ github.repository }}.git" "refs/tags/${TAG}"
           echo "tag_created=true" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag_name }}
-          name: ${{ steps.version.outputs.tag_name }}
+          tag_name: ${{ steps.release_metadata.outputs.tag_name }}
+          name: ${{ steps.release_metadata.outputs.tag_name }}
           generate_release_notes: true
 
       - name: Checkout release tag source for publish
-        run: git checkout --detach "${{ steps.version.outputs.tag_name }}"
+        run: git checkout --detach "${{ steps.release_metadata.outputs.tag_name }}"
 
       - name: Ensure npm supports trusted publishing
-        run: npm install -g npm@latest
+        # Pin npm so provenance/trusted-publishing behavior only changes through review.
+        run: npm install -g npm@11.16.0
 
       - name: Install dependencies for tagged source
         run: pnpm install --frozen-lockfile
@@ -437,6 +470,9 @@ jobs:
       - name: Verify OpenClaw ClawHub artifact packlist
         run: pnpm run verify:openclaw-clawpack
 
+      - name: Generate workspace package publish order
+        run: node scripts/publish-order.mjs --output "${RUNNER_TEMP}/remnic-publish-order.txt"
+
       - name: Publish root package to npm
         run: |
           IS_PRIVATE="$(node -p "require('./package.json').private || false")"
@@ -444,7 +480,7 @@ jobs:
             echo "::notice title=NPM publish skipped::Root package is private workspace metadata only."
             exit 0
           fi
-          VERSION="${{ steps.version.outputs.new_version }}"
+          VERSION="${{ steps.release_metadata.outputs.new_version }}"
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
             echo "::notice title=NPM publish skipped::${PACKAGE_NAME}@${VERSION} is already published."
@@ -464,28 +500,7 @@ jobs:
           # depend on them. Optional/à-la-carte surfaces (bench, weclone,
           # plugins) must ship so end users can install only what they need
           # — see the à-la-carte invariant in CLAUDE.md / AGENTS.md.
-          PUBLISH_ORDER=(
-            packages/remnic-core
-            packages/bench
-            packages/export-weclone
-            packages/import-weclone
-            packages/import-chatgpt
-            packages/import-claude
-            packages/import-gemini
-            packages/import-mem0
-            packages/import-lossless-claw
-            packages/import-supermemory
-            packages/connector-weclone
-            packages/connector-replit
-            packages/hermes-provider
-            packages/remnic-server
-            packages/plugin-pi
-            packages/remnic-cli
-            packages/plugin-openclaw
-            packages/plugin-claude-code
-            packages/plugin-codex
-            packages/shim-openclaw-engram
-          )
+          mapfile -t PUBLISH_ORDER < "${RUNNER_TEMP}/remnic-publish-order.txt"
           for pkg_dir in "${PUBLISH_ORDER[@]}"; do
             pkg_json="$pkg_dir/package.json"
             if [ ! -f "$pkg_json" ]; then
@@ -568,7 +583,7 @@ jobs:
             --version "${package_version}" \
             --host-targets openclaw \
             --source-repo "${GITHUB_REPOSITORY}" \
-            --source-ref "${{ steps.version.outputs.tag_name }}" \
+            --source-ref "${{ steps.release_metadata.outputs.tag_name }}" \
             --source-commit "${source_commit}" \
             --source-path "${NPM_PACKAGE_PATH}" \
             --changelog "Publish ${CLAWHUB_PACKAGE_NAME}@${package_version} from the GitHub release workflow." \
