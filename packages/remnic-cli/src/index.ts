@@ -6031,6 +6031,40 @@ interface OfflineFileContentChunk {
   content: Buffer;
 }
 
+const APPEND_TOLERANT_RUNTIME_STATE_FILES = new Set([
+  "memory-lifecycle-ledger.jsonl",
+  "recall_impressions.jsonl",
+]);
+
+function isAppendTolerantOfflineRuntimeFile(relPath: string): boolean {
+  if (!shouldPreferIncomingOfflineRuntimeFile(relPath)) return false;
+  const parts = relPath.split("/");
+  const basename = parts[parts.length - 1] ?? "";
+  return APPEND_TOLERANT_RUNTIME_STATE_FILES.has(basename);
+}
+
+function offlineFileContentChunkMatchesExpected(options: {
+  chunk: OfflineFileContentChunk;
+  expected: OfflineSyncFileState;
+  offset: number;
+}): boolean {
+  const { chunk, expected, offset } = options;
+  if (chunk.path !== expected.path) return false;
+  if (chunk.offset !== offset) return false;
+  if (chunk.chunkBytes !== chunk.content.length) return false;
+  if (offset + chunk.chunkBytes > expected.bytes) return false;
+  if (
+    chunk.bytes === expected.bytes &&
+    chunk.mtimeMs === expected.mtimeMs &&
+    (chunk.sha256 === undefined || chunk.sha256 === expected.sha256)
+  ) {
+    return true;
+  }
+  if (!isAppendTolerantOfflineRuntimeFile(expected.path)) return false;
+  if (chunk.bytes < expected.bytes) return false;
+  return true;
+}
+
 const OFFLINE_SYNC_DIRECT_DEFAULT_MIN_BYTES = 16 * 1024 * 1024;
 const OFFLINE_SYNC_FILES_CONTENT_MAX_BATCH_BYTES = 8 * 1024 * 1024;
 export const OFFLINE_SYNC_APPLY_MAX_REQUEST_BYTES = Math.floor(OFFLINE_SYNC_APPLY_MAX_BODY_BYTES / 2);
@@ -6061,6 +6095,11 @@ class OfflineRemoteFileChangedError extends Error {
 function isOfflineRemoteFileChangedError(error: unknown): error is OfflineRemoteFileChangedError {
   return error instanceof OfflineRemoteFileChangedError ||
     (error instanceof Error && error.message.startsWith("remote file changed while fetching offline content: "));
+}
+
+function isOfflineHydrateChecksumMismatch(error: unknown, relPath: string): boolean {
+  return error instanceof Error &&
+    error.message === `offline sync upload checksum mismatch for ${relPath}`;
 }
 
 function isOfflineLocalFileChangedError(error: unknown): boolean {
@@ -6543,14 +6582,7 @@ async function fetchOfflineFileContent(args: {
         args.expected.bytes - offset,
       ),
     });
-    if (
-      chunk.path !== args.expected.path ||
-      (chunk.sha256 !== undefined && chunk.sha256 !== args.expected.sha256) ||
-      chunk.bytes !== args.expected.bytes ||
-      chunk.mtimeMs !== args.expected.mtimeMs ||
-      chunk.offset !== offset ||
-      chunk.chunkBytes !== chunk.content.length
-    ) {
+    if (!offlineFileContentChunkMatchesExpected({ chunk, expected: args.expected, offset })) {
       throw new OfflineRemoteFileChangedError(args.expected.path);
     }
     if (chunk.chunkBytes === 0) {
@@ -6563,6 +6595,9 @@ async function fetchOfflineFileContent(args: {
   const content = Buffer.concat(chunks, offset);
   const digest = hash.digest("hex");
   if (digest !== args.expected.sha256 || content.length !== args.expected.bytes) {
+    if (isAppendTolerantOfflineRuntimeFile(args.expected.path)) {
+      throw new OfflineRemoteFileChangedError(args.expected.path);
+    }
     throw new Error(`remote offline content checksum mismatch for ${args.expected.path}`);
   }
   return content;
@@ -6598,36 +6633,39 @@ async function hydrateOfflineFileContent(args: {
         Math.max(1, args.expected.bytes - offset),
       ),
     });
-    if (
-      chunk.path !== args.expected.path ||
-      (chunk.sha256 !== undefined && chunk.sha256 !== args.expected.sha256) ||
-      chunk.bytes !== args.expected.bytes ||
-      chunk.mtimeMs !== args.expected.mtimeMs ||
-      chunk.offset !== offset ||
-      chunk.chunkBytes !== chunk.content.length
-    ) {
+    if (!offlineFileContentChunkMatchesExpected({ chunk, expected: args.expected, offset })) {
       throw new OfflineRemoteFileChangedError(args.expected.path);
     }
     if (chunk.chunkBytes === 0 && args.expected.bytes > 0) {
       throw new Error(`remote offline content chunk was empty before EOF: ${args.expected.path}`);
     }
-    finalResult = await applyOfflineSyncFileContentChunk({
-      root: args.memoryDir,
-      sourceId: args.sourceId,
-      path: args.expected.path,
-      sha256: args.expected.sha256,
-      bytes: args.expected.bytes,
-      mtimeMs: args.expected.mtimeMs,
-      offset,
-      content: chunk.content,
-      ...(args.baseSha256 ? { baseSha256: args.baseSha256 } : {}),
-      includeTranscripts: args.includeTranscripts,
-      readFile: args.readFile,
-      readFileDigest: args.readFileDigest,
-      writeFile: args.writeFile,
-      writeStagingFile: args.writeStagingFile,
-      writeFileChunks: args.writeFileChunks,
-    });
+    try {
+      finalResult = await applyOfflineSyncFileContentChunk({
+        root: args.memoryDir,
+        sourceId: args.sourceId,
+        path: args.expected.path,
+        sha256: args.expected.sha256,
+        bytes: args.expected.bytes,
+        mtimeMs: args.expected.mtimeMs,
+        offset,
+        content: chunk.content,
+        ...(args.baseSha256 ? { baseSha256: args.baseSha256 } : {}),
+        includeTranscripts: args.includeTranscripts,
+        readFile: args.readFile,
+        readFileDigest: args.readFileDigest,
+        writeFile: args.writeFile,
+        writeStagingFile: args.writeStagingFile,
+        writeFileChunks: args.writeFileChunks,
+      });
+    } catch (error) {
+      if (
+        isAppendTolerantOfflineRuntimeFile(args.expected.path) &&
+        isOfflineHydrateChecksumMismatch(error, args.expected.path)
+      ) {
+        throw new OfflineRemoteFileChangedError(args.expected.path);
+      }
+      throw error;
+    }
     if (finalResult.conflict) {
       return finalResult;
     }

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -9,6 +12,8 @@ import {
   type OfflineSyncSnapshot,
 } from "@remnic/core";
 import {
+  directHydrateLargeOfflineFiles,
+  OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES,
   OFFLINE_SYNC_SNAPSHOT_BASE_POST_MAX_FILES,
   fetchOfflineSnapshot,
   hydrateOfflineSnapshotContent,
@@ -18,7 +23,10 @@ import {
 } from "./index.js";
 
 function fileState(relPath: string, content: string, mtimeMs = 1): OfflineSyncFileState {
-  const buffer = Buffer.from(content);
+  return fileStateFromBuffer(relPath, Buffer.from(content), mtimeMs);
+}
+
+function fileStateFromBuffer(relPath: string, buffer: Buffer, mtimeMs = 1): OfflineSyncFileState {
   return {
     path: relPath,
     sha256: createHash("sha256").update(buffer).digest("hex"),
@@ -131,6 +139,217 @@ test("isOfflineMissingContentDeferrablePath recognizes namespace profiling logs"
     true,
   );
   assert.equal(isOfflineMissingContentDeferrablePath("facts/profile.md"), false);
+});
+
+test("direct hydration accepts append-only growth for remote-authoritative runtime files", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-direct-hydrate-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const original = Buffer.alloc(OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES + 128, "r");
+    const appended = Buffer.concat([original, Buffer.from("\nappended-after-snapshot")]);
+    const remoteFile = fileStateFromBuffer("state/recall_impressions.jsonl", original, 10);
+    const remoteSnapshot = snapshot([remoteFile]);
+    const writeBuffer = async (filePath: string, content: Buffer): Promise<void> => {
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, content);
+    };
+
+    globalThis.fetch = (async (input, init = {}) => {
+      const url = new URL(String(input));
+      assert.equal(url.pathname, "/remnic/v1/offline-sync/file-content");
+      const body = JSON.parse(String(init.body ?? "{}")) as {
+        path?: string;
+        offset?: number;
+        length?: number;
+      };
+      assert.equal(body.path, remoteFile.path);
+      const offset = body.offset ?? 0;
+      const length = body.length ?? original.byteLength;
+      const chunk = original.subarray(offset, Math.min(original.byteLength, offset + length));
+      return new Response(new Uint8Array(chunk), {
+        status: 200,
+        headers: {
+          "x-remnic-file-path": encodeURIComponent(remoteFile.path),
+          "x-remnic-file-bytes": String(appended.byteLength),
+          "x-remnic-file-mtime-ms": "11",
+          "x-remnic-chunk-offset": String(offset),
+          "x-remnic-chunk-bytes": String(chunk.byteLength),
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await directHydrateLargeOfflineFiles({
+      remoteUrl: "http://example.invalid",
+      token: "token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      snapshot: remoteSnapshot,
+      baseFiles: [],
+      currentFiles: [],
+      memoryDir,
+      readFile: async ({ filePath }) => readFile(filePath),
+      writeFile: async ({ filePath, content }) => writeBuffer(filePath, content),
+      writeStagingFile: async ({ filePath, content }) => writeBuffer(filePath, content),
+      writeFileChunks: async ({ filePath, chunks }) => {
+        const buffers: Buffer[] = [];
+        for await (const chunk of chunks) buffers.push(Buffer.from(chunk));
+        await writeBuffer(filePath, Buffer.concat(buffers));
+      },
+    });
+
+    assert.deepEqual([...result.hydratedPaths], [remoteFile.path]);
+    assert.deepEqual([...result.deferredPaths], []);
+    assert.deepEqual(await readFile(path.join(memoryDir, remoteFile.path)), original);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct hydration defers append-tolerant runtime files when the prefix changes", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-direct-hydrate-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const original = Buffer.alloc(OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES + 128, "r");
+    const changedPrefix = Buffer.concat([
+      Buffer.from("rewritten-prefix\n"),
+      original.subarray("rewritten-prefix\n".length),
+      Buffer.from("\nappended-after-snapshot"),
+    ]);
+    const remoteFile = fileStateFromBuffer("state/recall_impressions.jsonl", original, 10);
+    const remoteSnapshot = snapshot([remoteFile]);
+
+    globalThis.fetch = (async (input, init = {}) => {
+      const url = new URL(String(input));
+      assert.equal(url.pathname, "/remnic/v1/offline-sync/file-content");
+      const body = JSON.parse(String(init.body ?? "{}")) as {
+        path?: string;
+        offset?: number;
+        length?: number;
+      };
+      assert.equal(body.path, remoteFile.path);
+      const offset = body.offset ?? 0;
+      const length = body.length ?? original.byteLength;
+      const chunk = changedPrefix.subarray(offset, Math.min(changedPrefix.byteLength, offset + length));
+      return new Response(new Uint8Array(chunk), {
+        status: 200,
+        headers: {
+          "x-remnic-file-path": encodeURIComponent(remoteFile.path),
+          "x-remnic-file-bytes": String(changedPrefix.byteLength),
+          "x-remnic-file-mtime-ms": "11",
+          "x-remnic-chunk-offset": String(offset),
+          "x-remnic-chunk-bytes": String(chunk.byteLength),
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await directHydrateLargeOfflineFiles({
+      remoteUrl: "http://example.invalid",
+      token: "token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      snapshot: remoteSnapshot,
+      baseFiles: [],
+      currentFiles: [],
+      memoryDir,
+      readFile: async ({ filePath }) => readFile(filePath),
+      writeFile: async ({ filePath, content }) => {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, content);
+      },
+      writeStagingFile: async ({ filePath, content }) => {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, content);
+      },
+      writeFileChunks: async ({ filePath, chunks }) => {
+        const buffers: Buffer[] = [];
+        for await (const chunk of chunks) buffers.push(Buffer.from(chunk));
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, Buffer.concat(buffers));
+      },
+    });
+
+    assert.deepEqual([...result.hydratedPaths], []);
+    assert.deepEqual([...result.deferredPaths], [remoteFile.path]);
+    await assert.rejects(
+      readFile(path.join(memoryDir, remoteFile.path)),
+      /ENOENT/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("direct hydration defers changed non-append runtime files", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-direct-hydrate-"));
+  const originalFetch = globalThis.fetch;
+  try {
+    const original = Buffer.alloc(OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES + 128, "b");
+    const changed = Buffer.concat([Buffer.from("changed-after-snapshot\n"), original]);
+    const remoteFile = fileStateFromBuffer("state/buffer.json", original, 10);
+    const remoteSnapshot = snapshot([remoteFile]);
+
+    globalThis.fetch = (async (input, init = {}) => {
+      const url = new URL(String(input));
+      assert.equal(url.pathname, "/remnic/v1/offline-sync/file-content");
+      const body = JSON.parse(String(init.body ?? "{}")) as {
+        path?: string;
+        offset?: number;
+        length?: number;
+      };
+      assert.equal(body.path, remoteFile.path);
+      const offset = body.offset ?? 0;
+      const length = body.length ?? original.byteLength;
+      const chunk = changed.subarray(offset, Math.min(changed.byteLength, offset + length));
+      return new Response(new Uint8Array(chunk), {
+        status: 200,
+        headers: {
+          "x-remnic-file-path": encodeURIComponent(remoteFile.path),
+          "x-remnic-file-bytes": String(changed.byteLength),
+          "x-remnic-file-mtime-ms": "11",
+          "x-remnic-chunk-offset": String(offset),
+          "x-remnic-chunk-bytes": String(chunk.byteLength),
+        },
+      });
+    }) as typeof fetch;
+
+    const result = await directHydrateLargeOfflineFiles({
+      remoteUrl: "http://example.invalid",
+      token: "token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      snapshot: remoteSnapshot,
+      baseFiles: [],
+      currentFiles: [],
+      memoryDir,
+      readFile: async ({ filePath }) => readFile(filePath),
+      writeFile: async ({ filePath, content }) => {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, content);
+      },
+      writeStagingFile: async ({ filePath, content }) => {
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, content);
+      },
+      writeFileChunks: async ({ filePath, chunks }) => {
+        const buffers: Buffer[] = [];
+        for await (const chunk of chunks) buffers.push(Buffer.from(chunk));
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, Buffer.concat(buffers));
+      },
+    });
+
+    assert.deepEqual([...result.hydratedPaths], []);
+    assert.deepEqual([...result.deferredPaths], [remoteFile.path]);
+    await assert.rejects(
+      readFile(path.join(memoryDir, remoteFile.path)),
+      /ENOENT/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 test("fetchOfflineSnapshot uses base-aware POST at the cached file cutoff", async () => {

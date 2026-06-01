@@ -489,14 +489,27 @@ const REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES = new Set([
   "index_time.json",
   "last_intent.json",
   "last_recall.json",
+  "lcm.sqlite-shm",
+  "lcm.sqlite-wal",
   "memory-lifecycle-ledger.jsonl",
   "recall_impressions.jsonl",
+]);
+
+const ABSENT_INCOMING_RUNTIME_DELETE_FILES = new Set([
+  "lcm.sqlite-shm",
+  "lcm.sqlite-wal",
 ]);
 
 export function shouldPreferIncomingOfflineRuntimeFile(relPosix: string): boolean {
   const parts = relPosix.split("/");
   const basename = parts[parts.length - 1] ?? "";
   return isCanonicalRuntimeStatePath(parts) && REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES.has(basename);
+}
+
+function shouldDeleteAbsentIncomingOfflineRuntimeFile(relPosix: string): boolean {
+  const parts = relPosix.split("/");
+  const basename = parts[parts.length - 1] ?? "";
+  return isCanonicalRuntimeStatePath(parts) && ABSENT_INCOMING_RUNTIME_DELETE_FILES.has(basename);
 }
 
 function filterBaseFilesForMode(
@@ -1213,7 +1226,10 @@ export async function applyOfflineSyncSnapshot(options: {
       skipped += 1;
       continue;
     }
-    if (shouldPreferIncomingOfflineRuntimeFile(relPath) && base) {
+    if (
+      shouldPreferIncomingOfflineRuntimeFile(relPath) &&
+      (base || shouldDeleteAbsentIncomingOfflineRuntimeFile(relPath))
+    ) {
       await deleteSafeFile(root, relPath, options.deleteFile);
       nextBase.delete(relPath);
       deleted += 1;

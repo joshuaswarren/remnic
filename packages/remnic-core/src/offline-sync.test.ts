@@ -211,6 +211,8 @@ test("offline sync includes live LCM sqlite artifacts for full-fidelity offline 
       "state/lcm.sqlite-shm",
       "state/lcm.sqlite-wal",
     ]);
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-shm"), true);
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-wal"), true);
     const focused = await buildOfflineSyncSnapshotForPaths({
       root,
       sourceId: "remote",
@@ -233,6 +235,14 @@ test("offline sync includes live LCM sqlite artifacts for full-fidelity offline 
 
     assert.equal(pull.skipped, 4);
     assert.equal(await readUtf8(root, "state/lcm.sqlite"), "live db");
+
+    await write(root, "state/lcm.sqlite-wal", "local wal churn");
+    const changeset = await buildOfflineSyncChangeset({
+      root,
+      sourceId: "laptop",
+      baseFiles: snapshot.files,
+    });
+    assert.deepEqual(changeset.changes.map((change) => change.path), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1269,6 +1279,43 @@ test("offline snapshot apply preserves new local runtime files without a base", 
   }
 });
 
+test("offline snapshot apply removes current-only sqlite sidecars when absent remotely", async () => {
+  const root = await tempDir("remnic-offline-runtime-sidecar-local-create");
+  try {
+    await write(root, "state/lcm.sqlite-wal", "stale local wal");
+    await write(root, "state/lcm.sqlite-shm", "stale local shm");
+
+    const pull = await applyOfflineSyncSnapshot({
+      root,
+      snapshot: {
+        format: "remnic.offline-sync.snapshot.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "remote",
+        includeTranscripts: true,
+        files: [],
+      },
+      baseFiles: [],
+    });
+
+    assert.equal(pull.deleted, 2);
+    assert.equal(pull.pendingLocal, 0);
+    assert.equal(pull.skipped, 0);
+    assert.equal(pull.conflicts.length, 0);
+    assert.deepEqual(pull.nextBaseFiles, []);
+    await assert.rejects(
+      () => readFile(path.join(root, "state/lcm.sqlite-wal")),
+      /ENOENT/,
+    );
+    await assert.rejects(
+      () => readFile(path.join(root, "state/lcm.sqlite-shm")),
+      /ENOENT/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline snapshot apply restores locally deleted remote-authoritative runtime files", async () => {
   const root = await tempDir("remnic-offline-runtime-local-delete-restore");
   try {
@@ -2219,6 +2266,43 @@ test("offline sync applies and snapshots through secure storage hooks", async ()
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(source, { recursive: true, force: true });
+  }
+});
+
+test("offline storage digest cache avoids repeat reads and invalidates on ctime changes", async () => {
+  const root = await tempDir("remnic-offline-digest-cache");
+  const relPath = "facts/cache.md";
+  const filePath = path.join(root, relPath);
+  try {
+    await write(root, relPath, "alpha");
+    const storage = new StorageManager(root);
+    const first = await storage.digestOfflineSyncFile(filePath);
+
+    let headerProbes = 0;
+    (storage as unknown as { offlineSyncFileIsEncrypted: () => Promise<boolean> }).offlineSyncFileIsEncrypted =
+      async () => {
+        headerProbes += 1;
+        throw new Error("cache miss");
+      };
+    assert.deepEqual(await storage.digestOfflineSyncFile(filePath), first);
+    assert.equal(headerProbes, 0);
+
+    const before = await stat(filePath);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writeFile(filePath, "bravo");
+    await utimes(filePath, before.atime, before.mtime);
+
+    (storage as unknown as { offlineSyncFileIsEncrypted: () => Promise<boolean> }).offlineSyncFileIsEncrypted =
+      async () => {
+        headerProbes += 1;
+        return false;
+      };
+    const second = await storage.digestOfflineSyncFile(filePath);
+    assert.equal(headerProbes, 1);
+    assert.notEqual(second.sha256, first.sha256);
+    assert.equal(second.bytes, first.bytes);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

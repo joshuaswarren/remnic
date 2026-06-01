@@ -135,6 +135,15 @@ const ARTIFACT_SEARCH_STOPWORDS = new Set([
   "with",
 ]);
 
+type OfflineSyncDigestCacheEntry = {
+  statBytes: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  encrypted: boolean;
+  sha256: string;
+  bytes: number;
+};
+
 export interface ReextractJobRequest {
   memoryId: string;
   model: string;
@@ -2236,6 +2245,10 @@ export class StorageManager {
   private factHashIndexAuthoritative: boolean | null = null;
   private factHashIndexAuthoritativePromise: Promise<void> | null = null;
   private readonly secureAppendChains = new Map<string, Promise<void>>();
+  private offlineSyncDigestCache: Map<string, OfflineSyncDigestCacheEntry> | null = null;
+  private offlineSyncDigestCacheLoadPromise: Promise<Map<string, OfflineSyncDigestCacheEntry>> | null = null;
+  private offlineSyncDigestCacheWriteChain: Promise<void> = Promise.resolve();
+  private offlineSyncDigestCacheWriteTimer: ReturnType<typeof setTimeout> | null = null;
   /** Optional: set by the orchestrator after construction to enable template-aware citation stripping during legacy hash rebuild. */
   citationTemplate: string = DEFAULT_CITATION_FORMAT;
 
@@ -2516,24 +2529,152 @@ export class StorageManager {
 
   async digestOfflineSyncFile(filePath: string): Promise<{ sha256: string; bytes: number }> {
     const target = this.assertManagedStoragePath(filePath, "storage.digestOfflineSyncFile");
-    if (await this.offlineSyncFileIsEncrypted(target)) {
-      const content = await readMaybeEncryptedFileBuffer(target, this._secureStoreKey, this.baseDir);
+    const st = await stat(target);
+    const relPath = path.relative(this.baseDir, target).split(path.sep).join("/");
+    const cache = await this.loadOfflineSyncDigestCache();
+    const cached = cache.get(relPath);
+    if (
+      cached &&
+      cached.statBytes === st.size &&
+      cached.mtimeMs === st.mtimeMs &&
+      cached.ctimeMs === st.ctimeMs &&
+      !cached.encrypted
+    ) {
       return {
+        sha256: cached.sha256,
+        bytes: cached.bytes,
+      };
+    }
+
+    const encrypted = await this.offlineSyncFileIsEncrypted(target);
+    let digest: { sha256: string; bytes: number };
+    if (encrypted) {
+      const content = await readMaybeEncryptedFileBuffer(target, this._secureStoreKey, this.baseDir);
+      digest = {
         sha256: createHash("sha256").update(content).digest("hex"),
         bytes: content.byteLength,
       };
+    } else {
+      const hash = createHash("sha256");
+      let bytes = 0;
+      for await (const rawChunk of createReadStream(target)) {
+        const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
+        hash.update(chunk);
+        bytes += chunk.length;
+      }
+      digest = {
+        sha256: hash.digest("hex"),
+        bytes,
+      };
     }
-    const hash = createHash("sha256");
-    let bytes = 0;
-    for await (const rawChunk of createReadStream(target)) {
-      const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
-      hash.update(chunk);
-      bytes += chunk.length;
+    if (!encrypted) {
+      this.rememberOfflineSyncDigest(relPath, st, digest);
     }
-    return {
-      sha256: hash.digest("hex"),
-      bytes,
-    };
+    return digest;
+  }
+
+  private async loadOfflineSyncDigestCache(): Promise<Map<string, OfflineSyncDigestCacheEntry>> {
+    if (this.offlineSyncDigestCache) return this.offlineSyncDigestCache;
+    if (!this.offlineSyncDigestCacheLoadPromise) {
+      this.offlineSyncDigestCacheLoadPromise = this.readOfflineSyncDigestCache();
+    }
+    this.offlineSyncDigestCache = await this.offlineSyncDigestCacheLoadPromise;
+    return this.offlineSyncDigestCache;
+  }
+
+  private async readOfflineSyncDigestCache(): Promise<Map<string, OfflineSyncDigestCacheEntry>> {
+    const cache = new Map<string, OfflineSyncDigestCacheEntry>();
+    try {
+      const raw = await readFile(this.offlineSyncDigestCachePath, "utf-8");
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return cache;
+      const entries = (parsed as { entries?: unknown }).entries;
+      if (!Array.isArray(entries)) return cache;
+      for (const entry of entries) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+        const record = entry as Record<string, unknown>;
+        const cachePath = typeof record.path === "string" ? record.path : "";
+        const statBytes = typeof record.statBytes === "number" ? record.statBytes : NaN;
+        const mtimeMs = typeof record.mtimeMs === "number" ? record.mtimeMs : NaN;
+        const ctimeMs = typeof record.ctimeMs === "number" ? record.ctimeMs : NaN;
+        const bytes = typeof record.bytes === "number" ? record.bytes : NaN;
+        const sha256 = typeof record.sha256 === "string" ? record.sha256 : "";
+        const encrypted = record.encrypted === true;
+        if (
+          cachePath.length === 0 ||
+          cachePath === ".." ||
+          cachePath.startsWith("../") ||
+          path.isAbsolute(cachePath) ||
+          !Number.isFinite(statBytes) ||
+          !Number.isFinite(mtimeMs) ||
+          !Number.isFinite(ctimeMs) ||
+          !Number.isFinite(bytes) ||
+          !/^[a-f0-9]{64}$/i.test(sha256)
+        ) {
+          continue;
+        }
+        cache.set(cachePath, { statBytes, mtimeMs, ctimeMs, encrypted, sha256, bytes });
+      }
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) {
+        log.warn(
+          `storage.offlineSyncDigestCache: ignoring unreadable cache: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return cache;
+  }
+
+  private rememberOfflineSyncDigest(
+    relPath: string,
+    st: { size: number; mtimeMs: number; ctimeMs: number },
+    digest: { sha256: string; bytes: number },
+  ): void {
+    const cache = this.offlineSyncDigestCache;
+    if (!cache) return;
+    cache.set(relPath, {
+      statBytes: st.size,
+      mtimeMs: st.mtimeMs,
+      ctimeMs: st.ctimeMs,
+      encrypted: false,
+      sha256: digest.sha256,
+      bytes: digest.bytes,
+    });
+    this.scheduleOfflineSyncDigestCacheWrite();
+  }
+
+  private scheduleOfflineSyncDigestCacheWrite(): void {
+    if (this.offlineSyncDigestCacheWriteTimer) {
+      clearTimeout(this.offlineSyncDigestCacheWriteTimer);
+    }
+    this.offlineSyncDigestCacheWriteTimer = setTimeout(() => {
+      this.offlineSyncDigestCacheWriteTimer = null;
+      this.queueOfflineSyncDigestCacheWrite();
+    }, 1_000);
+    this.offlineSyncDigestCacheWriteTimer.unref?.();
+  }
+
+  private queueOfflineSyncDigestCacheWrite(): void {
+    this.offlineSyncDigestCacheWriteChain = this.offlineSyncDigestCacheWriteChain
+      .catch(() => undefined)
+      .then(async () => {
+        const cache = this.offlineSyncDigestCache;
+        if (!cache) return;
+        const entries = [...cache.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([entryPath, entry]) => ({ path: entryPath, ...entry }));
+        await mkdir(path.dirname(this.offlineSyncDigestCachePath), { recursive: true });
+        await writeFile(
+          this.offlineSyncDigestCachePath,
+          `${JSON.stringify({ version: 1, entries })}\n`,
+          "utf-8",
+        );
+      })
+      .catch((err) => {
+        log.warn(
+          `storage.offlineSyncDigestCache: failed to write cache: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
   }
 
   private async offlineSyncFileIsEncrypted(filePath: string): Promise<boolean> {
@@ -2643,6 +2784,9 @@ export class StorageManager {
   }
   private get stateDir(): string {
     return path.join(this.baseDir, "state");
+  }
+  private get offlineSyncDigestCachePath(): string {
+    return path.join(this.baseDir, ".offline-sync", "digest-cache.v1.json");
   }
   private get entitySynthesisQueuePath(): string {
     return path.join(this.stateDir, "entity-synthesis-queue.json");
