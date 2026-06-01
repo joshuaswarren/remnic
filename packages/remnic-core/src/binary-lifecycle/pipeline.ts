@@ -382,7 +382,8 @@ function markdownReferencePattern(
     const normalized = candidate.split(path.sep).join("/");
     if (normalized.length === 0) return;
     candidates.add(normalized);
-    if (!normalized.startsWith(".") && !normalized.startsWith("/")) {
+    const isParentTraversal = normalized === ".." || normalized.startsWith("../");
+    if (!normalized.startsWith("./") && !normalized.startsWith("/") && !isParentTraversal) {
       candidates.add(`./${normalized}`);
     }
   };

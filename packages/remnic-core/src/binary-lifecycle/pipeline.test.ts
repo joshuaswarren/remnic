@@ -452,6 +452,42 @@ test("binary lifecycle rewrites nested asset references before cleanup", async (
   }
 });
 
+test("binary lifecycle rewrites dot-slash hidden asset references before cleanup", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-hidden-redirect-"));
+  try {
+    await writeFile(path.join(memoryDir, ".photo.png"), "hidden", "utf8");
+    await writeFile(path.join(memoryDir, "note.md"), "![img](./.photo.png)", "utf8");
+    await writeManifest(memoryDir, {
+      version: 1,
+      assets: [
+        {
+          originalPath: ".photo.png",
+          mirroredPath: "remote/.photo.png",
+          contentHash: sha256("hidden"),
+          sizeBytes: "hidden".length,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          status: "mirrored",
+        },
+      ],
+    });
+
+    const result = await runBinaryLifecyclePipeline(memoryDir, baseConfig, nestedRemoteBackend, noopLogger);
+    const manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string }> };
+
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.redirected, 1);
+    assert.equal(result.cleaned, 1);
+    assert.equal(await readFile(path.join(memoryDir, "note.md"), "utf8"), "![img](remote/.photo.png)");
+    assert.equal(manifest.assets[0]?.status, "cleaned");
+    await assert.rejects(() => readFile(path.join(memoryDir, ".photo.png"), "utf8"), /ENOENT/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("binary lifecycle does not rewrite ambiguous nested bare links for root assets", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-ambiguous-link-"));
   const subDir = path.join(memoryDir, "sub");
