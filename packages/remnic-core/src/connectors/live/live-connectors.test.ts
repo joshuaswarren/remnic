@@ -757,7 +757,7 @@ test("state store: aborts scoped work when heartbeat loses the connector lock", 
   assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, "replacement-lock");
 });
 
-test("state store: refreshing an unlinked stale lease does not overwrite a newer lock owner", async (t) => {
+test("state store: refreshing an unlinked stale lease reports a newer lock owner", async (t) => {
   const memoryDir = makeMemoryDir(t);
   const lease = await _tryAcquireConnectorLockForTest(memoryDir, "drive");
   assert.ok(lease);
@@ -786,7 +786,44 @@ test("state store: refreshing an unlinked stale lease does not overwrite a newer
   };
 
   try {
-    assert.equal(await _refreshConnectorLockForTest(lease), true);
+    assert.equal(await _refreshConnectorLockForTest(lease), false);
+  } finally {
+    fileHandlePrototype.readFile = originalReadFile;
+  }
+
+  assert.equal(JSON.parse(fs.readFileSync(lease.path, "utf8")).token, "replacement-lock");
+});
+
+test("state store: release does not unlink a lock path replaced after ownership read", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const lease = await _tryAcquireConnectorLockForTest(memoryDir, "drive");
+  assert.ok(lease);
+  const probeHandle = await fs.promises.open(lease.path, "r");
+  const fileHandlePrototype = Object.getPrototypeOf(probeHandle) as {
+    readFile: (...args: unknown[]) => Promise<unknown>;
+  };
+  const originalReadFile = fileHandlePrototype.readFile;
+  await probeHandle.close();
+  const replacement = {
+    pid: process.pid,
+    token: "replacement-lock",
+    createdAt: new Date().toISOString(),
+    refreshedAt: new Date().toISOString(),
+  };
+  let replaced = false;
+
+  fileHandlePrototype.readFile = async function readFileAndReplace(...args: unknown[]) {
+    const result = await originalReadFile.apply(this, args);
+    if (!replaced) {
+      replaced = true;
+      fs.unlinkSync(lease.path);
+      fs.writeFileSync(lease.path, `${JSON.stringify(replacement)}\n`);
+    }
+    return result;
+  };
+
+  try {
+    await _releaseConnectorLockForTest(lease);
   } finally {
     fileHandlePrototype.readFile = originalReadFile;
   }

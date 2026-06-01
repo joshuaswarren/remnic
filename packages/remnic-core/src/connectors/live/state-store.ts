@@ -226,6 +226,10 @@ function parseConnectorLockMetadata(raw: string): ConnectorLockMetadata | null {
   }
 }
 
+function isSameFileIdentity(left: import("node:fs").Stats, right: import("node:fs").Stats): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
 /**
  * Reject any path component along `<memoryDir>/state/connectors/<id>.json`
  * that is a symlink. Without this guard, a symlink in any of those
@@ -372,26 +376,60 @@ async function refreshConnectorLock(lease: ConnectorLockLease): Promise<boolean>
     throw err;
   }
   try {
+    const openedStat = await handle.stat();
     const metadata = parseConnectorLockMetadata(await handle.readFile("utf8"));
     if (metadata?.token !== lease.token) return false;
     const body = `${JSON.stringify(connectorLockMetadata(lease.token, metadata.createdAt))}\n`;
     await handle.truncate(0);
     await handle.write(body, 0, "utf8");
-    return true;
+    let pathStat: import("node:fs").Stats;
+    try {
+      pathStat = await fs.lstat(lease.path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw err;
+    }
+    if (pathStat.isSymbolicLink()) {
+      throw new Error(`connector state path component ${lease.path} is a symlink; refusing to follow`);
+    }
+    return isSameFileIdentity(openedStat, pathStat);
   } finally {
     await handle.close();
   }
 }
 
 async function releaseConnectorLock(lease: ConnectorLockLease): Promise<void> {
-  const metadata = await readConnectorLockMetadata(lease.path);
-  if (metadata?.token !== lease.token) return;
+  let handle: Awaited<ReturnType<typeof fs.open>>;
   try {
-    await fs.unlink(lease.path);
+    handle = await fs.open(lease.path, "r");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+  try {
+    const openedStat = await handle.stat();
+    const metadata = parseConnectorLockMetadata(await handle.readFile("utf8"));
+    if (metadata?.token !== lease.token) return;
+    let pathStat: import("node:fs").Stats;
+    try {
+      pathStat = await fs.lstat(lease.path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
       throw err;
     }
+    if (pathStat.isSymbolicLink()) {
+      throw new Error(`connector state path component ${lease.path} is a symlink; refusing to follow`);
+    }
+    if (!isSameFileIdentity(openedStat, pathStat)) return;
+    try {
+      await fs.unlink(lease.path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw err;
+      }
+    }
+  } finally {
+    await handle.close();
   }
 }
 
