@@ -68,7 +68,7 @@ function activityTime(activity) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function isCurrentActivity(activity, headSha, headCommittedAt) {
+function isCurrentActivity(activity, headSha, headCommittedAt, options = {}) {
   if (activity.commit_id && headSha) {
     return activity.commit_id === headSha;
   }
@@ -76,6 +76,9 @@ function isCurrentActivity(activity, headSha, headCommittedAt) {
     return activity.original_commit_id === headSha;
   }
   if (!bodyReferencesCurrentHead(activity.body, headSha)) {
+    return false;
+  }
+  if (options.requireExplicitSha === true && !bodyExplicitlyReferencesCurrentHead(activity.body, headSha)) {
     return false;
   }
   const activityTime = Date.parse(activity.submitted_at ?? activity.created_at ?? "");
@@ -181,7 +184,7 @@ export function evaluateAiReviewGate({
   for (const comment of [...issueComments, ...reviewComments]) {
     const login = normalizeLogin(comment.user?.login);
     if (!login || !configuredAliases.has(login) || !bodyHasPositiveVerdict(comment.body)) continue;
-    if (!isCurrentActivity(comment, headSha, headCommittedAt)) continue;
+    if (!isCurrentActivity(comment, headSha, headCommittedAt, { requireExplicitSha: true })) continue;
     positiveByAlias.set(login, { alias: login, kind: "comment", state: "POSITIVE_COMMENT" });
   }
 
