@@ -1,7 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -1953,12 +1952,35 @@ export class EngramAccessHttpServer {
     if (cid) {
       res.setHeader("x-request-id", cid);
     }
-    const writeLine = async (payload: unknown): Promise<void> => {
-      if (!res.write(`${JSON.stringify(payload)}\n`)) {
-        await once(res, "drain");
-      }
+    const waitForDrainOrClose = async (): Promise<boolean> => new Promise((resolve, reject) => {
+      const cleanup = () => {
+        res.off("drain", onDrain);
+        res.off("close", onClose);
+        res.off("error", onError);
+      };
+      const onDrain = () => {
+        cleanup();
+        resolve(true);
+      };
+      const onClose = () => {
+        cleanup();
+        resolve(false);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      res.once("drain", onDrain);
+      res.once("close", onClose);
+      res.once("error", onError);
+    });
+    const writeLine = async (payload: unknown): Promise<boolean> => {
+      if (res.destroyed || res.writableEnded) return false;
+      if (res.write(`${JSON.stringify(payload)}\n`)) return true;
+      if (res.destroyed || res.writableEnded) return false;
+      return waitForDrainOrClose();
     };
-    await writeLine({
+    if (!await writeLine({
       type: "snapshot",
       namespace: snapshot.namespace,
       format: snapshot.format,
@@ -1966,11 +1988,13 @@ export class EngramAccessHttpServer {
       createdAt: snapshot.createdAt,
       sourceId: snapshot.sourceId,
       includeTranscripts: snapshot.includeTranscripts,
-    });
+    })) return;
     for await (const file of snapshot.files) {
-      await writeLine({ type: "file", file });
+      if (!await writeLine({ type: "file", file })) return;
     }
-    res.end();
+    if (!res.destroyed && !res.writableEnded) {
+      res.end();
+    }
   }
 
   private respondBinary(
