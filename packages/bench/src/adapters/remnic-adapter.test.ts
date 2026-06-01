@@ -1998,6 +1998,37 @@ test("AMB bridge document parser requires blank lines between role turns", async
   assert.equal(messages[2]?.content, "Confirmed.");
 });
 
+test("AMB bridge document parser preserves preface text before role turns", async () => {
+  // @ts-expect-error The bridge script is plain JS without declaration output.
+  const module = await import("../../scripts/amb-remnic-bridge.mjs") as {
+    parseAmbDocumentMessages(document: {
+      id?: string;
+      user_id?: string;
+      content?: string;
+    }): Array<{ role: string; content: string }>;
+  };
+  const messages = module.parseAmbDocumentMessages({
+    id: "doc-preface",
+    user_id: "user-preface",
+    content: [
+      "This document starts with unlabelled source text.",
+      "It should be preserved for ingest.",
+      "",
+      "User: Then the labelled exchange starts.",
+      "",
+      "Assistant: Confirmed.",
+    ].join("\n"),
+  });
+
+  assert.deepEqual(
+    messages.map((message: { role: string }) => message.role),
+    ["system", "user", "user", "assistant"],
+  );
+  assert.match(messages[1]?.content ?? "", /unlabelled source text/);
+  assert.equal(messages[2]?.content, "Then the labelled exchange starts.");
+  assert.equal(messages[3]?.content, "Confirmed.");
+});
+
 test("lightweight adapter keeps smoke-run guardrails even when overrides conflict", () => {
   const assistantHook = { enabled: true };
   const config = buildBenchAdapterConfig("lightweight", BASE_CONFIG, {

@@ -80,6 +80,11 @@ export function parseAmbDocumentMessages(document) {
     return messages;
   }
 
+  const preface = content.slice(0, matches[0].index).trim();
+  if (preface.length > 0) {
+    messages.push({ role: "user", content: preface });
+  }
+
   for (let index = 0; index < matches.length; index += 1) {
     const match = matches[index];
     const next = matches[index + 1];
