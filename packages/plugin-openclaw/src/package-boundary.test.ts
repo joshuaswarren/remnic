@@ -53,7 +53,7 @@ test("OpenClaw plugin type-check config resolves @remnic/core to one source surf
   }
 });
 
-test("OpenClaw plugin publishes a concrete @remnic/core runtime lower bound", async () => {
+test("OpenClaw plugin source manifest keeps @remnic/core workspace-linked", async () => {
   const manifest = JSON.parse(
     await readFile(path.join(packageRoot, "package.json"), "utf8"),
   ) as {
@@ -61,7 +61,7 @@ test("OpenClaw plugin publishes a concrete @remnic/core runtime lower bound", as
     devDependencies?: Record<string, string>;
   };
 
-  assert.equal(manifest.dependencies?.["@remnic/core"], "^1.1.12");
+  assert.equal(manifest.dependencies?.["@remnic/core"], "workspace:^");
   assert.equal(manifest.devDependencies?.["@remnic/core"], "workspace:^");
 });
 
