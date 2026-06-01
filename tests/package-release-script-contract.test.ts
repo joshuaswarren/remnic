@@ -48,3 +48,16 @@ test("release smoke coverage verifies build artifacts after the build", () => {
   assert.match(releaseWorkflow, /pnpm -r run build\s*\n\s*pnpm run build\s*\n\s*\n\s*- name: Verify root release artifacts/);
   assert.match(releaseWorkflow, /- name: Verify root release artifacts\s*\n\s*run: node scripts\/check-release-artifacts\.mjs/);
 });
+
+test("release workflow updates lockfile after version mutations without frozen CI installs", () => {
+  const releaseWorkflow = readFileSync(
+    join(repoRoot, ".github", "workflows", "release-and-publish.yml"),
+    "utf8",
+  );
+  const lockfileOnlyInstalls = releaseWorkflow.match(/pnpm install --lockfile-only[^\n]*/g) ?? [];
+
+  assert.equal(lockfileOnlyInstalls.length, 4);
+  for (const installCommand of lockfileOnlyInstalls) {
+    assert.match(installCommand, /--no-frozen-lockfile/);
+  }
+});
