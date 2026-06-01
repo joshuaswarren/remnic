@@ -10,6 +10,7 @@ const packageExpectations = [
     path: new URL("../packages/remnic-cli/package.json", testDir),
     deps: {
       "@remnic/core": "workspace:^",
+      "@remnic/plugin-pi": "workspace:^",
       "@remnic/server": "workspace:^",
     },
   },

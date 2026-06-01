@@ -34,7 +34,7 @@
   },
   "dependencies": {
     "@remnic/core": "workspace:^",
-    "@remnic/plugin-pi": "^1.0.0",
+    "@remnic/plugin-pi": "workspace:^",
     "@remnic/server": "workspace:^",
     "yaml": "^2.4.2"
   },

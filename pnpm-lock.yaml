@@ -345,8 +345,8 @@ importers:
         specifier: workspace:^
         version: link:../remnic-core
       '@remnic/plugin-pi':
-        specifier: ^1.0.0
-        version: 1.0.0
+        specifier: workspace:^
+        version: link:../plugin-pi
       '@remnic/server':
         specifier: workspace:^
         version: link:../remnic-server
@@ -980,14 +980,6 @@ packages:
     resolution: {integrity: sha512-DSILueFFJLsgyi7GjExcq0LPAlVwglyjf6OrvxqMq1nZjBpaNp8EUw9X/vZELoP59QfFkXeGWbPWITOtCCxtAg==}
     peerDependencies:
       openclaw: '>=2026.5.16-beta.1'
-
-  '@remnic/plugin-pi@1.0.0':
-    resolution: {integrity: sha512-x3v6sDGew3fhN0sMYyAoHZlMrFmbhWLia5vMk4XrHK2X4gBhyNGgpmgYpnykvyOB4+HhNp3b7kiop79UTSy0cQ==}
-    peerDependencies:
-      '@earendil-works/pi-coding-agent': '*'
-    peerDependenciesMeta:
-      '@earendil-works/pi-coding-agent':
-        optional: true
 
   '@rolldown/pluginutils@1.0.0-rc.3':
     resolution: {integrity: sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q==}
@@ -2312,13 +2304,6 @@ snapshots:
     transitivePeerDependencies:
       - ws
       - zod
-
-  '@remnic/plugin-pi@1.0.0':
-    dependencies:
-      '@remnic/core': 1.1.20
-      '@sinclair/typebox': 0.34.49
-    transitivePeerDependencies:
-      - ws
 
   '@rolldown/pluginutils@1.0.0-rc.3': {}
 
