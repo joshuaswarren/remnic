@@ -24,16 +24,27 @@ function bodyHasPositiveVerdict(body) {
   return !NEGATIVE_VERDICT_PATTERN.test(body) && POSITIVE_VERDICT_PATTERN.test(body);
 }
 
+function bodyShaReferences(body) {
+  if (typeof body !== "string") return [];
+  return [...body.matchAll(SHA_REFERENCE_PATTERN)]
+    .map((match) => (match[1] ?? match[2] ?? "").toLowerCase())
+    .filter(Boolean);
+}
+
 function bodyReferencesCurrentHead(body, headSha) {
   if (typeof body !== "string" || typeof headSha !== "string" || !headSha.trim()) {
     return true;
   }
   const normalizedHead = headSha.trim().toLowerCase();
-  const references = [...body.matchAll(SHA_REFERENCE_PATTERN)]
-    .map((match) => (match[1] ?? match[2] ?? "").toLowerCase())
-    .filter(Boolean);
+  const references = bodyShaReferences(body);
   if (references.length === 0) return true;
   return references.some((reference) => normalizedHead.startsWith(reference));
+}
+
+function bodyExplicitlyReferencesCurrentHead(body, headSha) {
+  if (typeof headSha !== "string" || !headSha.trim()) return false;
+  const normalizedHead = headSha.trim().toLowerCase();
+  return bodyShaReferences(body).some((reference) => normalizedHead.startsWith(reference));
 }
 
 function checkRunTime(checkRun) {
@@ -69,8 +80,10 @@ function isCurrentActivity(activity, headSha, headCommittedAt) {
   }
   const activityTime = Date.parse(activity.submitted_at ?? activity.created_at ?? "");
   const headTime = Date.parse(headCommittedAt ?? "");
+  if (!Number.isFinite(headTime)) {
+    return Number.isFinite(activityTime) && bodyExplicitlyReferencesCurrentHead(activity.body, headSha);
+  }
   return Number.isFinite(activityTime) &&
-    Number.isFinite(headTime) &&
     activityTime >= headTime;
 }
 

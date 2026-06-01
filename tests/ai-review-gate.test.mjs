@@ -367,6 +367,44 @@ test("AI review gate accepts explicit positive comments on the current head", ()
   assert.equal(result.present[0]?.kind, "comment");
 });
 
+test("AI review gate accepts current-head comments when head commit time is unavailable", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt: null,
+    issueComments: [
+      {
+        user: { login: "cursor" },
+        body: `PASS for ${headSha.slice(0, 7)}`,
+        created_at: "2026-05-21T12:00:01.000Z",
+        updated_at: "2026-05-21T12:00:01.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.present[0]?.kind, "comment");
+});
+
+test("AI review gate rejects unreferenced comments when head commit time is unavailable", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt: null,
+    issueComments: [
+      {
+        user: { login: "cursor" },
+        body: "PASS",
+        created_at: "2026-05-21T12:00:01.000Z",
+        updated_at: "2026-05-21T12:00:01.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /Missing required positive AI review groups/);
+});
+
 test("AI review gate ignores positive comments from unconfigured aliases", () => {
   const result = evaluateAiReviewGate({
     groups: parseReviewerGroups("cursor"),
