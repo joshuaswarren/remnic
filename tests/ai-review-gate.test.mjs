@@ -276,6 +276,25 @@ test("AI review gate accepts explicit PASS comments that mention failures are ab
   assert.equal(result.present[0]?.kind, "comment");
 });
 
+test("AI review gate rejects fresh positive comments that target an older SHA", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt,
+    issueComments: [
+      {
+        user: { login: "cursor" },
+        body: "PASS for deadbee",
+        created_at: "2026-05-21T12:00:01.000Z",
+        updated_at: "2026-05-21T12:00:01.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /Missing required positive AI review groups/);
+});
+
 test("AI review gate fails when a required group is missing", () => {
   const result = evaluateAiReviewGate({
     groups,

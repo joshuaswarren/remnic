@@ -12,6 +12,8 @@ const NEGATIVE_REVIEW_STATES = new Set(["CHANGES_REQUESTED"]);
 const NEGATIVE_VERDICT_PATTERN =
   /\b(?:changes\s+requested|do\s+not\s+merge|(?:not|no|never|cannot|can['’]?t|isn['’]?t)\s+(?:a\s+)?(?:pass|approved|lgtm))\b/i;
 const POSITIVE_VERDICT_PATTERN = /\b(?:PASS|APPROVED|LGTM)\b/i;
+const SHA_REFERENCE_PATTERN =
+  /\b(?:sha|commit|head|rev|revision)\s*[:#]?\s*([0-9a-f]{7,40})\b|\bfor\s+([0-9a-f]{7,40})\b/gi;
 
 function normalizeLogin(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -20,6 +22,18 @@ function normalizeLogin(value) {
 function bodyHasPositiveVerdict(body) {
   if (typeof body !== "string") return false;
   return !NEGATIVE_VERDICT_PATTERN.test(body) && POSITIVE_VERDICT_PATTERN.test(body);
+}
+
+function bodyReferencesCurrentHead(body, headSha) {
+  if (typeof body !== "string" || typeof headSha !== "string" || !headSha.trim()) {
+    return true;
+  }
+  const normalizedHead = headSha.trim().toLowerCase();
+  const references = [...body.matchAll(SHA_REFERENCE_PATTERN)]
+    .map((match) => (match[1] ?? match[2] ?? "").toLowerCase())
+    .filter(Boolean);
+  if (references.length === 0) return true;
+  return references.some((reference) => normalizedHead.startsWith(reference));
 }
 
 function checkRunTime(checkRun) {
@@ -49,6 +63,9 @@ function isCurrentActivity(activity, headSha, headCommittedAt) {
   }
   if (activity.original_commit_id && headSha) {
     return activity.original_commit_id === headSha;
+  }
+  if (!bodyReferencesCurrentHead(activity.body, headSha)) {
+    return false;
   }
   const activityTime = Date.parse(activity.submitted_at ?? activity.created_at ?? "");
   const headTime = Date.parse(headCommittedAt ?? "");
