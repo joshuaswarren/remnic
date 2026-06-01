@@ -1741,3 +1741,53 @@ test("verifyMemoryProjection reports drift in projected entity mentions, native 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("projection browse filters invalid rows before paginating", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-invalid-page-"));
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-valid.md",
+      memoryDoc({
+        id: "fact-valid",
+        content: "valid projected memory",
+        created: "2026-03-08T00:00:00.000Z",
+        updated: "2026-03-08T01:00:00.000Z",
+      }),
+    );
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/fact-invalid.md",
+      memoryDoc({
+        id: "fact-invalid",
+        content: "invalid projected memory",
+        created: "2026-03-08T00:00:00.000Z",
+        updated: "2026-03-08T02:00:00.000Z",
+      }),
+    );
+
+    await rebuildMemoryProjection({
+      memoryDir,
+      dryRun: false,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+    });
+    const db = new Database(getMemoryProjectionPath(memoryDir));
+    try {
+      db.prepare("UPDATE memory_current SET path_rel = ? WHERE memory_id = ?")
+        .run("../escaped.md", "fact-invalid");
+    } finally {
+      db.close();
+    }
+
+    const browse = readProjectedMemoryBrowse(memoryDir, {
+      limit: 1,
+      offset: 0,
+    });
+
+    assert.ok(browse);
+    assert.equal(browse.total, 1);
+    assert.deepEqual(browse.memories.map((memory) => memory.id), ["fact-valid"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

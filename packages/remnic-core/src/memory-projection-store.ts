@@ -653,10 +653,8 @@ export function readProjectedMemoryBrowse(
       };
     }
 
-    // No query: use SQL pagination directly
-    const totalRow = db
-      .prepare(`SELECT COUNT(*) AS total FROM memory_current ${whereSql}`)
-      .get(...params) as { total?: number } | undefined;
+    // No query: filter unsafe legacy/corrupt path rows before pagination so
+    // invalid rows cannot consume page slots or inflate totals.
     const rows = db
       .prepare(`
         SELECT
@@ -672,15 +670,16 @@ export function readProjectedMemoryBrowse(
         FROM memory_current
         ${whereSql}
         ORDER BY ${orderBySql}
-        LIMIT ? OFFSET ?
       `)
-      .all(...params, options.limit, options.offset) as Array<Record<string, unknown>>;
+      .all(...params) as Array<Record<string, unknown>>;
+    const filtered = rows
+      .map((row) => projectedBrowseRowFromCurrentRow(memoryDir, row))
+      .filter((row): row is ProjectedMemoryBrowseRow => row !== null);
+    const pageRows = filtered.slice(options.offset, options.offset + options.limit);
 
     return {
-      total: typeof totalRow?.total === "number" ? totalRow.total : 0,
-      memories: rows
-        .map((row) => projectedBrowseRowFromCurrentRow(memoryDir, row))
-        .filter((row): row is ProjectedMemoryBrowseRow => row !== null),
+      total: filtered.length,
+      memories: pageRows,
     };
   });
 }
