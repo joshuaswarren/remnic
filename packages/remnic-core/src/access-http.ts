@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { EngramMcpServer } from "./access-mcp.js";
@@ -2055,6 +2056,10 @@ export class EngramAccessHttpServer {
     req: IncomingMessage,
     maxBodyBytes = this.maxBodyBytes,
   ): Promise<Record<string, unknown>> {
+    const encoding = (this.readOptionalHeader(req, "content-encoding") ?? "identity").toLowerCase();
+    if (encoding !== "identity" && encoding !== "gzip") {
+      throw new HttpError(415, "unsupported_content_encoding", "unsupported_content_encoding");
+    }
     const chunks: Buffer[] = [];
     let total = 0;
     for await (const chunk of req) {
@@ -2066,7 +2071,21 @@ export class EngramAccessHttpServer {
       chunks.push(buffer);
     }
     if (chunks.length === 0) return {};
-    const raw = Buffer.concat(chunks).toString("utf-8").trim();
+    let body = Buffer.concat(chunks, total);
+    if (encoding === "gzip") {
+      try {
+        body = gunzipSync(body, { maxOutputLength: maxBodyBytes });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE") {
+          throw new HttpError(413, "request_body_too_large", "request_body_too_large");
+        }
+        throw new HttpError(400, "invalid_gzip_body", "invalid_gzip_body");
+      }
+      if (body.byteLength > maxBodyBytes) {
+        throw new HttpError(413, "request_body_too_large", "request_body_too_large");
+      }
+    }
+    const raw = body.toString("utf-8").trim();
     if (raw.length === 0) return {};
     let parsed: unknown;
     try {

@@ -38,6 +38,7 @@ import path from "node:path";
 import { createDecipheriv, createHash } from "node:crypto";
 import * as childProcess from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { gzipSync } from "node:zlib";
 import {
   parseConfig,
   isOpenaiApiKeyDisabled,
@@ -5863,14 +5864,15 @@ export async function fetchOfflineSnapshot(args: {
       baseFiles: args.baseFiles,
       baseCapturedAt: args.baseCapturedAt,
     });
-    if (offlineSnapshotBasePostBodyFits(postBody)) {
+    const postRequest = offlineSnapshotBasePostRequest(postBody);
+    if (postRequest) {
       try {
         return await fetchOfflineJson(
           offlineEndpoint(args.remoteUrl, "/remnic/v1/offline-sync/snapshot"),
           args.token,
           {
             method: "POST",
-            body: postBody,
+            ...postRequest,
           },
         );
       } catch (error) {
@@ -5922,6 +5924,24 @@ export function offlineSnapshotBasePostBodyFits(body: string): boolean {
   const bytes = Buffer.byteLength(body, "utf-8");
   return bytes <= OFFLINE_SYNC_SNAPSHOT_BASE_MAX_BODY_BYTES &&
     bytes <= OFFLINE_SYNC_SNAPSHOT_BASE_POST_PREFERRED_MAX_BODY_BYTES;
+}
+
+export function offlineSnapshotBasePostRequest(body: string): Pick<RequestInit, "body" | "headers"> | null {
+  const bytes = Buffer.byteLength(body, "utf-8");
+  if (bytes > OFFLINE_SYNC_SNAPSHOT_BASE_MAX_BODY_BYTES) return null;
+  if (bytes <= OFFLINE_SYNC_SNAPSHOT_BASE_POST_PREFERRED_MAX_BODY_BYTES) {
+    return { body };
+  }
+  const compressed = gzipSync(body);
+  if (compressed.byteLength > OFFLINE_SYNC_SNAPSHOT_BASE_POST_PREFERRED_MAX_BODY_BYTES) {
+    return null;
+  }
+  return {
+    body: compressed,
+    headers: {
+      "content-encoding": "gzip",
+    },
+  };
 }
 
 export function isOfflineSnapshotPostFallbackError(error: unknown): boolean {

@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/p
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { gunzipSync } from "node:zlib";
 
 import {
   OFFLINE_SYNC_APPLY_MAX_BODY_BYTES,
@@ -32,6 +33,7 @@ import {
   offlinePartialHydrationForPaths,
   offlineSnapshotBasePostBody,
   offlineSnapshotBasePostBodyFits,
+  offlineSnapshotBasePostRequest,
   offlineSnapshotContentFilesForApply,
   parseOfflineSyncRequestTimeoutMs,
   pushOfflineFileContent,
@@ -233,6 +235,7 @@ test("offline sync snapshot post falls back when base payload is too large", () 
     baseFiles: [file("facts/a.md", 1)],
   });
   assert.equal(offlineSnapshotBasePostBodyFits(smallBody), true);
+  assert.deepEqual(offlineSnapshotBasePostRequest(smallBody), { body: smallBody });
 
   const hugeButServerAcceptedBody = JSON.stringify({
     baseFiles: "x".repeat(OFFLINE_SYNC_SNAPSHOT_BASE_POST_PREFERRED_MAX_BODY_BYTES),
@@ -243,6 +246,7 @@ test("offline sync snapshot post falls back when base payload is too large", () 
     baseFiles: "x".repeat(OFFLINE_SYNC_SNAPSHOT_BASE_MAX_BODY_BYTES),
   });
   assert.equal(offlineSnapshotBasePostBodyFits(largeBody), false);
+  assert.equal(offlineSnapshotBasePostRequest(largeBody), null);
 
   assert.equal(
     isOfflineSnapshotPostFallbackError(
@@ -258,32 +262,34 @@ test("offline sync snapshot post falls back when base payload is too large", () 
   );
 });
 
-test("offline sync uses snapshot stream when fast-base payload is too large", async () => {
+test("offline sync compresses oversized fast-base payloads before stream fallback", async () => {
   const originalFetch = globalThis.fetch;
   try {
     const baseFiles = Array.from({ length: 150_000 }, (_, index) =>
       file(`facts/${String(index).padStart(6, "0")}.md`, index + 1));
     const remoteFile = file("facts/remote.md", 42, "b");
     const calls: string[] = [];
-    globalThis.fetch = (async (input) => {
+    globalThis.fetch = (async (input, init) => {
       const url = new URL(String(input));
       calls.push(`${url.pathname}${url.search}`);
-      assert.equal(url.pathname, "/remnic/v1/offline-sync/snapshot-stream");
-      const body = [
-        JSON.stringify({
-          type: "snapshot",
-          namespace: "generalist",
-          format: "remnic.offline-sync.snapshot.v1",
-          schemaVersion: 1,
-          createdAt: "2026-05-31T00:01:00.000Z",
-          sourceId: "remote",
-          includeTranscripts: true,
-        }),
-        JSON.stringify({ type: "file", file: remoteFile }),
-      ].join("\n");
-      return new Response(`${body}\n`, {
+      assert.equal(url.pathname, "/remnic/v1/offline-sync/snapshot");
+      assert.equal(init?.method, "POST");
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("content-encoding"), "gzip");
+      const compressed = Buffer.from(await new Response(init?.body).arrayBuffer());
+      const parsed = JSON.parse(gunzipSync(compressed).toString("utf8")) as { baseFiles?: unknown[] };
+      assert.equal(parsed.baseFiles?.length, baseFiles.length);
+      return new Response(JSON.stringify({
+        namespace: "generalist",
+        format: "remnic.offline-sync.snapshot.v1",
+        schemaVersion: 1,
+        createdAt: "2026-05-31T00:01:00.000Z",
+        sourceId: "remote",
+        includeTranscripts: true,
+        files: [remoteFile],
+      }), {
         status: 200,
-        headers: { "content-type": "application/x-ndjson" },
+        headers: { "content-type": "application/json" },
       });
     }) as typeof fetch;
 
@@ -299,7 +305,7 @@ test("offline sync uses snapshot stream when fast-base payload is too large", as
     assert.equal(snapshot.namespace, "generalist");
     assert.deepEqual(snapshot.files, [remoteFile]);
     assert.deepEqual(calls, [
-      "/remnic/v1/offline-sync/snapshot-stream?namespace=generalist&include_transcripts=true&content=false",
+      "/remnic/v1/offline-sync/snapshot",
     ]);
   } finally {
     globalThis.fetch = originalFetch;

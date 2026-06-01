@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 
 import { EngramAccessHttpServer } from "./access-http.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
@@ -282,6 +283,102 @@ test("HTTP offline snapshot forwards namespace and transfer options", async () =
       includeTranscripts: false,
       includeContent: false,
     }]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP offline snapshot accepts gzipped fast-base bodies", async () => {
+  const calls: Array<{
+    namespace: string | undefined;
+    principal: string | undefined;
+    includeTranscripts: boolean | undefined;
+    includeContent: boolean | undefined;
+    baseFiles: unknown;
+    baseCapturedAt: Date | undefined;
+  }> = [];
+  const service = {
+    offlineSyncSnapshot: async (options: {
+      namespace?: string;
+      principal?: string;
+      includeTranscripts?: boolean;
+      includeContent?: boolean;
+      baseFiles?: unknown;
+      baseCapturedAt?: Date;
+    }) => {
+      calls.push({
+        namespace: options.namespace,
+        principal: options.principal,
+        includeTranscripts: options.includeTranscripts,
+        includeContent: options.includeContent,
+        baseFiles: options.baseFiles,
+        baseCapturedAt: options.baseCapturedAt,
+      });
+      return {
+        namespace: options.namespace ?? "default",
+        format: "remnic.offline-sync.snapshot.v1",
+        schemaVersion: 1,
+        createdAt: new Date("2026-05-21T00:00:00Z").toISOString(),
+        sourceId: "remote:test",
+        includeTranscripts: options.includeTranscripts !== false,
+        files: [],
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "reader",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const body = gzipSync(JSON.stringify({
+      namespace: "team",
+      includeTranscripts: false,
+      includeContent: false,
+      baseCapturedAt: "2026-05-20T00:00:00.000Z",
+      baseFiles: [{
+        path: "facts/a.md",
+        sha256: "a".repeat(64),
+        bytes: 12,
+        mtimeMs: 1234,
+      }],
+    }));
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/snapshot`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+          "content-encoding": "gzip",
+        },
+        body,
+      },
+    );
+    const responseBody = await response.json() as { namespace?: string };
+
+    assert.equal(response.status, 200);
+    assert.equal(responseBody.namespace, "team");
+    assert.equal(calls.length, 1);
+    const call = calls[0];
+    assert.ok(call);
+    assert.deepEqual(call, {
+      namespace: "team",
+      principal: "reader",
+      includeTranscripts: false,
+      includeContent: false,
+      baseFiles: [{
+        path: "facts/a.md",
+        sha256: "a".repeat(64),
+        bytes: 12,
+        mtimeMs: 1234,
+      }],
+      baseCapturedAt: new Date("2026-05-20T00:00:00.000Z"),
+    });
   } finally {
     await server.stop();
   }
