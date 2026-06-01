@@ -287,6 +287,80 @@ test("HTTP offline snapshot forwards namespace and transfer options", async () =
   }
 });
 
+test("HTTP offline snapshot stream emits metadata records as NDJSON", async () => {
+  const calls: Array<{
+    namespace: string | undefined;
+    principal: string | undefined;
+    includeTranscripts: boolean | undefined;
+    includeContent: boolean | undefined;
+  }> = [];
+  const service = {
+    offlineSyncSnapshotStream: async (options: {
+      namespace?: string;
+      principal?: string;
+      includeTranscripts?: boolean;
+      includeContent?: boolean;
+    }) => {
+      calls.push({
+        namespace: options.namespace,
+        principal: options.principal,
+        includeTranscripts: options.includeTranscripts,
+        includeContent: options.includeContent,
+      });
+      return {
+        namespace: options.namespace ?? "default",
+        format: "remnic.offline-sync.snapshot.v1",
+        schemaVersion: 1,
+        createdAt: new Date("2026-05-21T00:00:00Z").toISOString(),
+        sourceId: "remote:test",
+        includeTranscripts: options.includeTranscripts !== false,
+        files: (async function* () {
+          yield {
+            path: "facts/a.md",
+            sha256: "a".repeat(64),
+            bytes: 12,
+            mtimeMs: 1234,
+          };
+        })(),
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    principal: "reader",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/remnic/v1/offline-sync/snapshot-stream?namespace=team&include_transcripts=false&content=false`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    const lines = (await response.text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/x-ndjson; charset=utf-8");
+    assert.equal(lines[0]?.type, "snapshot");
+    assert.equal(lines[0]?.namespace, "team");
+    assert.equal(lines[1]?.type, "file");
+    assert.deepEqual((lines[1]?.file as { path?: string }).path, "facts/a.md");
+    assert.deepEqual(calls, [{
+      namespace: "team",
+      principal: "reader",
+      includeTranscripts: false,
+      includeContent: false,
+    }]);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP offline files forwards namespace and requested paths", async () => {
   const calls: Array<{
     namespace: string | undefined;

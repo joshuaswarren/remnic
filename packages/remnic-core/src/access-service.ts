@@ -141,9 +141,12 @@ import {
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotFromBase,
   buildOfflineSyncSnapshotForPaths,
+  iterateOfflineSyncSnapshotFileRecords,
+  OFFLINE_SYNC_SNAPSHOT_FORMAT,
   readOfflineSyncFileContentChunk,
   type OfflineSyncApplyFileContentChunkResult,
   type OfflineSyncApplyChangesetResult,
+  type OfflineSyncFileRecord,
   type OfflineSyncFileContentChunk,
   type OfflineSyncFileState,
   type OfflineSyncSnapshot,
@@ -664,6 +667,11 @@ export interface EngramAccessOfflineSyncApplyRequest {
 
 export interface EngramAccessOfflineSyncSnapshotResponse extends OfflineSyncSnapshot {
   namespace: string;
+}
+
+export interface EngramAccessOfflineSyncSnapshotStreamResponse extends Omit<OfflineSyncSnapshot, "files"> {
+  namespace: string;
+  files: AsyncIterable<OfflineSyncFileRecord>;
 }
 
 export interface EngramAccessOfflineSyncFilesResponse extends OfflineSyncSnapshot {
@@ -5624,6 +5632,29 @@ export class EngramAccessService {
     return {
       namespace: resolvedNamespace,
       ...snapshot,
+    };
+  }
+
+  async offlineSyncSnapshotStream(
+    options: Omit<EngramAccessOfflineSyncSnapshotRequest, "baseCapturedAt" | "baseFiles"> = {},
+  ): Promise<EngramAccessOfflineSyncSnapshotStreamResponse> {
+    const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const storageHash = createHash("sha256").update(storage.dir).digest("hex").slice(0, 16);
+    return {
+      namespace: resolvedNamespace,
+      format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+      sourceId: `remnic:${resolvedNamespace}:${storageHash}`,
+      includeTranscripts: options.includeTranscripts !== false,
+      files: iterateOfflineSyncSnapshotFileRecords({
+        root: storage.dir,
+        includeContent: options.includeContent === true,
+        includeTranscripts: options.includeTranscripts !== false,
+        readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+        readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
+      }),
     };
   }
 

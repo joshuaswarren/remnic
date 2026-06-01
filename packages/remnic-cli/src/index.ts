@@ -146,6 +146,7 @@ import {
   writeOfflineSyncState,
   type OfflineSyncApplyFileContentChunkResult,
   type OfflineSyncFileDigest,
+  type OfflineSyncFileRecord,
   type OfflineSyncFileState,
   type OfflineSyncFileTarget,
   type OfflineSyncFileWriteTarget,
@@ -5748,7 +5749,104 @@ async function fetchOfflineJson<T>(
   );
 }
 
-async function fetchOfflineSnapshot(args: {
+interface OfflineSnapshotStreamHeader {
+  namespace?: string;
+  format: OfflineSyncSnapshot["format"];
+  schemaVersion: OfflineSyncSnapshot["schemaVersion"];
+  createdAt: string;
+  sourceId: string;
+  includeTranscripts: boolean;
+}
+
+async function parseOfflineSnapshotStreamResponse(
+  response: Response,
+): Promise<OfflineSyncSnapshot & { namespace?: string }> {
+  if (!response.body) {
+    throw new Error("offline sync snapshot stream response omitted body");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  let header: OfflineSnapshotStreamHeader | null = null;
+  const files: OfflineSyncFileRecord[] = [];
+  const handleLine = (line: string): void => {
+    if (line.trim().length === 0) return;
+    const parsed = JSON.parse(line) as Record<string, unknown>;
+    if (parsed.type === "snapshot") {
+      if (header) throw new Error("offline sync snapshot stream repeated header");
+      header = {
+        ...(typeof parsed.namespace === "string" && parsed.namespace.length > 0 ? { namespace: parsed.namespace } : {}),
+        format: parsed.format as OfflineSyncSnapshot["format"],
+        schemaVersion: parsed.schemaVersion as OfflineSyncSnapshot["schemaVersion"],
+        createdAt: parsed.createdAt as string,
+        sourceId: parsed.sourceId as string,
+        includeTranscripts: parsed.includeTranscripts as boolean,
+      };
+      return;
+    }
+    if (parsed.type === "file") {
+      if (!header) throw new Error("offline sync snapshot stream file arrived before header");
+      files.push(parsed.file as OfflineSyncFileRecord);
+      return;
+    }
+    throw new Error("offline sync snapshot stream contained unknown event");
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffered += decoder.decode(value, { stream: true });
+    for (;;) {
+      const newline = buffered.indexOf("\n");
+      if (newline < 0) break;
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      handleLine(line);
+    }
+  }
+  buffered += decoder.decode();
+  handleLine(buffered);
+  const finalHeader = header as OfflineSnapshotStreamHeader | null;
+  if (!finalHeader) throw new Error("offline sync snapshot stream omitted header");
+  const snapshot = normalizeOfflineSyncSnapshot({
+    format: finalHeader.format,
+    schemaVersion: finalHeader.schemaVersion,
+    createdAt: finalHeader.createdAt,
+    sourceId: finalHeader.sourceId,
+    includeTranscripts: finalHeader.includeTranscripts,
+    files,
+  });
+  return {
+    ...(finalHeader.namespace ? { namespace: finalHeader.namespace } : {}),
+    ...snapshot,
+  };
+}
+
+async function fetchOfflineSnapshotStream(args: {
+  remoteUrl: string;
+  token: string;
+  namespace?: string;
+  includeTranscripts: boolean;
+}): Promise<OfflineSyncSnapshot & { namespace?: string }> {
+  const url = offlineEndpoint(args.remoteUrl, "/remnic/v1/offline-sync/snapshot-stream", {
+    namespace: args.namespace,
+    include_transcripts: args.includeTranscripts ? "true" : "false",
+    content: "false",
+  });
+  return fetchOfflineWithResponse(
+    url,
+    args.token,
+    {},
+    {},
+    async (response) => {
+      if (!response.ok) {
+        await throwOfflineResponseError(response, url, {}, "offline sync snapshot-stream request");
+      }
+      return parseOfflineSnapshotStreamResponse(response);
+    },
+  );
+}
+
+export async function fetchOfflineSnapshot(args: {
   remoteUrl: string;
   token: string;
   namespace?: string;
@@ -5757,6 +5855,7 @@ async function fetchOfflineSnapshot(args: {
   baseFiles?: readonly OfflineSyncFileState[];
   baseCapturedAt?: Date;
 }): Promise<OfflineSyncSnapshot & { namespace?: string }> {
+  let tryStreamSnapshot = false;
   if (args.includeContent === false && args.baseFiles && args.baseFiles.length > 0) {
     const postBody = offlineSnapshotBasePostBody({
       namespace: args.namespace,
@@ -5776,7 +5875,22 @@ async function fetchOfflineSnapshot(args: {
         );
       } catch (error) {
         if (!isOfflineSnapshotPostFallbackError(error)) throw error;
+        tryStreamSnapshot = true;
       }
+    } else {
+      tryStreamSnapshot = true;
+    }
+  }
+  if (tryStreamSnapshot) {
+    try {
+      return await fetchOfflineSnapshotStream({
+        remoteUrl: args.remoteUrl,
+        token: args.token,
+        namespace: args.namespace,
+        includeTranscripts: args.includeTranscripts,
+      });
+    } catch (error) {
+      if (!isOfflineSnapshotStreamFallbackError(error)) throw error;
     }
   }
   return fetchOfflineJson(
@@ -5813,6 +5927,11 @@ export function offlineSnapshotBasePostBodyFits(body: string): boolean {
 export function isOfflineSnapshotPostFallbackError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /offline-sync\/snapshot\b.* returned (404|405|413)\b/.test(message);
+}
+
+function isOfflineSnapshotStreamFallbackError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /offline-sync\/snapshot-stream\b.* returned (404|405)\b/.test(message);
 }
 
 async function fetchOfflineFiles(args: {

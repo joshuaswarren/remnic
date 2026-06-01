@@ -594,6 +594,44 @@ async function readPlainFileContentChunk(options: {
   }
 }
 
+export async function* iterateOfflineSyncSnapshotFileRecords(options: {
+  root: string;
+  includeContent?: boolean;
+  includeTranscripts?: boolean;
+  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+  readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+}): AsyncIterable<OfflineSyncFileRecord> {
+  const rootAbs = path.resolve(options.root);
+  const root = await prepareSafeArchiveRoot(rootAbs, "iterateOfflineSyncSnapshotFileRecords", "root");
+  const includeTranscripts = options.includeTranscripts !== false;
+
+  async function* walk(dirAbs: string): AsyncIterable<OfflineSyncFileRecord> {
+    let entries = await readdir(dirAbs, { withFileTypes: true });
+    entries = entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const abs = path.join(dirAbs, entry.name);
+      const relPosix = path.relative(root.abs, abs).split(path.sep).join("/");
+      if (shouldExcludeRelPath(relPosix, includeTranscripts)) continue;
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        yield* walk(abs);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      yield await readOfflineSyncFileRecord({
+        root,
+        relPath: relPosix,
+        filePath: abs,
+        includeContent: options.includeContent === true,
+        readFile: options.readFile,
+        readFileDigest: options.readFileDigest,
+      });
+    }
+  }
+
+  yield* walk(root.abs);
+}
+
 export async function buildOfflineSyncSnapshot(options: {
   root: string;
   sourceId: string;
@@ -603,36 +641,9 @@ export async function buildOfflineSyncSnapshot(options: {
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
 }): Promise<OfflineSyncSnapshot> {
-  const rootAbs = path.resolve(options.root);
-  const root = await prepareSafeArchiveRoot(rootAbs, "buildOfflineSyncSnapshot", "root");
   const includeTranscripts = options.includeTranscripts !== false;
   const files: OfflineSyncFileRecord[] = [];
-
-  async function walk(dirAbs: string): Promise<void> {
-    let entries = await readdir(dirAbs, { withFileTypes: true });
-    entries = entries.sort((left, right) => left.name.localeCompare(right.name));
-    for (const entry of entries) {
-      const abs = path.join(dirAbs, entry.name);
-      const relPosix = path.relative(root.abs, abs).split(path.sep).join("/");
-      if (shouldExcludeRelPath(relPosix, includeTranscripts)) continue;
-      if (entry.isSymbolicLink()) continue;
-      if (entry.isDirectory()) {
-        await walk(abs);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      files.push(await readOfflineSyncFileRecord({
-        root,
-        relPath: relPosix,
-        filePath: abs,
-        includeContent: options.includeContent === true,
-        readFile: options.readFile,
-        readFileDigest: options.readFileDigest,
-      }));
-    }
-  }
-
-  await walk(root.abs);
+  for await (const file of iterateOfflineSyncSnapshotFileRecords(options)) files.push(file);
 
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,

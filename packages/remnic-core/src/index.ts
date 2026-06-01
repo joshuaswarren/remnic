@@ -696,6 +696,7 @@ export {
   buildOfflineSyncSnapshotForPaths,
   defaultOfflineSyncStatePath,
   fileStatesFromSnapshot,
+  iterateOfflineSyncSnapshotFileRecords,
   normalizeOfflineSyncChangeset,
   normalizeOfflineSyncSnapshot,
   offlineSyncStateFromSnapshot,

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -642,6 +643,42 @@ export class EngramAccessHttpServer {
         includeContent: includeContentRaw !== "false",
       });
       this.respondJson(res, 200, result);
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
+      (pathname === "/engram/v1/offline-sync/snapshot-stream" ||
+        pathname === "/remnic/v1/offline-sync/snapshot-stream")
+    ) {
+      const includeTranscriptsRaw = parsed.searchParams.get("include_transcripts");
+      const includeContentRaw = parsed.searchParams.get("content");
+      if (
+        includeTranscriptsRaw !== null &&
+        includeTranscriptsRaw !== "true" &&
+        includeTranscriptsRaw !== "false"
+      ) {
+        throw new EngramAccessInputError(
+          `include_transcripts must be one of: true, false (got: ${includeTranscriptsRaw})`,
+        );
+      }
+      if (
+        includeContentRaw !== null &&
+        includeContentRaw !== "false"
+      ) {
+        throw new EngramAccessInputError("snapshot-stream content must be false");
+      }
+      const namespaceParam = parsed.searchParams.get("namespace");
+      const result = await this.service.offlineSyncSnapshotStream({
+        namespace: this.resolveNamespace(
+          req,
+          namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined,
+        ),
+        principal: this.resolveRequestPrincipal(req),
+        includeTranscripts: includeTranscriptsRaw !== "false",
+        includeContent: false,
+      });
+      await this.respondOfflineSnapshotStream(res, result);
       return;
     }
 
@@ -1903,6 +1940,37 @@ export class EngramAccessHttpServer {
       res.setHeader("x-request-id", cid);
     }
     res.end(body);
+  }
+
+  private async respondOfflineSnapshotStream(
+    res: ServerResponse,
+    snapshot: Awaited<ReturnType<EngramAccessService["offlineSyncSnapshotStream"]>>,
+  ): Promise<void> {
+    res.statusCode = 200;
+    res.setHeader("content-type", "application/x-ndjson; charset=utf-8");
+    res.setHeader("cache-control", "no-store");
+    const cid = correlationIdStore.getStore();
+    if (cid) {
+      res.setHeader("x-request-id", cid);
+    }
+    const writeLine = async (payload: unknown): Promise<void> => {
+      if (!res.write(`${JSON.stringify(payload)}\n`)) {
+        await once(res, "drain");
+      }
+    };
+    await writeLine({
+      type: "snapshot",
+      namespace: snapshot.namespace,
+      format: snapshot.format,
+      schemaVersion: snapshot.schemaVersion,
+      createdAt: snapshot.createdAt,
+      sourceId: snapshot.sourceId,
+      includeTranscripts: snapshot.includeTranscripts,
+    });
+    for await (const file of snapshot.files) {
+      await writeLine({ type: "file", file });
+    }
+    res.end();
   }
 
   private respondBinary(
