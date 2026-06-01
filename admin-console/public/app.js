@@ -1474,9 +1474,12 @@ function applyGraphEvent(event) {
       hadEdges.add(e.source);
       hadEdges.add(e.target);
     }
-    graphData.edges = graphData.edges.filter(
-      (e) => !(e.source === p.source && e.target === p.target && e.kind === p.kind),
-    );
+    for (let i = graphData.edges.length - 1; i >= 0; i -= 1) {
+      const e = graphData.edges[i];
+      if (e.source === p.source && e.target === p.target && e.kind === p.kind) {
+        graphData.edges.splice(i, 1);
+      }
+    }
     // Build the still-connected set after removal.
     const stillConnected = new Set();
     for (const e of graphData.edges) {
@@ -1484,9 +1487,12 @@ function applyGraphEvent(event) {
       stillConnected.add(e.target);
     }
     // Only prune a node when it was connected before AND is now orphaned.
-    graphData.nodes = graphData.nodes.filter(
-      (n) => !hadEdges.has(n.id) || stillConnected.has(n.id),
-    );
+    for (let i = graphData.nodes.length - 1; i >= 0; i -= 1) {
+      const n = graphData.nodes[i];
+      if (hadEdges.has(n.id) && !stillConnected.has(n.id)) {
+        graphData.nodes.splice(i, 1);
+      }
+    }
     if (graphSim) graphSim.reheat();
     drawGraph();
   }

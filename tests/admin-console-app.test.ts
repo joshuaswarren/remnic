@@ -484,6 +484,40 @@ test("duplicate orphan edges are not queued twice", async () => {
   assert.equal(_orphanEdgeQueue.length, 1, "duplicate orphan edge must not be queued twice");
 });
 
+test("edge-removed mutates graph arrays in place for the active simulation", async () => {
+  const { applyGraphEvent, getContext, getGraphData, ts } = await loadGraphEventContext();
+  const context = getContext();
+
+  vm.runInContext(
+    `
+      const a = { id: "facts/a.md", label: "A", kind: "fact", score: 1, x: 10, y: 10, vx: 0, vy: 0 };
+      const b = { id: "facts/b.md", label: "B", kind: "fact", score: 1, x: 20, y: 20, vx: 0, vy: 0 };
+      const c = { id: "facts/c.md", label: "C", kind: "fact", score: 1, x: 30, y: 30, vx: 0, vy: 0 };
+      graphData.nodes.push(a, b, c);
+      graphData.edges.push({ source: "facts/a.md", target: "facts/b.md", kind: "entity", weight: 1, label: "", confidence: 1, _srcNode: a, _tgtNode: b });
+      graphSim = createForceSimulation(graphData.nodes, graphData.edges, 800, 520);
+      globalThis.__nodesRef = graphData.nodes;
+      globalThis.__edgesRef = graphData.edges;
+    `,
+    context,
+  );
+
+  const before = getGraphData();
+  applyGraphEvent({
+    type: "edge-removed",
+    payload: { source: "facts/a.md", target: "facts/b.md", kind: "entity" },
+    ts,
+  });
+  const after = getGraphData();
+
+  assert.equal(after.nodes, before.nodes, "node array identity must be preserved");
+  assert.equal(after.edges, before.edges, "edge array identity must be preserved");
+  assert.equal(after.edges.length, 0);
+  assert.equal(after.nodes.map((node) => (node as { id: string }).id).join(","), "facts/c.md");
+  assert.equal(vm.runInContext("globalThis.__nodesRef === graphData.nodes", context), true);
+  assert.equal(vm.runInContext("globalThis.__edgesRef === graphData.edges", context), true);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // applyGraphEvent: guard for graphData === null
 // ─────────────────────────────────────────────────────────────────────────────
