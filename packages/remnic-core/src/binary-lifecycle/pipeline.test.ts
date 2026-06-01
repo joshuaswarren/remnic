@@ -167,6 +167,40 @@ test("binary lifecycle blocks manifest cleanup paths outside memoryDir", async (
   }
 });
 
+test("binary lifecycle allows hidden asset names that remain inside memoryDir", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-hidden-clean-"));
+  try {
+    await writeFile(path.join(memoryDir, "..hidden.png"), "hidden", "utf8");
+    await writeManifest(memoryDir, {
+      version: 1,
+      assets: [
+        {
+          originalPath: "..hidden.png",
+          mirroredPath: "remote/..hidden.png",
+          contentHash: sha256("hidden"),
+          sizeBytes: "hidden".length,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          redirectedAt: "2026-01-01T00:00:00.000Z",
+          status: "redirected",
+        },
+      ],
+    });
+
+    const result = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    const manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string; cleanedAt?: string }> };
+
+    assert.equal(result.cleaned, 1);
+    assert.deepEqual(result.errors, []);
+    assert.equal(manifest.assets[0]?.status, "cleaned");
+    assert.equal(typeof manifest.assets[0]?.cleanedAt, "string");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("binary lifecycle dry-run does not mark missing redirected assets cleaned", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-dry-clean-"));
   try {

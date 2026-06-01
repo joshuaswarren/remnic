@@ -84,7 +84,7 @@ function resolveManifestAssetPath(memoryDir: string, originalPath: string): stri
   const memoryRoot = path.resolve(memoryDir);
   const fullPath = path.resolve(memoryRoot, originalPath);
   const relative = path.relative(memoryRoot, fullPath);
-  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+  if (relative === "" || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     return null;
   }
 
