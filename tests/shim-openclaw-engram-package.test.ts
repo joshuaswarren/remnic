@@ -21,8 +21,8 @@ test("Phase C shim package keeps its source manifest aligned", async () => {
   assert.equal(bin["engram-access"], "./bin/engram-access.js");
   assert.equal(exportsMap["."].import, "./dist/index.js");
   assert.equal(exportsMap["./access-cli"].import, "./dist/access-cli.js");
-  assert.equal(dependencies["@remnic/plugin-openclaw"], "^1.0.36");
-  assert.equal(dependencies["@remnic/core"], "^1.1.20");
+  assert.equal(dependencies["@remnic/plugin-openclaw"], "workspace:^");
+  assert.equal(dependencies["@remnic/core"], "workspace:^");
 });
 
 test("Phase C shim register binds the legacy plugin id even when called unbound", async () => {
