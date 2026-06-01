@@ -386,4 +386,24 @@ describe("fetchAllMem0Memories (record/replay)", () => {
     });
     assert.equal(firstRequestUrl, "https://self-hosted.mem0.test/memories/");
   });
+
+  it("uses the legacy v1 path by default when legacyGet is enabled", async () => {
+    let firstRequestUrl = "";
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
+      firstRequestUrl = String(input);
+      return new Response(JSON.stringify({ results: [], next: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await fetchAllMem0Memories({
+      apiKey: "synthetic-key",
+      baseUrl: "https://api.mem0.test",
+      fetchImpl,
+      legacyGet: true,
+    });
+
+    assert.equal(firstRequestUrl, "https://api.mem0.test/v1/memories/");
+  });
 });

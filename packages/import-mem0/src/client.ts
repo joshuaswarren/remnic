@@ -78,6 +78,7 @@ export interface Mem0ClientOptions {
 
 const DEFAULT_BASE_URL = "https://api.mem0.ai";
 const DEFAULT_LIST_PATH = "/v3/memories/?page=1&page_size=50";
+const DEFAULT_LEGACY_GET_LIST_PATH = "/v1/memories/";
 
 /**
  * Fetch all mem0 memories across pagination. Returns a flat array; the
@@ -98,7 +99,10 @@ export async function fetchAllMem0Memories(
   }
   const sleep = options.sleep ?? defaultSleep;
   const base = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
-  const listPath = normalizeListPath(options.listPath ?? DEFAULT_LIST_PATH);
+  const defaultListPath = options.legacyGet === true
+    ? DEFAULT_LEGACY_GET_LIST_PATH
+    : DEFAULT_LIST_PATH;
+  const listPath = normalizeListPath(options.listPath ?? defaultListPath);
   const intervalMs =
     options.rateLimit && options.rateLimit > 0 ? 1000 / options.rateLimit : 0;
 
