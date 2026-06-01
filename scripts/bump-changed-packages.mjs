@@ -253,7 +253,7 @@ function changedFilesBaseRef(repoRoot, base, head) {
   );
 }
 
-async function syncOpenClawManifestVersion(repoRoot, relativeManifestPath, version, dryRun) {
+async function syncJsonManifestVersion(repoRoot, relativeManifestPath, version, dryRun) {
   const manifestPath = path.join(repoRoot, relativeManifestPath);
   if (!(await pathExists(manifestPath))) {
     return false;
@@ -270,18 +270,25 @@ async function syncCompanionVersions(repoRoot, pkg, version, dryRun) {
   if (pkg.relativeDir === "packages/plugin-openclaw") {
     const packageManifest = "packages/plugin-openclaw/openclaw.plugin.json";
     const rootManifest = "openclaw.plugin.json";
-    if (await syncOpenClawManifestVersion(repoRoot, packageManifest, version, dryRun)) {
+    if (await syncJsonManifestVersion(repoRoot, packageManifest, version, dryRun)) {
       changedFiles.push(packageManifest);
     }
-    if (await syncOpenClawManifestVersion(repoRoot, rootManifest, version, dryRun)) {
+    if (await syncJsonManifestVersion(repoRoot, rootManifest, version, dryRun)) {
       changedFiles.push(rootManifest);
     }
   }
 
   if (pkg.relativeDir === "packages/shim-openclaw-engram") {
     const shimManifest = "packages/shim-openclaw-engram/openclaw.plugin.json";
-    if (await syncOpenClawManifestVersion(repoRoot, shimManifest, version, dryRun)) {
+    if (await syncJsonManifestVersion(repoRoot, shimManifest, version, dryRun)) {
       changedFiles.push(shimManifest);
+    }
+  }
+
+  if (pkg.relativeDir === "packages/plugin-claude-code") {
+    const claudeManifest = "packages/plugin-claude-code/.claude-plugin/plugin.json";
+    if (await syncJsonManifestVersion(repoRoot, claudeManifest, version, dryRun)) {
+      changedFiles.push(claudeManifest);
     }
   }
 

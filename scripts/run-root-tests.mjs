@@ -10,6 +10,7 @@ const tsxBin = process.platform === "win32" ? "tsx.cmd" : "tsx";
 const testArgs = [
   "--test",
   "tests/**/*.test.ts",
+  "tests/**/*.test.mjs",
   "packages/*/src/**/*.test.ts",
   "packages/*/src/**/*.test.tsx",
   "dashboard/lib/*.test.ts",

@@ -46,6 +46,7 @@ test("root test runner applies remnic source conditions and test globs portably"
 
   const script = readFileSync(join(repoRoot, "scripts", "run-root-tests.mjs"), "utf8");
   assert.match(script, /"tests\/\*\*\/\*\.test\.ts"/);
+  assert.match(script, /"tests\/\*\*\/\*\.test\.mjs"/);
   assert.match(script, /"packages\/\*\/src\/\*\*\/\*\.test\.ts"/);
   assert.match(script, /"packages\/\*\/src\/\*\*\/\*\.test\.tsx"/);
   assert.match(script, /"dashboard\/lib\/\*\.test\.ts"/);

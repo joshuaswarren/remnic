@@ -72,10 +72,11 @@ test("set-release-version accepts prerelease and build metadata SemVer", () => {
   assert.match(result.stdout, /1\.0\.0-rc\.1\+001/);
 });
 
-test("set-release-version syncs OpenClaw companion manifests", async () => {
+test("set-release-version syncs companion plugin manifests", async () => {
   const repo = await mkdtemp(path.join(os.tmpdir(), "remnic-release-version-"));
   try {
     await mkdir(path.join(repo, "packages", "plugin-openclaw"), { recursive: true });
+    await mkdir(path.join(repo, "packages", "plugin-claude-code", ".claude-plugin"), { recursive: true });
     await mkdir(path.join(repo, "packages", "shim-openclaw-engram"), { recursive: true });
     await writeJson(path.join(repo, "package.json"), {
       private: true,
@@ -91,6 +92,14 @@ test("set-release-version syncs OpenClaw companion manifests", async () => {
     });
     await writeJson(path.join(repo, "openclaw.plugin.json"), {
       id: "openclaw-remnic",
+      version: "1.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "plugin-claude-code", "package.json"), {
+      name: "@remnic/plugin-claude-code",
+      version: "1.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "plugin-claude-code", ".claude-plugin", "plugin.json"), {
+      name: "Remnic",
       version: "1.0.0",
     });
     await writeJson(path.join(repo, "packages", "shim-openclaw-engram", "package.json"), {
@@ -121,6 +130,14 @@ test("set-release-version syncs OpenClaw companion manifests", async () => {
       "1.2.3",
     );
     assert.equal((await readJson(path.join(repo, "openclaw.plugin.json"))).version, "1.2.3");
+    assert.equal(
+      (await readJson(path.join(repo, "packages", "plugin-claude-code", "package.json"))).version,
+      "1.2.3",
+    );
+    assert.equal(
+      (await readJson(path.join(repo, "packages", "plugin-claude-code", ".claude-plugin", "plugin.json"))).version,
+      "1.2.3",
+    );
     assert.equal(
       (await readJson(path.join(repo, "packages", "shim-openclaw-engram", "package.json"))).version,
       "1.2.3",

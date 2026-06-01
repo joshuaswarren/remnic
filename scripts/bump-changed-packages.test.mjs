@@ -39,6 +39,8 @@ async function withRepo(fn) {
 
     await mkdir(path.join(repo, "packages", "remnic-core", "src"), { recursive: true });
     await mkdir(path.join(repo, "packages", "plugin-openclaw"), { recursive: true });
+    await mkdir(path.join(repo, "packages", "plugin-claude-code", ".claude-plugin"), { recursive: true });
+    await mkdir(path.join(repo, "packages", "plugin-claude-code", "src"), { recursive: true });
     await mkdir(path.join(repo, "packages", "bench-ui"), { recursive: true });
 
     await writeJson(path.join(repo, "package.json"), {
@@ -63,6 +65,18 @@ async function withRepo(fn) {
     await writeJson(path.join(repo, "openclaw.plugin.json"), {
       id: "openclaw-remnic",
       version: "2.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "plugin-claude-code", "package.json"), {
+      name: "@remnic/plugin-claude-code",
+      version: "3.0.0",
+    });
+    await writeFile(
+      path.join(repo, "packages", "plugin-claude-code", "src", "index.ts"),
+      "export {};\n",
+    );
+    await writeJson(path.join(repo, "packages", "plugin-claude-code", ".claude-plugin", "plugin.json"), {
+      name: "Remnic",
+      version: "3.0.0",
     });
     await writeJson(path.join(repo, "packages", "bench-ui", "package.json"), {
       name: "@remnic/bench-ui",
@@ -120,6 +134,26 @@ test("root OpenClaw manifest changes bump plugin package and synced manifests", 
     assert.equal(plugin.version, "2.0.1");
     assert.equal(rootManifest.version, "2.0.1");
     assert.equal(packageManifest.version, "2.0.1");
+  });
+});
+
+test("Claude package changes bump and sync the Claude companion manifest", async () => {
+  await withRepo(async (repo) => {
+    await writeFile(
+      path.join(repo, "packages", "plugin-claude-code", "src", "index.ts"),
+      "export const changed = true;\n",
+    );
+    git(repo, ["add", "."]);
+    git(repo, ["commit", "-qm", "change claude plugin"]);
+
+    run(repo, "node", [scriptPath, "--base", "v1.0.0"]);
+
+    const plugin = await readJson(path.join(repo, "packages", "plugin-claude-code", "package.json"));
+    const companionManifest = await readJson(
+      path.join(repo, "packages", "plugin-claude-code", ".claude-plugin", "plugin.json"),
+    );
+    assert.equal(plugin.version, "3.0.1");
+    assert.equal(companionManifest.version, "3.0.1");
   });
 });
 

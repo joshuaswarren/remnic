@@ -131,15 +131,29 @@ jobs:
           if [ -n "${OVERRIDE}" ]; then
             # Strip leading 'v' if provided
             OVERRIDE="${OVERRIDE#v}"
+            OVERRIDE_TAG="v${OVERRIDE}"
+            if git rev-parse -q --verify "refs/tags/${OVERRIDE_TAG}" >/dev/null; then
+              echo "::error title=Version override tag exists::${OVERRIDE_TAG} already exists locally. Choose a new version override."
+              exit 1
+            fi
+            FETCH_LOG="$(mktemp)"
+            trap 'rm -f "$FETCH_LOG"' EXIT
+            if git fetch --force origin "refs/tags/${OVERRIDE_TAG}:refs/tags/${OVERRIDE_TAG}" 2>"${FETCH_LOG}"; then
+              echo "::error title=Version override tag exists::${OVERRIDE_TAG} already exists on origin. Choose a new version override."
+              exit 1
+            elif ! grep -Eiq "couldn'?t find remote ref|could not find remote ref" "${FETCH_LOG}"; then
+              cat "${FETCH_LOG}" >&2
+              exit 1
+            fi
             {
               echo "tag_exists=false"
-              echo "tag_name=v${OVERRIDE}"
+              echo "tag_name=${OVERRIDE_TAG}"
               echo "new_version=${OVERRIDE}"
               echo "bump_type=override"
             } >> "$GITHUB_OUTPUT"
             node scripts/set-release-version.mjs "${OVERRIDE}"
             pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
-            git add package.json packages/*/package.json packages/*/openclaw.plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
+            git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "::notice title=Release commit skipped::Version already matches v${OVERRIDE}; no package files changed."
             else
@@ -211,7 +225,7 @@ jobs:
             echo "::notice title=Bootstrap release::${BOOTSTRAP_PACKAGE} is not published yet; using package.json version ${PKG_VERSION}."
             node scripts/set-release-version.mjs "${PKG_VERSION}"
             pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
-            git add package.json packages/*/package.json packages/*/openclaw.plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
+            git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
             if git diff --cached --quiet; then
               echo "::notice title=Release commit skipped::Version already matches v${PKG_VERSION}; no package files changed."
             else
@@ -259,7 +273,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           node scripts/set-release-version.mjs "${NEXT_VERSION}"
           pnpm install --lockfile-only --no-frozen-lockfile --ignore-scripts
-          git add package.json packages/*/package.json packages/*/openclaw.plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
+          git add package.json packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "::notice title=Release commit skipped::Version already matches v${NEXT_VERSION}; no package files changed."
           else
@@ -291,13 +305,13 @@ jobs:
             --head "${SOURCE_MAIN_SHA}" \
             --bump "${PACKAGE_BUMP}"
 
-          if git diff --quiet -- packages/*/package.json packages/*/openclaw.plugin.json openclaw.plugin.json; then
+          if git diff --quiet -- packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json; then
             echo "::notice title=Package version bump skipped::No public workspace package versions changed."
             exit 0
           fi
 
           pnpm install --lockfile-only --no-frozen-lockfile
-          git add packages/*/package.json packages/*/openclaw.plugin.json openclaw.plugin.json pnpm-lock.yaml
+          git add packages/*/package.json packages/*/openclaw.plugin.json packages/*/.claude-plugin/plugin.json openclaw.plugin.json pnpm-lock.yaml
           git commit -m "chore(release): bump changed workspace packages [skip ci]"
 
       - name: Resolve final release metadata
@@ -393,6 +407,36 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i ~/.ssh/release_deploy_key -o StrictHostKeyChecking=no"
           git push "git@github.com:${{ github.repository }}.git" "${RELEASE_COMMIT}:refs/heads/main"
 
+      - name: Prepare publish-order helper
+        run: cp scripts/publish-order.mjs "${RUNNER_TEMP}/publish-order.mjs"
+
+      - name: Checkout release source for publish
+        run: git checkout --detach "${{ steps.release_commit.outputs.release_commit }}"
+
+      - name: Ensure npm supports trusted publishing
+        # Pin npm so provenance/trusted-publishing behavior only changes through review.
+        run: npm install -g npm@11.16.0
+
+      - name: Install dependencies for release source
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate workspace package publish order
+        run: node "${RUNNER_TEMP}/publish-order.mjs" --repo-root "$PWD" --output "${RUNNER_TEMP}/remnic-publish-order.txt"
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Build all packages
+        run: |
+          pnpm -r run build
+          pnpm run build
+
+      - name: Verify root release artifacts
+        run: node scripts/check-release-artifacts.mjs
+
+      - name: Verify OpenClaw ClawHub artifact packlist
+        run: pnpm run verify:openclaw-clawpack
+
       - name: Ensure version tag on release commit
         id: release_tag
         env:
@@ -439,54 +483,40 @@ jobs:
           git push "git@github.com:${{ github.repository }}.git" "refs/tags/${TAG}"
           echo "tag_created=true" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release_metadata.outputs.tag_name }}
-          name: ${{ steps.release_metadata.outputs.tag_name }}
-          generate_release_notes: true
-
-      - name: Checkout release tag source for publish
-        run: git checkout --detach "${{ steps.release_metadata.outputs.tag_name }}"
-
-      - name: Ensure npm supports trusted publishing
-        # Pin npm so provenance/trusted-publishing behavior only changes through review.
-        run: npm install -g npm@11.16.0
-
-      - name: Install dependencies for tagged source
-        run: pnpm install --frozen-lockfile
-
-      - name: Rebuild native modules
-        run: pnpm rebuild better-sqlite3
-
-      - name: Build all packages
+      - name: Fail incomplete existing npm release
+        if: steps.release_metadata.outputs.tag_exists == 'true'
         run: |
-          pnpm -r run build
-          pnpm run build
-
-      - name: Verify root release artifacts
-        run: node scripts/check-release-artifacts.mjs
-
-      - name: Verify OpenClaw ClawHub artifact packlist
-        run: pnpm run verify:openclaw-clawpack
-
-      - name: Generate workspace package publish order
-        run: node scripts/publish-order.mjs --output "${RUNNER_TEMP}/remnic-publish-order.txt"
-
-      - name: Publish root package to npm
-        run: |
-          IS_PRIVATE="$(node -p "require('./package.json').private || false")"
-          if [ "$IS_PRIVATE" = "true" ]; then
-            echo "::notice title=NPM publish skipped::Root package is private workspace metadata only."
-            exit 0
-          fi
           VERSION="${{ steps.release_metadata.outputs.new_version }}"
-          PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
-            echo "::notice title=NPM publish skipped::${PACKAGE_NAME}@${VERSION} is already published."
-            exit 0
+          missing=0
+          check_package() {
+            local package_name="$1"
+            local package_version="$2"
+            if ! npm view "${package_name}@${package_version}" version >/dev/null 2>&1; then
+              echo "::error title=Incomplete tagged release::${package_name}@${package_version} is missing from npm for existing tag ${{ steps.release_metadata.outputs.tag_name }}."
+              missing=1
+            fi
+          }
+
+          if [ "$(node -p "require('./package.json').private || false")" != "true" ]; then
+            check_package "$(node -p "require('./package.json').name")" "${VERSION}"
           fi
-          npm publish --access public --provenance
+
+          mapfile -t PUBLISH_ORDER < "${RUNNER_TEMP}/remnic-publish-order.txt"
+          for pkg_dir in "${PUBLISH_ORDER[@]}"; do
+            pkg_json="$pkg_dir/package.json"
+            if [ ! -f "$pkg_json" ]; then
+              continue
+            fi
+            if [ "$(node -p "require('./$pkg_json').private || false")" = "true" ]; then
+              continue
+            fi
+            check_package "$(node -p "require('./$pkg_json').name")" "$(node -p "require('./$pkg_json').version")"
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Existing release tag ${{ steps.release_metadata.outputs.tag_name }} is incomplete. Resolve the npm publication gap or create a superseding release instead of reusing this tag."
+            exit 1
+          fi
 
       - name: Publish workspace packages to npm
         run: |
@@ -540,6 +570,21 @@ jobs:
               exit $publish_status
             fi
           done
+
+      - name: Publish root package to npm
+        run: |
+          IS_PRIVATE="$(node -p "require('./package.json').private || false")"
+          if [ "$IS_PRIVATE" = "true" ]; then
+            echo "::notice title=NPM publish skipped::Root package is private workspace metadata only."
+            exit 0
+          fi
+          VERSION="${{ steps.release_metadata.outputs.new_version }}"
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "::notice title=NPM publish skipped::${PACKAGE_NAME}@${VERSION} is already published."
+            exit 0
+          fi
+          npm publish --access public --provenance
 
       - name: Publish OpenClaw plugin to ClawHub
         env:
@@ -603,3 +648,10 @@ jobs:
           fi
 
           clawhub package rescan "${CLAWHUB_PACKAGE_NAME}" --yes --json || true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_metadata.outputs.tag_name }}
+          name: ${{ steps.release_metadata.outputs.tag_name }}
+          generate_release_notes: true

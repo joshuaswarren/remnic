@@ -39,8 +39,12 @@ test("release workflow publish order matches the supported npm install surfaces"
   const publishDirs = JSON.parse(order.stdout) as string[];
 
   assert.deepEqual([...publishDirs].sort(), [...expectedPublishDirs].sort());
-  assert.match(workflow, /Generate workspace package publish order/);
-  assert.match(workflow, /node scripts\/publish-order\.mjs --output/);
+  assert.match(
+    workflow,
+    /Checkout release source for publish[\s\S]*Install dependencies for release source[\s\S]*Generate workspace package publish order/,
+  );
+  assert.match(workflow, /cp scripts\/publish-order\.mjs "\$\{RUNNER_TEMP\}\/publish-order\.mjs"/);
+  assert.match(workflow, /node "\$\{RUNNER_TEMP\}\/publish-order\.mjs" --repo-root "\$PWD" --output/);
   assert.match(workflow, /mapfile -t PUBLISH_ORDER/);
 });
 
@@ -113,13 +117,9 @@ test("@remnic/server build verifies declared bin artifacts", async () => {
 });
 
 test("@remnic/server bin wrapper help includes the CLI environment contract", async () => {
-  // The source-controlled bin helper is plain JavaScript, so this import is
-  // intentionally typed at the call site.
-  // Keep the check here with the release workflow package-surface tests:
-  // the package manifest, published files list, and runtime help text are all
-  // part of the same npm install contract.
-  // If the helper moves to TypeScript later, this import can switch to the
-  // package's declared export surface.
+  // The source-controlled bin helper is plain JavaScript; keep this
+  // test typed at the call site until it grows a declared TypeScript
+  // export surface.
   const { runServerBin } = await import("../packages/remnic-server/bin/server-bin.js") as {
     runServerBin: (
       commandName: string,
