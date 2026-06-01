@@ -1,5 +1,5 @@
 import path from "node:path";
-import { access } from "node:fs/promises";
+import { access, lstat, readdir } from "node:fs/promises";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { StorageManager } from "../storage.js";
 import type { PluginConfig } from "../types.js";
@@ -10,6 +10,23 @@ async function exists(p: string): Promise<boolean> {
   try {
     await access(p);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function hasStoredEntries(p: string): Promise<boolean> {
+  try {
+    const entry = await lstat(p);
+    if (entry.isSymbolicLink()) return true;
+    if (!entry.isDirectory()) return true;
+    const children = await readdir(p, { withFileTypes: true });
+    for (const child of children) {
+      const childPath = path.join(p, child.name);
+      if (child.isSymbolicLink() || child.isFile()) return true;
+      if (child.isDirectory() && (await hasStoredEntries(childPath))) return true;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -35,7 +52,7 @@ async function hasAnyLegacyData(
     ? [...LEGACY_NAMESPACE_CONTENT_CHILDREN, ...LEGACY_NAMESPACE_RUNTIME_CHILDREN]
     : LEGACY_NAMESPACE_CONTENT_CHILDREN;
   for (const child of children) {
-    if (await exists(path.join(rootDir, child))) return true;
+    if (await hasStoredEntries(path.join(rootDir, child))) return true;
   }
   return false;
 }

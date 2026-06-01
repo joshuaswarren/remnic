@@ -250,6 +250,7 @@ test("runNamespaceMigration rejects symlinked namespace reservation paths", asyn
 test("default namespace router keeps legacy root when partial migrated root exists", async () => {
   const memoryDir = tmpDir("engram-namespace-partial-default");
   await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+  await writeFile(path.join(memoryDir, "facts", "legacy.md"), "Legacy fact\n", "utf-8");
   await mkdir(path.join(memoryDir, "namespaces", "default", "entities"), { recursive: true });
 
   const router = new NamespaceStorageRouter(baseConfig(memoryDir));
@@ -257,10 +258,25 @@ test("default namespace router keeps legacy root when partial migrated root exis
   assert.equal(storage.dir, memoryDir);
 });
 
+test("default namespace router ignores empty bootstrap directories after tokenized migration", async () => {
+  const memoryDir = tmpDir("engram-namespace-tokenized-default-with-empty-bootstrap");
+  const tokenizedDefault = path.join(memoryDir, "namespaces", "ns-64656661756c74");
+  await mkdir(path.join(tokenizedDefault, "facts"), { recursive: true });
+  await writeFile(path.join(tokenizedDefault, "facts", "migrated.md"), "Migrated default fact\n", "utf-8");
+  await mkdir(path.join(memoryDir, "facts", "2026-05-31"), { recursive: true });
+  await mkdir(path.join(memoryDir, "config"), { recursive: true });
+  await mkdir(path.join(memoryDir, "identity", "incidents"), { recursive: true });
+
+  const router = new NamespaceStorageRouter(baseConfig(memoryDir));
+  const storage = await router.storageFor("default");
+  assert.equal(storage.dir, tokenizedDefault);
+});
+
 test("default namespace router ignores top-level runtime state after tokenized migration", async () => {
   const memoryDir = tmpDir("engram-namespace-tokenized-default-with-state");
   const tokenizedDefault = path.join(memoryDir, "namespaces", "ns-64656661756c74");
   await mkdir(path.join(tokenizedDefault, "facts"), { recursive: true });
+  await writeFile(path.join(tokenizedDefault, "facts", "migrated.md"), "Migrated default fact\n", "utf-8");
   await mkdir(path.join(memoryDir, "state", "graphs"), { recursive: true });
 
   const router = new NamespaceStorageRouter(baseConfig(memoryDir));
