@@ -6,8 +6,17 @@ export PATH="/opt/homebrew/opt/gh/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${PAT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 BENCHMARK="${1:-amemgym}"
-RUN_ID="${RUN_ID:-public-matrix-codex-bf9b2643-20260515T052919Z}"
-RESULTS_DIR="${RESULTS_DIR:-${HOME}/.remnic/bench/results/${RUN_ID}}"
+RESULTS_ROOT="${RESULTS_ROOT:-${HOME}/.remnic/bench/results}"
+. "${SCRIPT_DIR}/memoryarena-run-id.sh"
+
+LEGACY_MEMORYARENA_RUN_ID="public-matrix-codex-bf9b2643-20260515T052919Z"
+if [[ -n "${RESULTS_DIR:-}" && -z "${RUN_ID:-}" ]]; then
+  RUN_ID="$(basename "${RESULTS_DIR%/}")"
+else
+  RUN_ID="${RUN_ID:-$(latest_memoryarena_run_id)}"
+  RUN_ID="${RUN_ID:-${LEGACY_MEMORYARENA_RUN_ID}}"
+fi
+RESULTS_DIR="${RESULTS_DIR:-${RESULTS_ROOT}/${RUN_ID}}"
 INTERVAL_SECONDS="${INTERVAL_SECONDS:-1800}"
 LOG_FILE="${LOG_FILE:-${RESULTS_DIR}/next-after-memoryarena-watcher.log}"
 LOCK_DIR="${LOCK_DIR:-/tmp/remnic-next-after-memoryarena-watcher.lock}"
@@ -26,7 +35,7 @@ log() {
 
 while :; do
   set +e
-  output="$(bash "${SCRIPT_DIR}/launch-next-after-memoryarena.sh" "${BENCHMARK}" 2>&1)"
+  output="$(RUN_ID="${RUN_ID}" RESULTS_ROOT="${RESULTS_ROOT}" bash "${SCRIPT_DIR}/launch-next-after-memoryarena.sh" "${BENCHMARK}" 2>&1)"
   rc=$?
   set -e
 

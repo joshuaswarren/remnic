@@ -1916,17 +1916,60 @@ test("MemoryArena transition helper retries active-session launch collisions", a
     path.join("scripts", "bench", "public-sota", "launch-next-after-memoryarena.sh"),
     "utf8",
   );
+  const helper = await readFile(
+    path.join("scripts", "bench", "public-sota", "memoryarena-run-id.sh"),
+    "utf8",
+  );
 
-  assert.match(source, /RUN_ID="\$\{RUN_ID:-\$\{ACTIVE_SESSION\}\}"/);
+  assert.match(source, /\. "\$\{SCRIPT_DIR\}\/memoryarena-run-id\.sh"/);
+  assert.doesNotMatch(source, /latest_memoryarena_run_id\(\) \{/);
+  assert.match(helper, /latest_memoryarena_run_id\(\)/);
+  assert.match(helper, /timestamp="\$\(printf '%s' "\$\{name\}" \| sed -nE/);
+  assert.match(helper, /"\$\{timestamp\}" > "\$\{latest_timestamp\}"/);
+  assert.doesNotMatch(source, /sort \| tail -1/);
+  assert.doesNotMatch(helper, /sort \| tail -1/);
+  assert.match(source, /LATEST_MEMORYARENA_RUN_ID="\$\(latest_memoryarena_run_id\)"/);
+  assert.match(source, /RUN_ID="\$\{RUN_ID:-\$\{ACTIVE_SESSION:-\$\{LATEST_MEMORYARENA_RUN_ID:-\$\{LEGACY_MEMORYARENA_RUN_ID\}\}\}\}"/);
+  assert.match(source, /ACTIVE_SESSION="\$\{ACTIVE_SESSION:-\$\{RUN_ID\}\}"/);
   assert.match(source, /RUN_BRANCH_SUFFIX="\$\(printf '%s' "\$\{RUN_ID\}" \| sed -E/);
+  assert.match(source, /LEGACY_MEMORYARENA_FALLBACK_SUFFIX="bf9b264"/);
+  assert.match(source, /if \[\[ "\$\{RUN_BRANCH_SUFFIX\}" == "\$\{RUN_ID\}" \]\]; then/);
+  assert.match(source, /RUN_BRANCH_SUFFIX="\$\{LEGACY_MEMORYARENA_FALLBACK_SUFFIX\}"/);
+  assert.match(source, /WATCHER_SESSION="\$\{WATCHER_SESSION:-remnic-memoryarena-publish-watcher-\$\{RUN_BRANCH_SUFFIX\}\}"/);
   assert.match(source, /MEMORYARENA_BRANCH="\$\{MEMORYARENA_BRANCH:-codex\/publish-memoryarena-sota-\$\{RUN_BRANCH_SUFFIX\}\}"/);
   assert.doesNotMatch(source, /MEMORYARENA_BRANCH="\$\{MEMORYARENA_BRANCH:-codex\/publish-memoryarena-sota-bf9b264\}"/);
+  assert.doesNotMatch(source, /ACTIVE_SESSION="\$\{ACTIVE_SESSION:-public-matrix-codex-bf9b2643/);
+  assert.doesNotMatch(source, /WATCHER_SESSION="\$\{WATCHER_SESSION:-remnic-memoryarena-publish-watcher-bf9b2643/);
   assert.match(source, /--state all/);
   assert.match(source, /select\(\.state == "OPEN" or \.state == "MERGED"\)/);
   assert.match(source, /launch_status=\$\?/);
   assert.match(source, /if \[\[ "\$\{launch_status\}" -eq 3 \]\]; then/);
   assert.match(source, /waiting: active public benchmark scoring session blocked \$\{BENCHMARK\} launch; retrying/);
   assert.match(source, /exit 0[\s\S]*if \[\[ "\$\{launch_status\}" -ne 0 \]\]; then/);
+});
+
+test("MemoryArena transition watcher defaults to the latest MemoryArena run directory", async () => {
+  const source = await readFile(
+    path.join("scripts", "bench", "public-sota", "watch-next-after-memoryarena.sh"),
+    "utf8",
+  );
+  const helper = await readFile(
+    path.join("scripts", "bench", "public-sota", "memoryarena-run-id.sh"),
+    "utf8",
+  );
+
+  assert.match(source, /\. "\$\{SCRIPT_DIR\}\/memoryarena-run-id\.sh"/);
+  assert.doesNotMatch(source, /latest_memoryarena_run_id\(\) \{/);
+  assert.match(helper, /latest_memoryarena_run_id\(\)/);
+  assert.match(helper, /timestamp="\$\(printf '%s' "\$\{name\}" \| sed -nE/);
+  assert.match(helper, /"\$\{timestamp\}" > "\$\{latest_timestamp\}"/);
+  assert.doesNotMatch(source, /sort \| tail -1/);
+  assert.doesNotMatch(helper, /sort \| tail -1/);
+  assert.match(source, /RUN_ID="\$\{RUN_ID:-\$\(latest_memoryarena_run_id\)\}"/);
+  assert.match(source, /RUN_ID="\$\{RUN_ID:-\$\{LEGACY_MEMORYARENA_RUN_ID\}\}"/);
+  assert.match(source, /RESULTS_DIR="\$\{RESULTS_DIR:-\$\{RESULTS_ROOT\}\/\$\{RUN_ID\}\}"/);
+  assert.match(source, /RUN_ID="\$\{RUN_ID\}" RESULTS_ROOT="\$\{RESULTS_ROOT\}" bash "\$\{SCRIPT_DIR\}\/launch-next-after-memoryarena\.sh" "\$\{BENCHMARK\}"/);
+  assert.doesNotMatch(source, /RUN_ID="\$\{RUN_ID:-public-matrix-codex-bf9b2643/);
 });
 
 test("public SOTA completion helpers keep packaging retryable and classify verification failures as remediation", async () => {
