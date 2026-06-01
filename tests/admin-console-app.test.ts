@@ -244,12 +244,17 @@ test("drawGraph is a no-op when graphData is null", async () => {
   assert.equal(canvas._ctx.calls.length, 0);
 });
 
-test("loadMemoryGraph closes the live event stream when a reload returns an empty graph", async () => {
-  const { getContext, loadMemoryGraph } = await loadAdminConsoleContext("25", {
+test("loadMemoryGraph clears live graph reload state when a reload returns an empty graph", async () => {
+  const { getContext, loadMemoryGraph, _orphanEdgeQueue } = await loadAdminConsoleContext("25", {
     graphCanvas: new FakeCanvas(),
     graphStatus: new FakeElement(),
   });
   const context = getContext();
+  _orphanEdgeQueue.push({
+    source: "facts/old-a.md",
+    target: "facts/old-b.md",
+    kind: "entity",
+  });
 
   vm.runInContext(
     `
@@ -264,6 +269,7 @@ test("loadMemoryGraph closes the live event stream when a reload returns an empt
 
   assert.equal(vm.runInContext("globalThis.__closedGraphEventSource", context), true);
   assert.equal(vm.runInContext("graphEventSource", context), null);
+  assert.equal(_orphanEdgeQueue.length, 0);
 });
 
 test("graph pane HTML elements are present in index.html", async () => {

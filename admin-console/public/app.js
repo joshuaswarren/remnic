@@ -1199,6 +1199,7 @@ async function loadMemoryGraph() {
   // Stop any running simulation.
   if (graphSim) { graphSim.stop(); graphSim = null; }
   closeGraphEventSource();
+  _orphanEdgeQueue.length = 0;
 
   setStatus("graphStatus", "Fetching graph snapshot...");
 

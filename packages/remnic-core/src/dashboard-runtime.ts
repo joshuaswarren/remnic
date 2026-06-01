@@ -317,10 +317,11 @@ export class GraphDashboardServer {
     try {
       const parsed = new URL(origin);
       const hostname = normalizeOriginHostname(parsed.hostname);
-      if (!LOOPBACK_HOSTS.has(hostname)) return false;
       if (parsed.protocol !== "http:") return false;
       const originPort = parsed.port ? Number(parsed.port) : 80;
-      return Number.isFinite(originPort) && originPort === this.boundPort;
+      if (!Number.isFinite(originPort) || originPort !== this.boundPort) return false;
+      if (LOOPBACK_HOSTS.has(hostname)) return true;
+      return this.authToken !== null;
     } catch {
       return false;
     }

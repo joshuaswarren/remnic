@@ -302,6 +302,41 @@ test("dashboard server start recovers after listen failure", async () => {
   await server.stop();
 });
 
+test("dashboard websocket upgrade allows public same-port origins when token-authenticated", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-dashboard-server-ws-public-auth-"));
+  await mkdir(path.join(memoryDir, "state", "graphs"), { recursive: true });
+
+  const server = new GraphDashboardServer({
+    memoryDir,
+    host: "0.0.0.0",
+    port: 0,
+    publicDir: path.join(process.cwd(), "dashboard", "public"),
+    authToken: "secret-token",
+  });
+  const started = await server.start();
+  try {
+    const socket = net.createConnection({ host: "127.0.0.1", port: started.port });
+    socket.write(
+      [
+        "GET /?token=secret-token HTTP/1.1",
+        `Host: 127.0.0.1:${started.port}`,
+        "Upgrade: WebSocket",
+        "Connection: Upgrade",
+        `Origin: http://192.0.2.10:${started.port}`,
+        "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==",
+        "Sec-WebSocket-Version: 13",
+        "",
+        "",
+      ].join("\r\n"),
+    );
+    const upgradeResponse = await waitForSocketChunk(socket);
+    assert.match(upgradeResponse, /101 Switching Protocols/);
+    socket.destroy();
+  } finally {
+    await server.stop();
+  }
+});
+
 test("dashboard browser app propagates auth tokens to API and websocket requests", async () => {
   const app = await readFile(path.join(process.cwd(), "dashboard", "public", "app.js"), "utf-8");
 

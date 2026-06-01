@@ -256,3 +256,14 @@ test("default namespace router keeps legacy root when partial migrated root exis
   const storage = await router.storageFor("default");
   assert.equal(storage.dir, memoryDir);
 });
+
+test("default namespace router ignores top-level runtime state after tokenized migration", async () => {
+  const memoryDir = tmpDir("engram-namespace-tokenized-default-with-state");
+  const tokenizedDefault = path.join(memoryDir, "namespaces", "ns-64656661756c74");
+  await mkdir(path.join(tokenizedDefault, "facts"), { recursive: true });
+  await mkdir(path.join(memoryDir, "state", "graphs"), { recursive: true });
+
+  const router = new NamespaceStorageRouter(baseConfig(memoryDir));
+  const storage = await router.storageFor("default");
+  assert.equal(storage.dir, tokenizedDefault);
+});

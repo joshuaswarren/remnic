@@ -9241,6 +9241,13 @@ function failDaemonInstall(command: string, error: unknown): never {
   process.exit(1);
 }
 
+function isLaunchdLabelLoaded(label: string): boolean {
+  return firstSuccessfulResult([label], (candidate) => {
+    childProcess.execSync(`launchctl list ${candidate} 2>/dev/null`, { stdio: "pipe" });
+    return true;
+  }) === true;
+}
+
 function isLaunchdServiceLoaded(): boolean {
   return firstSuccessfulResult(LAUNCHD_LABEL_CANDIDATES, (label) => {
     childProcess.execSync(`launchctl list ${label} 2>/dev/null`, { stdio: "pipe" });
@@ -9325,11 +9332,11 @@ function daemonInstall(): void {
     try {
       launchdLoadPlist(LAUNCHD_PLIST_PATH);
     } catch (err) {
-      if (!isLaunchdServiceLoaded()) {
+      if (!isLaunchdLabelLoaded(LAUNCHD_LABEL)) {
         failDaemonInstall(`launchctl load -w ${LAUNCHD_PLIST_PATH}`, err);
       }
     }
-    if (!isLaunchdServiceLoaded()) {
+    if (!isLaunchdLabelLoaded(LAUNCHD_LABEL)) {
       failDaemonInstall(`launchctl list ${LAUNCHD_LABEL}`, new Error("service was not loaded after install"));
     }
     console.log(`Installed launchd service: ${LAUNCHD_PLIST_PATH}`);

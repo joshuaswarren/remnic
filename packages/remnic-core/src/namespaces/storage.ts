@@ -15,19 +15,26 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-const LEGACY_NAMESPACE_CHILDREN = [
+const LEGACY_NAMESPACE_CONTENT_CHILDREN = [
   ...ALL_CATEGORY_DIRS,
   "entities",
   "artifacts",
   "identity",
-  "state",
   "config",
   "summaries",
   "profile.md",
 ] as const;
 
-async function hasAnyLegacyData(rootDir: string): Promise<boolean> {
-  for (const child of LEGACY_NAMESPACE_CHILDREN) {
+const LEGACY_NAMESPACE_RUNTIME_CHILDREN = ["state"] as const;
+
+async function hasAnyLegacyData(
+  rootDir: string,
+  options: { includeRuntimeState?: boolean } = {},
+): Promise<boolean> {
+  const children = options.includeRuntimeState === true
+    ? [...LEGACY_NAMESPACE_CONTENT_CHILDREN, ...LEGACY_NAMESPACE_RUNTIME_CHILDREN]
+    : LEGACY_NAMESPACE_CONTENT_CHILDREN;
+  for (const child of children) {
     if (await exists(path.join(rootDir, child))) return true;
   }
   return false;
@@ -64,7 +71,7 @@ export class NamespaceStorageRouter {
       namespaceIdentityToken(this.config.defaultNamespace),
     );
     const tokenizedHasData =
-      (await exists(tokenizedNsDir)) && (await hasAnyLegacyData(tokenizedNsDir));
+      (await exists(tokenizedNsDir)) && (await hasAnyLegacyData(tokenizedNsDir, { includeRuntimeState: true }));
     const nsDir = tokenizedHasData
       ? tokenizedNsDir
       : (await exists(legacyNsDir)) ? legacyNsDir : tokenizedNsDir;
@@ -83,7 +90,7 @@ export class NamespaceStorageRouter {
     }
     const legacyRoot = path.join(this.config.memoryDir, "namespaces", namespace);
     const tokenizedRoot = path.join(this.config.memoryDir, "namespaces", namespaceIdentityToken(namespace));
-    if ((await exists(tokenizedRoot)) && (await hasAnyLegacyData(tokenizedRoot))) {
+    if ((await exists(tokenizedRoot)) && (await hasAnyLegacyData(tokenizedRoot, { includeRuntimeState: true }))) {
       return tokenizedRoot;
     }
     return (await exists(legacyRoot)) ? legacyRoot : tokenizedRoot;
