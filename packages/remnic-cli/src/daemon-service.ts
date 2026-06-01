@@ -186,8 +186,10 @@ export function readVerifiedDaemonPid(
     }
 
     const command = readProcessCommand(pid, execFileSync);
+    if (command === undefined) {
+      return pid;
+    }
     if (
-      command !== undefined &&
       doesProcessCommandLookLikeRemnicDaemon(command, options.expectedServerBin)
     ) {
       return pid;

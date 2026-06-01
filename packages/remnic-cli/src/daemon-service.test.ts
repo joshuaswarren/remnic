@@ -271,6 +271,29 @@ test("readVerifiedDaemonPid accepts a live remnic-server command", () => {
   assert.deepEqual(removed, []);
 });
 
+test("readVerifiedDaemonPid keeps a live pid when command lookup is inconclusive", () => {
+  const removed: string[] = [];
+  const pid = readVerifiedDaemonPid({
+    pidFiles: ["/tmp/remnic.pid"],
+    expectedServerBin: "/repo/packages/remnic-server/bin/remnic-server.js",
+    readFileSync: () => "34567\n",
+    processKill: (candidatePid, signal) => {
+      assert.equal(candidatePid, 34567);
+      assert.equal(signal, 0);
+      return true;
+    },
+    execFileSync: () => {
+      throw new Error("ps unavailable");
+    },
+    unlinkSync: (file) => {
+      removed.push(file);
+    },
+  });
+
+  assert.equal(pid, 34567);
+  assert.deepEqual(removed, []);
+});
+
 test("doesProcessCommandLookLikeRemnicDaemon recognizes package and workspace server paths", () => {
   assert.equal(
     doesProcessCommandLookLikeRemnicDaemon(
