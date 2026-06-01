@@ -6,7 +6,7 @@
   "description": "Minimal local UI shell for browsing Remnic benchmark result summaries.",
   "scripts": {
     "dev": "vite",
-    "test": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
+    "test": "find src \\( -name '*.test.ts' -o -name '*.test.tsx' \\) -print | sort | xargs tsx --test",
     "check-types": "tsc --noEmit",
     "build": "pnpm run check-types && vite build"
   },
