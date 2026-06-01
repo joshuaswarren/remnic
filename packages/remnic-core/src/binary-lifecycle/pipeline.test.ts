@@ -445,6 +445,41 @@ test("binary lifecycle resumes errored assets with no remaining local references
   }
 });
 
+test("binary lifecycle keeps unreferenced errored assets mirrored-only", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-error-unreferenced-"));
+  try {
+    await writeFile(path.join(memoryDir, "image.png"), "image", "utf8");
+    await writeManifest(memoryDir, {
+      version: 1,
+      assets: [
+        {
+          originalPath: "image.png",
+          mirroredPath: "remote/image.png",
+          contentHash: sha256("image"),
+          sizeBytes: "image".length,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          status: "error",
+        },
+      ],
+    });
+
+    const result = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    const manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string; cleanedAt?: string }> };
+
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.redirected, 0);
+    assert.equal(result.cleaned, 0);
+    assert.equal(manifest.assets[0]?.status, "mirrored");
+    assert.equal(manifest.assets[0]?.cleanedAt, undefined);
+    assert.equal(await readFile(path.join(memoryDir, "image.png"), "utf8"), "image");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("binary lifecycle fails closed without overwriting an invalid manifest", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-invalid-manifest-"));
   let uploaded = false;

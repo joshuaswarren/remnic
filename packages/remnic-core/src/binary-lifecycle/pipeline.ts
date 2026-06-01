@@ -252,6 +252,14 @@ async function stageRedirect(
           continue;
         }
 
+        if (asset.redirectedAt === undefined) {
+          if (!dryRun) {
+            asset.status = "mirrored";
+          }
+          log.info(`[binary-lifecycle] preserved mirrored asset without redirected marker: ${asset.originalPath}${dryRun ? " [dry-run]" : ""}`);
+          continue;
+        }
+
         if (!dryRun) {
           asset.status = "redirected";
           asset.redirectedAt = new Date().toISOString();
