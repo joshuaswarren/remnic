@@ -29,6 +29,13 @@ const packageExpectations = [
     },
   },
   {
+    label: "Pi plugin",
+    path: new URL("../packages/plugin-pi/package.json", testDir),
+    deps: {
+      "@remnic/core": "workspace:^",
+    },
+  },
+  {
     label: "OpenClaw Engram shim",
     path: new URL("../packages/shim-openclaw-engram/package.json", testDir),
     deps: {

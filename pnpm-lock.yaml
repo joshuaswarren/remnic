@@ -323,8 +323,8 @@ importers:
   packages/plugin-pi:
     dependencies:
       '@remnic/core':
-        specifier: ^1.1.20
-        version: 1.1.20
+        specifier: workspace:^
+        version: link:../remnic-core
       '@sinclair/typebox':
         specifier: ^0.34.0
         version: 0.34.49
@@ -972,9 +972,6 @@ packages:
 
   '@orama/plugin-data-persistence@3.1.18':
     resolution: {integrity: sha512-pfBbpK96VRW/7IkdMHn2HaW3/+4k2C9Uwyup0IONNuz5bG3L1orCNFZPBmu+zcokOU2YH+IAVuQz6MlvqOe3iw==}
-
-  '@remnic/core@1.1.20':
-    resolution: {integrity: sha512-vC/QwCZBcKp/efHYLtF2Mgwzt90vVbftPXp++YeffW0kVsUjiSwK1EMHUj5a1t83sQWX/GRcbGzEKEw7uPk58w==}
 
   '@rolldown/pluginutils@1.0.0-rc.3':
     resolution: {integrity: sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q==}
@@ -2270,27 +2267,6 @@ snapshots:
       '@orama/orama': 3.1.18
       dpack: 0.6.22
       seqproto: 0.2.3
-
-  '@remnic/core@1.1.20':
-    dependencies:
-      '@honcho-ai/sdk': 2.1.0
-      '@lancedb/lancedb': 0.26.2(apache-arrow@18.1.0)
-      '@node-rs/argon2': 2.0.2
-      '@orama/orama': 3.1.18
-      '@orama/plugin-data-persistence': 3.1.18
-      '@sinclair/typebox': 0.34.49
-      apache-arrow: 18.1.0
-      better-sqlite3: 12.8.0
-      meilisearch: 0.46.0
-      node-gyp: 12.3.0
-      openai: 6.33.0(zod@3.25.76)
-      zod: 3.25.76
-    optionalDependencies:
-      '@lancedb/lancedb-darwin-arm64': 0.26.2
-      '@lancedb/lancedb-linux-arm64-gnu': 0.26.2
-      '@lancedb/lancedb-linux-x64-gnu': 0.26.2
-    transitivePeerDependencies:
-      - ws
 
   '@rolldown/pluginutils@1.0.0-rc.3': {}
 
