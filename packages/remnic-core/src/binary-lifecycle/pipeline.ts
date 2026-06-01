@@ -30,6 +30,8 @@ interface PipelineOptions {
   dryRun?: boolean;
   /** Force-clean all files past grace period, ignoring redirect status. */
   forceClean?: boolean;
+  /** Test hook for deterministic markdown write failures. */
+  writeMarkdownFile?: typeof fsp.writeFile;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +174,7 @@ async function stageRedirect(
   assets: BinaryAssetRecord[],
   log: PipelineLogger,
   dryRun: boolean,
+  writeMarkdownFile: typeof fsp.writeFile,
 ): Promise<{ redirected: number; errors: string[] }> {
   let redirected = 0;
   const errors: string[] = [];
@@ -279,7 +282,7 @@ async function stageRedirect(
     let writeFailCount = 0;
     for (const update of updates) {
       try {
-        await fsp.writeFile(update.mdPath, update.content, "utf-8");
+        await writeMarkdownFile(update.mdPath, update.content, "utf-8");
       } catch (err) {
         writeFailCount++;
         const msg = `redirect write failed for ${update.mdPath}: ${err instanceof Error ? err.message : String(err)}`;
@@ -366,8 +369,12 @@ function markdownReferencePattern(
   // Markdown links may be file-relative to the note or memory-root-relative in
   // Remnic notes. Match both forms so verification cannot miss a live local ref.
   addCandidate(path.relative(mdDir, assetAbsolute));
-  addCandidate(asset.originalPath);
-  addCandidate(`/${asset.originalPath.split(path.sep).join("/")}`);
+  const originalPath = asset.originalPath.split(path.sep).join("/");
+  const originalAsFileRelative = path.resolve(mdDir, ...originalPath.split("/"));
+  if (path.resolve(originalAsFileRelative) === path.resolve(assetAbsolute)) {
+    addCandidate(originalPath);
+  }
+  addCandidate(`/${originalPath}`);
 
   const alternatives = [...candidates]
     .sort((a, b) => b.length - a.length)
@@ -554,7 +561,13 @@ export async function runBinaryLifecyclePipeline(
   );
 
   // Stage 2: Redirect
-  const redirectResult = await stageRedirect(memoryDir, manifest.assets, log, dryRun);
+  const redirectResult = await stageRedirect(
+    memoryDir,
+    manifest.assets,
+    log,
+    dryRun,
+    opts?.writeMarkdownFile ?? fsp.writeFile,
+  );
 
   // Stage 3: Clean
   const cleanResult = await stageClean(

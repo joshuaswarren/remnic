@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -328,7 +328,6 @@ test("binary lifecycle retries partial redirect failures before cleanup", async 
     await writeFile(imagePath, "image", "utf8");
     await writeFile(firstNote, "![img](image.png)", "utf8");
     await writeFile(secondNote, "![img](image.png)", "utf8");
-    await chmod(secondNote, 0o444);
     await writeManifest(memoryDir, {
       version: 1,
       assets: [
@@ -344,7 +343,20 @@ test("binary lifecycle retries partial redirect failures before cleanup", async 
       ],
     });
 
-    const firstResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    const firstResult = await runBinaryLifecyclePipeline(
+      memoryDir,
+      baseConfig,
+      noUploadBackend,
+      noopLogger,
+      {
+        writeMarkdownFile: async (file, data, options) => {
+          if (file === secondNote) {
+            throw new Error("injected write failure");
+          }
+          await writeFile(file, data, options);
+        },
+      },
+    );
     let manifest = JSON.parse(
       await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
     ) as { assets: Array<{ status: string }> };
@@ -356,7 +368,6 @@ test("binary lifecycle retries partial redirect failures before cleanup", async 
     assert.equal(await readFile(secondNote, "utf8"), "![img](image.png)");
     assert.equal(manifest.assets[0]?.status, "error");
 
-    await chmod(secondNote, 0o644);
     const secondResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
     manifest = JSON.parse(
       await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
@@ -369,7 +380,6 @@ test("binary lifecycle retries partial redirect failures before cleanup", async 
     assert.equal(await readFile(secondNote, "utf8"), "![img](remote/image.png)");
     assert.equal(manifest.assets[0]?.status, "cleaned");
   } finally {
-    await chmod(secondNote, 0o644).catch(() => {});
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -388,7 +398,7 @@ test("binary lifecycle rewrites nested asset references before cleanup", async (
     await writeFile(rootNote, "![img](assets/photo.png)", "utf8");
     await writeFile(
       nestedNote,
-      ["![relative](../assets/photo.png)", "![root](assets/photo.png)"].join("\n"),
+      ["![relative](../assets/photo.png)", "![root](/assets/photo.png)"].join("\n"),
       "utf8",
     );
 
@@ -403,6 +413,27 @@ test("binary lifecycle rewrites nested asset references before cleanup", async (
       ["![relative](remote/assets/photo.png)", "![root](remote/assets/photo.png)"].join("\n"),
     );
     await assert.rejects(() => readFile(imagePath, "utf8"), /ENOENT/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle does not rewrite ambiguous nested bare links for root assets", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-ambiguous-link-"));
+  const subDir = path.join(memoryDir, "sub");
+  const nestedNote = path.join(subDir, "note.md");
+  try {
+    await mkdir(subDir);
+    await writeFile(path.join(memoryDir, "image.png"), "root", "utf8");
+    await writeFile(path.join(subDir, "image.png"), "nested", "utf8");
+    await writeFile(nestedNote, "![img](image.png)", "utf8");
+
+    const result = await runBinaryLifecyclePipeline(memoryDir, baseConfig, nestedRemoteBackend, noopLogger);
+
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.mirrored, 2);
+    assert.equal(result.redirected, 1);
+    assert.equal(await readFile(nestedNote, "utf8"), "![img](remote/sub/image.png)");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
