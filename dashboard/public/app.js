@@ -1,7 +1,59 @@
-async function fetchJson(url) {
-  const res = await fetch(url);
+const DASHBOARD_TOKEN_STORAGE_KEY = "remnic.dashboard.token";
+
+function readTokenFromUrl() {
+  const current = new URL(window.location.href);
+  const token = current.searchParams.get("token");
+  if (!token) return "";
+  current.searchParams.delete("token");
+  window.history.replaceState(null, document.title, current.toString());
+  return token;
+}
+
+function readStoredToken() {
+  try {
+    return window.sessionStorage.getItem(DASHBOARD_TOKEN_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function storeToken(token) {
+  try {
+    if (token) {
+      window.sessionStorage.setItem(DASHBOARD_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.sessionStorage.removeItem(DASHBOARD_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage failures; the token can still be kept in memory.
+  }
+}
+
+function requestToken() {
+  const token = window.prompt("Dashboard token")?.trim() ?? "";
+  storeToken(token);
+  return token;
+}
+
+function authHeaders(token) {
+  return token ? { Authorization: `Bearer ${token}` } : undefined;
+}
+
+async function fetchJson(url, tokenState) {
+  let res = await fetch(url, { headers: authHeaders(tokenState.value) });
+  if (res.status === 401) {
+    tokenState.value = requestToken();
+    res = await fetch(url, { headers: authHeaders(tokenState.value) });
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
+}
+
+function webSocketUrl(token) {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const url = new URL("/", `${protocol}//${window.location.host}`);
+  if (token) url.searchParams.set("token", token);
+  return url.toString();
 }
 
 function setText(id, value) {
@@ -23,8 +75,11 @@ function renderPatch(patch) {
 }
 
 async function bootstrap() {
+  const tokenState = { value: readTokenFromUrl() || readStoredToken() };
+  storeToken(tokenState.value);
   try {
-    const [health, graph] = await Promise.all([fetchJson("/api/health"), fetchJson("/api/graph")]);
+    const health = await fetchJson("/api/health", tokenState);
+    const graph = await fetchJson("/api/graph", tokenState);
     setText("status", health?.ok ? "ok" : "degraded");
     setText("clients", health?.clients ?? 0);
     renderGraph(graph);
@@ -32,8 +87,7 @@ async function bootstrap() {
     setText("status", `error: ${err?.message ?? String(err)}`);
   }
 
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${protocol}//${window.location.host}`);
+  const ws = new WebSocket(webSocketUrl(tokenState.value));
   ws.addEventListener("open", () => setText("status", "streaming"));
   ws.addEventListener("close", () => setText("status", "closed"));
   ws.addEventListener("error", () => setText("status", "error"));
@@ -55,4 +109,3 @@ async function bootstrap() {
 }
 
 void bootstrap();
-

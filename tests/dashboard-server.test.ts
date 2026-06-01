@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { GraphDashboardServer } from "../src/dashboard-runtime.js";
 
 async function waitForCondition(
@@ -300,4 +300,13 @@ test("dashboard server start recovers after listen failure", async () => {
   assert.equal(started.running, true);
   assert.equal(started.port > 0, true);
   await server.stop();
+});
+
+test("dashboard browser app propagates auth tokens to API and websocket requests", async () => {
+  const app = await readFile(path.join(process.cwd(), "dashboard", "public", "app.js"), "utf-8");
+
+  assert.match(app, /Authorization: `Bearer \$\{token\}`/);
+  assert.match(app, /fetch\(url, \{ headers: authHeaders\(tokenState\.value\) \}\)/);
+  assert.match(app, /url\.searchParams\.set\("token", token\)/);
+  assert.match(app, /new WebSocket\(webSocketUrl\(tokenState\.value\)\)/);
 });
