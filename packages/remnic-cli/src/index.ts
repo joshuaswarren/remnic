@@ -5866,6 +5866,8 @@ export async function fetchOfflineSnapshot(args: {
     });
     const postRequest = offlineSnapshotBasePostRequest(postBody);
     if (postRequest) {
+      const postRequestUsesGzip =
+        new Headers(postRequest.headers).get("content-encoding")?.toLowerCase() === "gzip";
       try {
         return await fetchOfflineJson(
           offlineEndpoint(args.remoteUrl, "/remnic/v1/offline-sync/snapshot"),
@@ -5876,7 +5878,7 @@ export async function fetchOfflineSnapshot(args: {
           },
         );
       } catch (error) {
-        if (!isOfflineSnapshotPostFallbackError(error)) throw error;
+        if (!isOfflineSnapshotPostFallbackError(error, { compressed: postRequestUsesGzip })) throw error;
         tryStreamSnapshot = true;
       }
     } else {
@@ -5944,9 +5946,15 @@ export function offlineSnapshotBasePostRequest(body: string): Pick<RequestInit, 
   };
 }
 
-export function isOfflineSnapshotPostFallbackError(error: unknown): boolean {
+export function isOfflineSnapshotPostFallbackError(
+  error: unknown,
+  options: { compressed?: boolean } = {},
+): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /offline-sync\/snapshot\b.* returned (404|405|413)\b/.test(message);
+  if (/offline-sync\/snapshot\b.* returned (404|405|413)\b/.test(message)) return true;
+  if (!options.compressed) return false;
+  return /offline-sync\/snapshot\b.* returned (400|415)\b/.test(message) &&
+    /\b(unsupported_content_encoding|invalid_gzip_body|invalid_json)\b/.test(message);
 }
 
 function isOfflineSnapshotStreamFallbackError(error: unknown): boolean {
