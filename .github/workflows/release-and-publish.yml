@@ -151,7 +151,12 @@ jobs:
           EXISTING_TAG=""
           while IFS= read -r tag; do
             [ -z "${tag}" ] && continue
-            if git cat-file -p "refs/tags/${tag}" | grep -Fq "source-main-sha: ${SOURCE_MAIN_SHA}"; then
+            if git cat-file -e "refs/tags/${tag}^{tag}" 2>/dev/null; then
+              TAG_CONTENT="$(git cat-file -p "refs/tags/${tag}^{tag}")"
+            else
+              TAG_CONTENT="$(git log -1 --format=%B "refs/tags/${tag}")"
+            fi
+            if printf '%s\n' "${TAG_CONTENT}" | grep -Fq "source-main-sha: ${SOURCE_MAIN_SHA}"; then
               EXISTING_TAG="${tag}"
               break
             fi
@@ -329,16 +334,78 @@ jobs:
             git commit -m "docs(changelog): promote [Unreleased] -> v${NEW_VERSION} [skip ci]"
           fi
 
-      - name: Create version tag on release commit
-        if: steps.version.outputs.tag_exists != 'true'
+      - name: Push release commits to main
+        id: release_commit
+        # Uses a deploy key (RELEASE_DEPLOY_KEY secret) for the push.
+        # PAT-based pushes (fine-grained or classic) do not satisfy the RepositoryRole
+        # bypass actor on personal-repo rulesets; a DeployKey bypass actor works reliably.
+        # Commit messages carry [skip ci] to prevent this push from re-triggering
+        # the release workflow (github.actor would be github-actions[bot] for a key push,
+        # so the job-level actor guard would fire — [skip ci] is a belt-and-suspenders guard).
+        env:
+          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
         run: |
-          git tag -a "${{ steps.version.outputs.tag_name }}" \
-            -m "Release ${{ steps.version.outputs.tag_name }}" \
-            -m "source-main-sha: ${{ steps.version.outputs.source_main_sha }}"
+          TAG="${{ steps.version.outputs.tag_name }}"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            RELEASE_COMMIT="$(git rev-parse "refs/tags/${TAG}^{}")"
+          else
+            RELEASE_COMMIT="$(git rev-parse HEAD)"
+          fi
+          echo "release_commit=${RELEASE_COMMIT}" >> "$GITHUB_OUTPUT"
+          git fetch origin main
+          if git merge-base --is-ancestor "${RELEASE_COMMIT}" origin/main; then
+            echo "::notice::Release commit already on main; skipping push."
+            exit 0
+          fi
+          # Configure deploy key for SSH push. Ruleset DeployKey bypass allows this.
+          # Use a trap to ensure the key file is removed even if the push fails.
+          mkdir -p ~/.ssh
+          echo "${RELEASE_DEPLOY_KEY}" > ~/.ssh/release_deploy_key
+          chmod 600 ~/.ssh/release_deploy_key
+          trap 'rm -f ~/.ssh/release_deploy_key' EXIT
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/release_deploy_key -o StrictHostKeyChecking=no"
+          git push "git@github.com:${{ github.repository }}.git" "${RELEASE_COMMIT}:refs/heads/main"
 
-      - name: Push release tag
-        if: steps.version.outputs.tag_exists != 'true'
-        run: git push origin "refs/tags/${{ steps.version.outputs.tag_name }}"
+      - name: Ensure version tag on release commit
+        id: release_tag
+        env:
+          TAG: ${{ steps.version.outputs.tag_name }}
+          RELEASE_COMMIT: ${{ steps.release_commit.outputs.release_commit }}
+          SOURCE_MAIN_SHA: ${{ steps.version.outputs.source_main_sha }}
+        run: |
+          FETCH_LOG="$(mktemp)"
+          trap 'rm -f "$FETCH_LOG"' EXIT
+          REMOTE_TAG_EXISTS=false
+          if git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}" 2>"${FETCH_LOG}"; then
+            REMOTE_TAG_EXISTS=true
+          elif grep -Eiq "couldn'?t find remote ref|could not find remote ref" "${FETCH_LOG}"; then
+            echo "::notice::Release tag ${TAG} does not exist on origin yet."
+          else
+            cat "${FETCH_LOG}" >&2
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            TAG_TARGET="$(git rev-parse "refs/tags/${TAG}^{}")"
+            if [ "${TAG_TARGET}" != "${RELEASE_COMMIT}" ]; then
+              echo "::error title=Release tag mismatch::${TAG} points at ${TAG_TARGET}, expected ${RELEASE_COMMIT}."
+              exit 1
+            fi
+            if [ "${REMOTE_TAG_EXISTS}" = "true" ]; then
+              echo "::notice::Release tag ${TAG} already exists on origin and points at ${RELEASE_COMMIT}."
+              echo "tag_created=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::notice::Release tag ${TAG} exists locally and points at ${RELEASE_COMMIT}; pushing missing remote tag."
+          else
+            git tag -a "${TAG}" \
+              "${RELEASE_COMMIT}" \
+              -m "Release ${TAG}" \
+              -m "source-main-sha: ${SOURCE_MAIN_SHA}"
+          fi
+
+          git push origin "refs/tags/${TAG}"
+          echo "tag_created=true" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -458,36 +525,6 @@ jobs:
               exit $publish_status
             fi
           done
-
-      - name: Push release commits to main
-        # Uses a deploy key (RELEASE_DEPLOY_KEY secret) for the push.
-        # PAT-based pushes (fine-grained or classic) do not satisfy the RepositoryRole
-        # bypass actor on personal-repo rulesets; a DeployKey bypass actor works reliably.
-        # Commit messages carry [skip ci] to prevent this push from re-triggering
-        # the release workflow (github.actor would be github-actions[bot] for a key push,
-        # so the job-level actor guard would fire — [skip ci] is a belt-and-suspenders guard).
-        env:
-          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
-        run: |
-          TAG="${{ steps.version.outputs.tag_name }}"
-          RELEASE_COMMIT="$(git rev-parse "refs/tags/${TAG}^{}" 2>/dev/null || true)"
-          if [ -z "${RELEASE_COMMIT}" ]; then
-            echo "::notice::Tag ${TAG} not found locally; skipping main push."
-            exit 0
-          fi
-          git fetch origin main
-          if git merge-base --is-ancestor "${RELEASE_COMMIT}" origin/main; then
-            echo "::notice::Release commit already on main; skipping push."
-            exit 0
-          fi
-          # Configure deploy key for SSH push. Ruleset DeployKey bypass allows this.
-          # Use a trap to ensure the key file is removed even if the push fails.
-          mkdir -p ~/.ssh
-          echo "${RELEASE_DEPLOY_KEY}" > ~/.ssh/release_deploy_key
-          chmod 600 ~/.ssh/release_deploy_key
-          trap 'rm -f ~/.ssh/release_deploy_key' EXIT
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/release_deploy_key -o StrictHostKeyChecking=no"
-          git push "git@github.com:${{ github.repository }}.git" "${RELEASE_COMMIT}:refs/heads/main"
 
       - name: Publish OpenClaw plugin to ClawHub
         env:
