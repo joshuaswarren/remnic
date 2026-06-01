@@ -867,3 +867,24 @@ test("FilesystemBackend does not treat directories as mirrored files", async () 
     await rm(destDir, { recursive: true, force: true });
   }
 });
+
+test("FilesystemBackend accepts remote filenames that start with two dots", async () => {
+  const srcDir = await mkdtemp(tmpPrefix());
+  const destDir = await mkdtemp(tmpPrefix());
+  try {
+    const srcFile = path.join(srcDir, "hidden.png");
+    await writeFile(srcFile, Buffer.from("PNG_DATA"));
+
+    const backend = new FilesystemBackend(destDir);
+    const result = await backend.upload(srcFile, "..hidden.png");
+
+    assert.equal(result, "..hidden.png");
+    assert.equal(await backend.exists("..hidden.png"), true);
+    assert.equal(await readFile(path.join(destDir, "..hidden.png"), "utf-8"), "PNG_DATA");
+    await backend.delete("..hidden.png");
+    assert.equal(await backend.exists("..hidden.png"), false);
+  } finally {
+    await rm(srcDir, { recursive: true, force: true });
+    await rm(destDir, { recursive: true, force: true });
+  }
+});

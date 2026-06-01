@@ -59,7 +59,7 @@ export class FilesystemBackend implements BinaryStorageBackend {
 
   private isInsideBase(candidate: string, realBase: string): boolean {
     const relative = path.relative(realBase, candidate);
-    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+    return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
   }
 
   private async realBasePathIfExists(): Promise<string | null> {
