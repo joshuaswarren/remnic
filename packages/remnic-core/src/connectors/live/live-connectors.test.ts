@@ -786,7 +786,7 @@ test("state store: aborts scoped work when heartbeat loses the connector lock", 
         );
       });
     },
-    { heartbeatMs: 5 },
+    { heartbeatMs: 5, unrefHeartbeat: false },
   );
 
   await started;

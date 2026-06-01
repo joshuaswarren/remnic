@@ -107,6 +107,7 @@ interface ConnectorLockMetadata {
 
 interface ConnectorStateLockOptions {
   readonly heartbeatMs?: number;
+  readonly unrefHeartbeat?: boolean;
 }
 
 /**
@@ -543,7 +544,9 @@ async function withConnectorStateLockInternal<T>(
         failLostLock(`lost connector "${id}" state lock: ${message}`);
       });
   }, options.heartbeatMs ?? CONNECTOR_LOCK_HEARTBEAT_MS);
-  heartbeat.unref?.();
+  if (options.unrefHeartbeat !== false) {
+    heartbeat.unref?.();
+  }
   const runPromise = run(abortController.signal);
   try {
     return await Promise.race([runPromise, lockLostPromise]);
