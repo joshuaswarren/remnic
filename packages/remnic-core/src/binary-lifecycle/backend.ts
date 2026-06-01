@@ -167,6 +167,9 @@ export class FilesystemBackend implements BinaryStorageBackend {
       if (stat.isSymbolicLink()) {
         throw new Error(`FilesystemBackend remotePath points to symlink: ${dest}`);
       }
+      if (!stat.isFile()) {
+        return null;
+      }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         return null;

@@ -853,3 +853,17 @@ test("FilesystemBackend rejects uploads through symlinked directories", async ()
     await rm(outsideDir, { recursive: true, force: true });
   }
 });
+
+test("FilesystemBackend does not treat directories as mirrored files", async () => {
+  const destDir = await mkdtemp(tmpPrefix());
+  try {
+    await mkdir(path.join(destDir, "remote.png"));
+    const backend = new FilesystemBackend(destDir);
+
+    assert.equal(await backend.exists("remote.png"), false);
+    await backend.delete("remote.png");
+    assert.equal(fs.existsSync(path.join(destDir, "remote.png")), true);
+  } finally {
+    await rm(destDir, { recursive: true, force: true });
+  }
+});
