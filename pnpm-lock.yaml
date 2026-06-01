@@ -295,8 +295,8 @@ importers:
   packages/plugin-codex:
     dependencies:
       '@remnic/core':
-        specifier: ^1.1.20
-        version: 1.1.20
+        specifier: workspace:^
+        version: link:../remnic-core
 
   packages/plugin-openclaw:
     dependencies:
@@ -466,11 +466,11 @@ importers:
   packages/shim-openclaw-engram:
     dependencies:
       '@remnic/core':
-        specifier: ^1.1.20
-        version: 1.1.20
+        specifier: workspace:^
+        version: link:../remnic-core
       '@remnic/plugin-openclaw':
-        specifier: ^1.0.36
-        version: 1.0.39(zod@4.0.0)
+        specifier: workspace:^
+        version: link:../plugin-openclaw
     devDependencies:
       tsup:
         specifier: ^8.5.1
@@ -975,11 +975,6 @@ packages:
 
   '@remnic/core@1.1.20':
     resolution: {integrity: sha512-vC/QwCZBcKp/efHYLtF2Mgwzt90vVbftPXp++YeffW0kVsUjiSwK1EMHUj5a1t83sQWX/GRcbGzEKEw7uPk58w==}
-
-  '@remnic/plugin-openclaw@1.0.39':
-    resolution: {integrity: sha512-DSILueFFJLsgyi7GjExcq0LPAlVwglyjf6OrvxqMq1nZjBpaNp8EUw9X/vZELoP59QfFkXeGWbPWITOtCCxtAg==}
-    peerDependencies:
-      openclaw: '>=2026.5.16-beta.1'
 
   '@rolldown/pluginutils@1.0.0-rc.3':
     resolution: {integrity: sha512-eybk3TjzzzV97Dlj5c+XrBFW57eTNhzod66y9HrBlzJ6NsCrWCp/2kaPS3K9wJmurBC0Tdw4yPjXKZqlznim3Q==}
@@ -2296,14 +2291,6 @@ snapshots:
       '@lancedb/lancedb-linux-x64-gnu': 0.26.2
     transitivePeerDependencies:
       - ws
-
-  '@remnic/plugin-openclaw@1.0.39(zod@4.0.0)':
-    dependencies:
-      '@remnic/core': 1.1.20
-      openai: 6.33.0(zod@4.0.0)
-    transitivePeerDependencies:
-      - ws
-      - zod
 
   '@rolldown/pluginutils@1.0.0-rc.3': {}
 

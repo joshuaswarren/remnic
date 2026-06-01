@@ -28,6 +28,21 @@ const packageExpectations = [
       "@remnic/core": "workspace:^",
     },
   },
+  {
+    label: "OpenClaw Engram shim",
+    path: new URL("../packages/shim-openclaw-engram/package.json", testDir),
+    deps: {
+      "@remnic/core": "workspace:^",
+      "@remnic/plugin-openclaw": "workspace:^",
+    },
+  },
+  {
+    label: "Codex plugin",
+    path: new URL("../packages/plugin-codex/package.json", testDir),
+    deps: {
+      "@remnic/core": "workspace:^",
+    },
+  },
 ] as const;
 
 test("runtime workspace packages preserve local linking in source manifests", async () => {
