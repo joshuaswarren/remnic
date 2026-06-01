@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Orchestrator, parseConfig, parseEntityFile, StorageManager } from "@remnic/core";
+import { LcmEngine } from "@remnic/core/lcm";
 
 import {
   buildBenchAdapterConfig,
@@ -180,6 +181,52 @@ test("runtime-backed adapter waits for full reset rebuild to settle after abort"
   } finally {
     Orchestrator.prototype.initialize = originalInitialize;
     rebuildCanFinish.resolve();
+    await adapter.destroy();
+  }
+});
+
+test("runtime-backed adapter waits for scoped reset cleanup to settle after abort", async () => {
+  const adapter = await createLightweightAdapter();
+  const originalClearSession = LcmEngine.prototype.clearSession;
+  const clearStarted = createDeferredForTest();
+  const clearCanFinish = createDeferredForTest();
+  const sessionId = "scoped-reset-abort-session";
+
+  LcmEngine.prototype.clearSession = async function patchedClearSession(
+    this: LcmEngine,
+    clearSessionId: string,
+  ): Promise<void> {
+    if (clearSessionId === sessionId) {
+      clearStarted.resolve();
+      await clearCanFinish.promise;
+    }
+    return originalClearSession.call(this, clearSessionId);
+  };
+
+  try {
+    const controller = new AbortController();
+    const resetPromise = adapter.reset(sessionId, { signal: controller.signal });
+    await Promise.race([
+      clearStarted.promise,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error("timed out waiting for scoped reset cleanup")), 1_000),
+      ),
+    ]);
+
+    controller.abort(new Error("scoped reset deadline"));
+    let resetSettled = false;
+    void resetPromise.catch(() => {
+      resetSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(resetSettled, false);
+
+    clearCanFinish.resolve();
+    await assert.rejects(resetPromise, /scoped reset deadline/);
+    assert.equal(resetSettled, true);
+  } finally {
+    LcmEngine.prototype.clearSession = originalClearSession;
+    clearCanFinish.resolve();
     await adapter.destroy();
   }
 });

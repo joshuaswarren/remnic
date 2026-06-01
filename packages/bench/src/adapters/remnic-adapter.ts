@@ -2338,6 +2338,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             engine.clearSession(normalizedSessionId),
             control,
             "reset",
+            { waitForCompletionOnAbort: true },
           );
           throwIfBenchPhaseAborted(control, "reset");
           if (useCoreMemoryPipeline) {
@@ -2350,17 +2351,20 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               ),
               control,
               "reset",
+              { waitForCompletionOnAbort: true },
             );
             coreSessionMemoryIds.delete(normalizedSessionId);
             await withBenchPhaseAbort(
               clearBenchTranscriptSession(state.tempDir, normalizedSessionId),
               control,
               "reset",
+              { waitForCompletionOnAbort: true },
             );
             await withBenchPhaseAbort(
               clearBenchSummarySession(state.tempDir, normalizedSessionId),
               control,
               "reset",
+              { waitForCompletionOnAbort: true },
             );
           }
           sessionTurnCounters.delete(normalizedSessionId);
