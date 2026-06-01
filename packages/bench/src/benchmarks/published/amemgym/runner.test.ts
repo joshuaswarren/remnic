@@ -327,9 +327,8 @@ test("AMemGym applies a positive limit before validating later profiles", async 
   }
 });
 
-test("AMemGym rejects answer choices that do not match the final profile state", async () => {
+test("AMemGym falls back to the first answer choice when final state has no choice match", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-amemgym-bad-choice-"));
-  let storeCalls = 0;
 
   try {
     await writeFile(
@@ -371,33 +370,31 @@ test("AMemGym rejects answer choices that do not match the final profile state",
       "utf8",
     );
 
-    await assert.rejects(
-      () =>
-        runAMemGymBenchmark({
-          benchmark: amemGymDefinition,
-          mode: "full",
-          datasetDir: tempDir,
-          system: {
-            async store() {
-              storeCalls += 1;
-            },
-            async recall() {
-              return "Austin";
-            },
-            async search() {
-              return [];
-            },
-            async reset() {},
-            async drain() {},
-            async destroy() {},
-            async getStats() {
-              return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
-            },
-          },
-        }),
-      /final state does not match any answer_choices state/,
-    );
-    assert.equal(storeCalls, 0);
+    const result = await runAMemGymBenchmark({
+      benchmark: amemGymDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          return "Austin";
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async drain() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+      },
+    });
+
+    const task = result.results.tasks[0]!;
+    assert.equal(task.expected, "Austin");
+    assert.equal(task.details?.expectedChoiceIndex, null);
+    assert.equal(task.scores.qa_accuracy, 0);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

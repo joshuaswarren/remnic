@@ -314,7 +314,7 @@ tests/bench-public-matrix-verifier.test.ts(377,7): TS2740
 tests/bench-public-matrix-verifier.test.ts(380,7): TS2739
 tests/bench-public-matrix-verifier.test.ts(447,7): TS2740
 tests/bench-public-matrix-verifier.test.ts(530,7): TS2739
-tests/bench-remnic-deterministic-runners.test.ts(220,37): TS2339
+tests/bench-remnic-deterministic-runners.test.ts(221,37): TS2339
 tests/bench-ui-assistant.test.ts(21,9): TS2741
 tests/bench-ui-results.test.ts(20,8): TS6142
 tests/bench-ui-results.test.ts(21,68): TS6142
@@ -529,8 +529,8 @@ tests/orchestrator-qmd-review.test.ts(298,26): TS2339
 tests/orchestrator-qmd-review.test.ts(299,26): TS2339
 tests/orchestrator-qmd-review.test.ts(300,26): TS2339
 tests/orchestrator-recent-thread-paths.test.ts(16,5): TS2741
-tests/orchestrator-routing-rules.test.ts(128,5): TS2353
-tests/orchestrator-routing-rules.test.ts(174,5): TS2353
+tests/orchestrator-routing-rules.test.ts(134,5): TS2353
+tests/orchestrator-routing-rules.test.ts(182,5): TS2353
 tests/query-aware-prefilter.test.ts(163,40): TS2339
 tests/query-aware-prefilter.test.ts(188,27): TS7006
 tests/query-aware-prefilter.test.ts(189,27): TS7006
@@ -557,7 +557,7 @@ tests/remnic-server-cli.test.ts(9,30): TS7016
 tests/retrieval-agents.test.ts(624,79): TS2345
 tests/retrieval-hot-cold-parity.test.ts(41,7): TS2353
 tests/routing-engine.test.ts(59,27): TS2352
-tests/sdk-compat-hook-handlers.test.ts(2474,5): TS1117
+tests/sdk-compat-hook-handlers.test.ts(2510,5): TS1117
 tests/secure-store/storage-wrap.test.ts(532,58): TS2345
 tests/secure-store/storage-wrap.test.ts(544,45): TS2345
 tests/secure-store/storage-wrap.test.ts(601,45): TS2345

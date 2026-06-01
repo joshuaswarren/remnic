@@ -748,9 +748,6 @@ function validateDatasetProfiles(
           throw new Error(`AMemGym profile ${profileId} question ${questionIndex} answer choice ${choiceIndex} answer must be a non-empty string.`);
         }
       }
-      if (!findExpectedAnswerChoice(qa, finalState)) {
-        throw new Error(`AMemGym profile ${profileId} question ${questionIndex} final state does not match any answer_choices state.`);
-      }
     }
 
     return profile;

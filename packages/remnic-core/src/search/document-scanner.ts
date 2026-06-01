@@ -48,7 +48,9 @@ async function scanDir(dir: string, memoryRootReal: string): Promise<IndexableDo
       throw new Error(`Refusing to scan symlinked memory category directory: ${dir}`);
     }
     if (!dirStat.isDirectory()) {
-      return docs;
+      const error = new Error(`Memory category path is not a directory: ${dir}`) as NodeJS.ErrnoException;
+      error.code = "ENOTDIR";
+      throw error;
     }
     assertPathInsideRoot(memoryRootReal, await realpath(dir), dir);
 

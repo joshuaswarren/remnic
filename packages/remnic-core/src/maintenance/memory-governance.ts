@@ -852,6 +852,8 @@ export async function runMemoryGovernance(
 
       if (action.action === "archive") {
         const reviewEntry = reviewEntryByActionKey.get(`${action.memoryId}:${action.reasonCode}`);
+        restoreEntry.applied = true;
+        await persistRestoreManifest(options.memoryDir, restoreManifest);
         const archivedPath = await storage.archiveMemory(memory, {
           at: now,
           actor: "memory-governance.apply",
@@ -861,9 +863,10 @@ export async function runMemoryGovernance(
           correlationId: traceId,
         });
         if (!archivedPath) {
+          restoreEntry.applied = false;
+          await persistRestoreManifest(options.memoryDir, restoreManifest);
           continue;
         }
-        restoreEntry.applied = true;
         restoreEntry.currentPath = archivedPath;
         restoreEntry.expectedCurrentRaw = await safeRead(archivedPath) ?? undefined;
         await persistRestoreManifest(options.memoryDir, restoreManifest);
@@ -877,6 +880,8 @@ export async function runMemoryGovernance(
 
       if (!action.afterStatus || action.beforeStatus === action.afterStatus) continue;
       const reviewEntry = reviewEntryByActionKey.get(`${action.memoryId}:${action.reasonCode}`);
+      restoreEntry.applied = true;
+      await persistRestoreManifest(options.memoryDir, restoreManifest);
       const updated = await storage.writeMemoryFrontmatter(memory, {
         status: action.afterStatus,
         updated: now.toISOString(),
@@ -888,9 +893,10 @@ export async function runMemoryGovernance(
         correlationId: traceId,
       });
       if (!updated) {
+        restoreEntry.applied = false;
+        await persistRestoreManifest(options.memoryDir, restoreManifest);
         continue;
       }
-      restoreEntry.applied = true;
       restoreEntry.expectedCurrentRaw = await safeRead(memory.path) ?? undefined;
       await persistRestoreManifest(options.memoryDir, restoreManifest);
       appliedActions.push({

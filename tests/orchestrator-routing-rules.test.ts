@@ -11,6 +11,12 @@ import { readEdges } from "../src/graph.js";
 import { queryByTagsAsync } from "../src/temporal-index.js";
 import type { ExtractionResult } from "../src/types.js";
 
+function namespaceIdentityToken(namespace: string): string {
+  const bytes = new TextEncoder().encode(namespace.trim());
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `ns-${hex || "default"}`;
+}
+
 async function exists(filePath: string): Promise<boolean> {
   try {
     await access(filePath);
@@ -143,7 +149,9 @@ test("persistExtraction applies routing rule category+namespace targets", async 
     indexedPaths = await queryByTagsAsync(memoryDir, ["ops"]);
   }
   assert.ok(indexedPaths && indexedPaths.size > 0);
-  const sharedPathMatch = [...indexedPaths!].some((p) => p.includes(path.join("namespaces", "shared")));
+  const sharedPathMatch = [...indexedPaths!].some((p) =>
+    p.includes(path.join("namespaces", namespaceIdentityToken("shared"))),
+  );
   assert.equal(sharedPathMatch, true);
 
   const causalEdges = await readEdges(sharedStorage.dir, "causal");

@@ -411,7 +411,13 @@ async function rewriteJsonFile(
   persistManifest?: PersistRollbackManifest,
 ): Promise<boolean> {
   if (!existsSync(targetPath)) return false;
-  if (!(await isExistingRegularFileNoFollow(targetPath))) return false;
+  const targetStat = await lstat(targetPath);
+  if (targetStat.isSymbolicLink()) return false;
+  if (!targetStat.isFile()) {
+    const error = new Error(`connector config must be a regular file: ${targetPath}`) as NodeJS.ErrnoException;
+    error.code = targetStat.isDirectory() ? "EISDIR" : "EINVAL";
+    throw error;
+  }
 
   const original = await readFile(targetPath, "utf8");
   let parsed: unknown;

@@ -90,6 +90,7 @@ export async function runMemoryArenaBenchmark(
           console.error(
             `  [WARN] memory-arena initial task state failed for ${domain}:${task.id}: ${initialSeedError}`,
           );
+          pendingPrerequisiteError = `MemoryArena initial task state failed: ${initialSeedError}`;
         }
       }
       for (
@@ -490,7 +491,7 @@ function parseTask(line: string, filename: string, lineNumber: number): ArenaTas
   }
   if (record.answers.length < record.questions.length) {
     throw new Error(
-      `MemoryArena task ${category}:${record.id} is missing answer index ${record.answers.length}`,
+      `${location} must include exactly one answer for each question; received ${record.questions.length} questions and ${record.answers.length} answers.`,
     );
   }
   if (record.answers.length > record.questions.length) {
@@ -2064,7 +2065,7 @@ function extractItemSelectionAsinReferences(
   const asinPattern =
     /\b(?:target\s+asin|asin)\s+([a-z0-9][a-z0-9 ]{1,30}?)(?=\s+(?:attributes?|item|selected|price|rating|reviews|product|title|category)\b|$)/g;
   for (const match of predictedNormalized.matchAll(asinPattern)) {
-    const normalizedAsin = normalizeItemSelectionAsinForComparison(match[1]);
+    const normalizedAsin = normalizeExplicitItemSelectionAsinReference(match[1]);
     if (normalizedAsin !== undefined) {
       asinReferences.add(normalizedAsin);
     }
@@ -2081,6 +2082,15 @@ function extractItemSelectionAsinReferences(
 function normalizeItemSelectionAsinForComparison(value: string): string {
   return normalizeMemoryArenaWebshopAsinReference(value)
     ?? normalizeItemSelectionText(value);
+}
+
+function normalizeExplicitItemSelectionAsinReference(
+  value: string | undefined,
+): string | undefined {
+  if (value === undefined || !/\d/.test(value)) {
+    return undefined;
+  }
+  return normalizeItemSelectionAsinForComparison(value);
 }
 
 function normalizedPredictionIncludesTargetReference(

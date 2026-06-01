@@ -519,6 +519,7 @@ export async function syncHeartbeatOutcomeLinks(params: {
     titlePattern: compileDelimitedPhrasePattern(entry.title),
     slugPattern: compileDelimitedPhrasePattern(entry.slug),
   }));
+  const knownSlugs = new Set(matchEntries.map((entry) => entry.slug));
   let linked = 0;
 
   for (const memory of memories) {
@@ -532,6 +533,7 @@ export async function syncHeartbeatOutcomeLinks(params: {
     );
     if (!detectedSlug) {
       if (!existingSlug) continue;
+      if (knownSlugs.has(existingSlug)) continue;
       const wrote = await storage.writeMemoryFrontmatter(memory, {
         structuredAttributes: baseAttributes,
         tags: uniqueTags(baseTags),

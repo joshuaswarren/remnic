@@ -56,12 +56,38 @@ function cleanGlobalThis() {
   }
 }
 
+async function stopGlobalThisRuntime() {
+  const maybeStop = new Set<unknown>();
+  const maybeDestroy = new Set<unknown>();
+  for (const key of GLOBAL_KEYS) {
+    const value = (globalThis as any)[key];
+    if (!value) continue;
+    if (typeof value.stop === "function") maybeStop.add(value);
+    if (typeof value.destroy === "function") maybeDestroy.add(value);
+  }
+  for (const value of maybeStop) {
+    try {
+      await (value as { stop: () => Promise<void> | void }).stop();
+    } catch {
+      // best effort test cleanup
+    }
+  }
+  for (const value of maybeDestroy) {
+    try {
+      await (value as { destroy: () => Promise<void> | void }).destroy();
+    } catch {
+      // best effort test cleanup
+    }
+  }
+}
+
 test.beforeEach(() => {
   process.env[DISABLE_REGISTER_MIGRATION_ENV] = "1";
   cleanGlobalThis();
 });
-test.afterEach(() => {
+test.afterEach(async () => {
   delete process.env[DISABLE_REGISTER_MIGRATION_ENV];
+  await stopGlobalThisRuntime();
   cleanGlobalThis();
 });
 
@@ -96,10 +122,11 @@ function buildHandlerCapturingApi(
   opts?: { registrationMode?: string; includeMemoryCapability?: boolean },
 ): HandlerCapturingApi {
   const handlers = new Map<string, Function>();
+  let pluginConfig: Record<string, unknown> = { qmdEnabled: false };
   const api: HandlerCapturingApi = {
     label,
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
-    pluginConfig: {},
+    pluginConfig,
     config: {},
     handlers,
     _registeredCommands: [],
@@ -124,6 +151,15 @@ function buildHandlerCapturingApi(
     _registeredServiceStart: null,
     _registeredServiceStop: null,
   };
+  Object.defineProperty(api, "pluginConfig", {
+    get() {
+      return pluginConfig;
+    },
+    set(value: Record<string, unknown>) {
+      pluginConfig = { qmdEnabled: false, ...(value ?? {}) };
+    },
+    configurable: true,
+  });
   if (opts?.includeMemoryCapability) {
     api.runtime = { version: "2026.4.9" };
     api.registerMemoryCapability = (spec: unknown) => {

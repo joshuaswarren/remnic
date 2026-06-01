@@ -290,6 +290,7 @@ import {
   type ConversationQmdRuntime,
 } from "./conversation-index/backend.js";
 import { NamespaceStorageRouter } from "./namespaces/storage.js";
+import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import {
   canReadNamespace,
   defaultNamespaceForPrincipal,
@@ -16359,7 +16360,8 @@ export class Orchestrator {
   private namespaceFromPath(p: string): string {
     if (!this.config.namespacesEnabled) return this.config.defaultNamespace;
     const m = p.match(/[\\/]+namespaces[\\/]+([^\\/]+)(?:[\\/]|$)/);
-    return m && m[1] ? m[1] : this.config.defaultNamespace;
+    if (!m?.[1]) return this.config.defaultNamespace;
+    return namespaceIdentityFromToken(m[1]) ?? m[1];
   }
 
   private namespaceFromStorageDir(storageDir: string): string {
@@ -16369,7 +16371,8 @@ export class Orchestrator {
     if (resolvedStorageDir === resolvedMemoryDir)
       return this.config.defaultNamespace;
     const m = resolvedStorageDir.match(/[\\/]namespaces[\\/]([^\\/]+)$/);
-    return m && m[1] ? m[1] : this.config.defaultNamespace;
+    if (!m?.[1]) return this.config.defaultNamespace;
+    return namespaceIdentityFromToken(m[1]) ?? m[1];
   }
 
   private async readAllMemoriesForNamespaces(

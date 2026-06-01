@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -422,6 +423,49 @@ def metadata_row_key(row: dict[str, Any]) -> tuple[str, str]:
     return (session_key, row_id)
 
 
+def metadata_result_path(row: dict[str, Any]) -> str:
+    row_id = row.get("id") if isinstance(row.get("id"), str) else ""
+    session_key = row.get("sessionKey") if isinstance(row.get("sessionKey"), str) else ""
+    return f"{session_key}/{row_id}" if session_key else row_id
+
+
+def parse_retention_cutoff_ms(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SidecarError("retentionCutoffMs must be a finite non-negative number when provided")
+    if value < 0 or value != value or value in (float("inf"), float("-inf")):
+        raise SidecarError("retentionCutoffMs must be a finite non-negative number when provided")
+    return int(value)
+
+
+def parse_row_timestamp_ms(row: dict[str, Any]) -> int | None:
+    for key in ("endTs", "startTs"):
+        value = row.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        text = value.strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    return None
+
+
+def prune_metadata_rows(rows: list[dict[str, Any]], retention_cutoff_ms: int | None) -> list[dict[str, Any]]:
+    if retention_cutoff_ms is None:
+        return rows
+    pruned: list[dict[str, Any]] = []
+    for row in rows:
+        timestamp_ms = parse_row_timestamp_ms(row)
+        if timestamp_ms is None or timestamp_ms >= retention_cutoff_ms:
+            pruned.append(row)
+    return pruned
+
+
 def merge_rows(existing: list[dict[str, Any]], updates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_key: dict[tuple[str, str], dict[str, Any]] = {
         metadata_row_key(row): row for row in existing
@@ -593,6 +637,7 @@ def run_upsert(payload: dict[str, Any]) -> dict[str, Any]:
         raise SidecarError("modelId is required")
 
     index_dir = ensure_index_dir(payload.get("indexPath"))
+    retention_cutoff_ms = parse_retention_cutoff_ms(payload.get("retentionCutoffMs"))
     chunks = parse_chunks(payload)
 
     if not chunks:
@@ -604,7 +649,7 @@ def run_upsert(payload: dict[str, Any]) -> dict[str, Any]:
 
     writer_lock_path = acquire_writer_lock(index_dir)
     try:
-        existing = read_metadata(meta_path)
+        existing = prune_metadata_rows(read_metadata(meta_path), retention_cutoff_ms)
         existing_manifest = read_manifest(manifest_path)
         merged = merge_rows(existing, chunks)
 
@@ -739,7 +784,7 @@ def run_search(payload: dict[str, Any]) -> dict[str, Any]:
         row = rows[idx_i]
         results.append(
             {
-                "path": row["id"],
+                "path": metadata_result_path(row),
                 "snippet": row["text"][:280],
                 "score": float(score),
             }

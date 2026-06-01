@@ -121,7 +121,7 @@ export async function runMemBenchBenchmark(
         responder: options.system.responder,
         answerMode: "strict",
       });
-      const predictedChoice = testCase.choices && options.system.responder
+      const predictedChoice = testCase.choices
         ? extractChoice(answered.finalAnswer, testCase.choices)
         : undefined;
       const actualAnswer = predictedChoice && testCase.choices

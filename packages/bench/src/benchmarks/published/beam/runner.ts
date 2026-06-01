@@ -948,6 +948,9 @@ async function* streamJsonDataset(
         if (limit === undefined || yielded < limit) {
           yield conversation;
           yielded += 1;
+          if (limit !== undefined && yielded >= limit) {
+            return;
+          }
         }
       }
     }
@@ -983,6 +986,9 @@ async function* streamJsonlDataset(
   let lineIndex = 0;
 
   for await (const line of lines) {
+    if (limit !== undefined && yielded >= limit) {
+      break;
+    }
     lineIndex += 1;
     if (line.trim().length === 0) {
       continue;

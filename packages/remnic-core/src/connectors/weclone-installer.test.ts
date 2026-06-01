@@ -465,15 +465,15 @@ test("installConnector weclone install error reports token rollback status truth
       REMNIC_HOME: sandbox.remnicHome,
     },
     () => {
-      // Force proxy write to fail so we hit the WeClone catch branch.
+      // Force proxy atomic replace to fail so we hit the WeClone catch branch.
       const proxyConfigPath = resolveWeCloneProxyConfigPath();
-      const originalWrite = fs.writeFileSync.bind(fs);
+      const originalRename = fs.renameSync.bind(fs);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mock = t.mock.method(fs, "writeFileSync", (...args: [any, any, any?]) => {
-        if (String(args[0] ?? "") === proxyConfigPath) {
+      const mock = t.mock.method(fs, "renameSync", (...args: [any, any]) => {
+        if (String(args[1] ?? "") === proxyConfigPath) {
           throw new Error("ENOSPC: simulated proxy write failure");
         }
-        return originalWrite(...args);
+        return originalRename(...args);
       });
 
       const result = installConnector({ connectorId: "weclone" });
@@ -491,11 +491,10 @@ test("installConnector weclone install error reports token rollback status truth
   );
 });
 
-test("installConnector weclone restores prior proxy config when write throws mid-truncate", async (t) => {
-  // Reviewer (codex P2): writeSecretFileSync opens the file in truncate
-  // mode, so a mid-write failure (ENOSPC) can leave weclone.json empty.
-  // The rollback closure must be installed BEFORE the write so prior
-  // contents are restored on failure.
+test("installConnector weclone restores prior proxy config when atomic replace fails", async (t) => {
+  // Reviewer (codex P2): failures during the proxy-config replace must not
+  // corrupt or replace the prior weclone.json. The rollback closure is
+  // installed BEFORE the write so prior contents are restored on failure.
   const sandbox = makeSandbox(t);
   await withEnv(
     {
@@ -515,18 +514,17 @@ test("installConnector weclone restores prior proxy config when write throws mid
       const priorBytes = fs.readFileSync(proxyConfigPath, "utf8");
       assert.ok(priorBytes.length > 0);
 
-      // Now mock the internal writeFileSync so that the NEXT call targeting
-      // proxyConfigPath fails. We target writeFileSync because
-      // writeSecretFileSync calls through to it via a wrapper; catching that
-      // exception drives our new rollback path.
-      const originalWrite = fs.writeFileSync.bind(fs);
+      // Now mock the atomic rename so that the NEXT attempt to replace
+      // proxyConfigPath fails. writeSecretFileSync writes to a temp file and
+      // renames into place, so the destination path is the second arg.
+      const originalRename = fs.renameSync.bind(fs);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mock = t.mock.method(fs, "writeFileSync", (...args: [any, any, any?]) => {
-        const target = String(args[0] ?? "");
+      const mock = t.mock.method(fs, "renameSync", (...args: [any, any]) => {
+        const target = String(args[1] ?? "");
         if (target === proxyConfigPath) {
           throw new Error("ENOSPC: no space left on device (simulated)");
         }
-        return originalWrite(...args);
+        return originalRename(...args);
       });
 
       const second = installConnector({

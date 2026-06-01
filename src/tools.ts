@@ -67,6 +67,26 @@ function normalizeToolNamespace(value: unknown): string | undefined {
   return asNonEmptyString(value);
 }
 
+function namespaceIdentityFromPathToken(token: string): string | null {
+  if (!token.startsWith("ns-")) return null;
+  const hex = token.slice(3);
+  if (hex === "default") return "";
+  if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) {
+    return null;
+  }
+  const decoded = Buffer.from(hex, "hex").toString("utf8");
+  const encoded = Array.from(new TextEncoder().encode(decoded), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return encoded.toLowerCase() === hex.toLowerCase() ? decoded : null;
+}
+
+function namespaceFromMemoryPath(filePath: string, defaultNamespace: string): string {
+  const match = filePath.match(/[\\/]+namespaces[\\/]+([^\\/]+)(?:[\\/]|$)/);
+  if (!match?.[1]) return defaultNamespace;
+  return namespaceIdentityFromPathToken(match[1]) ?? match[1];
+}
+
 function clampUnitInterval(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   if (value < 0) return 0;
@@ -483,8 +503,11 @@ Best for:
 
         const namespaceFilter = namespace && namespace.length > 0 ? namespace : undefined;
         const filtered =
-          collection === "global" && !namespaceFilter
-            ? await orchestrator.qmd.searchGlobal(query, maxResults)
+          collection === "global"
+            ? (await orchestrator.qmd.searchGlobal(query, maxResults)).filter((result) =>
+                !namespaceFilter ||
+                namespaceFromMemoryPath(result.path, orchestrator.config.defaultNamespace) === namespaceFilter,
+              )
             : await orchestrator.searchAcrossNamespaces({
               query,
               namespaces: namespaceFilter ? [namespaceFilter] : undefined,

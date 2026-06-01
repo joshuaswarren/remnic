@@ -96,7 +96,7 @@ test("runBenchmark executes taxonomy-accuracy in quick mode", async () => {
 
   assert.equal(result.meta.benchmark, "taxonomy-accuracy");
   assert.equal(result.meta.benchmarkTier, "remnic");
-  assert.equal(result.results.tasks.length, 5);
+  assert.equal(result.results.tasks.length, 7);
   assert.equal(result.results.aggregates.exact_match.mean, 1);
 });
 
@@ -153,16 +153,17 @@ test("runBenchmark executes retrieval-personalization in quick mode", async () =
   assert.equal(result.results.aggregates["dirty_penalty.p_at_1"].mean, 0);
 });
 
-test("runBenchmark applies retrieval-personalization limit as an exact task cap", async () => {
+test("runBenchmark applies retrieval-personalization limit as a clean/dirty pair cap", async () => {
   const result = await runBenchmark("retrieval-personalization", {
     mode: "quick",
     limit: 1,
     system: adapter,
   });
 
-  assert.equal(result.results.tasks.length, 1);
+  assert.equal(result.results.tasks.length, 2);
   assert.equal(result.results.tasks[0]?.taskId, "clean:alex-scope-q3-launch");
-  assert.equal(result.results.aggregates["dirty_penalty.p_at_1"], undefined);
+  assert.equal(result.results.tasks[1]?.taskId, "dirty:alex-scope-q3-launch");
+  assert.equal(result.results.aggregates["dirty_penalty.p_at_1"].mean, 0);
 });
 
 test("runBenchmark treats retrospective decision questions as non-initiating procedural recall", async () => {
