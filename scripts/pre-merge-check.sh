@@ -20,36 +20,76 @@ REQUIRED_REVIEWERS=("cursor[bot]" "chatgpt-codex-connector[bot]")
 echo "[pre-merge] Checking PR #${PR_NUMBER} on ${REPO}..."
 
 # 1. Check for unresolved review threads
-UNRESOLVED=$(gh api graphql \
-  -f query='query($owner: String!, $name: String!, $pr: Int!) {
+OWNER="${REPO%%/*}"
+NAME="${REPO##*/}"
+REVIEW_THREADS_QUERY='query($owner: String!, $name: String!, $pr: Int!, $after: String = null) {
     repository(owner: $owner, name: $name) {
       pullRequest(number: $pr) {
-        reviewThreads(first: 100) {
+        reviewThreads(first: 100, after: $after) {
           totalCount
-          nodes { isResolved }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            isResolved
+          }
         }
       }
     }
-  }' \
-  -f owner="${REPO%%/*}" \
-  -f name="${REPO##*/}" \
-  -F pr="$PR_NUMBER" \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' \
-  2>/dev/null)
+  }'
 
-TOTAL_THREADS=$(gh api graphql \
-  -f query='query($owner: String!, $name: String!, $pr: Int!) {
-    repository(owner: $owner, name: $name) {
-      pullRequest(number: $pr) {
-        reviewThreads(first: 100) { totalCount }
-      }
-    }
-  }' \
-  -f owner="${REPO%%/*}" \
-  -f name="${REPO##*/}" \
-  -F pr="$PR_NUMBER" \
-  --jq '.data.repository.pullRequest.reviewThreads.totalCount' \
-  2>/dev/null)
+UNRESOLVED=0
+TOTAL_THREADS=0
+AFTER=""
+PAGE_INDEX=0
+while true; do
+  THREAD_ARGS=(
+    api graphql
+    -f query="$REVIEW_THREADS_QUERY"
+    -f owner="$OWNER"
+    -f name="$NAME"
+    -F pr="$PR_NUMBER"
+    --jq '.data.repository.pullRequest.reviewThreads as $threads | [($threads.totalCount // 0), ([($threads.nodes // [])[] | select(.isResolved == false)] | length), ($threads.pageInfo.hasNextPage // false), ($threads.pageInfo.endCursor // "")] | @tsv'
+  )
+  if [[ -n "$AFTER" ]]; then
+    THREAD_ARGS+=(-f after="$AFTER")
+  fi
+
+  if ! THREAD_PAGE=$(gh "${THREAD_ARGS[@]}" 2>/dev/null); then
+    echo "[pre-merge] BLOCKED: Failed to read review threads from GitHub."
+    exit 1
+  fi
+
+  if [[ "$THREAD_PAGE" == *$'\n'* ]]; then
+    echo "[pre-merge] BLOCKED: GitHub returned malformed review thread data."
+    exit 1
+  fi
+
+  IFS=$'\t' read -r PAGE_TOTAL PAGE_UNRESOLVED HAS_NEXT END_CURSOR EXTRA_FIELD <<< "$THREAD_PAGE"
+  if [[ -n "${EXTRA_FIELD:-}" || ! "$PAGE_TOTAL" =~ ^[0-9]+$ || ! "$PAGE_UNRESOLVED" =~ ^[0-9]+$ || ! "$HAS_NEXT" =~ ^(true|false)$ ]]; then
+    echo "[pre-merge] BLOCKED: GitHub returned malformed review thread data."
+    exit 1
+  fi
+
+  if [[ "$PAGE_INDEX" -eq 0 ]]; then
+    TOTAL_THREADS="$PAGE_TOTAL"
+  fi
+  PAGE_INDEX=$((PAGE_INDEX + 1))
+  UNRESOLVED=$((UNRESOLVED + PAGE_UNRESOLVED))
+  if [[ "$HAS_NEXT" != "true" ]]; then
+    break
+  fi
+  if [[ -z "$END_CURSOR" ]]; then
+    echo "[pre-merge] BLOCKED: GitHub review thread pagination was incomplete."
+    exit 1
+  fi
+  if [[ "$END_CURSOR" == "$AFTER" ]]; then
+    echo "[pre-merge] BLOCKED: GitHub review thread pagination did not advance."
+    exit 1
+  fi
+  AFTER="$END_CURSOR"
+done
 
 echo "[pre-merge] Review threads: ${TOTAL_THREADS} total, ${UNRESOLVED} unresolved"
 
@@ -59,30 +99,67 @@ if [[ "$UNRESOLVED" -gt 0 ]]; then
 fi
 
 # 2. Check that AI reviewers have actually posted (via reviews, comments, or check runs)
-REVIEWS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --jq '.[].user.login' 2>/dev/null || echo "")
-COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate --jq '.[].user.login' 2>/dev/null || echo "")
+if ! REVIEWS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --jq '.[].user.login' 2>/dev/null); then
+  echo "[pre-merge] BLOCKED: Failed to read PR reviews from GitHub."
+  exit 1
+fi
+if ! COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate --jq '.[].user.login' 2>/dev/null); then
+  echo "[pre-merge] BLOCKED: Failed to read PR comments from GitHub."
+  exit 1
+fi
 
 # Some bots (Cursor Bugbot, Kilo Code Review) post as check runs via GitHub
 # Apps rather than as PR comments. A completed check run counts as reviewer
 # activity. The app.slug field maps to reviewer aliases (e.g. "cursor" matches
 # cursor[bot]).
-HEAD_SHA=$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
-CHECK_RUN_APPS=""
+if ! HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid 2>/dev/null); then
+  echo "[pre-merge] BLOCKED: Failed to read PR head SHA from GitHub."
+  exit 1
+fi
+CHECK_RUNS=""
 if [[ -n "$HEAD_SHA" ]]; then
-  CHECK_RUN_APPS=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" \
-    --jq '.check_runs[] | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "neutral") | .app.slug' \
-    2>/dev/null || echo "")
+  if ! CHECK_RUNS=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" \
+    --jq '.check_runs[] | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "neutral") | [.app.slug, .name] | @tsv' \
+    2>/dev/null); then
+    echo "[pre-merge] BLOCKED: Failed to read PR check runs from GitHub."
+    exit 1
+  fi
 fi
 
-ALL_REVIEWERS=$(printf '%s\n%s\n%s' "$REVIEWS" "$COMMENTS" "$CHECK_RUN_APPS" | sort -u)
+ALL_REVIEWERS=$(printf '%s\n%s\n' "$REVIEWS" "$COMMENTS" | sort -u)
+
+has_reviewer_check_run() {
+  local reviewer="$1"
+  local expected_slug=""
+  local expected_name=""
+
+  case "$reviewer" in
+    "cursor[bot]")
+      expected_slug="cursor"
+      expected_name="Cursor Bugbot"
+      ;;
+    "chatgpt-codex-connector[bot]")
+      expected_slug="chatgpt-codex-connector"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  while IFS=$'\t' read -r app_slug check_name _; do
+    if [[ "$app_slug" == "$expected_slug" && ( -z "$expected_name" || "$check_name" == "$expected_name" ) ]]; then
+      return 0
+    fi
+  done <<< "$CHECK_RUNS"
+
+  return 1
+}
 
 MISSING_REVIEWERS=()
 for reviewer in "${REQUIRED_REVIEWERS[@]}"; do
-  # Strip [bot] suffix for matching against check-run app slugs.
-  reviewer_base="${reviewer%%\[bot\]}"
   # Use exact line match (-x) to avoid substring false positives.
   if ! echo "$ALL_REVIEWERS" | grep -qxiF "$reviewer" && \
-     ! echo "$ALL_REVIEWERS" | grep -qxiF "$reviewer_base"; then
+     ! has_reviewer_check_run "$reviewer"; then
     MISSING_REVIEWERS+=("$reviewer")
   fi
 done
