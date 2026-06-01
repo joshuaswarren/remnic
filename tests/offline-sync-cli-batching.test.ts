@@ -20,6 +20,7 @@ import {
   OFFLINE_SYNC_DIRECT_PUSH_MIN_BYTES,
   OFFLINE_SYNC_FILE_CONTENT_UPLOAD_CHUNK_BYTES,
   OFFLINE_SYNC_REQUEST_TIMEOUT_DEFAULT_MS,
+  OFFLINE_SYNC_SNAPSHOT_BASE_POST_PREFERRED_MAX_BODY_BYTES,
   advanceOfflineBaseFilesForSuccessfulPush,
   chunkOfflineChangesetApplyBatches,
   chunkOfflineFileContentBatches,
@@ -231,6 +232,11 @@ test("offline sync snapshot post falls back when base payload is too large", () 
     baseFiles: [file("facts/a.md", 1)],
   });
   assert.equal(offlineSnapshotBasePostBodyFits(smallBody), true);
+
+  const hugeButServerAcceptedBody = JSON.stringify({
+    baseFiles: "x".repeat(OFFLINE_SYNC_SNAPSHOT_BASE_POST_PREFERRED_MAX_BODY_BYTES),
+  });
+  assert.equal(offlineSnapshotBasePostBodyFits(hugeButServerAcceptedBody), false);
 
   const largeBody = JSON.stringify({
     baseFiles: "x".repeat(OFFLINE_SYNC_SNAPSHOT_BASE_MAX_BODY_BYTES),

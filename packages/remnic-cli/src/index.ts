@@ -5618,6 +5618,7 @@ function offlineEndpoint(
 }
 
 export const OFFLINE_SYNC_REQUEST_TIMEOUT_DEFAULT_MS = 15 * 60_000;
+export const OFFLINE_SYNC_SNAPSHOT_BASE_POST_PREFERRED_MAX_BODY_BYTES = 16 * 1024 * 1024;
 
 export function parseOfflineSyncRequestTimeoutMs(
   raw: string | undefined,
@@ -5804,7 +5805,9 @@ export function offlineSnapshotBasePostBody(args: {
 }
 
 export function offlineSnapshotBasePostBodyFits(body: string): boolean {
-  return Buffer.byteLength(body, "utf-8") <= OFFLINE_SYNC_SNAPSHOT_BASE_MAX_BODY_BYTES;
+  const bytes = Buffer.byteLength(body, "utf-8");
+  return bytes <= OFFLINE_SYNC_SNAPSHOT_BASE_MAX_BODY_BYTES &&
+    bytes <= OFFLINE_SYNC_SNAPSHOT_BASE_POST_PREFERRED_MAX_BODY_BYTES;
 }
 
 export function isOfflineSnapshotPostFallbackError(error: unknown): boolean {
