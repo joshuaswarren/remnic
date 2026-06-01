@@ -3,7 +3,7 @@ export function readDashboardArg(args: readonly string[], flag: string, fallback
   if (idx === -1) return fallback;
   const value = args[idx + 1];
   if (!value || value.startsWith("--")) {
-    throw new Error(`missing ${flag}`);
+    return fallback;
   }
   return value;
 }
