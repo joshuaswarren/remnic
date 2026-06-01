@@ -78,15 +78,20 @@ function cacheIdentity(value: unknown): string {
   if (typeof value === "number") return `number:${String(value)}`;
   if (typeof value === "boolean") return `boolean:${String(value)}`;
   if (typeof value === "bigint") return `bigint:${String(value)}`;
-  if (typeof value === "symbol" || typeof value === "function") return typeof value;
+  if (typeof value === "symbol") return typeof value;
+  if (typeof value === "function") return cacheObjectIdentity(value as object);
   if (typeof value === "object") {
-    const existingId = cacheObjectIds.get(value);
-    if (existingId !== undefined) return `object:${existingId}`;
-    const newId = nextCacheObjectId++;
-    cacheObjectIds.set(value, newId);
-    return `object:${newId}`;
+    return cacheObjectIdentity(value);
   }
   return String(value);
+}
+
+function cacheObjectIdentity(value: object): string {
+  const existingId = cacheObjectIds.get(value);
+  if (existingId !== undefined) return `object:${existingId}`;
+  const newId = nextCacheObjectId++;
+  cacheObjectIds.set(value, newId);
+  return `object:${newId}`;
 }
 
 function providerSecretCacheKey(
@@ -94,12 +99,14 @@ function providerSecretCacheKey(
   resolvedAgentDir: string,
   apiKeyValue: unknown,
   gatewayConfig: unknown,
+  resolverContext: unknown,
 ): string {
   return [
     `provider:${providerId}`,
     `agentDir:${resolvedAgentDir}`,
     `apiKey:${cacheIdentity(apiKeyValue)}`,
     `cfg:${cacheIdentity(gatewayConfig)}`,
+    `resolver:${cacheIdentity(resolverContext)}`,
   ].join(":");
 }
 
@@ -140,14 +147,20 @@ export async function resolveProviderApiKey(
     }
   }
 
-  const cacheKey = providerSecretCacheKey(providerId, resolvedAgentDir, apiKeyValue, gatewayConfig);
+  const resolver = options.resolveApiKeyForProvider ?? _resolveApiKeyForProviderForTest;
+  const cacheKey = providerSecretCacheKey(
+    providerId,
+    resolvedAgentDir,
+    apiKeyValue,
+    gatewayConfig,
+    resolver ?? null,
+  );
   if (resolvedCache.has(cacheKey)) {
     return resolvedCache.get(cacheKey);
   }
 
   // The API key is either a SecretRef object, "secretref-managed", or empty.
   // Try the host-supplied auth resolution system first.
-  const resolver = options.resolveApiKeyForProvider ?? _resolveApiKeyForProviderForTest;
   if (resolver) {
     try {
       const auth = await resolver({ provider: providerId, cfg: gatewayConfig, agentDir: resolvedAgentDir });

@@ -145,6 +145,53 @@ test("resolveProviderApiKey scopes cached gateway secrets by auth input and conf
   }
 });
 
+test("resolveProviderApiKey scopes cached gateway secrets by injected resolver identity", async () => {
+  clearSecretCache();
+  const gatewayConfig = { profile: "shared" };
+  let firstCalls = 0;
+  let secondCalls = 0;
+  const firstResolver = async () => {
+    firstCalls += 1;
+    return { apiKey: "key:first" };
+  };
+  const secondResolver = async () => {
+    secondCalls += 1;
+    return { apiKey: "key:second" };
+  };
+
+  try {
+    const first = await resolveProviderApiKey(
+      "openai",
+      "secretref-managed",
+      gatewayConfig,
+      "/tmp/shared-agent",
+      { resolveApiKeyForProvider: firstResolver },
+    );
+    const second = await resolveProviderApiKey(
+      "openai",
+      "secretref-managed",
+      gatewayConfig,
+      "/tmp/shared-agent",
+      { resolveApiKeyForProvider: secondResolver },
+    );
+    const repeatFirst = await resolveProviderApiKey(
+      "openai",
+      "secretref-managed",
+      gatewayConfig,
+      "/tmp/shared-agent",
+      { resolveApiKeyForProvider: firstResolver },
+    );
+
+    assert.equal(first, "key:first");
+    assert.equal(second, "key:second");
+    assert.equal(repeatFirst, first);
+    assert.equal(firstCalls, 1);
+    assert.equal(secondCalls, 1);
+  } finally {
+    clearSecretCache();
+  }
+});
+
 test("resolveProviderApiKey treats env-var-shaped config strings as markers", async () => {
   clearSecretCache();
   const previousOpenAI = process.env.OPENAI_API_KEY;
