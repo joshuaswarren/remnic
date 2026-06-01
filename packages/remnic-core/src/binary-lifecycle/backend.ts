@@ -6,7 +6,7 @@
  * so swapping storage providers requires no pipeline changes.
  */
 
-import fs from "node:fs";
+import type { Stats } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type { BinaryStorageBackendConfig } from "./types.js";
@@ -56,26 +56,163 @@ export class FilesystemBackend implements BinaryStorageBackend {
     return resolved;
   }
 
+  private isInsideBase(candidate: string, realBase: string): boolean {
+    const relative = path.relative(realBase, candidate);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  }
+
+  private async realBasePathIfExists(): Promise<string | null> {
+    try {
+      const stat = await fsp.lstat(this.basePath);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`FilesystemBackend basePath must not be a symlink: ${this.basePath}`);
+      }
+      if (!stat.isDirectory()) {
+        throw new Error(`FilesystemBackend basePath must be a directory: ${this.basePath}`);
+      }
+      return await fsp.realpath(this.basePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  private async ensureBaseDirectory(): Promise<string> {
+    await fsp.mkdir(this.basePath, { recursive: true });
+    const realBase = await this.realBasePathIfExists();
+    if (realBase === null) {
+      throw new Error(`FilesystemBackend failed to create basePath: ${this.basePath}`);
+    }
+    return realBase;
+  }
+
+  private async ensureSafeParentDirectory(dest: string): Promise<string> {
+    const realBase = await this.ensureBaseDirectory();
+    const destDir = path.dirname(dest);
+    const relativeDir = path.relative(this.basePath, destDir);
+    const segments = relativeDir === "" ? [] : relativeDir.split(path.sep);
+    let current = this.basePath;
+
+    for (const segment of segments) {
+      if (segment === "." || segment === "") continue;
+      current = path.join(current, segment);
+      try {
+        const stat = await fsp.lstat(current);
+        if (stat.isSymbolicLink()) {
+          throw new Error(`FilesystemBackend remotePath traverses symlink: ${current}`);
+        }
+        if (!stat.isDirectory()) {
+          throw new Error(`FilesystemBackend remotePath parent is not a directory: ${current}`);
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw err;
+        }
+        await fsp.mkdir(current);
+      }
+    }
+
+    const realParent = await fsp.realpath(destDir);
+    if (!this.isInsideBase(realParent, realBase)) {
+      throw new Error(`FilesystemBackend remotePath parent escapes basePath: ${dest}`);
+    }
+    return realBase;
+  }
+
+  private async resolveExistingRemotePath(remotePath: string): Promise<string | null> {
+    const dest = this.resolveRemotePath(remotePath);
+    const realBase = await this.realBasePathIfExists();
+    if (realBase === null) {
+      return null;
+    }
+
+    const destDir = path.dirname(dest);
+    const relativeDir = path.relative(this.basePath, destDir);
+    const segments = relativeDir === "" ? [] : relativeDir.split(path.sep);
+    let current = this.basePath;
+    for (const segment of segments) {
+      if (segment === "." || segment === "") continue;
+      current = path.join(current, segment);
+      let stat: Stats;
+      try {
+        stat = await fsp.lstat(current);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          return null;
+        }
+        throw err;
+      }
+      if (stat.isSymbolicLink()) {
+        throw new Error(`FilesystemBackend remotePath traverses symlink: ${current}`);
+      }
+      if (!stat.isDirectory()) {
+        return null;
+      }
+    }
+
+    const realParent = await fsp.realpath(destDir).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return null;
+      throw err;
+    });
+    if (realParent === null) {
+      return null;
+    }
+    if (!this.isInsideBase(realParent, realBase)) {
+      throw new Error(`FilesystemBackend remotePath parent escapes basePath: ${JSON.stringify(remotePath)}`);
+    }
+
+    try {
+      const stat = await fsp.lstat(dest);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`FilesystemBackend remotePath points to symlink: ${dest}`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+        return null;
+      }
+      throw err;
+    }
+
+    const realDest = await fsp.realpath(dest);
+    if (!this.isInsideBase(realDest, realBase)) {
+      throw new Error(`FilesystemBackend remotePath escapes basePath: ${JSON.stringify(remotePath)}`);
+    }
+    return dest;
+  }
+
   async upload(localPath: string, remotePath: string): Promise<string> {
     const dest = this.resolveRemotePath(remotePath);
-    const destDir = path.dirname(dest);
-    await fsp.mkdir(destDir, { recursive: true });
+    const realBase = await this.ensureSafeParentDirectory(dest);
+    try {
+      const stat = await fsp.lstat(dest);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`FilesystemBackend remotePath points to symlink: ${dest}`);
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw err;
+      }
+    }
     await fsp.copyFile(localPath, dest);
+    const realDest = await fsp.realpath(dest);
+    if (!this.isInsideBase(realDest, realBase)) {
+      throw new Error(`FilesystemBackend remotePath escapes basePath: ${JSON.stringify(remotePath)}`);
+    }
     return dest;
   }
 
   async exists(remotePath: string): Promise<boolean> {
-    const dest = this.resolveRemotePath(remotePath);
-    try {
-      await fsp.access(dest, fs.constants.F_OK);
-      return true;
-    } catch {
-      return false;
-    }
+    const dest = await this.resolveExistingRemotePath(remotePath);
+    return dest !== null;
   }
 
   async delete(remotePath: string): Promise<void> {
-    const dest = this.resolveRemotePath(remotePath);
+    const dest = await this.resolveExistingRemotePath(remotePath);
+    if (dest === null) {
+      return;
+    }
     try {
       await fsp.unlink(dest);
     } catch (err: unknown) {

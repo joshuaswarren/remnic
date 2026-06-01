@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { runBinaryLifecyclePipeline } from "./pipeline.js";
-import { writeManifest } from "./manifest.js";
+import { manifestPath, writeManifest } from "./manifest.js";
 import type { BinaryLifecycleConfig } from "./types.js";
 import type { BinaryStorageBackend } from "./backend.js";
 
@@ -129,6 +129,314 @@ test("binary lifecycle blocks cleanup when local hash no longer matches manifest
   }
 });
 
+test("binary lifecycle blocks manifest cleanup paths outside memoryDir", async () => {
+  const parentDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-escape-parent-"));
+  const memoryDir = path.join(parentDir, "memory");
+  const victimPath = path.join(parentDir, "victim.png");
+  try {
+    await mkdir(memoryDir);
+    await writeFile(victimPath, "victim", "utf8");
+    await writeManifest(memoryDir, {
+      version: 1,
+      assets: [
+        {
+          originalPath: "../victim.png",
+          mirroredPath: "remote/victim.png",
+          contentHash: sha256("victim"),
+          sizeBytes: "victim".length,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          redirectedAt: "2026-01-01T00:00:00.000Z",
+          status: "redirected",
+        },
+      ],
+    });
+
+    const result = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    const manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ originalPath: string; status: string }> };
+
+    assert.equal(result.cleaned, 0);
+    assert.match(result.errors.join("\n"), /manifest path is outside memoryDir/);
+    assert.equal(await readFile(victimPath, "utf8"), "victim");
+    assert.equal(manifest.assets[0]?.originalPath, "../victim.png");
+    assert.equal(manifest.assets[0]?.status, "error");
+  } finally {
+    await rm(parentDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle dry-run does not mark missing redirected assets cleaned", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-dry-clean-"));
+  try {
+    await writeManifest(memoryDir, {
+      version: 1,
+      assets: [
+        {
+          originalPath: "missing.png",
+          mirroredPath: "remote/missing.png",
+          contentHash: sha256("missing"),
+          sizeBytes: "missing".length,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          redirectedAt: "2026-01-01T00:00:00.000Z",
+          status: "redirected",
+        },
+      ],
+    });
+
+    const result = await runBinaryLifecyclePipeline(
+      memoryDir,
+      baseConfig,
+      noUploadBackend,
+      noopLogger,
+      { dryRun: true },
+    );
+    const manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string; cleanedAt?: string }> };
+
+    assert.equal(result.cleaned, 0);
+    assert.equal(manifest.assets[0]?.status, "redirected");
+    assert.equal(manifest.assets[0]?.cleanedAt, undefined);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle blocks cleanup when manifest mirroredAt is invalid", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-invalid-timestamp-"));
+  try {
+    await writeFile(path.join(memoryDir, "image.png"), "image", "utf8");
+    await writeManifest(memoryDir, {
+      version: 1,
+      assets: [
+        {
+          originalPath: "image.png",
+          mirroredPath: "remote/image.png",
+          contentHash: sha256("image"),
+          sizeBytes: "image".length,
+          mimeType: "image/png",
+          mirroredAt: "not-a-date",
+          redirectedAt: "2026-01-01T00:00:00.000Z",
+          status: "redirected",
+        },
+      ],
+    });
+
+    const result = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    const manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string }> };
+
+    assert.equal(result.cleaned, 0);
+    assert.match(result.errors.join("\n"), /manifest mirroredAt is invalid/);
+    assert.equal(await readFile(path.join(memoryDir, "image.png"), "utf8"), "image");
+    assert.equal(manifest.assets[0]?.status, "error");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle blocks cleanup when mirrored copy is missing", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-missing-remote-"));
+  try {
+    await writeFile(path.join(memoryDir, "image.png"), "image", "utf8");
+    await writeManifest(memoryDir, {
+      version: 1,
+      assets: [
+        {
+          originalPath: "image.png",
+          mirroredPath: "remote/image.png",
+          contentHash: sha256("image"),
+          sizeBytes: "image".length,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          redirectedAt: "2026-01-01T00:00:00.000Z",
+          status: "redirected",
+        },
+      ],
+    });
+
+    const result = await runBinaryLifecyclePipeline(
+      memoryDir,
+      baseConfig,
+      missingRemoteBackend,
+      noopLogger,
+    );
+    const manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string; cleanedAt?: string }> };
+
+    assert.equal(result.cleaned, 0);
+    assert.match(result.errors.join("\n"), /mirrored copy is missing/);
+    assert.equal(await readFile(path.join(memoryDir, "image.png"), "utf8"), "image");
+    assert.equal(manifest.assets[0]?.status, "redirected");
+    assert.equal(manifest.assets[0]?.cleanedAt, undefined);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle blocks cleanup when mirrored copy verification fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-remote-error-"));
+  try {
+    await writeFile(path.join(memoryDir, "image.png"), "image", "utf8");
+    await writeManifest(memoryDir, {
+      version: 1,
+      assets: [
+        {
+          originalPath: "image.png",
+          mirroredPath: "remote/image.png",
+          contentHash: sha256("image"),
+          sizeBytes: "image".length,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          redirectedAt: "2026-01-01T00:00:00.000Z",
+          status: "redirected",
+        },
+      ],
+    });
+
+    const result = await runBinaryLifecyclePipeline(
+      memoryDir,
+      baseConfig,
+      failingRemoteBackend,
+      noopLogger,
+    );
+    const manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string; cleanedAt?: string }> };
+
+    assert.equal(result.cleaned, 0);
+    assert.match(result.errors.join("\n"), /failed to verify mirrored copy/);
+    assert.equal(await readFile(path.join(memoryDir, "image.png"), "utf8"), "image");
+    assert.equal(manifest.assets[0]?.status, "redirected");
+    assert.equal(manifest.assets[0]?.cleanedAt, undefined);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle retries partial redirect failures before cleanup", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-partial-redirect-"));
+  const imagePath = path.join(memoryDir, "image.png");
+  const firstNote = path.join(memoryDir, "first.md");
+  const secondNote = path.join(memoryDir, "second.md");
+  try {
+    await writeFile(imagePath, "image", "utf8");
+    await writeFile(firstNote, "![img](image.png)", "utf8");
+    await writeFile(secondNote, "![img](image.png)", "utf8");
+    await chmod(secondNote, 0o444);
+    await writeManifest(memoryDir, {
+      version: 1,
+      assets: [
+        {
+          originalPath: "image.png",
+          mirroredPath: "remote/image.png",
+          contentHash: sha256("image"),
+          sizeBytes: "image".length,
+          mimeType: "image/png",
+          mirroredAt: "2026-01-01T00:00:00.000Z",
+          status: "mirrored",
+        },
+      ],
+    });
+
+    const firstResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    let manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string }> };
+
+    assert.equal(firstResult.cleaned, 0);
+    assert.match(firstResult.errors.join("\n"), /redirect write failed/);
+    assert.equal(await readFile(imagePath, "utf8"), "image");
+    assert.equal(await readFile(firstNote, "utf8"), "![img](remote/image.png)");
+    assert.equal(await readFile(secondNote, "utf8"), "![img](image.png)");
+    assert.equal(manifest.assets[0]?.status, "error");
+
+    await chmod(secondNote, 0o644);
+    const secondResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string }> };
+
+    assert.equal(secondResult.errors.length, 0);
+    assert.equal(secondResult.redirected, 1);
+    assert.equal(secondResult.cleaned, 1);
+    assert.equal(await readFile(firstNote, "utf8"), "![img](remote/image.png)");
+    assert.equal(await readFile(secondNote, "utf8"), "![img](remote/image.png)");
+    assert.equal(manifest.assets[0]?.status, "cleaned");
+  } finally {
+    await chmod(secondNote, 0o644).catch(() => {});
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle rewrites nested asset references before cleanup", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-nested-redirect-"));
+  const assetDir = path.join(memoryDir, "assets");
+  const noteDir = path.join(memoryDir, "notes");
+  const imagePath = path.join(assetDir, "photo.png");
+  const rootNote = path.join(memoryDir, "note.md");
+  const nestedNote = path.join(noteDir, "nested.md");
+  try {
+    await mkdir(assetDir);
+    await mkdir(noteDir);
+    await writeFile(imagePath, "image", "utf8");
+    await writeFile(rootNote, "![img](assets/photo.png)", "utf8");
+    await writeFile(
+      nestedNote,
+      ["![relative](../assets/photo.png)", "![root](assets/photo.png)"].join("\n"),
+      "utf8",
+    );
+
+    const result = await runBinaryLifecyclePipeline(memoryDir, baseConfig, nestedRemoteBackend, noopLogger);
+
+    assert.equal(result.errors.length, 0);
+    assert.equal(result.redirected, 1);
+    assert.equal(result.cleaned, 1);
+    assert.equal(await readFile(rootNote, "utf8"), "![img](remote/assets/photo.png)");
+    assert.equal(
+      await readFile(nestedNote, "utf8"),
+      ["![relative](remote/assets/photo.png)", "![root](remote/assets/photo.png)"].join("\n"),
+    );
+    await assert.rejects(() => readFile(imagePath, "utf8"), /ENOENT/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle fails closed without overwriting an invalid manifest", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-invalid-manifest-"));
+  let uploaded = false;
+  try {
+    await writeFile(path.join(memoryDir, "image.png"), "image", "utf8");
+    const mPath = manifestPath(memoryDir);
+    await mkdir(path.dirname(mPath), { recursive: true });
+    await writeFile(mPath, '{"version":1,"assets":[', "utf8");
+    const backend = {
+      type: "test",
+      upload: async () => {
+        uploaded = true;
+        return "remote/image.png";
+      },
+      exists: async () => false,
+      delete: async () => {},
+    } satisfies BinaryStorageBackend;
+
+    await assert.rejects(
+      () => runBinaryLifecyclePipeline(memoryDir, baseConfig, backend, noopLogger),
+      /Invalid binary lifecycle manifest JSON/,
+    );
+    assert.equal(uploaded, false);
+    assert.equal(await readFile(mPath, "utf8"), '{"version":1,"assets":[');
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 const noopLogger = {
   info: () => {},
   warn: () => {},
@@ -140,7 +448,34 @@ const noUploadBackend = {
   upload: async () => {
     throw new Error("upload should not run");
   },
+  exists: async () => true,
+  delete: async () => {},
+} satisfies BinaryStorageBackend;
+
+const missingRemoteBackend = {
+  type: "test",
+  upload: async () => {
+    throw new Error("upload should not run");
+  },
   exists: async () => false,
+  delete: async () => {},
+} satisfies BinaryStorageBackend;
+
+const failingRemoteBackend = {
+  type: "test",
+  upload: async () => {
+    throw new Error("upload should not run");
+  },
+  exists: async () => {
+    throw new Error("remote unavailable");
+  },
+  delete: async () => {},
+} satisfies BinaryStorageBackend;
+
+const nestedRemoteBackend = {
+  type: "test",
+  upload: async (_localPath: string, remotePath: string) => `remote/${remotePath}`,
+  exists: async () => true,
   delete: async () => {},
 } satisfies BinaryStorageBackend;
 

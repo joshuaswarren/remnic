@@ -63,6 +63,27 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function resolveManifestAssetPath(memoryDir: string, originalPath: string): string | null {
+  if (
+    originalPath.length === 0 ||
+    originalPath.includes("\0") ||
+    originalPath.includes("\\") ||
+    path.isAbsolute(originalPath) ||
+    path.win32.isAbsolute(originalPath)
+  ) {
+    return null;
+  }
+
+  const memoryRoot = path.resolve(memoryDir);
+  const fullPath = path.resolve(memoryRoot, originalPath);
+  const relative = path.relative(memoryRoot, fullPath);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+
+  return fullPath;
+}
+
 function validateBinaryLifecycleConfig(config: BinaryLifecycleConfig): void {
   if (
     typeof config.gracePeriodDays !== "number" ||
@@ -141,89 +162,178 @@ async function stageRedirect(
   let redirected = 0;
   const errors: string[] = [];
 
-  // Only redirect assets that are mirrored but not yet redirected.
-  const candidates = assets.filter((a) => a.status === "mirrored");
+  // Redirect mirrored assets and retry prior redirect errors. Clean-stage errors
+  // remain safe because the redirect path validation below will keep rejecting
+  // invalid manifest records.
+  const candidates = assets.filter((a) => a.status === "mirrored" || a.status === "error");
   if (candidates.length === 0) return { redirected, errors };
 
   // Find all markdown files in memoryDir (recursive).
   const mdFiles = await findMarkdownFiles(memoryDir);
 
   for (const asset of candidates) {
-    let matchCount = 0;
-    let writeFailCount = 0;
+    const assetAbsolute = resolveManifestAssetPath(memoryDir, asset.originalPath);
+    if (assetAbsolute === null) {
+      const msg = `redirect blocked for ${asset.originalPath}: manifest path is outside memoryDir`;
+      log.error(`[binary-lifecycle] ${msg}`);
+      errors.push(msg);
+      if (!dryRun) {
+        asset.status = "error";
+      }
+      continue;
+    }
+
+    const updates: Array<{ mdPath: string; content: string }> = [];
+    let scanFailCount = 0;
     for (const mdPath of mdFiles) {
       try {
         const content = await fsp.readFile(mdPath, "utf-8");
 
-        // Build the match path relative to this markdown file's directory.
-        // Markdown links like `![img](./image.png)` are file-relative, but
-        // asset.originalPath is memory-root relative (e.g. `sub/image.png`).
-        // Resolve the asset path relative to the markdown file's directory
-        // so both forms match correctly.
-        const mdDir = path.dirname(mdPath);
-        const assetAbsolute = path.join(memoryDir, asset.originalPath);
-        const relativeToMd = path.relative(mdDir, assetAbsolute);
-        // Normalise to forward slashes for regex matching (markdown uses /).
-        const relativeForward = relativeToMd.split(path.sep).join("/");
-        const escaped = escapeRegex(relativeForward);
-
-        // Build a regex that matches markdown image/link references to the file.
-        // Handles: ![alt](./path) , ![alt](path) , [text](./path)
-        const pattern = new RegExp(
-          `(!?\\[[^\\]]*\\]\\()(\\.\\/)?(${escaped})(\\))`,
-          "g",
-        );
+        const pattern = markdownReferencePattern(asset, assetAbsolute, mdPath);
 
         if (!pattern.test(content)) continue;
-        matchCount++;
 
-        if (!dryRun) {
-          // Reset lastIndex after test().
-          pattern.lastIndex = 0;
-          const updated = content.replace(pattern, (_match, open, _dotSlash, _file, close) => {
-            return `${open as string}${asset.mirroredPath}${close as string}`;
-          });
-          await fsp.writeFile(mdPath, updated, "utf-8");
-        }
+        // Reset lastIndex after test().
+        pattern.lastIndex = 0;
+        const updated = content.replace(pattern, (_match, open, _target, close) => {
+          return `${open as string}${asset.mirroredPath}${close as string}`;
+        });
+        updates.push({ mdPath, content: updated });
       } catch (err) {
-        // Track write failures separately so we don't transition status
-        // when some markdown rewrites failed (P1: block redirect on failure).
-        writeFailCount++;
+        scanFailCount++;
         const msg = `redirect scan failed for ${mdPath}: ${err instanceof Error ? err.message : String(err)}`;
         log.error(`[binary-lifecycle] ${msg}`);
         errors.push(msg);
       }
     }
 
-    // Only transition to "redirected" when at least one reference was found
-    // AND all matched files were rewritten successfully.
-    if (matchCount > 0 && writeFailCount === 0) {
-      if (!dryRun) {
-        asset.status = "redirected";
-        asset.redirectedAt = new Date().toISOString();
-      }
-      redirected++;
-      log.info(`[binary-lifecycle] redirected: ${asset.originalPath}${dryRun ? " [dry-run]" : ""}`);
-    } else if (matchCount > 0 && writeFailCount > 0) {
-      // Some rewrites failed — set error status so the asset is not cleaned
-      // prematurely. It can be retried on the next pipeline run.
+    if (scanFailCount > 0) {
       if (!dryRun) {
         asset.status = "error";
       }
       log.warn(
-        `[binary-lifecycle] redirect partial failure for ${asset.originalPath}: ` +
-          `${matchCount} match(es), ${writeFailCount} write failure(s)` +
+        `[binary-lifecycle] redirect blocked for ${asset.originalPath}: ` +
+          `${scanFailCount} markdown scan failure(s)` +
           `${dryRun ? "" : " — status set to error"}`,
       );
+      continue;
     }
+
+    if (updates.length === 0) {
+      continue;
+    }
+
+    if (dryRun) {
+      redirected++;
+      log.info(`[binary-lifecycle] redirected: ${asset.originalPath} [dry-run]`);
+      continue;
+    }
+
+    let writeFailCount = 0;
+    for (const update of updates) {
+      try {
+        await fsp.writeFile(update.mdPath, update.content, "utf-8");
+      } catch (err) {
+        writeFailCount++;
+        const msg = `redirect write failed for ${update.mdPath}: ${err instanceof Error ? err.message : String(err)}`;
+        log.error(`[binary-lifecycle] ${msg}`);
+        errors.push(msg);
+      }
+    }
+
+    if (writeFailCount > 0) {
+      if (!dryRun) {
+        asset.status = "error";
+      }
+      log.warn(
+        `[binary-lifecycle] redirect write failure for ${asset.originalPath}: ` +
+          `${writeFailCount} write failure(s) — status set to error`,
+      );
+      continue;
+    }
+
+    const verifyResult = await countRemainingLocalReferences(memoryDir, asset, assetAbsolute, mdFiles);
+    if (verifyResult.errors.length > 0 || verifyResult.remaining > 0) {
+      asset.status = "error";
+      for (const msg of verifyResult.errors) {
+        log.error(`[binary-lifecycle] ${msg}`);
+        errors.push(msg);
+      }
+      if (verifyResult.remaining > 0) {
+        const msg = `redirect verification failed for ${asset.originalPath}: ${verifyResult.remaining} local reference(s) remain`;
+        log.warn(`[binary-lifecycle] ${msg}`);
+        errors.push(msg);
+      }
+      continue;
+    }
+
+    asset.status = "redirected";
+    asset.redirectedAt = new Date().toISOString();
+    redirected++;
+    log.info(`[binary-lifecycle] redirected: ${asset.originalPath}`);
   }
 
   return { redirected, errors };
 }
 
+async function countRemainingLocalReferences(
+  memoryDir: string,
+  asset: BinaryAssetRecord,
+  assetAbsolute: string,
+  mdFiles: string[],
+): Promise<{ remaining: number; errors: string[] }> {
+  let remaining = 0;
+  const errors: string[] = [];
+
+  for (const mdPath of mdFiles) {
+    try {
+      const content = await fsp.readFile(mdPath, "utf-8");
+      const pattern = markdownReferencePattern(asset, assetAbsolute, mdPath);
+      if (pattern.test(content)) {
+        remaining++;
+      }
+    } catch (err) {
+      errors.push(`redirect verification failed for ${mdPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return { remaining, errors };
+}
+
+function markdownReferencePattern(
+  asset: BinaryAssetRecord,
+  assetAbsolute: string,
+  mdPath: string,
+): RegExp {
+  const mdDir = path.dirname(mdPath);
+  const candidates = new Set<string>();
+  const addCandidate = (candidate: string): void => {
+    const normalized = candidate.split(path.sep).join("/");
+    if (normalized.length === 0) return;
+    candidates.add(normalized);
+    if (!normalized.startsWith(".") && !normalized.startsWith("/")) {
+      candidates.add(`./${normalized}`);
+    }
+  };
+
+  // Markdown links may be file-relative to the note or memory-root-relative in
+  // Remnic notes. Match both forms so verification cannot miss a live local ref.
+  addCandidate(path.relative(mdDir, assetAbsolute));
+  addCandidate(asset.originalPath);
+  addCandidate(`/${asset.originalPath.split(path.sep).join("/")}`);
+
+  const alternatives = [...candidates]
+    .sort((a, b) => b.length - a.length)
+    .map(escapeRegex)
+    .join("|");
+
+  return new RegExp(`(!?\\[[^\\]]*\\]\\()(${alternatives})(\\))`, "g");
+}
+
 async function stageClean(
   memoryDir: string,
   assets: BinaryAssetRecord[],
+  backend: BinaryStorageBackend,
   gracePeriodDays: number,
   log: PipelineLogger,
   dryRun: boolean,
@@ -243,6 +353,15 @@ async function stageClean(
 
   for (const asset of candidates) {
     const mirroredMs = new Date(asset.mirroredAt).getTime();
+    if (!Number.isFinite(mirroredMs)) {
+      const msg = `clean blocked for ${asset.originalPath}: manifest mirroredAt is invalid`;
+      log.error(`[binary-lifecycle] ${msg}`);
+      errors.push(msg);
+      if (!dryRun) {
+        asset.status = "error";
+      }
+      continue;
+    }
     const ageMs = now - mirroredMs;
 
     if (!forceClean && ageMs < graceMs) {
@@ -250,7 +369,34 @@ async function stageClean(
       continue;
     }
 
-    const fullPath = path.join(memoryDir, asset.originalPath);
+    const fullPath = resolveManifestAssetPath(memoryDir, asset.originalPath);
+    if (fullPath === null) {
+      const msg = `clean blocked for ${asset.originalPath}: manifest path is outside memoryDir`;
+      log.error(`[binary-lifecycle] ${msg}`);
+      errors.push(msg);
+      if (!dryRun) {
+        asset.status = "error";
+      }
+      continue;
+    }
+
+    let remoteExists: boolean;
+    try {
+      remoteExists = await backend.exists(asset.mirroredPath);
+    } catch (err) {
+      const msg = `clean blocked for ${asset.originalPath}: failed to verify mirrored copy: ${err instanceof Error ? err.message : String(err)}`;
+      log.error(`[binary-lifecycle] ${msg}`);
+      errors.push(msg);
+      continue;
+    }
+
+    if (!remoteExists) {
+      const msg = `clean blocked for ${asset.originalPath}: mirrored copy is missing`;
+      log.error(`[binary-lifecycle] ${msg}`);
+      errors.push(msg);
+      continue;
+    }
+
     try {
       const currentHash = await hashFile(fullPath);
       if (currentHash !== asset.contentHash) {
@@ -269,9 +415,11 @@ async function stageClean(
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         // Already gone — mark as cleaned.
-        asset.status = "cleaned";
-        asset.cleanedAt = new Date().toISOString();
-        cleaned++;
+        if (!dryRun) {
+          asset.status = "cleaned";
+          asset.cleanedAt = new Date().toISOString();
+          cleaned++;
+        }
       } else {
         const msg = `clean failed for ${asset.originalPath}: ${err instanceof Error ? err.message : String(err)}`;
         log.error(`[binary-lifecycle] ${msg}`);
@@ -365,6 +513,7 @@ export async function runBinaryLifecyclePipeline(
   const cleanResult = await stageClean(
     memoryDir,
     manifest.assets,
+    backend,
     config.gracePeriodDays,
     log,
     dryRun,

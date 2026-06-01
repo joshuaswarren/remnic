@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, mkdir, readFile, symlink } from "node:fs/promises";
 
 import {
   scanForBinaries,
@@ -305,27 +305,27 @@ test("readManifest returns empty manifest for missing file", async () => {
   }
 });
 
-test("readManifest returns empty manifest for invalid JSON", async () => {
+test("readManifest rejects invalid JSON without overwriting it", async () => {
   const dir = await mkdtemp(tmpPrefix());
   try {
     const mPath = manifestPath(dir);
     await mkdir(path.dirname(mPath), { recursive: true });
     await writeFile(mPath, "not json at all");
-    const manifest = await readManifest(dir);
-    assert.deepEqual(manifest, { version: 1, assets: [] });
+    await assert.rejects(() => readManifest(dir), /Invalid binary lifecycle manifest JSON/);
+    assert.equal(await readFile(mPath, "utf8"), "not json at all");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("readManifest returns empty manifest for JSON null", async () => {
+test("readManifest rejects invalid manifest shape without overwriting it", async () => {
   const dir = await mkdtemp(tmpPrefix());
   try {
     const mPath = manifestPath(dir);
     await mkdir(path.dirname(mPath), { recursive: true });
     await writeFile(mPath, "null");
-    const manifest = await readManifest(dir);
-    assert.deepEqual(manifest, { version: 1, assets: [] });
+    await assert.rejects(() => readManifest(dir), /Invalid binary lifecycle manifest shape/);
+    assert.equal(await readFile(mPath, "utf8"), "null");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -820,5 +820,36 @@ test("redirect stage handles markdown in parent dir referencing asset in subdir"
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(backendDir, { recursive: true, force: true });
+  }
+});
+
+test("FilesystemBackend rejects uploads through symlinked directories", async () => {
+  const srcDir = await mkdtemp(tmpPrefix());
+  const destDir = await mkdtemp(tmpPrefix());
+  const outsideDir = await mkdtemp(tmpPrefix());
+  try {
+    const srcFile = path.join(srcDir, "test.png");
+    const outsideFile = path.join(outsideDir, "test.png");
+    await writeFile(srcFile, Buffer.from("PNG_DATA"));
+    await symlink(outsideDir, path.join(destDir, "sub"), "dir");
+
+    const backend = new FilesystemBackend(destDir);
+    await assert.rejects(
+      () => backend.upload(srcFile, "sub/test.png"),
+      /traverses symlink/,
+    );
+    await assert.rejects(
+      () => backend.exists("sub/test.png"),
+      /traverses symlink/,
+    );
+    await assert.rejects(
+      () => backend.delete("sub/test.png"),
+      /traverses symlink/,
+    );
+    assert.equal(fs.existsSync(outsideFile), false);
+  } finally {
+    await rm(srcDir, { recursive: true, force: true });
+    await rm(destDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
   }
 });

@@ -24,25 +24,37 @@ export function manifestPath(memoryDir: string): string {
 
 /**
  * Read the manifest from disk. Returns a fresh empty manifest if the file
- * does not exist or contains invalid JSON (CLAUDE.md #18).
+ * does not exist. Existing invalid manifests fail closed so the pipeline does
+ * not overwrite state needed for safe cleanup.
  */
 export async function readManifest(memoryDir: string): Promise<BinaryLifecycleManifest> {
   const filePath = manifestPath(memoryDir);
+  let raw: string;
   try {
-    const raw = await fsp.readFile(filePath, "utf-8");
-    const parsed: unknown = JSON.parse(raw);
-    // CLAUDE.md #18: validate the parsed result is a non-null object.
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    raw = await fsp.readFile(filePath, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return emptyManifest();
     }
-    const obj = parsed as Record<string, unknown>;
-    if (obj.version !== 1 || !Array.isArray(obj.assets)) {
-      return emptyManifest();
-    }
-    return parsed as BinaryLifecycleManifest;
-  } catch {
-    return emptyManifest();
+    throw new Error(`Failed to read binary lifecycle manifest at ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Invalid binary lifecycle manifest JSON at ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // CLAUDE.md #18: validate the parsed result is a non-null object.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Invalid binary lifecycle manifest shape at ${filePath}: expected object`);
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (obj.version !== 1 || !Array.isArray(obj.assets)) {
+    throw new Error(`Invalid binary lifecycle manifest shape at ${filePath}: expected version 1 with assets array`);
+  }
+  return parsed as BinaryLifecycleManifest;
 }
 
 /**
