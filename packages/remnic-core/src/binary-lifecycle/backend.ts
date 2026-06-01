@@ -27,6 +27,8 @@ export interface BinaryStorageBackend {
   exists(remotePath: string): Promise<boolean>;
   /** Delete a file from the backend. */
   delete(remotePath: string): Promise<void>;
+  /** Return the user-resolvable markdown target for a stored backend path. */
+  getRedirectTarget?(remotePath: string): string;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +226,10 @@ export class FilesystemBackend implements BinaryStorageBackend {
       // Ignore ENOENT (already deleted); rethrow everything else.
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
+  }
+
+  getRedirectTarget(remotePath: string): string {
+    return this.resolveRemotePath(remotePath);
   }
 }
 

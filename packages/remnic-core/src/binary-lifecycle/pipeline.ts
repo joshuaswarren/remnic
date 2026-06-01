@@ -103,6 +103,10 @@ function remotePathForAsset(backend: BinaryStorageBackend, relPath: string): str
   return normalized;
 }
 
+function markdownTargetForAsset(asset: BinaryAssetRecord): string {
+  return asset.redirectPath ?? asset.mirroredPath;
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline stages
 // ---------------------------------------------------------------------------
@@ -131,10 +135,12 @@ async function stageMirror(
       if (!dryRun) {
         backendLocation = await backend.upload(fullPath, remotePath);
       }
+      const redirectPath = backend.getRedirectTarget?.(backendLocation);
 
       const record: BinaryAssetRecord = {
         originalPath: relPath,
         mirroredPath: backendLocation,
+        ...(redirectPath ? { redirectPath } : {}),
         contentHash,
         sizeBytes: stat.size,
         mimeType,
@@ -204,7 +210,7 @@ async function stageRedirect(
         // Reset lastIndex after test().
         pattern.lastIndex = 0;
         const updated = content.replace(pattern, (_match, open, _target, close) => {
-          return `${open as string}${asset.mirroredPath}${close as string}`;
+          return `${open as string}${markdownTargetForAsset(asset)}${close as string}`;
         });
         updates.push({ mdPath, content: updated });
       } catch (err) {

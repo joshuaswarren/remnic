@@ -43,6 +43,8 @@ export interface BinaryAssetRecord {
   originalPath: string;
   /** Path (or URL) in the backend storage. */
   mirroredPath: string;
+  /** Optional user-resolvable target to write into markdown links. */
+  redirectPath?: string;
   /** SHA-256 hex digest of file content. */
   contentHash: string;
   /** File size in bytes. */

@@ -364,7 +364,7 @@ test("mirror stage creates manifest entry with status 'mirrored'", async () => {
       manifest.assets[0].mirroredPath,
       ".binary-lifecycle/mirrors/photo.png",
     );
-    assert.equal(fs.existsSync(path.join(backendDir, ".binary-lifecycle", "mirrors", "photo.png")), true);
+    assert.equal(manifest.assets[0].redirectPath, path.join(backendDir, ".binary-lifecycle", "mirrors", "photo.png"));
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(backendDir, { recursive: true, force: true });
@@ -403,7 +403,7 @@ test("redirect stage replaces ![img](./screenshot.png) with redirect path", asyn
     // Verify the markdown was updated.
     const mdContent = await readFile(path.join(dir, "notes.md"), "utf-8");
     assert.ok(!mdContent.includes("./screenshot.png"), "original ref should be replaced");
-    assert.ok(mdContent.includes(".binary-lifecycle/mirrors/screenshot.png"), "redirect path should be present");
+    assert.ok(mdContent.includes(path.join(backendDir, ".binary-lifecycle", "mirrors", "screenshot.png")), "redirect path should be present");
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(backendDir, { recursive: true, force: true });
@@ -784,7 +784,7 @@ test("redirect stage resolves asset paths relative to markdown file directory", 
     // Verify the markdown was updated.
     const mdContent = await readFile(path.join(dir, "sub", "note.md"), "utf-8");
     assert.ok(!mdContent.includes("./image.png"), "original file-relative ref should be replaced");
-    assert.ok(mdContent.includes(".binary-lifecycle/mirrors/sub/image.png"), "redirect path should be present");
+    assert.ok(mdContent.includes(path.join(backendDir, ".binary-lifecycle", "mirrors", "sub", "image.png")), "redirect path should be present");
   } finally {
     await rm(dir, { recursive: true, force: true });
     await rm(backendDir, { recursive: true, force: true });
