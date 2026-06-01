@@ -189,7 +189,7 @@ test("binary lifecycle dry-run does not mark missing redirected assets cleaned",
     const result = await runBinaryLifecyclePipeline(
       memoryDir,
       baseConfig,
-      noUploadBackend,
+      nestedRemoteBackend,
       noopLogger,
       { dryRun: true },
     );
@@ -346,14 +346,14 @@ test("binary lifecycle retries partial redirect failures before cleanup", async 
     const firstResult = await runBinaryLifecyclePipeline(
       memoryDir,
       baseConfig,
-      noUploadBackend,
+      nestedRemoteBackend,
       noopLogger,
       {
-        writeMarkdownFile: async (file, data, options) => {
+        writeMarkdownFile: async (file, data) => {
           if (file === secondNote) {
             throw new Error("injected write failure");
           }
-          await writeFile(file, data, options);
+          await writeFile(file, data, "utf8");
         },
       },
     );
@@ -368,7 +368,7 @@ test("binary lifecycle retries partial redirect failures before cleanup", async 
     assert.equal(await readFile(secondNote, "utf8"), "![img](image.png)");
     assert.equal(manifest.assets[0]?.status, "error");
 
-    const secondResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, noUploadBackend, noopLogger);
+    const secondResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, nestedRemoteBackend, noopLogger);
     manifest = JSON.parse(
       await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
     ) as { assets: Array<{ status: string }> };
@@ -471,6 +471,52 @@ test("binary lifecycle resumes errored assets with no remaining local references
     assert.equal(manifest.assets[0]?.status, "cleaned");
     assert.equal(typeof manifest.assets[0]?.cleanedAt, "string");
     await assert.rejects(() => readFile(path.join(memoryDir, "image.png"), "utf8"), /ENOENT/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("binary lifecycle resumes redirects after verification read failures", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-binary-verify-read-error-"));
+  const notePath = path.join(memoryDir, "note.md");
+  let noteReads = 0;
+  try {
+    await writeFile(path.join(memoryDir, "image.png"), "image", "utf8");
+    await writeFile(notePath, "![img](image.png)", "utf8");
+
+    const firstResult = await runBinaryLifecyclePipeline(
+      memoryDir,
+      baseConfig,
+      nestedRemoteBackend,
+      noopLogger,
+      {
+        readMarkdownFile: async (file) => {
+          if (file === notePath && noteReads++ > 0) {
+            throw new Error("injected verification read failure");
+          }
+          return readFile(file, "utf8");
+        },
+      },
+    );
+    let manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string; redirectedAt?: string }> };
+
+    assert.equal(firstResult.cleaned, 0);
+    assert.match(firstResult.errors.join("\n"), /injected verification read failure/);
+    assert.equal(await readFile(notePath, "utf8"), "![img](remote/image.png)");
+    assert.equal(manifest.assets[0]?.status, "error");
+    assert.equal(typeof manifest.assets[0]?.redirectedAt, "string");
+
+    const secondResult = await runBinaryLifecyclePipeline(memoryDir, baseConfig, nestedRemoteBackend, noopLogger);
+    manifest = JSON.parse(
+      await readFile(path.join(memoryDir, ".binary-lifecycle", "manifest.json"), "utf8"),
+    ) as { assets: Array<{ status: string; cleanedAt?: string }> };
+
+    assert.equal(secondResult.errors.length, 0);
+    assert.equal(secondResult.redirected, 1);
+    assert.equal(secondResult.cleaned, 1);
+    assert.equal(manifest.assets[0]?.status, "cleaned");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

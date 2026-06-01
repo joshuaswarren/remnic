@@ -26,12 +26,17 @@ interface PipelineLogger {
   error(msg: string): void;
 }
 
+type ReadMarkdownFile = (filePath: string) => Promise<string>;
+type WriteMarkdownFile = (filePath: string, content: string) => Promise<void>;
+
 interface PipelineOptions {
   dryRun?: boolean;
   /** Force-clean all files past grace period, ignoring redirect status. */
   forceClean?: boolean;
+  /** Test hook for deterministic markdown read failures. */
+  readMarkdownFile?: ReadMarkdownFile;
   /** Test hook for deterministic markdown write failures. */
-  writeMarkdownFile?: typeof fsp.writeFile;
+  writeMarkdownFile?: WriteMarkdownFile;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +179,8 @@ async function stageRedirect(
   assets: BinaryAssetRecord[],
   log: PipelineLogger,
   dryRun: boolean,
-  writeMarkdownFile: typeof fsp.writeFile,
+  readMarkdownFile: ReadMarkdownFile,
+  writeMarkdownFile: WriteMarkdownFile,
 ): Promise<{ redirected: number; errors: string[] }> {
   let redirected = 0;
   const errors: string[] = [];
@@ -204,7 +210,7 @@ async function stageRedirect(
     let scanFailCount = 0;
     for (const mdPath of mdFiles) {
       try {
-        const content = await fsp.readFile(mdPath, "utf-8");
+        const content = await readMarkdownFile(mdPath);
 
         const pattern = markdownReferencePattern(asset, assetAbsolute, mdPath);
 
@@ -238,7 +244,13 @@ async function stageRedirect(
 
     if (updates.length === 0) {
       if (asset.status === "error") {
-        const verifyResult = await countRemainingLocalReferences(memoryDir, asset, assetAbsolute, mdFiles);
+        const verifyResult = await countRemainingLocalReferences(
+          memoryDir,
+          asset,
+          assetAbsolute,
+          mdFiles,
+          readMarkdownFile,
+        );
         if (verifyResult.errors.length > 0 || verifyResult.remaining > 0) {
           if (!dryRun) {
             asset.status = "error";
@@ -282,7 +294,7 @@ async function stageRedirect(
     let writeFailCount = 0;
     for (const update of updates) {
       try {
-        await writeMarkdownFile(update.mdPath, update.content, "utf-8");
+        await writeMarkdownFile(update.mdPath, update.content);
       } catch (err) {
         writeFailCount++;
         const msg = `redirect write failed for ${update.mdPath}: ${err instanceof Error ? err.message : String(err)}`;
@@ -302,7 +314,16 @@ async function stageRedirect(
       continue;
     }
 
-    const verifyResult = await countRemainingLocalReferences(memoryDir, asset, assetAbsolute, mdFiles);
+    const redirectedAt = new Date().toISOString();
+    asset.redirectedAt = redirectedAt;
+
+    const verifyResult = await countRemainingLocalReferences(
+      memoryDir,
+      asset,
+      assetAbsolute,
+      mdFiles,
+      readMarkdownFile,
+    );
     if (verifyResult.errors.length > 0 || verifyResult.remaining > 0) {
       asset.status = "error";
       for (const msg of verifyResult.errors) {
@@ -316,9 +337,8 @@ async function stageRedirect(
       }
       continue;
     }
-
     asset.status = "redirected";
-    asset.redirectedAt = new Date().toISOString();
+    asset.redirectedAt = redirectedAt;
     redirected++;
     log.info(`[binary-lifecycle] redirected: ${asset.originalPath}`);
   }
@@ -331,13 +351,14 @@ async function countRemainingLocalReferences(
   asset: BinaryAssetRecord,
   assetAbsolute: string,
   mdFiles: string[],
+  readMarkdownFile: ReadMarkdownFile,
 ): Promise<{ remaining: number; errors: string[] }> {
   let remaining = 0;
   const errors: string[] = [];
 
   for (const mdPath of mdFiles) {
     try {
-      const content = await fsp.readFile(mdPath, "utf-8");
+      const content = await readMarkdownFile(mdPath);
       const pattern = markdownReferencePattern(asset, assetAbsolute, mdPath);
       if (pattern.test(content)) {
         remaining++;
@@ -566,7 +587,8 @@ export async function runBinaryLifecyclePipeline(
     manifest.assets,
     log,
     dryRun,
-    opts?.writeMarkdownFile ?? fsp.writeFile,
+    opts?.readMarkdownFile ?? ((filePath: string) => fsp.readFile(filePath, "utf-8")),
+    opts?.writeMarkdownFile ?? ((filePath: string, content: string) => fsp.writeFile(filePath, content, "utf-8")),
   );
 
   // Stage 3: Clean
