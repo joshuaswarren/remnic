@@ -5,12 +5,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
-// Topological publish order: core first, then the à-la-carte companion
-// packages (bench, importer/exporter family, connector-replit) that install
-// surfaces depend on, then the depend-on-core runtimes and plugin bundles.
-// Packages that the CLI depends on, such as plugin-pi, must publish before
-// remnic-cli. The legacy shim lives at the tail. Keep in sync with PUBLISH_ORDER in
-// .github/workflows/release-and-publish.yml and AGENTS.md §44.
+// Supported public workspace packages. The workflow generates dependency-safe
+// publish order from package metadata before any workspace package is published.
 const expectedPublishDirs = [
   "packages/remnic-core",
   "packages/bench",
@@ -36,19 +32,16 @@ const expectedPublishDirs = [
 
 test("release workflow publish order matches the supported npm install surfaces", async () => {
   const workflow = await readFile(".github/workflows/release-and-publish.yml", "utf8");
-  const publishOrderMatch = workflow.match(/PUBLISH_ORDER=\(\s*([\s\S]*?)\s*\)/);
-  assert.ok(publishOrderMatch, "release workflow must define PUBLISH_ORDER");
-  const publishDirs = [...publishOrderMatch[1].matchAll(/packages\/[A-Za-z0-9_-]+/g)].map((match) => match[0]);
+  const order = spawnSync(process.execPath, ["scripts/publish-order.mjs", "--json"], {
+    encoding: "utf8",
+  });
+  assert.equal(order.status, 0, order.stderr);
+  const publishDirs = JSON.parse(order.stdout) as string[];
 
-  assert.deepEqual(publishDirs, [...expectedPublishDirs]);
-
-  for (const pkgDir of expectedPublishDirs) {
-    assert.match(
-      workflow,
-      new RegExp(`\\b${pkgDir.replace("/", "\\/")}\\b`),
-      `release-and-publish.yml must publish ${pkgDir}`,
-    );
-  }
+  assert.deepEqual([...publishDirs].sort(), [...expectedPublishDirs].sort());
+  assert.match(workflow, /Generate workspace package publish order/);
+  assert.match(workflow, /node scripts\/publish-order\.mjs --output/);
+  assert.match(workflow, /mapfile -t PUBLISH_ORDER/);
 });
 
 test("release workflow verifies the OpenClaw ClawHub packlist after build", async () => {
@@ -120,6 +113,13 @@ test("@remnic/server build verifies declared bin artifacts", async () => {
 });
 
 test("@remnic/server bin wrapper help includes the CLI environment contract", async () => {
+  // The source-controlled bin helper is plain JavaScript, so this import is
+  // intentionally typed at the call site.
+  // Keep the check here with the release workflow package-surface tests:
+  // the package manifest, published files list, and runtime help text are all
+  // part of the same npm install contract.
+  // If the helper moves to TypeScript later, this import can switch to the
+  // package's declared export surface.
   const { runServerBin } = await import("../packages/remnic-server/bin/server-bin.js") as {
     runServerBin: (
       commandName: string,

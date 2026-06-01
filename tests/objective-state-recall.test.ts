@@ -7,6 +7,10 @@ import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { recordObjectiveStateSnapshot } from "../src/objective-state.js";
 
+async function removeTempDir(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+}
+
 async function buildObjectiveStateRecallHarness(options: {
   objectiveStateRecallEnabled: boolean;
   recallSectionEnabled?: boolean;
@@ -207,7 +211,8 @@ test("recall searches objective-state snapshots from the requested namespace sto
       "raw session-key boost should rank the current session first",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await orchestrator.destroy();
+    await removeTempDir(memoryDir);
   }
 });
 
@@ -289,7 +294,8 @@ test("recall searches objective-state snapshots from routed default namespace st
     assert.match(context, /namespace store/i);
     assert.equal(context.includes("old default store"), false);
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await orchestrator.destroy();
+    await removeTempDir(memoryDir);
   }
 });
 
@@ -355,7 +361,8 @@ test("recall searches namespaced objective-state snapshots from configured store
     assert.match(context, /## Objective State/);
     assert.match(context, /configured store/i);
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(overrideDir, { recursive: true, force: true });
+    await orchestrator.destroy();
+    await removeTempDir(memoryDir);
+    await removeTempDir(overrideDir);
   }
 });
