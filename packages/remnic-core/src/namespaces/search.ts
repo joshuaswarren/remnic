@@ -144,8 +144,11 @@ export class NamespaceSearchRouter {
     );
   }
 
-  async ensureNamespaceCollection(namespace: string): Promise<"present" | "missing" | "unknown" | "skipped"> {
-    const record = await this.backendRecordFor(namespace);
+  async ensureNamespaceCollection(
+    namespace: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<"present" | "missing" | "unknown" | "skipped"> {
+    const record = await this.backendRecordFor(namespace, execution);
     return record.collectionState;
   }
 
@@ -168,7 +171,10 @@ export class NamespaceSearchRouter {
     );
   }
 
-  private async backendRecordFor(namespace: string): Promise<NamespaceBackendRecord> {
+  private async backendRecordFor(
+    namespace: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<NamespaceBackendRecord> {
     const key = namespace.trim() || this.config.defaultNamespace;
     const existing = this.cache.get(key);
     if (existing) return await existing;
@@ -189,7 +195,7 @@ export class NamespaceSearchRouter {
       const backend = this.createBackend(scopedConfig);
       const available = await backend.probe().catch(() => false);
       const collectionState = available
-        ? await backend.ensureCollection(storage.dir).catch(() => "unknown" as const)
+        ? await backend.ensureCollection(storage.dir, execution).catch(() => "unknown" as const)
         : "unknown";
       return {
         backend,

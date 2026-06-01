@@ -680,6 +680,56 @@ async function raceRecallAbort<T>(
 
 /** Maximum age (ms) before a compaction-reset signal file is considered stale and removed. */
 const COMPACTION_SIGNAL_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
+const DEFAULT_QMD_STARTUP_COLLECTION_CHECK_TIMEOUT_MS = 10_000;
+
+type SearchCollectionState = "present" | "missing" | "unknown" | "skipped";
+
+function qmdStartupCollectionCheckTimeoutMs(): number {
+  const raw =
+    process.env.REMNIC_QMD_STARTUP_COLLECTION_CHECK_TIMEOUT_MS ??
+    process.env.ENGRAM_QMD_STARTUP_COLLECTION_CHECK_TIMEOUT_MS;
+  if (raw === undefined) return DEFAULT_QMD_STARTUP_COLLECTION_CHECK_TIMEOUT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1_000
+    ? Math.floor(parsed)
+    : DEFAULT_QMD_STARTUP_COLLECTION_CHECK_TIMEOUT_MS;
+}
+
+async function qmdStartupCollectionCheckWithTimeout(
+  promise: Promise<SearchCollectionState>,
+  controller: AbortController,
+  label: string,
+): Promise<SearchCollectionState> {
+  const timeoutMs = qmdStartupCollectionCheckTimeoutMs();
+  let timer: NodeJS.Timeout | undefined;
+  let settled = false;
+
+  const timeoutPromise = new Promise<SearchCollectionState>((resolve) => {
+    timer = setTimeout(() => {
+      if (settled) return;
+      controller.abort();
+      log.warn(
+        `QMD startup collection check for ${label} timed out after ${timeoutMs}ms; keeping search enabled fail-open`,
+      );
+      resolve("unknown");
+    }, timeoutMs);
+    timer.unref?.();
+  });
+
+  const checkedPromise = promise
+    .catch((err): SearchCollectionState => {
+      log.warn(
+        `QMD startup collection check for ${label} failed; keeping search enabled fail-open: ${err}`,
+      );
+      return "unknown";
+    })
+    .finally(() => {
+      settled = true;
+      if (timer) clearTimeout(timer);
+    });
+
+  return await Promise.race([checkedPromise, timeoutPromise]);
+}
 
 /** Default workspace directory when no per-agent or config workspace is available. */
 export function defaultWorkspaceDir(): string {
@@ -2453,14 +2503,22 @@ export class Orchestrator {
             ? this.configuredNamespaces()
             : [this.config.defaultNamespace];
           const states = await Promise.all(
-            namespaces.map(async (namespace) => ({
-              namespace,
-              state: this.config.namespacesEnabled
-                ? await this.namespaceSearchRouter.ensureNamespaceCollection(
-                    namespace,
-                  )
-                : await this.qmd.ensureCollection(this.config.memoryDir),
-            })),
+            namespaces.map(async (namespace) => {
+              const collectionCheckAbort = new AbortController();
+              const state = await qmdStartupCollectionCheckWithTimeout(
+                this.config.namespacesEnabled
+                  ? this.namespaceSearchRouter.ensureNamespaceCollection(
+                      namespace,
+                      { signal: collectionCheckAbort.signal },
+                    )
+                  : this.qmd.ensureCollection(this.config.memoryDir, {
+                      signal: collectionCheckAbort.signal,
+                    }),
+                collectionCheckAbort,
+                namespace,
+              );
+              return { namespace, state };
+            }),
           );
           const defaultState =
             states.find(
@@ -2800,8 +2858,8 @@ export class Orchestrator {
       namespaces.map(async (namespace) => ({
         namespace,
         state: this.config.namespacesEnabled
-          ? await this.namespaceSearchRouter.ensureNamespaceCollection(namespace)
-          : await this.qmd.ensureCollection(this.config.memoryDir),
+          ? await this.namespaceSearchRouter.ensureNamespaceCollection(namespace, { signal })
+          : await this.qmd.ensureCollection(this.config.memoryDir, { signal }),
       })),
     );
 

@@ -7,6 +7,7 @@ import type { PluginConfig, QmdSearchResult } from "../types.js";
 class FakeBackend implements SearchBackend {
   updates = 0;
   calls: Array<{ method: string; collection: string | undefined }> = [];
+  ensureSignals: Array<AbortSignal | undefined> = [];
 
   constructor(
     private readonly globalUpdate: boolean,
@@ -63,7 +64,8 @@ class FakeBackend implements SearchBackend {
 
   async embedCollection(): Promise<void> {}
 
-  async ensureCollection(): Promise<"present"> {
+  async ensureCollection(_memoryDir?: string, execution?: { signal?: AbortSignal }): Promise<"present"> {
+    this.ensureSignals.push(execution?.signal);
     return "present";
   }
 }
@@ -172,4 +174,21 @@ test("searchAcrossNamespaces passes scoped collection to backend search methods"
       mode,
     );
   }
+});
+
+test("ensureNamespaceCollection forwards abort signals to backend collection checks", async () => {
+  const backend = new FakeBackend(false);
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => backend,
+  );
+  const controller = new AbortController();
+
+  const state = await router.ensureNamespaceCollection("main", {
+    signal: controller.signal,
+  });
+
+  assert.equal(state, "present");
+  assert.deepEqual(backend.ensureSignals, [controller.signal]);
 });

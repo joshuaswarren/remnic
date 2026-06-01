@@ -735,6 +735,7 @@ export class EngramAccessHttpServer {
         principal: this.resolveRequestPrincipal(req),
         includeTranscripts: includeTranscriptsRaw !== "false",
         includeContent: false,
+        signal: this.createRequestAbortSignal(req, res),
       });
       await this.respondOfflineSnapshotStream(res, result);
       return;
@@ -756,6 +757,7 @@ export class EngramAccessHttpServer {
         includeContent: body.includeContent,
         baseFiles: body.baseFiles,
         ...(body.baseCapturedAt ? { baseCapturedAt: new Date(body.baseCapturedAt) } : {}),
+        signal: this.createRequestAbortSignal(req, res),
       });
       this.respondJson(res, 200, result);
       return;
@@ -1784,6 +1786,18 @@ export class EngramAccessHttpServer {
     }
 
     this.respondJson(res, 404, { error: "not_found", code: "not_found" });
+  }
+
+  private createRequestAbortSignal(req: IncomingMessage, res: ServerResponse): AbortSignal {
+    const controller = new AbortController();
+    const abort = () => {
+      if (!controller.signal.aborted) controller.abort();
+    };
+    req.once("aborted", abort);
+    res.once("close", () => {
+      if (!res.writableEnded) abort();
+    });
+    return controller.signal;
   }
 
   /**

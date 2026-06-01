@@ -69,6 +69,8 @@ function compressibleBaseFiles(count: number): OfflineSyncFileState[] {
     file(`facts/${String(index).padStart(6, "0")}-${pathPadding}.md`, index + 1));
 }
 
+const COMPRESSIBLE_FAST_BASE_POST_FILE_COUNT = 40_000;
+
 test("offline sync file content batches are bounded by expected bytes", () => {
   const batches = chunkOfflineFileContentBatches([
     file("facts/a.md", 5 * 1024 * 1024),
@@ -292,7 +294,7 @@ test("offline sync snapshot post falls back when base payload is too large", () 
 test("offline sync compresses oversized fast-base payloads before stream fallback", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    const baseFiles = compressibleBaseFiles(OFFLINE_SYNC_SNAPSHOT_BASE_POST_MAX_FILES - 1);
+    const baseFiles = compressibleBaseFiles(COMPRESSIBLE_FAST_BASE_POST_FILE_COUNT);
     const remoteFile = file("facts/remote.md", 42, "b");
     const calls: string[] = [];
     globalThis.fetch = (async (input, init) => {
@@ -341,7 +343,7 @@ test("offline sync compresses oversized fast-base payloads before stream fallbac
 test("offline sync falls back to stream when compressed fast-base POST is unsupported", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    const baseFiles = compressibleBaseFiles(OFFLINE_SYNC_SNAPSHOT_BASE_POST_MAX_FILES - 1);
+    const baseFiles = compressibleBaseFiles(COMPRESSIBLE_FAST_BASE_POST_FILE_COUNT);
     const remoteFile = file("facts/remote.md", 42, "b");
     const calls: string[] = [];
     globalThis.fetch = (async (input, init) => {

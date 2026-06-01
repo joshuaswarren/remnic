@@ -251,7 +251,10 @@ export class OramaBackend implements SearchBackend {
     await this.persistDbForCollection(db, collection);
   }
 
-  async ensureCollection(_memoryDir: string): Promise<"present" | "missing" | "unknown" | "skipped"> {
+  async ensureCollection(
+    _memoryDir: string,
+    _execution?: SearchExecutionOptions,
+  ): Promise<"present" | "missing" | "unknown" | "skipped"> {
     try {
       await this.ensureModules();
       await this.ensureDb();

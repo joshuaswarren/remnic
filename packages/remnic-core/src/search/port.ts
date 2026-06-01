@@ -82,5 +82,8 @@ export interface SearchBackend {
   embedCollection(collection: string): Promise<void>;
 
   // ── Collection management ──
-  ensureCollection(memoryDir: string): Promise<"present" | "missing" | "unknown" | "skipped">;
+  ensureCollection(
+    memoryDir: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<"present" | "missing" | "unknown" | "skipped">;
 }

@@ -186,27 +186,25 @@ test("offlineSyncFiles reports symlink requested paths as input errors", async (
   }
 });
 
-test("offlineSyncSnapshot ignores client capture time for server fast-base scans", async () => {
+test("offlineSyncSnapshot does not trust client base capture time for server fast-base scans", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-snapshot-client-clock-"));
   try {
     const relPath = "facts/a.md";
     const filePath = path.join(root, relPath);
-    const oldContent = Buffer.from("alpha");
-    const newContent = Buffer.from("bravo");
+    const content = Buffer.from("alpha");
     const mtimeMs = 1_700_000_000_000;
     await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, oldContent);
+    await writeFile(filePath, content);
     await utimes(filePath, mtimeMs / 1000, mtimeMs / 1000);
     const baseFile = {
       path: relPath,
-      sha256: createHash("sha256").update(oldContent).digest("hex"),
-      bytes: oldContent.byteLength,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      bytes: content.byteLength,
       mtimeMs,
     };
-    await writeFile(filePath, newContent);
-    await utimes(filePath, mtimeMs / 1000, mtimeMs / 1000);
 
     const { service } = makeService();
+    let digestReads = 0;
     (service as unknown as {
       orchestrator: {
         config: PluginConfig;
@@ -218,6 +216,7 @@ test("offlineSyncSnapshot ignores client capture time for server fast-base scans
         return readFile(targetPath);
       },
       async digestOfflineSyncFile(targetPath: string) {
+        digestReads += 1;
         const content = await readFile(targetPath);
         return {
           sha256: createHash("sha256").update(content).digest("hex"),
@@ -234,7 +233,8 @@ test("offlineSyncSnapshot ignores client capture time for server fast-base scans
       baseCapturedAt: new Date(Date.now() + 60_000),
     });
 
-    assert.equal(snapshot.files[0]?.sha256, createHash("sha256").update(newContent).digest("hex"));
+    assert.equal(digestReads, 1);
+    assert.deepEqual(snapshot.files, [baseFile]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

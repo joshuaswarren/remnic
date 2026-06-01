@@ -5611,7 +5611,7 @@ export class EngramAccessService {
   }
 
   async offlineSyncSnapshot(
-    options: EngramAccessOfflineSyncSnapshotRequest = {},
+    options: EngramAccessOfflineSyncSnapshotRequest & { signal?: AbortSignal } = {},
   ): Promise<EngramAccessOfflineSyncSnapshotResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
@@ -5623,12 +5623,11 @@ export class EngramAccessService {
       root: storage.dir,
       sourceId: `remnic:${resolvedNamespace}:${storageHash}`,
       ...(options.baseFiles && options.baseFiles.length > 0 ? { baseFiles: options.baseFiles } : {}),
-      // Client clocks are not authoritative for server-side ctime reuse. A
-      // future client timestamp can hide same-size, preserved-mtime rewrites.
       includeContent: options.includeContent !== false,
       includeTranscripts: options.includeTranscripts !== false,
       readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
       readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
+      signal: options.signal,
     });
     return {
       namespace: resolvedNamespace,
@@ -5637,7 +5636,7 @@ export class EngramAccessService {
   }
 
   async offlineSyncSnapshotStream(
-    options: Omit<EngramAccessOfflineSyncSnapshotRequest, "baseCapturedAt" | "baseFiles"> = {},
+    options: Omit<EngramAccessOfflineSyncSnapshotRequest, "baseCapturedAt" | "baseFiles"> & { signal?: AbortSignal } = {},
   ): Promise<EngramAccessOfflineSyncSnapshotStreamResponse> {
     const resolvedNamespace = this.resolveReadableNamespace(options.namespace, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
@@ -5655,6 +5654,7 @@ export class EngramAccessService {
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
+        signal: options.signal,
       }),
     };
   }

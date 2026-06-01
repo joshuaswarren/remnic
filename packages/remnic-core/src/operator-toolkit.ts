@@ -87,7 +87,10 @@ function resolveOpenClawRemnicPluginEntry(raw: unknown): Record<string, unknown>
 interface QmdRuntimeLike {
   probe(): Promise<boolean>;
   isAvailable(): boolean;
-  ensureCollection(memoryDir: string): Promise<"present" | "missing" | "unknown" | "skipped">;
+  ensureCollection(
+    memoryDir: string,
+    execution?: { signal?: AbortSignal },
+  ): Promise<"present" | "missing" | "unknown" | "skipped">;
   debugStatus(): string;
 }
 

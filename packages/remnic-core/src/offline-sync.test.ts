@@ -16,6 +16,7 @@ import {
   buildOfflineSyncSnapshotForPaths,
   OFFLINE_SYNC_MAX_MTIME_MS,
   readOfflineSyncFileContentChunk,
+  shouldPreferIncomingOfflineRuntimeFile,
   summarizeOfflineSyncPendingChanges,
   summarizeOfflineSyncPendingFiles,
 } from "./offline-sync.js";
@@ -104,6 +105,32 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
         "state/lcm.sqlite-shm",
         "state/lcm.sqlite-wal",
       ],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline snapshot abort signal stops filesystem snapshot work", async () => {
+  const root = await tempDir("remnic-offline-snapshot-abort");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    const controller = new AbortController();
+
+    await assert.rejects(
+      buildOfflineSyncSnapshot({
+        root,
+        sourceId: "remote",
+        signal: controller.signal,
+        readFileDigest: async () => {
+          controller.abort();
+          return {
+            sha256: createHash("sha256").update("alpha").digest("hex"),
+            bytes: Buffer.byteLength("alpha"),
+          };
+        },
+      }),
+      /offline sync request aborted/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -313,7 +340,7 @@ test("offline snapshot from base avoids rehashing unchanged files", async () => 
       sourceId: "remote",
       includeContent: false,
     });
-    const baseCapturedAt = new Date(Date.now() + 60_000);
+    const baseCapturedAt = new Date();
     let readCount = 0;
 
     const unchanged = await buildOfflineSyncSnapshotFromBase({
@@ -438,7 +465,7 @@ test("offline snapshot from base trusts mtime precision drift without rehashing"
       root,
       sourceId: "remote",
       baseFiles: [driftedBase],
-      baseCapturedAt: new Date(Date.now() + 60_000),
+      baseCapturedAt: new Date(),
       includeContent: false,
       readFileDigest: async () => {
         throw new Error("unchanged file should reuse trusted mtime metadata");
@@ -446,6 +473,47 @@ test("offline snapshot from base trusts mtime precision drift without rehashing"
     });
 
     assert.deepEqual(reused.files, [driftedBase]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offline snapshot from base rehashes metadata-only ctime churn", async () => {
+  const root = await tempDir("remnic-offline-fast-base-ctime-only");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    const filePath = path.join(root, "facts/a.md");
+    const baseSnapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: false,
+    });
+    const baseFile = baseSnapshot.files.find((file) => file.path === "facts/a.md");
+    assert.ok(baseFile);
+    const baseCapturedAt = new Date();
+    await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+    await chmod(filePath, 0o600);
+    await chmod(filePath, 0o644);
+
+    let digestReadCount = 0;
+    const rehashed = await buildOfflineSyncSnapshotFromBase({
+      root,
+      sourceId: "remote",
+      baseFiles: baseSnapshot.files,
+      baseCapturedAt,
+      includeContent: false,
+      readFileDigest: async ({ filePath }) => {
+        digestReadCount += 1;
+        const bytes = await readFile(filePath);
+        return {
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          bytes: bytes.byteLength,
+        };
+      },
+    });
+
+    assert.equal(digestReadCount, 1);
+    assert.equal(rehashed.files[0]?.sha256, baseFile.sha256);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -463,6 +531,8 @@ test("offline snapshot from base rehashes preserved-mtime rewrites when ctime ch
     });
     const baseFile = baseSnapshot.files[0];
     assert.ok(baseFile);
+    const baseCapturedAt = new Date();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
     await write(root, "facts/a.md", "bravo");
     await utimes(filePath, baseFile.mtimeMs / 1000, baseFile.mtimeMs / 1000);
 
@@ -471,7 +541,7 @@ test("offline snapshot from base rehashes preserved-mtime rewrites when ctime ch
       root,
       sourceId: "remote",
       baseFiles: baseSnapshot.files,
-      baseCapturedAt: new Date(0),
+      baseCapturedAt,
       includeContent: false,
       readFileDigest: async ({ filePath }) => {
         digestReadCount += 1;
@@ -525,7 +595,7 @@ test("offline snapshot apply preserves incoming mtime for future fast-base reuse
       root,
       sourceId: "local",
       baseFiles: applied.nextBaseFiles,
-      baseCapturedAt: new Date(capturedAtMs),
+      baseCapturedAt: new Date(),
       includeContent: false,
       readFileDigest: async () => {
         throw new Error("applied file should reuse preserved mtime metadata");
@@ -1526,6 +1596,50 @@ test("offline pull skips local runtime drift when remote still matches base", as
   }
 });
 
+test("offline pull treats last intent as remote-authoritative runtime state", async () => {
+  const root = await tempDir("remnic-offline-runtime-last-intent");
+  try {
+    const relPath = "state/last_intent.json";
+    const baseContent = Buffer.from("{\"intent\":\"base\"}");
+    const localContent = Buffer.from("{\"intent\":\"local\"}");
+    const remoteContent = Buffer.from("{\"intent\":\"remote\"}");
+    await write(root, relPath, localContent);
+    const baseFile = {
+      path: relPath,
+      sha256: createHash("sha256").update(baseContent).digest("hex"),
+      bytes: baseContent.byteLength,
+      mtimeMs: 1,
+    };
+    const incomingFile = {
+      path: relPath,
+      sha256: createHash("sha256").update(remoteContent).digest("hex"),
+      bytes: remoteContent.byteLength,
+      mtimeMs: 2,
+      contentBase64: remoteContent.toString("base64"),
+    };
+
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile(relPath), true);
+    const pull = await applyOfflineSyncSnapshot({
+      root,
+      snapshot: {
+        format: "remnic.offline-sync.snapshot.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "remote",
+        includeTranscripts: true,
+        files: [incomingFile],
+      },
+      baseFiles: [baseFile],
+    });
+
+    assert.equal(pull.upserted, 1);
+    assert.equal(pull.conflicts.length, 0);
+    assert.equal(await readUtf8(root, relPath), remoteContent.toString("utf-8"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline pull applies snapshots with content only for remote-changed files", async () => {
   const remote = await tempDir("remnic-offline-partial-remote");
   const local = await tempDir("remnic-offline-partial-local");
@@ -2108,14 +2222,13 @@ test("offline sync applies and snapshots through secure storage hooks", async ()
   }
 });
 
-test("offline snapshot fast-base rehashes when encrypted header probe fails", async () => {
-  const root = await tempDir("remnic-offline-fast-base-probe-error");
+test("offline snapshot fast-base does not probe file headers for trusted metadata", async () => {
+  const root = await tempDir("remnic-offline-fast-base-no-header-probe");
   const relPath = "facts/same-size.md";
-  const oldContent = Buffer.from("old!");
-  const newContent = Buffer.from("new!");
+  const content = Buffer.from("fact");
   const filePath = path.join(root, relPath);
   try {
-    await write(root, relPath, newContent);
+    await write(root, relPath, content);
     await chmod(filePath, 0o000);
     const st = await stat(filePath);
     let digestReads = 0;
@@ -2125,24 +2238,21 @@ test("offline snapshot fast-base rehashes when encrypted header probe fails", as
       sourceId: "remote",
       baseFiles: [{
         path: relPath,
-        sha256: createHash("sha256").update(oldContent).digest("hex"),
-        bytes: newContent.byteLength,
+        sha256: createHash("sha256").update(content).digest("hex"),
+        bytes: content.byteLength,
         mtimeMs: st.mtimeMs,
       }],
-      baseCapturedAt: new Date(),
+      baseCapturedAt: new Date(Date.now() + 60_000),
       readFileDigest: async ({ path: targetPath, filePath: targetFilePath }) => {
         assert.equal(targetPath, relPath);
         assert.equal(targetFilePath, filePath);
         digestReads += 1;
-        return {
-          sha256: createHash("sha256").update(newContent).digest("hex"),
-          bytes: newContent.byteLength,
-        };
+        throw new Error("trusted metadata should not read the file header or digest");
       },
     });
 
-    assert.equal(digestReads, 1);
-    assert.equal(snapshot.files[0]?.sha256, createHash("sha256").update(newContent).digest("hex"));
+    assert.equal(digestReads, 0);
+    assert.equal(snapshot.files[0]?.sha256, createHash("sha256").update(content).digest("hex"));
   } finally {
     await chmod(filePath, 0o600).catch(() => {});
     await rm(root, { recursive: true, force: true });

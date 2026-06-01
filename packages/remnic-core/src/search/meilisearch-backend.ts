@@ -189,7 +189,10 @@ export class MeilisearchBackend implements SearchBackend {
     // manages embeddings server-side per index (collection).
   }
 
-  async ensureCollection(_memoryDir: string): Promise<"present" | "missing" | "unknown" | "skipped"> {
+  async ensureCollection(
+    _memoryDir: string,
+    _execution?: SearchExecutionOptions,
+  ): Promise<"present" | "missing" | "unknown" | "skipped"> {
     if (!this.available) return "skipped";
     try {
       const client = await this.ensureClient();

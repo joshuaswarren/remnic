@@ -183,11 +183,13 @@ interface OfflineSyncFileRecordOptions {
   includeContent: boolean;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  signal?: AbortSignal;
 }
 
 const SYNC_INTERNAL_DIR = ".offline-sync";
 const OFFLINE_SYNC_UPLOAD_STAGING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS = 1_000;
+const OFFLINE_SYNC_FAST_BASE_CTIME_TOLERANCE_MS = 1;
 const EXCLUDED_FILE_NAMES = new Set([
   ".sync-state.json",
 ]);
@@ -203,6 +205,11 @@ function hashText(value: string): string {
 
 function sha256Buffer(buffer: Buffer): { sha256: string; bytes: number } {
   return sha256Bytes(buffer);
+}
+
+function throwIfOfflineSyncAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw new Error("offline sync request aborted");
 }
 
 function compareByPath<T extends { path: string }>(left: T, right: T): number {
@@ -480,6 +487,7 @@ const REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES = new Set([
   "buffer.json",
   "embeddings.json",
   "index_time.json",
+  "last_intent.json",
   "last_recall.json",
   "memory-lifecycle-ledger.jsonl",
   "recall_impressions.jsonl",
@@ -508,22 +516,23 @@ function canReuseFastBaseFileState(
     return false;
   }
   if (baseCapturedAtMs === null) return false;
-  return st.ctimeMs - baseCapturedAtMs <= OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS;
+  // Node reports stat times as fractional milliseconds while Date snapshots are
+  // whole milliseconds, so allow only a tiny precision window around capture.
+  return st.ctimeMs - baseCapturedAtMs <= OFFLINE_SYNC_FAST_BASE_CTIME_TOLERANCE_MS;
 }
 
 async function canReuseFastBaseFileStateFromDisk(
   baseEntry: OfflineSyncFileState,
-  filePath: string,
   st: { size: number; mtimeMs: number; ctimeMs: number },
   baseCapturedAtMs: number | null,
 ): Promise<boolean> {
-  if (!canReuseFastBaseFileState(baseEntry, st, baseCapturedAtMs)) return false;
-  return !(await fileIsSecureStoreEncrypted(filePath).catch(() => true));
+  return canReuseFastBaseFileState(baseEntry, st, baseCapturedAtMs);
 }
 
 async function readOfflineSyncFileRecord(
   options: OfflineSyncFileRecordOptions,
 ): Promise<OfflineSyncFileRecord> {
+  throwIfOfflineSyncAborted(options.signal);
   const relPath = validateArchiveRelativePath(options.relPath, "offlineSyncFile.path");
   let content: Buffer | null = null;
   let digest: OfflineSyncFileDigest;
@@ -531,16 +540,20 @@ async function readOfflineSyncFileRecord(
     content = options.readFile
       ? await options.readFile({ root: options.root.abs, path: relPath, filePath: options.filePath })
       : await readFile(options.filePath);
+    throwIfOfflineSyncAborted(options.signal);
     digest = sha256Buffer(content);
   } else if (options.readFileDigest) {
     digest = await options.readFileDigest({ root: options.root.abs, path: relPath, filePath: options.filePath });
+    throwIfOfflineSyncAborted(options.signal);
   } else if (options.readFile) {
     content = await options.readFile({ root: options.root.abs, path: relPath, filePath: options.filePath });
+    throwIfOfflineSyncAborted(options.signal);
     digest = sha256Buffer(content);
     content = null;
   } else {
-    digest = await sha256File(options.filePath);
+    digest = await sha256File(options.filePath, options.signal);
   }
+  throwIfOfflineSyncAborted(options.signal);
   const st = await stat(options.filePath);
   return {
     path: relPath,
@@ -551,14 +564,16 @@ async function readOfflineSyncFileRecord(
   };
 }
 
-async function sha256File(filePath: string): Promise<OfflineSyncFileDigest> {
+async function sha256File(filePath: string, signal?: AbortSignal): Promise<OfflineSyncFileDigest> {
   const hash = createHash("sha256");
   let bytes = 0;
   for await (const chunk of createReadStream(filePath)) {
+    throwIfOfflineSyncAborted(signal);
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     hash.update(buffer);
     bytes += buffer.length;
   }
+  throwIfOfflineSyncAborted(signal);
   return {
     sha256: hash.digest("hex"),
     bytes,
@@ -600,15 +615,19 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
   includeTranscripts?: boolean;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  signal?: AbortSignal;
 }): AsyncIterable<OfflineSyncFileRecord> {
+  throwIfOfflineSyncAborted(options.signal);
   const rootAbs = path.resolve(options.root);
   const root = await prepareSafeArchiveRoot(rootAbs, "iterateOfflineSyncSnapshotFileRecords", "root");
   const includeTranscripts = options.includeTranscripts !== false;
 
   async function* walk(dirAbs: string): AsyncIterable<OfflineSyncFileRecord> {
+    throwIfOfflineSyncAborted(options.signal);
     let entries = await readdir(dirAbs, { withFileTypes: true });
     entries = entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
+      throwIfOfflineSyncAborted(options.signal);
       const abs = path.join(dirAbs, entry.name);
       const relPosix = path.relative(root.abs, abs).split(path.sep).join("/");
       if (shouldExcludeRelPath(relPosix, includeTranscripts)) continue;
@@ -625,6 +644,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
         includeContent: options.includeContent === true,
         readFile: options.readFile,
         readFileDigest: options.readFileDigest,
+        signal: options.signal,
       });
     }
   }
@@ -640,10 +660,13 @@ export async function buildOfflineSyncSnapshot(options: {
   now?: Date;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  signal?: AbortSignal;
 }): Promise<OfflineSyncSnapshot> {
+  throwIfOfflineSyncAborted(options.signal);
   const includeTranscripts = options.includeTranscripts !== false;
   const files: OfflineSyncFileRecord[] = [];
   for await (const file of iterateOfflineSyncSnapshotFileRecords(options)) files.push(file);
+  throwIfOfflineSyncAborted(options.signal);
 
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
@@ -665,7 +688,9 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
   now?: Date;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  signal?: AbortSignal;
 }): Promise<OfflineSyncSnapshot> {
+  throwIfOfflineSyncAborted(options.signal);
   const rootAbs = path.resolve(options.root);
   const root = await prepareSafeArchiveRoot(rootAbs, "buildOfflineSyncSnapshotFromBase", "root");
   const includeTranscripts = options.includeTranscripts !== false;
@@ -680,9 +705,11 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
   const files: OfflineSyncFileRecord[] = [];
 
   async function walk(dirAbs: string): Promise<void> {
+    throwIfOfflineSyncAborted(options.signal);
     let entries = await readdir(dirAbs, { withFileTypes: true });
     entries = entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
+      throwIfOfflineSyncAborted(options.signal);
       const abs = path.join(dirAbs, entry.name);
       const relPosix = path.relative(root.abs, abs).split(path.sep).join("/");
       if (shouldExcludeRelPath(relPosix, includeTranscripts)) continue;
@@ -698,7 +725,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
         options.includeContent !== true &&
         baseEntry &&
         baseCapturedAtMs !== null &&
-        await canReuseFastBaseFileStateFromDisk(baseEntry, abs, st, baseCapturedAtMs)
+        await canReuseFastBaseFileStateFromDisk(baseEntry, st, baseCapturedAtMs)
       ) {
         files.push(baseEntry);
         continue;
@@ -710,11 +737,13 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
         includeContent: options.includeContent === true,
         readFile: options.readFile,
         readFileDigest: options.readFileDigest,
+        signal: options.signal,
       }));
     }
   }
 
   await walk(root.abs);
+  throwIfOfflineSyncAborted(options.signal);
 
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
@@ -735,7 +764,9 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
   now?: Date;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  signal?: AbortSignal;
 }): Promise<OfflineSyncSnapshot> {
+  throwIfOfflineSyncAborted(options.signal);
   const rootAbs = path.resolve(options.root);
   const root = await prepareSafeArchiveRoot(rootAbs, "buildOfflineSyncSnapshotForPaths", "root");
   const includeTranscripts = options.includeTranscripts !== false;
@@ -743,6 +774,7 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
   const seen = new Set<string>();
 
   for (const rawPath of options.paths) {
+    throwIfOfflineSyncAborted(options.signal);
     const relPath = normalizeRelativePath(rawPath, "paths[]");
     if (seen.has(relPath)) continue;
     seen.add(relPath);
@@ -762,8 +794,10 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
       includeContent: options.includeContent === true,
       readFile: options.readFile,
       readFileDigest: options.readFileDigest,
+      signal: options.signal,
     }));
   }
+  throwIfOfflineSyncAborted(options.signal);
 
   return {
     format: OFFLINE_SYNC_SNAPSHOT_FORMAT,

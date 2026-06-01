@@ -2595,12 +2595,15 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  async ensureCollection(memoryDir: string): Promise<"present" | "missing" | "unknown" | "skipped"> {
+  async ensureCollection(
+    memoryDir: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<"present" | "missing" | "unknown" | "skipped"> {
     if (this.available === false && !this.daemonAvailable) return "unknown";
     // If only daemon is available (no CLI), skip collection check
     if (this.available === false) return "skipped";
     try {
-      const { stdout } = await this.runQmdCommand(["collection", "list"], QMD_TIMEOUT_MS);
+      const { stdout } = await this.runQmdCommand(["collection", "list"], QMD_TIMEOUT_MS, execution?.signal);
       // Parse text output: "openclaw-engram (qmd://openclaw-engram/)"
       const collectionRegex = new RegExp(
         `^${this.collection}\\s+\\(qmd://`,

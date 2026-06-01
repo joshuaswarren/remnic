@@ -5580,9 +5580,10 @@ function normalizeOfflineRemoteUrl(raw: string): string {
   return parsed.toString().replace(/\/$/, "");
 }
 
-function resolveOptionalOfflineRemoteUrl(args: string[]): string | undefined {
+export function resolveOptionalOfflineRemoteUrl(args: string[]): string | undefined {
   const raw =
     resolveRequiredValueFlag(args, "--remote-url") ??
+    resolveRequiredValueFlag(args, "--remote") ??
     process.env.REMNIC_OFFLINE_REMOTE_URL ??
     process.env.ENGRAM_OFFLINE_REMOTE_URL;
   if (!raw || raw.trim().length === 0) return undefined;
@@ -5659,6 +5660,14 @@ function offlineRequestTimeoutMs(): number {
   return parseOfflineSyncRequestTimeoutMs(
     process.env.REMNIC_OFFLINE_REQUEST_TIMEOUT_MS ??
       process.env.ENGRAM_OFFLINE_REQUEST_TIMEOUT_MS,
+  );
+}
+
+function offlineSnapshotPostTimeoutMs(): number {
+  return parseOfflineSyncRequestTimeoutMs(
+    process.env.REMNIC_OFFLINE_SNAPSHOT_POST_TIMEOUT_MS ??
+      process.env.ENGRAM_OFFLINE_SNAPSHOT_POST_TIMEOUT_MS,
+    Math.min(offlineRequestTimeoutMs(), 60_000),
   );
 }
 
@@ -5882,18 +5891,23 @@ export async function fetchOfflineSnapshot(args: {
       if (postRequest) {
         const postRequestUsesGzip =
           new Headers(postRequest.headers).get("content-encoding")?.toLowerCase() === "gzip";
+        const postAbort = new AbortController();
+        const postTimeout = setTimeout(() => postAbort.abort(), offlineSnapshotPostTimeoutMs());
         try {
           return await fetchOfflineJson(
             offlineEndpoint(args.remoteUrl, "/remnic/v1/offline-sync/snapshot"),
             args.token,
             {
               method: "POST",
+              signal: postAbort.signal,
               ...postRequest,
             },
           );
         } catch (error) {
           if (!isOfflineSnapshotPostFallbackError(error, { compressed: postRequestUsesGzip })) throw error;
           tryStreamSnapshot = true;
+        } finally {
+          clearTimeout(postTimeout);
         }
       } else {
         tryStreamSnapshot = true;
@@ -5969,6 +5983,13 @@ export function isOfflineSnapshotPostFallbackError(
 ): boolean {
   const message = error instanceof Error ? error.message : String(error);
   if (/offline-sync\/snapshot\b.* returned (404|405|413)\b/.test(message)) return true;
+  if (
+    /^offline sync request timed out after \d+ms: POST .*\/offline-sync\/snapshot\b/.test(message) ||
+    /^offline sync request failed before response: POST .*\/offline-sync\/snapshot\b/.test(message) ||
+    /^(This operation was aborted|The operation was aborted|AbortError)/i.test(message)
+  ) {
+    return true;
+  }
   if (!options.compressed) return false;
   return /offline-sync\/snapshot\b.* returned (400|415)\b/.test(message) &&
     /\b(unsupported_content_encoding|invalid_gzip_body|invalid_json)\b/.test(message);
@@ -6024,6 +6045,8 @@ export const OFFLINE_SYNC_DIRECT_PUSH_MIN_BYTES = Math.min(
 );
 export const OFFLINE_SYNC_DIRECT_HYDRATE_MIN_BYTES = OFFLINE_SYNC_DIRECT_PUSH_MIN_BYTES;
 export const OFFLINE_SYNC_CHANGESET_RETRY_MAX = 1_024;
+export const OFFLINE_SYNC_CONTENT_MISSING_RETRY_MAX = 3;
+export const OFFLINE_SYNC_CONTENT_MISSING_RETRY_DELAY_MS = 250;
 
 class OfflineRemoteFileChangedError extends Error {
   readonly path: string;
@@ -6724,12 +6747,65 @@ function isOfflineFilesUnsupportedError(error: unknown): boolean {
   return /offline sync request failed: .* returned 404\b/.test(message);
 }
 
+class OfflineMissingContentError extends Error {
+  readonly missing: readonly OfflineSyncFileState[];
+
+  constructor(missing: readonly OfflineSyncFileState[]) {
+    const preview = missing.slice(0, 8).map((file) => file.path).join(", ");
+    const suffix = missing.length > 8 ? `, ... +${missing.length - 8} more` : "";
+    super(
+      `remote offline content response omitted ${missing.length} changed file${missing.length === 1 ? "" : "s"}: ${preview}${suffix}; retry sync`,
+    );
+    this.name = "OfflineMissingContentError";
+    this.missing = missing;
+  }
+}
+
 function isMissingOfflineContentError(error: unknown): boolean {
+  if (error instanceof OfflineMissingContentError) return true;
   const message = error instanceof Error ? error.message : String(error);
   return /^missing decoded content for /.test(message);
 }
 
-async function hydrateOfflineSnapshotContent(args: {
+function formatMissingOfflineContentError(missing: readonly OfflineSyncFileState[]): Error {
+  return new OfflineMissingContentError(missing);
+}
+
+export function isOfflineMissingContentDeferrablePath(relPath: string): boolean {
+  const parts = relPath.split("/");
+  return parts[0] === "profiling" || (parts[0] === "namespaces" && parts[2] === "profiling");
+}
+
+function deferMissingOfflineContent(
+  missing: readonly OfflineSyncFileState[],
+  deferredPaths: Set<string> | undefined,
+): OfflineSyncFileState[] {
+  if (!deferredPaths) return [...missing];
+  const stillMissing: OfflineSyncFileState[] = [];
+  for (const file of missing) {
+    if (isOfflineMissingContentDeferrablePath(file.path)) {
+      deferredPaths.add(file.path);
+    } else {
+      stillMissing.push(file);
+    }
+  }
+  return stillMissing;
+}
+
+function formatMissingDecodedContentError(missing: readonly OfflineSyncFileState[]): Error {
+  const preview = missing.slice(0, 8).map((file) => file.path).join(", ");
+  const suffix = missing.length > 8 ? `, ... +${missing.length - 8} more` : "";
+  return new Error(
+    `remote offline content response omitted ${missing.length} changed file${missing.length === 1 ? "" : "s"}: ${preview}${suffix}; retry sync`,
+  );
+}
+
+async function waitForMissingOfflineContentRetry(delayMs: number): Promise<void> {
+  if (delayMs <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+export async function hydrateOfflineSnapshotContent(args: {
   remoteUrl: string;
   token: string;
   namespace?: string;
@@ -6738,6 +6814,10 @@ async function hydrateOfflineSnapshotContent(args: {
   baseFiles: readonly OfflineSyncFileState[];
   currentFiles?: readonly OfflineSyncFileState[];
   deferredPaths?: readonly string[];
+  missingContentDeferredPaths?: Set<string>;
+  fetchFiles?: typeof fetchOfflineFiles;
+  missingContentRetryMax?: number;
+  missingContentRetryDelayMs?: number;
 }): Promise<OfflineSyncSnapshot & { namespace?: string }> {
   const snapshot = normalizeOfflineSyncSnapshot(args.snapshot);
   const neededFiles = offlineSnapshotContentFilesForApply({
@@ -6752,26 +6832,47 @@ async function hydrateOfflineSnapshotContent(args: {
   const expectedByPath = new Map(snapshot.files.map((file) => [file.path, file]));
   const contentByPath = new Map<string, string>();
   const updatedByPath = new Map<string, OfflineSyncFileState & { contentBase64: string }>();
+  const fetchFiles = args.fetchFiles ?? fetchOfflineFiles;
+  const retryMax = args.missingContentRetryMax ?? OFFLINE_SYNC_CONTENT_MISSING_RETRY_MAX;
+  const retryDelayMs = args.missingContentRetryDelayMs ?? OFFLINE_SYNC_CONTENT_MISSING_RETRY_DELAY_MS;
+  if (!Number.isInteger(retryMax) || retryMax < 0) {
+    throw new Error("offline sync missing content retry max must be an integer >= 0");
+  }
+  if (!Number.isInteger(retryDelayMs) || retryDelayMs < 0) {
+    throw new Error("offline sync missing content retry delay must be an integer >= 0");
+  }
   try {
-    for (const batch of chunkOfflineFileContentBatches(neededFiles)) {
-      const partial = await fetchOfflineFiles({
-        remoteUrl: args.remoteUrl,
-        token: args.token,
-        namespace: args.namespace,
-        includeTranscripts: args.includeTranscripts,
-        paths: batch.map((file) => file.path),
-      });
-      for (const file of partial.files) {
-        const expected = expectedByPath.get(file.path);
-        if (!expected) continue;
-        if (typeof file.contentBase64 !== "string") {
-          throw new Error(`remote offline content response omitted contentBase64 for ${file.path}`);
+    let pendingFiles = neededFiles;
+    for (let attempt = 0; ; attempt += 1) {
+      for (const batch of chunkOfflineFileContentBatches(pendingFiles)) {
+        const partial = await fetchFiles({
+          remoteUrl: args.remoteUrl,
+          token: args.token,
+          namespace: args.namespace,
+          includeTranscripts: args.includeTranscripts,
+          paths: batch.map((file) => file.path),
+        });
+        for (const file of partial.files) {
+          const expected = expectedByPath.get(file.path);
+          if (!expected) continue;
+          if (typeof file.contentBase64 !== "string") {
+            throw new Error(`remote offline content response omitted contentBase64 for ${file.path}`);
+          }
+          if (file.sha256 !== expected.sha256 || file.bytes !== expected.bytes || file.mtimeMs !== expected.mtimeMs) {
+            updatedByPath.set(file.path, file as OfflineSyncFileState & { contentBase64: string });
+          }
+          contentByPath.set(file.path, file.contentBase64);
         }
-        if (file.sha256 !== expected.sha256 || file.bytes !== expected.bytes || file.mtimeMs !== expected.mtimeMs) {
-          updatedByPath.set(file.path, file as OfflineSyncFileState & { contentBase64: string });
-        }
-        contentByPath.set(file.path, file.contentBase64);
       }
+      const missing = pendingFiles.filter((file) => !contentByPath.has(file.path));
+      if (missing.length === 0) break;
+      if (attempt >= retryMax) {
+        const stillMissing = deferMissingOfflineContent(missing, args.missingContentDeferredPaths);
+        if (stillMissing.length > 0) throw formatMissingOfflineContentError(stillMissing);
+        break;
+      }
+      pendingFiles = missing;
+      await waitForMissingOfflineContentRetry(retryDelayMs);
     }
   } catch (error) {
     if (!isOfflineFilesUnsupportedError(error)) throw error;
@@ -6786,10 +6887,10 @@ async function hydrateOfflineSnapshotContent(args: {
 
   const missing = neededFiles
     .map((file) => file.path)
-    .filter((relPath) => !contentByPath.has(relPath));
+    .filter((relPath) => !contentByPath.has(relPath) && !args.missingContentDeferredPaths?.has(relPath));
   if (missing.length > 0) {
-    throw new Error(
-      `remote offline content response omitted ${missing.length} changed file${missing.length === 1 ? "" : "s"}; retry sync`,
+    throw formatMissingDecodedContentError(
+      neededFiles.filter((file) => missing.includes(file.path)),
     );
   }
 
@@ -7583,6 +7684,7 @@ export async function runOfflineSyncOnce(options: {
       baseFiles,
       currentFiles: applyCurrentSnapshot.files,
       deferredPaths: [...remoteDeferredPaths],
+      missingContentDeferredPaths: remoteDeferredPaths,
     });
   } catch (error) {
     if (pushed || partialHydration.hydratedFiles.length > 0) {
@@ -7627,6 +7729,7 @@ export async function runOfflineSyncOnce(options: {
         baseFiles,
         currentFiles: applyCurrentSnapshot.files,
         deferredPaths: [...remoteDeferredPaths],
+        missingContentDeferredPaths: remoteDeferredPaths,
       });
     } catch (retryError) {
       if (pushed || partialHydration.hydratedFiles.length > 0) {
@@ -7764,7 +7867,7 @@ async function cmdOffline(action: string, rest: string[], json: boolean): Promis
     console.log(`Usage: remnic offline <prepare|sync|status|watch> [options]
 
 Options:
-  --remote-url <url>       Remote Remnic server URL, e.g. http://home:4242
+  --remote-url <url>       Remote Remnic server URL, e.g. http://home:4242 (--remote alias accepted)
   --token <token>          Bearer token for the remote server
   --namespace <name>       Namespace to sync
   --memory-dir <dir>       Local memory dir (defaults to resolved memoryDir)
