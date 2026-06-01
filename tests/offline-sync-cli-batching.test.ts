@@ -21,6 +21,7 @@ import {
   OFFLINE_SYNC_DIRECT_PUSH_MIN_BYTES,
   OFFLINE_SYNC_FILE_CONTENT_UPLOAD_CHUNK_BYTES,
   OFFLINE_SYNC_REQUEST_TIMEOUT_DEFAULT_MS,
+  OFFLINE_SYNC_SNAPSHOT_BASE_POST_MAX_FILES,
   OFFLINE_SYNC_SNAPSHOT_BASE_POST_PREFERRED_MAX_BODY_BYTES,
   advanceOfflineBaseFilesForSuccessfulPush,
   chunkOfflineChangesetApplyBatches,
@@ -60,6 +61,12 @@ function contentFile(path: string, content: Buffer | string, mtimeMs = 0): Offli
     sha256: createHash("sha256").update(buffer).digest("hex"),
     mtimeMs,
   };
+}
+
+function compressibleBaseFiles(count: number): OfflineSyncFileState[] {
+  const pathPadding = "x".repeat(360);
+  return Array.from({ length: count }, (_, index) =>
+    file(`facts/${String(index).padStart(6, "0")}-${pathPadding}.md`, index + 1));
 }
 
 test("offline sync file content batches are bounded by expected bytes", () => {
@@ -285,8 +292,7 @@ test("offline sync snapshot post falls back when base payload is too large", () 
 test("offline sync compresses oversized fast-base payloads before stream fallback", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    const baseFiles = Array.from({ length: 150_000 }, (_, index) =>
-      file(`facts/${String(index).padStart(6, "0")}.md`, index + 1));
+    const baseFiles = compressibleBaseFiles(OFFLINE_SYNC_SNAPSHOT_BASE_POST_MAX_FILES - 1);
     const remoteFile = file("facts/remote.md", 42, "b");
     const calls: string[] = [];
     globalThis.fetch = (async (input, init) => {
@@ -335,8 +341,7 @@ test("offline sync compresses oversized fast-base payloads before stream fallbac
 test("offline sync falls back to stream when compressed fast-base POST is unsupported", async () => {
   const originalFetch = globalThis.fetch;
   try {
-    const baseFiles = Array.from({ length: 150_000 }, (_, index) =>
-      file(`facts/${String(index).padStart(6, "0")}.md`, index + 1));
+    const baseFiles = compressibleBaseFiles(OFFLINE_SYNC_SNAPSHOT_BASE_POST_MAX_FILES - 1);
     const remoteFile = file("facts/remote.md", 42, "b");
     const calls: string[] = [];
     globalThis.fetch = (async (input, init) => {
@@ -385,6 +390,55 @@ test("offline sync falls back to stream when compressed fast-base POST is unsupp
     assert.deepEqual(snapshot.files, [remoteFile]);
     assert.deepEqual(calls, [
       "POST /remnic/v1/offline-sync/snapshot",
+      "GET /remnic/v1/offline-sync/snapshot-stream?namespace=generalist&include_transcripts=true&content=false",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("offline sync streams huge fast-base file lists instead of posting them", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const baseFiles = Array.from({ length: OFFLINE_SYNC_SNAPSHOT_BASE_POST_MAX_FILES + 1 }, (_, index) =>
+      file(`facts/${String(index).padStart(6, "0")}.md`, index + 1));
+    const remoteFile = file("facts/remote.md", 42, "b");
+    const calls: string[] = [];
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(String(input));
+      calls.push(`${init?.method ?? "GET"} ${url.pathname}${url.search}`);
+      assert.equal(url.pathname, "/remnic/v1/offline-sync/snapshot-stream");
+      assert.equal(url.searchParams.get("content"), "false");
+      return new Response([
+        JSON.stringify({
+          type: "snapshot",
+          namespace: "generalist",
+          format: "remnic.offline-sync.snapshot.v1",
+          schemaVersion: 1,
+          createdAt: "2026-05-31T00:01:00.000Z",
+          sourceId: "remote",
+          includeTranscripts: true,
+        }),
+        JSON.stringify({ type: "file", file: remoteFile }),
+        "",
+      ].join("\n"), {
+        status: 200,
+        headers: { "content-type": "application/x-ndjson" },
+      });
+    }) as typeof fetch;
+
+    const snapshot = await fetchOfflineSnapshot({
+      remoteUrl: "http://remnic.test",
+      token: "test-token",
+      namespace: "generalist",
+      includeTranscripts: true,
+      includeContent: false,
+      baseFiles,
+    });
+
+    assert.equal(snapshot.namespace, "generalist");
+    assert.deepEqual(snapshot.files, [remoteFile]);
+    assert.deepEqual(calls, [
       "GET /remnic/v1/offline-sync/snapshot-stream?namespace=generalist&include_transcripts=true&content=false",
     ]);
   } finally {
