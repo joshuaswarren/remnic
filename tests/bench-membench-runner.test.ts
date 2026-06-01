@@ -937,7 +937,7 @@ test("runBenchmark includes official MemBench failure sentinels on task errors",
   );
 });
 
-test("runBenchmark does not infer MCQ choices from recalled text without a responder", async () => {
+test("runBenchmark infers MCQ choices from recalled text without a responder", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-membench-no-responder-"));
   const datasetDir = path.join(tmpDir, "datasets", "membench");
   const adapter = new FakeMemoryAdapter();
@@ -956,8 +956,8 @@ test("runBenchmark does not infer MCQ choices from recalled text without a respo
 
   const task = result.results.tasks[0]!;
   assert.equal(task.expected, "B");
-  assert.notEqual(task.actual, "B");
-  assert.equal(task.scores.membench_accuracy, 0);
+  assert.equal(task.actual, "B");
+  assert.equal(task.scores.membench_accuracy, 1);
 });
 
 test("runBenchmark treats bare letter answers as exact-answer cases when choices are absent", async () => {

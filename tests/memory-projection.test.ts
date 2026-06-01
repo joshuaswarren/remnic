@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
 import {
   backupExistingProjection,
@@ -1742,8 +1742,9 @@ test("verifyMemoryProjection reports drift in projected entity mentions, native 
   }
 });
 
-test("projection browse filters invalid rows before paginating", async () => {
+test("projection browse filters realpath-invalid rows before counting and paginating", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-invalid-page-"));
+  const outsidePath = path.join(os.tmpdir(), `engram-memory-projection-outside-${process.pid}-${Date.now()}.md`);
   try {
     await writeText(
       memoryDir,
@@ -1771,10 +1772,12 @@ test("projection browse filters invalid rows before paginating", async () => {
       dryRun: false,
       now: new Date("2026-03-08T12:00:00.000Z"),
     });
+    await writeFile(outsidePath, "symlink escape", "utf-8");
+    await symlink(outsidePath, path.join(memoryDir, "facts/2026-03-08/fact-invalid-link.md"));
     const db = new Database(getMemoryProjectionPath(memoryDir));
     try {
       db.prepare("UPDATE memory_current SET path_rel = ? WHERE memory_id = ?")
-        .run("../escaped.md", "fact-invalid");
+        .run("facts/2026-03-08/fact-invalid-link.md", "fact-invalid");
     } finally {
       db.close();
     }
@@ -1789,5 +1792,6 @@ test("projection browse filters invalid rows before paginating", async () => {
     assert.deepEqual(browse.memories.map((memory) => memory.id), ["fact-valid"]);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
+    await rm(outsidePath, { force: true });
   }
 });

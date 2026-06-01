@@ -16,7 +16,7 @@
     "build": "tsup src/index.ts --format esm --dts",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "test": "tsx --test src/**/*.test.ts",
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test src/adapter.test.ts src/chunker.test.ts src/integration.test.ts src/parser.test.ts src/participant.test.ts src/progress.test.ts src/threader.test.ts",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
@@ -24,7 +24,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^1.1.29"
+    "@remnic/core": "^1.1.31"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",

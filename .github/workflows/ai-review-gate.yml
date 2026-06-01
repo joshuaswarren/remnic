@@ -26,7 +26,6 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Wait for AI reviewers to settle
-        if: github.event_name == 'pull_request' || github.event_name == 'check_run'
         run: |
           echo "Waiting 3 minutes for AI reviewers to analyse the diff..."
           sleep 180
@@ -195,6 +194,7 @@ jobs:
               }
 
               const positiveByAlias = new Map();
+              const positiveCheckRunAliases = new Set();
               const blockers = [];
               const configuredAliases = new Set(groups.flat());
 
@@ -248,6 +248,7 @@ jobs:
                 if (BAD_CHECK_CONCLUSIONS.has(conclusion)) {
                   blockers.push({ alias, kind: 'check_run', state: conclusion || 'unknown' });
                 } else if (POSITIVE_CHECK_CONCLUSIONS.has(conclusion)) {
+                  positiveCheckRunAliases.add(alias);
                   positiveByAlias.set(alias, { alias, kind: 'check_run', state: conclusion });
                 }
               }
@@ -263,7 +264,9 @@ jobs:
                 }
               }
 
-              const effectiveBlockers = blockers;
+              const effectiveBlockers = blockers.filter(
+                (blocker) => blocker.kind !== 'review' || !positiveCheckRunAliases.has(blocker.alias),
+              );
 
               if (effectiveBlockers.length > 0) {
                 return {
@@ -306,7 +309,6 @@ jobs:
               core.setFailed('Unable to determine pull request number.');
               return;
             }
-
             const groupsRaw = process.env.REQUIRED_AI_REVIEWER_GROUPS || '';
             const groups = parseReviewerGroups(groupsRaw);
 
@@ -412,6 +414,6 @@ jobs:
             }
 
             if (evaluatedCount === 0) {
-              core.notice('Skipping because all associated pull requests are draft.');
+              core.setFailed('AI review gate did not evaluate any non-draft pull requests.');
               return;
             }

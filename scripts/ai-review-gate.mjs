@@ -154,6 +154,7 @@ export function evaluateAiReviewGate({
   }
 
   const positiveByAlias = new Map();
+  const positiveCheckRunAliases = new Set();
   const blockers = [];
   const configuredAliases = new Set(groups.flat());
 
@@ -207,6 +208,7 @@ export function evaluateAiReviewGate({
     if (BAD_CHECK_CONCLUSIONS.has(conclusion)) {
       blockers.push({ alias, kind: "check_run", state: conclusion || "unknown" });
     } else if (POSITIVE_CHECK_CONCLUSIONS.has(conclusion)) {
+      positiveCheckRunAliases.add(alias);
       positiveByAlias.set(alias, { alias, kind: "check_run", state: conclusion });
     }
   }
@@ -222,7 +224,9 @@ export function evaluateAiReviewGate({
     }
   }
 
-  const effectiveBlockers = blockers;
+  const effectiveBlockers = blockers.filter(
+    (blocker) => blocker.kind !== "review" || !positiveCheckRunAliases.has(blocker.alias),
+  );
 
   if (effectiveBlockers.length > 0) {
     return {

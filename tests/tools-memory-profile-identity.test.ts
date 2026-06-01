@@ -20,6 +20,16 @@ function buildHarness(overrides?: {
     score: number;
     snippet?: string;
   }>>;
+  searchAcrossNamespaces?: (params: {
+    query: string;
+    namespaces?: string[];
+    maxResults?: number;
+    mode?: string;
+  }) => Promise<Array<{
+    path: string;
+    score: number;
+    snippet?: string;
+  }>>;
 }) {
   const tools = new Map<string, RegisteredTool>();
   const reads: Array<{ kind: "profile" | "identity"; namespace: string }> = [];
@@ -104,7 +114,7 @@ function buildHarness(overrides?: {
       mode?: string;
     }) => {
       namespaceSearchCalls.push(params);
-      return [];
+      return overrides?.searchAcrossNamespaces?.(params) ?? [];
     },
   };
 
@@ -142,7 +152,7 @@ test("memory_profile preserves an explicit default namespace request", async () 
   assert.deepEqual(requestedNamespaces, ["default"]);
 });
 
-test("memory_search uses global search before namespace filtering when collection is global", async () => {
+test("memory_search routes global namespace requests through namespace search", async () => {
   const { tools, globalSearchCalls, namespaceSearchCalls } = buildHarness();
   const tool = tools.get("memory_search");
   assert.ok(tool);
@@ -154,27 +164,22 @@ test("memory_search uses global search before namespace filtering when collectio
     maxResults: 5,
   });
 
-  assert.deepEqual(globalSearchCalls, [{ query: "project status", maxResults: 5 }]);
-  assert.deepEqual(namespaceSearchCalls, []);
+  assert.deepEqual(globalSearchCalls, []);
+  assert.deepEqual(namespaceSearchCalls, [
+    { query: "project status", namespaces: ["shared"], maxResults: 5, mode: "search" },
+  ]);
 });
 
-test("memory_search filters global results to the requested namespace", async () => {
+test("memory_search avoids pre-filter global caps for namespace requests", async () => {
   const { tools } = buildHarness({
-    searchGlobal: async () => [
-      {
-        path: "/tmp/memory/profile.md",
-        score: 0.9,
-        snippet: "default profile result",
-      },
+    searchGlobal: async () => {
+      throw new Error("global search should not be used for namespace-scoped requests");
+    },
+    searchAcrossNamespaces: async () => [
       {
         path: "/tmp/memory/namespaces/shared/facts/shared.md",
         score: 0.8,
         snippet: "shared result",
-      },
-      {
-        path: "/tmp/memory/namespaces/other/facts/other.md",
-        score: 0.7,
-        snippet: "other result",
       },
     ],
   });
@@ -189,6 +194,4 @@ test("memory_search filters global results to the requested namespace", async ()
 
   const text = toolText(result);
   assert.match(text, /shared\.md/);
-  assert.doesNotMatch(text, /profile\.md/);
-  assert.doesNotMatch(text, /other\.md/);
 });

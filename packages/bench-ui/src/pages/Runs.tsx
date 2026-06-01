@@ -13,6 +13,7 @@ export function reconcileRunFilters(
   const benchmarks = new Set(listBenchmarks(payload));
   const systemProviders = new Set(listProviders(payload, "systemProvider"));
   const judgeProviders = new Set(listProviders(payload, "judgeProvider"));
+  const modes = new Set<string>(payload.summaries.map((summary) => summary.mode));
 
   return {
     ...filters,
@@ -28,6 +29,7 @@ export function reconcileRunFilters(
       filters.judgeProvider === "all" || judgeProviders.has(filters.judgeProvider)
         ? filters.judgeProvider
         : "all",
+    mode: filters.mode === "all" || modes.has(filters.mode) ? filters.mode : "all",
   };
 }
 

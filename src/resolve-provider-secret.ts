@@ -7,7 +7,7 @@ export * from "@remnic/core/resolve-provider-secret";
  * OpenClaw runtime-module discovery lives in the root adapter shim.
  */
 export async function findGatewayRuntimeModules(filePrefix: string): Promise<string[]> {
-  const { readFileSync, readdirSync, realpathSync } = await import("node:fs");
+  const { existsSync, readFileSync, readdirSync, realpathSync } = await import("node:fs");
   const { createRequire } = await import("node:module");
   const candidates: string[] = [];
 
@@ -19,14 +19,26 @@ export async function findGatewayRuntimeModules(filePrefix: string): Promise<str
   let packageRoot: string | undefined;
   try {
     const req = createRequire(import.meta.url);
-    const openclawPackageJson = req.resolve("openclaw/package.json");
-    const packageJson = JSON.parse(readFileSync(openclawPackageJson, "utf8")) as {
-      name?: unknown;
-    };
-    if (packageJson.name !== "openclaw") {
-      return [];
+    const openclawEntrypoint = realpathSync(req.resolve("openclaw"));
+    let currentDir = path.dirname(openclawEntrypoint);
+    while (true) {
+      const packageJsonPath = path.join(currentDir, "package.json");
+      if (existsSync(packageJsonPath)) {
+        const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+          name?: unknown;
+        };
+        if (packageJson.name !== "openclaw") {
+          return [];
+        }
+        packageRoot = realpathSync(currentDir);
+        break;
+      }
+      const parent = path.dirname(currentDir);
+      if (parent === currentDir) {
+        return [];
+      }
+      currentDir = parent;
     }
-    packageRoot = realpathSync(path.dirname(openclawPackageJson));
   } catch {
     return [];
   }

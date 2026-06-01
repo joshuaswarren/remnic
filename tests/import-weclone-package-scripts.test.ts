@@ -10,12 +10,25 @@ type PackageJson = {
   scripts?: Record<string, string>;
 };
 
-test("import-weclone test script avoids POSIX-only quoted globs", async () => {
+test("import-weclone test script runs explicit files against workspace source exports", async () => {
   const raw = await readFile(path.join(repoRoot, "packages", "import-weclone", "package.json"), "utf8");
   const pkg = JSON.parse(raw) as PackageJson;
   const testScript = pkg.scripts?.test ?? "";
 
+  assert.match(testScript, /\bNODE_OPTIONS=/);
+  assert.match(testScript, /--conditions=remnic-source\b/);
   assert.match(testScript, /\btsx --test\b/);
-  assert.match(testScript, /src\/\*\*\/\*\.test\.ts/);
-  assert.doesNotMatch(testScript, /['"]src\/\*\*\/\*\.test\.ts['"]/);
+  const testScriptParts = testScript.split(/\s+/);
+  for (const testFile of [
+    "src/adapter.test.ts",
+    "src/chunker.test.ts",
+    "src/integration.test.ts",
+    "src/parser.test.ts",
+    "src/participant.test.ts",
+    "src/progress.test.ts",
+    "src/threader.test.ts",
+  ]) {
+    assert.ok(testScriptParts.includes(testFile), `${testFile} missing from import-weclone test script`);
+  }
+  assert.doesNotMatch(testScript, /src\/\*\*\/\*\.test\.ts/);
 });

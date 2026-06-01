@@ -338,13 +338,9 @@ function statsForStoredSessions(
 ): { totalMessages: number; totalSummaryNodes: number; maxDepth: number } {
   const sessionId =
     typeof params.sessionId === "string" ? params.sessionId : undefined;
-  const sessionPrefix =
-    typeof params.sessionPrefix === "string" ? params.sessionPrefix : undefined;
   const totalMessages = [...stored.entries()]
     .filter(([storedSessionId]) =>
-      sessionId
-        ? storedSessionId === sessionId
-        : !sessionPrefix || storedSessionId.startsWith(sessionPrefix),
+      !sessionId || storedSessionId === sessionId,
     )
     .reduce((count, [, messages]) => count + messages.length, 0);
   return {

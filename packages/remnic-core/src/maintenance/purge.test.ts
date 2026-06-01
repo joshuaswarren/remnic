@@ -7,7 +7,7 @@ import test from "node:test";
 import { purgeMemories } from "./purge.js";
 import type { MemoryFile } from "../types.js";
 
-test("purgeMemories fails closed when pre-delete audit cannot be written", async () => {
+test("purgeMemories records audit errors without blocking hard delete", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-purge-"));
   try {
     const memoryPath = path.join(dir, "cold-memory.md");
@@ -44,10 +44,11 @@ test("purgeMemories fails closed when pre-delete audit cannot be written", async
       now: () => new Date("2026-01-02T00:00:00.000Z"),
     });
 
-    assert.equal(result.purgedCount, 0);
-    assert.equal(result.errorCount, 1);
+    assert.equal(result.purgedCount, 1);
+    assert.equal(result.errorCount, 2);
     assert.equal(result.errors[0]?.id, "(purge-audit)");
-    assert.equal(await fileExists(memoryPath), true);
+    assert.equal(result.errors[1]?.id, "(purge-audit)");
+    assert.equal(await fileExists(memoryPath), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

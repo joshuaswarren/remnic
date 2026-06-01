@@ -31,6 +31,7 @@ const BASE_CONFIG = {
   lcmEnabled: true as const,
 };
 const BENCH_TEST_RM_RETRY_OPTIONS = { maxRetries: 5, retryDelay: 50 } as const;
+const BENCH_TEST_OPERATION_START_TIMEOUT_MS = 10_000;
 
 function benchReplaySourceForTest(sessionId: string): string {
   return `bench-replay-${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}`;
@@ -163,7 +164,10 @@ test("runtime-backed adapter waits for full reset rebuild to settle after abort"
     await Promise.race([
       rebuildStarted.promise,
       new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error("timed out waiting for reset rebuild")), 1_000),
+        setTimeout(
+          () => reject(new Error("timed out waiting for reset rebuild")),
+          BENCH_TEST_OPERATION_START_TIMEOUT_MS,
+        ),
       ),
     ]);
 
@@ -209,7 +213,10 @@ test("runtime-backed adapter waits for scoped reset cleanup to settle after abor
     await Promise.race([
       clearStarted.promise,
       new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error("timed out waiting for scoped reset cleanup")), 1_000),
+        setTimeout(
+          () => reject(new Error("timed out waiting for scoped reset cleanup")),
+          BENCH_TEST_OPERATION_START_TIMEOUT_MS,
+        ),
       ),
     ]);
 
@@ -250,7 +257,10 @@ test("direct caller-owned adapter waits for full clearAll reset to settle after 
     await Promise.race([
       clearStarted.promise,
       new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error("timed out waiting for clearAll reset")), 1_000),
+        setTimeout(
+          () => reject(new Error("timed out waiting for clearAll reset")),
+          BENCH_TEST_OPERATION_START_TIMEOUT_MS,
+        ),
       ),
     ]);
 

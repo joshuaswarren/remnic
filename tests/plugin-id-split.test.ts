@@ -5,7 +5,7 @@
  *   - @remnic/plugin-openclaw and the root manifest use the canonical id "openclaw-remnic"
  *   - @joshuaswarren/openclaw-engram (shim) intentionally keeps the legacy id "openclaw-engram"
  *   - The OpenClaw adapter owns the OpenClaw plugin-id constants
- *   - @remnic/core does not export OpenClaw-specific plugin IDs
+ *   - @remnic/core keeps the legacy plugin-id subpath for compatibility
  *
  * This test locks the id split in place so a future refactor cannot silently
  * revert the rename or break the shim's backwards-compat guarantee.
@@ -41,12 +41,12 @@ test("REMNIC_OPENCLAW_LEGACY_PLUGIN_ID constant equals 'openclaw-engram'", () =>
   assert.equal(REMNIC_OPENCLAW_LEGACY_PLUGIN_ID, "openclaw-engram");
 });
 
-test("@remnic/core package does not export OpenClaw plugin-id constants", () => {
+test("@remnic/core package preserves legacy plugin-id compatibility subpaths", () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(PACKAGES_DIR, "remnic-core", "package.json"), "utf-8"),
   ) as { exports?: Record<string, unknown> };
-  assert.equal(packageJson.exports?.["./plugin-id"], undefined);
-  assert.equal(packageJson.exports?.["./plugin-id.js"], undefined);
+  assert.ok(packageJson.exports?.["./plugin-id"]);
+  assert.ok(packageJson.exports?.["./plugin-id.js"]);
 });
 
 test("root openclaw.plugin.json declares id 'openclaw-remnic'", () => {

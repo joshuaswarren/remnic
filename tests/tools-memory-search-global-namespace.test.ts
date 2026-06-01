@@ -22,7 +22,7 @@ test("memory_search global collection applies namespace before maxResults limiti
       tools.set(spec.name, spec);
     },
   };
-  let qmdGlobalCalled = false;
+  const qmdGlobalLimits: Array<number | undefined> = [];
   let namespaceSearchParams: Record<string, unknown> | undefined;
   const orchestrator = {
     config: {
@@ -36,11 +36,9 @@ test("memory_search global collection applies namespace before maxResults limiti
       compoundingEnabled: false,
     },
     qmd: {
-      searchGlobal: async () => {
-        qmdGlobalCalled = true;
-        return [
-          { path: "/memory/namespaces/a/high.md", score: 0.99, snippet: "wrong namespace" },
-        ];
+      searchGlobal: async (_query: string, maxResults?: number) => {
+        qmdGlobalLimits.push(maxResults);
+        throw new Error("global search should not run before namespace filtering");
       },
     },
     searchAcrossNamespaces: async (params: Record<string, unknown>) => {
@@ -83,7 +81,7 @@ test("memory_search global collection applies namespace before maxResults limiti
     maxResults: 1,
   });
 
-  assert.equal(qmdGlobalCalled, false);
+  assert.deepEqual(qmdGlobalLimits, []);
   assert.deepEqual(namespaceSearchParams, {
     query: "incident",
     namespaces: ["b"],

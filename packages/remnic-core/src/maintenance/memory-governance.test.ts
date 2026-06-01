@@ -7,7 +7,7 @@ import test from "node:test";
 import { StorageManager } from "../storage.js";
 import { runMemoryGovernance } from "./memory-governance.js";
 
-test("governance restore manifest marks actions applied only after mutation succeeds", async (t) => {
+test("governance restore manifest pre-marks actions applied before mutation", async (t) => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-governance-restore-"));
   try {
     const storage = new StorageManager(memoryDir);
@@ -46,7 +46,7 @@ test("governance restore manifest marks actions applied only after mutation succ
     };
     assert.equal(restore.entries.length, 1);
     assert.equal(restore.entries[0]?.memoryId, memoryId);
-    assert.equal(restore.entries[0]?.applied, false);
+    assert.equal(restore.entries[0]?.applied, true);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

@@ -920,6 +920,9 @@ function resetGraphView() {
 /** Last rendered snapshot, kept for re-draw on resize / pan / zoom. */
 let graphData = null; // { nodes, edges }
 
+/** Monotonic guard for async graph refreshes. */
+let graphLoadToken = 0;
+
 /**
  * Guard flag: canvas interaction listeners (mouse/wheel) must be attached
  * exactly once during pane initialisation. Without this, every graph refresh
@@ -949,6 +952,15 @@ function drawGraph() {
   ctx.save();
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, lw, lh);
+
+  if (graphData.nodes.length === 0 && graphData.edges.length === 0) {
+    ctx.fillStyle = "#aaa";
+    ctx.font = "14px Avenir Next, Segoe UI, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("No graph data — memory graph is empty.", lw / 2, lh / 2);
+    ctx.restore();
+    return;
+  }
 
   ctx.save();
   ctx.translate(graphView.tx, graphView.ty);
@@ -1196,10 +1208,11 @@ async function loadMemoryGraph() {
   const canvas = $("graphCanvas");
   if (!canvas) return;
 
-  // Stop any running simulation.
-  if (graphSim) { graphSim.stop(); graphSim = null; }
+  const loadToken = ++graphLoadToken;
+  const previousGraphSim = graphSim;
+  if (previousGraphSim) previousGraphSim.stop();
+  graphSim = null;
   closeGraphEventSource();
-  _orphanEdgeQueue.length = 0;
 
   setStatus("graphStatus", "Fetching graph snapshot...");
 
@@ -1213,12 +1226,47 @@ async function loadMemoryGraph() {
   try {
     snapshot = await fetchJson(`/engram/v1/graph/snapshot?${params.toString()}`);
   } catch (err) {
-    setStatus("graphStatus", err.message || String(err), "error");
+    if (loadToken !== graphLoadToken) return;
+    if (graphData) {
+      graphSim = previousGraphSim;
+      if (graphSim) graphSim.reheat(drawGraph);
+      else drawGraph();
+      mountGraphEventSource();
+      setStatus(
+        "graphStatus",
+        `Snapshot refresh failed; kept previous live graph: ${err.message || String(err)}`,
+        "error",
+      );
+    } else {
+      setStatus("graphStatus", err.message || String(err), "error");
+    }
     return;
   }
 
+  if (loadToken !== graphLoadToken) return;
+
+  _orphanEdgeQueue.length = 0;
+
   const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
   const edges = Array.isArray(snapshot.edges) ? snapshot.edges : [];
+
+  if (edges.length > 0) {
+    const nodeIds = new Set(nodes.map((n) => n.id).filter(Boolean));
+    for (const edge of edges) {
+      for (const endpoint of [edge.source, edge.target]) {
+        if (typeof endpoint !== "string" || endpoint === "" || nodeIds.has(endpoint)) continue;
+        nodeIds.add(endpoint);
+        nodes.push({
+          id: endpoint,
+          label: endpoint,
+          kind: "unknown",
+          score: 0,
+          lastUpdated: "",
+          metadata: { synthetic: true },
+        });
+      }
+    }
+  }
 
   // Always reset highlights, invalidate in-flight searches, and close panel
   // at the start of every reload — so stale state never persists.
@@ -1231,23 +1279,18 @@ async function loadMemoryGraph() {
   graphCategoryColorIndex = 0;
 
   if (nodes.length === 0) {
-    graphData = { nodes: [], edges: [] };
-    const ctx = canvas.getContext("2d");
-    if (ctx) {
-      const dpr = window.devicePixelRatio || 1;
-      const lw = canvas.offsetWidth;
-      const lh = canvas.offsetHeight;
-      canvas.width = lw * dpr;
-      canvas.height = lh * dpr;
-      ctx.save();
-      ctx.scale(dpr, dpr);
-      ctx.clearRect(0, 0, lw, lh);
-      ctx.fillStyle = "#aaa";
-      ctx.font = "14px Avenir Next, Segoe UI, sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText("No graph data — memory graph is empty.", lw / 2, lh / 2);
-      ctx.restore();
-    }
+    graphData = { nodes, edges };
+    graphView.tx = 0;
+    graphView.ty = 0;
+    graphView.scale = 1;
+    const lw = canvas.offsetWidth || 800;
+    const lh = canvas.offsetHeight || 520;
+    graphSim = createForceSimulation(nodes, edges, lw, lh);
+    // Prime the draw callback for future SSE reheats without running an
+    // empty requestAnimationFrame loop.
+    graphSim.start(drawGraph);
+    graphSim.stop();
+    drawGraph();
     attachGraphInteractions(canvas);
     renderGraphLegend();
     mountGraphEventSource();

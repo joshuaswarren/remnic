@@ -483,7 +483,10 @@ test("runBenchmark keeps memory-arena base traveler seed failures task-local", a
   });
 
   const task = result.results.tasks[0]!;
-  assert.equal(task.actual, "Coco Bambu, Dallas");
+  assert.match(
+    String(task.actual),
+    /MemoryArena prerequisite failed before group_travel_planner-t1-q0/,
+  );
   assert.match(String(task.details?.initialSeedError), /forced seed store failure/);
 });
 
@@ -1629,7 +1632,10 @@ test("runBenchmark keeps memory-arena initial seed errors in failure rows", asyn
   });
 
   const task = result.results.tasks[0]!;
-  assert.equal(task.details?.error, "forced recall failure");
+  assert.equal(
+    task.details?.error,
+    "MemoryArena prerequisite failed before group_travel_planner-t1-q0: MemoryArena initial task state failed: forced seed store failure",
+  );
   assert.equal(task.details?.initialSeedError, "forced seed store failure");
 });
 
@@ -1950,7 +1956,7 @@ test("runBenchmark fails fast when a memory-arena question is missing a matching
         limit: 1,
         system: adapter,
       }),
-    /MemoryArena task bundled_shopping:1 is missing answer index 0/,
+    /MemoryArena dataset file bundled_shopping\.jsonl line 1 must include exactly one answer/,
   );
 
   assert.equal(

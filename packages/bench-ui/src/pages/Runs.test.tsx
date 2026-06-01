@@ -72,7 +72,7 @@ test("reconcileRunFilters resets dynamic filter values missing after payload ref
       benchmark: "all",
       systemProvider: "all",
       judgeProvider: "all",
-      mode: "full",
+      mode: "all",
       range: "30d",
     },
   );

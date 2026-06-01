@@ -301,6 +301,86 @@ test("loadMemoryGraph keeps an empty snapshot subscribed for live graph events",
   assert.equal(vm.runInContext("graphData.nodes.length", context), 1);
 });
 
+test("loadMemoryGraph materializes missing edge endpoints from snapshot edges", async () => {
+  const { getContext, loadMemoryGraph } = await loadAdminConsoleContext("25", {
+    graphCanvas: new FakeCanvas(),
+    graphStatus: new FakeElement(),
+    graphLegend: new FakeElement(),
+  });
+  const context = getContext();
+
+  vm.runInContext(
+    `
+      fetchJson = async () => ({
+        nodes: [],
+        edges: [{ source: "facts/a.md", target: "facts/b.md", kind: "entity", weight: 1, label: "", confidence: 1 }],
+        generatedAt: "2026-05-31T00:00:00.000Z",
+      });
+    `,
+    context,
+  );
+
+  await loadMemoryGraph();
+
+  assert.equal(vm.runInContext("graphData.nodes.length", context), 2);
+  assert.equal(vm.runInContext("graphData.edges.length", context), 1);
+  assert.equal(vm.runInContext("graphData.edges[0]._srcNode.id", context), "facts/a.md");
+  assert.equal(vm.runInContext("graphData.edges[0]._tgtNode.id", context), "facts/b.md");
+  assert.match(vm.runInContext('document.getElementById("graphStatus").textContent', context), /Loaded 2 nodes, 1 edges/);
+});
+
+test("stale graph refresh failure does not restore an older simulation over newer data", async () => {
+  const { getContext, loadMemoryGraph } = await loadAdminConsoleContext("25", {
+    graphCanvas: new FakeCanvas(),
+    graphStatus: new FakeElement(),
+    graphLegend: new FakeElement(),
+  });
+  const context = getContext();
+
+  vm.runInContext(
+    `
+      fetchJson = async () => ({
+        nodes: [{ id: "facts/old.md", label: "Old", kind: "fact", score: 1, metadata: {}, lastUpdated: "" }],
+        edges: [],
+        generatedAt: "2026-05-31T00:00:00.000Z",
+      });
+    `,
+    context,
+  );
+  await loadMemoryGraph();
+  vm.runInContext("globalThis.__oldGraphSim = graphSim;", context);
+
+  vm.runInContext(
+    `
+      globalThis.__rejectFirstRefresh = null;
+      let refreshCalls = 0;
+      fetchJson = () => {
+        refreshCalls += 1;
+        if (refreshCalls === 1) {
+          return new Promise((_, reject) => {
+            globalThis.__rejectFirstRefresh = reject;
+          });
+        }
+        return Promise.resolve({
+          nodes: [{ id: "facts/new.md", label: "New", kind: "decision", score: 1, metadata: {}, lastUpdated: "" }],
+          edges: [],
+          generatedAt: "2026-05-31T00:00:01.000Z",
+        });
+      };
+    `,
+    context,
+  );
+
+  const staleRefresh = loadMemoryGraph();
+  const currentRefresh = loadMemoryGraph();
+  await currentRefresh;
+  vm.runInContext("globalThis.__rejectFirstRefresh(new Error('stale refresh failed'));", context);
+  await staleRefresh;
+
+  assert.equal(vm.runInContext("graphData.nodes[0].id", context), "facts/new.md");
+  assert.equal(vm.runInContext("graphSim === globalThis.__oldGraphSim", context), false);
+});
+
 test("graph pane HTML elements are present in index.html", async () => {
   const htmlPath = path.resolve("admin-console/public/index.html");
   const html = await readFile(htmlPath, "utf8");

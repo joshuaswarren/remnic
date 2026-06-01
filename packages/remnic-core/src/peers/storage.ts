@@ -856,6 +856,14 @@ function isCanonicalIsoTimestamp(value: string): boolean {
   return Number.isFinite(ms) && new Date(ms).toISOString() === value;
 }
 
+function parseIsoTimestampMs(value: string): number | null {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    return null;
+  }
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function assertCanonicalIsoTimestamp(value: string, field: string): void {
   if (!isCanonicalIsoTimestamp(value)) {
     throw new Error(`${field} must be a canonical ISO-8601 timestamp`);
@@ -1257,7 +1265,7 @@ function parseLogLine(line: string): PeerInteractionLogEntry | null {
   if (tsClose === -1) return null;
   const timestamp = line.slice(3, tsClose).trim();
   if (timestamp === "") return null;
-  if (!isCanonicalIsoTimestamp(timestamp)) return null;
+  if (parseIsoTimestampMs(timestamp) === null) return null;
   // Skip optional whitespace between `]` and `(`.
   let cursor = tsClose + 1;
   while (cursor < line.length && line[cursor] === " ") cursor += 1;
@@ -1321,8 +1329,9 @@ function parseLogLine(line: string): PeerInteractionLogEntry | null {
  *
  * `options.limit` (when > 0) restricts the result to the most recent
  * N entries. `options.afterTimestamp` (ISO-8601) filters out entries
- * with `timestamp < afterTimestamp` (string compare is safe for
- * canonical ISO-8601 form). Both filters are applied in order:
+ * with `timestamp <= afterTimestamp`, comparing parsed instants so
+ * legacy valid ISO-8601 forms like `Z` without milliseconds or
+ * offset timestamps keep working. Both filters are applied in order:
  * timestamp first, then limit.
  *
  * Order: oldest → newest, matching the append-only on-disk order so
@@ -1350,8 +1359,14 @@ export async function readPeerInteractionLog(
   let filtered = entries;
   if (typeof options.afterTimestamp === "string" && options.afterTimestamp.length > 0) {
     const cutoff = options.afterTimestamp;
-    assertCanonicalIsoTimestamp(cutoff, "afterTimestamp");
-    filtered = filtered.filter((e) => e.timestamp > cutoff);
+    const cutoffMs = parseIsoTimestampMs(cutoff);
+    if (cutoffMs === null) {
+      throw new Error("afterTimestamp must be an ISO-8601 timestamp");
+    }
+    filtered = filtered.filter((e) => {
+      const entryMs = parseIsoTimestampMs(e.timestamp);
+      return entryMs !== null && entryMs > cutoffMs;
+    });
   }
   // Gotcha #27: guard slice(-n) against n === 0 — `slice(-0)` returns
   // the entire array. Treat 0 and negatives as "no limit applied".

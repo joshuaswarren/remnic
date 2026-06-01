@@ -312,6 +312,38 @@ test("readPeerInteractionLog skips malformed timestamp lines before timestamp fi
   );
 });
 
+test("readPeerInteractionLog preserves valid non-canonical ISO timestamps", async () => {
+  const dir = await makeTempDir();
+  const peerDir = path.join(dir, "peers", "self");
+  await fs.mkdir(peerDir, { recursive: true });
+  await fs.writeFile(
+    path.join(peerDir, "interactions.log.md"),
+    [
+      "- [2026-04-25T00:00:00Z] (message) no millisecond marker",
+      "- [2026-04-25T01:00:00+01:00] (message) offset marker for same instant",
+      "- [2026-04-25T00:00:01.000Z] (message) newer marker",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const allEntries = await readPeerInteractionLog(dir, "self");
+
+  assert.deepEqual(
+    allEntries.map((entry) => entry.timestamp),
+    ["2026-04-25T00:00:00Z", "2026-04-25T01:00:00+01:00", "2026-04-25T00:00:01.000Z"],
+  );
+
+  const filteredEntries = await readPeerInteractionLog(dir, "self", {
+    afterTimestamp: "2026-04-25T00:00:00.000Z",
+  });
+
+  assert.deepEqual(
+    filteredEntries.map((entry) => entry.timestamp),
+    ["2026-04-25T00:00:01.000Z"],
+  );
+});
+
 test("readInteractionLogRaw returns empty string when log does not exist", async () => {
   const dir = await makeTempDir();
   const raw = await readInteractionLogRaw(dir, "self");

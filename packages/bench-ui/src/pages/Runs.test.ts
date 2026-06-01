@@ -76,7 +76,7 @@ test("reconcileRunFilters clears selected values that disappear from payload opt
     benchmark: "all",
     systemProvider: "all",
     judgeProvider: "all",
-    mode: "full",
+    mode: "all",
     range: "30d",
   });
 });

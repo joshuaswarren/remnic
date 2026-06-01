@@ -663,20 +663,17 @@ export function readProjectedMemoryBrowse(
       };
     }
 
-    // No query: push lexical path safety into SQL so corrupt legacy rows do not
-    // inflate totals or force every browse request to materialize the table.
+    // No query: push lexical path safety into SQL, then count through the same
+    // realpath-aware row parser used for returned rows so symlink escapes do not
+    // inflate totals.
     const browseWhereClauses = [...whereClauses, ...projectedBrowsePathSqlClauses()];
     const browseWhereSql = `WHERE ${browseWhereClauses.join(" AND ")}`;
-    const totalRow = db
-      .prepare(`SELECT COUNT(*) AS total FROM memory_current ${browseWhereSql}`)
-      .get(...params) as { total?: unknown } | undefined;
-    const total = typeof totalRow?.total === "number" ? totalRow.total : 0;
     const pageRows: ProjectedMemoryBrowseRow[] = [];
     const fetchSize = Math.max(options.limit * 2, 50);
     let validRowsSeen = 0;
     let scanOffset = 0;
 
-    while (pageRows.length < options.limit) {
+    while (true) {
       const rows = db
         .prepare(`
           SELECT
@@ -700,15 +697,16 @@ export function readProjectedMemoryBrowse(
       for (const row of rows) {
         const browseRow = projectedBrowseRowFromCurrentRow(memoryDir, row);
         if (!browseRow) continue;
-        if (validRowsSeen >= options.offset) pageRows.push(browseRow);
+        if (validRowsSeen >= options.offset && pageRows.length < options.limit) {
+          pageRows.push(browseRow);
+        }
         validRowsSeen += 1;
-        if (pageRows.length >= options.limit) break;
       }
       if (rows.length < fetchSize) break;
     }
 
     return {
-      total,
+      total: validRowsSeen,
       memories: pageRows,
     };
   });

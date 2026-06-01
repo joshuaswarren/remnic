@@ -748,7 +748,7 @@ test("runBenchmark rejects malformed beam JSON array comma placement", async () 
   }
 });
 
-test("runBenchmark validates beam JSON tails after reaching a limit", async () => {
+test("runBenchmark ignores beam JSON tails after reaching a limit", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-beam-limit-tail-"));
   const datasetDir = path.join(tmpDir, "datasets", "beam");
   const adapter = new FakeMemoryAdapter();
@@ -769,19 +769,17 @@ test("runBenchmark validates beam JSON tails after reaching a limit", async () =
 
   await writeFile(path.join(datasetDir, "100K.json"), `[${validObject},not-json]`, "utf8");
 
-  await assert.rejects(
-    () =>
-      runBenchmark("beam", {
-        mode: "full",
-        datasetDir,
-        limit: 1,
-        system: adapter,
-      }),
-    /invalid JSON array content/,
-  );
+  const result = await runBenchmark("beam", {
+    mode: "full",
+    datasetDir,
+    limit: 1,
+    system: adapter,
+  });
+
+  assert.equal(result.results.tasks.length, 1);
 });
 
-test("runBenchmark validates beam JSONL tails after reaching a limit", async () => {
+test("runBenchmark ignores beam JSONL tails after reaching a limit", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-beam-jsonl-tail-"));
   const datasetDir = path.join(tmpDir, "datasets", "beam");
   const adapter = new FakeMemoryAdapter();
@@ -802,16 +800,14 @@ test("runBenchmark validates beam JSONL tails after reaching a limit", async () 
 
   await writeFile(path.join(datasetDir, "100K.jsonl"), `${validObject}\nnot-json\n`, "utf8");
 
-  await assert.rejects(
-    () =>
-      runBenchmark("beam", {
-        mode: "full",
-        datasetDir,
-        limit: 1,
-        system: adapter,
-      }),
-    /invalid JSON on line 2/,
-  );
+  const result = await runBenchmark("beam", {
+    mode: "full",
+    datasetDir,
+    limit: 1,
+    system: adapter,
+  });
+
+  assert.equal(result.results.tasks.length, 1);
 });
 
 test("runBenchmark stops reading later beam split files once the global limit is exhausted", async () => {

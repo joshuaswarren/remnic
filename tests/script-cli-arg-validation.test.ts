@@ -133,3 +133,43 @@ test("set-release-version syncs OpenClaw companion manifests", async () => {
     await rm(repo, { recursive: true, force: true });
   }
 });
+
+test("set-release-version syncs Remnic peer dependency ranges", async () => {
+  const repo = await mkdtemp(path.join(os.tmpdir(), "remnic-release-peers-"));
+  try {
+    await mkdir(path.join(repo, "packages", "remnic-core"), { recursive: true });
+    await mkdir(path.join(repo, "packages", "import-mem0"), { recursive: true });
+    await writeJson(path.join(repo, "package.json"), {
+      private: true,
+      version: "0.0.0",
+    });
+    await writeJson(path.join(repo, "packages", "remnic-core", "package.json"), {
+      name: "@remnic/core",
+      version: "9.3.0",
+    });
+    await writeJson(path.join(repo, "packages", "import-mem0", "package.json"), {
+      name: "@remnic/import-mem0",
+      version: "9.3.0",
+      peerDependencies: {
+        "@remnic/core": "^1.1.31",
+      },
+    });
+
+    const result = spawnSync(process.execPath, [
+      path.join(repoRoot, "scripts", "set-release-version.mjs"),
+      "9.3.0",
+    ], {
+      cwd: repo,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const importer = await readJson(path.join(repo, "packages", "import-mem0", "package.json"));
+    assert.deepEqual(importer.peerDependencies, {
+      "@remnic/core": "^9.3.0",
+    });
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});

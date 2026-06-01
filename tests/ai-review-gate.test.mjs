@@ -42,6 +42,11 @@ test("AI review gate resolves every pull request associated with a check_run eve
     }),
     [17, 18],
   );
+
+  const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
+  assert.doesNotMatch(workflow, /linked to multiple pull requests/);
+  assert.match(workflow, /AI review gate did not evaluate any non-draft pull requests/);
+  assert.doesNotMatch(workflow, /Skipping because all associated pull requests are draft/);
 });
 
 test("AI review gate prefers the direct pull_request event number", () => {
@@ -176,6 +181,34 @@ test("AI review gate accepts a later current-head approval after changes request
   assert.equal(result.ok, true);
   assert.deepEqual(result.blockers, []);
   assert.equal(result.present[0]?.kind, "review");
+});
+
+test("AI review gate lets current-head positive check runs clear review blockers", () => {
+  const result = evaluateAiReviewGate({
+    groups: parseReviewerGroups("cursor"),
+    headSha,
+    headCommittedAt,
+    reviews: [
+      {
+        user: { login: "cursor" },
+        state: "CHANGES_REQUESTED",
+        commit_id: headSha,
+        submitted_at: "2026-05-21T12:00:01.000Z",
+      },
+    ],
+    checkRuns: [
+      {
+        app: { slug: "cursor" },
+        conclusion: "success",
+        head_sha: headSha,
+        completed_at: "2026-05-21T12:00:02.000Z",
+      },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.blockers, []);
+  assert.equal(result.present[0]?.kind, "check_run");
 });
 
 test("AI review gate ignores failed check runs from non-reviewer apps", () => {

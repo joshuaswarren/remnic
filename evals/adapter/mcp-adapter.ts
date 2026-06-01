@@ -72,6 +72,7 @@ export async function createMcpAdapter(
   const { baseUrl, authToken, timeoutMs } = options;
   const rpcOpts = { authToken, timeoutMs };
   let runPrefix = createRunPrefix();
+  let runSessionIds = new Set<string>();
   const qualifySessionId = (sessionId: string, prefix = runPrefix): string =>
     `${prefix}:${sessionId}`;
   const stripRunPrefix = (sessionId: string, prefix = runPrefix): string =>
@@ -104,6 +105,7 @@ export async function createMcpAdapter(
         { sessionId: qualifiedSessionId, messages },
         rpcOpts,
       );
+      runSessionIds.add(sessionId);
     },
 
     async recall(sessionId: string, query: string, budgetChars?: number): Promise<string> {
@@ -159,6 +161,7 @@ export async function createMcpAdapter(
 
     async reset(): Promise<void> {
       runPrefix = createRunPrefix();
+      runSessionIds = new Set<string>();
     },
 
     async getStats(sessionId?: string): Promise<MemoryStats> {
@@ -167,22 +170,40 @@ export async function createMcpAdapter(
         typeof sessionId === "string" && sessionId.length > 0
           ? qualifySessionId(sessionId, statsRunPrefix)
           : undefined;
-      const result = await mcpRequest(
-        baseUrl,
-        "engram.lcm.stats",
-        {
-          ...(qualifiedSessionId
-            ? { sessionId: qualifiedSessionId }
-            : { sessionPrefix: `${statsRunPrefix}:` }),
-        },
-        rpcOpts,
-      );
-      const r = result as Record<string, unknown> | null;
-      return {
-        totalMessages: typeof r?.totalMessages === "number" ? r.totalMessages : 0,
-        totalSummaryNodes: typeof r?.totalSummaryNodes === "number" ? r.totalSummaryNodes : 0,
-        maxDepth: typeof r?.maxDepth === "number" ? r.maxDepth : -1,
+      const readStats = async (params: Record<string, unknown>): Promise<MemoryStats> => {
+        const result = await mcpRequest(
+          baseUrl,
+          "engram.lcm.stats",
+          params,
+          rpcOpts,
+        );
+        const r = result as Record<string, unknown> | null;
+        return {
+          totalMessages: typeof r?.totalMessages === "number" ? r.totalMessages : 0,
+          totalSummaryNodes: typeof r?.totalSummaryNodes === "number" ? r.totalSummaryNodes : 0,
+          maxDepth: typeof r?.maxDepth === "number" ? r.maxDepth : -1,
+        };
       };
+      if (!qualifiedSessionId) {
+        const sessionIds = [...runSessionIds];
+        if (sessionIds.length === 0) {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: -1 };
+        }
+        const stats = await Promise.all(
+          sessionIds.map((storedSessionId) =>
+            readStats({ sessionId: qualifySessionId(storedSessionId, statsRunPrefix) }),
+          ),
+        );
+        return stats.reduce<MemoryStats>(
+          (combined, next) => ({
+            totalMessages: combined.totalMessages + next.totalMessages,
+            totalSummaryNodes: combined.totalSummaryNodes + next.totalSummaryNodes,
+            maxDepth: Math.max(combined.maxDepth, next.maxDepth),
+          }),
+          { totalMessages: 0, totalSummaryNodes: 0, maxDepth: -1 },
+        );
+      }
+      return readStats({ sessionId: qualifiedSessionId });
     },
 
     async destroy(): Promise<void> {

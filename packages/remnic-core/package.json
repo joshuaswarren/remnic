@@ -1671,6 +1671,16 @@
       "remnic-source": "./src/plugin-entry-resolver.ts",
       "import": "./dist/plugin-entry-resolver.js"
     },
+    "./plugin-id": {
+      "types": "./src/plugin-id.ts",
+      "remnic-source": "./src/plugin-id.ts",
+      "import": "./dist/plugin-id.js"
+    },
+    "./plugin-id.js": {
+      "types": "./src/plugin-id.ts",
+      "remnic-source": "./src/plugin-id.ts",
+      "import": "./dist/plugin-id.js"
+    },
     "./policy-runtime": {
       "types": "./src/policy-runtime.ts",
       "remnic-source": "./src/policy-runtime.ts",

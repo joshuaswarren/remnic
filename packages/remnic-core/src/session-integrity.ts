@@ -598,8 +598,9 @@ async function assertNoSymlinkPath(root: string, target: string): Promise<void> 
   const targetDirReal = await realpath(targetDir);
   const relative = path.relative(rootReal, targetDirReal);
   if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+    const normalizedTarget = path.join(targetDirReal, path.basename(target));
     let current = rootReal;
-    for (const segment of path.relative(rootReal, target).split(path.sep)) {
+    for (const segment of path.relative(rootReal, normalizedTarget).split(path.sep)) {
       if (!segment) continue;
       current = path.join(current, segment);
       try {
