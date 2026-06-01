@@ -35,12 +35,17 @@ export function filterComparableCandidateRuns(
 export function reconcileCompareSelection(
   payload: BenchResultSummaryPayload,
   selection: { baselineId: string; candidateId: string },
+  options: { preserveClearedSelection?: boolean } = {},
 ): { baselineId: string; candidateId: string } {
+  const preserveClearedSelection = options.preserveClearedSelection ?? true;
   const defaults = pickDefaultCompareIds(payload);
   const summariesById = new Map(payload.summaries.map((summary) => [summary.id, summary]));
   let baselineId = selection.baselineId;
   if (baselineId === "") {
-    return { baselineId: "", candidateId: "" };
+    if (preserveClearedSelection) {
+      return { baselineId: "", candidateId: "" };
+    }
+    baselineId = defaults.baselineId ?? "";
   }
   if (!summariesById.has(baselineId)) {
     baselineId = defaults.baselineId ?? "";
@@ -55,7 +60,14 @@ export function reconcileCompareSelection(
   const candidateIds = new Set(candidateOptions.map((summary) => summary.id));
   let candidateId = selection.candidateId;
   if (candidateId === "") {
-    return { baselineId, candidateId: "" };
+    if (preserveClearedSelection) {
+      return { baselineId, candidateId: "" };
+    }
+    if (defaults.candidateId && candidateIds.has(defaults.candidateId)) {
+      candidateId = defaults.candidateId;
+    } else {
+      candidateId = candidateOptions[0]?.id ?? "";
+    }
   }
   if (!candidateIds.has(candidateId)) {
     if (defaults.candidateId && candidateIds.has(defaults.candidateId)) {
@@ -72,16 +84,21 @@ export function Compare({ payload }: { payload: BenchResultSummaryPayload }) {
   const defaults = pickDefaultCompareIds(payload);
   const [baselineId, setBaselineId] = useState<string>(defaults.baselineId ?? "");
   const [candidateId, setCandidateId] = useState<string>(defaults.candidateId ?? "");
+  const [selectionTouched, setSelectionTouched] = useState(false);
 
   useEffect(() => {
-    const next = reconcileCompareSelection(payload, { baselineId, candidateId });
+    const next = reconcileCompareSelection(
+      payload,
+      { baselineId, candidateId },
+      { preserveClearedSelection: selectionTouched },
+    );
     if (next.baselineId !== baselineId) {
       setBaselineId(next.baselineId);
     }
     if (next.candidateId !== candidateId) {
       setCandidateId(next.candidateId);
     }
-  }, [payload, baselineId, candidateId]);
+  }, [payload, baselineId, candidateId, selectionTouched]);
 
   const baselineSummary =
     payload.summaries.find((summary) => summary.id === baselineId) ?? null;
@@ -109,7 +126,10 @@ export function Compare({ payload }: { payload: BenchResultSummaryPayload }) {
       <section className="panel controls-grid">
         <label>
           <span>Baseline run</span>
-          <select value={baselineId} onChange={(event) => setBaselineId(event.target.value)}>
+          <select value={baselineId} onChange={(event) => {
+            setSelectionTouched(true);
+            setBaselineId(event.target.value);
+          }}>
             <option value="">Select baseline</option>
             {payload.summaries.map((summary) => (
               <option key={summary.id} value={summary.id}>
@@ -120,7 +140,10 @@ export function Compare({ payload }: { payload: BenchResultSummaryPayload }) {
         </label>
         <label>
           <span>Candidate run</span>
-          <select value={candidateId} onChange={(event) => setCandidateId(event.target.value)}>
+          <select value={candidateId} onChange={(event) => {
+            setSelectionTouched(true);
+            setCandidateId(event.target.value);
+          }}>
             <option value="">Select candidate</option>
             {candidateOptions.map((summary) => (
               <option key={summary.id} value={summary.id}>
