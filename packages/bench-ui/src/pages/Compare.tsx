@@ -39,7 +39,10 @@ export function reconcileCompareSelection(
   const defaults = pickDefaultCompareIds(payload);
   const summariesById = new Map(payload.summaries.map((summary) => [summary.id, summary]));
   let baselineId = selection.baselineId;
-  if (!baselineId || !summariesById.has(baselineId)) {
+  if (baselineId === "") {
+    return { baselineId: "", candidateId: "" };
+  }
+  if (!summariesById.has(baselineId)) {
     baselineId = defaults.baselineId ?? "";
   }
 
@@ -51,7 +54,10 @@ export function reconcileCompareSelection(
   const candidateOptions = filterComparableCandidateRuns(payload, baselineSummary);
   const candidateIds = new Set(candidateOptions.map((summary) => summary.id));
   let candidateId = selection.candidateId;
-  if (!candidateId || !candidateIds.has(candidateId)) {
+  if (candidateId === "") {
+    return { baselineId, candidateId: "" };
+  }
+  if (!candidateIds.has(candidateId)) {
     if (defaults.candidateId && candidateIds.has(defaults.candidateId)) {
       candidateId = defaults.candidateId;
     } else {

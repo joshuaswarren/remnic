@@ -100,6 +100,43 @@ test("reconcileCompareSelection preserves valid manual selections across payload
   });
 });
 
+test("reconcileCompareSelection preserves explicit cleared selections", async () => {
+  // @ts-ignore This TS test imports a TSX page module in the root test-typecheck baseline.
+  const module = await import("./Compare") as {
+    reconcileCompareSelection(
+      payload: { resultsDir: string; summaries: BenchResultSummary[] },
+      selection: { baselineId: string; candidateId: string },
+    ): { baselineId: string; candidateId: string };
+  };
+  const baseline = summary({ id: "baseline", benchmark: "bench-a", timestamp: "2026-05-21T00:00:00.000Z" });
+  const candidate = summary({ id: "candidate", benchmark: "bench-a", timestamp: "2026-05-22T00:00:00.000Z" });
+  const payload = {
+    resultsDir: "/tmp/results",
+    summaries: [baseline, candidate],
+  };
+
+  assert.deepEqual(
+    module.reconcileCompareSelection(payload, {
+      baselineId: "",
+      candidateId: candidate.id,
+    }),
+    {
+      baselineId: "",
+      candidateId: "",
+    },
+  );
+  assert.deepEqual(
+    module.reconcileCompareSelection(payload, {
+      baselineId: baseline.id,
+      candidateId: "",
+    }),
+    {
+      baselineId: baseline.id,
+      candidateId: "",
+    },
+  );
+});
+
 test("reconcileCompareSelection repairs selections whose runs disappeared", async () => {
   // @ts-ignore This TS test imports a TSX page module in the root test-typecheck baseline.
   const module = await import("./Compare") as {
