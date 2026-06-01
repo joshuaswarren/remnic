@@ -45,10 +45,9 @@ export class FilesystemBackend implements BinaryStorageBackend {
   }
 
   private resolveRemotePath(remotePath: string): string {
-    if (path.isAbsolute(remotePath)) {
-      throw new Error(`FilesystemBackend remotePath must be relative: ${JSON.stringify(remotePath)}`);
-    }
-    const resolved = path.resolve(this.basePath, remotePath);
+    const resolved = path.isAbsolute(remotePath)
+      ? path.resolve(remotePath)
+      : path.resolve(this.basePath, remotePath);
     const relative = path.relative(this.basePath, resolved);
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error(`FilesystemBackend remotePath escapes basePath: ${JSON.stringify(remotePath)}`);
@@ -183,6 +182,9 @@ export class FilesystemBackend implements BinaryStorageBackend {
   }
 
   async upload(localPath: string, remotePath: string): Promise<string> {
+    if (path.isAbsolute(remotePath)) {
+      throw new Error(`FilesystemBackend upload remotePath must be relative: ${JSON.stringify(remotePath)}`);
+    }
     const dest = this.resolveRemotePath(remotePath);
     const realBase = await this.ensureSafeParentDirectory(dest);
     try {
@@ -200,7 +202,7 @@ export class FilesystemBackend implements BinaryStorageBackend {
     if (!this.isInsideBase(realDest, realBase)) {
       throw new Error(`FilesystemBackend remotePath escapes basePath: ${JSON.stringify(remotePath)}`);
     }
-    return dest;
+    return remotePath;
   }
 
   async exists(remotePath: string): Promise<boolean> {

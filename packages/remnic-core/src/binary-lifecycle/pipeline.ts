@@ -95,6 +95,14 @@ function validateBinaryLifecycleConfig(config: BinaryLifecycleConfig): void {
   }
 }
 
+function remotePathForAsset(backend: BinaryStorageBackend, relPath: string): string {
+  const normalized = relPath.split(path.sep).join("/");
+  if (backend.type === "filesystem") {
+    return `.binary-lifecycle/mirrors/${normalized}`;
+  }
+  return normalized;
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline stages
 // ---------------------------------------------------------------------------
@@ -117,7 +125,7 @@ async function stageMirror(
       const contentHash = await hashFile(fullPath);
       const ext = path.extname(relPath);
       const mimeType = guessMimeType(ext);
-      const remotePath = relPath;
+      const remotePath = remotePathForAsset(backend, relPath);
 
       let backendLocation = remotePath;
       if (!dryRun) {
@@ -220,6 +228,31 @@ async function stageRedirect(
     }
 
     if (updates.length === 0) {
+      if (asset.status === "error") {
+        const verifyResult = await countRemainingLocalReferences(memoryDir, asset, assetAbsolute, mdFiles);
+        if (verifyResult.errors.length > 0 || verifyResult.remaining > 0) {
+          if (!dryRun) {
+            asset.status = "error";
+          }
+          for (const msg of verifyResult.errors) {
+            log.error(`[binary-lifecycle] ${msg}`);
+            errors.push(msg);
+          }
+          if (verifyResult.remaining > 0) {
+            const msg = `redirect verification failed for ${asset.originalPath}: ${verifyResult.remaining} local reference(s) remain`;
+            log.warn(`[binary-lifecycle] ${msg}`);
+            errors.push(msg);
+          }
+          continue;
+        }
+
+        if (!dryRun) {
+          asset.status = "redirected";
+          asset.redirectedAt = new Date().toISOString();
+        }
+        redirected++;
+        log.info(`[binary-lifecycle] redirected: ${asset.originalPath}${dryRun ? " [dry-run]" : ""}`);
+      }
       continue;
     }
 
