@@ -692,6 +692,30 @@ test("state store: evicts an unrefreshed stale lock even when the pid is live", 
   assert.equal(fs.existsSync(lockPath), false);
 });
 
+test("state store: stale cleanup does not race another reclaim holder", async (t) => {
+  const memoryDir = makeMemoryDir(t);
+  const lockDir = path.join(memoryDir, "state", "connector-locks");
+  const lockPath = path.join(lockDir, "drive.lock");
+  const reclaimPath = `${lockPath}.reclaim`;
+  fs.mkdirSync(lockDir, { recursive: true });
+  const staleDate = new Date(Date.now() - 11 * 60 * 1000);
+  fs.writeFileSync(
+    lockPath,
+    `${JSON.stringify({
+      pid: process.pid,
+      token: "stale-lock",
+      createdAt: staleDate.toISOString(),
+      refreshedAt: staleDate.toISOString(),
+    })}\n`
+  );
+  fs.utimesSync(lockPath, staleDate, staleDate);
+  fs.writeFileSync(reclaimPath, "other-reclaimer");
+
+  await _unlinkStaleConnectorLockForTest(lockPath);
+
+  assert.equal(JSON.parse(fs.readFileSync(lockPath, "utf8")).token, "stale-lock");
+});
+
 test("state store: release only removes the matching connector lock token", async (t) => {
   const memoryDir = makeMemoryDir(t);
   const lease = await _tryAcquireConnectorLockForTest(memoryDir, "drive");

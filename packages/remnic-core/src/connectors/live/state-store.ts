@@ -347,6 +347,18 @@ async function shouldUnlinkStaleConnectorLock(lockPath: string, stat: import("no
 }
 
 async function unlinkStaleConnectorLock(lockPath: string): Promise<void> {
+  const reclaimHandle = await openConnectorReclaimLock(lockPath);
+  if (!reclaimHandle) return;
+  try {
+    await reclaimHandle.writeFile(`${process.pid}:${new Date().toISOString()}`, "utf8");
+    await unlinkStaleConnectorLockWhileReclaimHeld(lockPath);
+  } finally {
+    await reclaimHandle.close().catch(() => undefined);
+    await fs.unlink(connectorReclaimLockPath(lockPath)).catch(() => undefined);
+  }
+}
+
+async function unlinkStaleConnectorLockWhileReclaimHeld(lockPath: string): Promise<void> {
   let stat: import("node:fs").Stats;
   try {
     stat = await fs.lstat(lockPath);
@@ -364,6 +376,39 @@ async function unlinkStaleConnectorLock(lockPath: string): Promise<void> {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       throw err;
     }
+  }
+}
+
+function connectorReclaimLockPath(lockPath: string): string {
+  return `${lockPath}.reclaim`;
+}
+
+async function openConnectorReclaimLock(lockPath: string): Promise<Awaited<ReturnType<typeof fs.open>> | null> {
+  const reclaimPath = connectorReclaimLockPath(lockPath);
+  try {
+    return await fs.open(reclaimPath, "wx");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+
+  let reclaimStat: import("node:fs").Stats;
+  try {
+    reclaimStat = await fs.lstat(reclaimPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  if (reclaimStat.isSymbolicLink()) {
+    throw new Error(`connector state path component ${reclaimPath} is a symlink; refusing to follow`);
+  }
+  if (Date.now() - reclaimStat.mtimeMs <= CONNECTOR_LOCK_STALE_MS) return null;
+  await fs.unlink(reclaimPath);
+
+  try {
+    return await fs.open(reclaimPath, "wx");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return null;
+    throw err;
   }
 }
 
@@ -399,6 +444,18 @@ async function refreshConnectorLock(lease: ConnectorLockLease): Promise<boolean>
 }
 
 async function releaseConnectorLock(lease: ConnectorLockLease): Promise<void> {
+  const reclaimHandle = await openConnectorReclaimLock(lease.path);
+  if (!reclaimHandle) return;
+  try {
+    await reclaimHandle.writeFile(`${process.pid}:${new Date().toISOString()}`, "utf8");
+    await releaseConnectorLockWhileReclaimHeld(lease);
+  } finally {
+    await reclaimHandle.close().catch(() => undefined);
+    await fs.unlink(connectorReclaimLockPath(lease.path)).catch(() => undefined);
+  }
+}
+
+async function releaseConnectorLockWhileReclaimHeld(lease: ConnectorLockLease): Promise<void> {
   let handle: Awaited<ReturnType<typeof fs.open>>;
   try {
     handle = await fs.open(lease.path, "r");

@@ -231,6 +231,48 @@ test("runtime-backed adapter waits for scoped reset cleanup to settle after abor
   }
 });
 
+test("direct caller-owned adapter waits for full clearAll reset to settle after abort", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-bench-clearall-abort-"));
+  const adapter = await createRemnicAdapter({ memoryDir });
+  const originalClearAll = LcmEngine.prototype.clearAll;
+  const clearStarted = createDeferredForTest();
+  const clearCanFinish = createDeferredForTest();
+
+  LcmEngine.prototype.clearAll = async function patchedClearAll(this: LcmEngine): Promise<void> {
+    clearStarted.resolve();
+    await clearCanFinish.promise;
+    return originalClearAll.call(this);
+  };
+
+  try {
+    const controller = new AbortController();
+    const resetPromise = adapter.reset(undefined, { signal: controller.signal });
+    await Promise.race([
+      clearStarted.promise,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error("timed out waiting for clearAll reset")), 1_000),
+      ),
+    ]);
+
+    controller.abort(new Error("clearAll reset deadline"));
+    let resetSettled = false;
+    void resetPromise.catch(() => {
+      resetSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(resetSettled, false);
+
+    clearCanFinish.resolve();
+    await assert.rejects(resetPromise, /clearAll reset deadline/);
+    assert.equal(resetSettled, true);
+  } finally {
+    LcmEngine.prototype.clearAll = originalClearAll;
+    clearCanFinish.resolve();
+    await adapter.destroy();
+    await rm(memoryDir, { recursive: true, force: true, ...BENCH_TEST_RM_RETRY_OPTIONS });
+  }
+});
+
 test("adapter QMD wrapper resolves relative binaries and isolates QMD env", async () => {
   const fakeRoot = await mkdtemp(path.join(tmpdir(), "remnic-fake-qmd-"));
   const fakeQmdPath = path.join(fakeRoot, "qmd");

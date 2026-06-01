@@ -2392,7 +2392,9 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         if (typeof engine.clearAll !== "function") {
           throw new Error("Remnic benchmark adapter cannot safely reset a caller-owned memory directory.");
         }
-        await withBenchPhaseAbort(engine.clearAll(), control, "reset");
+        await withBenchPhaseAbort(engine.clearAll(), control, "reset", {
+          waitForCompletionOnAbort: true,
+        });
         sessionTurnCounters.clear();
       },
 

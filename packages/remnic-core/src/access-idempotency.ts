@@ -198,7 +198,7 @@ export class AccessIdempotencyStore {
             clearInterval(heartbeat);
           }
           await handle.close().catch(() => undefined);
-          await unlinkLockIfOwner(lockPath, ownerToken);
+          await unlinkLockIfOwner(lockPath, ownerToken, staleLockMs);
         }
       } catch (error) {
         if (!isAlreadyExistsError(error)) throw error;
@@ -256,7 +256,19 @@ async function readLockOwner(lockPath: string): Promise<string | null> {
   }
 }
 
-async function unlinkLockIfOwner(lockPath: string, ownerToken: string): Promise<void> {
+async function unlinkLockIfOwner(lockPath: string, ownerToken: string, staleLockMs: number): Promise<void> {
+  const reclaimHandle = await openStaleReclaimLock(`${lockPath}.reclaim`, staleLockMs);
+  if (!reclaimHandle) return;
+  try {
+    await reclaimHandle.writeFile(`${process.pid}:${Date.now()}`, "utf-8");
+    await unlinkLockIfOwnerWhileReclaimHeld(lockPath, ownerToken);
+  } finally {
+    await reclaimHandle.close().catch(() => undefined);
+    await unlink(`${lockPath}.reclaim`).catch(() => undefined);
+  }
+}
+
+async function unlinkLockIfOwnerWhileReclaimHeld(lockPath: string, ownerToken: string): Promise<void> {
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(lockPath, "r");
