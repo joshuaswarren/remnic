@@ -105,7 +105,7 @@ test("HTTP memory browse rejects malformed pagination and sort query values", as
   }
 });
 
-test("HTTP admin console routes require bearer authentication", async () => {
+test("HTTP admin console assets are public but API routes require bearer authentication", async () => {
   const service = {} as EngramAccessService;
   const server = new EngramAccessHttpServer({
     service,
@@ -115,11 +115,19 @@ test("HTTP admin console routes require bearer authentication", async () => {
 
   const status = await server.start();
   try {
-    const unauthenticated = await fetch(`http://127.0.0.1:${status.port}/remnic/ui/`);
-    const body = await unauthenticated.json() as { code?: string };
-    assert.equal(unauthenticated.status, 401);
+    const shell = await fetch(`http://127.0.0.1:${status.port}/remnic/ui/`);
+    assert.equal(shell.status, 200);
+    assert.match(await shell.text(), /Remnic Admin Console/);
+
+    const app = await fetch(`http://127.0.0.1:${status.port}/remnic/ui/app.js`);
+    assert.equal(app.status, 200);
+    assert.match(app.headers.get("content-type") ?? "", /javascript/);
+
+    const api = await fetch(`http://127.0.0.1:${status.port}/engram/v1/health`);
+    const body = await api.json() as { code?: string };
+    assert.equal(api.status, 401);
     assert.equal(body.code, "unauthorized");
-    assert.equal(unauthenticated.headers.get("www-authenticate"), "Bearer");
+    assert.equal(api.headers.get("www-authenticate"), "Bearer");
   } finally {
     await server.stop();
   }
