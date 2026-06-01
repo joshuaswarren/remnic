@@ -19,16 +19,16 @@ test("dashboard server entrypoint accepts valid port arguments", () => {
   assert.equal(parseDashboardPort(undefined), 4319);
 });
 
-test("dashboard server entrypoint falls back for flags without values", () => {
-  assert.equal(
-    readDashboardArg(["node", "dashboard/server.js", "--port", "--host", "0.0.0.0"], "--port", "4319"),
-    "4319",
+test("dashboard server entrypoint rejects flags without values before applying defaults", () => {
+  assert.throws(
+    () => readDashboardArg(["node", "dashboard/server.js", "--port", "--host", "0.0.0.0"], "--port", "4319"),
+    /missing --port/,
   );
-  assert.equal(
-    readDashboardArg(["node", "dashboard/server.js", "--host"], "--host", "127.0.0.1"),
-    "127.0.0.1",
+  assert.throws(
+    () => readDashboardArg(["node", "dashboard/server.js", "--host"], "--host", "127.0.0.1"),
+    /missing --host/,
   );
-  assert.equal(readDashboardArg(["node", "dashboard/server.js", "--token"], "--token"), undefined);
+  assert.throws(() => readDashboardArg(["node", "dashboard/server.js", "--token"], "--token"), /missing --token/);
 });
 
 test("dashboard server entrypoint reads provided flag values and defaults absent flags", () => {
