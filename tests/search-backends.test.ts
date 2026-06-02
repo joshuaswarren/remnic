@@ -1112,6 +1112,59 @@ describe("embedded backend provider identity", () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("OramaBackend keeps no-provider collections vector-ready for later embeddings", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-late-embed-"));
+    try {
+      const dbPath = path.join(tempDir, "db");
+      await mkdir(path.join(tempDir, "facts"), { recursive: true });
+      await writeFile(
+        path.join(tempDir, "facts", "handoff.md"),
+        "The handoff memory should become vector searchable once embeddings start.",
+        "utf-8",
+      );
+
+      const noProviderBackend = new OramaBackend({
+        dbPath,
+        collection: "memories",
+        embedHelper: fakeEmbedHelper(),
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+
+      assert.equal(await noProviderBackend.probe(), true);
+      await noProviderBackend.update();
+
+      const vectorBackend = new OramaBackend({
+        dbPath,
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedBatchWithProvider: async () => ({
+            vectors: [[1, 0]],
+            providerIdentity: "host:openclaw-memory",
+          }),
+          embedWithProvider: async () => ({
+            vector: [1, 0],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+
+      assert.equal(await vectorBackend.probe(), true);
+      await vectorBackend.embed();
+
+      const results = await vectorBackend.vectorSearch("handoff", "memories", 5);
+      assert.equal(results[0]?.docid, "handoff");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 /** Minimal fake PluginConfig for factory routing tests. */

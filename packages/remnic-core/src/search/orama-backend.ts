@@ -344,7 +344,7 @@ export class OramaBackend implements SearchBackend {
       // No existing DB — create fresh
     }
 
-    this.db = await this.createDb({ includeVector: this.embedHelper.isAvailable() });
+    this.db = await this.createDb();
     return this.db;
   }
 
@@ -366,10 +366,10 @@ export class OramaBackend implements SearchBackend {
       // No existing DB — create fresh
     }
 
-    return await this.createDb({ includeVector: this.embedHelper.isAvailable() });
+    return await this.createDb();
   }
 
-  private async createDb(options: { includeVector: boolean }): Promise<any> {
+  private async createDb(): Promise<any> {
     const { create } = this.oramaModule;
     const schema: Record<string, string> = {
       id: "string",
@@ -377,10 +377,8 @@ export class OramaBackend implements SearchBackend {
       content: "string",
       snippet: "string",
       vectorProvider: "string",
+      vector: `vector[${this.embeddingDimension}]`,
     };
-    if (options.includeVector) {
-      schema.vector = `vector[${this.embeddingDimension}]`;
-    }
     return await create({ schema });
   }
 
@@ -388,9 +386,7 @@ export class OramaBackend implements SearchBackend {
     const { search: oramaSearch, count, insert } = this.oramaModule;
     const existingCount = await count(db);
     if (existingCount === 0) {
-      const migrated = await this.createDb({
-        includeVector: this.embedHelper.isAvailable(),
-      });
+      const migrated = await this.createDb();
       await this.persistDbForCollection(migrated, collection);
       return migrated;
     }
@@ -402,10 +398,7 @@ export class OramaBackend implements SearchBackend {
     );
     if (!needsMigration) return db;
 
-    const includeVector =
-      this.embedHelper.isAvailable() ||
-      hits.some((hit: any) => this.normalizeStoredVector(hit.document?.vector) !== null);
-    const migrated = await this.createDb({ includeVector });
+    const migrated = await this.createDb();
     for (const hit of hits) {
       const doc = hit.document ?? {};
       const vector = this.normalizeStoredVector(doc.vector);
@@ -422,7 +415,7 @@ export class OramaBackend implements SearchBackend {
         vectorProvider:
           typeof doc.vectorProvider === "string" ? doc.vectorProvider : "",
       };
-      if (includeVector && vector) {
+      if (vector) {
         payload.vector = vector;
       }
       try {

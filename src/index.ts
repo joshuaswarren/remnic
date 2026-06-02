@@ -396,6 +396,7 @@ async function loadOpenClawSecretRefResolver(): Promise<ResolveSecretRefFn | nul
 
 type ServiceKeys = {
   REGISTERED_GUARD: string;
+  HOST_EMBEDDING_UNREGISTER: string;
   /** Tracks which api objects have already had hooks bound to prevent duplicate handlers. */
   HOOK_APIS: string;
   ACCESS_SERVICE: string;
@@ -422,6 +423,7 @@ function buildServiceKeys(serviceId: string): ServiceKeys {
   const suffix = `::${serviceId}`;
   return {
     REGISTERED_GUARD: `__openclawEngramRegistered${suffix}`,
+    HOST_EMBEDDING_UNREGISTER: `__openclawEngramHostEmbeddingUnregister${suffix}`,
     HOOK_APIS: `__openclawEngramHookApis${suffix}`,
     ACCESS_SERVICE: `__openclawEngramAccessService${suffix}`,
     ACCESS_HTTP_SERVER: `__openclawEngramAccessHttpServer${suffix}`,
@@ -1137,9 +1139,17 @@ const pluginDefinition = {
     const orchestrator = existing?.recall ? existing : new Orchestrator(cfg);
     const isFirstRegistration = !(globalThis as any)[keys.REGISTERED_GUARD];
     (globalThis as any)[keys.REGISTERED_GUARD] = true;
-    const unregisterOpenClawHostEmbeddingProvider = isFirstRegistration
-      ? registerOpenClawHostEmbeddingProvider({ api, cfg, serviceId })
-      : null;
+    if (!(globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER]) {
+      const unregisterHostEmbedding = registerOpenClawHostEmbeddingProvider({
+        api,
+        cfg,
+        serviceId,
+      });
+      if (unregisterHostEmbedding) {
+        (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER] =
+          unregisterHostEmbedding;
+      }
+    }
 
     // Per-api hook deduplication: if the same api object calls register() twice
     // (e.g., during reload edge cases), skip re-binding hooks to avoid double-
@@ -5143,7 +5153,11 @@ const pluginDefinition = {
           stopHeartbeatWatcher = null;
           removeDreamingObserver?.();
           removeDreamingObserver = null;
+          const unregisterOpenClawHostEmbeddingProvider = (globalThis as any)[
+            keys.HOST_EMBEDDING_UNREGISTER
+          ] as (() => void) | undefined;
           unregisterOpenClawHostEmbeddingProvider?.();
+          delete (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER];
           delete (globalThis as any)[keys.ACCESS_HTTP_SERVER];
           delete (globalThis as any)[keys.ACCESS_HTTP_AUTH_STATE];
           delete (globalThis as any)[keys.ACCESS_SERVICE];
