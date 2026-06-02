@@ -573,6 +573,54 @@ test("scenario: message_received dedupes agent_end transcript when metadata capt
   );
 });
 
+test("scenario: message_received only dedupes after transcript append succeeds", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      type TranscriptEntry = Parameters<typeof orchestrator.transcript.append>[0];
+      const appendTranscript = orchestrator.transcript.append.bind(orchestrator.transcript);
+      let failNextAppend = true;
+      orchestrator.transcript.append = async (entry: TranscriptEntry) => {
+        if (failNextAppend) {
+          failNextAppend = false;
+          throw new Error("transient transcript failure");
+        }
+        await appendTranscript(entry);
+      };
+
+      await messageReceived(
+        {
+          content: "Remember the transient inbound append fallback.",
+          messageId: "msg-transient-fail-1",
+        },
+        { sessionKey: "transient-append-session" },
+      );
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            {
+              role: "user",
+              content: "Remember the transient inbound append fallback.",
+              messageId: "msg-transient-fail-1",
+            },
+          ],
+        },
+        { sessionKey: "transient-append-session" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.match(transcriptText, /transient inbound append fallback/);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: agent_end does not dedupe assistant turns with inbound user message ids", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {

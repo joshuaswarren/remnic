@@ -3358,7 +3358,6 @@ const pluginDefinition = {
           const inboundMessageId = getOpenClawMessageId(event, event, ctx);
           if (inboundMessageId) {
             if (observedInboundMessageIds.has(inboundMessageId)) return;
-            rememberObservedInboundMessageId(inboundMessageId);
           }
           const metadata = buildOpenClawMessageMetadata(event, event, ctx, cfg);
           const sessionKey =
@@ -3390,6 +3389,9 @@ const pluginDefinition = {
               turnId: crypto.randomUUID(),
               ...(metadata ? { metadata } : {}),
             });
+            if (inboundMessageId) {
+              rememberObservedInboundMessageId(inboundMessageId);
+            }
           } catch (err) {
             log.debug(`message_received transcript append failed: ${err}`);
           }
