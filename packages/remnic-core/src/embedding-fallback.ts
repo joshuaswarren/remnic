@@ -329,10 +329,15 @@ export class EmbeddingFallback {
     return run;
   }
 
-  private async resolveProvider(): Promise<ProviderConfig | null> {
+  private async resolveProvider(
+    options: { includeHost?: boolean } = {},
+  ): Promise<ProviderConfig | null> {
     if (!this.config.embeddingFallbackEnabled) return null;
 
-    if (this.config.hostEmbeddingProviderEnabled !== false) {
+    if (
+      options.includeHost !== false &&
+      this.config.hostEmbeddingProviderEnabled !== false
+    ) {
       const hostProvider = getHostEmbeddingProvider(this.config.memoryDir);
       if (hostProvider) {
         return {
@@ -402,7 +407,18 @@ export class EmbeddingFallback {
         ? resolveEmbeddingIndexTimeoutMs()
         : resolveEmbeddingLookupTimeoutMs();
     if (provider.type === "host") {
-      return this.embedWithHostProvider(input, provider, mode, timeoutMs);
+      const vector = await this.embedWithHostProvider(input, provider, mode, timeoutMs);
+      if (vector) return vector;
+      const fallbackProvider = await this.resolveProvider({ includeHost: false });
+      if (!fallbackProvider) {
+        if (mode === "lookup") {
+          throw new EmbeddingTimeoutError(
+            `host embedding provider unavailable (${provider.hostProvider?.id ?? provider.model})`,
+          );
+        }
+        return null;
+      }
+      return this.embed(input, fallbackProvider, options);
     }
     if (!provider.endpoint || !provider.headers) return null;
     try {
@@ -514,15 +530,7 @@ export class EmbeddingFallback {
       });
       return normalizeEmbeddingVector(vector);
     } catch (err) {
-      if (mode === "lookup") {
-        log.warn(
-          `host embedding provider unavailable on lookup path (${hostProvider.id}): ${err}`,
-        );
-        throw new EmbeddingTimeoutError(
-          `host embedding provider unavailable (${hostProvider.id}): ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-      log.debug(`host embedding provider index error: ${err}`);
+      log.debug(`host embedding provider error: ${hostProvider.id}: ${err}`);
       return null;
     }
   }

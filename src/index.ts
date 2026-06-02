@@ -3326,11 +3326,12 @@ const pluginDefinition = {
           const content =
             typeof event.content === "string" ? event.content.trim() : "";
           if (content.length === 0) return;
-          const metadata = buildOpenClawMessageMetadata(event, event, ctx, cfg);
-          if (metadata?.messageId) {
-            if (observedInboundMessageIds.has(metadata.messageId)) return;
-            observedInboundMessageIds.add(metadata.messageId);
+          const inboundMessageId = getOpenClawMessageId(event, event, ctx);
+          if (inboundMessageId) {
+            if (observedInboundMessageIds.has(inboundMessageId)) return;
+            observedInboundMessageIds.add(inboundMessageId);
           }
+          const metadata = buildOpenClawMessageMetadata(event, event, ctx, cfg);
           const sessionKey =
             normalizeOptionalString(ctx.sessionKey) ??
             normalizeOptionalString(event.sessionKey) ??
@@ -3492,11 +3493,11 @@ const pluginDefinition = {
               ctx,
               cfg,
             );
+            const messageId = getOpenClawMessageId(msg, event, ctx);
             const transcriptAlreadyCaptured =
-              !!messageMetadata?.messageId &&
-              observedInboundMessageIds.has(messageMetadata.messageId);
-            if (messageMetadata?.messageId) {
-              observedInboundMessageIds.add(messageMetadata.messageId);
+              !!messageId && observedInboundMessageIds.has(messageId);
+            if (messageId) {
+              observedInboundMessageIds.add(messageId);
             }
 
             for (const note of explicitNotes) {
@@ -5089,10 +5090,7 @@ function buildOpenClawMessageMetadata(
 ): OpenClawTranscriptMetadata | null {
   if (!cfg.openclawReplyMetadataCaptureEnabled) return null;
   const metadata: OpenClawTranscriptMetadata = {};
-  const messageId =
-    normalizeOptionalString(message.messageId) ??
-    normalizeOptionalString(event.messageId) ??
-    normalizeOptionalString(ctx.messageId);
+  const messageId = getOpenClawMessageId(message, event, ctx);
   if (messageId) metadata.messageId = truncateMetadataValue(messageId, 512);
 
   const threadId =
@@ -5120,6 +5118,18 @@ function buildOpenClawMessageMetadata(
   if (replyToSender) metadata.replyToSender = truncateMetadataValue(replyToSender, 256);
 
   return Object.keys(metadata).length > 0 ? metadata : null;
+}
+
+function getOpenClawMessageId(
+  message: Record<string, unknown>,
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+): string | undefined {
+  const messageId =
+    normalizeOptionalString(message.messageId) ??
+    normalizeOptionalString(event.messageId) ??
+    normalizeOptionalString(ctx.messageId);
+  return messageId ? truncateMetadataValue(messageId, 512) : undefined;
 }
 
 function withReplyExtractionHint(

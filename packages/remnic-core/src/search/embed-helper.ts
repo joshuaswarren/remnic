@@ -48,7 +48,10 @@ export class EmbedHelper {
   async embed(text: string, options: { signal?: AbortSignal } = {}): Promise<number[] | null> {
     const provider = this.getProvider();
     if (!provider) return null;
-    return this.callEmbed(text, provider, options.signal);
+    const result = await this.callEmbed(text, provider, options.signal);
+    if (result || provider.type !== "host") return result;
+    const fallbackProvider = this.resolveProvider({ includeHost: false });
+    return fallbackProvider ? this.callEmbed(text, fallbackProvider, options.signal) : null;
   }
 
   /**
@@ -74,6 +77,21 @@ export class EmbedHelper {
       for (let j = 0; j < batchResults.length; j++) {
         results[i + j] = batchResults[j];
       }
+      if (provider.type === "host" && batchResults.some((result) => result === null)) {
+        const fallbackProvider = this.resolveProvider({ includeHost: false });
+        if (fallbackProvider) {
+          const fallbackResults = await Promise.all(
+            batch.map((text, index) =>
+              batchResults[index] === null
+                ? this.callEmbed(text, fallbackProvider, options.signal)
+                : Promise.resolve(batchResults[index]),
+            ),
+          );
+          for (let j = 0; j < fallbackResults.length; j++) {
+            results[i + j] = fallbackResults[j];
+          }
+        }
+      }
     }
     return results;
   }
@@ -85,10 +103,13 @@ export class EmbedHelper {
     return this.provider;
   }
 
-  private resolveProvider(): ProviderConfig | null {
+  private resolveProvider(options: { includeHost?: boolean } = {}): ProviderConfig | null {
     if (!this.config.embeddingFallbackEnabled) return null;
 
-    if (this.config.hostEmbeddingProviderEnabled !== false) {
+    if (
+      options.includeHost !== false &&
+      this.config.hostEmbeddingProviderEnabled !== false
+    ) {
       const hostProvider = getHostEmbeddingProvider(this.config.memoryDir);
       if (hostProvider) {
         return {

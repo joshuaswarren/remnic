@@ -369,6 +369,51 @@ test("scenario: message_received captures bounded thread and reply metadata in t
   );
 });
 
+test("scenario: message_received dedupes agent_end transcript when metadata capture is disabled", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      const content = "Remember the launch dedupe preference.";
+
+      await messageReceived(
+        {
+          content,
+          messageId: "msg-dedupe-1",
+        },
+        { sessionKey: "dedupe-session" },
+      );
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            {
+              role: "user",
+              content,
+              messageId: "msg-dedupe-1",
+            },
+            { role: "assistant", content: "I will remember that." },
+          ],
+        },
+        { sessionKey: "dedupe-session" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal(
+        (transcriptText.match(/Remember the launch dedupe preference/g) ?? []).length,
+        1,
+      );
+      assert.doesNotMatch(transcriptText, /"messageId":"msg-dedupe-1"/);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+        openclawReplyMetadataCaptureEnabled: false,
+      },
+    },
+  );
+});
+
 test("scenario: reply extraction hints are opt-in and bounded", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {

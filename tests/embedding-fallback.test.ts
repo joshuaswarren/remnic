@@ -96,6 +96,40 @@ test("EmbeddingFallback prefers scoped host embedding provider when registered",
   }
 });
 
+test("EmbeddingFallback falls back when scoped host provider fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-fallback-"));
+  const originalFetch = globalThis.fetch;
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    async embed() {
+      throw new Error("host setup failed");
+    },
+  });
+  try {
+    let fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
+    const provider = await (fallback as any).resolveProvider();
+    assert.equal(provider.type, "host");
+    const vector = await (fallback as any).embed("launch query", provider, {
+      mode: "lookup",
+    });
+    assert.deepEqual(vector, [0.1, 0.2]);
+    assert.equal(fetchCalls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+  }
+});
+
 test("EmbeddingFallback returns null when disabled", async () => {
   const fallback = new EmbeddingFallback(stubConfig({
     embeddingFallbackEnabled: false,

@@ -409,6 +409,46 @@ describe("embed helper", () => {
     const result = await helper.embed("test");
     assert.equal(result, null);
   });
+
+  it("falls back when a scoped host provider cannot embed", async () => {
+    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const {
+      clearHostEmbeddingProvidersForTest,
+      registerHostEmbeddingProvider,
+    } = await import("../src/host-embedding-provider.js");
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-host-"));
+    const originalFetch = globalThis.fetch;
+    const unregister = registerHostEmbeddingProvider(memoryDir, {
+      id: "host-test",
+      async embed() {
+        return null as unknown as number[];
+      },
+    });
+    try {
+      let fetchCalls = 0;
+      globalThis.fetch = (async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ data: [{ embedding: [0.3, 0.4] }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as typeof fetch;
+      const helper = new EmbedHelper(fakeConfig({
+        embeddingFallbackEnabled: true,
+        embeddingFallbackProvider: "openai",
+        openaiApiKey: "test-key",
+        memoryDir,
+      }) as any);
+
+      const result = await helper.embed("test");
+      assert.deepEqual(result, [0.3, 0.4]);
+      assert.equal(fetchCalls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      unregister();
+      clearHostEmbeddingProvidersForTest();
+    }
+  });
 });
 
 /** Minimal fake PluginConfig for factory routing tests. */
