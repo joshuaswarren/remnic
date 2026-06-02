@@ -56,6 +56,38 @@ test("OpenClaw generic embedding bridge uses embedQuery for query inputs", async
   assert.deepEqual(calls, ["embedQuery"]);
 });
 
+test("OpenClaw memory embedding bridge uses embed for document inputs", async () => {
+  const { embedWithOpenClawProvider } = await import("../src/index.js");
+  const calls: string[] = [];
+  const provider = {
+    async embed(text: string, options?: { inputType?: string }) {
+      calls.push(`embed:${text}:${options?.inputType ?? ""}`);
+      return [0.4, 0.6];
+    },
+  };
+
+  const vector = await embedWithOpenClawProvider("memory", provider, "index launch", {
+    inputType: "document",
+  });
+
+  assert.deepEqual(vector, [0.4, 0.6]);
+  assert.deepEqual(calls, ["embed:index launch:document"]);
+});
+
+test("OpenClaw memory embedding SDK selector prefers current subpath with legacy fallback", async () => {
+  const { selectOpenClawMemoryEmbeddingSdk } = await import("../src/index.js");
+  const current = {
+    listMemoryEmbeddingProviders: () => [{ id: "current" }],
+  };
+  const legacy = {
+    listMemoryEmbeddingProviders: () => [{ id: "legacy" }],
+  };
+
+  assert.equal(selectOpenClawMemoryEmbeddingSdk(current, legacy), current);
+  assert.equal(selectOpenClawMemoryEmbeddingSdk(null, legacy), legacy);
+  assert.equal(selectOpenClawMemoryEmbeddingSdk(null, null), null);
+});
+
 async function withScenarioRegistration(
   fn: (context: ScenarioContext) => Promise<void> | void,
   options: Parameters<typeof captureOpenClawRegistrationApi>[0] = {},

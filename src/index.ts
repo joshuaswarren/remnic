@@ -878,9 +878,7 @@ function selectOpenClawEmbeddingAdapter(
   api: OpenClawPluginApi,
   requestedId?: string,
 ): { kind: OpenClawEmbeddingAdapterKind; adapter: OpenClawEmbeddingAdapter } | null {
-  const memorySdk = requireOpenClawSdkSubpath<{
-    listMemoryEmbeddingProviders?: (cfg?: unknown) => unknown[];
-  }>("openclaw/plugin-sdk/memory-core-host-embedding-registry");
+  const memorySdk = loadOpenClawMemoryEmbeddingSdk();
   const memoryAdapters = memorySdk?.listMemoryEmbeddingProviders?.(api.config) ?? [];
   const selectedMemory = selectAdapter(memoryAdapters, requestedId);
   if (selectedMemory) {
@@ -897,6 +895,26 @@ function selectOpenClawEmbeddingAdapter(
   }
 
   return null;
+}
+
+export function loadOpenClawMemoryEmbeddingSdk(): {
+  listMemoryEmbeddingProviders?: (cfg?: unknown) => unknown[];
+} | null {
+  return selectOpenClawMemoryEmbeddingSdk(
+    requireOpenClawSdkSubpath<{
+      listMemoryEmbeddingProviders?: (cfg?: unknown) => unknown[];
+    }>("openclaw/plugin-sdk/memory-core-host-engine-embeddings"),
+    requireOpenClawSdkSubpath<{
+      listMemoryEmbeddingProviders?: (cfg?: unknown) => unknown[];
+    }>("openclaw/plugin-sdk/memory-core-host-embedding-registry"),
+  );
+}
+
+export function selectOpenClawMemoryEmbeddingSdk(
+  currentSdk: { listMemoryEmbeddingProviders?: (cfg?: unknown) => unknown[] } | null,
+  legacySdk: { listMemoryEmbeddingProviders?: (cfg?: unknown) => unknown[] } | null,
+): { listMemoryEmbeddingProviders?: (cfg?: unknown) => unknown[] } | null {
+  return currentSdk ?? legacySdk;
 }
 
 function selectAdapter(
@@ -921,7 +939,7 @@ function isOpenClawEmbeddingAdapter(value: unknown): value is OpenClawEmbeddingA
 }
 
 export async function embedWithOpenClawProvider(
-  kind: OpenClawEmbeddingAdapterKind,
+  _kind: OpenClawEmbeddingAdapterKind,
   provider: unknown,
   text: string,
   options?: { signal?: AbortSignal; inputType?: string },
@@ -933,7 +951,7 @@ export async function embedWithOpenClawProvider(
       await record.embedQuery.call(provider, text, { signal: options.signal }),
     );
   }
-  if (kind === "generic" && typeof record.embed === "function") {
+  if (typeof record.embed === "function") {
     return normalizeHostEmbeddingVector(
       await record.embed.call(provider, text, {
         signal: options?.signal,

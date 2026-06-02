@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { EmbeddingFallback } from "../src/embedding-fallback.js";
+import {
+  EmbeddingFallback,
+  EmbeddingProviderUnavailableError,
+  EmbeddingTimeoutError,
+} from "../src/embedding-fallback.js";
 import {
   clearHostEmbeddingProvidersForTest,
   registerHostEmbeddingProvider,
@@ -224,6 +228,41 @@ test("EmbeddingFallback does not replace an existing host index during transient
     assert.equal(parsed.entries["mem-openai"], undefined);
   } finally {
     globalThis.fetch = originalFetch;
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+  }
+});
+
+test("EmbeddingFallback classifies host provider unavailable without mislabeling it as timeout", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-unavailable-"));
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    model: "host-model",
+    async embed() {
+      return null;
+    },
+  });
+  try {
+    const fallback = new EmbeddingFallback(stubConfig({
+      memoryDir,
+      openaiApiKey: undefined,
+      embeddingFallbackProvider: "openai",
+      localLlmEnabled: false,
+    }));
+
+    const failOpen = await fallback.search("launch", 5);
+    assert.deepEqual(failOpen, []);
+
+    await assert.rejects(
+      () => fallback.search("launch", 5, { throwOnTimeout: true }),
+      (err) => {
+        assert.ok(err instanceof EmbeddingProviderUnavailableError);
+        assert.ok(!(err instanceof EmbeddingTimeoutError));
+        assert.match(err.message, /host embedding provider unavailable/);
+        return true;
+      },
+    );
+  } finally {
     unregister();
     clearHostEmbeddingProvidersForTest();
   }

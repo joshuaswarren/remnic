@@ -79,6 +79,20 @@ export class EmbeddingTimeoutError extends Error {
   }
 }
 
+export class EmbeddingProviderUnavailableError extends Error {
+  override readonly name = "EmbeddingProviderUnavailableError" as const;
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+function isLookupBackendUnavailableError(err: unknown): boolean {
+  return (
+    err instanceof EmbeddingTimeoutError ||
+    err instanceof EmbeddingProviderUnavailableError
+  );
+}
+
 /**
  * Maximum time to wait for an embedding HTTP request on the LOOKUP/query
  * path before giving up.
@@ -250,13 +264,13 @@ export class EmbeddingFallback {
         mode: "lookup",
       });
     } catch (err) {
-      if (err instanceof EmbeddingTimeoutError) {
+      if (isLookupBackendUnavailableError(err)) {
         if (options.throwOnTimeout) {
           throw err;
         }
         // Fail-open: recall-path callers get an empty result rather than an
         // unhandled rejection that would abort recall entirely.
-        log.debug("embedding fallback search: timeout on lookup, returning [] (throwOnTimeout=false)");
+        log.debug("embedding fallback search: backend unavailable on lookup, returning [] (throwOnTimeout=false)");
         return [];
       }
       throw err;
@@ -445,7 +459,7 @@ export class EmbeddingFallback {
       const fallbackProvider = await this.resolveProvider({ includeHost: false });
       if (!fallbackProvider) {
         if (mode === "lookup") {
-          throw new EmbeddingTimeoutError(
+          throw new EmbeddingProviderUnavailableError(
             `host embedding provider unavailable (${provider.hostProvider?.id ?? provider.model})`,
           );
         }
@@ -494,7 +508,7 @@ export class EmbeddingFallback {
       // Round 11 (Finding Ur_J): the !res.ok branch above throws
       // EmbeddingTimeoutError directly. Re-throw it here so the catch does
       // not swallow our own intentional signal back into a null return.
-      if (err instanceof EmbeddingTimeoutError) {
+      if (isLookupBackendUnavailableError(err)) {
         throw err;
       }
       // AbortSignal.timeout throws a DOMException with name "TimeoutError";
