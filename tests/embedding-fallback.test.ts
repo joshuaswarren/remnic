@@ -320,6 +320,7 @@ test("EmbeddingFallback classifies host provider unavailable without mislabeling
 test("normalizeHostEmbeddingVector preserves vector dimensions", async () => {
   const { normalizeHostEmbeddingVector } = await import("../src/host-embedding-provider.js");
   assert.deepEqual(normalizeHostEmbeddingVector([1, "bad", 3]), [1, 0, 3]);
+  assert.deepEqual(normalizeHostEmbeddingVector(new Float32Array([0.25, 0.5])), [0.25, 0.5]);
 });
 
 test("EmbeddingFallback returns null when disabled", async () => {

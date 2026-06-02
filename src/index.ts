@@ -3545,8 +3545,10 @@ const pluginDefinition = {
               : messageMetadata;
             const messageId = getOpenClawMessageId(msg, event, ctx);
             const transcriptAlreadyCaptured =
-              !!messageId && observedInboundMessageIds.has(messageId);
-            if (messageId) {
+              role === "user" &&
+              !!messageId &&
+              observedInboundMessageIds.has(messageId);
+            if (role === "user" && messageId) {
               rememberObservedInboundMessageId(messageId);
             }
 

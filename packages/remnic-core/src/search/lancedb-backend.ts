@@ -27,6 +27,10 @@ export class LanceDbBackend implements SearchBackend {
   private available = false;
   private db: any = null;
   private lanceModule: any = null;
+  private readonly vectorProviderCompatibility = new WeakMap<
+    object,
+    { providerIdentity: EmbedProviderIdentity; compatible: boolean }
+  >();
 
   constructor(opts: LanceDbBackendOptions) {
     this.dbPath = opts.dbPath;
@@ -188,6 +192,11 @@ export class LanceDbBackend implements SearchBackend {
     try {
       if (isSearchAborted(execution)) return;
       await table.add(rows, { mode: "overwrite" });
+      this.rememberVectorProviderCompatibility(
+        table,
+        embeddingProviderIdentity,
+        rows.length > 0 && rows.every((row) => row.vectorProvider === embeddingProviderIdentity),
+      );
       if (isSearchAborted(execution)) return;
       // Create FTS index on content column
       try {
@@ -225,22 +234,30 @@ export class LanceDbBackend implements SearchBackend {
         return arr.length === 0 || arr.every((v: number) => v === 0);
       });
 
-      if (needsEmbed.length === 0) return;
+      if (needsEmbed.length === 0) {
+        this.rememberVectorProviderCompatibility(table, embeddingProviderIdentity, true);
+        return;
+      }
 
       const texts = needsEmbed.map((row: any) => row.content as string);
       const embedResult = await this.embedHelper.embedBatchWithProvider(texts);
       if (!embedResult) return;
       const { vectors, providerIdentity } = embedResult;
 
+      let allEmbedded = true;
       for (let i = 0; i < needsEmbed.length; i++) {
         const vec = vectors[i];
-        if (!vec) continue;
+        if (!vec) {
+          allEmbedded = false;
+          continue;
+        }
         const docid = needsEmbed[i].docid;
         await table.update({
           where: `docid = '${docid.replace(/'/g, "''")}'`,
           values: { vector: vec, vectorProvider: providerIdentity },
         });
       }
+      this.rememberVectorProviderCompatibility(table, providerIdentity, allEmbedded);
     } catch (err) {
       log.debug(`LanceDbBackend embed failed: ${err}`);
     }
@@ -419,22 +436,32 @@ export class LanceDbBackend implements SearchBackend {
     execution?: SearchExecutionOptions,
   ): Promise<boolean> {
     try {
-      const rows = await table.query().select(["vector", "vectorProvider"]).toArray();
-      let hasMatchingVector = false;
+      const cached = this.vectorProviderCompatibility.get(table);
+      if (cached?.providerIdentity === providerIdentity) return cached.compatible;
+      const rows = await table.query().select(["vectorProvider"]).toArray();
+      let compatible = rows.length > 0;
       for (const row of rows ?? []) {
         throwIfSearchAborted(execution, "LanceDbBackend vector provider check aborted");
-        const vector = row.vector;
-        if (!vector || typeof vector !== "object") continue;
-        const arr = Array.from(vector as ArrayLike<number>);
-        if (arr.length === 0 || arr.every((value) => Number(value) === 0)) continue;
-        if (row.vectorProvider !== providerIdentity) return false;
-        hasMatchingVector = true;
+        if (row.vectorProvider !== providerIdentity) {
+          compatible = false;
+          break;
+        }
       }
-      return hasMatchingVector;
+      this.vectorProviderCompatibility.set(table, { providerIdentity, compatible });
+      return compatible;
     } catch (err) {
       if (isSearchAborted(execution)) throw err;
       log.debug(`LanceDbBackend vector provider check failed: ${err}`);
       return false;
     }
+  }
+
+  private rememberVectorProviderCompatibility(
+    table: unknown,
+    providerIdentity: EmbedProviderIdentity | null,
+    compatible: boolean,
+  ): void {
+    if (!providerIdentity || !table || typeof table !== "object") return;
+    this.vectorProviderCompatibility.set(table, { providerIdentity, compatible });
   }
 }

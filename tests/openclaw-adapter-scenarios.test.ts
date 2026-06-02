@@ -573,6 +573,40 @@ test("scenario: message_received dedupes agent_end transcript when metadata capt
   );
 });
 
+test("scenario: agent_end does not dedupe assistant turns with inbound user message ids", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const agentEnd = registeredHook(capture, "agent_end");
+      await agentEnd(
+        {
+          success: true,
+          messageId: "inbound-user-msg",
+          messages: [
+            {
+              role: "user",
+              content: "Remember the inbound user id transcript regression.",
+            },
+            {
+              role: "assistant",
+              content: "I will preserve the assistant response in transcripts.",
+            },
+          ],
+        },
+        { sessionKey: "agent-end-inbound-id-session" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.match(transcriptText, /inbound user id transcript regression/);
+      assert.match(transcriptText, /preserve the assistant response/);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: inbound message dedupe keeps a bounded recent window", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {

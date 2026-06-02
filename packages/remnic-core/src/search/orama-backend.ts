@@ -54,6 +54,10 @@ export class OramaBackend implements SearchBackend {
   private db: any = null;
   private oramaModule: any = null;
   private persistModule: any = null;
+  private readonly vectorProviderCompatibility = new WeakMap<
+    object,
+    { providerIdentity: EmbedProviderIdentity; compatible: boolean }
+  >();
 
   constructor(opts: OramaBackendOptions) {
     this.dbPath = opts.dbPath;
@@ -227,6 +231,7 @@ export class OramaBackend implements SearchBackend {
 
     if (isSearchAborted(execution)) return;
     await this.persistDbForCollection(db, collection);
+    this.rememberVectorProviderCompatibility(db, embeddingProviderIdentity, false);
   }
 
   async embed(): Promise<void> {
@@ -252,16 +257,23 @@ export class OramaBackend implements SearchBackend {
       h.document.vector.length === 0
     );
 
-    if (needsEmbed.length === 0) return;
+    if (needsEmbed.length === 0) {
+      this.rememberVectorProviderCompatibility(db, embeddingProviderIdentity, true);
+      return;
+    }
 
     const texts = needsEmbed.map((h: any) => h.document.content as string);
     const embedResult = await this.embedHelper.embedBatchWithProvider(texts);
     if (!embedResult) return;
     const { vectors, providerIdentity } = embedResult;
 
+    let allEmbedded = true;
     for (let i = 0; i < needsEmbed.length; i++) {
       const vec = vectors[i];
-      if (!vec) continue;
+      if (!vec) {
+        allEmbedded = false;
+        continue;
+      }
       // Orama update is remove+insert — must include all fields to avoid data loss
       const doc = needsEmbed[i].document;
       await oramaUpdate(db, needsEmbed[i].id, {
@@ -275,6 +287,7 @@ export class OramaBackend implements SearchBackend {
     }
 
     await this.persistDbForCollection(db, collection);
+    this.rememberVectorProviderCompatibility(db, providerIdentity, allEmbedded);
   }
 
   async ensureCollection(
@@ -444,24 +457,39 @@ export class OramaBackend implements SearchBackend {
   ): Promise<boolean> {
     const { search: oramaSearch, count } = this.oramaModule;
     try {
+      const cached = this.vectorProviderCompatibility.get(db);
+      if (cached?.providerIdentity === providerIdentity) return cached.compatible;
       const existingCount = await count(db);
       if (existingCount === 0) return false;
-      const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
-      let hasMatchingVector = false;
+      const allHits = await oramaSearch(db, {
+        term: "",
+        limit: existingCount + 100,
+        properties: ["vectorProvider"],
+      });
+      let compatible = (allHits.hits ?? []).length > 0;
       for (const hit of allHits.hits ?? []) {
         throwIfSearchAborted(execution, "OramaBackend vector provider check aborted");
         const doc = hit.document ?? {};
-        const vector = doc.vector;
-        if (!Array.isArray(vector) || vector.length === 0) continue;
-        if (vector.every((value: unknown) => Number(value) === 0)) continue;
-        if (doc.vectorProvider !== providerIdentity) return false;
-        hasMatchingVector = true;
+        if (doc.vectorProvider !== providerIdentity) {
+          compatible = false;
+          break;
+        }
       }
-      return hasMatchingVector;
+      this.vectorProviderCompatibility.set(db, { providerIdentity, compatible });
+      return compatible;
     } catch (err) {
       if (isSearchAborted(execution)) throw err;
       log.debug(`OramaBackend vector provider check failed: ${err}`);
       return false;
     }
+  }
+
+  private rememberVectorProviderCompatibility(
+    db: unknown,
+    providerIdentity: EmbedProviderIdentity | null,
+    compatible: boolean,
+  ): void {
+    if (!providerIdentity || !db || typeof db !== "object") return;
+    this.vectorProviderCompatibility.set(db, { providerIdentity, compatible });
   }
 }

@@ -12,11 +12,11 @@ export interface HostEmbeddingProvider {
   embed(
     text: string,
     options?: { signal?: AbortSignal; inputType?: HostEmbeddingInputType },
-  ): Promise<number[] | null>;
+  ): Promise<ArrayLike<number> | null>;
   embedBatch?(
     texts: string[],
     options?: { signal?: AbortSignal; inputType?: HostEmbeddingInputType },
-  ): Promise<Array<number[] | null>>;
+  ): Promise<Array<ArrayLike<number> | null>>;
   close?: () => Promise<void> | void;
 }
 
@@ -61,8 +61,10 @@ export function clearHostEmbeddingProvidersForTest(): void {
 }
 
 export function normalizeHostEmbeddingVector(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const vector = value.map((component) => {
+  if (!Array.isArray(value) && (!ArrayBuffer.isView(value) || value instanceof DataView)) {
+    return null;
+  }
+  const vector = Array.from(value as unknown as ArrayLike<unknown>, (component) => {
     const numeric = Number(component);
     return Number.isFinite(numeric) ? numeric : 0;
   });
