@@ -30,6 +30,7 @@ export type EmbedBatchWithProviderResult = {
 };
 
 const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
+const DEFAULT_PROVIDER_CACHE_TTL_MS = 250;
 
 /**
  * Standalone embedding helper for search backend adapters.
@@ -41,11 +42,16 @@ const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
  * Merging them would break the port/adapter separation between search and plugin layers.
  */
 export class EmbedHelper {
+  private cachedProvider: ProviderConfig | null | undefined;
+  private cachedProviderAt = 0;
+  private providerCacheTtlMs = DEFAULT_PROVIDER_CACHE_TTL_MS;
+
   constructor(private readonly config: PluginConfig) {}
 
   /**
    * Whether an embedding provider is available.
-   * Re-resolves on each call so late host-provider registration is visible.
+   * Re-resolves periodically so late host-provider registration is visible
+   * without repeatedly probing provider state on every hot-path call.
    */
   isAvailable(): boolean {
     return this.getProvider() !== null;
@@ -158,7 +164,16 @@ export class EmbedHelper {
   }
 
   private getProvider(): ProviderConfig | null {
-    return this.resolveProvider();
+    const now = Date.now();
+    if (
+      this.cachedProvider !== undefined &&
+      now - this.cachedProviderAt < this.providerCacheTtlMs
+    ) {
+      return this.cachedProvider;
+    }
+    this.cachedProvider = this.resolveProvider();
+    this.cachedProviderAt = now;
+    return this.cachedProvider;
   }
 
   private resolveProvider(options: { includeHost?: boolean } = {}): ProviderConfig | null {

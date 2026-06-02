@@ -2,6 +2,7 @@ export { loadDaySummaryPrompt } from "./day-summary.js";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import OpenAI from "openai";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { DEFAULT_REASONING_MODEL, parseConfig } from "./config.js";
 import { initLogger } from "./logger.js";
 import { log } from "./logger.js";
@@ -754,6 +755,7 @@ type OpenClawEmbeddingAdapter = {
 };
 
 const MAX_OBSERVED_INBOUND_MESSAGE_IDS = 1024;
+const MAX_OBSERVED_INLINE_EXPLICIT_CAPTURE_KEYS = 1024;
 
 function requireOpenClawSdkSubpath<T>(subpath: string): T | null {
   try {
@@ -1511,6 +1513,8 @@ const pluginDefinition = {
     const codexMessageCountByBufferKey = new Map<string, number>();
     const observedInboundMessageIds = new Set<string>();
     const observedInboundMessageIdOrder: string[] = [];
+    const observedInlineExplicitCaptureKeys = new Set<string>();
+    const observedInlineExplicitCaptureKeyOrder: string[] = [];
     let codexCompactionModeLogged = false;
 
     function rememberObservedInboundMessageId(messageKey: string): void {
@@ -1522,6 +1526,75 @@ const pluginDefinition = {
         const expired = observedInboundMessageIdOrder.shift();
         if (expired) observedInboundMessageIds.delete(expired);
       }
+    }
+
+    function rememberObservedInlineExplicitCaptureKey(noteKey: string): void {
+      if (!observedInlineExplicitCaptureKeys.has(noteKey)) {
+        observedInlineExplicitCaptureKeys.add(noteKey);
+        observedInlineExplicitCaptureKeyOrder.push(noteKey);
+      }
+      while (
+        observedInlineExplicitCaptureKeyOrder.length >
+        MAX_OBSERVED_INLINE_EXPLICIT_CAPTURE_KEYS
+      ) {
+        const expired = observedInlineExplicitCaptureKeyOrder.shift();
+        if (expired) observedInlineExplicitCaptureKeys.delete(expired);
+      }
+    }
+
+    function buildInlineExplicitCaptureDedupeKey(
+      messageKey: string | null | undefined,
+      note: ReturnType<typeof parseInlineExplicitCaptureNotes>[number],
+    ): string | null {
+      if (!messageKey) return null;
+      return `${messageKey}:inline-memory-note:${createHash("sha256")
+        .update(JSON.stringify(note))
+        .digest("hex")}`;
+    }
+
+    async function processInlineExplicitCaptureNotes(
+      notes: ReturnType<typeof parseInlineExplicitCaptureNotes>,
+      messageKey: string | null | undefined,
+    ): Promise<number> {
+      let processed = 0;
+      for (const note of notes) {
+        const noteKey = buildInlineExplicitCaptureDedupeKey(messageKey, note);
+        if (noteKey && observedInlineExplicitCaptureKeys.has(noteKey)) {
+          continue;
+        }
+        try {
+          await persistExplicitCapture(
+            orchestrator,
+            validateExplicitCaptureInput(note),
+            "inline",
+          );
+          orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
+          if (noteKey) rememberObservedInlineExplicitCaptureKey(noteKey);
+          processed += 1;
+        } catch (error) {
+          try {
+            const queued = await queueExplicitCaptureForReview(
+              orchestrator,
+              note,
+              "inline",
+              error,
+            );
+            orchestrator.requestQmdMaintenanceForTool(
+              "inline.memory_note.review",
+            );
+            if (noteKey) rememberObservedInlineExplicitCaptureKey(noteKey);
+            processed += 1;
+            log.warn(
+              `explicit inline capture queued for review: ${queued.id}${queued.duplicateOf ? ` (duplicate of ${queued.duplicateOf})` : ""}`,
+            );
+          } catch (queueError) {
+            log.warn(
+              `explicit inline capture rejected: ${error}; review queue fallback failed: ${queueError}`,
+            );
+          }
+        }
+      }
+      return processed;
     }
 
     function resolveStoredCodexThreadId(sessionKey: string): string | null {
@@ -3396,11 +3469,26 @@ const pluginDefinition = {
           const inlineCaptureEnabled = shouldProcessInlineExplicitCapture(
             orchestrator.config,
           );
+          const explicitNotes = inlineCaptureEnabled
+            ? parseInlineExplicitCaptureNotes(cleaned)
+            : [];
           const transcriptContent =
             inlineCaptureEnabled && hasInlineExplicitCaptureMarkup(cleaned)
               ? stripInlineExplicitCaptureNotes(cleaned)
               : cleaned;
-          if (transcriptContent.length === 0) return;
+          const processedExplicitNotes =
+            explicitNotes.length > 0
+              ? await processInlineExplicitCaptureNotes(
+                  explicitNotes,
+                  inboundMessageKey,
+                )
+              : 0;
+          if (transcriptContent.length === 0) {
+            if (inboundMessageKey && processedExplicitNotes > 0) {
+              rememberObservedInboundMessageId(inboundMessageKey);
+            }
+            return;
+          }
           try {
             await orchestrator.transcript.append({
               timestamp,
@@ -3572,35 +3660,10 @@ const pluginDefinition = {
               !!messageDedupeKey &&
               observedInboundMessageIds.has(messageDedupeKey);
 
-            for (const note of explicitNotes) {
-              try {
-                await persistExplicitCapture(
-                  orchestrator,
-                  validateExplicitCaptureInput(note),
-                  "inline",
-                );
-                orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
-              } catch (error) {
-                try {
-                  const queued = await queueExplicitCaptureForReview(
-                    orchestrator,
-                    note,
-                    "inline",
-                    error,
-                  );
-                  orchestrator.requestQmdMaintenanceForTool(
-                    "inline.memory_note.review",
-                  );
-                  log.warn(
-                    `explicit inline capture queued for review: ${queued.id}${queued.duplicateOf ? ` (duplicate of ${queued.duplicateOf})` : ""}`,
-                  );
-                } catch (queueError) {
-                  log.warn(
-                    `explicit inline capture rejected: ${error}; review queue fallback failed: ${queueError}`,
-                  );
-                }
-              }
-            }
+            await processInlineExplicitCaptureNotes(
+              explicitNotes,
+              messageDedupeKey,
+            );
 
             // Append to transcript
             if (

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { log } from "../logger.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
 import type { EmbedHelper, EmbedProviderIdentity } from "./embed-helper.js";
@@ -420,7 +420,17 @@ export class OramaBackend implements SearchBackend {
     const data = await this.persistModule.persist(db, "json");
     const filePath = this.dbFilePath(collection);
     await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, data, "utf-8");
+    const tempPath = path.join(
+      path.dirname(filePath),
+      `.${path.basename(filePath)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+    );
+    try {
+      await writeFile(tempPath, data, "utf-8");
+      await rename(tempPath, filePath);
+    } catch (err) {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+      throw err;
+    }
   }
 
   private dbFilePath(collection: string): string {

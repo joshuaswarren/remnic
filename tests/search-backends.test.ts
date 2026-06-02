@@ -524,6 +524,7 @@ describe("embed helper", () => {
         },
       });
 
+      (helper as any).cachedProviderAt = 0;
       assert.deepEqual(await helper.embed("after host registration"), [1, 0]);
       assert.equal(helper.getProviderIdentity(), "host:host-test");
       assert.equal(fallbackCalls, 1);

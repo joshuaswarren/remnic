@@ -514,6 +514,92 @@ test("scenario: message_received strips inline explicit capture markup from tran
   );
 });
 
+test("scenario: message_received persists inline explicit captures without agent_end", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+
+      await messageReceived(
+        {
+          content: [
+            "Remember the launch inbound note preference.",
+            "<memory_note>",
+            "content: The inbound launch note should survive without agent_end.",
+            "category: preference",
+            "</memory_note>",
+          ].join("\n"),
+          messageId: "msg-inline-persist-1",
+        },
+        { sessionKey: "inline-persist-session" },
+      );
+
+      const memoryText = readAllText(memoryDir);
+      assert.match(memoryText, /inbound launch note should survive without agent_end/);
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
+test("scenario: message_received inline captures are not duplicated by agent_end", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const content = [
+        "Remember the launch inline dedupe note.",
+        "<memory_note>",
+        "content: The inline dedupe note should only be processed once.",
+        "category: preference",
+        "</memory_note>",
+      ].join("\n");
+
+      await messageReceived(
+        {
+          content,
+          messageId: "msg-inline-dedupe-1",
+        },
+        { sessionKey: "inline-dedupe-session" },
+      );
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            {
+              role: "user",
+              content,
+              messageId: "msg-inline-dedupe-1",
+            },
+            { role: "assistant", content: "I will remember that." },
+          ],
+        },
+        { sessionKey: "inline-dedupe-session" },
+      );
+
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: message_received transcript append failures do not escape the hook", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {
