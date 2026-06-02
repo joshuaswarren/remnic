@@ -771,7 +771,7 @@ function resolveChannelEnvelopePrefixes(cfg: {
   includeLegacyChannelEnvelopePattern: boolean;
 } {
   if (!cfg.openclawChannelEnvelopeCleaningEnabled) {
-    return { prefixes: ["OpenClaw"], includeLegacyChannelEnvelopePattern: false };
+    return { prefixes: ["OpenClaw"], includeLegacyChannelEnvelopePattern: true };
   }
   const sdk = requireOpenClawSdkSubpath<{
     BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES?: unknown;
@@ -3363,6 +3363,16 @@ const pluginDefinition = {
           ctx: Record<string, unknown>,
         ) => {
           if (!orchestrator.config.transcriptEnabled) return;
+          if (
+            cfg.heartbeat.enabled &&
+            cfg.heartbeat.gateExtractionDuringHeartbeat &&
+            isHeartbeatTrigger(event, ctx)
+          ) {
+            log.debug(
+              `message_received: skipping transcript capture during heartbeat run for ${(ctx?.sessionKey as string) ?? "default"}`,
+            );
+            return;
+          }
           const content =
             typeof event.content === "string" ? event.content.trim() : "";
           if (content.length === 0) return;

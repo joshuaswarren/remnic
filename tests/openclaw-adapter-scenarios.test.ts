@@ -427,6 +427,61 @@ test("scenario: message_received captures bounded thread and reply metadata in t
   );
 });
 
+test("scenario: disabled channel envelope cleaning keeps legacy broad cleanup", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      await messageReceived(
+        {
+          content: "[Discord user id:123 2026-06-02] Remember the legacy envelope cleanup [message_id: discord-1]",
+          messageId: "discord-1",
+        },
+        { sessionKey: "legacy-envelope-session" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.match(transcriptText, /Remember the legacy envelope cleanup/);
+      assert.doesNotMatch(transcriptText, /Discord user id/);
+      assert.doesNotMatch(transcriptText, /message_id: discord-1/);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+        openclawChannelEnvelopeCleaningEnabled: false,
+      },
+    },
+  );
+});
+
+test("scenario: message_received honors heartbeat transcript gating", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      await messageReceived(
+        {
+          trigger: "heartbeat",
+          content: "Read HEARTBEAT.md and continue the maintenance run.",
+          messageId: "heartbeat-msg-1",
+        },
+        { sessionKey: "heartbeat-session", trigger: "heartbeat" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.doesNotMatch(transcriptText, /HEARTBEAT/);
+      assert.doesNotMatch(transcriptText, /maintenance run/);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+        heartbeat: {
+          enabled: true,
+          gateExtractionDuringHeartbeat: true,
+        },
+      },
+    },
+  );
+});
+
 test("scenario: message_received strips inline explicit capture markup from transcripts", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {
