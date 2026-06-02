@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { BenchmarkResult } from "./types.ts";
 import {
   BENCHMARK_ARTIFACT_SCHEMA_VERSION,
   PUBLISHED_BENCHMARK_ARTIFACT_IDS,
@@ -16,6 +15,7 @@ import {
   serializeBenchmarkArtifact,
   writeBenchmarkArtifact,
 } from "./published-artifact.ts";
+import type { BenchmarkResult } from "./types.ts";
 
 function sampleResult(overrides: Partial<BenchmarkResult> = {}): BenchmarkResult {
   return {
@@ -142,8 +142,7 @@ test("buildBenchmarkArtifact attaches category via categoryFor", () => {
     startedAt: "2026-04-20T12:00:00.000Z",
     finishedAt: "2026-04-20T12:01:00.000Z",
     result: sampleResult(),
-    categoryFor: (task) =>
-      (task.details?.category as string | undefined) ?? undefined,
+    categoryFor: (task) => (task.details?.category as string | undefined) ?? undefined,
   });
 
   assert.equal(artifact.perTaskScores[0]?.category, "multi_hop");
@@ -161,6 +160,23 @@ test("buildBenchmarkArtifact durationMs clamps to 0 for identical timestamps", (
     result: sampleResult(),
   });
   assert.equal(artifact.durationMs, 0);
+});
+
+test("buildBenchmarkArtifact normalizes timestamps before filename generation", () => {
+  const artifact = buildBenchmarkArtifact({
+    benchmarkId: "longmemeval",
+    datasetVersion: "v1",
+    model: "gpt-4o-mini",
+    seed: 1,
+    startedAt: "2026-06-02 00:00:00Z",
+    finishedAt: "2026-06-02T00:05:00+00:00",
+    result: sampleResult(),
+  });
+
+  assert.equal(artifact.startedAt, "2026-06-02T00:00:00.000Z");
+  assert.equal(artifact.finishedAt, "2026-06-02T00:05:00.000Z");
+  assert.equal(artifact.durationMs, 5 * 60 * 1000);
+  assert.equal(buildBenchmarkArtifactFilename(artifact), "2026-06-02-longmemeval-gpt-4o-mini-abc1234.json");
 });
 
 test("buildBenchmarkArtifact drops arch when hardware absent", () => {
@@ -295,10 +311,7 @@ test("parseBenchmarkArtifact rejects unknown schemaVersion", () => {
     durationMs: 0,
     env: { node: "v22", os: "linux" },
   });
-  assert.throws(
-    () => parseBenchmarkArtifact(raw),
-    /schemaVersion 999 is not supported/,
-  );
+  assert.throws(() => parseBenchmarkArtifact(raw), /schemaVersion 999 is not supported/);
 });
 
 test("parseBenchmarkArtifact rejects invalid benchmarkId", () => {
@@ -316,10 +329,7 @@ test("parseBenchmarkArtifact rejects invalid benchmarkId", () => {
     durationMs: 0,
     env: { node: "v22", os: "linux" },
   });
-  assert.throws(
-    () => parseBenchmarkArtifact(raw),
-    /benchmarkId must be one of/,
-  );
+  assert.throws(() => parseBenchmarkArtifact(raw), /benchmarkId must be one of/);
 });
 
 test("parseBenchmarkArtifact rejects non-number metric value", () => {
@@ -379,10 +389,7 @@ test("parseBenchmarkArtifact rejects non-ISO startedAt", () => {
     durationMs: 0,
     env: { node: "v22", os: "linux" },
   });
-  assert.throws(
-    () => parseBenchmarkArtifact(raw),
-    /"startedAt" "not-a-date" is not a parseable ISO-8601/,
-  );
+  assert.throws(() => parseBenchmarkArtifact(raw), /"startedAt" "not-a-date" is not a parseable ISO-8601/);
 });
 
 test("parseBenchmarkArtifact rejects non-ISO finishedAt", () => {
@@ -400,10 +407,7 @@ test("parseBenchmarkArtifact rejects non-ISO finishedAt", () => {
     durationMs: 0,
     env: { node: "v22", os: "linux" },
   });
-  assert.throws(
-    () => parseBenchmarkArtifact(raw),
-    /"finishedAt" "nope" is not a parseable ISO-8601/,
-  );
+  assert.throws(() => parseBenchmarkArtifact(raw), /"finishedAt" "nope" is not a parseable ISO-8601/);
 });
 
 test("parseBenchmarkArtifact rejects non-finite metric value", () => {
@@ -424,10 +428,7 @@ test("parseBenchmarkArtifact rejects non-finite metric value", () => {
     env: { node: "v22", os: "linux" },
   });
   const raw = rawBase.replace('"metrics":{}', '"metrics":{"f1":1e309}');
-  assert.throws(
-    () => parseBenchmarkArtifact(raw),
-    /metrics\.f1 must be a finite number/,
-  );
+  assert.throws(() => parseBenchmarkArtifact(raw), /metrics\.f1 must be a finite number/);
 });
 
 test("parseBenchmarkArtifact rejects non-finite per-task score", () => {
@@ -446,10 +447,7 @@ test("parseBenchmarkArtifact rejects non-finite per-task score", () => {
     env: { node: "v22", os: "linux" },
   });
   const raw = rawBase.replace('"f1":1', '"f1":1e309');
-  assert.throws(
-    () => parseBenchmarkArtifact(raw),
-    /perTaskScores\[0\]\.scores\.f1 must be a finite number/,
-  );
+  assert.throws(() => parseBenchmarkArtifact(raw), /perTaskScores\[0\]\.scores\.f1 must be a finite number/);
 });
 
 test("parseBenchmarkArtifact rejects malformed optional string fields", () => {
@@ -457,21 +455,21 @@ test("parseBenchmarkArtifact rejects malformed optional string fields", () => {
   (withBadArch.env as Record<string, unknown>).arch = {};
   assert.throws(
     () => parseBenchmarkArtifact(JSON.stringify(withBadArch)),
-    /field "env\.arch" must be a string when provided/,
+    /field "env\.arch" must be a string when provided/
   );
 
   const withBadNote = sampleArtifactPayload();
   withBadNote.note = 42;
   assert.throws(
     () => parseBenchmarkArtifact(JSON.stringify(withBadNote)),
-    /field "note" must be a string when provided/,
+    /field "note" must be a string when provided/
   );
 
   const withBadCategory = sampleArtifactPayload();
-  ((withBadCategory.perTaskScores as Array<Record<string, unknown>>)[0]!).category = 42;
+  (withBadCategory.perTaskScores as Array<Record<string, unknown>>)[0]!.category = 42;
   assert.throws(
     () => parseBenchmarkArtifact(JSON.stringify(withBadCategory)),
-    /field "perTaskScores\[0\]\.category" must be a string when provided/,
+    /field "perTaskScores\[0\]\.category" must be a string when provided/
   );
 });
 
@@ -547,7 +545,7 @@ test("buildBenchmarkArtifact rejects non-finite per-task scores", () => {
           },
         }),
       }),
-    /perTaskScores\[0\] "t1" scores\.f1 must be a finite number/,
+    /perTaskScores\[0\] "t1" scores\.f1 must be a finite number/
   );
 });
 
@@ -563,7 +561,7 @@ test("buildBenchmarkArtifact rejects invalid startedAt/finishedAt timestamps", (
         finishedAt: "2026-04-20T12:00:00.000Z",
         result: sampleResult(),
       }),
-    /startedAt "not-a-date" is not a valid ISO-8601 timestamp/,
+    /startedAt "not-a-date" is not a valid ISO-8601 timestamp/
   );
   assert.throws(
     () =>
@@ -576,7 +574,7 @@ test("buildBenchmarkArtifact rejects invalid startedAt/finishedAt timestamps", (
         finishedAt: "garbage",
         result: sampleResult(),
       }),
-    /finishedAt "garbage" is not a valid ISO-8601 timestamp/,
+    /finishedAt "garbage" is not a valid ISO-8601 timestamp/
   );
 });
 

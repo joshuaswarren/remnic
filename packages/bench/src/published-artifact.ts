@@ -46,8 +46,7 @@ export const PUBLISHED_BENCHMARK_ARTIFACT_IDS = Object.freeze([
 ] as const);
 
 /** Identifier of a published-benchmark runner. */
-export type PublishedBenchmarkId =
-  (typeof PUBLISHED_BENCHMARK_ARTIFACT_IDS)[number];
+export type PublishedBenchmarkId = (typeof PUBLISHED_BENCHMARK_ARTIFACT_IDS)[number];
 
 export interface BenchmarkArtifactSystem {
   /** Short product name, e.g. "remnic". */
@@ -128,9 +127,7 @@ export interface BuildBenchmarkArtifactInput {
  * per-task scores verbatim. The result is sort-stable: metric keys are
  * emitted in sorted order and perTaskScores preserves runner order.
  */
-export function buildBenchmarkArtifact(
-  input: BuildBenchmarkArtifactInput,
-): BenchmarkArtifact {
+export function buildBenchmarkArtifact(input: BuildBenchmarkArtifactInput): BenchmarkArtifact {
   const { result } = input;
   const metrics: Record<string, number> = {};
   // Only finite means are exported — a non-finite mean is almost
@@ -146,49 +143,46 @@ export function buildBenchmarkArtifact(
     }
   }
 
-  const perTaskScores: BenchmarkArtifactPerTaskScore[] =
-    result.results.tasks.map((task, index) => {
-      const category = input.categoryFor?.(task);
-      // Validate up-front so a non-finite score (e.g. NaN from a
-      // rejected extraction, Infinity from a broken divisor) fails
-      // at build time with a clear per-task pointer — instead of
-      // silently serializing to JSON `null` (which
-      // `parseBenchmarkArtifact()` would then reject) or flowing
-      // into leaderboard aggregates downstream.
-      const cleanedScores: Record<string, number> = {};
-      for (const [key, value] of Object.entries(task.scores)) {
-        if (typeof value !== "number" || !Number.isFinite(value)) {
-          throw new Error(
-            `BuildBenchmarkArtifact: perTaskScores[${index}] "${task.taskId}" scores.${key} must be a finite number; got ${String(value)}.`,
-          );
-        }
-        cleanedScores[key] = value;
+  const perTaskScores: BenchmarkArtifactPerTaskScore[] = result.results.tasks.map((task, index) => {
+    const category = input.categoryFor?.(task);
+    // Validate up-front so a non-finite score (e.g. NaN from a
+    // rejected extraction, Infinity from a broken divisor) fails
+    // at build time with a clear per-task pointer — instead of
+    // silently serializing to JSON `null` (which
+    // `parseBenchmarkArtifact()` would then reject) or flowing
+    // into leaderboard aggregates downstream.
+    const cleanedScores: Record<string, number> = {};
+    for (const [key, value] of Object.entries(task.scores)) {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(
+          `BuildBenchmarkArtifact: perTaskScores[${index}] "${task.taskId}" scores.${key} must be a finite number; got ${String(value)}.`
+        );
       }
-      const entry: BenchmarkArtifactPerTaskScore = {
-        taskId: task.taskId,
-        // In-memory scores preserve whatever order the runner emitted;
-        // `serializeBenchmarkArtifact()` sorts keys at write time via
-        // the shared `canonicalJsonStringify` helper.
-        scores: cleanedScores,
-      };
-      if (category !== undefined) {
-        entry.category = category;
-      }
-      return entry;
-    });
+      cleanedScores[key] = value;
+    }
+    const entry: BenchmarkArtifactPerTaskScore = {
+      taskId: task.taskId,
+      // In-memory scores preserve whatever order the runner emitted;
+      // `serializeBenchmarkArtifact()` sorts keys at write time via
+      // the shared `canonicalJsonStringify` helper.
+      scores: cleanedScores,
+    };
+    if (category !== undefined) {
+      entry.category = category;
+    }
+    return entry;
+  });
 
   const startedMs = Date.parse(input.startedAt);
   const finishedMs = Date.parse(input.finishedAt);
   if (!Number.isFinite(startedMs)) {
-    throw new Error(
-      `BuildBenchmarkArtifact: startedAt "${input.startedAt}" is not a valid ISO-8601 timestamp.`,
-    );
+    throw new Error(`BuildBenchmarkArtifact: startedAt "${input.startedAt}" is not a valid ISO-8601 timestamp.`);
   }
   if (!Number.isFinite(finishedMs)) {
-    throw new Error(
-      `BuildBenchmarkArtifact: finishedAt "${input.finishedAt}" is not a valid ISO-8601 timestamp.`,
-    );
+    throw new Error(`BuildBenchmarkArtifact: finishedAt "${input.finishedAt}" is not a valid ISO-8601 timestamp.`);
   }
+  const startedAt = new Date(startedMs).toISOString();
+  const finishedAt = new Date(finishedMs).toISOString();
   const durationMs = Math.max(0, finishedMs - startedMs);
 
   return {
@@ -204,15 +198,13 @@ export function buildBenchmarkArtifact(
     seed: input.seed,
     metrics,
     perTaskScores,
-    startedAt: input.startedAt,
-    finishedAt: input.finishedAt,
+    startedAt,
+    finishedAt,
     durationMs,
     env: {
       node: result.environment.nodeVersion,
       os: result.environment.os,
-      ...(result.environment.hardware
-        ? { arch: result.environment.hardware }
-        : {}),
+      ...(result.environment.hardware ? { arch: result.environment.hardware } : {}),
     },
     ...(input.note !== undefined ? { note: input.note } : {}),
   };
@@ -229,34 +221,26 @@ export function buildBenchmarkArtifact(
  * path-separator characters — preventing a malicious artifact input
  * from directing `writeBenchmarkArtifact()` outside of `outputDir`.
  */
-export function buildBenchmarkArtifactFilename(
-  artifact: BenchmarkArtifact,
-): string {
+export function buildBenchmarkArtifactFilename(artifact: BenchmarkArtifact): string {
   const date = sanitizeSegment(artifact.startedAt.slice(0, 10));
-  const sha = sanitizeSegment(
-    (artifact.system.gitSha || "unknown").slice(0, 7),
-  );
+  const sha = sanitizeSegment((artifact.system.gitSha || "unknown").slice(0, 7));
   const model = sanitizeSegment(artifact.model);
   const benchmark = sanitizeSegment(artifact.benchmarkId);
   return `${date}-${benchmark}-${model}-${sha}.json`;
 }
 
 /** Serialize an artifact to deterministic JSON (sorted keys, indented). */
-export function serializeBenchmarkArtifact(
-  artifact: BenchmarkArtifact,
-): string {
+export function serializeBenchmarkArtifact(artifact: BenchmarkArtifact): string {
   // Reuse the package's shared canonical-JSON helper (CLAUDE.md rule 22:
   // single source of truth for canonicalization) with pretty-print
   // indentation so the SHA-256 stays reproducible regardless of key
   // insertion order.
-  return canonicalJsonStringify(artifact, 2) + "\n";
+  return `${canonicalJsonStringify(artifact, 2)}\n`;
 }
 
 /** Compute SHA-256 of the canonical JSON serialization of the artifact. */
 export function hashBenchmarkArtifact(artifact: BenchmarkArtifact): string {
-  return createHash("sha256")
-    .update(serializeBenchmarkArtifact(artifact))
-    .digest("hex");
+  return createHash("sha256").update(serializeBenchmarkArtifact(artifact)).digest("hex");
 }
 
 export interface WriteBenchmarkArtifactResult {
@@ -278,7 +262,7 @@ export interface WriteBenchmarkArtifactResult {
  */
 export async function writeBenchmarkArtifact(
   artifact: BenchmarkArtifact,
-  outputDir: string,
+  outputDir: string
 ): Promise<WriteBenchmarkArtifactResult> {
   await mkdir(outputDir, { recursive: true });
   const filename = buildBenchmarkArtifactFilename(artifact);
@@ -288,14 +272,9 @@ export async function writeBenchmarkArtifact(
   // `abs` must be a direct child of `resolvedDir`. Reject anything that
   // resolves to a parent directory, sibling, or any other location.
   const relative = path.relative(resolvedDir, abs);
-  if (
-    relative.length === 0 ||
-    relative.startsWith("..") ||
-    path.isAbsolute(relative) ||
-    relative.includes(path.sep)
-  ) {
+  if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative) || relative.includes(path.sep)) {
     throw new Error(
-      `writeBenchmarkArtifact: refusing to write outside outputDir (filename="${filename}", resolved="${abs}").`,
+      `writeBenchmarkArtifact: refusing to write outside outputDir (filename="${filename}", resolved="${abs}").`
     );
   }
   await writeFile(abs, body);
@@ -322,12 +301,12 @@ export function parseBenchmarkArtifact(raw: string): BenchmarkArtifact {
   if (record.schemaVersion !== BENCHMARK_ARTIFACT_SCHEMA_VERSION) {
     throw new Error(
       `BenchmarkArtifact schemaVersion ${String(record.schemaVersion)} is not supported. ` +
-        `This build expects schemaVersion ${BENCHMARK_ARTIFACT_SCHEMA_VERSION}.`,
+        `This build expects schemaVersion ${BENCHMARK_ARTIFACT_SCHEMA_VERSION}.`
     );
   }
   if (!isPublishedBenchmarkArtifactId(record.benchmarkId)) {
     throw new Error(
-      `BenchmarkArtifact benchmarkId must be one of ${PUBLISHED_BENCHMARK_ARTIFACT_IDS.map((id) => `"${id}"`).join(", ")}; got ${String(record.benchmarkId)}.`,
+      `BenchmarkArtifact benchmarkId must be one of ${PUBLISHED_BENCHMARK_ARTIFACT_IDS.map((id) => `"${id}"`).join(", ")}; got ${String(record.benchmarkId)}.`
     );
   }
   requireString(record, "datasetVersion");
@@ -348,9 +327,7 @@ export function parseBenchmarkArtifact(raw: string): BenchmarkArtifact {
   const metrics = requireObject(record, "metrics");
   for (const [key, value] of Object.entries(metrics)) {
     if (typeof value !== "number" || !Number.isFinite(value)) {
-      throw new Error(
-        `BenchmarkArtifact metrics.${key} must be a finite number; got ${String(value)}.`,
-      );
+      throw new Error(`BenchmarkArtifact metrics.${key} must be a finite number; got ${String(value)}.`);
     }
   }
   const tasks = record.perTaskScores;
@@ -365,22 +342,12 @@ export function parseBenchmarkArtifact(raw: string): BenchmarkArtifact {
     requireString(task as Record<string, unknown>, "taskId");
     requireOptionalString(task as Record<string, unknown>, "category", `perTaskScores[${index}].category`);
     const scoreRecord = (task as Record<string, unknown>).scores;
-    if (
-      !scoreRecord ||
-      typeof scoreRecord !== "object" ||
-      Array.isArray(scoreRecord)
-    ) {
-      throw new Error(
-        `BenchmarkArtifact perTaskScores[${index}].scores must be an object.`,
-      );
+    if (!scoreRecord || typeof scoreRecord !== "object" || Array.isArray(scoreRecord)) {
+      throw new Error(`BenchmarkArtifact perTaskScores[${index}].scores must be an object.`);
     }
-    for (const [scoreKey, scoreValue] of Object.entries(
-      scoreRecord as Record<string, unknown>,
-    )) {
+    for (const [scoreKey, scoreValue] of Object.entries(scoreRecord as Record<string, unknown>)) {
       if (typeof scoreValue !== "number" || !Number.isFinite(scoreValue)) {
-        throw new Error(
-          `BenchmarkArtifact perTaskScores[${index}].scores.${scoreKey} must be a finite number.`,
-        );
+        throw new Error(`BenchmarkArtifact perTaskScores[${index}].scores.${scoreKey} must be a finite number.`);
       }
     }
   }
@@ -390,7 +357,7 @@ export function parseBenchmarkArtifact(raw: string): BenchmarkArtifact {
 
 /** Read + parse + re-hash an artifact file. Handy for `verify-artifact` CLI. */
 export async function loadBenchmarkArtifact(
-  filePath: string,
+  filePath: string
 ): Promise<{ artifact: BenchmarkArtifact; sha256: string; bytes: number }> {
   const raw = await readFile(filePath, "utf8");
   const artifact = parseBenchmarkArtifact(raw);
@@ -461,41 +428,26 @@ function sanitizeSegment(value: string): string {
   return cleaned.length > 0 ? cleaned : "unknown";
 }
 
-function requireString(
-  record: Record<string, unknown>,
-  field: string,
-): void {
+function requireString(record: Record<string, unknown>, field: string): void {
   if (typeof record[field] !== "string") {
     throw new Error(`BenchmarkArtifact field "${field}" must be a string.`);
   }
 }
 
-function requireOptionalString(
-  record: Record<string, unknown>,
-  field: string,
-  label: string,
-): void {
+function requireOptionalString(record: Record<string, unknown>, field: string, label: string): void {
   if (record[field] !== undefined && typeof record[field] !== "string") {
     throw new Error(`BenchmarkArtifact field "${label}" must be a string when provided.`);
   }
 }
 
-function requireNumber(
-  record: Record<string, unknown>,
-  field: string,
-): void {
+function requireNumber(record: Record<string, unknown>, field: string): void {
   const value = record[field];
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(
-      `BenchmarkArtifact field "${field}" must be a finite number.`,
-    );
+    throw new Error(`BenchmarkArtifact field "${field}" must be a finite number.`);
   }
 }
 
-function requireObject(
-  record: Record<string, unknown>,
-  field: string,
-): Record<string, unknown> {
+function requireObject(record: Record<string, unknown>, field: string): Record<string, unknown> {
   const value = record[field];
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`BenchmarkArtifact field "${field}" must be an object.`);
@@ -509,28 +461,16 @@ function requireObject(
  * (so `"not-a-date"` fails here instead of quietly flowing into
  * downstream duration math or leaderboard ordering).
  */
-function requireIsoTimestamp(
-  record: Record<string, unknown>,
-  field: string,
-): void {
+function requireIsoTimestamp(record: Record<string, unknown>, field: string): void {
   const value = record[field];
   if (typeof value !== "string") {
-    throw new Error(
-      `BenchmarkArtifact field "${field}" must be an ISO-8601 timestamp string.`,
-    );
+    throw new Error(`BenchmarkArtifact field "${field}" must be an ISO-8601 timestamp string.`);
   }
   if (!Number.isFinite(Date.parse(value))) {
-    throw new Error(
-      `BenchmarkArtifact field "${field}" "${value}" is not a parseable ISO-8601 timestamp.`,
-    );
+    throw new Error(`BenchmarkArtifact field "${field}" "${value}" is not a parseable ISO-8601 timestamp.`);
   }
 }
 
-function isPublishedBenchmarkArtifactId(
-  value: unknown,
-): value is PublishedBenchmarkId {
-  return (
-    typeof value === "string" &&
-    (PUBLISHED_BENCHMARK_ARTIFACT_IDS as readonly string[]).includes(value)
-  );
+function isPublishedBenchmarkArtifactId(value: unknown): value is PublishedBenchmarkId {
+  return typeof value === "string" && (PUBLISHED_BENCHMARK_ARTIFACT_IDS as readonly string[]).includes(value);
 }
