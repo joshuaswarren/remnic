@@ -40,8 +40,7 @@ import { createOpikExporter } from "./opik-exporter.js";
 import { readEnvVar, resolveHomeDir } from "@remnic/core/runtime/env";
 import { migrateFromEngram } from "./migrate/from-engram.js";
 import {
-  cleanUserMessage,
-  configureOpenClawChannelEnvelopePrefixes,
+  createOpenClawUserMessageCleaner,
 } from "./user-message-cleaning.js";
 import { listRemnicPublicArtifacts } from "../packages/plugin-openclaw/src/public-artifacts.js";
 import {
@@ -743,7 +742,7 @@ function tryDefinePluginEntry(def: {
   }
 }
 
-type OpenClawEmbeddingAdapterKind = "generic" | "memory";
+export type OpenClawEmbeddingAdapterKind = "generic" | "memory";
 
 type OpenClawEmbeddingAdapter = {
   id: string;
@@ -765,24 +764,21 @@ function requireOpenClawSdkSubpath<T>(subpath: string): T | null {
   }
 }
 
-function configureChannelEnvelopeCleaning(cfg: {
+function resolveChannelEnvelopePrefixes(cfg: {
   openclawChannelEnvelopeCleaningEnabled: boolean;
-}): void {
+}): string[] {
   if (!cfg.openclawChannelEnvelopeCleaningEnabled) {
-    configureOpenClawChannelEnvelopePrefixes([]);
-    return;
+    return ["OpenClaw"];
   }
   const sdk = requireOpenClawSdkSubpath<{
     BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES?: unknown;
   }>("openclaw/plugin-sdk/chat-channel-ids");
   const prefixes = sdk?.BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES;
   if (!Array.isArray(prefixes)) {
-    configureOpenClawChannelEnvelopePrefixes([]);
-    return;
+    return ["OpenClaw"];
   }
-  configureOpenClawChannelEnvelopePrefixes(
-    prefixes.filter((value): value is string => typeof value === "string"),
-  );
+  const cleaned = prefixes.filter((value): value is string => typeof value === "string");
+  return cleaned.length > 0 ? cleaned : ["OpenClaw"];
 }
 
 function registerOpenClawHostEmbeddingProvider(params: {
@@ -924,7 +920,7 @@ function isOpenClawEmbeddingAdapter(value: unknown): value is OpenClawEmbeddingA
   );
 }
 
-async function embedWithOpenClawProvider(
+export async function embedWithOpenClawProvider(
   kind: OpenClawEmbeddingAdapterKind,
   provider: unknown,
   text: string,
@@ -932,7 +928,7 @@ async function embedWithOpenClawProvider(
 ): Promise<number[] | null> {
   if (!provider || typeof provider !== "object") return null;
   const record = provider as Record<string, unknown>;
-  if (kind === "memory" && options?.inputType === "query" && typeof record.embedQuery === "function") {
+  if (options?.inputType === "query" && typeof record.embedQuery === "function") {
     return normalizeHostEmbeddingVector(
       await record.embedQuery.call(provider, text, { signal: options.signal }),
     );
@@ -1091,7 +1087,9 @@ const pluginDefinition = {
         `[remnic] memory slot not assigned to ${serviceId}; running passively`,
       );
     }
-    configureChannelEnvelopeCleaning(cfg);
+    const cleanOpenClawUserMessage = createOpenClawUserMessageCleaner(
+      resolveChannelEnvelopePrefixes(cfg),
+    );
 
     // Singleton guard: the gateway calls register() once per agent (each with a
     // different plugin registry). Reuse the orchestrator (heavy object) but always
@@ -3356,7 +3354,7 @@ const pluginDefinition = {
           await orchestrator.transcript.append({
             timestamp,
             role: "user",
-            content: cleanUserMessage(content),
+            content: cleanOpenClawUserMessage(content),
             sessionKey,
             turnId: crypto.randomUUID(),
             ...(metadata ? { metadata } : {}),
@@ -3489,7 +3487,7 @@ const pluginDefinition = {
 
             // Clean system metadata from user messages
             const cleaned =
-              role === "user" ? cleanUserMessage(content) : content;
+              role === "user" ? cleanOpenClawUserMessage(content) : content;
             const inlineCaptureEnabled = shouldProcessInlineExplicitCapture(
               orchestrator.config,
             );
@@ -3506,6 +3504,11 @@ const pluginDefinition = {
               ctx,
               cfg,
             );
+            const replyHintMetadata = cfg.openclawReplyMetadataExtractionHintsEnabled
+              ? buildOpenClawMessageMetadata(msg, event, ctx, {
+                  openclawReplyMetadataCaptureEnabled: true,
+                })
+              : messageMetadata;
             const messageId = getOpenClawMessageId(msg, event, ctx);
             const transcriptAlreadyCaptured =
               !!messageId && observedInboundMessageIds.has(messageId);
@@ -3563,7 +3566,7 @@ const pluginDefinition = {
               const extractionContent =
                 role === "user" &&
                 cfg.openclawReplyMetadataExtractionHintsEnabled
-                  ? withReplyExtractionHint(stripped, messageMetadata)
+                  ? withReplyExtractionHint(stripped, replyHintMetadata)
                   : stripped;
               await orchestrator.processTurn(role, extractionContent, sessionKey, {
                 bufferKey: resolveExtractionBufferKey(

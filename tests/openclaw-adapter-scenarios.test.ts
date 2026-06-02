@@ -30,6 +30,32 @@ type ScenarioContext = {
   memoryDir: string;
 };
 
+test("OpenClaw generic embedding bridge uses embedQuery for query inputs", async () => {
+  const { embedWithOpenClawProvider } = await import("../src/index.js");
+  const calls: string[] = [];
+  const provider = {
+    async embedQuery() {
+      calls.push("embedQuery");
+      return [1, 0];
+    },
+    async embed() {
+      calls.push("embed");
+      return [0, 1];
+    },
+    async embedBatch() {
+      calls.push("embedBatch");
+      return [[0, 0]];
+    },
+  };
+
+  const vector = await embedWithOpenClawProvider("generic", provider, "find launch", {
+    inputType: "query",
+  });
+
+  assert.deepEqual(vector, [1, 0]);
+  assert.deepEqual(calls, ["embedQuery"]);
+});
+
 async function withScenarioRegistration(
   fn: (context: ScenarioContext) => Promise<void> | void,
   options: Parameters<typeof captureOpenClawRegistrationApi>[0] = {},
@@ -512,6 +538,7 @@ test("scenario: reply extraction hints are opt-in and bounded", async () => {
     {
       pluginConfig: {
         openclawReplyMetadataExtractionHintsEnabled: true,
+        openclawReplyMetadataCaptureEnabled: false,
       },
     },
   );
