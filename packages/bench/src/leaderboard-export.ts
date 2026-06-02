@@ -18,7 +18,7 @@ interface AmaBenchLeaderboardRow {
 
 export async function writeLeaderboardArtifactsForResult(
   result: BenchmarkResult,
-  outputDir: string,
+  outputDir: string
 ): Promise<LeaderboardArtifactWrite[]> {
   if (result.meta.benchmark !== "ama-bench") {
     return [];
@@ -33,10 +33,7 @@ export async function writeLeaderboardArtifactsForResult(
   const leaderboardDir = resolveContainedPath(outputRoot, "leaderboard");
   await mkdir(leaderboardDir, { recursive: true });
   const timestamp = sanitizeFilenameSegment(result.meta.timestamp.replace(/[:.]/g, "-"));
-  const filePath = resolveContainedPath(
-    leaderboardDir,
-    `ama-bench-${timestamp}-answers.jsonl`,
-  );
+  const filePath = resolveContainedPath(leaderboardDir, `ama-bench-${timestamp}-answers.jsonl`);
   await writeFile(filePath, serializeJsonl(rows), "utf8");
   return [
     {
@@ -48,19 +45,14 @@ export async function writeLeaderboardArtifactsForResult(
   ];
 }
 
-export function buildAmaBenchLeaderboardRows(
-  result: BenchmarkResult,
-): AmaBenchLeaderboardRow[] {
-  const rowsByEpisode = new Map<
-    number | string,
-    { firstTaskIndex: number; answers: string[] }
-  >();
+export function buildAmaBenchLeaderboardRows(result: BenchmarkResult): AmaBenchLeaderboardRow[] {
+  const rowsByEpisode = new Map<number | string, { firstTaskIndex: number; answers: string[] }>();
 
   result.results.tasks.forEach((task, taskIndex) => {
     const episodeId = amaBenchEpisodeIdForTask(task);
     if (episodeId === undefined) {
       throw new Error(
-        `AMA-Bench leaderboard export requires details.episodeId for every task; missing on ${task.taskId}.`,
+        `AMA-Bench leaderboard export requires details.episodeId for every task; missing on ${task.taskId}.`
       );
     }
 
@@ -85,7 +77,7 @@ export function buildAmaBenchLeaderboardRows(
 }
 
 export function serializeJsonl(rows: readonly AmaBenchLeaderboardRow[]): string {
-  return rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
+  return `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
 }
 
 function amaBenchEpisodeIdForTask(task: TaskResult): number | string | undefined {

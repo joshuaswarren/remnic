@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { BenchmarkResult } from "./types.ts";
 import {
   buildAmaBenchLeaderboardRows,
   serializeJsonl,
   writeLeaderboardArtifactsForResult,
 } from "./leaderboard-export.ts";
+import type { BenchmarkResult } from "./types.ts";
 
 function amaResult(): BenchmarkResult {
   return {
@@ -93,12 +93,9 @@ test("buildAmaBenchLeaderboardRows groups answers by episode in task order", () 
 
 test("buildAmaBenchLeaderboardRows rejects missing episode ids instead of undercounting", () => {
   const result = amaResult();
-  delete result.results.tasks[0]!.details;
+  result.results.tasks[0]!.details = undefined;
 
-  assert.throws(
-    () => buildAmaBenchLeaderboardRows(result),
-    /requires details\.episodeId/,
-  );
+  assert.throws(() => buildAmaBenchLeaderboardRows(result), /requires details\.episodeId/);
 });
 
 test("serializeJsonl emits one valid JSON object per line", () => {
@@ -122,7 +119,7 @@ test("writeLeaderboardArtifactsForResult writes AMA-Bench answer-list JSONL", as
     assert.equal(writes[0]?.format, "ama-bench-answer-list-jsonl");
     assert.equal(writes[0]?.records, 2);
 
-    const raw = await readFile(writes[0]!.path, "utf8");
+    const raw = await readFile(writes[0]?.path, "utf8");
     assert.match(raw, /"episode_id":101/);
     assert.match(raw, /"answer_list":\["opened the app","changed settings"\]/);
   } finally {

@@ -1,20 +1,8 @@
-import {
-  FallbackLlmClient,
-  type FallbackLlmRuntimeContext,
-  type GatewayConfig,
-} from "@remnic/core";
-import type {
-  BenchJudge,
-  BenchJudgeResult,
-  BenchResponder,
-  BenchResponse,
-} from "./adapters/types.js";
-import { createProvider } from "./providers/factory.js";
-import type {
-  LlmProvider,
-  ProviderFactoryConfig,
-} from "./providers/types.js";
+import { FallbackLlmClient, type FallbackLlmRuntimeContext, type GatewayConfig } from "@remnic/core";
+import type { BenchJudge, BenchJudgeResult, BenchResponder, BenchResponse } from "./adapters/types.js";
 import type { StructuredJudge } from "./judges/sealed-rubric.js";
+import { createProvider } from "./providers/factory.js";
+import type { LlmProvider, ProviderFactoryConfig } from "./providers/types.js";
 
 const DEFAULT_RESPONDER_SYSTEM_PROMPT = [
   "You answer benchmark questions using only the supplied Remnic memory context.",
@@ -44,12 +32,7 @@ const CONTEXT_COMPACTION_MARKER = "[...omitted unrelated recalled context...]";
 const COMPACTED_CONTEXT_PREFIX =
   "[Remnic memory context compacted for the responder prompt; full recalled text is preserved in the benchmark artifact.]";
 const TRAJECTORY_ANALYSIS_HEADING = "## Trajectory analysis";
-const TRAJECTORY_LABELS = Object.freeze([
-  "action",
-  "observation",
-  "step",
-  "turn",
-]);
+const TRAJECTORY_LABELS = Object.freeze(["action", "observation", "step", "turn"]);
 
 export interface GatewayResponderOptions {
   gatewayConfig?: GatewayConfig;
@@ -58,7 +41,7 @@ export interface GatewayResponderOptions {
   workspaceDir?: string;
   llmFactory?: (
     gatewayConfig: GatewayConfig,
-    runtimeContext: FallbackLlmRuntimeContext,
+    runtimeContext: FallbackLlmRuntimeContext
   ) => Pick<FallbackLlmClient, "chatCompletion">;
 }
 
@@ -69,32 +52,24 @@ export interface ProviderResponderOptions {
 
 export function createResponderFromProvider(
   provider: LlmProvider,
-  options: ProviderResponderOptions = {},
+  options: ProviderResponderOptions = {}
 ): BenchResponder {
   return {
-    async respond(
-      question: string,
-      recalledText: string,
-      control,
-    ): Promise<BenchResponse> {
-      const responderQuestion = options.promptBudgetChars === undefined
-        ? question
-        : compactResponderQuestion(question, options.promptBudgetChars);
-      const responderContext = options.contextBudgetChars === undefined
-        ? recalledText
-        : compactResponderContext(
-          recalledText,
-          question,
-          options.contextBudgetChars,
-        );
+    async respond(question: string, recalledText: string, control): Promise<BenchResponse> {
+      const responderQuestion =
+        options.promptBudgetChars === undefined
+          ? question
+          : compactResponderQuestion(question, options.promptBudgetChars);
+      const responderContext =
+        options.contextBudgetChars === undefined
+          ? recalledText
+          : compactResponderContext(recalledText, question, options.contextBudgetChars);
       const completion = await provider.complete(
         [
           `QUESTION: ${responderQuestion}`,
           "",
           "REMNIC_MEMORY_CONTEXT:",
-          responderContext.trim().length > 0
-            ? responderContext
-            : "(no memory context available)",
+          responderContext.trim().length > 0 ? responderContext : "(no memory context available)",
           "",
           "Answer the question using only the supplied memory context.",
         ].join("\n"),
@@ -103,7 +78,7 @@ export function createResponderFromProvider(
           temperature: 0,
           maxTokens: 256,
           signal: control?.signal,
-        },
+        }
       );
 
       return {
@@ -118,7 +93,7 @@ export function createResponderFromProvider(
 
 export function createProviderBackedResponder(
   config: ProviderFactoryConfig,
-  providerInstance?: LlmProvider,
+  providerInstance?: LlmProvider
 ): BenchResponder {
   validateProviderConfig(config, "responder");
   return createResponderFromProvider(providerInstance ?? createProvider(config), {
@@ -127,10 +102,7 @@ export function createProviderBackedResponder(
   });
 }
 
-export function compactResponderQuestion(
-  question: string,
-  maxChars: number,
-): string {
+export function compactResponderQuestion(question: string, maxChars: number): string {
   if (!Number.isInteger(maxChars) || maxChars <= 0) {
     throw new Error("responder prompt budget must be a positive integer");
   }
@@ -144,9 +116,7 @@ export function compactResponderQuestion(
     : question.includes("Benchmark answer protocol:")
       ? buildConciseStrictProtocol(question)
       : "";
-  const compacted = [baseQuestion, conciseProtocol]
-    .filter((part) => part.trim().length > 0)
-    .join("\n\n");
+  const compacted = [baseQuestion, conciseProtocol].filter((part) => part.trim().length > 0).join("\n\n");
   if (compacted.length <= maxChars) {
     return compacted;
   }
@@ -157,10 +127,7 @@ export function compactResponderQuestion(
 
   const separator = "\n\n";
   const protocolBudget = maxChars - baseQuestion.length - separator.length;
-  return `${baseQuestion}${separator}${headTailCompact(
-    conciseProtocol,
-    protocolBudget,
-  )}`;
+  return `${baseQuestion}${separator}${headTailCompact(conciseProtocol, protocolBudget)}`;
 }
 
 function extractBenchmarkQuestionText(question: string): string {
@@ -180,7 +147,7 @@ function buildConciseStrictProtocol(question: string): string {
     "Benchmark answer protocol:",
     "- Use only the supplied Remnic memory context.",
     "- Answer directly and briefly; do not add unsupported facts.",
-    "- Say \"unknown\" only when relevant evidence is absent, contradictory, or lacks the requested value.",
+    '- Say "unknown" only when relevant evidence is absent, contradictory, or lacks the requested value.',
     "- Preserve any requested output format.",
   ];
   appendFormatSpecificInstruction(question, instructions);
@@ -202,10 +169,7 @@ function buildConciseAgenticProtocol(question: string): string {
   return instructions.join("\n");
 }
 
-function appendFormatSpecificInstruction(
-  question: string,
-  instructions: string[],
-): void {
+function appendFormatSpecificInstruction(question: string, instructions: string[]): void {
   if (question.includes("- Return only the selected option letter")) {
     instructions.push("- Return only the selected option letter.");
   } else if (question.includes("- Return only the selected option number")) {
@@ -217,11 +181,7 @@ function appendFormatSpecificInstruction(
   }
 }
 
-export function compactResponderContext(
-  recalledText: string,
-  question: string,
-  maxChars: number,
-): string {
+export function compactResponderContext(recalledText: string, question: string, maxChars: number): string {
   if (!Number.isInteger(maxChars) || maxChars <= 0) {
     throw new Error("responder context budget must be a positive integer");
   }
@@ -232,20 +192,21 @@ export function compactResponderContext(
   }
 
   const stepRefs = extractReferencedTrajectoryNumbers(question);
-  const trajectoryAnalysis = extractContextSection(
-    normalized,
-    TRAJECTORY_ANALYSIS_HEADING,
-  );
-  const focusedTranscript = stepRefs.size > 0
-    ? buildTrajectoryFocusedContext(normalized, stepRefs)
-    : "";
-  const body = joinCompactedContextSections(
-    trajectoryAnalysis,
-    focusedTranscript,
-  );
-  const compactedBody = body.trim().length > 0
-    ? body.trim()
-    : headTailCompact(normalized, maxChars);
+  const trajectoryAnalysis = extractContextSection(normalized, TRAJECTORY_ANALYSIS_HEADING);
+  const preserveTrajectorySpan = shouldPreserveTrajectorySpan(question);
+  const includeTrajectoryBoundary = shouldIncludeTrajectorySpanBoundary(question);
+  const preserveTrajectoryInterval = shouldPreserveTrajectoryInterval(question);
+  const focusedTranscript =
+    stepRefs.size > 0
+      ? preserveTrajectorySpan
+        ? buildTrajectorySpanContext(normalized, stepRefs, {
+            includeBoundary: includeTrajectoryBoundary,
+            intervalOnly: preserveTrajectoryInterval,
+          })
+        : buildTrajectoryFocusedContext(normalized, stepRefs)
+      : "";
+  const body = joinCompactedContextSections(trajectoryAnalysis, focusedTranscript);
+  const compactedBody = body.trim().length > 0 ? body.trim() : headTailCompact(normalized, maxChars);
   const withPrefix = `${COMPACTED_CONTEXT_PREFIX}\n${compactedBody}`;
   if (withPrefix.length <= maxChars) {
     return withPrefix;
@@ -259,10 +220,7 @@ export function compactResponderContext(
   return `${COMPACTED_CONTEXT_PREFIX}\n${headTailCompact(compactedBody, bodyBudget)}`;
 }
 
-function extractContextSection(
-  text: string,
-  heading: string,
-): string {
+function extractContextSection(text: string, heading: string): string {
   const lines = text.split("\n");
   const start = lines.findIndex((line) => line.trim() === heading);
   if (start < 0) {
@@ -316,11 +274,7 @@ function extractReferencedTrajectoryNumbers(question: string): Set<number> {
   return refs;
 }
 
-function matchedTrajectoryLabelLength(
-  text: string,
-  index: number,
-  label: string,
-): number {
+function matchedTrajectoryLabelLength(text: string, index: number, label: string): number {
   if (!isWordBoundary(text[index - 1])) {
     return 0;
   }
@@ -336,7 +290,7 @@ function matchedTrajectoryLabelLength(
 
 function parseNumberRangeAfterLabel(
   text: string,
-  index: number,
+  index: number
 ): { start: number; end: number; nextIndex: number } | undefined {
   let cursor = skipNumberLeadIn(text, index);
   const first = parseUnsignedIntegerAt(text, cursor);
@@ -383,10 +337,7 @@ function skipWhitespace(text: string, index: number): number {
   return cursor;
 }
 
-function parseUnsignedIntegerAt(
-  text: string,
-  index: number,
-): { value: number; nextIndex: number } | undefined {
+function parseUnsignedIntegerAt(text: string, index: number): { value: number; nextIndex: number } | undefined {
   let cursor = index;
   let raw = "";
   while (cursor < text.length && isDigit(text[cursor])) {
@@ -411,10 +362,7 @@ function addBoundedRange(refs: Set<number>, start: number, end: number): void {
   }
 }
 
-function buildTrajectoryFocusedContext(
-  recalledText: string,
-  stepRefs: Set<number>,
-): string {
+function buildTrajectoryFocusedContext(recalledText: string, stepRefs: Set<number>): string {
   const lines = recalledText.split("\n");
   const include = new Set<number>();
   for (let index = 0; index < lines.length; index += 1) {
@@ -449,11 +397,7 @@ function buildTrajectoryFocusedContext(
     if (!include.has(index)) {
       continue;
     }
-    if (
-      lastIncluded >= 0 &&
-      index > lastIncluded + 1 &&
-      rendered.at(-1) !== CONTEXT_COMPACTION_MARKER
-    ) {
+    if (lastIncluded >= 0 && index > lastIncluded + 1 && rendered.at(-1) !== CONTEXT_COMPACTION_MARKER) {
       rendered.push(CONTEXT_COMPACTION_MARKER);
     }
     rendered.push(lines[index]);
@@ -462,21 +406,93 @@ function buildTrajectoryFocusedContext(
   return rendered.join("\n");
 }
 
+function buildTrajectorySpanContext(
+  recalledText: string,
+  stepRefs: Set<number>,
+  options: { includeBoundary: boolean; intervalOnly: boolean }
+): string {
+  const lines = recalledText.split("\n");
+  const include = new Set<number>();
+  const minStep = Math.min(...stepRefs);
+  const maxStep = Math.max(...stepRefs);
+  for (let index = 0; index < lines.length; index += 1) {
+    if (isContextHeading(lines[index])) {
+      include.add(index);
+      continue;
+    }
+
+    const trajectoryNumber = parseTrajectoryLineNumber(lines[index]);
+    if (trajectoryNumber !== undefined && isTrajectoryNumberInSpan(trajectoryNumber, minStep, maxStep, options)) {
+      include.add(index);
+    }
+  }
+
+  if (include.size === 0) {
+    return "";
+  }
+
+  const rendered: string[] = [];
+  let lastIncluded = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!include.has(index)) {
+      continue;
+    }
+    if (lastIncluded >= 0 && index > lastIncluded + 1 && rendered.at(-1) !== CONTEXT_COMPACTION_MARKER) {
+      rendered.push(CONTEXT_COMPACTION_MARKER);
+    }
+    rendered.push(lines[index]);
+    lastIncluded = index;
+  }
+  return rendered.join("\n");
+}
+
+function isTrajectoryNumberInSpan(
+  trajectoryNumber: number,
+  minStep: number,
+  maxStep: number,
+  options: { includeBoundary: boolean; intervalOnly: boolean }
+): boolean {
+  if (options.intervalOnly || minStep !== maxStep) {
+    return (
+      trajectoryNumber >= minStep &&
+      (options.includeBoundary ? trajectoryNumber <= maxStep : trajectoryNumber < maxStep)
+    );
+  }
+  return options.includeBoundary ? trajectoryNumber <= maxStep : trajectoryNumber < maxStep;
+}
+
+function shouldPreserveTrajectorySpan(question: string): boolean {
+  const baseQuestion = extractBenchmarkQuestionText(question).toLowerCase();
+  return /\b(?:before|until|through|thru|prior to|between|history|histories|range|count|counts|list|lists)\b|up to/.test(
+    baseQuestion
+  );
+}
+
+function shouldIncludeTrajectorySpanBoundary(question: string): boolean {
+  const baseQuestion = extractBenchmarkQuestionText(question).toLowerCase();
+  return !/\b(?:before|prior to)\b/.test(baseQuestion);
+}
+
+function shouldPreserveTrajectoryInterval(question: string): boolean {
+  const baseQuestion = extractBenchmarkQuestionText(question).toLowerCase();
+  return /\bbetween\b/.test(baseQuestion);
+}
+
 function isContextHeading(line: string): boolean {
   const trimmed = line.trim();
-  return trimmed.startsWith("#") ||
+  return (
+    trimmed.startsWith("#") ||
     trimmed === "REMNIC_MEMORY_CONTEXT:" ||
     trimmed.startsWith("Memory context") ||
-    trimmed.startsWith("Relevant");
+    trimmed.startsWith("Relevant")
+  );
 }
 
 function parseTrajectoryLineNumber(line: string): number | undefined {
   const trimmed = line.trimStart();
   const bracketStart = trimmed[0] === "[" ? 1 : 0;
   const bracketEnd = bracketStart === 1 ? trimmed.indexOf("]") : -1;
-  const candidate = bracketEnd > bracketStart
-    ? trimmed.slice(bracketStart, bracketEnd)
-    : trimmed.slice(0, 48);
+  const candidate = bracketEnd > bracketStart ? trimmed.slice(bracketStart, bracketEnd) : trimmed.slice(0, 48);
   const lower = candidate.toLowerCase();
   for (const label of TRAJECTORY_LABELS) {
     if (!lower.startsWith(label)) {
@@ -503,9 +519,7 @@ function headTailCompact(text: string, maxChars: number): string {
   const remaining = maxChars - marker.length;
   const headChars = Math.ceil(remaining * 0.6);
   const tailChars = remaining - headChars;
-  return `${text.slice(0, headChars).trimEnd()}${marker}${
-    text.slice(text.length - tailChars).trimStart()
-  }`;
+  return `${text.slice(0, headChars).trimEnd()}${marker}${text.slice(text.length - tailChars).trimStart()}`;
 }
 
 function isWordBoundary(char: string | undefined): boolean {
@@ -514,9 +528,7 @@ function isWordBoundary(char: string | undefined): boolean {
 
 function isAsciiAlnum(char: string): boolean {
   const code = char.charCodeAt(0);
-  return (code >= 48 && code <= 57) ||
-    (code >= 65 && code <= 90) ||
-    (code >= 97 && code <= 122);
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 
 function isDigit(char: string | undefined): boolean {
@@ -536,10 +548,7 @@ function isRangeDash(char: string | undefined): boolean {
 }
 
 function createJudgeFromProvider(provider: LlmProvider): BenchJudge {
-  async function scoreBinaryPrompt(
-    prompt: string,
-    control?: { signal?: AbortSignal },
-  ): Promise<BenchJudgeResult> {
+  async function scoreBinaryPrompt(prompt: string, control?: { signal?: AbortSignal }): Promise<BenchJudgeResult> {
     const completion = await provider.complete(prompt, {
       systemPrompt: "Answer the benchmark judging question with yes or no only.",
       temperature: 0,
@@ -559,7 +568,7 @@ function createJudgeFromProvider(provider: LlmProvider): BenchJudge {
     question: string,
     predicted: string,
     expected: string,
-    control?: { signal?: AbortSignal },
+    control?: { signal?: AbortSignal }
   ): Promise<BenchJudgeResult> {
     const completion = await provider.complete(
       [
@@ -576,7 +585,7 @@ function createJudgeFromProvider(provider: LlmProvider): BenchJudge {
         temperature: 0,
         maxTokens: 16,
         signal: control?.signal,
-      },
+      }
     );
 
     return {
@@ -588,12 +597,7 @@ function createJudgeFromProvider(provider: LlmProvider): BenchJudge {
   }
 
   return {
-    async score(
-      question: string,
-      predicted: string,
-      expected: string,
-      control,
-    ): Promise<number> {
+    async score(question: string, predicted: string, expected: string, control): Promise<number> {
       return (await scoreWithMetrics(question, predicted, expected, control)).score;
     },
     scoreWithMetrics,
@@ -601,10 +605,7 @@ function createJudgeFromProvider(provider: LlmProvider): BenchJudge {
   };
 }
 
-export function createProviderBackedJudge(
-  config: ProviderFactoryConfig,
-  providerInstance?: LlmProvider,
-): BenchJudge {
+export function createProviderBackedJudge(config: ProviderFactoryConfig, providerInstance?: LlmProvider): BenchJudge {
   validateProviderConfig(config, "judge");
   return createJudgeFromProvider(providerInstance ?? createProvider(config));
 }
@@ -614,7 +615,7 @@ function createAmaBenchRecommendedJudgeFromProvider(provider: LlmProvider): Benc
     question: string,
     predicted: string,
     expected: string,
-    control?: { signal?: AbortSignal },
+    control?: { signal?: AbortSignal }
   ): Promise<BenchJudgeResult> {
     const completion = await provider.complete(
       [
@@ -631,7 +632,7 @@ function createAmaBenchRecommendedJudgeFromProvider(provider: LlmProvider): Benc
         temperature: 0,
         maxTokens: 128,
         signal: control?.signal,
-      },
+      }
     );
 
     return {
@@ -643,12 +644,7 @@ function createAmaBenchRecommendedJudgeFromProvider(provider: LlmProvider): Benc
   }
 
   return {
-    async score(
-      question: string,
-      predicted: string,
-      expected: string,
-      control,
-    ): Promise<number> {
+    async score(question: string, predicted: string, expected: string, control): Promise<number> {
       return (await scoreWithMetrics(question, predicted, expected, control)).score;
     },
     scoreWithMetrics,
@@ -657,17 +653,13 @@ function createAmaBenchRecommendedJudgeFromProvider(provider: LlmProvider): Benc
 
 export function createProviderBackedAmaBenchRecommendedJudge(
   config: ProviderFactoryConfig,
-  providerInstance?: LlmProvider,
+  providerInstance?: LlmProvider
 ): BenchJudge {
   validateProviderConfig(config, "AMA-Bench recommended judge");
-  return createAmaBenchRecommendedJudgeFromProvider(
-    providerInstance ?? createProvider(config),
-  );
+  return createAmaBenchRecommendedJudgeFromProvider(providerInstance ?? createProvider(config));
 }
 
-export function createStructuredJudgeFromProvider(
-  provider: LlmProvider,
-): StructuredJudge {
+export function createStructuredJudgeFromProvider(provider: LlmProvider): StructuredJudge {
   return {
     async evaluate(request) {
       const completion = await provider.complete(request.user, {
@@ -682,15 +674,13 @@ export function createStructuredJudgeFromProvider(
 
 export function createProviderBackedStructuredJudge(
   config: ProviderFactoryConfig,
-  providerInstance?: LlmProvider,
+  providerInstance?: LlmProvider
 ): StructuredJudge {
   validateProviderConfig(config, "judge");
   return createStructuredJudgeFromProvider(providerInstance ?? createProvider(config));
 }
 
-export function createGatewayResponder(
-  options: GatewayResponderOptions,
-): BenchResponder {
+export function createGatewayResponder(options: GatewayResponderOptions): BenchResponder {
   if (!options.gatewayConfig) {
     throw new Error("gateway responder requires gatewayConfig");
   }
@@ -699,15 +689,12 @@ export function createGatewayResponder(
     ...(options.agentDir ? { agentDir: options.agentDir } : {}),
     ...(options.workspaceDir ? { workspaceDir: options.workspaceDir } : {}),
   };
-  const llm = options.llmFactory?.(options.gatewayConfig, runtimeContext)
-    ?? new FallbackLlmClient(options.gatewayConfig, runtimeContext);
+  const llm =
+    options.llmFactory?.(options.gatewayConfig, runtimeContext) ??
+    new FallbackLlmClient(options.gatewayConfig, runtimeContext);
 
   return {
-    async respond(
-      question: string,
-      recalledText: string,
-      control,
-    ): Promise<BenchResponse> {
+    async respond(question: string, recalledText: string, control): Promise<BenchResponse> {
       const startedAt = performance.now();
       const response = await llm.chatCompletion(
         [
@@ -718,9 +705,7 @@ export function createGatewayResponder(
               `QUESTION: ${question}`,
               "",
               "REMNIC_MEMORY_CONTEXT:",
-              recalledText.trim().length > 0
-                ? recalledText
-                : "(no memory context available)",
+              recalledText.trim().length > 0 ? recalledText : "(no memory context available)",
               "",
               "Answer the question using only the supplied memory context.",
             ].join("\n"),
@@ -730,7 +715,7 @@ export function createGatewayResponder(
           temperature: 0,
           agentId: options.agentId,
           signal: control?.signal,
-        },
+        }
       );
 
       if (!response?.content) {
@@ -752,7 +737,7 @@ export function createGatewayResponder(
 
 function validateProviderConfig(
   config: ProviderFactoryConfig,
-  kind: "responder" | "judge" | "AMA-Bench recommended judge",
+  kind: "responder" | "judge" | "AMA-Bench recommended judge"
 ): void {
   if (typeof config.model !== "string" || config.model.trim().length === 0) {
     throw new Error(`provider-backed ${kind} requires a non-empty model`);
@@ -776,7 +761,7 @@ function parseScalarJudgeScore(raw: string): number {
 
   const scoreCueMatches = [
     ...trimmed.matchAll(
-      /\b(?:final\s+score|score|rating)\b\s*[:=]\s*(-?\d+(?:\.\d+)?)(?:\s*(%|\/\s*(-?\d+(?:\.\d+)?)))?/gi,
+      /\b(?:final\s+score|score|rating)\b\s*[:=]\s*(-?\d+(?:\.\d+)?)(?:\s*(%|\/\s*(-?\d+(?:\.\d+)?)))?/gi
     ),
   ];
   for (const match of scoreCueMatches.reverse()) {
@@ -801,9 +786,7 @@ function parseScalarJudgeScore(raw: string): number {
     }
   }
 
-  const fractionMatches = [
-    ...trimmed.matchAll(/(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)/g),
-  ];
+  const fractionMatches = [...trimmed.matchAll(/(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)/g)];
   for (const match of fractionMatches.reverse()) {
     const numerator = Number.parseFloat(match[1]);
     const denominator = Number.parseFloat(match[2]);
@@ -820,9 +803,7 @@ function parseScalarJudgeScore(raw: string): number {
     }
   }
 
-  const outOfMatches = [
-    ...trimmed.matchAll(/(-?\d+(?:\.\d+)?)\s+out\s+of\s+(-?\d+(?:\.\d+)?)/gi),
-  ];
+  const outOfMatches = [...trimmed.matchAll(/(-?\d+(?:\.\d+)?)\s+out\s+of\s+(-?\d+(?:\.\d+)?)/gi)];
   for (const match of outOfMatches.reverse()) {
     const numerator = Number.parseFloat(match[1]);
     const denominator = Number.parseFloat(match[2]);
@@ -890,7 +871,7 @@ function parseAmaBenchBinaryJudgeScore(raw: string): number {
   }
   if (
     /\b(?:not|never|isn'?t|wasn'?t|doesn'?t|didn'?t|cannot|can'?t)\b(?:\s+\w+){0,3}\s+(?:incorrect|false|fail(?:ed|s|ing)?)\b/i.test(
-      trimmed,
+      trimmed
     )
   ) {
     return 1;
@@ -900,7 +881,7 @@ function parseAmaBenchBinaryJudgeScore(raw: string): number {
   }
   if (
     /\b(?:not|never|isn'?t|wasn'?t|doesn'?t|didn'?t|cannot|can'?t)\b(?:\s+\w+){0,3}\s+(?:correct|true|pass(?:ed|es|ing)?|match(?:es|ed|ing)?|same)\b/i.test(
-      trimmed,
+      trimmed
     )
   ) {
     return 0;
@@ -935,13 +916,13 @@ function extractJsonObjects(raw: string): string[] {
         escaped = false;
       } else if (char === "\\") {
         escaped = true;
-      } else if (char === "\"") {
+      } else if (char === '"') {
         inString = false;
       }
       continue;
     }
 
-    if (char === "\"") {
+    if (char === '"') {
       inString = true;
     } else if (char === "{") {
       depth += 1;
@@ -957,10 +938,7 @@ function extractJsonObjects(raw: string): string[] {
   return objects;
 }
 
-function isPlausibleScoreFraction(
-  numerator: number,
-  denominator: number,
-): boolean {
+function isPlausibleScoreFraction(numerator: number, denominator: number): boolean {
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator)) {
     return false;
   }
@@ -976,7 +954,7 @@ function isPlausibleSlashScoreFraction(
   raw: string,
   match: RegExpMatchArray,
   numerator: number,
-  denominator: number,
+  denominator: number
 ): boolean {
   if (!isPlausibleScoreFraction(numerator, denominator)) {
     return false;
@@ -1004,19 +982,12 @@ function isPlausibleSlashScoreFraction(
   return hasScoreCueBefore(raw, start);
 }
 
-function isStandaloneSlashScore(
-  raw: string,
-  start: number,
-  end: number,
-): boolean {
-  return raw.slice(0, start).trim().length === 0 &&
-    /^[\s.!?]*$/.test(raw.slice(end));
+function isStandaloneSlashScore(raw: string, start: number, end: number): boolean {
+  return raw.slice(0, start).trim().length === 0 && /^[\s.!?]*$/.test(raw.slice(end));
 }
 
 function hasScoreCueBefore(raw: string, start: number): boolean {
-  const beforeContext = raw
-    .slice(Math.max(0, start - 20), start)
-    .toLowerCase();
+  const beforeContext = raw.slice(Math.max(0, start - 20), start).toLowerCase();
 
   return SCORE_CUE_REGEX.test(beforeContext);
 }

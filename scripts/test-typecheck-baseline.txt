@@ -68,10 +68,10 @@ packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(18
 packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(206,60): TS2352
 packages/bench/src/providers/local-llm.test.ts(155,50): TS2304
 packages/bench/src/providers/ollama.test.ts(10,50): TS2304
-packages/bench/src/responders.test.ts(334,5): TS2322
-packages/bench/src/responders.test.ts(337,21): TS18048
-packages/bench/src/responders.test.ts(339,13): TS18048
-packages/bench/src/responders.test.ts(343,24): TS18048
+packages/bench/src/responders.test.ts(368,5): TS2322
+packages/bench/src/responders.test.ts(371,21): TS18048
+packages/bench/src/responders.test.ts(373,13): TS18048
+packages/bench/src/responders.test.ts(377,24): TS18048
 packages/bench/src/results-store.test.ts(31,18): TS2352
 packages/bench/src/runtime-profiles.test.ts(54,38): TS2345
 packages/bench/src/security/extraction-attack/baseline.test.ts(12,62): TS2559
