@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { EmbeddingFallback } from "../src/embedding-fallback.js";
 import {
   clearHostEmbeddingProvidersForTest,
@@ -164,6 +164,64 @@ test("EmbeddingFallback indexes and searches fallback vectors under the fallback
 
     const results = await fallback.search("launch", 5);
     assert.deepEqual(results.map((result) => result.id), ["mem-openai"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+  }
+});
+
+test("EmbeddingFallback does not replace an existing host index during transient fallback", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-skip-fallback-"));
+  const originalFetch = globalThis.fetch;
+  const indexPath = path.join(memoryDir, "state", "embeddings.json");
+  await mkdir(path.dirname(indexPath), { recursive: true });
+  await writeFile(
+    indexPath,
+    JSON.stringify({
+      version: 1,
+      provider: "host",
+      model: "host-model",
+      entries: {
+        "mem-host": {
+          vector: [1, 0],
+          path: "facts/host.md",
+        },
+      },
+    }),
+    "utf-8",
+  );
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    model: "host-model",
+    async embed() {
+      return null;
+    },
+  });
+  try {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({ data: [{ embedding: [0, 1] }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
+    await fallback.indexFile(
+      "mem-openai",
+      "launch planning",
+      path.join(memoryDir, "facts", "launch.md"),
+    );
+
+    const parsed = JSON.parse(await readFile(indexPath, "utf-8")) as {
+      provider: string;
+      model: string;
+      entries: Record<string, unknown>;
+    };
+    assert.equal(parsed.provider, "host");
+    assert.equal(parsed.model, "host-model");
+    assert.ok(parsed.entries["mem-host"]);
+    assert.equal(parsed.entries["mem-openai"], undefined);
   } finally {
     globalThis.fetch = originalFetch;
     unregister();

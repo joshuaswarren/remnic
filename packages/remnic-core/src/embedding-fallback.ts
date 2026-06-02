@@ -36,6 +36,11 @@ type EmbeddingIndexFile = {
   entries: Record<string, EmbeddingIndexEntry>;
 };
 
+type EmbeddingIndexIdentity = Pick<EmbeddingIndexFile, "provider" | "model">;
+type EmbeddingIndexComparable =
+  | EmbeddingIndexIdentity
+  | Pick<ProviderConfig, "type" | "model">;
+
 const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
 
 /**
@@ -308,6 +313,15 @@ export class EmbeddingFallback {
     if (!result) return;
 
     await this.enqueueIndexMutation(async () => {
+      if (!sameIndexIdentity(provider, result.provider)) {
+        const existing = await this.readIndexIdentityFromDisk();
+        if (existing && !sameIndexIdentity(existing, result.provider)) {
+          log.debug(
+            `embedding fallback index update skipped: ${result.provider.type}/${result.provider.model} would replace existing ${existing.provider}/${existing.model} index`,
+          );
+          return;
+        }
+      }
       const index = await this.loadIndex(result.provider);
       const relPath = toMemoryRelativePath(this.config.memoryDir, filePath);
       index.entries[memoryId] = {
@@ -594,6 +608,31 @@ export class EmbeddingFallback {
     return this.loaded;
   }
 
+  private async readIndexIdentityFromDisk(): Promise<EmbeddingIndexIdentity | null> {
+    try {
+      const raw = await readFile(this.indexPath, "utf-8");
+      const parsed = JSON.parse(raw) as Partial<EmbeddingIndexFile> | null;
+      if (
+        parsed &&
+        parsed.version === 1 &&
+        (parsed.provider === "openai" ||
+          parsed.provider === "local" ||
+          parsed.provider === "host") &&
+        typeof parsed.model === "string" &&
+        parsed.model.length > 0
+      ) {
+        return {
+          provider: parsed.provider,
+          model: parsed.model,
+        };
+      }
+    } catch {
+      // Missing or invalid indexes are treated as absent; loadIndex() owns
+      // creating a fresh file when it is safe to write.
+    }
+    return null;
+  }
+
   private async saveIndex(index: EmbeddingIndexFile): Promise<void> {
     const dir = path.dirname(this.indexPath);
     await mkdir(dir, { recursive: true });
@@ -654,6 +693,17 @@ function normalizePathPrefix(prefix: string | undefined): string | undefined {
   if (p.length === 0) return undefined;
   if (!p.endsWith("/")) p = `${p}/`;
   return p;
+}
+
+function sameIndexIdentity(
+  left: EmbeddingIndexComparable,
+  right: EmbeddingIndexComparable,
+): boolean {
+  return indexIdentityProvider(left) === indexIdentityProvider(right) && left.model === right.model;
+}
+
+function indexIdentityProvider(identity: EmbeddingIndexComparable): EmbeddingProviderType {
+  return "provider" in identity ? identity.provider : identity.type;
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {

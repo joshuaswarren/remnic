@@ -395,6 +395,38 @@ test("scenario: message_received captures bounded thread and reply metadata in t
   );
 });
 
+test("scenario: message_received strips inline explicit capture markup from transcripts", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      await messageReceived(
+        {
+          content: [
+            "Remember the launch transcript preference.",
+            "<memory_note>",
+            "content: The launch transcript preference should be compact.",
+            "category: preference",
+            "</memory_note>",
+          ].join("\n"),
+          messageId: "msg-inline-1",
+        },
+        { sessionKey: "inline-session" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.match(transcriptText, /Remember the launch transcript preference/);
+      assert.doesNotMatch(transcriptText, /memory_note/);
+      assert.doesNotMatch(transcriptText, /launch transcript preference should be compact/);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: message_received dedupes agent_end transcript when metadata capture is disabled", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {

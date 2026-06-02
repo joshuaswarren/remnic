@@ -486,6 +486,55 @@ describe("embed helper", () => {
       clearHostEmbeddingProvidersForTest();
     }
   });
+
+  it("falls back a whole host batch instead of mixing vector spaces", async () => {
+    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const {
+      clearHostEmbeddingProvidersForTest,
+      registerHostEmbeddingProvider,
+    } = await import("../src/host-embedding-provider.js");
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-batch-fallback-"));
+    const originalFetch = globalThis.fetch;
+    const hostCalls: string[] = [];
+    const fallbackInputs: string[] = [];
+    const unregister = registerHostEmbeddingProvider(memoryDir, {
+      id: "host-test",
+      async embed() {
+        return null;
+      },
+      async embedBatch(texts) {
+        hostCalls.push(...texts);
+        return [[1, 0], null];
+      },
+    });
+    try {
+      globalThis.fetch = (async (_url, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { input?: string };
+        fallbackInputs.push(body.input ?? "");
+        return new Response(JSON.stringify({ data: [{ embedding: [0, 1] }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as typeof fetch;
+      const helper = new EmbedHelper(fakeConfig({
+        embeddingFallbackEnabled: true,
+        embeddingFallbackProvider: "openai",
+        openaiApiKey: "test-key",
+        memoryDir,
+      }) as any);
+
+      assert.deepEqual(await helper.embedBatch(["doc one", "doc two"]), [
+        [0, 1],
+        [0, 1],
+      ]);
+      assert.deepEqual(hostCalls, ["doc one", "doc two"]);
+      assert.deepEqual(fallbackInputs, ["doc one", "doc two"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      unregister();
+      clearHostEmbeddingProvidersForTest();
+    }
+  });
 });
 
 /** Minimal fake PluginConfig for factory routing tests. */

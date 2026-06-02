@@ -83,10 +83,8 @@ export class EmbedHelper {
         const fallbackProvider = this.resolveProvider({ includeHost: false });
         if (fallbackProvider) {
           const fallbackResults = await Promise.all(
-            batch.map((text, index) =>
-              batchResults[index] === null
-                ? this.callEmbed(text, fallbackProvider, options.signal, "document")
-                : Promise.resolve(batchResults[index]),
+            batch.map((text) =>
+              this.callEmbed(text, fallbackProvider, options.signal, "document"),
             ),
           );
           for (let j = 0; j < fallbackResults.length; j++) {

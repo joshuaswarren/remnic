@@ -3351,10 +3351,19 @@ const pluginDefinition = {
             typeof event.timestamp === "number" && Number.isFinite(event.timestamp)
               ? new Date(event.timestamp).toISOString()
               : new Date().toISOString();
+          const cleaned = cleanOpenClawUserMessage(content);
+          const inlineCaptureEnabled = shouldProcessInlineExplicitCapture(
+            orchestrator.config,
+          );
+          const transcriptContent =
+            inlineCaptureEnabled && hasInlineExplicitCaptureMarkup(cleaned)
+              ? stripInlineExplicitCaptureNotes(cleaned)
+              : cleaned;
+          if (transcriptContent.length === 0) return;
           await orchestrator.transcript.append({
             timestamp,
             role: "user",
-            content: cleanOpenClawUserMessage(content),
+            content: transcriptContent,
             sessionKey,
             turnId: crypto.randomUUID(),
             ...(metadata ? { metadata } : {}),
