@@ -3,14 +3,14 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
-  getConnectorToken,
-  loadTokenStore,
-  saveTokenStore,
   type MemoryExtensionPublisher,
   type PublishContext,
   type PublishResult,
   type PublisherCapabilities,
   type TokenEntry,
+  getConnectorToken,
+  loadTokenStore,
+  saveTokenStore,
 } from "@remnic/core";
 
 import { resolvePiAgentHome, resolvePiExtensionRoot } from "./paths.js";
@@ -56,7 +56,7 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
       "## Installed Capabilities",
       "",
       "- Recall relevant Remnic context in Pi's `context` hook before agent turns.",
-      "- Observe Pi user, assistant, and tool messages with `sourceFormat: \"pi\"`.",
+      '- Observe Pi user, assistant, and tool messages with `sourceFormat: "pi"`.',
       "- Coordinate Pi `session_before_compact` with Remnic LCM flush and checkpoint recording.",
       "- Register Remnic MCP tools as Pi tools when daemon authentication is configured.",
       "- Persist lightweight dedupe state in Pi custom entries via `appendEntry`.",
@@ -129,12 +129,16 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
       try {
         restorePublishSnapshot(extensionRoot, rootExisted, snapshots);
       } catch (restoreErr) {
-        ctx.log.warn(`Pi extension rollback failed: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`);
+        ctx.log.warn(
+          `Pi extension rollback failed: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`
+        );
       }
       try {
         restorePiTokenEntry(priorTokenEntry);
       } catch (tokenErr) {
-        ctx.log.warn(`Pi connector token rollback failed: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`);
+        ctx.log.warn(
+          `Pi connector token rollback failed: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`
+        );
       }
       throw err;
     }
@@ -229,11 +233,7 @@ function snapshotFiles(paths: string[]): FileSnapshot[] {
 }
 
 function restorePublishSnapshot(extensionRoot: string, rootExisted: boolean, snapshots: FileSnapshot[]): void {
-  if (!rootExisted) {
-    assertSafeExistingPath(extensionRoot);
-    fs.rmSync(extensionRoot, { recursive: true, force: true });
-    return;
-  }
+  if (!rootExisted && !canCleanNewExtensionRoot(extensionRoot)) return;
 
   for (const snapshot of snapshots) {
     if (!snapshot.existed) {
@@ -251,6 +251,40 @@ function restorePublishSnapshot(extensionRoot: string, rootExisted: boolean, sna
       }
     }
   }
+
+  if (!rootExisted) {
+    removeEmptyDirectory(extensionRoot);
+  }
+}
+
+function canCleanNewExtensionRoot(extensionRoot: string): boolean {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(extensionRoot);
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") return false;
+    throw err;
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Pi extension path must not be a symlink: ${extensionRoot}`);
+  }
+  return stat.isDirectory();
+}
+
+function removeEmptyDirectory(dirPath: string): void {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(dirPath);
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") return;
+    throw err;
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Pi extension path must not be a symlink: ${dirPath}`);
+  }
+  if (!stat.isDirectory()) return;
+  if (fs.readdirSync(dirPath).length > 0) return;
+  fs.rmdirSync(dirPath);
 }
 
 function mkdirPiExtensionRoot(extensionRoot: string, env: NodeJS.ProcessEnv): void {
