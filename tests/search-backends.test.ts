@@ -497,6 +497,7 @@ describe("embed helper", () => {
     const originalFetch = globalThis.fetch;
     const hostCalls: string[] = [];
     const fallbackInputs: string[] = [];
+    let hostAvailable = false;
     const unregister = registerHostEmbeddingProvider(memoryDir, {
       id: "host-test",
       async embed() {
@@ -504,7 +505,7 @@ describe("embed helper", () => {
       },
       async embedBatch(texts) {
         hostCalls.push(...texts);
-        return [[1, 0], null];
+        return hostAvailable ? texts.map(() => [1, 0]) : [[1, 0], null];
       },
     });
     try {
@@ -523,11 +524,18 @@ describe("embed helper", () => {
         memoryDir,
       }) as any);
 
+      assert.equal(helper.getProviderIdentity(), "host:host-test");
       assert.deepEqual(await helper.embedBatch(["doc one", "doc two"]), [
         [0, 1],
         [0, 1],
       ]);
-      assert.deepEqual(hostCalls, ["doc one", "doc two"]);
+      assert.equal(helper.getProviderIdentity(), "openai:text-embedding-3-small");
+
+      hostAvailable = true;
+      assert.deepEqual(await helper.embedBatch(["doc three"]), [[1, 0]]);
+      assert.equal(helper.getProviderIdentity(), "host:host-test");
+
+      assert.deepEqual(hostCalls, ["doc one", "doc two", "doc three"]);
       assert.deepEqual(fallbackInputs, ["doc one", "doc two"]);
     } finally {
       globalThis.fetch = originalFetch;
