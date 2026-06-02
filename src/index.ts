@@ -3378,14 +3378,18 @@ const pluginDefinition = {
               ? stripInlineExplicitCaptureNotes(cleaned)
               : cleaned;
           if (transcriptContent.length === 0) return;
-          await orchestrator.transcript.append({
-            timestamp,
-            role: "user",
-            content: transcriptContent,
-            sessionKey,
-            turnId: crypto.randomUUID(),
-            ...(metadata ? { metadata } : {}),
-          });
+          try {
+            await orchestrator.transcript.append({
+              timestamp,
+              role: "user",
+              content: transcriptContent,
+              sessionKey,
+              turnId: crypto.randomUUID(),
+              ...(metadata ? { metadata } : {}),
+            });
+          } catch (err) {
+            log.debug(`message_received transcript append failed: ${err}`);
+          }
         },
       );
     }

@@ -17,6 +17,18 @@ type ProviderConfig = {
   hostProvider?: HostEmbeddingProvider;
 };
 
+export type EmbedProviderIdentity = `${ProviderConfig["type"]}:${string}`;
+
+export type EmbedWithProviderResult = {
+  vector: number[];
+  providerIdentity: EmbedProviderIdentity;
+};
+
+export type EmbedBatchWithProviderResult = {
+  vectors: (number[] | null)[];
+  providerIdentity: EmbedProviderIdentity;
+};
+
 const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
 
 /**
@@ -48,12 +60,32 @@ export class EmbedHelper {
    * Embed a single text string. Returns null if no provider is available.
    */
   async embed(text: string, options: { signal?: AbortSignal } = {}): Promise<number[] | null> {
+    return (await this.embedWithProvider(text, options))?.vector ?? null;
+  }
+
+  async embedWithProvider(
+    text: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<EmbedWithProviderResult | null> {
     const provider = this.getProvider();
     if (!provider) return null;
     const result = await this.callEmbed(text, provider, options.signal, "query");
-    if (result || provider.type !== "host") return result;
+    if (result) {
+      return {
+        vector: result,
+        providerIdentity: providerIdentity(provider),
+      };
+    }
+    if (provider.type !== "host") return null;
     const fallbackProvider = this.resolveProvider({ includeHost: false });
-    return fallbackProvider ? this.callEmbed(text, fallbackProvider, options.signal) : null;
+    if (!fallbackProvider) return null;
+    const fallbackResult = await this.callEmbed(text, fallbackProvider, options.signal, "query");
+    return fallbackResult
+      ? {
+          vector: fallbackResult,
+          providerIdentity: providerIdentity(fallbackProvider),
+        }
+      : null;
   }
 
   /**
@@ -64,9 +96,55 @@ export class EmbedHelper {
     batchSize = 32,
     options: { signal?: AbortSignal } = {},
   ): Promise<(number[] | null)[]> {
-    const provider = this.getProvider();
-    if (!provider) return texts.map(() => null);
+    return (await this.embedBatchWithProvider(texts, batchSize, options))?.vectors ?? texts.map(() => null);
+  }
 
+  async embedBatchWithProvider(
+    texts: string[],
+    batchSize = 32,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<EmbedBatchWithProviderResult | null> {
+    const provider = this.getProvider();
+    if (!provider) return null;
+
+    if (provider.type === "host") {
+      const hostResults = await this.embedAllWithProvider(texts, batchSize, provider, options);
+      if (!hostResults.some((result) => result === null)) {
+        return {
+          vectors: hostResults,
+          providerIdentity: providerIdentity(provider),
+        };
+      }
+      const fallbackProvider = this.resolveProvider({ includeHost: false });
+      if (!fallbackProvider) {
+        return {
+          vectors: hostResults,
+          providerIdentity: providerIdentity(provider),
+        };
+      }
+      return {
+        vectors: await this.embedAllWithProvider(texts, batchSize, fallbackProvider, options),
+        providerIdentity: providerIdentity(fallbackProvider),
+      };
+    }
+
+    return {
+      vectors: await this.embedAllWithProvider(texts, batchSize, provider, options),
+      providerIdentity: providerIdentity(provider),
+    };
+  }
+
+  getProviderIdentity(): EmbedProviderIdentity | null {
+    const provider = this.getProvider();
+    return provider ? providerIdentity(provider) : null;
+  }
+
+  private async embedAllWithProvider(
+    texts: string[],
+    batchSize: number,
+    provider: ProviderConfig,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<(number[] | null)[]> {
     const results: (number[] | null)[] = new Array(texts.length).fill(null);
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize);
@@ -78,19 +156,6 @@ export class EmbedHelper {
             );
       for (let j = 0; j < batchResults.length; j++) {
         results[i + j] = batchResults[j];
-      }
-      if (provider.type === "host" && batchResults.some((result) => result === null)) {
-        const fallbackProvider = this.resolveProvider({ includeHost: false });
-        if (fallbackProvider) {
-          const fallbackResults = await Promise.all(
-            batch.map((text) =>
-              this.callEmbed(text, fallbackProvider, options.signal, "document"),
-            ),
-          );
-          for (let j = 0; j < fallbackResults.length; j++) {
-            results[i + j] = fallbackResults[j];
-          }
-        }
       }
     }
     return results;
@@ -239,4 +304,8 @@ export class EmbedHelper {
       return inputs.map(() => null);
     }
   }
+}
+
+function providerIdentity(provider: ProviderConfig): EmbedProviderIdentity {
+  return `${provider.type}:${provider.model}`;
 }

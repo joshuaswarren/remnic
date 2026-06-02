@@ -535,6 +535,161 @@ describe("embed helper", () => {
       clearHostEmbeddingProvidersForTest();
     }
   });
+
+  it("falls back the whole host call when a later batch fails", async () => {
+    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const {
+      clearHostEmbeddingProvidersForTest,
+      registerHostEmbeddingProvider,
+    } = await import("../src/host-embedding-provider.js");
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-cross-batch-"));
+    const originalFetch = globalThis.fetch;
+    const hostInputs: string[] = [];
+    const fallbackInputs: string[] = [];
+    const unregister = registerHostEmbeddingProvider(memoryDir, {
+      id: "host-test",
+      async embed() {
+        return null;
+      },
+      async embedBatch(texts) {
+        hostInputs.push(...texts);
+        return texts.map((text) => (text === "doc four" ? null : [1, 0]));
+      },
+    });
+    try {
+      globalThis.fetch = (async (_url, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { input?: string };
+        fallbackInputs.push(body.input ?? "");
+        return new Response(JSON.stringify({ data: [{ embedding: [0, 1] }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as typeof fetch;
+      const helper = new EmbedHelper(fakeConfig({
+        embeddingFallbackEnabled: true,
+        embeddingFallbackProvider: "openai",
+        openaiApiKey: "test-key",
+        memoryDir,
+      }) as any);
+
+      assert.deepEqual(await helper.embedBatch(["doc one", "doc two", "doc three", "doc four"], 2), [
+        [0, 1],
+        [0, 1],
+        [0, 1],
+        [0, 1],
+      ]);
+      assert.deepEqual(hostInputs, ["doc one", "doc two", "doc three", "doc four"]);
+      assert.deepEqual(fallbackInputs, ["doc one", "doc two", "doc three", "doc four"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      unregister();
+      clearHostEmbeddingProvidersForTest();
+    }
+  });
+});
+
+describe("embedded backend provider identity", () => {
+  it("LanceDbBackend resets stale vectors when the embedding provider changes", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-id-"));
+    try {
+      const factsDir = path.join(tempDir, "facts");
+      await mkdir(factsDir);
+      await writeFile(path.join(factsDir, "same.md"), "Updated content.", "utf8");
+
+      const addCalls: Array<{ rows: any[]; options: any }> = [];
+      const table = {
+        query: () => ({
+          select: () => ({
+            toArray: async () => [{
+              docid: "same",
+              vector: [0.25, 0.75],
+              vectorProvider: "openai:text-embedding-3-small",
+            }],
+          }),
+        }),
+        add: async (rows: any[], options: any) => {
+          addCalls.push({ rows, options });
+        },
+        createIndex: async () => {},
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+      (backend as any).lanceModule = { Index: { fts: () => ({}) } };
+
+      await backend.updateCollection("memories");
+
+      assert.equal(addCalls.length, 1);
+      assert.deepEqual(addCalls[0].rows[0].vector, [0, 0]);
+      assert.equal(addCalls[0].rows[0].vectorProvider, "");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("LanceDbBackend falls back to FTS when stored vectors use another provider", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-search-"));
+    try {
+      const searchCalls: string[] = [];
+      const table = {
+        query: () => ({
+          select: () => ({
+            toArray: async () => [{
+              docid: "same",
+              vector: [0.25, 0.75],
+              vectorProvider: "openai:text-embedding-3-small",
+            }],
+          }),
+        }),
+        search: (value: unknown, mode?: string) => {
+          searchCalls.push(mode ?? (Array.isArray(value) ? "vector" : "unknown"));
+          return {
+            limit: () => ({
+              toArray: async () => [{
+                docid: "same",
+                path: "facts/same.md",
+                snippet: "same",
+                _relevance_score: 0.9,
+              }],
+            }),
+          };
+        },
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          embedWithProvider: async () => ({
+            vector: [1, 0],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+
+      const results = await backend.vectorSearch("same", "memories", 5);
+
+      assert.deepEqual(searchCalls, ["fts"]);
+      assert.deepEqual(results.map((result) => result.docid), ["same"]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 /** Minimal fake PluginConfig for factory routing tests. */
@@ -584,6 +739,9 @@ function fakeEmbedHelper(): any {
     isAvailable: () => false,
     embed: async () => null,
     embedBatch: async () => [],
+    embedWithProvider: async () => null,
+    embedBatchWithProvider: async () => null,
+    getProviderIdentity: () => null,
   };
 }
 
@@ -599,6 +757,18 @@ function countingEmbedHelper(): any {
       helper.embedCalls++;
       return [[0.1, 0.2]];
     },
+    embedWithProvider: async () => {
+      helper.embedCalls++;
+      return { vector: [0.1, 0.2], providerIdentity: "openai:text-embedding-3-small" };
+    },
+    embedBatchWithProvider: async () => {
+      helper.embedCalls++;
+      return {
+        vectors: [[0.1, 0.2]],
+        providerIdentity: "openai:text-embedding-3-small",
+      };
+    },
+    getProviderIdentity: () => "openai:text-embedding-3-small",
   };
   return helper;
 }

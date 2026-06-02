@@ -2,7 +2,7 @@ import path from "node:path";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { log } from "../logger.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
-import type { EmbedHelper } from "./embed-helper.js";
+import type { EmbedHelper, EmbedProviderIdentity } from "./embed-helper.js";
 import { scanMemoryDir } from "./document-scanner.js";
 import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
 
@@ -156,8 +156,13 @@ export class OramaBackend implements SearchBackend {
     const docMap = new Map(docs.map((d) => [d.docid, d]));
     const { update: oramaUpdate } = this.oramaModule;
 
+    const embeddingProviderIdentity = this.embedHelper.getProviderIdentity();
     // Get existing docs to diff — map user doc ID → { internalId, vector }
-    const existingDocs = new Map<string, { internalId: string; vector?: number[] }>();
+    const existingDocs = new Map<string, {
+      internalId: string;
+      vector?: number[];
+      vectorProvider?: string;
+    }>();
     const existingCount = await count(db);
     if (existingCount > 0) {
       const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
@@ -169,6 +174,10 @@ export class OramaBackend implements SearchBackend {
           existingDocs.set(hit.document.id, {
             internalId: hit.id,
             vector: hit.document.vector,
+            vectorProvider:
+              typeof hit.document.vectorProvider === "string"
+                ? hit.document.vectorProvider
+                : undefined,
           });
         }
       }
@@ -185,8 +194,16 @@ export class OramaBackend implements SearchBackend {
           content: doc.content,
           snippet: doc.snippet,
         };
-        if (existing.vector && existing.vector.length > 0) {
+        if (
+          existing.vector &&
+          existing.vector.length > 0 &&
+          (!embeddingProviderIdentity ||
+            existing.vectorProvider === embeddingProviderIdentity)
+        ) {
           payload.vector = existing.vector;
+          payload.vectorProvider = existing.vectorProvider ?? "";
+        } else {
+          payload.vectorProvider = "";
         }
         try {
           await oramaUpdate(db, existing.internalId, payload);
@@ -200,6 +217,7 @@ export class OramaBackend implements SearchBackend {
             path: doc.path,
             content: doc.content,
             snippet: doc.snippet,
+            vectorProvider: "",
           });
         } catch {
           // Duplicate id edge case — skip
@@ -225,14 +243,21 @@ export class OramaBackend implements SearchBackend {
     const existingCount = await count(db);
     if (existingCount === 0) return;
 
-    // Find docs without vectors
+    const embeddingProviderIdentity = this.embedHelper.getProviderIdentity();
+    // Find docs without vectors or with vectors from a different provider.
     const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
-    const needsEmbed = allHits.hits.filter((h: any) => !h.document.vector || h.document.vector.length === 0);
+    const needsEmbed = allHits.hits.filter((h: any) =>
+      (embeddingProviderIdentity && h.document.vectorProvider !== embeddingProviderIdentity) ||
+      !h.document.vector ||
+      h.document.vector.length === 0
+    );
 
     if (needsEmbed.length === 0) return;
 
     const texts = needsEmbed.map((h: any) => h.document.content as string);
-    const vectors = await this.embedHelper.embedBatch(texts);
+    const embedResult = await this.embedHelper.embedBatchWithProvider(texts);
+    if (!embedResult) return;
+    const { vectors, providerIdentity } = embedResult;
 
     for (let i = 0; i < needsEmbed.length; i++) {
       const vec = vectors[i];
@@ -245,6 +270,7 @@ export class OramaBackend implements SearchBackend {
         content: doc.content,
         snippet: doc.snippet,
         vector: vec,
+        vectorProvider: providerIdentity,
       });
     }
 
@@ -291,6 +317,7 @@ export class OramaBackend implements SearchBackend {
       path: "string",
       content: "string",
       snippet: "string",
+      vectorProvider: "string",
     };
     if (this.embedHelper.isAvailable()) {
       schema.vector = `vector[${this.embeddingDimension}]`;
@@ -320,6 +347,7 @@ export class OramaBackend implements SearchBackend {
       path: "string",
       content: "string",
       snippet: "string",
+      vectorProvider: "string",
     };
     if (this.embedHelper.isAvailable()) {
       schema.vector = `vector[${this.embeddingDimension}]`;
@@ -375,22 +403,22 @@ export class OramaBackend implements SearchBackend {
       if (mode === "fulltext") {
         searchParams = { term: query, limit };
       } else if (mode === "vector") {
-        const vec = await this.embedHelper.embed(query, { signal: execution?.signal });
+        const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
         throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
-        if (!vec) {
+        if (!embedResult || !(await this.dbHasCompatibleVectors(db, embedResult.providerIdentity, execution))) {
           // Fall back to fulltext if no embeddings available
           searchParams = { term: query, limit };
         } else {
-          searchParams = { mode: "vector", vector: { value: vec, property: "vector" }, limit };
+          searchParams = { mode: "vector", vector: { value: embedResult.vector, property: "vector" }, limit };
         }
       } else {
         // hybrid
-        const vec = await this.embedHelper.embed(query, { signal: execution?.signal });
+        const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
         throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
-        if (!vec) {
+        if (!embedResult || !(await this.dbHasCompatibleVectors(db, embedResult.providerIdentity, execution))) {
           searchParams = { term: query, limit };
         } else {
-          searchParams = { mode: "hybrid", term: query, vector: { value: vec, property: "vector" }, limit };
+          searchParams = { mode: "hybrid", term: query, vector: { value: embedResult.vector, property: "vector" }, limit };
         }
       }
 
@@ -406,6 +434,34 @@ export class OramaBackend implements SearchBackend {
     } catch (err) {
       log.debug(`OramaBackend search (${mode}) failed: ${err}`);
       return [];
+    }
+  }
+
+  private async dbHasCompatibleVectors(
+    db: any,
+    providerIdentity: EmbedProviderIdentity,
+    execution?: SearchExecutionOptions,
+  ): Promise<boolean> {
+    const { search: oramaSearch, count } = this.oramaModule;
+    try {
+      const existingCount = await count(db);
+      if (existingCount === 0) return false;
+      const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
+      let hasMatchingVector = false;
+      for (const hit of allHits.hits ?? []) {
+        throwIfSearchAborted(execution, "OramaBackend vector provider check aborted");
+        const doc = hit.document ?? {};
+        const vector = doc.vector;
+        if (!Array.isArray(vector) || vector.length === 0) continue;
+        if (vector.every((value: unknown) => Number(value) === 0)) continue;
+        if (doc.vectorProvider !== providerIdentity) return false;
+        hasMatchingVector = true;
+      }
+      return hasMatchingVector;
+    } catch (err) {
+      if (isSearchAborted(execution)) throw err;
+      log.debug(`OramaBackend vector provider check failed: ${err}`);
+      return false;
     }
   }
 }

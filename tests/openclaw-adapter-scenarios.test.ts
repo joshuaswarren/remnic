@@ -459,6 +459,38 @@ test("scenario: message_received strips inline explicit capture markup from tran
   );
 });
 
+test("scenario: message_received transcript append failures do not escape the hook", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const originalAppend = orchestrator.transcript.append;
+      let appendAttempts = 0;
+      orchestrator.transcript.append = async () => {
+        appendAttempts += 1;
+        throw new Error("transcript unavailable");
+      };
+      try {
+        await messageReceived(
+          {
+            content: "Remember the launch transcript should fail open.",
+            messageId: "msg-fail-open-1",
+          },
+          { sessionKey: "fail-open-session" },
+        );
+      } finally {
+        orchestrator.transcript.append = originalAppend;
+      }
+
+      assert.equal(appendAttempts, 1);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: message_received dedupes agent_end transcript when metadata capture is disabled", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {

@@ -1,6 +1,6 @@
 import { log } from "../logger.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
-import type { EmbedHelper } from "./embed-helper.js";
+import type { EmbedHelper, EmbedProviderIdentity } from "./embed-helper.js";
 import { scanMemoryDir } from "./document-scanner.js";
 import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
 
@@ -143,28 +143,47 @@ export class LanceDbBackend implements SearchBackend {
       return;
     }
 
-    const existingVectors = new Map<string, number[]>();
+    const embeddingProviderIdentity = this.embedHelper.getProviderIdentity();
+    const existingVectors = new Map<string, {
+      vector: number[];
+      providerIdentity?: string;
+    }>();
     try {
-      const existingRows = await table.query().select(["docid", "vector"]).toArray();
+      const existingRows = await table.query().select(["docid", "vector", "vectorProvider"]).toArray();
       for (const row of existingRows ?? []) {
         if (isSearchAborted(execution)) return;
         const docid = row.docid;
         if (typeof docid !== "string") continue;
         const vector = row.vector;
         if (!vector || typeof vector !== "object") continue;
-        existingVectors.set(docid, Array.from(vector as ArrayLike<number>));
+        existingVectors.set(docid, {
+          vector: Array.from(vector as ArrayLike<number>),
+          providerIdentity: typeof row.vectorProvider === "string" ? row.vectorProvider : undefined,
+        });
       }
     } catch {
       // Vector preservation is best-effort; refresh can proceed without it.
     }
 
-    const rows = docs.map((d) => ({
-      docid: d.docid,
-      path: d.path,
-      content: d.content,
-      snippet: d.snippet,
-      vector: existingVectors.get(d.docid) ?? new Array(this.embeddingDimension).fill(0),
-    }));
+    const rows = docs.map((d) => {
+      const existing = existingVectors.get(d.docid);
+      const canPreserveVector =
+        existing &&
+        (!embeddingProviderIdentity ||
+          existing.providerIdentity === embeddingProviderIdentity);
+      return {
+        docid: d.docid,
+        path: d.path,
+        content: d.content,
+        snippet: d.snippet,
+        vector: canPreserveVector
+          ? existing.vector
+          : new Array(this.embeddingDimension).fill(0),
+        vectorProvider: canPreserveVector
+          ? existing.providerIdentity ?? ""
+          : "",
+      };
+    });
 
     try {
       if (isSearchAborted(execution)) return;
@@ -193,8 +212,12 @@ export class LanceDbBackend implements SearchBackend {
     if (!table) return;
 
     try {
-      const allRows = await table.query().select(["docid", "content", "vector"]).toArray();
+      const embeddingProviderIdentity = this.embedHelper.getProviderIdentity();
+      const allRows = await table.query().select(["docid", "content", "vector", "vectorProvider"]).toArray();
       const needsEmbed = allRows.filter((row: any) => {
+        if (embeddingProviderIdentity && row.vectorProvider !== embeddingProviderIdentity) {
+          return true;
+        }
         const vec = row.vector;
         if (!vec || (typeof vec !== "object")) return true;
         // Support both Array and typed arrays (e.g. Float32Array from Arrow)
@@ -205,13 +228,18 @@ export class LanceDbBackend implements SearchBackend {
       if (needsEmbed.length === 0) return;
 
       const texts = needsEmbed.map((row: any) => row.content as string);
-      const vectors = await this.embedHelper.embedBatch(texts);
+      const embedResult = await this.embedHelper.embedBatchWithProvider(texts);
+      if (!embedResult) return;
+      const { vectors, providerIdentity } = embedResult;
 
       for (let i = 0; i < needsEmbed.length; i++) {
         const vec = vectors[i];
         if (!vec) continue;
         const docid = needsEmbed[i].docid;
-        await table.update({ where: `docid = '${docid.replace(/'/g, "''")}'`, values: { vector: vec } });
+        await table.update({
+          where: `docid = '${docid.replace(/'/g, "''")}'`,
+          values: { vector: vec, vectorProvider: providerIdentity },
+        });
       }
     } catch (err) {
       log.debug(`LanceDbBackend embed failed: ${err}`);
@@ -264,6 +292,7 @@ export class LanceDbBackend implements SearchBackend {
       content: "",
       snippet: "",
       vector: new Array(this.embeddingDimension).fill(0),
+      vectorProvider: "",
     };
     const newTable = await db.createTable(collection, [emptyRow]);
     try {
@@ -297,6 +326,7 @@ export class LanceDbBackend implements SearchBackend {
       content: "",
       snippet: "",
       vector: new Array(this.embeddingDimension).fill(0),
+      vectorProvider: "",
     };
     this.table = await db.createTable(this.collection, [emptyRow]);
     // Create FTS index on content column
@@ -330,23 +360,23 @@ export class LanceDbBackend implements SearchBackend {
       }
 
       if (mode === "vector") {
-        const vec = await this.embedHelper.embed(query, { signal: execution?.signal });
+        const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
-        if (!vec) {
+        if (!embedResult || !(await this.tableHasCompatibleVectors(table, embedResult.providerIdentity, execution))) {
           // Fall back to FTS
           const results = await table.search(query, "fts").limit(limit).toArray();
           throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
           return this.mapRows(results);
         }
-        const results = await table.search(vec).limit(limit).toArray();
+        const results = await table.search(embedResult.vector).limit(limit).toArray();
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
       }
 
       // hybrid — try FTS+vector with RRF reranking
-      const vec = await this.embedHelper.embed(query, { signal: execution?.signal });
+      const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
       throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
-      if (!vec) {
+      if (!embedResult || !(await this.tableHasCompatibleVectors(table, embedResult.providerIdentity, execution))) {
         const results = await table.search(query, "fts").limit(limit).toArray();
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
@@ -355,14 +385,14 @@ export class LanceDbBackend implements SearchBackend {
       try {
         const results = await table
           .search(query, "hybrid")
-          .vector(vec)
+          .vector(embedResult.vector)
           .limit(limit)
           .toArray();
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
       } catch {
         // Hybrid may not be supported in all LanceDB versions — fall back to vector
-        const results = await table.search(vec).limit(limit).toArray();
+        const results = await table.search(embedResult.vector).limit(limit).toArray();
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
       }
@@ -381,5 +411,30 @@ export class LanceDbBackend implements SearchBackend {
         snippet: row.snippet ?? row.content?.slice(0, 200) ?? "",
         score: row._relevance_score ?? (row._distance != null ? 1 / (1 + (row._distance ?? 0)) : 0.5),
       }));
+  }
+
+  private async tableHasCompatibleVectors(
+    table: any,
+    providerIdentity: EmbedProviderIdentity,
+    execution?: SearchExecutionOptions,
+  ): Promise<boolean> {
+    try {
+      const rows = await table.query().select(["vector", "vectorProvider"]).toArray();
+      let hasMatchingVector = false;
+      for (const row of rows ?? []) {
+        throwIfSearchAborted(execution, "LanceDbBackend vector provider check aborted");
+        const vector = row.vector;
+        if (!vector || typeof vector !== "object") continue;
+        const arr = Array.from(vector as ArrayLike<number>);
+        if (arr.length === 0 || arr.every((value) => Number(value) === 0)) continue;
+        if (row.vectorProvider !== providerIdentity) return false;
+        hasMatchingVector = true;
+      }
+      return hasMatchingVector;
+    } catch (err) {
+      if (isSearchAborted(execution)) throw err;
+      log.debug(`LanceDbBackend vector provider check failed: ${err}`);
+      return false;
+    }
   }
 }
