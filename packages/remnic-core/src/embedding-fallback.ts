@@ -6,6 +6,7 @@ import type { PluginConfig } from "./types.js";
 import {
   getHostEmbeddingProvider,
   type HostEmbeddingProvider,
+  normalizeHostEmbeddingVector,
 } from "./host-embedding-provider.js";
 
 type EmbeddingProviderType = "openai" | "local" | "host";
@@ -528,7 +529,7 @@ export class EmbeddingFallback {
         signal: AbortSignal.timeout(timeoutMs),
         inputType: mode === "lookup" ? "query" : "document",
       });
-      return normalizeEmbeddingVector(vector);
+      return normalizeHostEmbeddingVector(vector);
     } catch (err) {
       log.debug(`host embedding provider error: ${hostProvider.id}: ${err}`);
       return null;
@@ -615,14 +616,6 @@ function normalizeEntryPath(p: string): string {
   let out = p.replace(/\\/g, "/");
   if (out.startsWith("./")) out = out.slice(2);
   return out;
-}
-
-function normalizeEmbeddingVector(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const vector = value
-    .map((n) => Number(n))
-    .filter((n) => Number.isFinite(n));
-  return vector.length > 0 ? vector : null;
 }
 
 /**

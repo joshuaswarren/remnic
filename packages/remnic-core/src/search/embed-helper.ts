@@ -5,6 +5,8 @@ import { withTimeoutSignal } from "./abort.js";
 import {
   getHostEmbeddingProvider,
   type HostEmbeddingProvider,
+  type HostEmbeddingInputType,
+  normalizeHostEmbeddingVector,
 } from "../host-embedding-provider.js";
 
 type ProviderConfig = {
@@ -48,7 +50,7 @@ export class EmbedHelper {
   async embed(text: string, options: { signal?: AbortSignal } = {}): Promise<number[] | null> {
     const provider = this.getProvider();
     if (!provider) return null;
-    const result = await this.callEmbed(text, provider, options.signal);
+    const result = await this.callEmbed(text, provider, options.signal, "query");
     if (result || provider.type !== "host") return result;
     const fallbackProvider = this.resolveProvider({ includeHost: false });
     return fallbackProvider ? this.callEmbed(text, fallbackProvider, options.signal) : null;
@@ -72,7 +74,7 @@ export class EmbedHelper {
         provider.type === "host" && provider.hostProvider?.embedBatch
           ? await this.callHostEmbedBatch(batch, provider.hostProvider, options.signal)
           : await Promise.all(
-              batch.map((t) => this.callEmbed(t, provider, options.signal)),
+              batch.map((t) => this.callEmbed(t, provider, options.signal, "document")),
             );
       for (let j = 0; j < batchResults.length; j++) {
         results[i + j] = batchResults[j];
@@ -83,7 +85,7 @@ export class EmbedHelper {
           const fallbackResults = await Promise.all(
             batch.map((text, index) =>
               batchResults[index] === null
-                ? this.callEmbed(text, fallbackProvider, options.signal)
+                ? this.callEmbed(text, fallbackProvider, options.signal, "document")
                 : Promise.resolve(batchResults[index]),
             ),
           );
@@ -166,9 +168,10 @@ export class EmbedHelper {
     input: string,
     provider: ProviderConfig,
     signal?: AbortSignal,
+    inputType: HostEmbeddingInputType = "document",
   ): Promise<number[] | null> {
     if (provider.type === "host") {
-      return this.callHostEmbed(input, provider.hostProvider, signal);
+      return this.callHostEmbed(input, provider.hostProvider, signal, inputType);
     }
     if (!provider.endpoint || !provider.headers) return null;
     try {
@@ -201,14 +204,15 @@ export class EmbedHelper {
     input: string,
     provider: HostEmbeddingProvider | undefined,
     signal?: AbortSignal,
+    inputType: HostEmbeddingInputType = "document",
   ): Promise<number[] | null> {
     if (!provider) return null;
     try {
       const vector = await provider.embed(input.slice(0, 8000), {
         signal: withTimeoutSignal(signal, 30_000),
-        inputType: "document",
+        inputType,
       });
-      return normalizeVector(vector);
+      return normalizeHostEmbeddingVector(vector);
     } catch (err) {
       if (isAbortError(err)) throw err;
       log.debug(`EmbedHelper host provider error: ${err}`);
@@ -230,19 +234,11 @@ export class EmbedHelper {
         },
       );
       if (!Array.isArray(vectors)) return inputs.map(() => null);
-      return inputs.map((_, index) => normalizeVector(vectors[index]));
+      return inputs.map((_, index) => normalizeHostEmbeddingVector(vectors[index]));
     } catch (err) {
       if (isAbortError(err)) throw err;
       log.debug(`EmbedHelper host provider batch error: ${err}`);
       return inputs.map(() => null);
     }
   }
-}
-
-function normalizeVector(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const vector = value
-    .map((n) => Number(n))
-    .filter((n) => Number.isFinite(n));
-  return vector.length > 0 ? vector : null;
 }

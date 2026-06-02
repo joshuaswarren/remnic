@@ -60,6 +60,14 @@ export function clearHostEmbeddingProvidersForTest(): void {
   providerMap().clear();
 }
 
+export function normalizeHostEmbeddingVector(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const vector = value
+    .map((component) => Number(component))
+    .filter((component) => Number.isFinite(component));
+  return vector.length > 0 ? vector : null;
+}
+
 function normalizeScope(scope: string): string {
   const normalized = typeof scope === "string" ? scope.trim() : "";
   return normalized || "default";

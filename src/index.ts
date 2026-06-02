@@ -84,6 +84,7 @@ import {
   expandTildePath,
 } from "@remnic/core";
 import {
+  normalizeHostEmbeddingVector,
   registerHostEmbeddingProvider,
   type HostEmbeddingProvider,
 } from "@remnic/core/host-embedding-provider";
@@ -924,12 +925,12 @@ async function embedWithOpenClawProvider(
   if (!provider || typeof provider !== "object") return null;
   const record = provider as Record<string, unknown>;
   if (kind === "memory" && options?.inputType === "query" && typeof record.embedQuery === "function") {
-    return normalizeOpenClawVector(
+    return normalizeHostEmbeddingVector(
       await record.embedQuery.call(provider, text, { signal: options.signal }),
     );
   }
   if (kind === "generic" && typeof record.embed === "function") {
-    return normalizeOpenClawVector(
+    return normalizeHostEmbeddingVector(
       await record.embed.call(provider, text, {
         signal: options?.signal,
         inputType: options?.inputType,
@@ -941,7 +942,7 @@ async function embedWithOpenClawProvider(
       signal: options?.signal,
       inputType: options?.inputType,
     });
-    return normalizeOpenClawVector(Array.isArray(vectors) ? vectors[0] : null);
+    return normalizeHostEmbeddingVector(Array.isArray(vectors) ? vectors[0] : null);
   }
   return null;
 }
@@ -960,20 +961,12 @@ async function embedBatchWithOpenClawProvider(
       inputType: options?.inputType,
     });
     return texts.map((_, index) =>
-      normalizeOpenClawVector(Array.isArray(vectors) ? vectors[index] : null),
+      normalizeHostEmbeddingVector(Array.isArray(vectors) ? vectors[index] : null),
     );
   }
   return Promise.all(
     texts.map((text) => embedWithOpenClawProvider(kind, provider, text, options)),
   );
-}
-
-function normalizeOpenClawVector(value: unknown): number[] | null {
-  if (!Array.isArray(value)) return null;
-  const vector = value
-    .map((component) => Number(component))
-    .filter((component) => Number.isFinite(component));
-  return vector.length > 0 ? vector : null;
 }
 
 /** SDK capabilities detected at register() time — available to later tasks. */

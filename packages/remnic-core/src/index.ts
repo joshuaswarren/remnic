@@ -106,6 +106,7 @@ export {
 } from "./storage.js";
 export {
   getHostEmbeddingProvider,
+  normalizeHostEmbeddingVector,
   registerHostEmbeddingProvider,
   type HostEmbeddingInputType,
   type HostEmbeddingProvider,

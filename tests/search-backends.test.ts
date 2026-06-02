@@ -449,6 +449,43 @@ describe("embed helper", () => {
       clearHostEmbeddingProvidersForTest();
     }
   });
+
+  it("passes query input type for search embeddings and document input type for batches", async () => {
+    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const {
+      clearHostEmbeddingProvidersForTest,
+      registerHostEmbeddingProvider,
+    } = await import("../src/host-embedding-provider.js");
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-input-type-"));
+    const calls: string[] = [];
+    const unregister = registerHostEmbeddingProvider(memoryDir, {
+      id: "host-test",
+      async embed(_text, options) {
+        calls.push(options?.inputType ?? "missing");
+        return [0.5, 0.6];
+      },
+      async embedBatch(texts, options) {
+        calls.push(options?.inputType ?? "missing");
+        return texts.map(() => [0.7, 0.8]);
+      },
+    });
+    try {
+      const helper = new EmbedHelper(fakeConfig({
+        embeddingFallbackEnabled: true,
+        memoryDir,
+      }) as any);
+
+      assert.deepEqual(await helper.embed("search query"), [0.5, 0.6]);
+      assert.deepEqual(await helper.embedBatch(["doc one", "doc two"]), [
+        [0.7, 0.8],
+        [0.7, 0.8],
+      ]);
+      assert.deepEqual(calls, ["query", "document"]);
+    } finally {
+      unregister();
+      clearHostEmbeddingProvidersForTest();
+    }
+  });
 });
 
 /** Minimal fake PluginConfig for factory routing tests. */
