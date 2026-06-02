@@ -488,6 +488,7 @@ const REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES = new Set([
   "embeddings.json",
   "index_time.json",
   "last_intent.json",
+  "last_qmd_recall.json",
   "last_recall.json",
   "lcm.sqlite-shm",
   "lcm.sqlite-wal",

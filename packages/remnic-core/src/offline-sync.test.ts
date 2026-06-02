@@ -213,6 +213,7 @@ test("offline sync includes live LCM sqlite artifacts for full-fidelity offline 
     ]);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-shm"), true);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-wal"), true);
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/last_qmd_recall.json"), true);
     const focused = await buildOfflineSyncSnapshotForPaths({
       root,
       sourceId: "remote",
