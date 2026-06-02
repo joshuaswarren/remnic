@@ -277,6 +277,14 @@ export class EmbeddingFallback {
     }
     if (!queryResult) return [];
 
+    const diskIdentity = await this.readIndexIdentityFromDisk();
+    if (diskIdentity && !sameIndexIdentity(diskIdentity, queryResult.provider)) {
+      log.debug(
+        `embedding fallback search skipped: query provider ${queryResult.provider.type}/${queryResult.provider.model} does not match existing ${diskIdentity.provider}/${diskIdentity.model} index`,
+      );
+      return [];
+    }
+
     const index = await this.loadIndex(queryResult.provider);
     const ids = Object.keys(index.entries);
     if (ids.length === 0) return [];

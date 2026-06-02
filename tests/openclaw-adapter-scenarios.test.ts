@@ -676,6 +676,49 @@ test("scenario: message_received only dedupes after transcript append succeeds",
   );
 });
 
+test("scenario: agent_end only dedupes after transcript append succeeds", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const agentEnd = registeredHook(capture, "agent_end");
+      type TranscriptEntry = Parameters<typeof orchestrator.transcript.append>[0];
+      const appendTranscript = orchestrator.transcript.append.bind(orchestrator.transcript);
+      let failNextAppend = true;
+      orchestrator.transcript.append = async (entry: TranscriptEntry) => {
+        if (failNextAppend) {
+          failNextAppend = false;
+          throw new Error("transient agent_end transcript failure");
+        }
+        await appendTranscript(entry);
+      };
+
+      const event = {
+        success: true,
+        messages: [
+          {
+            role: "user",
+            content: "Remember the agent_end retry transcript fallback.",
+            messageId: "agent-end-transient-fail-1",
+          },
+        ],
+      };
+
+      await agentEnd(event, { sessionKey: "agent-end-transient-session" });
+      await agentEnd(event, { sessionKey: "agent-end-transient-session" });
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal(
+        (transcriptText.match(/agent_end retry transcript fallback/g) ?? []).length,
+        1,
+      );
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: inbound message dedupe is scoped per session", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {

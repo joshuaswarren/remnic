@@ -41,20 +41,16 @@ const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
  * Merging them would break the port/adapter separation between search and plugin layers.
  */
 export class EmbedHelper {
-  private provider: ProviderConfig | null | undefined; // undefined = not yet resolved
   private effectiveProviderIdentity: EmbedProviderIdentity | null = null;
 
   constructor(private readonly config: PluginConfig) {}
 
   /**
    * Whether an embedding provider is available.
-   * Resolves the provider on first call.
+   * Re-resolves on each call so late host-provider registration is visible.
    */
   isAvailable(): boolean {
-    if (this.provider === undefined) {
-      this.provider = this.resolveProvider();
-    }
-    return this.provider !== null;
+    return this.getProvider() !== null;
   }
 
   /**
@@ -179,10 +175,7 @@ export class EmbedHelper {
   }
 
   private getProvider(): ProviderConfig | null {
-    if (this.provider === undefined) {
-      this.provider = this.resolveProvider();
-    }
-    return this.provider;
+    return this.resolveProvider();
   }
 
   private resolveProvider(options: { includeHost?: boolean } = {}): ProviderConfig | null {

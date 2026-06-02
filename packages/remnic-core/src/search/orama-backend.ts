@@ -369,7 +369,13 @@ export class OramaBackend implements SearchBackend {
   private async migrateLegacyVectorProviderSchema(db: any, collection: string): Promise<any> {
     const { search: oramaSearch, count, insert } = this.oramaModule;
     const existingCount = await count(db);
-    if (existingCount === 0) return db;
+    if (existingCount === 0) {
+      const migrated = await this.createDb({
+        includeVector: this.embedHelper.isAvailable(),
+      });
+      await this.persistDbForCollection(migrated, collection);
+      return migrated;
+    }
 
     const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
     const hits = allHits.hits ?? [];

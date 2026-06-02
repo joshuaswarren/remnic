@@ -487,6 +487,54 @@ describe("embed helper", () => {
     }
   });
 
+  it("picks up host embedding providers registered after construction", async () => {
+    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const {
+      clearHostEmbeddingProvidersForTest,
+      registerHostEmbeddingProvider,
+    } = await import("../src/host-embedding-provider.js");
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-late-host-"));
+    const originalFetch = globalThis.fetch;
+    let fallbackCalls = 0;
+    let hostCalls = 0;
+    let unregister: (() => void) | undefined;
+    try {
+      globalThis.fetch = (async () => {
+        fallbackCalls += 1;
+        return new Response(JSON.stringify({ data: [{ embedding: [0, 1] }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as typeof fetch;
+      const helper = new EmbedHelper(fakeConfig({
+        embeddingFallbackEnabled: true,
+        embeddingFallbackProvider: "openai",
+        openaiApiKey: "test-key",
+        memoryDir,
+      }) as any);
+
+      assert.deepEqual(await helper.embed("before host registration"), [0, 1]);
+      assert.equal(helper.getProviderIdentity(), "openai:text-embedding-3-small");
+
+      unregister = registerHostEmbeddingProvider(memoryDir, {
+        id: "host-test",
+        async embed() {
+          hostCalls += 1;
+          return [1, 0];
+        },
+      });
+
+      assert.deepEqual(await helper.embed("after host registration"), [1, 0]);
+      assert.equal(helper.getProviderIdentity(), "host:host-test");
+      assert.equal(fallbackCalls, 1);
+      assert.equal(hostCalls, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      unregister?.();
+      clearHostEmbeddingProvidersForTest();
+    }
+  });
+
   it("falls back a whole host batch instead of mixing vector spaces", async () => {
     const { EmbedHelper } = await import("../src/search/embed-helper.js");
     const {
@@ -917,6 +965,83 @@ describe("embedded backend provider identity", () => {
       );
       const results = await search(migrated, { term: "", limit: 10 });
       assert.equal(results.hits[0]?.document.vectorProvider, "host:openclaw-memory");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("OramaBackend recreates empty legacy DBs before embedding new documents", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { create, search } = await import("@orama/orama");
+    const { persist, restore } = await import("@orama/plugin-data-persistence");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-empty-legacy-"));
+    try {
+      const dbPath = path.join(tempDir, "db");
+      await mkdir(dbPath, { recursive: true });
+      const legacyDb = await create({
+        schema: {
+          id: "string",
+          path: "string",
+          content: "string",
+          snippet: "string",
+        },
+      });
+      await writeFile(
+        path.join(dbPath, "memories.msp"),
+        await persist(legacyDb, "json") as string,
+        "utf-8",
+      );
+      await mkdir(path.join(tempDir, "facts"), { recursive: true });
+      await writeFile(
+        path.join(tempDir, "facts", "launch.md"),
+        "The launch memo should be embedded after legacy schema migration.",
+        "utf-8",
+      );
+      let embedCalls = 0;
+
+      const backend = new OramaBackend({
+        dbPath,
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedBatchWithProvider: async () => {
+            embedCalls += 1;
+            return {
+              vectors: [[1, 0]],
+              providerIdentity: "host:openclaw-memory",
+            };
+          },
+          embedWithProvider: async () => ({
+            vector: [1, 0],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+
+      assert.equal(await backend.probe(), true);
+      await backend.update();
+      await backend.embed();
+
+      const restored = await restore(
+        "json",
+        await readFile(path.join(dbPath, "memories.msp"), "utf-8"),
+      );
+      const allHits = await search(restored, { term: "", limit: 10 });
+      const launchDoc = allHits.hits.find((hit: any) => hit.document?.id === "launch")
+        ?.document;
+      assert.equal(embedCalls, 1);
+      assert.equal(launchDoc?.vectorProvider, "host:openclaw-memory");
+      assert.doesNotThrow(() =>
+        search(restored, {
+          mode: "vector",
+          vector: { value: [1, 0], property: "vector" },
+          limit: 5,
+        } as any),
+      );
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

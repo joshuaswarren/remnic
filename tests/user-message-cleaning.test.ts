@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   cleanUserMessage,
-  configureOpenClawChannelEnvelopePrefixes,
   createOpenClawUserMessageCleaner,
 } from "../src/user-message-cleaning.ts";
 
@@ -22,10 +21,7 @@ test("cleanUserMessage removes message IDs only with a platform header", () => {
 });
 
 test("cleanUserMessage uses configured OpenClaw channel envelope prefixes", () => {
-  const channelEnvelopePrefixes = configureOpenClawChannelEnvelopePrefixes([
-    "Discord",
-    "Google Chat",
-  ]);
+  const channelEnvelopePrefixes = ["Discord", "Google Chat"];
   assert.equal(
     cleanUserMessage(
       "[Discord user id:123 2026-06-02] Remember this [message_id: host-2]",
@@ -42,8 +38,8 @@ test("cleanUserMessage uses configured OpenClaw channel envelope prefixes", () =
   );
 });
 
-test("configureOpenClawChannelEnvelopePrefixes resets to legacy OpenClaw default", () => {
-  const discordPrefixes = configureOpenClawChannelEnvelopePrefixes(["Discord"]);
+test("empty channel envelope prefixes reset to legacy OpenClaw default", () => {
+  const discordPrefixes = ["Discord"];
   assert.equal(
     cleanUserMessage(
       "[Discord user id:123 2026-06-02] Remember this [message_id: host-2]",
@@ -52,7 +48,7 @@ test("configureOpenClawChannelEnvelopePrefixes resets to legacy OpenClaw default
     "Remember this",
   );
 
-  const defaultPrefixes = configureOpenClawChannelEnvelopePrefixes([]);
+  const defaultPrefixes: string[] = [];
   assert.equal(
     cleanUserMessage(
       "[Discord user id:123 2026-06-02] Keep literal [message_id: host-2]",

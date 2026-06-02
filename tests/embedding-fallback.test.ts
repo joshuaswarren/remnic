@@ -233,6 +233,50 @@ test("EmbeddingFallback does not replace an existing host index during transient
   }
 });
 
+test("EmbeddingFallback does not search an existing host index with fallback vectors", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-search-mismatch-"));
+  const originalFetch = globalThis.fetch;
+  const indexPath = path.join(memoryDir, "state", "embeddings.json");
+  await mkdir(path.dirname(indexPath), { recursive: true });
+  await writeFile(
+    indexPath,
+    JSON.stringify({
+      version: 1,
+      provider: "host",
+      model: "host-model",
+      entries: {
+        "mem-host": {
+          vector: [1, 0],
+          path: "facts/host.md",
+        },
+      },
+    }),
+    "utf-8",
+  );
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    model: "host-model",
+    async embed() {
+      return null;
+    },
+  });
+  try {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
+    assert.deepEqual(await fallback.search("launch planning", 5), []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+  }
+});
+
 test("EmbeddingFallback does not replace an existing fallback index when host embeddings succeed", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-skip-host-"));
   const indexPath = path.join(memoryDir, "state", "embeddings.json");

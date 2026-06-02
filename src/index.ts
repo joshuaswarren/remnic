@@ -3571,9 +3571,6 @@ const pluginDefinition = {
               role === "user" &&
               !!messageDedupeKey &&
               observedInboundMessageIds.has(messageDedupeKey);
-            if (role === "user" && messageDedupeKey) {
-              rememberObservedInboundMessageId(messageDedupeKey);
-            }
 
             for (const note of explicitNotes) {
               try {
@@ -3619,6 +3616,9 @@ const pluginDefinition = {
                 turnId: crypto.randomUUID(),
                 ...(messageMetadata ? { metadata: messageMetadata } : {}),
               });
+              if (role === "user" && messageDedupeKey) {
+                rememberObservedInboundMessageId(messageDedupeKey);
+              }
             }
 
             if (stripped.length > 0) {

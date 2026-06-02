@@ -5,10 +5,6 @@ export type UserMessageCleanerOptions = {
   includeLegacyChannelEnvelopePattern?: boolean;
 };
 
-export function configureOpenClawChannelEnvelopePrefixes(prefixes: string[]): string[] {
-  return normalizeOpenClawChannelEnvelopePrefixes(prefixes);
-}
-
 export function createOpenClawUserMessageCleaner(
   prefixes: readonly string[],
   options: UserMessageCleanerOptions = {},
