@@ -20,19 +20,32 @@ test("cleanUserMessage removes message IDs only with a platform header", () => {
   );
 });
 
+test("cleanUserMessage preserves broad legacy channel envelope cleanup by default", () => {
+  assert.equal(
+    cleanUserMessage("[Discord user id:123 2026-06-02] Remember the legacy default [message_id: host-2]"),
+    "Remember the legacy default",
+  );
+});
+
 test("cleanUserMessage uses configured OpenClaw channel envelope prefixes", () => {
   const channelEnvelopePrefixes = ["Discord", "Google Chat"];
   assert.equal(
     cleanUserMessage(
       "[Discord user id:123 2026-06-02] Remember this [message_id: host-2]",
-      { channelEnvelopePrefixes },
+      {
+        channelEnvelopePrefixes,
+        includeLegacyChannelEnvelopePattern: false,
+      },
     ),
     "Remember this",
   );
   assert.equal(
     cleanUserMessage(
       "[Slack user id:123 2026-06-02] Keep literal [message_id: host-3]",
-      { channelEnvelopePrefixes },
+      {
+        channelEnvelopePrefixes,
+        includeLegacyChannelEnvelopePattern: false,
+      },
     ),
     "[Slack user id:123 2026-06-02] Keep literal [message_id: host-3]",
   );
@@ -52,14 +65,20 @@ test("empty channel envelope prefixes reset to legacy OpenClaw default", () => {
   assert.equal(
     cleanUserMessage(
       "[Discord user id:123 2026-06-02] Keep literal [message_id: host-2]",
-      { channelEnvelopePrefixes: defaultPrefixes },
+      {
+        channelEnvelopePrefixes: defaultPrefixes,
+        includeLegacyChannelEnvelopePattern: false,
+      },
     ),
     "[Discord user id:123 2026-06-02] Keep literal [message_id: host-2]",
   );
   assert.equal(
     cleanUserMessage(
       "[OpenClaw user id:123 2026-06-02] Remember this [message_id: host-3]",
-      { channelEnvelopePrefixes: defaultPrefixes },
+      {
+        channelEnvelopePrefixes: defaultPrefixes,
+        includeLegacyChannelEnvelopePattern: false,
+      },
     ),
     "Remember this",
   );
@@ -91,6 +110,13 @@ test("createOpenClawUserMessageCleaner can preserve legacy broad envelope cleani
   assert.equal(
     legacyCleaner("[Discord user id:123 2026-06-02] Remember this [message_id: host-2]"),
     "Remember this",
+  );
+});
+
+test("channel envelope cleaning remains case-sensitive", () => {
+  assert.equal(
+    cleanUserMessage("[discord user ID:123 2026-06-02] Keep literal [message_id: host-2]"),
+    "[discord user ID:123 2026-06-02] Keep literal [message_id: host-2]",
   );
 });
 

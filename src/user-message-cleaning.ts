@@ -24,11 +24,13 @@ export function cleanUserMessage(
   const prefixes = normalizeOpenClawChannelEnvelopePrefixes(
     options.channelEnvelopePrefixes ?? DEFAULT_CHANNEL_ENVELOPE_PREFIXES,
   );
+  const includeLegacyChannelEnvelopePattern =
+    options.includeLegacyChannelEnvelopePattern ?? true;
   return cleanUserMessageWithPattern(
     content,
     channelEnvelopeHeaderPattern(
       prefixes,
-      options.includeLegacyChannelEnvelopePattern === true,
+      includeLegacyChannelEnvelopePattern === true,
     ),
   );
 }
@@ -80,7 +82,7 @@ function channelEnvelopeHeaderPattern(
   if (includeLegacyChannelEnvelopePattern) {
     patterns.push("\\[\\w+\\s+.+?\\s+id:\\d+\\s+[^\\]]+\\]");
   }
-  return new RegExp(`^(?:${patterns.join("|")})\\s*`, "i");
+  return new RegExp(`^(?:${patterns.join("|")})\\s*`);
 }
 
 function escapeRegExp(value: string): string {
