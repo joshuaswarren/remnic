@@ -15,33 +15,23 @@
       "types": "./dist/publisher.d.ts"
     }
   },
-  "files": [
-    "dist",
-    "README.md"
-  ],
+  "files": ["dist", "README.md"],
   "pi": {
-    "extensions": [
-      "./dist/index.js"
-    ]
+    "extensions": ["./dist/index.js"]
   },
-  "keywords": [
-    "remnic",
-    "pi-package",
-    "pi",
-    "memory",
-    "ai-agent",
-    "coding-agent"
-  ],
+  "keywords": ["remnic", "pi-package", "pi", "memory", "ai-agent", "coding-agent"],
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
   "scripts": {
-    "build": "tsup src/index.ts src/publisher.ts --format esm --dts",
+    "build": "tsup --config tsup.config.ts",
+    "precheck-packed-imports": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "check-packed-imports": "npm run build && node scripts/check-packed-imports.mjs",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "test": "tsx --test 'src/**/*.test.ts'",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run check-packed-imports"
   },
   "dependencies": {
     "@remnic/core": "workspace:^",
