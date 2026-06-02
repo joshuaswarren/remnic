@@ -87,6 +87,17 @@ test("createOpenClawUserMessageCleaner isolates channel prefixes per instance", 
   );
 });
 
+test("createOpenClawUserMessageCleaner can preserve legacy broad envelope cleaning", () => {
+  const legacyCleaner = createOpenClawUserMessageCleaner(
+    ["OpenClaw"],
+    { includeLegacyChannelEnvelopePattern: true },
+  );
+  assert.equal(
+    legacyCleaner("[Discord user id:123 2026-06-02] Remember this [message_id: host-2]"),
+    "Remember this",
+  );
+});
+
 test("cleanUserMessage only strips markdown memory context as a leading preamble", () => {
   assert.equal(
     cleanUserMessage("User text\n\n## Memory Context (Remnic)\nKeep this literal section."),

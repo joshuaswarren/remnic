@@ -766,19 +766,25 @@ function requireOpenClawSdkSubpath<T>(subpath: string): T | null {
 
 function resolveChannelEnvelopePrefixes(cfg: {
   openclawChannelEnvelopeCleaningEnabled: boolean;
-}): string[] {
+}): {
+  prefixes: string[];
+  includeLegacyChannelEnvelopePattern: boolean;
+} {
   if (!cfg.openclawChannelEnvelopeCleaningEnabled) {
-    return ["OpenClaw"];
+    return { prefixes: ["OpenClaw"], includeLegacyChannelEnvelopePattern: false };
   }
   const sdk = requireOpenClawSdkSubpath<{
     BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES?: unknown;
   }>("openclaw/plugin-sdk/chat-channel-ids");
   const prefixes = sdk?.BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES;
   if (!Array.isArray(prefixes)) {
-    return ["OpenClaw"];
+    return { prefixes: ["OpenClaw"], includeLegacyChannelEnvelopePattern: true };
   }
   const cleaned = prefixes.filter((value): value is string => typeof value === "string");
-  return cleaned.length > 0 ? cleaned : ["OpenClaw"];
+  return {
+    prefixes: cleaned.length > 0 ? cleaned : ["OpenClaw"],
+    includeLegacyChannelEnvelopePattern: false,
+  };
 }
 
 function registerOpenClawHostEmbeddingProvider(params: {
@@ -1105,8 +1111,13 @@ const pluginDefinition = {
         `[remnic] memory slot not assigned to ${serviceId}; running passively`,
       );
     }
+    const channelEnvelopeCleaning = resolveChannelEnvelopePrefixes(cfg);
     const cleanOpenClawUserMessage = createOpenClawUserMessageCleaner(
-      resolveChannelEnvelopePrefixes(cfg),
+      channelEnvelopeCleaning.prefixes,
+      {
+        includeLegacyChannelEnvelopePattern:
+          channelEnvelopeCleaning.includeLegacyChannelEnvelopePattern,
+      },
     );
 
     // Singleton guard: the gateway calls register() once per agent (each with a

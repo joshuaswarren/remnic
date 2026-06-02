@@ -1,25 +1,40 @@
 const DEFAULT_CHANNEL_ENVELOPE_PREFIXES = ["OpenClaw"] as const;
 
 export type UserMessageCleaner = (content: string) => string;
+export type UserMessageCleanerOptions = {
+  includeLegacyChannelEnvelopePattern?: boolean;
+};
 
 export function configureOpenClawChannelEnvelopePrefixes(prefixes: string[]): string[] {
   return normalizeOpenClawChannelEnvelopePrefixes(prefixes);
 }
 
-export function createOpenClawUserMessageCleaner(prefixes: readonly string[]): UserMessageCleaner {
+export function createOpenClawUserMessageCleaner(
+  prefixes: readonly string[],
+  options: UserMessageCleanerOptions = {},
+): UserMessageCleaner {
   const normalized = normalizeOpenClawChannelEnvelopePrefixes(prefixes);
-  const platformHeaderPattern = channelEnvelopeHeaderPattern(normalized);
+  const platformHeaderPattern = channelEnvelopeHeaderPattern(
+    normalized,
+    options.includeLegacyChannelEnvelopePattern === true,
+  );
   return (content) => cleanUserMessageWithPattern(content, platformHeaderPattern);
 }
 
 export function cleanUserMessage(
   content: string,
-  options: { channelEnvelopePrefixes?: readonly string[] } = {},
+  options: { channelEnvelopePrefixes?: readonly string[] } & UserMessageCleanerOptions = {},
 ): string {
   const prefixes = normalizeOpenClawChannelEnvelopePrefixes(
     options.channelEnvelopePrefixes ?? DEFAULT_CHANNEL_ENVELOPE_PREFIXES,
   );
-  return cleanUserMessageWithPattern(content, channelEnvelopeHeaderPattern(prefixes));
+  return cleanUserMessageWithPattern(
+    content,
+    channelEnvelopeHeaderPattern(
+      prefixes,
+      options.includeLegacyChannelEnvelopePattern === true,
+    ),
+  );
 }
 
 function cleanUserMessageWithPattern(
@@ -60,12 +75,16 @@ function normalizeOpenClawChannelEnvelopePrefixes(prefixes: readonly string[]): 
   return cleaned.length > 0 ? cleaned : [...DEFAULT_CHANNEL_ENVELOPE_PREFIXES];
 }
 
-function channelEnvelopeHeaderPattern(prefixes: readonly string[]): RegExp {
+function channelEnvelopeHeaderPattern(
+  prefixes: readonly string[],
+  includeLegacyChannelEnvelopePattern: boolean,
+): RegExp {
   const alternatives = prefixes.map(escapeRegExp).join("|");
-  return new RegExp(
-    `^\\[(?:${alternatives})\\s+.+?\\s+id:\\d+\\s+[^\\]]+\\]\\s*`,
-    "i",
-  );
+  const patterns = [`\\[(?:${alternatives})\\s+.+?\\s+id:\\d+\\s+[^\\]]+\\]`];
+  if (includeLegacyChannelEnvelopePattern) {
+    patterns.push("\\[\\w+\\s+.+?\\s+id:\\d+\\s+[^\\]]+\\]");
+  }
+  return new RegExp(`^(?:${patterns.join("|")})\\s*`, "i");
 }
 
 function escapeRegExp(value: string): string {
