@@ -31,9 +31,12 @@ OpenClaw adapter note:
   `initGateTimeoutMs` as the per-hook timeout on SDKs that support hook
   options. The same config bounds Remnic's internal cold-start init gate for
   recall and day summaries. Default: 30000ms; accepted range: 1000-120000ms.
-  Current OpenClaw compatibility target: 2026.5.31-beta.3, with package
-  metadata floor >=2026.4.1. Keep openclaw.install.minHostVersion as one
-  installer floor, and put explicit reviewed prerelease versions in
+  Current OpenClaw compatibility target: reviewed source tag
+  2026.6.2-alpha.1, with package metadata floor >=2026.4.1. As of
+  June 2, 2026 the active 60-day floor is April 3, 2026; keep the
+  more-permissive 2026.4.1 floor unless an upstream breaking change makes it
+  impossible. Keep openclaw.install.minHostVersion as one installer floor, and
+  put explicit reviewed prerelease versions in
   peerDependencies.openclaw and openclaw.compat.pluginApi because default npm
   semver range checks exclude prereleases. Keep the manifest on current native
   fields: kind="memory", contracts.tools, commandAliases, activation,
@@ -231,13 +234,23 @@ OPENCLAW PLUGIN COMPATIBILITY
 
   Policy: Remnic supports OpenClaw releases from at least the previous 60 days.
   Recalculate the floor from the current date before changing package metadata.
-  As of May 31, 2026, the floor is April 1, 2026 / OpenClaw 2026.4.1.
+  As of June 2, 2026, the active floor is April 3, 2026. Remnic intentionally
+  keeps OpenClaw 2026.4.1 as a more-permissive package metadata floor.
 
   Current manifest shape for OpenClaw 2026.5.31+:
   kind: "memory" selects the exclusive memory slot.
   setup.providers[].envVars advertises optional plugin-mode OPENAI_API_KEY
   discovery. providerAuthChoices keeps the custom onboarding/CLI metadata.
   providerAuthEnvVars must remain mirrored for older pre-runtime auth probes.
+
+  June 2, 2026 sweep: issues #1258, #1259, #1266, and #1271 were reviewed
+  against OpenClaw tags through v2026.6.2-alpha.1. The manifest, SDK overview,
+  and SDK entrypoint docs did not change; Remnic's SDK snapshot still matched
+  every reviewed tag. New OpenClaw surfaces were additive
+  (plugin-sdk/chat-channel-ids, plugin-sdk/memory-core-host-embedding-registry,
+  and quoted-reply hook metadata), so Remnic only needs compatibility metadata,
+  docs, and tests for those versions. v2026.6.2-alpha.1 is a source tag but
+  was not a GitHub release page or npm package during that sweep.
   supports must remain for OpenClaw 2026.4 / early 2026.5 slot and lifecycle
   routing. Top-level securityDisclosure is not a current native manifest field
   and must stay omitted.

@@ -95,11 +95,12 @@ plugin id.
 ## Compatibility Policy
 
 Remnic supports OpenClaw releases from at least the previous 60 days. As of
-May 31, 2026, that window starts on April 1, 2026. The OpenClaw installer
-floor remains the single supported `>=2026.4.1` shape, while the peer and
-plugin-API compatibility ranges explicitly include reviewed prerelease hosts in
-that window. The adapter records `2026.5.31-beta.3` as the latest reviewed
-build target.
+June 2, 2026, that window starts on April 3, 2026. The OpenClaw installer
+floor remains the single supported `>=2026.4.1` shape because it is more
+permissive than the active 60-day floor, while the peer and plugin-API
+compatibility ranges explicitly include reviewed prerelease hosts in that
+window. The adapter records `2026.6.2-alpha.1` as the latest reviewed
+source-tag target.
 
 When OpenClaw adds a new manifest or setup surface, Remnic should add that new
 surface without dropping older metadata that still helps hosts inside the
@@ -186,13 +187,19 @@ surfaces:
   diagnostic while preserving older host behavior.
 - `securityDisclosure` is intentionally documented here instead of shipped as a
   manifest field; current OpenClaw native manifests do not list it.
-- OpenClaw 2026.5.20-beta.2 through 2026.5.31-beta.3 keep Remnic's SDK hook,
-  tool-contract, memory-slot, ClawHub install, gateway model, and security-scan
-  surfaces compatible. Remnic stays on the full `definePluginEntry` SDK path
-  instead of the simple `defineToolPlugin` helper because the adapter combines
-  memory-slot hooks, lifecycle handlers, command metadata, public artifacts,
-  and runtime tools. The package metadata records `2026.5.31-beta.3` as the
-  reviewed OpenClaw build target while keeping the broad stable and prerelease
+- OpenClaw 2026.5.20-beta.2 through the reviewed `2026.6.2-alpha.1` source tag
+  keep Remnic's SDK hook, tool-contract, memory-slot, ClawHub install, gateway
+  model, and security-scan surfaces compatible. Remnic stays on the full
+  `definePluginEntry` SDK path instead of the simple `defineToolPlugin` helper
+  because the adapter combines memory-slot hooks, lifecycle handlers, command
+  metadata, public artifacts, and runtime tools. OpenClaw 2026.5.31-beta.4 adds
+  optional `plugin-sdk/chat-channel-ids` and
+  `plugin-sdk/memory-core-host-embedding-registry` subpaths, and the
+  `2026.6.2-alpha.1` tag adds quoted-reply metadata fields to inbound and
+  `before_dispatch` hook contexts. Remnic does not consume those optional
+  surfaces in the memory adapter, so no runtime adapter code change is required.
+  The package metadata records `2026.6.2-alpha.1` as the reviewed OpenClaw
+  source-tag target while keeping the broad stable and prerelease
   peer/plugin-API range required by Remnic's rolling 60-day support policy.
   `openclaw.install.minHostVersion` remains the single `>=2026.4.1` floor that
   OpenClaw setup expects.
@@ -231,11 +238,38 @@ converge on the latest upstream contract:
 - Compatibility window: keep package ranges at or below the active 60-day
   floor and explicitly list reviewed prerelease hosts in peer/plugin-API ranges
   because default npm semver range checks exclude prereleases. Keep installer
-  `minHostVersion` as a single floor. On May 31, 2026 that floor is OpenClaw
-  `2026.4.1`.
+  `minHostVersion` as a single floor. On June 2, 2026 the active 60-day floor
+  is April 3, 2026, while Remnic intentionally keeps the more permissive
+  OpenClaw `2026.4.1` installer floor.
 - Runtime behavior: Remnic core semantics remain in `@remnic/core`; the
   OpenClaw adapter only translates hooks, commands, memory-slot behavior, and
   gateway/provider metadata.
+
+### 2026.6.2 Compatibility Sweep
+
+Issues #1258, #1259, #1266, and #1271 were reviewed as one OpenClaw compatibility
+window on June 2, 2026.
+
+- Upstream availability: `v2026.5.31-beta.4`, `v2026.6.1-beta.1`, and
+  `v2026.6.1-beta.2` are GitHub releases. `v2026.6.1-beta.1` is published on
+  npm; `v2026.6.1-beta.2` was a GitHub release but was not present in the npm
+  registry during this sweep. `v2026.6.2-alpha.1` exists as an upstream Git tag
+  but not as a GitHub release page or npm package as of June 2, 2026.
+- Reviewed source tags: `v2026.5.31-beta.4`, `v2026.6.1-alpha.1`,
+  `v2026.6.1-alpha.2`, `v2026.6.1-alpha.3`, `v2026.6.1-beta.1`,
+  `v2026.6.1-beta.2`, and `v2026.6.2-alpha.1`.
+- SDK surface: `npm run check:openclaw-sdk-surface -- --package-root <tag checkout>`
+  passes for every reviewed tag with the existing snapshot (`14 registrars,
+  22 hooks, 2 manifest contracts`).
+- Manifest and setup: `docs/plugins/manifest.md`, `docs/plugins/sdk-overview.md`,
+  and `docs/plugins/sdk-entrypoints.md` have no contract diff from
+  `v2026.5.31-beta.3` to `v2026.6.2-alpha.1`.
+- Additive host features: OpenClaw added optional
+  `plugin-sdk/chat-channel-ids` and `plugin-sdk/memory-core-host-embedding-registry`
+  subpaths, and quoted-reply metadata fields on inbound / `before_dispatch`
+  hook contexts. Remnic's OpenClaw memory adapter does not consume those
+  optional features, so compatibility only requires package metadata, docs, and
+  tests to include the reviewed prerelease hosts.
 
 ## Reset Flush Contract
 
