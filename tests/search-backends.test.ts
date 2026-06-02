@@ -577,7 +577,7 @@ describe("embed helper", () => {
         [0, 1],
         [0, 1],
       ]);
-      assert.equal(helper.getProviderIdentity(), "openai:text-embedding-3-small");
+      assert.equal(helper.getProviderIdentity(), "host:host-test");
 
       hostAvailable = true;
       assert.deepEqual(await helper.embedBatch(["doc three"]), [[1, 0]]);

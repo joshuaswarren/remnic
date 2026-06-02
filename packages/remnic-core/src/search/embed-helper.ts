@@ -41,8 +41,6 @@ const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
  * Merging them would break the port/adapter separation between search and plugin layers.
  */
 export class EmbedHelper {
-  private effectiveProviderIdentity: EmbedProviderIdentity | null = null;
-
   constructor(private readonly config: PluginConfig) {}
 
   /**
@@ -68,7 +66,6 @@ export class EmbedHelper {
     if (!provider) return null;
     const result = await this.callEmbed(text, provider, options.signal, "query");
     if (result) {
-      this.rememberEffectiveProvider(provider);
       return {
         vector: result,
         providerIdentity: providerIdentity(provider),
@@ -78,9 +75,6 @@ export class EmbedHelper {
     const fallbackProvider = this.resolveProvider({ includeHost: false });
     if (!fallbackProvider) return null;
     const fallbackResult = await this.callEmbed(text, fallbackProvider, options.signal, "query");
-    if (fallbackResult) {
-      this.rememberEffectiveProvider(fallbackProvider);
-    }
     return fallbackResult
       ? {
           vector: fallbackResult,
@@ -111,7 +105,6 @@ export class EmbedHelper {
     if (provider.type === "host") {
       const hostResults = await this.embedAllWithProvider(texts, batchSize, provider, options);
       if (!hostResults.some((result) => result === null)) {
-        this.rememberEffectiveProvider(provider);
         return {
           vectors: hostResults,
           providerIdentity: providerIdentity(provider),
@@ -119,23 +112,18 @@ export class EmbedHelper {
       }
       const fallbackProvider = this.resolveProvider({ includeHost: false });
       if (!fallbackProvider) {
-        this.rememberEffectiveProvider(provider);
         return {
           vectors: hostResults,
           providerIdentity: providerIdentity(provider),
         };
       }
       const fallbackResults = await this.embedAllWithProvider(texts, batchSize, fallbackProvider, options);
-      if (fallbackResults.some((result) => result !== null)) {
-        this.rememberEffectiveProvider(fallbackProvider);
-      }
       return {
         vectors: fallbackResults,
         providerIdentity: providerIdentity(fallbackProvider),
       };
     }
 
-    this.rememberEffectiveProvider(provider);
     return {
       vectors: await this.embedAllWithProvider(texts, batchSize, provider, options),
       providerIdentity: providerIdentity(provider),
@@ -143,13 +131,8 @@ export class EmbedHelper {
   }
 
   getProviderIdentity(): EmbedProviderIdentity | null {
-    if (this.effectiveProviderIdentity) return this.effectiveProviderIdentity;
     const provider = this.getProvider();
     return provider ? providerIdentity(provider) : null;
-  }
-
-  private rememberEffectiveProvider(provider: ProviderConfig): void {
-    this.effectiveProviderIdentity = providerIdentity(provider);
   }
 
   private async embedAllWithProvider(
