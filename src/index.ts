@@ -3365,10 +3365,13 @@ const pluginDefinition = {
             normalizeOptionalString(ctx.sessionKey) ??
             normalizeOptionalString(event.sessionKey) ??
             "default";
-          const timestamp =
+          const eventDate =
             typeof event.timestamp === "number" && Number.isFinite(event.timestamp)
-              ? new Date(event.timestamp).toISOString()
-              : new Date().toISOString();
+              ? new Date(event.timestamp)
+              : new Date();
+          const timestamp = Number.isFinite(eventDate.getTime())
+            ? eventDate.toISOString()
+            : new Date().toISOString();
           const cleaned = cleanOpenClawUserMessage(content);
           const inlineCaptureEnabled = shouldProcessInlineExplicitCapture(
             orchestrator.config,

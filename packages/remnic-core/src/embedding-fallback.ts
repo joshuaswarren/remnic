@@ -351,10 +351,30 @@ export class EmbeddingFallback {
     if (!provider) return;
 
     await this.enqueueIndexMutation(async () => {
-      const index = await this.loadIndex(provider);
-      if (!index.entries[memoryId]) return;
-      delete index.entries[memoryId];
-      await this.saveIndex(index);
+      const providers = [provider];
+      const diskIdentity = await this.readIndexIdentityFromDisk();
+      if (
+        diskIdentity &&
+        !providers.some((entry) => sameIndexIdentity(entry, diskIdentity))
+      ) {
+        providers.push(providerFromIndexIdentity(diskIdentity));
+      }
+      if (provider.type === "host") {
+        const fallbackProvider = await this.resolveProvider({ includeHost: false });
+        if (
+          fallbackProvider &&
+          !providers.some((entry) => sameIndexIdentity(entry, fallbackProvider))
+        ) {
+          providers.push(fallbackProvider);
+        }
+      }
+
+      for (const indexProvider of providers) {
+        const index = await this.loadIndex(indexProvider);
+        if (!index.entries[memoryId]) continue;
+        delete index.entries[memoryId];
+        await this.saveIndex(index);
+      }
     });
   }
 
@@ -718,6 +738,13 @@ function sameIndexIdentity(
 
 function indexIdentityProvider(identity: EmbeddingIndexComparable): EmbeddingProviderType {
   return "provider" in identity ? identity.provider : identity.type;
+}
+
+function providerFromIndexIdentity(identity: EmbeddingIndexIdentity): ProviderConfig {
+  return {
+    type: identity.provider,
+    model: identity.model,
+  };
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {

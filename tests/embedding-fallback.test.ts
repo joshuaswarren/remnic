@@ -233,6 +233,55 @@ test("EmbeddingFallback does not replace an existing host index during transient
   }
 });
 
+test("EmbeddingFallback removes stale fallback index entries when host provider is active", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-remove-stale-"));
+  const indexPath = path.join(memoryDir, "state", "embeddings.json");
+  await mkdir(path.dirname(indexPath), { recursive: true });
+  await writeFile(
+    indexPath,
+    JSON.stringify({
+      version: 1,
+      provider: "openai",
+      model: "text-embedding-3-small",
+      entries: {
+        "mem-deleted": {
+          vector: [1, 0],
+          path: "facts/deleted.md",
+        },
+        "mem-kept": {
+          vector: [0, 1],
+          path: "facts/kept.md",
+        },
+      },
+    }),
+    "utf-8",
+  );
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    model: "host-model",
+    async embed() {
+      return [1, 1];
+    },
+  });
+  try {
+    const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
+    await fallback.removeFromIndex("mem-deleted");
+
+    const parsed = JSON.parse(await readFile(indexPath, "utf-8")) as {
+      provider: string;
+      model: string;
+      entries: Record<string, unknown>;
+    };
+    assert.equal(parsed.provider, "openai");
+    assert.equal(parsed.model, "text-embedding-3-small");
+    assert.equal(parsed.entries["mem-deleted"], undefined);
+    assert.ok(parsed.entries["mem-kept"]);
+  } finally {
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+  }
+});
+
 test("EmbeddingFallback classifies host provider unavailable without mislabeling it as timeout", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-unavailable-"));
   const unregister = registerHostEmbeddingProvider(memoryDir, {

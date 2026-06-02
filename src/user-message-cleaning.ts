@@ -8,8 +8,8 @@ export function configureOpenClawChannelEnvelopePrefixes(prefixes: string[]): st
 
 export function createOpenClawUserMessageCleaner(prefixes: readonly string[]): UserMessageCleaner {
   const normalized = normalizeOpenClawChannelEnvelopePrefixes(prefixes);
-  return (content) =>
-    cleanUserMessage(content, { channelEnvelopePrefixes: normalized });
+  const platformHeaderPattern = channelEnvelopeHeaderPattern(normalized);
+  return (content) => cleanUserMessageWithPattern(content, platformHeaderPattern);
 }
 
 export function cleanUserMessage(
@@ -19,6 +19,13 @@ export function cleanUserMessage(
   const prefixes = normalizeOpenClawChannelEnvelopePrefixes(
     options.channelEnvelopePrefixes ?? DEFAULT_CHANNEL_ENVELOPE_PREFIXES,
   );
+  return cleanUserMessageWithPattern(content, channelEnvelopeHeaderPattern(prefixes));
+}
+
+function cleanUserMessageWithPattern(
+  content: string,
+  platformHeaderPattern: RegExp,
+): string {
   let cleaned = content;
   // Remove structured host-injected memory wrappers wherever the platform
   // emits them; free-form markdown stripping below is intentionally anchored.
@@ -27,7 +34,7 @@ export function cleanUserMessage(
     "",
   );
 
-  const platformHeader = cleaned.match(channelEnvelopeHeaderPattern(prefixes));
+  const platformHeader = cleaned.match(platformHeaderPattern);
   const hasPlatformHeader = platformHeader !== null;
   if (platformHeader) {
     cleaned = cleaned.slice(platformHeader[0].length);

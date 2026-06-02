@@ -491,6 +491,43 @@ test("scenario: message_received transcript append failures do not escape the ho
   );
 });
 
+test("scenario: message_received rejects invalid numeric timestamps before formatting", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const originalAppend = orchestrator.transcript.append;
+      let appended: Record<string, unknown> | null = null;
+      orchestrator.transcript.append = async (turn: Record<string, unknown>) => {
+        appended = turn;
+      };
+      try {
+        await messageReceived(
+          {
+            content: "Remember that invalid host timestamps should fail open.",
+            messageId: "msg-invalid-timestamp-1",
+            timestamp: Number.MAX_VALUE,
+          },
+          { sessionKey: "invalid-timestamp-session" },
+        );
+      } finally {
+        orchestrator.transcript.append = originalAppend;
+      }
+
+      assert.ok(appended);
+      const timestamp = (appended as Record<string, unknown>).timestamp;
+      if (typeof timestamp !== "string") {
+        assert.fail("expected transcript timestamp to be a string");
+      }
+      assert.ok(Number.isFinite(new Date(timestamp).getTime()));
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: message_received dedupes agent_end transcript when metadata capture is disabled", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {
