@@ -1517,7 +1517,11 @@ async function setSafeFileMtime(
   if (targetStat.isSymbolicLink()) {
     throw new Error(`offline sync target is a symlink: ${relPath}`);
   }
-  const mtime = new Date(assertOfflineSyncMtimeMs(mtimeMs, "mtimeMs"));
+  const targetMtimeMs = assertOfflineSyncMtimeMs(mtimeMs, "mtimeMs");
+  if (Math.abs(targetStat.mtimeMs - targetMtimeMs) <= OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS) {
+    return true;
+  }
+  const mtime = new Date(targetMtimeMs);
   await utimes(target, mtime, mtime);
   return true;
 }

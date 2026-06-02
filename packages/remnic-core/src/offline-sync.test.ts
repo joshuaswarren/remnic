@@ -2571,6 +2571,59 @@ test("offline snapshot apply defers volatile remote paths without changing local
   }
 });
 
+test("offline snapshot apply does not churn metadata for equivalent mtimes", async () => {
+  const root = await tempDir("remnic-offline-equivalent-mtime");
+  try {
+    const relPath = "facts/unchanged.md";
+    const content = Buffer.from("same content");
+    await write(root, relPath, content);
+    const filePath = path.join(root, relPath);
+    const baseTime = new Date("2026-05-31T00:00:00.000Z");
+    await utimes(filePath, baseTime, baseTime);
+    const before = await stat(filePath);
+    const sha256 = createHash("sha256").update(content).digest("hex");
+    const incomingMtimeMs = before.mtimeMs + 500;
+
+    const pull = await applyOfflineSyncSnapshot({
+      root,
+      currentFiles: [{
+        path: relPath,
+        sha256,
+        bytes: content.byteLength,
+        mtimeMs: before.mtimeMs,
+      }],
+      snapshot: {
+        format: "remnic.offline-sync.snapshot.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "remote",
+        includeTranscripts: true,
+        files: [{
+          path: relPath,
+          sha256,
+          bytes: content.byteLength,
+          mtimeMs: incomingMtimeMs,
+        }],
+      },
+      baseFiles: [],
+    });
+
+    const after = await stat(filePath);
+    assert.equal(pull.upserted, 0);
+    assert.equal(pull.deleted, 0);
+    assert.equal(pull.skipped, 1);
+    assert.deepEqual(pull.nextBaseFiles, [{
+      path: relPath,
+      sha256,
+      bytes: content.byteLength,
+      mtimeMs: incomingMtimeMs,
+    }]);
+    assert.equal(after.mtimeMs, before.mtimeMs);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("offline changeset validation reports client input errors with an offline sync prefix", async () => {
   const root = await tempDir("remnic-offline-invalid-changeset");
   try {
