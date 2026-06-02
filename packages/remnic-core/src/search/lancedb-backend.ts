@@ -180,6 +180,7 @@ export class LanceDbBackend implements SearchBackend {
       const existing = existingVectors.get(d.docid);
       const canPreserveVector =
         existing &&
+        existing.vector.length === this.embeddingDimension &&
         (!embeddingProviderIdentity ||
           existing.providerIdentity === embeddingProviderIdentity);
       return {
@@ -254,7 +255,7 @@ export class LanceDbBackend implements SearchBackend {
       let allEmbedded = true;
       for (let i = 0; i < needsEmbed.length; i++) {
         const vec = vectors[i];
-        if (!vec) {
+        if (!this.isExpectedDimensionVector(vec)) {
           allEmbedded = false;
           continue;
         }
@@ -406,7 +407,11 @@ export class LanceDbBackend implements SearchBackend {
       if (mode === "vector") {
         const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
-        if (!embedResult || !(await this.tableHasCompatibleVectors(table, embedResult.providerIdentity, execution))) {
+        if (
+          !embedResult ||
+          !this.isExpectedDimensionVector(embedResult.vector) ||
+          !(await this.tableHasCompatibleVectors(table, embedResult.providerIdentity, execution))
+        ) {
           // Fall back to FTS
           const results = await table.search(query, "fts").limit(limit).toArray();
           throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
@@ -420,7 +425,11 @@ export class LanceDbBackend implements SearchBackend {
       // hybrid — try FTS+vector with RRF reranking
       const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
       throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
-      if (!embedResult || !(await this.tableHasCompatibleVectors(table, embedResult.providerIdentity, execution))) {
+      if (
+        !embedResult ||
+        !this.isExpectedDimensionVector(embedResult.vector) ||
+        !(await this.tableHasCompatibleVectors(table, embedResult.providerIdentity, execution))
+      ) {
         const results = await table.search(query, "fts").limit(limit).toArray();
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
@@ -490,5 +499,9 @@ export class LanceDbBackend implements SearchBackend {
   ): void {
     if (!providerIdentity || !table || typeof table !== "object") return;
     this.vectorProviderCompatibility.set(table, { providerIdentity, compatible });
+  }
+
+  private isExpectedDimensionVector(vector: number[] | null | undefined): vector is number[] {
+    return Array.isArray(vector) && vector.length === this.embeddingDimension;
   }
 }

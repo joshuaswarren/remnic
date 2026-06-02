@@ -621,6 +621,37 @@ test("scenario: message_received only dedupes after transcript append succeeds",
   );
 });
 
+test("scenario: inbound message dedupe is scoped per session", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      await messageReceived(
+        {
+          content: "Remember the first scoped inbound message.",
+          messageId: "shared-openclaw-msg-id",
+        },
+        { sessionKey: "scoped-session-one" },
+      );
+      await messageReceived(
+        {
+          content: "Remember the second scoped inbound message.",
+          messageId: "shared-openclaw-msg-id",
+        },
+        { sessionKey: "scoped-session-two" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.match(transcriptText, /first scoped inbound message/);
+      assert.match(transcriptText, /second scoped inbound message/);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: agent_end does not dedupe assistant turns with inbound user message ids", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {

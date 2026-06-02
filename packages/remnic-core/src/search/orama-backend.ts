@@ -199,8 +199,7 @@ export class OramaBackend implements SearchBackend {
           snippet: doc.snippet,
         };
         if (
-          existing.vector &&
-          existing.vector.length > 0 &&
+          this.isExpectedDimensionVector(existing.vector) &&
           (!embeddingProviderIdentity ||
             existing.vectorProvider === embeddingProviderIdentity)
         ) {
@@ -270,7 +269,7 @@ export class OramaBackend implements SearchBackend {
     let allEmbedded = true;
     for (let i = 0; i < needsEmbed.length; i++) {
       const vec = vectors[i];
-      if (!vec) {
+      if (!this.isExpectedDimensionVector(vec)) {
         allEmbedded = false;
         continue;
       }
@@ -418,7 +417,11 @@ export class OramaBackend implements SearchBackend {
       } else if (mode === "vector") {
         const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
         throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
-        if (!embedResult || !(await this.dbHasCompatibleVectors(db, embedResult.providerIdentity, execution))) {
+        if (
+          !embedResult ||
+          !this.isExpectedDimensionVector(embedResult.vector) ||
+          !(await this.dbHasCompatibleVectors(db, embedResult.providerIdentity, execution))
+        ) {
           // Fall back to fulltext if no embeddings available
           searchParams = { term: query, limit };
         } else {
@@ -428,7 +431,11 @@ export class OramaBackend implements SearchBackend {
         // hybrid
         const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
         throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
-        if (!embedResult || !(await this.dbHasCompatibleVectors(db, embedResult.providerIdentity, execution))) {
+        if (
+          !embedResult ||
+          !this.isExpectedDimensionVector(embedResult.vector) ||
+          !(await this.dbHasCompatibleVectors(db, embedResult.providerIdentity, execution))
+        ) {
           searchParams = { term: query, limit };
         } else {
           searchParams = { mode: "hybrid", term: query, vector: { value: embedResult.vector, property: "vector" }, limit };
@@ -491,5 +498,9 @@ export class OramaBackend implements SearchBackend {
   ): void {
     if (!providerIdentity || !db || typeof db !== "object") return;
     this.vectorProviderCompatibility.set(db, { providerIdentity, compatible });
+  }
+
+  private isExpectedDimensionVector(vector: number[] | null | undefined): vector is number[] {
+    return Array.isArray(vector) && vector.length === this.embeddingDimension;
   }
 }

@@ -763,6 +763,104 @@ describe("embedded backend provider identity", () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("LanceDbBackend falls back to FTS when query vector dimensions do not match schema", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-dim-search-"));
+    try {
+      const searchCalls: string[] = [];
+      const table = {
+        query: () => ({
+          select: () => ({
+            toArray: async () => [{
+              docid: "same",
+              vectorProvider: "host:openclaw-memory",
+            }],
+          }),
+        }),
+        search: (value: unknown, mode?: string) => {
+          searchCalls.push(mode ?? (Array.isArray(value) ? "vector" : "unknown"));
+          return {
+            limit: () => ({
+              toArray: async () => [{
+                docid: "same",
+                path: "facts/same.md",
+                snippet: "same",
+                _relevance_score: 0.9,
+              }],
+            }),
+          };
+        },
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          embedWithProvider: async () => ({
+            vector: [1, 0, 0],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+
+      const results = await backend.vectorSearch("same", "memories", 5);
+
+      assert.deepEqual(searchCalls, ["fts"]);
+      assert.deepEqual(results.map((result) => result.docid), ["same"]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("LanceDbBackend skips writes for mismatched embedding dimensions", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-dim-embed-"));
+    try {
+      const updateCalls: Array<Record<string, unknown>> = [];
+      const table = {
+        query: () => ({
+          select: () => ({
+            toArray: async () => [{
+              docid: "same",
+              content: "Updated content.",
+              vector: [0, 0],
+              vectorProvider: "",
+            }],
+          }),
+        }),
+        update: async (payload: Record<string, unknown>) => {
+          updateCalls.push(payload);
+        },
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedBatchWithProvider: async () => ({
+            vectors: [[1, 0, 0]],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+
+      await backend.embedCollection("memories");
+
+      assert.equal(updateCalls.length, 0);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 /** Minimal fake PluginConfig for factory routing tests. */
