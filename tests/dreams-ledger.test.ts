@@ -296,11 +296,12 @@ test("runDreamsPhase lightSleep counts recent observation ledger timestamps", as
     "rebuilt-observations.jsonl",
   );
   await mkdir(path.dirname(ledgerPath), { recursive: true });
-  const recentTs = new Date().toISOString();
-  const recentHourDate = new Date(Date.now() - 60 * 60 * 1000);
+  const nowMs = Date.now();
+  const recentTs = new Date(nowMs - 60_000).toISOString();
+  const recentHourDate = new Date(nowMs - 60 * 60 * 1000);
   recentHourDate.setUTCMinutes(0, 0, 0);
   const recentHour = recentHourDate.toISOString();
-  const oldTs = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  const oldTs = new Date(nowMs - 48 * 60 * 60 * 1000).toISOString();
   await writeFile(
     ledgerPath,
     [

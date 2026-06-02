@@ -32,12 +32,12 @@ jobs:
       REMNIC_AMB_RECALL_BUDGET_CHARS: "49152"
       REMNIC_AMB_DRAIN_TIMEOUT_MS: "28800000"
       UV_CACHE_DIR: /tmp/uv-cache
+      AMB_REPO_URL: https://github.com/vectorize-io/agent-memory-benchmark.git
+      AMB_REF: 45fa380523afab9b1acd667a03de51c5ea63f4d2
       OMB_ANSWER_LLM: gemini
       OMB_ANSWER_MODEL: gemini-3.1-pro-preview
       OMB_JUDGE_LLM: gemini
       OMB_JUDGE_MODEL: gemini-2.5-flash-lite
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       BEAM_SPLIT: ${{ inputs.split }}
       BEAM_QUERY_LIMIT: ${{ inputs.query_limit }}
     steps:
@@ -63,9 +63,22 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Checkout public AMB
-        run: git clone https://github.com/vectorize-io/agent-memory-benchmark.git "$AMB_DIR"
+        run: |
+          mkdir -p "$AMB_DIR"
+          git -C "$AMB_DIR" init
+          git -C "$AMB_DIR" remote add origin "$AMB_REPO_URL"
+          git -C "$AMB_DIR" fetch --depth 1 origin "$AMB_REF"
+          git -C "$AMB_DIR" checkout --detach FETCH_HEAD
+          actual_ref="$(git -C "$AMB_DIR" rev-parse HEAD)"
+          if [ "$actual_ref" != "$AMB_REF" ]; then
+            echo "::error::AMB checkout resolved to $actual_ref, expected $AMB_REF."
+            exit 1
+          fi
 
       - name: Require official judge credentials
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           if [ -z "${GEMINI_API_KEY}${GOOGLE_API_KEY}" ]; then
             echo "::error::Set a GEMINI_API_KEY or GOOGLE_API_KEY repository secret before running this workflow."
@@ -76,10 +89,16 @@ jobs:
         run: node integrations/amb/install-remnic-provider.mjs "$AMB_DIR"
 
       - name: Check public-comparable setup
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: node integrations/amb/check-remnic-run.mjs "$AMB_DIR"
 
       - name: Run AMB BEAM
         working-directory: ${{ env.AMB_DIR }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           case "$BEAM_SPLIT" in
             100k|10m) ;;
