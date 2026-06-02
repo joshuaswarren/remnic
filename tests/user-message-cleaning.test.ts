@@ -85,8 +85,14 @@ test("empty channel envelope prefixes reset to legacy OpenClaw default", () => {
 });
 
 test("createOpenClawUserMessageCleaner isolates channel prefixes per instance", () => {
-  const discordCleaner = createOpenClawUserMessageCleaner(["Discord"]);
-  const slackCleaner = createOpenClawUserMessageCleaner(["Slack"]);
+  const discordCleaner = createOpenClawUserMessageCleaner(
+    ["Discord"],
+    { includeLegacyChannelEnvelopePattern: false },
+  );
+  const slackCleaner = createOpenClawUserMessageCleaner(
+    ["Slack"],
+    { includeLegacyChannelEnvelopePattern: false },
+  );
 
   assert.equal(
     discordCleaner("[Discord user id:123 2026-06-02] Remember this [message_id: host-2]"),
@@ -98,6 +104,15 @@ test("createOpenClawUserMessageCleaner isolates channel prefixes per instance", 
   );
   assert.equal(
     slackCleaner("[Slack user id:123 2026-06-02] Remember this [message_id: host-3]"),
+    "Remember this",
+  );
+});
+
+test("createOpenClawUserMessageCleaner defaults to legacy broad envelope cleaning", () => {
+  const cleaner = createOpenClawUserMessageCleaner(["Discord"]);
+
+  assert.equal(
+    cleaner("[Slack user id:123 2026-06-02] Remember this [message_id: host-3]"),
     "Remember this",
   );
 });

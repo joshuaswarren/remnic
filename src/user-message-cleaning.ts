@@ -10,9 +10,11 @@ export function createOpenClawUserMessageCleaner(
   options: UserMessageCleanerOptions = {},
 ): UserMessageCleaner {
   const normalized = normalizeOpenClawChannelEnvelopePrefixes(prefixes);
+  const includeLegacyChannelEnvelopePattern =
+    options.includeLegacyChannelEnvelopePattern ?? true;
   const platformHeaderPattern = channelEnvelopeHeaderPattern(
     normalized,
-    options.includeLegacyChannelEnvelopePattern === true,
+    includeLegacyChannelEnvelopePattern === true,
   );
   return (content) => cleanUserMessageWithPattern(content, platformHeaderPattern);
 }

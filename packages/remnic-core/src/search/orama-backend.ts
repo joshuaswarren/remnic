@@ -153,7 +153,7 @@ export class OramaBackend implements SearchBackend {
     const db = await this.ensureDbForCollection(collection);
     if (isSearchAborted(execution)) return;
     if (!db) return;
-    const { search: oramaSearch, insert, remove, count } = this.oramaModule;
+    const { search: oramaSearch, insert, remove, count, getByID } = this.oramaModule;
 
     const docs = await scanMemoryDir(this.memoryDir);
     if (isSearchAborted(execution)) return;
@@ -161,6 +161,7 @@ export class OramaBackend implements SearchBackend {
     const { update: oramaUpdate } = this.oramaModule;
 
     const embeddingProviderIdentity = this.embedHelper.getProviderIdentity();
+    let allRowsCompatible = !!embeddingProviderIdentity && docs.length > 0;
     // Get existing docs to diff — map user doc ID → { internalId, vector }
     const existingDocs = new Map<string, {
       internalId: string;
@@ -169,18 +170,26 @@ export class OramaBackend implements SearchBackend {
     }>();
     const existingCount = await count(db);
     if (existingCount > 0) {
-      const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
+      const allHits = await oramaSearch(db, {
+        term: "",
+        limit: existingCount + 100,
+      });
       for (const hit of allHits.hits) {
         if (isSearchAborted(execution)) return;
-        if (!docMap.has(hit.document.id)) {
+        const storedDocument =
+          typeof getByID === "function"
+            ? await getByID(db, hit.id)
+            : hit.document;
+        const document = storedDocument ?? hit.document ?? {};
+        if (!docMap.has(document.id)) {
           await remove(db, hit.id);
         } else {
-          existingDocs.set(hit.document.id, {
+          existingDocs.set(document.id, {
             internalId: hit.id,
-            vector: hit.document.vector,
+            vector: this.normalizeStoredVector(document.vector) ?? undefined,
             vectorProvider:
-              typeof hit.document.vectorProvider === "string"
-                ? hit.document.vectorProvider
+              typeof document.vectorProvider === "string"
+                ? document.vectorProvider
                 : undefined,
           });
         }
@@ -198,22 +207,26 @@ export class OramaBackend implements SearchBackend {
           content: doc.content,
           snippet: doc.snippet,
         };
-        if (
-          this.isExpectedDimensionVector(existing.vector) &&
-          (!embeddingProviderIdentity ||
-            existing.vectorProvider === embeddingProviderIdentity)
-        ) {
-          payload.vector = existing.vector;
+        const preservesCompatibleProvider =
+          !!embeddingProviderIdentity &&
+          existing.vectorProvider === embeddingProviderIdentity;
+        if (preservesCompatibleProvider) {
+          if (this.isExpectedDimensionVector(existing.vector)) {
+            payload.vector = existing.vector;
+          }
           payload.vectorProvider = existing.vectorProvider ?? "";
         } else {
           payload.vectorProvider = "";
+          allRowsCompatible = false;
         }
         try {
           await oramaUpdate(db, existing.internalId, payload);
         } catch {
+          allRowsCompatible = false;
           // Update failed — skip and continue with remaining docs
         }
       } else {
+        allRowsCompatible = false;
         try {
           await insert(db, {
             id: doc.docid,
@@ -223,6 +236,7 @@ export class OramaBackend implements SearchBackend {
             vectorProvider: "",
           });
         } catch {
+          allRowsCompatible = false;
           // Duplicate id edge case — skip
         }
       }
@@ -230,7 +244,11 @@ export class OramaBackend implements SearchBackend {
 
     if (isSearchAborted(execution)) return;
     await this.persistDbForCollection(db, collection);
-    this.rememberVectorProviderCompatibility(db, embeddingProviderIdentity, false);
+    this.rememberVectorProviderCompatibility(
+      db,
+      embeddingProviderIdentity,
+      allRowsCompatible,
+    );
   }
 
   async embed(): Promise<void> {
@@ -386,10 +404,11 @@ export class OramaBackend implements SearchBackend {
 
     const includeVector =
       this.embedHelper.isAvailable() ||
-      hits.some((hit: any) => this.isExpectedDimensionVector(hit.document?.vector));
+      hits.some((hit: any) => this.normalizeStoredVector(hit.document?.vector) !== null);
     const migrated = await this.createDb({ includeVector });
     for (const hit of hits) {
       const doc = hit.document ?? {};
+      const vector = this.normalizeStoredVector(doc.vector);
       const payload: Record<string, unknown> = {
         id: typeof doc.id === "string" && doc.id.length > 0 ? doc.id : String(hit.id),
         path: typeof doc.path === "string" ? doc.path : "",
@@ -403,8 +422,8 @@ export class OramaBackend implements SearchBackend {
         vectorProvider:
           typeof doc.vectorProvider === "string" ? doc.vectorProvider : "",
       };
-      if (includeVector && this.isExpectedDimensionVector(doc.vector)) {
-        payload.vector = doc.vector;
+      if (includeVector && vector) {
+        payload.vector = vector;
       }
       try {
         await insert(migrated, payload);
@@ -561,5 +580,17 @@ export class OramaBackend implements SearchBackend {
 
   private isExpectedDimensionVector(vector: number[] | null | undefined): vector is number[] {
     return Array.isArray(vector) && vector.length === this.embeddingDimension;
+  }
+
+  private normalizeStoredVector(vector: unknown): number[] | null {
+    const values =
+      Array.isArray(vector)
+        ? vector
+        : ArrayBuffer.isView(vector) && !(vector instanceof DataView)
+          ? Array.from(vector as unknown as ArrayLike<unknown>)
+          : null;
+    if (!values || values.length !== this.embeddingDimension) return null;
+    const normalized = values.map((value) => Number(value));
+    return normalized.every((value) => Number.isFinite(value)) ? normalized : null;
   }
 }

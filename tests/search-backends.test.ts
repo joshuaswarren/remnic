@@ -971,6 +971,71 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("OramaBackend caches compatible vectors after preserving them during update", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { create, insert } = await import("@orama/orama");
+    const { persist } = await import("@orama/plugin-data-persistence");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-compatible-cache-"));
+    try {
+      const dbPath = path.join(tempDir, "db");
+      await mkdir(dbPath, { recursive: true });
+      await mkdir(path.join(tempDir, "facts"), { recursive: true });
+      await writeFile(
+        path.join(tempDir, "facts", "same.md"),
+        "---\nid: same\n---\nThe same launch fact should preserve compatible vectors.",
+        "utf-8",
+      );
+      const db = await create({
+        schema: {
+          id: "string",
+          path: "string",
+          content: "string",
+          snippet: "string",
+          vector: "vector[2]",
+          vectorProvider: "string",
+        },
+      });
+      await insert(db, {
+        id: "same",
+        path: "facts/same.md",
+        content: "old content",
+        snippet: "old",
+        vector: [1, 0],
+        vectorProvider: "host:openclaw-memory",
+      });
+      await writeFile(
+        path.join(dbPath, "memories.msp"),
+        await persist(db, "json") as string,
+        "utf-8",
+      );
+
+      const backend = new OramaBackend({
+        dbPath,
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+
+      assert.equal(await backend.probe(), true);
+      await backend.update();
+
+      const cache = (backend as any).vectorProviderCompatibility.get(
+        (backend as any).db,
+      );
+      assert.deepEqual(cache, {
+        providerIdentity: "host:openclaw-memory",
+        compatible: true,
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("OramaBackend recreates empty legacy DBs before embedding new documents", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
     const { create, search } = await import("@orama/orama");
