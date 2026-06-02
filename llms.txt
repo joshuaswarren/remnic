@@ -32,7 +32,7 @@ OpenClaw adapter note:
   options. The same config bounds Remnic's internal cold-start init gate for
   recall and day summaries. Default: 30000ms; accepted range: 1000-120000ms.
   Current OpenClaw compatibility target: reviewed source tag
-  2026.6.2-alpha.1, with package metadata floor >=2026.4.1. As of
+  2026.6.2-alpha.2, with package metadata floor >=2026.4.1. As of
   June 2, 2026 the active 60-day floor is April 3, 2026; keep the
   more-permissive 2026.4.1 floor unless an upstream breaking change makes it
   impossible. Keep openclaw.install.minHostVersion as one installer floor, and
@@ -244,13 +244,19 @@ OPENCLAW PLUGIN COMPATIBILITY
   providerAuthEnvVars must remain mirrored for older pre-runtime auth probes.
 
   June 2, 2026 sweep: issues #1258, #1259, #1266, and #1271 were reviewed
-  against OpenClaw tags through v2026.6.2-alpha.1. The manifest, SDK overview,
-  and SDK entrypoint docs did not change; Remnic's SDK snapshot still matched
-  every reviewed tag. New OpenClaw surfaces were additive
-  (plugin-sdk/chat-channel-ids, plugin-sdk/memory-core-host-embedding-registry,
-  and quoted-reply hook metadata), so Remnic only needs compatibility metadata,
-  docs, and tests for those versions. v2026.6.2-alpha.1 is a source tag but
-  was not a GitHub release page or npm package during that sweep.
+  against OpenClaw tags through v2026.6.2-alpha.2. The manifest, SDK overview,
+  and SDK entrypoint docs remained compatible; Remnic's SDK snapshot still
+  matched every reviewed tag. New additive OpenClaw surfaces are consumed only
+  through gates: host embedding providers via
+  hostEmbeddingProviderEnabled, inbound transcript capture via
+  openclawMessageReceivedCaptureEnabled, bounded reply/thread metadata via
+  openclawReplyMetadataCaptureEnabled, opt-in quoted-reply extraction context
+  via openclawReplyMetadataExtractionHintsEnabled, and canonical channel
+  envelope prefixes via openclawChannelEnvelopeCleaningEnabled. Never make
+  these static imports or required paths; older OpenClaw hosts must keep using
+  Remnic's existing embedding, agent_end, and legacy envelope-cleaning paths.
+  v2026.6.2-alpha.1 and v2026.6.2-alpha.2 are source tags but were not GitHub
+  release pages or npm packages during that sweep.
   supports must remain for OpenClaw 2026.4 / early 2026.5 slot and lifecycle
   routing. Top-level securityDisclosure is not a current native manifest field
   and must stay omitted.

@@ -3,14 +3,19 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { PluginConfig } from "./types.js";
+import {
+  getHostEmbeddingProvider,
+  type HostEmbeddingProvider,
+} from "./host-embedding-provider.js";
 
-type EmbeddingProviderType = "openai" | "local";
+type EmbeddingProviderType = "openai" | "local" | "host";
 
 type ProviderConfig = {
   type: EmbeddingProviderType;
   model: string;
-  endpoint: string;
-  headers: Record<string, string>;
+  endpoint?: string;
+  headers?: Record<string, string>;
+  hostProvider?: HostEmbeddingProvider;
 };
 
 type EmbeddingIndexEntry = {
@@ -327,6 +332,17 @@ export class EmbeddingFallback {
   private async resolveProvider(): Promise<ProviderConfig | null> {
     if (!this.config.embeddingFallbackEnabled) return null;
 
+    if (this.config.hostEmbeddingProviderEnabled !== false) {
+      const hostProvider = getHostEmbeddingProvider(this.config.memoryDir);
+      if (hostProvider) {
+        return {
+          type: "host",
+          model: hostProvider.model || hostProvider.id,
+          hostProvider,
+        };
+      }
+    }
+
     const preferred = this.config.embeddingFallbackProvider;
     const providers = preferred === "auto" ? ["openai", "local"] : [preferred];
 
@@ -385,6 +401,10 @@ export class EmbeddingFallback {
       mode === "index"
         ? resolveEmbeddingIndexTimeoutMs()
         : resolveEmbeddingLookupTimeoutMs();
+    if (provider.type === "host") {
+      return this.embedWithHostProvider(input, provider, mode, timeoutMs);
+    }
+    if (!provider.endpoint || !provider.headers) return null;
     try {
       const res = await fetch(provider.endpoint, {
         method: "POST",
@@ -479,6 +499,34 @@ export class EmbeddingFallback {
     }
   }
 
+  private async embedWithHostProvider(
+    input: string,
+    provider: ProviderConfig,
+    mode: EmbedMode,
+    timeoutMs: number,
+  ): Promise<number[] | null> {
+    const hostProvider = provider.hostProvider;
+    if (!hostProvider) return null;
+    try {
+      const vector = await hostProvider.embed(input.slice(0, 8000), {
+        signal: AbortSignal.timeout(timeoutMs),
+        inputType: mode === "lookup" ? "query" : "document",
+      });
+      return normalizeEmbeddingVector(vector);
+    } catch (err) {
+      if (mode === "lookup") {
+        log.warn(
+          `host embedding provider unavailable on lookup path (${hostProvider.id}): ${err}`,
+        );
+        throw new EmbeddingTimeoutError(
+          `host embedding provider unavailable (${hostProvider.id}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      log.debug(`host embedding provider index error: ${err}`);
+      return null;
+    }
+  }
+
   private async loadIndex(provider: ProviderConfig): Promise<EmbeddingIndexFile> {
     if (this.loaded && this.loaded.provider === provider.type && this.loaded.model === provider.model) {
       return this.loaded;
@@ -559,6 +607,14 @@ function normalizeEntryPath(p: string): string {
   let out = p.replace(/\\/g, "/");
   if (out.startsWith("./")) out = out.slice(2);
   return out;
+}
+
+function normalizeEmbeddingVector(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const vector = value
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n));
+  return vector.length > 0 ? vector : null;
 }
 
 /**

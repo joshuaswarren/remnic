@@ -49,7 +49,7 @@ The package metadata keeps the installer compatibility floor at the single
 `>=2026.4.1` shape OpenClaw setup expects because that older floor is still
 more permissive than the active 60-day requirement. The peer and plugin-API
 compatibility ranges explicitly include reviewed prerelease hosts in that
-window. The adapter separately records `2026.6.2-alpha.1` as the latest
+window. The adapter separately records `2026.6.2-alpha.2` as the latest
 reviewed OpenClaw source-tag target.
 
 When adding newer OpenClaw manifest surfaces, keep older-compatible metadata in
@@ -192,11 +192,11 @@ for the Remnic adapter surfaces. The May 31 sweep checked source tags
 #1203 through #1245, excluding unrelated issue #1211. The June 2 sweep reviewed
 Remnic issues #1258, #1259, #1266, and #1271 against OpenClaw tags
 `v2026.5.31-beta.4`, `v2026.6.1-alpha.1`, `v2026.6.1-alpha.2`,
-`v2026.6.1-alpha.3`, `v2026.6.1-beta.1`, `v2026.6.1-beta.2`, and
-`v2026.6.2-alpha.1`. The existing SDK snapshot still matched (`14 registrars,
-22 hooks, 2 manifest contracts`) for each tag. `v2026.6.2-alpha.1` exists as an
-upstream source tag, but as of June 2, 2026 it is not a GitHub release page or
-published npm package.
+`v2026.6.1-alpha.3`, `v2026.6.1-beta.1`, `v2026.6.1-beta.2`,
+`v2026.6.2-alpha.1`, and `v2026.6.2-alpha.2`. The existing SDK snapshot still
+matched (`14 registrars, 22 hooks, 2 manifest contracts`) for each tag.
+`v2026.6.2-alpha.1` and `v2026.6.2-alpha.2` exist as upstream source tags, but
+as of June 2, 2026 they are not GitHub release pages or published npm packages.
 
 OpenClaw 2026.5.16 package-entry discovery prefers explicit built runtime
 entries for installed packages. The published Remnic adapter declares
@@ -236,15 +236,31 @@ because the adapter owns mixed memory-slot hooks, lifecycle handlers, slash
 command metadata, public artifacts, and runtime tools rather than only static
 tools.
 
-OpenClaw 2026.5.20-beta.2 through the reviewed `2026.6.2-alpha.1` source tag
+OpenClaw 2026.5.20-beta.2 through the reviewed `2026.6.2-alpha.2` source tag
 keep the Remnic-required plugin install, ClawHub fallback, manifest contract,
 hook, memory-slot, gateway LLM, and plugin security-scan surfaces compatible.
 OpenClaw 2026.5.31-beta.4 added optional `plugin-sdk/chat-channel-ids` and
 `plugin-sdk/memory-core-host-embedding-registry` subpaths, and
-`2026.6.2-alpha.1` adds quoted-reply metadata fields to inbound and
-`before_dispatch` hook contexts. Remnic does not consume those optional
-surfaces in the memory adapter, so no runtime adapter code change is required.
-The package metadata now records `2026.6.2-alpha.1` as the reviewed OpenClaw
+`2026.6.2-alpha.1`/`2026.6.2-alpha.2` add quoted-reply metadata fields to
+inbound and `before_dispatch` hook contexts. Remnic consumes those optional
+surfaces only through compatibility gates:
+
+- `hostEmbeddingProviderEnabled` (default `true`) lets Remnic prefer
+  OpenClaw memory/generic embedding providers for semantic fallback and
+  embedded vector backends when the host SDK exposes them. Provider creation
+  failures fall back to Remnic's existing embedding path.
+- `openclawMessageReceivedCaptureEnabled` (default `true`) captures inbound
+  `message_received` content into transcripts when the host emits that hook.
+- `openclawReplyMetadataCaptureEnabled` (default `true`) stores bounded
+  `messageId`, `threadId`, `replyToId`, `replyToBody`, and `replyToSender`
+  transcript metadata.
+- `openclawReplyMetadataExtractionHintsEnabled` (default `false`) prepends
+  bounded quoted-reply context to user turns before extraction.
+- `openclawChannelEnvelopeCleaningEnabled` (default `true`) uses OpenClaw's
+  canonical channel envelope prefixes when the SDK subpath exists, with the
+  legacy OpenClaw-only cleaner preserved for older hosts.
+
+The package metadata now records `2026.6.2-alpha.2` as the reviewed OpenClaw
 source-tag target and keeps the stable `>=2026.4.1` installer floor plus
 reviewed prerelease peer/plugin-API hosts eligible.
 

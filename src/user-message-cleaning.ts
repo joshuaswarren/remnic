@@ -1,3 +1,12 @@
+let channelEnvelopePrefixes = ["OpenClaw"];
+
+export function configureOpenClawChannelEnvelopePrefixes(prefixes: string[]): void {
+  const cleaned = prefixes
+    .map((prefix) => (typeof prefix === "string" ? prefix.trim() : ""))
+    .filter((prefix) => prefix.length > 0);
+  channelEnvelopePrefixes = cleaned.length > 0 ? cleaned : ["OpenClaw"];
+}
+
 export function cleanUserMessage(content: string): string {
   let cleaned = content;
   // Remove structured host-injected memory wrappers wherever the platform
@@ -7,7 +16,7 @@ export function cleanUserMessage(content: string): string {
     "",
   );
 
-  const platformHeader = cleaned.match(/^\[\w+\s+.+?\s+id:\d+\s+[^\]]+\]\s*/);
+  const platformHeader = cleaned.match(channelEnvelopeHeaderPattern());
   const hasPlatformHeader = platformHeader !== null;
   if (platformHeader) {
     cleaned = cleaned.slice(platformHeader[0].length);
@@ -24,4 +33,18 @@ export function cleanUserMessage(content: string): string {
     cleaned = cleaned.replace(/\s*\[message_id:\s*[^\]]+\]\s*$/i, "");
   }
   return cleaned.trim();
+}
+
+function channelEnvelopeHeaderPattern(): RegExp {
+  const alternatives = channelEnvelopePrefixes
+    .map(escapeRegExp)
+    .join("|");
+  return new RegExp(
+    `^\\[(?:${alternatives})\\s+.+?\\s+id:\\d+\\s+[^\\]]+\\]\\s*`,
+    "i",
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

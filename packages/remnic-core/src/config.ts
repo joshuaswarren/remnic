@@ -1398,6 +1398,16 @@ export function parseConfig(raw: unknown): PluginConfig {
         : cfg.embeddingFallbackProvider === "local"
           ? "local"
           : "auto",
+    hostEmbeddingProviderEnabled:
+      coerceBooleanLike(cfg.hostEmbeddingProviderEnabled) ??
+      coerceBooleanLike(cfg.openclawHostEmbeddingProviderEnabled) ??
+      true,
+    hostEmbeddingProviderId:
+      parseOptionalNonEmptyString(cfg.hostEmbeddingProviderId) ??
+      parseOptionalNonEmptyString(cfg.openclawHostEmbeddingProviderId),
+    hostEmbeddingProviderModel:
+      parseOptionalNonEmptyString(cfg.hostEmbeddingProviderModel) ??
+      parseOptionalNonEmptyString(cfg.openclawHostEmbeddingProviderModel),
     embeddingFallbackModel:
       typeof cfg.embeddingFallbackModel === "string" && cfg.embeddingFallbackModel.length > 0
         ? cfg.embeddingFallbackModel
@@ -1719,6 +1729,14 @@ export function parseConfig(raw: unknown): PluginConfig {
       typeof cfg.openclawToolSnippetMaxChars === "number"
         ? Math.min(4_000, Math.max(80, Math.floor(cfg.openclawToolSnippetMaxChars)))
         : 600,
+    openclawMessageReceivedCaptureEnabled:
+      coerceBooleanLike(cfg.openclawMessageReceivedCaptureEnabled) ?? true,
+    openclawReplyMetadataCaptureEnabled:
+      coerceBooleanLike(cfg.openclawReplyMetadataCaptureEnabled) ?? true,
+    openclawReplyMetadataExtractionHintsEnabled:
+      coerceBooleanLike(cfg.openclawReplyMetadataExtractionHintsEnabled) ?? false,
+    openclawChannelEnvelopeCleaningEnabled:
+      coerceBooleanLike(cfg.openclawChannelEnvelopeCleaningEnabled) ?? true,
     sessionTogglesEnabled: cfg.sessionTogglesEnabled !== false,
     verboseRecallVisibility: cfg.verboseRecallVisibility !== false,
     recallTranscriptsEnabled: cfg.recallTranscriptsEnabled === true,

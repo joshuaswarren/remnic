@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { cleanUserMessage } from "../src/user-message-cleaning.ts";
+import {
+  cleanUserMessage,
+  configureOpenClawChannelEnvelopePrefixes,
+} from "../src/user-message-cleaning.ts";
 
 test("cleanUserMessage preserves user-authored trailing message IDs", () => {
   assert.equal(
@@ -15,6 +18,22 @@ test("cleanUserMessage removes message IDs only with a platform header", () => {
     cleanUserMessage("[OpenClaw user id:123 2026-05-22] Remember the deployment [message_id: host-1]"),
     "Remember the deployment",
   );
+});
+
+test("cleanUserMessage uses configured OpenClaw channel envelope prefixes", () => {
+  try {
+    configureOpenClawChannelEnvelopePrefixes(["Discord", "Google Chat"]);
+    assert.equal(
+      cleanUserMessage("[Discord user id:123 2026-06-02] Remember this [message_id: host-2]"),
+      "Remember this",
+    );
+    assert.equal(
+      cleanUserMessage("[Slack user id:123 2026-06-02] Keep literal [message_id: host-3]"),
+      "[Slack user id:123 2026-06-02] Keep literal [message_id: host-3]",
+    );
+  } finally {
+    configureOpenClawChannelEnvelopePrefixes(["OpenClaw"]);
+  }
 });
 
 test("cleanUserMessage only strips markdown memory context as a leading preamble", () => {

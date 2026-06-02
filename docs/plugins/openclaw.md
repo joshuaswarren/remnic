@@ -99,7 +99,7 @@ June 2, 2026, that window starts on April 3, 2026. The OpenClaw installer
 floor remains the single supported `>=2026.4.1` shape because it is more
 permissive than the active 60-day floor, while the peer and plugin-API
 compatibility ranges explicitly include reviewed prerelease hosts in that
-window. The adapter records `2026.6.2-alpha.1` as the latest reviewed
+window. The adapter records `2026.6.2-alpha.2` as the latest reviewed
 source-tag target.
 
 When OpenClaw adds a new manifest or setup surface, Remnic should add that new
@@ -187,7 +187,7 @@ surfaces:
   diagnostic while preserving older host behavior.
 - `securityDisclosure` is intentionally documented here instead of shipped as a
   manifest field; current OpenClaw native manifests do not list it.
-- OpenClaw 2026.5.20-beta.2 through the reviewed `2026.6.2-alpha.1` source tag
+- OpenClaw 2026.5.20-beta.2 through the reviewed `2026.6.2-alpha.2` source tag
   keep Remnic's SDK hook, tool-contract, memory-slot, ClawHub install, gateway
   model, and security-scan surfaces compatible. Remnic stays on the full
   `definePluginEntry` SDK path instead of the simple `defineToolPlugin` helper
@@ -195,10 +195,14 @@ surfaces:
   metadata, public artifacts, and runtime tools. OpenClaw 2026.5.31-beta.4 adds
   optional `plugin-sdk/chat-channel-ids` and
   `plugin-sdk/memory-core-host-embedding-registry` subpaths, and the
-  `2026.6.2-alpha.1` tag adds quoted-reply metadata fields to inbound and
-  `before_dispatch` hook contexts. Remnic does not consume those optional
-  surfaces in the memory adapter, so no runtime adapter code change is required.
-  The package metadata records `2026.6.2-alpha.1` as the reviewed OpenClaw
+  `2026.6.2-alpha.1`/`2026.6.2-alpha.2` tags add quoted-reply metadata fields
+  to inbound and `before_dispatch` hook contexts. Remnic consumes these as
+  optional, version-gated adapter surfaces: host embedding providers are used
+  only when OpenClaw exposes the registry and provider setup succeeds;
+  `message_received` reply/thread metadata is captured into transcripts when
+  available; quoted-reply extraction hints remain opt-in; and channel-envelope
+  cleanup uses OpenClaw's canonical prefix list only when that subpath exists.
+  The package metadata records `2026.6.2-alpha.2` as the reviewed OpenClaw
   source-tag target while keeping the broad stable and prerelease
   peer/plugin-API range required by Remnic's rolling 60-day support policy.
   `openclaw.install.minHostVersion` remains the single `>=2026.4.1` floor that
@@ -253,23 +257,28 @@ window on June 2, 2026.
 - Upstream availability: `v2026.5.31-beta.4`, `v2026.6.1-beta.1`, and
   `v2026.6.1-beta.2` are GitHub releases. `v2026.6.1-beta.1` is published on
   npm; `v2026.6.1-beta.2` was a GitHub release but was not present in the npm
-  registry during this sweep. `v2026.6.2-alpha.1` exists as an upstream Git tag
-  but not as a GitHub release page or npm package as of June 2, 2026.
+  registry during this sweep. `v2026.6.2-alpha.1` and `v2026.6.2-alpha.2`
+  exist as upstream Git tags but not as GitHub release pages or npm packages as
+  of June 2, 2026.
 - Reviewed source tags: `v2026.5.31-beta.4`, `v2026.6.1-alpha.1`,
   `v2026.6.1-alpha.2`, `v2026.6.1-alpha.3`, `v2026.6.1-beta.1`,
-  `v2026.6.1-beta.2`, and `v2026.6.2-alpha.1`.
+  `v2026.6.1-beta.2`, `v2026.6.2-alpha.1`, and `v2026.6.2-alpha.2`.
 - SDK surface: `npm run check:openclaw-sdk-surface -- --package-root <tag checkout>`
   passes for every reviewed tag with the existing snapshot (`14 registrars,
   22 hooks, 2 manifest contracts`).
 - Manifest and setup: `docs/plugins/manifest.md`, `docs/plugins/sdk-overview.md`,
-  and `docs/plugins/sdk-entrypoints.md` have no contract diff from
-  `v2026.5.31-beta.3` to `v2026.6.2-alpha.1`.
+  and `docs/plugins/sdk-entrypoints.md` have no breaking contract diff from
+  `v2026.5.31-beta.3` to `v2026.6.2-alpha.2`.
 - Additive host features: OpenClaw added optional
   `plugin-sdk/chat-channel-ids` and `plugin-sdk/memory-core-host-embedding-registry`
-  subpaths, and quoted-reply metadata fields on inbound / `before_dispatch`
-  hook contexts. Remnic's OpenClaw memory adapter does not consume those
-  optional features, so compatibility only requires package metadata, docs, and
-  tests to include the reviewed prerelease hosts.
+  subpaths, generic `plugin-sdk/embedding-providers`, and quoted-reply metadata
+  fields on inbound / `before_dispatch` hook contexts. Remnic now consumes those
+  surfaces through compatibility gates:
+  `hostEmbeddingProviderEnabled`,
+  `openclawMessageReceivedCaptureEnabled`,
+  `openclawReplyMetadataCaptureEnabled`,
+  `openclawReplyMetadataExtractionHintsEnabled`, and
+  `openclawChannelEnvelopeCleaningEnabled`.
 
 ## Reset Flush Contract
 

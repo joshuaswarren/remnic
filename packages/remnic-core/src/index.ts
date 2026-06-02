@@ -104,6 +104,12 @@ export {
   parseEntityFile,
   serializeEntityFile,
 } from "./storage.js";
+export {
+  getHostEmbeddingProvider,
+  registerHostEmbeddingProvider,
+  type HostEmbeddingInputType,
+  type HostEmbeddingProvider,
+} from "./host-embedding-provider.js";
 
 // ---------------------------------------------------------------------------
 // Extraction

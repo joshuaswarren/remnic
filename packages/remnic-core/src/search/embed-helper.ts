@@ -2,12 +2,17 @@ import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
 import { isAbortError } from "../abort-error.js";
 import { withTimeoutSignal } from "./abort.js";
+import {
+  getHostEmbeddingProvider,
+  type HostEmbeddingProvider,
+} from "../host-embedding-provider.js";
 
 type ProviderConfig = {
-  type: "openai" | "local";
+  type: "openai" | "local" | "host";
   model: string;
-  endpoint: string;
-  headers: Record<string, string>;
+  endpoint?: string;
+  headers?: Record<string, string>;
+  hostProvider?: HostEmbeddingProvider;
 };
 
 const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
@@ -60,9 +65,12 @@ export class EmbedHelper {
     const results: (number[] | null)[] = new Array(texts.length).fill(null);
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize);
-      const batchResults = await Promise.all(
-        batch.map((t) => this.callEmbed(t, provider, options.signal)),
-      );
+      const batchResults =
+        provider.type === "host" && provider.hostProvider?.embedBatch
+          ? await this.callHostEmbedBatch(batch, provider.hostProvider, options.signal)
+          : await Promise.all(
+              batch.map((t) => this.callEmbed(t, provider, options.signal)),
+            );
       for (let j = 0; j < batchResults.length; j++) {
         results[i + j] = batchResults[j];
       }
@@ -79,6 +87,17 @@ export class EmbedHelper {
 
   private resolveProvider(): ProviderConfig | null {
     if (!this.config.embeddingFallbackEnabled) return null;
+
+    if (this.config.hostEmbeddingProviderEnabled !== false) {
+      const hostProvider = getHostEmbeddingProvider(this.config.memoryDir);
+      if (hostProvider) {
+        return {
+          type: "host",
+          model: hostProvider.model || hostProvider.id,
+          hostProvider,
+        };
+      }
+    }
 
     const preferred = this.config.embeddingFallbackProvider;
     const providers = preferred === "auto" ? ["openai", "local"] : [preferred];
@@ -127,6 +146,10 @@ export class EmbedHelper {
     provider: ProviderConfig,
     signal?: AbortSignal,
   ): Promise<number[] | null> {
+    if (provider.type === "host") {
+      return this.callHostEmbed(input, provider.hostProvider, signal);
+    }
+    if (!provider.endpoint || !provider.headers) return null;
     try {
       const res = await fetch(provider.endpoint, {
         method: "POST",
@@ -152,4 +175,53 @@ export class EmbedHelper {
       return null;
     }
   }
+
+  private async callHostEmbed(
+    input: string,
+    provider: HostEmbeddingProvider | undefined,
+    signal?: AbortSignal,
+  ): Promise<number[] | null> {
+    if (!provider) return null;
+    try {
+      const vector = await provider.embed(input.slice(0, 8000), {
+        signal: withTimeoutSignal(signal, 30_000),
+        inputType: "document",
+      });
+      return normalizeVector(vector);
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      log.debug(`EmbedHelper host provider error: ${err}`);
+      return null;
+    }
+  }
+
+  private async callHostEmbedBatch(
+    inputs: string[],
+    provider: HostEmbeddingProvider,
+    signal?: AbortSignal,
+  ): Promise<(number[] | null)[]> {
+    try {
+      const vectors = await provider.embedBatch?.(
+        inputs.map((input) => input.slice(0, 8000)),
+        {
+          signal: withTimeoutSignal(signal, 30_000),
+          inputType: "document",
+        },
+      );
+      if (!Array.isArray(vectors)) return inputs.map(() => null);
+      return inputs.map((_, index) => normalizeVector(vectors[index]));
+    } catch (err) {
+      if (isAbortError(err)) throw err;
+      log.debug(`EmbedHelper host provider batch error: ${err}`);
+      return inputs.map(() => null);
+    }
+  }
+}
+
+function normalizeVector(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const vector = value
+    .map((n) => Number(n))
+    .filter((n) => Number.isFinite(n));
+  return vector.length > 0 ? vector : null;
 }

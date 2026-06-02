@@ -751,6 +751,16 @@
       "remnic-source": "./src/embedding-fallback.ts",
       "import": "./dist/embedding-fallback.js"
     },
+    "./host-embedding-provider": {
+      "types": "./src/host-embedding-provider.ts",
+      "remnic-source": "./src/host-embedding-provider.ts",
+      "import": "./dist/host-embedding-provider.js"
+    },
+    "./host-embedding-provider.js": {
+      "types": "./src/host-embedding-provider.ts",
+      "remnic-source": "./src/host-embedding-provider.ts",
+      "import": "./dist/host-embedding-provider.js"
+    },
     "./enrichment": {
       "types": "./src/enrichment/index.ts",
       "remnic-source": "./src/enrichment/index.ts",

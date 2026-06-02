@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { EmbeddingFallback } from "../src/embedding-fallback.js";
+import {
+  clearHostEmbeddingProvidersForTest,
+  registerHostEmbeddingProvider,
+} from "../src/host-embedding-provider.js";
 import type { PluginConfig } from "../src/types.js";
 
 function stubConfig(overrides: Partial<PluginConfig> = {}): PluginConfig {
@@ -64,6 +68,32 @@ test("EmbeddingFallback uses local provider when embeddingFallbackProvider is lo
   assert.equal(provider.type, "local");
   assert.equal(provider.model, "bge-m3");
   assert.equal(provider.endpoint, "http://host.docker.internal:8006/v1/embeddings");
+});
+
+test("EmbeddingFallback prefers scoped host embedding provider when registered", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-"));
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    model: "host-model",
+    async embed(text, options) {
+      assert.equal(text, "launch query");
+      assert.equal(options?.inputType, "query");
+      return [0.25, 0.5, 0.75];
+    },
+  });
+  try {
+    const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
+    const provider = await (fallback as any).resolveProvider();
+    assert.equal(provider.type, "host");
+    assert.equal(provider.model, "host-model");
+    const vector = await (fallback as any).embed("launch query", provider, {
+      mode: "lookup",
+    });
+    assert.deepEqual(vector, [0.25, 0.5, 0.75]);
+  } finally {
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+  }
 });
 
 test("EmbeddingFallback returns null when disabled", async () => {

@@ -39,7 +39,10 @@ import os from "node:os";
 import { createOpikExporter } from "./opik-exporter.js";
 import { readEnvVar, resolveHomeDir } from "@remnic/core/runtime/env";
 import { migrateFromEngram } from "./migrate/from-engram.js";
-import { cleanUserMessage } from "./user-message-cleaning.js";
+import {
+  cleanUserMessage,
+  configureOpenClawChannelEnvelopePrefixes,
+} from "./user-message-cleaning.js";
 import { listRemnicPublicArtifacts } from "../packages/plugin-openclaw/src/public-artifacts.js";
 import {
   buildMemoryGetTool,
@@ -80,6 +83,10 @@ import {
   resolveAgentAccessAuthToken,
   expandTildePath,
 } from "@remnic/core";
+import {
+  registerHostEmbeddingProvider,
+  type HostEmbeddingProvider,
+} from "@remnic/core/host-embedding-provider";
 import { findGatewayRuntimeModules } from "./resolve-provider-secret.js";
 import { createDreamsSurface } from "@remnic/core/surfaces/dreams";
 import { createHeartbeatSurface, type HeartbeatEntry } from "@remnic/core/surfaces/heartbeat";
@@ -735,6 +742,240 @@ function tryDefinePluginEntry(def: {
   }
 }
 
+type OpenClawEmbeddingAdapterKind = "generic" | "memory";
+
+type OpenClawEmbeddingAdapter = {
+  id: string;
+  defaultModel?: string;
+  create: (options: Record<string, unknown>) => Promise<{
+    provider?: unknown;
+    runtime?: unknown;
+  } | null>;
+};
+
+function requireOpenClawSdkSubpath<T>(subpath: string): T | null {
+  try {
+    const _require = createRequire(import.meta.url);
+    return _require(subpath) as T;
+  } catch {
+    return null;
+  }
+}
+
+function configureChannelEnvelopeCleaning(cfg: {
+  openclawChannelEnvelopeCleaningEnabled: boolean;
+}): void {
+  if (!cfg.openclawChannelEnvelopeCleaningEnabled) return;
+  const sdk = requireOpenClawSdkSubpath<{
+    BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES?: unknown;
+  }>("openclaw/plugin-sdk/chat-channel-ids");
+  const prefixes = sdk?.BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES;
+  if (!Array.isArray(prefixes)) return;
+  configureOpenClawChannelEnvelopePrefixes(
+    prefixes.filter((value): value is string => typeof value === "string"),
+  );
+}
+
+function registerOpenClawHostEmbeddingProvider(params: {
+  api: OpenClawPluginApi;
+  cfg: {
+    memoryDir: string;
+    hostEmbeddingProviderEnabled: boolean;
+    hostEmbeddingProviderId?: string;
+    hostEmbeddingProviderModel?: string;
+    embeddingFallbackModel?: string;
+  };
+  serviceId: string;
+}): (() => void) | null {
+  const { api, cfg, serviceId } = params;
+  if (cfg.hostEmbeddingProviderEnabled === false) return null;
+
+  const selected = selectOpenClawEmbeddingAdapter(api, cfg.hostEmbeddingProviderId);
+  if (!selected) return null;
+
+  const model =
+    cfg.hostEmbeddingProviderModel ||
+    cfg.embeddingFallbackModel ||
+    selected.adapter.defaultModel ||
+    "text-embedding-3-small";
+
+  let providerPromise: Promise<unknown | null> | null = null;
+  let providerInstance: unknown | null = null;
+  let createFailed = false;
+
+  const resolveProvider = async (): Promise<unknown | null> => {
+    if (providerInstance) return providerInstance;
+    if (createFailed) return null;
+    providerPromise ??= selected.adapter
+      .create({
+        config: api.config ?? {},
+        agentDir:
+          typeof (api as any).runtime?.agent?.workspaceDir === "string"
+            ? (api as any).runtime.agent.workspaceDir
+            : undefined,
+        provider: cfg.hostEmbeddingProviderId || selected.adapter.id,
+        model,
+      })
+      .then((result) => {
+        providerInstance =
+          result && typeof result === "object"
+            ? (result as Record<string, unknown>).provider ?? null
+            : null;
+        if (!providerInstance) {
+          createFailed = true;
+          log.debug(
+            `OpenClaw host embedding provider ${selected.adapter.id} did not create a provider; using Remnic fallback embeddings`,
+          );
+        }
+        return providerInstance;
+      })
+      .catch((error) => {
+        createFailed = true;
+        log.debug(
+          `OpenClaw host embedding provider ${selected.adapter.id} unavailable: ${error}`,
+        );
+        return null;
+      });
+    return providerPromise;
+  };
+
+  const hostProvider: HostEmbeddingProvider = {
+    id: `openclaw:${selected.kind}:${selected.adapter.id}`,
+    model: `${selected.adapter.id}/${model}`,
+    async embed(text, options) {
+      const provider = await resolveProvider();
+      if (!provider) return null;
+      return embedWithOpenClawProvider(selected.kind, provider, text, options);
+    },
+    async embedBatch(texts, options) {
+      const provider = await resolveProvider();
+      if (!provider) return texts.map(() => null);
+      return embedBatchWithOpenClawProvider(selected.kind, provider, texts, options);
+    },
+    async close() {
+      const close = providerInstance && typeof providerInstance === "object"
+        ? (providerInstance as Record<string, unknown>).close
+        : undefined;
+      if (typeof close === "function") {
+        await close.call(providerInstance);
+      }
+    },
+  };
+
+  const unregister = registerHostEmbeddingProvider(cfg.memoryDir, hostProvider);
+  log.info(
+    `registered OpenClaw host embedding provider bridge (${selected.adapter.id}) for ${serviceId}`,
+  );
+  return unregister;
+}
+
+function selectOpenClawEmbeddingAdapter(
+  api: OpenClawPluginApi,
+  requestedId?: string,
+): { kind: OpenClawEmbeddingAdapterKind; adapter: OpenClawEmbeddingAdapter } | null {
+  const memorySdk = requireOpenClawSdkSubpath<{
+    listMemoryEmbeddingProviders?: (cfg?: unknown) => unknown[];
+  }>("openclaw/plugin-sdk/memory-core-host-embedding-registry");
+  const memoryAdapters = memorySdk?.listMemoryEmbeddingProviders?.(api.config) ?? [];
+  const selectedMemory = selectAdapter(memoryAdapters, requestedId);
+  if (selectedMemory) {
+    return { kind: "memory", adapter: selectedMemory };
+  }
+
+  const genericSdk = requireOpenClawSdkSubpath<{
+    listEmbeddingProviders?: (cfg?: unknown) => unknown[];
+  }>("openclaw/plugin-sdk/embedding-providers");
+  const genericAdapters = genericSdk?.listEmbeddingProviders?.(api.config) ?? [];
+  const selectedGeneric = selectAdapter(genericAdapters, requestedId);
+  if (selectedGeneric) {
+    return { kind: "generic", adapter: selectedGeneric };
+  }
+
+  return null;
+}
+
+function selectAdapter(
+  adapters: unknown[],
+  requestedId?: string,
+): OpenClawEmbeddingAdapter | null {
+  const valid = adapters.filter(isOpenClawEmbeddingAdapter);
+  if (valid.length === 0) return null;
+  if (requestedId) {
+    return valid.find((adapter) => adapter.id === requestedId) ?? null;
+  }
+  return valid[0] ?? null;
+}
+
+function isOpenClawEmbeddingAdapter(value: unknown): value is OpenClawEmbeddingAdapter {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    typeof (value as Record<string, unknown>).id === "string" &&
+    typeof (value as Record<string, unknown>).create === "function"
+  );
+}
+
+async function embedWithOpenClawProvider(
+  kind: OpenClawEmbeddingAdapterKind,
+  provider: unknown,
+  text: string,
+  options?: { signal?: AbortSignal; inputType?: string },
+): Promise<number[] | null> {
+  if (!provider || typeof provider !== "object") return null;
+  const record = provider as Record<string, unknown>;
+  if (kind === "memory" && options?.inputType === "query" && typeof record.embedQuery === "function") {
+    return normalizeOpenClawVector(
+      await record.embedQuery.call(provider, text, { signal: options.signal }),
+    );
+  }
+  if (kind === "generic" && typeof record.embed === "function") {
+    return normalizeOpenClawVector(
+      await record.embed.call(provider, text, {
+        signal: options?.signal,
+        inputType: options?.inputType,
+      }),
+    );
+  }
+  if (typeof record.embedBatch === "function") {
+    const vectors = await record.embedBatch.call(provider, [text], {
+      signal: options?.signal,
+      inputType: options?.inputType,
+    });
+    return normalizeOpenClawVector(Array.isArray(vectors) ? vectors[0] : null);
+  }
+  return null;
+}
+
+async function embedBatchWithOpenClawProvider(
+  kind: OpenClawEmbeddingAdapterKind,
+  provider: unknown,
+  texts: string[],
+  options?: { signal?: AbortSignal; inputType?: string },
+): Promise<Array<number[] | null>> {
+  if (!provider || typeof provider !== "object") return texts.map(() => null);
+  const record = provider as Record<string, unknown>;
+  if (typeof record.embedBatch === "function") {
+    const vectors = await record.embedBatch.call(provider, texts, {
+      signal: options?.signal,
+      inputType: options?.inputType,
+    });
+    return texts.map((_, index) =>
+      normalizeOpenClawVector(Array.isArray(vectors) ? vectors[index] : null),
+    );
+  }
+  return Promise.all(
+    texts.map((text) => embedWithOpenClawProvider(kind, provider, text, options)),
+  );
+}
+
+function normalizeOpenClawVector(value: unknown): number[] | null {
+  if (!Array.isArray(value)) return null;
+  const vector = value
+    .map((component) => Number(component))
+    .filter((component) => Number.isFinite(component));
+  return vector.length > 0 ? vector : null;
+}
+
 /** SDK capabilities detected at register() time — available to later tasks. */
 let sdkCaps: SdkCapabilities | undefined;
 
@@ -849,6 +1090,7 @@ const pluginDefinition = {
         `[remnic] memory slot not assigned to ${serviceId}; running passively`,
       );
     }
+    configureChannelEnvelopeCleaning(cfg);
 
     // Singleton guard: the gateway calls register() once per agent (each with a
     // different plugin registry). Reuse the orchestrator (heavy object) but always
@@ -865,6 +1107,9 @@ const pluginDefinition = {
     const orchestrator = existing?.recall ? existing : new Orchestrator(cfg);
     const isFirstRegistration = !(globalThis as any)[keys.REGISTERED_GUARD];
     (globalThis as any)[keys.REGISTERED_GUARD] = true;
+    const unregisterOpenClawHostEmbeddingProvider = isFirstRegistration
+      ? registerOpenClawHostEmbeddingProvider({ api, cfg, serviceId })
+      : null;
 
     // Per-api hook deduplication: if the same api object calls register() twice
     // (e.g., during reload edge cases), skip re-binding hooks to avoid double-
@@ -1236,6 +1481,7 @@ const pluginDefinition = {
     const codexSessionsByThread = new Map<string, Set<string>>();
     const codexSessionsByBufferKey = new Map<string, Set<string>>();
     const codexMessageCountByBufferKey = new Map<string, number>();
+    const observedInboundMessageIds = new Set<string>();
     let codexCompactionModeLogged = false;
 
     function resolveStoredCodexThreadId(sessionKey: string): string | null {
@@ -3063,6 +3309,48 @@ const pluginDefinition = {
       log.info(`registered ${capabilityDesc}`);
     }
 
+    if (cfg.openclawMessageReceivedCaptureEnabled) {
+      (api.on as (
+        event: string,
+        handler: (
+          event: Record<string, unknown>,
+          ctx: Record<string, unknown>,
+        ) => Promise<unknown>,
+      ) => void)(
+        "message_received",
+        async (
+          event: Record<string, unknown>,
+          ctx: Record<string, unknown>,
+        ) => {
+          if (!orchestrator.config.transcriptEnabled) return;
+          const content =
+            typeof event.content === "string" ? event.content.trim() : "";
+          if (content.length === 0) return;
+          const metadata = buildOpenClawMessageMetadata(event, event, ctx, cfg);
+          if (metadata?.messageId) {
+            if (observedInboundMessageIds.has(metadata.messageId)) return;
+            observedInboundMessageIds.add(metadata.messageId);
+          }
+          const sessionKey =
+            normalizeOptionalString(ctx.sessionKey) ??
+            normalizeOptionalString(event.sessionKey) ??
+            "default";
+          const timestamp =
+            typeof event.timestamp === "number" && Number.isFinite(event.timestamp)
+              ? new Date(event.timestamp).toISOString()
+              : new Date().toISOString();
+          await orchestrator.transcript.append({
+            timestamp,
+            role: "user",
+            content: cleanUserMessage(content),
+            sessionKey,
+            turnId: crypto.randomUUID(),
+            ...(metadata ? { metadata } : {}),
+          });
+        },
+      );
+    }
+
     // ========================================================================
     // HOOK: agent_end — Buffer turns and trigger extraction
     // ========================================================================
@@ -3198,6 +3486,18 @@ const pluginDefinition = {
               inlineCaptureEnabled && hasInlineExplicitCaptureMarkup(cleaned)
                 ? stripInlineExplicitCaptureNotes(cleaned)
                 : cleaned;
+            const messageMetadata = buildOpenClawMessageMetadata(
+              msg,
+              event,
+              ctx,
+              cfg,
+            );
+            const transcriptAlreadyCaptured =
+              !!messageMetadata?.messageId &&
+              observedInboundMessageIds.has(messageMetadata.messageId);
+            if (messageMetadata?.messageId) {
+              observedInboundMessageIds.add(messageMetadata.messageId);
+            }
 
             for (const note of explicitNotes) {
               try {
@@ -3230,18 +3530,28 @@ const pluginDefinition = {
             }
 
             // Append to transcript
-            if (orchestrator.config.transcriptEnabled && stripped.length > 0) {
+            if (
+              orchestrator.config.transcriptEnabled &&
+              stripped.length > 0 &&
+              !transcriptAlreadyCaptured
+            ) {
               await orchestrator.transcript.append({
                 timestamp: eventTimestamp,
                 role,
                 content: stripped,
                 sessionKey,
                 turnId: crypto.randomUUID(),
+                ...(messageMetadata ? { metadata: messageMetadata } : {}),
               });
             }
 
             if (stripped.length > 0) {
-              await orchestrator.processTurn(role, stripped, sessionKey, {
+              const extractionContent =
+                role === "user" &&
+                cfg.openclawReplyMetadataExtractionHintsEnabled
+                  ? withReplyExtractionHint(stripped, messageMetadata)
+                  : stripped;
+              await orchestrator.processTurn(role, extractionContent, sessionKey, {
                 bufferKey: resolveExtractionBufferKey(
                   sessionKey,
                   sessionIdentity.logicalSessionKey,
@@ -3250,7 +3560,7 @@ const pluginDefinition = {
                 providerThreadId: sessionIdentity.providerThreadId,
                 turnFingerprint: buildTurnFingerprint({
                   role,
-                  content: stripped,
+                  content: extractionContent,
                   logicalSessionKey: sessionIdentity.logicalSessionKey,
                   providerThreadId: sessionIdentity.providerThreadId,
                   maxContentChars: cfg.extractionMaxTurnChars,
@@ -4694,6 +5004,7 @@ const pluginDefinition = {
           stopHeartbeatWatcher = null;
           removeDreamingObserver?.();
           removeDreamingObserver = null;
+          unregisterOpenClawHostEmbeddingProvider?.();
           delete (globalThis as any)[keys.ACCESS_HTTP_SERVER];
           delete (globalThis as any)[keys.ACCESS_HTTP_AUTH_STATE];
           delete (globalThis as any)[keys.ACCESS_SERVICE];
@@ -4762,4 +5073,79 @@ function extractTextContent(msg: Record<string, unknown>): string {
       .join("\n");
   }
   return "";
+}
+
+type OpenClawTranscriptMetadata = NonNullable<
+  import("@remnic/core/types").TranscriptEntry["metadata"]
+>;
+
+function buildOpenClawMessageMetadata(
+  message: Record<string, unknown>,
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+  cfg: {
+    openclawReplyMetadataCaptureEnabled: boolean;
+  },
+): OpenClawTranscriptMetadata | null {
+  if (!cfg.openclawReplyMetadataCaptureEnabled) return null;
+  const metadata: OpenClawTranscriptMetadata = {};
+  const messageId =
+    normalizeOptionalString(message.messageId) ??
+    normalizeOptionalString(event.messageId) ??
+    normalizeOptionalString(ctx.messageId);
+  if (messageId) metadata.messageId = truncateMetadataValue(messageId, 512);
+
+  const threadId =
+    normalizeThreadId(message.threadId) ??
+    normalizeThreadId(event.threadId) ??
+    normalizeThreadId(ctx.threadId);
+  if (threadId) metadata.threadId = truncateMetadataValue(threadId, 512);
+
+  const replyToId =
+    normalizeOptionalString(message.replyToId) ??
+    normalizeOptionalString(event.replyToId) ??
+    normalizeOptionalString(ctx.replyToId);
+  if (replyToId) metadata.replyToId = truncateMetadataValue(replyToId, 512);
+
+  const replyToBody =
+    normalizeOptionalString(message.replyToBody) ??
+    normalizeOptionalString(event.replyToBody) ??
+    normalizeOptionalString(ctx.replyToBody);
+  if (replyToBody) metadata.replyToBody = truncateMetadataValue(replyToBody, 1_000);
+
+  const replyToSender =
+    normalizeOptionalString(message.replyToSender) ??
+    normalizeOptionalString(event.replyToSender) ??
+    normalizeOptionalString(ctx.replyToSender);
+  if (replyToSender) metadata.replyToSender = truncateMetadataValue(replyToSender, 256);
+
+  return Object.keys(metadata).length > 0 ? metadata : null;
+}
+
+function withReplyExtractionHint(
+  content: string,
+  metadata: OpenClawTranscriptMetadata | null,
+): string {
+  const replyBody = metadata?.replyToBody?.trim();
+  if (!replyBody) return content;
+  const sender = metadata?.replyToSender?.trim();
+  const prefix = sender
+    ? `Reply context from ${sender}: ${replyBody}`
+    : `Reply context: ${replyBody}`;
+  return `${prefix}\n\nCurrent message: ${content}`;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeThreadId(value: unknown): string | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return normalizeOptionalString(value);
+}
+
+function truncateMetadataValue(value: string, maxChars: number): string {
+  return value.length <= maxChars ? value : value.slice(0, maxChars);
 }

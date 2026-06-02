@@ -586,6 +586,14 @@ export interface PluginConfig {
   embeddingFallbackEnabled: boolean;
   embeddingFallbackProvider: "auto" | "openai" | "local";
   /**
+   * Host adapters may register an embedding provider scoped to this memoryDir.
+   * Core remains host-agnostic: when no provider is registered, the existing
+   * OpenAI/local fallback path is used.
+   */
+  hostEmbeddingProviderEnabled: boolean;
+  hostEmbeddingProviderId?: string;
+  hostEmbeddingProviderModel?: string;
+  /**
    * Optional model identifier for local embedding fallback requests.
    *
    * Local chat/completion models and local embedding models are often
@@ -816,6 +824,10 @@ export interface PluginConfig {
   commandsListEnabled: boolean;
   openclawToolsEnabled: boolean;
   openclawToolSnippetMaxChars: number;
+  openclawMessageReceivedCaptureEnabled: boolean;
+  openclawReplyMetadataCaptureEnabled: boolean;
+  openclawReplyMetadataExtractionHintsEnabled: boolean;
+  openclawChannelEnvelopeCleaningEnabled: boolean;
   sessionTogglesEnabled: boolean;
   verboseRecallVisibility: boolean;
   recallTranscriptsEnabled: boolean;
@@ -3066,6 +3078,11 @@ export interface TranscriptEntry {
   metadata?: {
     compactAfter?: boolean;
     compactionId?: string | null;
+    messageId?: string;
+    threadId?: string;
+    replyToId?: string;
+    replyToBody?: string;
+    replyToSender?: string;
   };
 }
 

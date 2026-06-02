@@ -371,6 +371,19 @@
         "default": "auto",
         "description": "Embedding provider selection for semantic fallback"
       },
+      "hostEmbeddingProviderEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Prefer OpenClaw host-registered embedding providers for Remnic's semantic fallback and embedded vector backends when the OpenClaw SDK exposes them. Falls back to Remnic's existing embedding provider path on older hosts or provider setup failures."
+      },
+      "hostEmbeddingProviderId": {
+        "type": "string",
+        "description": "Optional OpenClaw embedding provider adapter id to use. Leave unset for automatic selection from OpenClaw's memory/generic embedding provider registry."
+      },
+      "hostEmbeddingProviderModel": {
+        "type": "string",
+        "description": "Optional embedding model id passed to the selected OpenClaw host embedding provider."
+      },
       "embeddingFallbackModel": {
         "type": "string",
         "description": "Optional model identifier for embedding fallback requests. Defaults to localLlmModel for legacy installs."
@@ -800,6 +813,26 @@
         "maximum": 4000,
         "default": 600,
         "description": "Maximum snippet size returned by the OpenClaw memory tool adapters."
+      },
+      "openclawMessageReceivedCaptureEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Capture OpenClaw message_received hook content into transcripts when that hook is emitted by the host. Older OpenClaw versions that never emit the hook continue through agent_end capture."
+      },
+      "openclawReplyMetadataCaptureEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Persist bounded OpenClaw messageId, threadId, replyToId, replyToBody, and replyToSender fields in transcript metadata when available."
+      },
+      "openclawReplyMetadataExtractionHintsEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "When true, prepend bounded quoted-reply context to user turns before Remnic extraction. Leave false to store reply metadata without changing extraction behavior."
+      },
+      "openclawChannelEnvelopeCleaningEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Use OpenClaw's canonical chat-channel envelope prefixes when the SDK exposes plugin-sdk/chat-channel-ids, while keeping the legacy OpenClaw-only cleaner on older hosts."
       },
       "sessionTogglesEnabled": {
         "type": "boolean",
@@ -4882,6 +4915,41 @@
     "qmdEnabled": {
       "label": "Enable QMD",
       "help": "Enable QMD for memory search/indexing"
+    },
+    "hostEmbeddingProviderEnabled": {
+      "label": "Use Host Embeddings",
+      "advanced": true,
+      "help": "Prefer OpenClaw's registered embedding providers when available; Remnic falls back automatically."
+    },
+    "hostEmbeddingProviderId": {
+      "label": "Host Embedding Provider",
+      "advanced": true,
+      "placeholder": "openai-compatible"
+    },
+    "hostEmbeddingProviderModel": {
+      "label": "Host Embedding Model",
+      "advanced": true,
+      "placeholder": "text-embedding-3-small"
+    },
+    "openclawMessageReceivedCaptureEnabled": {
+      "label": "Capture Inbound Messages",
+      "advanced": true,
+      "help": "Use OpenClaw message_received transcript capture when the host emits it."
+    },
+    "openclawReplyMetadataCaptureEnabled": {
+      "label": "Capture Reply Metadata",
+      "advanced": true,
+      "help": "Store bounded message/thread/reply fields in transcript metadata."
+    },
+    "openclawReplyMetadataExtractionHintsEnabled": {
+      "label": "Use Reply Extraction Hints",
+      "advanced": true,
+      "help": "Include bounded quoted-reply context in extraction prompts. Off by default."
+    },
+    "openclawChannelEnvelopeCleaningEnabled": {
+      "label": "Clean Channel Envelopes",
+      "advanced": true,
+      "help": "Use OpenClaw's canonical channel envelope prefixes when available."
     },
     "qmdCollection": {
       "label": "QMD Collection",

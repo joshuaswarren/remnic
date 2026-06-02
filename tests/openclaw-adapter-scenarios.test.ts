@@ -82,6 +82,20 @@ function listJsonFiles(root: string): string[] {
   return files.sort((left, right) => left.localeCompare(right));
 }
 
+function readAllText(root: string): string {
+  if (!fs.existsSync(root)) return "";
+  const chunks: string[] = [];
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      chunks.push(readAllText(fullPath));
+    } else if (entry.isFile()) {
+      chunks.push(fs.readFileSync(fullPath, "utf-8"));
+    }
+  }
+  return chunks.join("\n");
+}
+
 test("scenario: memory_store writes through the registered tool and memory_search routes through active memory search", async () => {
   await withScenarioRegistration(async ({ capture, orchestrator }) => {
     const store = registeredTool(capture, "memory_store");
@@ -265,7 +279,9 @@ test("scenario: prompt injection precomputes recall and serves the cached prompt
     const promptSectionBuilder = capture.registrations("registerMemoryPromptSection")[0]?.[0] as
       | ((params: { availableTools: Set<string> }) => string[])
       | undefined;
-    assert.equal(typeof promptSectionBuilder, "function");
+    if (typeof promptSectionBuilder !== "function") {
+      assert.fail("expected registerMemoryPromptSection to receive a prompt section builder");
+    }
     const lines = promptSectionBuilder({
       availableTools: new Set(["memory_search"]),
       sessionKey: "prompt-session",
@@ -317,6 +333,77 @@ test("scenario: agent_end buffers the last user and assistant turns without live
     assert.equal(processed[0].options.logicalSessionKey, "agent-session");
     assert.equal(processed[0].options.bufferKey, "agent-session");
   });
+});
+
+test("scenario: message_received captures bounded thread and reply metadata in transcripts", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      await messageReceived(
+        {
+          content: "[OpenClaw user id:123 2026-06-02] Remember the launch channel preference [message_id: msg-1]",
+          messageId: "msg-1",
+          threadId: "thread-42",
+          replyToId: "quoted-1",
+          replyToBody: "Original launch thread context",
+          replyToSender: "Ada",
+        },
+        { sessionKey: "agent:generalist:discord:channel:launch" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.match(transcriptText, /Remember the launch channel preference/);
+      assert.doesNotMatch(transcriptText, /message_id: msg-1/);
+      assert.match(transcriptText, /"messageId":"msg-1"/);
+      assert.match(transcriptText, /"threadId":"thread-42"/);
+      assert.match(transcriptText, /"replyToId":"quoted-1"/);
+      assert.match(transcriptText, /"replyToBody":"Original launch thread context"/);
+      assert.match(transcriptText, /"replyToSender":"Ada"/);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+        openclawReplyMetadataCaptureEnabled: true,
+      },
+    },
+  );
+});
+
+test("scenario: reply extraction hints are opt-in and bounded", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const processed: Array<{ role: string; content: string }> = [];
+      orchestrator.processTurn = async (role: string, content: string) => {
+        processed.push({ role, content });
+      };
+
+      const agentEnd = registeredHook(capture, "agent_end");
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            {
+              role: "user",
+              content: "Please remember that the launch note belongs to the mobile rollout.",
+              replyToBody: "The mobile rollout launch note lives in #launch.",
+              replyToSender: "Ada",
+            },
+            { role: "assistant", content: "I will remember that." },
+          ],
+        },
+        { sessionKey: "reply-hint-session" },
+      );
+
+      assert.match(processed[0].content, /^Reply context from Ada:/);
+      assert.match(processed[0].content, /Current message: Please remember/);
+      assert.match(processed[1].content, /^I will remember that\./);
+    },
+    {
+      pluginConfig: {
+        openclawReplyMetadataExtractionHintsEnabled: true,
+      },
+    },
+  );
 });
 
 test("scenario: agent_end objective-state snapshots use namespaced configured store overrides", async () => {

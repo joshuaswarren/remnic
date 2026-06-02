@@ -277,6 +277,34 @@ test("parseConfig exposes qmd 2.5 integration defaults and opt-in auto upgrade",
   assert.equal(falseGpuBackend.qmdGpuBackend, "false");
 });
 
+test("parseConfig exposes gated OpenClaw host feature defaults", () => {
+  const defaults = parseConfig({});
+  assert.equal(defaults.hostEmbeddingProviderEnabled, true);
+  assert.equal(defaults.hostEmbeddingProviderId, undefined);
+  assert.equal(defaults.hostEmbeddingProviderModel, undefined);
+  assert.equal(defaults.openclawMessageReceivedCaptureEnabled, true);
+  assert.equal(defaults.openclawReplyMetadataCaptureEnabled, true);
+  assert.equal(defaults.openclawReplyMetadataExtractionHintsEnabled, false);
+  assert.equal(defaults.openclawChannelEnvelopeCleaningEnabled, true);
+
+  const configured = parseConfig({
+    openclawHostEmbeddingProviderEnabled: "false",
+    openclawHostEmbeddingProviderId: "openai-compatible",
+    openclawHostEmbeddingProviderModel: "text-embedding-3-large",
+    openclawMessageReceivedCaptureEnabled: "0",
+    openclawReplyMetadataCaptureEnabled: "off",
+    openclawReplyMetadataExtractionHintsEnabled: "yes",
+    openclawChannelEnvelopeCleaningEnabled: "no",
+  });
+  assert.equal(configured.hostEmbeddingProviderEnabled, false);
+  assert.equal(configured.hostEmbeddingProviderId, "openai-compatible");
+  assert.equal(configured.hostEmbeddingProviderModel, "text-embedding-3-large");
+  assert.equal(configured.openclawMessageReceivedCaptureEnabled, false);
+  assert.equal(configured.openclawReplyMetadataCaptureEnabled, false);
+  assert.equal(configured.openclawReplyMetadataExtractionHintsEnabled, true);
+  assert.equal(configured.openclawChannelEnvelopeCleaningEnabled, false);
+});
+
 test("parseConfig rejects invalid qmd version and integer config values", () => {
   assert.throws(
     () => parseConfig({ qmdSupportedVersion: "latest" }),
