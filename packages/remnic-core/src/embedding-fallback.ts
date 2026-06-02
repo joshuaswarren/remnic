@@ -24,6 +24,11 @@ type EmbeddingIndexEntry = {
   path: string;
 };
 
+type EmbeddingResult = {
+  provider: ProviderConfig;
+  vector: number[];
+};
+
 type EmbeddingIndexFile = {
   version: 1;
   provider: EmbeddingProviderType;
@@ -234,13 +239,11 @@ export class EmbeddingFallback {
     const provider = await this.resolveProvider();
     if (!provider) return [];
 
-    const index = await this.loadIndex(provider);
-    const ids = Object.keys(index.entries);
-    if (ids.length === 0) return [];
-
-    let queryVector: number[] | null;
+    let queryResult: EmbeddingResult | null;
     try {
-      queryVector = await this.embed(query, provider, { mode: "lookup" });
+      queryResult = await this.embedWithEffectiveProvider(query, provider, {
+        mode: "lookup",
+      });
     } catch (err) {
       if (err instanceof EmbeddingTimeoutError) {
         if (options.throwOnTimeout) {
@@ -253,7 +256,11 @@ export class EmbeddingFallback {
       }
       throw err;
     }
-    if (!queryVector) return [];
+    if (!queryResult) return [];
+
+    const index = await this.loadIndex(queryResult.provider);
+    const ids = Object.keys(index.entries);
+    if (ids.length === 0) return [];
 
     const includePrefix = normalizePathPrefix(options.pathPrefix);
     const excludePrefixes = (options.pathExcludePrefixes ?? [])
@@ -266,7 +273,7 @@ export class EmbeddingFallback {
         return {
           id,
           path: entry.path,
-          score: cosineSimilarity(queryVector, entry.vector),
+          score: cosineSimilarity(queryResult.vector, entry.vector),
         };
       })
       .filter((r) => {
@@ -295,14 +302,16 @@ export class EmbeddingFallback {
     // add the entry to the index. Previously this used the short lookup
     // budget and silently dropped updates, leaving later dedup lookups
     // blind to the memory. Related: PR #399 P2.
-    const vector = await this.embed(content, provider, { mode: "index" });
-    if (!vector) return;
+    const result = await this.embedWithEffectiveProvider(content, provider, {
+      mode: "index",
+    });
+    if (!result) return;
 
     await this.enqueueIndexMutation(async () => {
-      const index = await this.loadIndex(provider);
+      const index = await this.loadIndex(result.provider);
       const relPath = toMemoryRelativePath(this.config.memoryDir, filePath);
       index.entries[memoryId] = {
-        vector,
+        vector: result.vector,
         path: relPath,
       };
       await this.saveIndex(index);
@@ -396,6 +405,15 @@ export class EmbeddingFallback {
     provider: ProviderConfig,
     options: { mode?: EmbedMode } = {},
   ): Promise<number[] | null> {
+    const result = await this.embedWithEffectiveProvider(input, provider, options);
+    return result?.vector ?? null;
+  }
+
+  private async embedWithEffectiveProvider(
+    input: string,
+    provider: ProviderConfig,
+    options: { mode?: EmbedMode } = {},
+  ): Promise<EmbeddingResult | null> {
     // Bound the fetch so a hung embedding endpoint cannot stall callers.
     // The lookup path uses a short budget (see DEFAULT_EMBEDDING_LOOKUP_TIMEOUT_MS
     // docblock) so semantic dedup fails open fast. The index path uses a
@@ -409,7 +427,7 @@ export class EmbeddingFallback {
         : resolveEmbeddingLookupTimeoutMs();
     if (provider.type === "host") {
       const vector = await this.embedWithHostProvider(input, provider, mode, timeoutMs);
-      if (vector) return vector;
+      if (vector) return { provider, vector };
       const fallbackProvider = await this.resolveProvider({ includeHost: false });
       if (!fallbackProvider) {
         if (mode === "lookup") {
@@ -419,7 +437,7 @@ export class EmbeddingFallback {
         }
         return null;
       }
-      return this.embed(input, fallbackProvider, options);
+      return this.embedWithEffectiveProvider(input, fallbackProvider, options);
     }
     if (!provider.endpoint || !provider.headers) return null;
     try {
@@ -454,7 +472,10 @@ export class EmbeddingFallback {
       const payload = (await res.json()) as any;
       const vector = payload?.data?.[0]?.embedding;
       if (!Array.isArray(vector)) return null;
-      return vector.map((n: unknown) => Number(n)).filter((n: number) => Number.isFinite(n));
+      const normalized = vector
+        .map((n: unknown) => Number(n))
+        .filter((n: number) => Number.isFinite(n));
+      return normalized.length > 0 ? { provider, vector: normalized } : null;
     } catch (err) {
       // Round 11 (Finding Ur_J): the !res.ok branch above throws
       // EmbeddingTimeoutError directly. Re-throw it here so the catch does

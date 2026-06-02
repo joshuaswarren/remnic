@@ -36,6 +36,28 @@ test("cleanUserMessage uses configured OpenClaw channel envelope prefixes", () =
   }
 });
 
+test("configureOpenClawChannelEnvelopePrefixes resets to legacy OpenClaw default", () => {
+  try {
+    configureOpenClawChannelEnvelopePrefixes(["Discord"]);
+    assert.equal(
+      cleanUserMessage("[Discord user id:123 2026-06-02] Remember this [message_id: host-2]"),
+      "Remember this",
+    );
+
+    configureOpenClawChannelEnvelopePrefixes([]);
+    assert.equal(
+      cleanUserMessage("[Discord user id:123 2026-06-02] Keep literal [message_id: host-2]"),
+      "[Discord user id:123 2026-06-02] Keep literal [message_id: host-2]",
+    );
+    assert.equal(
+      cleanUserMessage("[OpenClaw user id:123 2026-06-02] Remember this [message_id: host-3]"),
+      "Remember this",
+    );
+  } finally {
+    configureOpenClawChannelEnvelopePrefixes(["OpenClaw"]);
+  }
+});
+
 test("cleanUserMessage only strips markdown memory context as a leading preamble", () => {
   assert.equal(
     cleanUserMessage("User text\n\n## Memory Context (Remnic)\nKeep this literal section."),

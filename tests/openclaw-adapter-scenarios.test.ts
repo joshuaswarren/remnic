@@ -414,6 +414,72 @@ test("scenario: message_received dedupes agent_end transcript when metadata capt
   );
 });
 
+test("scenario: inbound message dedupe keeps a bounded recent window", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      const appended: Array<{ content: string }> = [];
+      orchestrator.transcript.append = async (entry: { content: string }) => {
+        appended.push(entry);
+      };
+
+      for (let i = 0; i < 1025; i++) {
+        await messageReceived(
+          {
+            content: `Remember bounded dedupe ${i}`,
+            messageId: `bounded-${i}`,
+          },
+          { sessionKey: "bounded-session" },
+        );
+      }
+
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            {
+              role: "user",
+              content: "Remember bounded dedupe 0",
+              messageId: "bounded-0",
+            },
+          ],
+        },
+        { sessionKey: "bounded-session" },
+      );
+
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            {
+              role: "user",
+              content: "Remember bounded dedupe 1024",
+              messageId: "bounded-1024",
+            },
+          ],
+        },
+        { sessionKey: "bounded-session" },
+      );
+
+      assert.equal(
+        appended.filter((entry) => entry.content === "Remember bounded dedupe 0").length,
+        2,
+      );
+      assert.equal(
+        appended.filter((entry) => entry.content === "Remember bounded dedupe 1024").length,
+        1,
+      );
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+        openclawReplyMetadataCaptureEnabled: false,
+      },
+    },
+  );
+});
+
 test("scenario: reply extraction hints are opt-in and bounded", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {

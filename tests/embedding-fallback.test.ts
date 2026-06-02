@@ -130,6 +130,52 @@ test("EmbeddingFallback falls back when scoped host provider fails", async () =>
   }
 });
 
+test("EmbeddingFallback indexes and searches fallback vectors under the fallback provider", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-index-fallback-"));
+  const originalFetch = globalThis.fetch;
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    async embed() {
+      return null;
+    },
+  });
+  try {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
+    await fallback.indexFile(
+      "mem-openai",
+      "launch planning",
+      path.join(memoryDir, "facts", "launch.md"),
+    );
+
+    const raw = await readFile(path.join(memoryDir, "state", "embeddings.json"), "utf-8");
+    const parsed = JSON.parse(raw) as {
+      provider: string;
+      entries: Record<string, unknown>;
+    };
+    assert.equal(parsed.provider, "openai");
+    assert.ok(parsed.entries["mem-openai"]);
+
+    const results = await fallback.search("launch", 5);
+    assert.deepEqual(results.map((result) => result.id), ["mem-openai"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+  }
+});
+
+test("normalizeHostEmbeddingVector preserves vector dimensions", async () => {
+  const { normalizeHostEmbeddingVector } = await import("../src/host-embedding-provider.js");
+  assert.deepEqual(normalizeHostEmbeddingVector([1, "bad", 3]), [1, 0, 3]);
+});
+
 test("EmbeddingFallback returns null when disabled", async () => {
   const fallback = new EmbeddingFallback(stubConfig({
     embeddingFallbackEnabled: false,
@@ -240,9 +286,9 @@ test("indexFile preserves all entries when concurrent index writes overlap", asy
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-embedding-concurrent-"));
   const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
 
-  (fallback as any).embed = async (input: string) => {
+  (fallback as any).embedWithEffectiveProvider = async (input: string, provider: unknown) => {
     await new Promise((resolve) => setTimeout(resolve, 5));
-    return [input.charCodeAt(0) || 1, 1, 0];
+    return { provider, vector: [input.charCodeAt(0) || 1, 1, 0] };
   };
 
   await Promise.all([

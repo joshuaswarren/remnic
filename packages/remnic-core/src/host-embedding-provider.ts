@@ -62,9 +62,10 @@ export function clearHostEmbeddingProvidersForTest(): void {
 
 export function normalizeHostEmbeddingVector(value: unknown): number[] | null {
   if (!Array.isArray(value)) return null;
-  const vector = value
-    .map((component) => Number(component))
-    .filter((component) => Number.isFinite(component));
+  const vector = value.map((component) => {
+    const numeric = Number(component);
+    return Number.isFinite(numeric) ? numeric : 0;
+  });
   return vector.length > 0 ? vector : null;
 }
 

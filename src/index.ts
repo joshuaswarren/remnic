@@ -754,6 +754,8 @@ type OpenClawEmbeddingAdapter = {
   } | null>;
 };
 
+const MAX_OBSERVED_INBOUND_MESSAGE_IDS = 1024;
+
 function requireOpenClawSdkSubpath<T>(subpath: string): T | null {
   try {
     const _require = createRequire(import.meta.url);
@@ -766,12 +768,18 @@ function requireOpenClawSdkSubpath<T>(subpath: string): T | null {
 function configureChannelEnvelopeCleaning(cfg: {
   openclawChannelEnvelopeCleaningEnabled: boolean;
 }): void {
-  if (!cfg.openclawChannelEnvelopeCleaningEnabled) return;
+  if (!cfg.openclawChannelEnvelopeCleaningEnabled) {
+    configureOpenClawChannelEnvelopePrefixes([]);
+    return;
+  }
   const sdk = requireOpenClawSdkSubpath<{
     BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES?: unknown;
   }>("openclaw/plugin-sdk/chat-channel-ids");
   const prefixes = sdk?.BUNDLED_CHAT_CHANNEL_ENVELOPE_PREFIXES;
-  if (!Array.isArray(prefixes)) return;
+  if (!Array.isArray(prefixes)) {
+    configureOpenClawChannelEnvelopePrefixes([]);
+    return;
+  }
   configureOpenClawChannelEnvelopePrefixes(
     prefixes.filter((value): value is string => typeof value === "string"),
   );
@@ -1475,7 +1483,19 @@ const pluginDefinition = {
     const codexSessionsByBufferKey = new Map<string, Set<string>>();
     const codexMessageCountByBufferKey = new Map<string, number>();
     const observedInboundMessageIds = new Set<string>();
+    const observedInboundMessageIdOrder: string[] = [];
     let codexCompactionModeLogged = false;
+
+    function rememberObservedInboundMessageId(messageId: string): void {
+      if (!observedInboundMessageIds.has(messageId)) {
+        observedInboundMessageIds.add(messageId);
+        observedInboundMessageIdOrder.push(messageId);
+      }
+      while (observedInboundMessageIdOrder.length > MAX_OBSERVED_INBOUND_MESSAGE_IDS) {
+        const expired = observedInboundMessageIdOrder.shift();
+        if (expired) observedInboundMessageIds.delete(expired);
+      }
+    }
 
     function resolveStoredCodexThreadId(sessionKey: string): string | null {
       const threadId = codexThreadBySession.get(sessionKey);
@@ -3322,7 +3342,7 @@ const pluginDefinition = {
           const inboundMessageId = getOpenClawMessageId(event, event, ctx);
           if (inboundMessageId) {
             if (observedInboundMessageIds.has(inboundMessageId)) return;
-            observedInboundMessageIds.add(inboundMessageId);
+            rememberObservedInboundMessageId(inboundMessageId);
           }
           const metadata = buildOpenClawMessageMetadata(event, event, ctx, cfg);
           const sessionKey =
@@ -3490,7 +3510,7 @@ const pluginDefinition = {
             const transcriptAlreadyCaptured =
               !!messageId && observedInboundMessageIds.has(messageId);
             if (messageId) {
-              observedInboundMessageIds.add(messageId);
+              rememberObservedInboundMessageId(messageId);
             }
 
             for (const note of explicitNotes) {
