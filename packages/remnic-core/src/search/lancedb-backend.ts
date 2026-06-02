@@ -129,7 +129,7 @@ export class LanceDbBackend implements SearchBackend {
 
   async updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void> {
     if (isSearchAborted(execution)) return;
-    const table = await this.ensureTableForCollection(collection);
+    let table = await this.ensureTableForCollection(collection);
     if (isSearchAborted(execution)) return;
     if (!table) return;
 
@@ -152,21 +152,28 @@ export class LanceDbBackend implements SearchBackend {
       vector: number[];
       providerIdentity?: string;
     }>();
-    try {
-      const existingRows = await table.query().select(["docid", "vector", "vectorProvider"]).toArray();
-      for (const row of existingRows ?? []) {
-        if (isSearchAborted(execution)) return;
-        const docid = row.docid;
-        if (typeof docid !== "string") continue;
-        const vector = row.vector;
-        if (!vector || typeof vector !== "object") continue;
-        existingVectors.set(docid, {
-          vector: Array.from(vector as ArrayLike<number>),
-          providerIdentity: typeof row.vectorProvider === "string" ? row.vectorProvider : undefined,
-        });
+    const hasVectorProviderColumn = await this.tableHasVectorProviderColumn(table);
+    if (!hasVectorProviderColumn) {
+      table = await this.recreateTableForCollection(collection);
+      if (isSearchAborted(execution)) return;
+      if (!table) return;
+    } else {
+      try {
+        const existingRows = await table.query().select(["docid", "vector", "vectorProvider"]).toArray();
+        for (const row of existingRows ?? []) {
+          if (isSearchAborted(execution)) return;
+          const docid = row.docid;
+          if (typeof docid !== "string") continue;
+          const vector = row.vector;
+          if (!vector || typeof vector !== "object") continue;
+          existingVectors.set(docid, {
+            vector: Array.from(vector as ArrayLike<number>),
+            providerIdentity: typeof row.vectorProvider === "string" ? row.vectorProvider : undefined,
+          });
+        }
+      } catch {
+        // Vector preservation is best-effort; refresh can proceed without it.
       }
-    } catch {
-      // Vector preservation is best-effort; refresh can proceed without it.
     }
 
     const rows = docs.map((d) => {
@@ -323,6 +330,26 @@ export class LanceDbBackend implements SearchBackend {
       // May fail if delete isn't supported on empty-ish tables
     }
     return newTable;
+  }
+
+  private async recreateTableForCollection(collection: string): Promise<any> {
+    const db = await this.ensureDb();
+    try {
+      await db.dropTable(collection).catch(() => {});
+    } catch {
+      // Best-effort legacy schema migration; table creation below may still recover.
+    }
+    if (collection === this.collection) this.table = null;
+    return this.ensureTableForCollection(collection);
+  }
+
+  private async tableHasVectorProviderColumn(table: any): Promise<boolean> {
+    try {
+      await table.query().select(["vectorProvider"]).toArray();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async ensureTable(): Promise<any> {

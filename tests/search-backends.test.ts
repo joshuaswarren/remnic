@@ -645,6 +645,71 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("LanceDbBackend recreates legacy tables before writing vectorProvider rows", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-migrate-"));
+    try {
+      const factsDir = path.join(tempDir, "facts");
+      await mkdir(factsDir);
+      await writeFile(path.join(factsDir, "same.md"), "Updated content.", "utf8");
+
+      let dropped = false;
+      const addCalls: Array<{ rows: any[]; options: any }> = [];
+      const legacyTable = {
+        query: () => ({
+          select: (columns: string[]) => ({
+            toArray: async () => {
+              if (columns.includes("vectorProvider")) {
+                throw new Error("missing column vectorProvider");
+              }
+              return [];
+            },
+          }),
+        }),
+      };
+      const migratedTable = {
+        query: () => ({
+          select: () => ({
+            toArray: async () => [],
+          }),
+        }),
+        add: async (rows: any[], options: any) => {
+          addCalls.push({ rows, options });
+        },
+        createIndex: async () => {},
+        delete: async () => {},
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = legacyTable;
+      (backend as any).db = {
+        tableNames: async () => (dropped ? [] : ["memories"]),
+        dropTable: async () => {
+          dropped = true;
+        },
+        createTable: async () => migratedTable,
+      };
+      (backend as any).lanceModule = { Index: { fts: () => ({}) } };
+
+      await backend.updateCollection("memories");
+
+      assert.equal(dropped, true);
+      assert.equal(addCalls.length, 1);
+      assert.equal(addCalls[0].rows[0].vectorProvider, "");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("LanceDbBackend falls back to FTS when stored vectors use another provider", async () => {
     const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-search-"));
