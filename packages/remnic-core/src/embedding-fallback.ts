@@ -327,14 +327,12 @@ export class EmbeddingFallback {
     if (!result) return;
 
     await this.enqueueIndexMutation(async () => {
-      if (!sameIndexIdentity(provider, result.provider)) {
-        const existing = await this.readIndexIdentityFromDisk();
-        if (existing && !sameIndexIdentity(existing, result.provider)) {
-          log.debug(
-            `embedding fallback index update skipped: ${result.provider.type}/${result.provider.model} would replace existing ${existing.provider}/${existing.model} index`,
-          );
-          return;
-        }
+      const existing = await this.readIndexIdentityFromDisk();
+      if (existing && !sameIndexIdentity(existing, result.provider)) {
+        log.debug(
+          `embedding fallback index update skipped: ${result.provider.type}/${result.provider.model} would replace existing ${existing.provider}/${existing.model} index`,
+        );
+        return;
       }
       const index = await this.loadIndex(result.provider);
       const relPath = toMemoryRelativePath(this.config.memoryDir, filePath);

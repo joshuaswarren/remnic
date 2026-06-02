@@ -317,24 +317,16 @@ export class OramaBackend implements SearchBackend {
 
     try {
       const raw = await readFile(filePath, "utf-8");
-      this.db = await this.persistModule.restore("json", raw);
+      this.db = await this.migrateLegacyVectorProviderSchema(
+        await this.persistModule.restore("json", raw),
+        this.collection,
+      );
       return this.db;
     } catch {
       // No existing DB — create fresh
     }
 
-    const { create } = this.oramaModule;
-    const schema: Record<string, string> = {
-      id: "string",
-      path: "string",
-      content: "string",
-      snippet: "string",
-      vectorProvider: "string",
-    };
-    if (this.embedHelper.isAvailable()) {
-      schema.vector = `vector[${this.embeddingDimension}]`;
-    }
-    this.db = await create({ schema });
+    this.db = await this.createDb({ includeVector: this.embedHelper.isAvailable() });
     return this.db;
   }
 
@@ -348,11 +340,18 @@ export class OramaBackend implements SearchBackend {
 
     try {
       const raw = await readFile(filePath, "utf-8");
-      return await this.persistModule.restore("json", raw);
+      return await this.migrateLegacyVectorProviderSchema(
+        await this.persistModule.restore("json", raw),
+        collection,
+      );
     } catch {
       // No existing DB — create fresh
     }
 
+    return await this.createDb({ includeVector: this.embedHelper.isAvailable() });
+  }
+
+  private async createDb(options: { includeVector: boolean }): Promise<any> {
     const { create } = this.oramaModule;
     const schema: Record<string, string> = {
       id: "string",
@@ -361,10 +360,54 @@ export class OramaBackend implements SearchBackend {
       snippet: "string",
       vectorProvider: "string",
     };
-    if (this.embedHelper.isAvailable()) {
+    if (options.includeVector) {
       schema.vector = `vector[${this.embeddingDimension}]`;
     }
     return await create({ schema });
+  }
+
+  private async migrateLegacyVectorProviderSchema(db: any, collection: string): Promise<any> {
+    const { search: oramaSearch, count, insert } = this.oramaModule;
+    const existingCount = await count(db);
+    if (existingCount === 0) return db;
+
+    const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
+    const hits = allHits.hits ?? [];
+    const needsMigration = hits.some((hit: any) =>
+      typeof hit.document?.vectorProvider !== "string"
+    );
+    if (!needsMigration) return db;
+
+    const includeVector =
+      this.embedHelper.isAvailable() ||
+      hits.some((hit: any) => this.isExpectedDimensionVector(hit.document?.vector));
+    const migrated = await this.createDb({ includeVector });
+    for (const hit of hits) {
+      const doc = hit.document ?? {};
+      const payload: Record<string, unknown> = {
+        id: typeof doc.id === "string" && doc.id.length > 0 ? doc.id : String(hit.id),
+        path: typeof doc.path === "string" ? doc.path : "",
+        content: typeof doc.content === "string" ? doc.content : "",
+        snippet:
+          typeof doc.snippet === "string"
+            ? doc.snippet
+            : typeof doc.content === "string"
+              ? doc.content.slice(0, 200)
+              : "",
+        vectorProvider:
+          typeof doc.vectorProvider === "string" ? doc.vectorProvider : "",
+      };
+      if (includeVector && this.isExpectedDimensionVector(doc.vector)) {
+        payload.vector = doc.vector;
+      }
+      try {
+        await insert(migrated, payload);
+      } catch (err) {
+        log.debug(`OramaBackend legacy vectorProvider migration skipped a document: ${err}`);
+      }
+    }
+    await this.persistDbForCollection(migrated, collection);
+    return migrated;
   }
 
   private async persistDbForCollection(db: any, collection: string): Promise<void> {

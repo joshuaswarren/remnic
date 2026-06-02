@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 
 // Test factory routing and adapter construction — no live services needed.
 
@@ -857,6 +857,66 @@ describe("embedded backend provider identity", () => {
       await backend.embedCollection("memories");
 
       assert.equal(updateCalls.length, 0);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("OramaBackend migrates legacy documents missing vectorProvider", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { create, insert, search } = await import("@orama/orama");
+    const { persist, restore } = await import("@orama/plugin-data-persistence");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-migrate-"));
+    try {
+      const dbPath = path.join(tempDir, "db");
+      await mkdir(dbPath, { recursive: true });
+      const legacyDb = await create({
+        schema: {
+          id: "string",
+          path: "string",
+          content: "string",
+          snippet: "string",
+          vector: "vector[2]",
+        },
+      });
+      await insert(legacyDb, {
+        id: "same",
+        path: "facts/same.md",
+        content: "legacy content",
+        snippet: "legacy",
+        vector: [1, 0],
+      });
+      await writeFile(
+        path.join(dbPath, "memories.msp"),
+        await persist(legacyDb, "json") as string,
+        "utf-8",
+      );
+
+      const backend = new OramaBackend({
+        dbPath,
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedBatchWithProvider: async () => ({
+            vectors: [[0, 1]],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+
+      assert.equal(await backend.probe(), true);
+      await backend.embedCollection("memories");
+
+      const migrated = await restore(
+        "json",
+        await readFile(path.join(dbPath, "memories.msp"), "utf-8"),
+      );
+      const results = await search(migrated, { term: "", limit: 10 });
+      assert.equal(results.hits[0]?.document.vectorProvider, "host:openclaw-memory");
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
