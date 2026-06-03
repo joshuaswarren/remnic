@@ -172,10 +172,12 @@ export class LanceDbBackend implements SearchBackend {
           });
         }
       } catch {
-        // Vector preservation is best-effort; refresh can proceed without it.
+        log.debug("LanceDbBackend skipped refresh after vector preservation failed");
+        return;
       }
     } else {
       log.debug("LanceDbBackend skipped vector preservation after vectorProvider probe failed");
+      return;
     }
 
     const rows = docs.map((d) => {
@@ -609,7 +611,11 @@ export class LanceDbBackend implements SearchBackend {
     providerIdentity: EmbedProviderIdentity | null,
     compatible: boolean,
   ): void {
-    if (!providerIdentity || !table || typeof table !== "object") return;
+    if (!table || typeof table !== "object") return;
+    if (!providerIdentity) {
+      this.vectorProviderCompatibility.delete(table);
+      return;
+    }
     this.vectorProviderCompatibility.set(table, { providerIdentity, compatible });
   }
 

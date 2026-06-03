@@ -703,7 +703,11 @@ export class OramaBackend implements SearchBackend {
     providerIdentity: EmbedProviderIdentity | null,
     compatible: boolean,
   ): void {
-    if (!providerIdentity || !db || typeof db !== "object") return;
+    if (!db || typeof db !== "object") return;
+    if (!providerIdentity) {
+      this.vectorProviderCompatibility.delete(db);
+      return;
+    }
     this.vectorProviderCompatibility.set(db, { providerIdentity, compatible });
   }
 

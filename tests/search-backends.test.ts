@@ -966,7 +966,7 @@ describe("embedded backend provider identity", () => {
     }
   });
 
-  it("LanceDbBackend does not drop tables when the vectorProvider probe fails transiently", async () => {
+  it("LanceDbBackend skips overwrite when the vectorProvider probe fails transiently", async () => {
     const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-probe-fail-"));
     try {
@@ -1018,8 +1018,54 @@ describe("embedded backend provider identity", () => {
 
       assert.equal(dropped, false);
       assert.equal(createTableCalled, false);
-      assert.equal(addCalls.length, 1);
-      assert.equal(addCalls[0].rows[0].vectorProvider, "");
+      assert.equal(addCalls.length, 0);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("LanceDbBackend skips overwrite when existing vector preservation fails", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-preserve-fail-"));
+    try {
+      const factsDir = path.join(tempDir, "facts");
+      await mkdir(factsDir);
+      await writeFile(path.join(factsDir, "same.md"), "Updated content.", "utf8");
+
+      const addCalls: Array<{ rows: any[]; options: any }> = [];
+      const table = {
+        query: () => ({
+          select: (columns: string[]) => ({
+            toArray: async () => {
+              if (columns.length === 1 && columns[0] === "vectorProvider") {
+                return [{ vectorProvider: "host:openclaw-memory" }];
+              }
+              throw new Error("transient row load failure");
+            },
+          }),
+        }),
+        add: async (rows: any[], options: any) => {
+          addCalls.push({ rows, options });
+        },
+        createIndex: async () => {},
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+      (backend as any).lanceModule = { Index: { fts: () => ({}) } };
+
+      await backend.updateCollection("memories");
+
+      assert.equal(addCalls.length, 0);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -1074,6 +1120,31 @@ describe("embedded backend provider identity", () => {
 
       assert.deepEqual(searchCalls, ["fts"]);
       assert.deepEqual(results.map((result) => result.docid), ["same"]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("LanceDbBackend clears vector provider compatibility when active provider identity is unavailable", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-cache-clear-"));
+    try {
+      const table = {};
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: fakeEmbedHelper(),
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).vectorProviderCompatibility.set(table, {
+        providerIdentity: "host:openclaw-memory",
+        compatible: true,
+      });
+
+      (backend as any).rememberVectorProviderCompatibility(table, null, false);
+
+      assert.equal((backend as any).vectorProviderCompatibility.get(table), undefined);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -1767,6 +1838,31 @@ describe("embedded backend provider identity", () => {
         providerIdentity: "openai:text-embedding-3-small",
         compatible: true,
       });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("OramaBackend clears vector provider compatibility when active provider identity is unavailable", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-cache-clear-"));
+    try {
+      const db = {};
+      const backend = new OramaBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: fakeEmbedHelper(),
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).vectorProviderCompatibility.set(db, {
+        providerIdentity: "host:openclaw-memory",
+        compatible: true,
+      });
+
+      (backend as any).rememberVectorProviderCompatibility(db, null, false);
+
+      assert.equal((backend as any).vectorProviderCompatibility.get(db), undefined);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
