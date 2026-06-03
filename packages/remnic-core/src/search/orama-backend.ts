@@ -444,8 +444,8 @@ export class OramaBackend implements SearchBackend {
 
     const migrated = await this.createDb();
     for (const hit of hits) {
-      const doc = hit.document ?? {};
-      const vector = this.normalizeStoredVector(doc.vector);
+      const doc = this.getStoredDocument(db, hit);
+      const vector = this.getStoredVector(db, hit, doc);
       const payload: Record<string, unknown> = {
         id: typeof doc.id === "string" && doc.id.length > 0 ? doc.id : String(hit.id),
         path: typeof doc.path === "string" ? doc.path : "",

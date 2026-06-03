@@ -1400,6 +1400,60 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("OramaBackend preserves internal vectors during legacy vectorProvider migration", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { create, insert, search } = await import("@orama/orama");
+    const { persist, restore } = await import("@orama/plugin-data-persistence");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-migrate-vector-"));
+    try {
+      const dbPath = path.join(tempDir, "db");
+      await mkdir(dbPath, { recursive: true });
+      const legacyDb = await create({
+        schema: {
+          id: "string",
+          path: "string",
+          content: "string",
+          snippet: "string",
+          vector: "vector[2]",
+        },
+      });
+      await insert(legacyDb, {
+        id: "same",
+        path: "facts/same.md",
+        content: "legacy content",
+        snippet: "legacy",
+        vector: [1, 0],
+      });
+      await writeFile(
+        path.join(dbPath, "memories.msp"),
+        await persist(legacyDb, "json") as string,
+        "utf-8",
+      );
+
+      const backend = new OramaBackend({
+        dbPath,
+        collection: "memories",
+        embedHelper: fakeEmbedHelper(),
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+
+      assert.equal(await backend.probe(), true);
+
+      const migrated = await restore(
+        "json",
+        await readFile(path.join(dbPath, "memories.msp"), "utf-8"),
+      );
+      const results = await search(migrated, { term: "", limit: 10 });
+      const hit = results.hits[0];
+      const doc = (backend as any).getStoredDocument(migrated, hit);
+      assert.equal(doc.vectorProvider, "");
+      assert.deepEqual((backend as any).getStoredVector(migrated, hit, doc), [1, 0]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("OramaBackend clears provider tags for persisted rows with missing vectors", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
     const { create, getByID, insert, search } = await import("@orama/orama");

@@ -550,6 +550,45 @@ test("scenario: message_received persists inline explicit captures without agent
   );
 });
 
+test("scenario: message_received persists sparse inline explicit captures without agent_end", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+
+      await messageReceived(
+        {
+          content: [
+            "Remember the sparse inbound note preference.",
+            "<memory_note>",
+            "content: The sparse inbound note should survive without agent_end.",
+            "category: preference",
+            "</memory_note>",
+          ].join("\n"),
+          threadId: "thread-sparse-inline-only",
+        },
+        { sessionKey: "inline-sparse-persist-session" },
+      );
+
+      const memoryText = readAllText(memoryDir);
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.match(memoryText, /sparse inbound note should survive without agent_end/);
+      assert.match(transcriptText, /Remember the sparse inbound note preference/);
+      assert.doesNotMatch(transcriptText, /memory_note/);
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: message_received persists inline explicit captures when transcripts are disabled", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir, orchestrator }) => {

@@ -3612,8 +3612,6 @@ const pluginDefinition = {
             normalizeOptionalString(event.sessionKey) ??
             "default";
           const inboundMessageKeys = getOpenClawMessageDedupeKeys(event, event, ctx, sessionKey);
-          const inboundMessageKey = inboundMessageKeys[0];
-          if (inboundMessageKeys.length === 0) return;
           if (inboundMessageKeys.some((key) => observedInboundMessageIds.has(key))) return;
           const metadata = buildOpenClawMessageMetadata(event, event, ctx, cfg);
           const inboundReplyHintMetadata = cfg.openclawReplyMetadataExtractionHintsEnabled
@@ -3643,15 +3641,28 @@ const pluginDefinition = {
             transcriptContent,
             sessionKey,
           );
+          if (
+            inboundMessageKeys.length === 0 &&
+            inboundContentFingerprint &&
+            observedInboundContentFingerprints.has(inboundContentFingerprint)
+          ) {
+            return;
+          }
+          const inlineCaptureDedupeKeys =
+            inboundMessageKeys.length > 0
+              ? inboundMessageKeys
+              : inboundContentFingerprint
+                ? [inboundContentFingerprint]
+                : [];
           const processedExplicitNotes =
             explicitNotes.length > 0
               ? await processInlineExplicitCaptureNotes(
                   explicitNotes,
-                  inboundMessageKeys,
+                  inlineCaptureDedupeKeys,
                 )
               : 0;
           if (!orchestrator.config.transcriptEnabled || transcriptContent.length === 0) {
-            if (inboundMessageKey && processedExplicitNotes > 0) {
+            if (processedExplicitNotes > 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
               rememberObservedInboundContentFingerprint(inboundContentFingerprint);
               rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
@@ -3667,11 +3678,11 @@ const pluginDefinition = {
               turnId: crypto.randomUUID(),
               ...(metadata ? { metadata } : {}),
             });
-            if (inboundMessageKey) {
+            if (inboundMessageKeys.length > 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
-              rememberObservedInboundContentFingerprint(inboundContentFingerprint);
               rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
+            rememberObservedInboundContentFingerprint(inboundContentFingerprint);
           } catch (err) {
             log.debug(`message_received transcript append failed: ${err}`);
           }
@@ -3821,6 +3832,7 @@ const pluginDefinition = {
               cfg,
             );
             const messageDedupeKeys = getOpenClawMessageDedupeKeys(msg, event, ctx, sessionKey);
+            const messageContentFingerprint = buildOpenClawInboundContentFingerprint(stripped, sessionKey);
             const cachedReplyHintMetadata =
               role === "user" && cfg.openclawReplyMetadataExtractionHintsEnabled
                 ? getInboundReplyMetadata(messageDedupeKeys)
@@ -3836,13 +3848,18 @@ const pluginDefinition = {
               ((messageDedupeKeys.length > 0 &&
                 messageDedupeKeys.some((key) => observedInboundMessageIds.has(key))) ||
                 (messageDedupeKeys.length === 0 &&
-                  observedInboundContentFingerprints.has(
-                    buildOpenClawInboundContentFingerprint(stripped, sessionKey) ?? "",
-                  )));
+                  messageContentFingerprint !== null &&
+                  observedInboundContentFingerprints.has(messageContentFingerprint)));
+            const inlineCaptureDedupeKeys =
+              messageDedupeKeys.length > 0
+                ? messageDedupeKeys
+                : messageContentFingerprint
+                  ? [messageContentFingerprint]
+                  : [];
 
             await processInlineExplicitCaptureNotes(
               explicitNotes,
-              messageDedupeKeys,
+              inlineCaptureDedupeKeys,
             );
 
             // Append to transcript
@@ -3863,9 +3880,7 @@ const pluginDefinition = {
                 if (messageDedupeKey) {
                   rememberObservedInboundMessageKeys(messageDedupeKeys);
                 }
-                rememberObservedInboundContentFingerprint(
-                  buildOpenClawInboundContentFingerprint(stripped, sessionKey),
-                );
+                rememberObservedInboundContentFingerprint(messageContentFingerprint);
               }
             }
 
