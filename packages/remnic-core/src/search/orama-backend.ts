@@ -316,7 +316,11 @@ export class OramaBackend implements SearchBackend {
     }
 
     await this.persistDbForCollection(db, collection);
-    this.rememberVectorProviderCompatibility(db, providerIdentity, allEmbedded);
+    if (allEmbedded) {
+      await this.dbHasCompatibleVectors(db, providerIdentity);
+    } else {
+      this.rememberVectorProviderCompatibility(db, providerIdentity, false);
+    }
   }
 
   async ensureCollection(

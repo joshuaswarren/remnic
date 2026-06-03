@@ -1024,6 +1024,73 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("LanceDbBackend rechecks all rows before caching fallback provider compatibility", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-fallback-cache-"));
+    try {
+      const rows = [
+        {
+          docid: "host-row",
+          content: "Already embedded by the host.",
+          vector: [1, 0],
+          vectorProvider: "host:openclaw-memory",
+        },
+        {
+          docid: "fallback-row",
+          content: "Needs fallback embedding.",
+          vector: [0, 0],
+          vectorProvider: "",
+        },
+      ];
+      const updateCalls: Array<Record<string, unknown>> = [];
+      const table = {
+        query: () => ({
+          select: () => ({
+            toArray: async () => rows.map((row) => ({ ...row })),
+          }),
+        }),
+        update: async (payload: Record<string, unknown>) => {
+          updateCalls.push(payload);
+          const docid = /docid = '([^']+)'/.exec(String(payload.where ?? ""))?.[1];
+          const row = rows.find((entry) => entry.docid === docid);
+          if (row) {
+            Object.assign(row, payload.values);
+          }
+        },
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedBatchWithProvider: async () => ({
+            vectors: [[0, 1]],
+            providerIdentity: "openai:text-embedding-3-small",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+
+      await backend.embedCollection("memories");
+
+      assert.equal(updateCalls.length, 1);
+      assert.deepEqual(rows.map((row) => row.vectorProvider), [
+        "host:openclaw-memory",
+        "openai:text-embedding-3-small",
+      ]);
+      assert.deepEqual((backend as any).vectorProviderCompatibility.get(table), {
+        providerIdentity: "openai:text-embedding-3-small",
+        compatible: false,
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("OramaBackend migrates legacy documents missing vectorProvider", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
     const { create, insert, search } = await import("@orama/orama");

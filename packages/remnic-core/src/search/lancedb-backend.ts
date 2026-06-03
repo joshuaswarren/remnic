@@ -261,7 +261,11 @@ export class LanceDbBackend implements SearchBackend {
           values: { vector: vec, vectorProvider: providerIdentity },
         });
       }
-      this.rememberVectorProviderCompatibility(table, providerIdentity, allEmbedded);
+      if (allEmbedded) {
+        await this.tableHasCompatibleVectors(table, providerIdentity);
+      } else {
+        this.rememberVectorProviderCompatibility(table, providerIdentity, false);
+      }
     } catch (err) {
       log.debug(`LanceDbBackend embed failed: ${err}`);
     }
