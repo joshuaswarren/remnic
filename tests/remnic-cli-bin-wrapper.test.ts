@@ -173,6 +173,62 @@ test("package bin wrappers do not inject FORCE_COLOR", async () => {
   }
 });
 
+test("package bin wrappers identify legacy engram invocation on built entrypoint", async () => {
+  const tempRoot = await mkdtemp(join(tmpdir(), "remnic-cli-bin-wrapper-"));
+  try {
+    const tempBinDir = join(tempRoot, "bin");
+    const tempDistDir = join(tempRoot, "dist");
+    await mkdir(tempBinDir, { recursive: true });
+    await mkdir(tempDistDir, { recursive: true });
+
+    const tempRemnicBin = join(tempBinDir, "remnic.cjs");
+    const tempEngramBin = join(tempBinDir, "engram.cjs");
+    await copyFile(remnicBin, tempRemnicBin);
+    await copyFile(engramBin, tempEngramBin);
+    await chmod(tempRemnicBin, 0o755);
+    await chmod(tempEngramBin, 0o755);
+    await writeFile(
+      join(tempDistDir, "index.js"),
+      [
+        "process.stdout.write(JSON.stringify({",
+        '  remnic: process.env.REMNIC_CLI_BIN === "1",',
+        '  engram: process.env.ENGRAM_CLI_BIN === "1",',
+        "  argv: process.argv.slice(2),",
+        "}));",
+        "",
+      ].join("\n"),
+    );
+
+    const env = { ...process.env };
+    delete env.REMNIC_CLI_BIN;
+    delete env.ENGRAM_CLI_BIN;
+
+    const remnicResult = spawnSync(process.execPath, [tempRemnicBin, "status"], {
+      encoding: "utf8",
+      env,
+    });
+    const engramResult = spawnSync(process.execPath, [tempEngramBin, "status"], {
+      encoding: "utf8",
+      env,
+    });
+
+    assert.equal(remnicResult.status, 0);
+    assert.equal(engramResult.status, 0);
+    assert.deepEqual(JSON.parse(remnicResult.stdout), {
+      remnic: true,
+      engram: false,
+      argv: ["status"],
+    });
+    assert.deepEqual(JSON.parse(engramResult.stdout), {
+      remnic: true,
+      engram: true,
+      argv: ["status"],
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("package bin wrappers keep a failing exit code when a self-signal is ignored", async () => {
   if (process.platform === "win32") {
     return;
