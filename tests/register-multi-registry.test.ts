@@ -829,6 +829,14 @@ test("host embedding bridge re-registers when host embedding config changes", as
     const { getHostEmbeddingProvider } = hostEmbeddingProviders;
 
     first = buildApi("host-embedding-config-first");
+    first.api.config = {
+      models: {
+        providers: [{
+          id: "secret-provider",
+          apiKey: "sk-test-raw-secret",
+        }],
+      },
+    };
     first.api.pluginConfig = {
       ...BASE_TEST_PLUGIN_CONFIG,
       memoryDir,
@@ -841,6 +849,14 @@ test("host embedding bridge re-registers when host embedding config changes", as
     assert.equal(
       getHostEmbeddingProvider(memoryDir)?.model,
       "memory:first-memory-provider/model-a",
+    );
+    assert.match(
+      (globalThis as any)[HOST_EMBEDDING_SIGNATURE_KEY],
+      /^sha256:[a-f0-9]{64}$/,
+    );
+    assert.doesNotMatch(
+      (globalThis as any)[HOST_EMBEDDING_SIGNATURE_KEY],
+      /sk-test-raw-secret/,
     );
 
     second = buildApi("host-embedding-config-second");

@@ -594,6 +594,28 @@ describe("embed helper", () => {
     }
   });
 
+  it("rejects malformed HTTP embedding vectors instead of coercing components", async () => {
+    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ data: [{ embedding: [0.1, null] }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })) as typeof fetch;
+      const helper = new EmbedHelper(fakeConfig({
+        embeddingFallbackEnabled: true,
+        embeddingFallbackProvider: "openai",
+        openaiApiKey: "test-key",
+      }) as any);
+
+      assert.equal(await helper.embed("bad vector"), null);
+      assert.equal(await helper.embedWithProvider("bad vector"), null);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("uses the root host embedding scope for namespace-scoped memory dirs", async () => {
     const { EmbedHelper } = await import("../src/search/embed-helper.js");
     const {

@@ -927,14 +927,14 @@ function openClawHostEmbeddingConfigSignature(cfg: {
   hostEmbeddingProviderId?: string;
   hostEmbeddingProviderModel?: string;
 }, apiConfig: unknown, workspaceDir?: string): string {
-  return JSON.stringify({
+  return `sha256:${createHash("sha256").update(JSON.stringify({
     enabled: cfg.hostEmbeddingProviderEnabled !== false,
     memoryDir: cfg.memoryDir,
     providerId: cfg.hostEmbeddingProviderId ?? "",
     providerModel: cfg.hostEmbeddingProviderModel ?? "",
     workspaceDir: workspaceDir ?? "",
     openClawConfig: stableOpenClawConfigSignature(apiConfig),
-  });
+  })).digest("hex")}`;
 }
 
 function selectOpenClawEmbeddingAdapter(

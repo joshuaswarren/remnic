@@ -330,8 +330,7 @@ export class EmbedHelper {
       }
       const payload = (await res.json()) as any;
       const vector = payload?.data?.[0]?.embedding;
-      if (!Array.isArray(vector)) return null;
-      return vector.map((n: unknown) => { const v = Number(n); return Number.isFinite(v) ? v : 0; });
+      return normalizeHttpEmbeddingVector(vector);
     } catch (err) {
       if (isAbortError(err)) throw err;
       log.debug(`EmbedHelper error: ${err}`);
@@ -384,4 +383,16 @@ export class EmbedHelper {
 
 function providerIdentity(provider: ProviderConfig): EmbedProviderIdentity {
   return `${provider.type}:${provider.model}`;
+}
+
+function normalizeHttpEmbeddingVector(vector: unknown): number[] | null {
+  if (!Array.isArray(vector)) return null;
+  const normalized: number[] = [];
+  for (const component of vector) {
+    if (typeof component !== "number" || !Number.isFinite(component)) {
+      return null;
+    }
+    normalized.push(component);
+  }
+  return normalized;
 }
