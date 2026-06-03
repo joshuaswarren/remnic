@@ -467,6 +467,9 @@ test("EmbeddingFallback classifies host provider unavailable without mislabeling
 test("normalizeHostEmbeddingVector rejects malformed components", async () => {
   const { normalizeHostEmbeddingVector } = await import("../src/host-embedding-provider.js");
   assert.equal(normalizeHostEmbeddingVector([1, "bad", 3]), null);
+  assert.equal(normalizeHostEmbeddingVector([1, null, 3]), null);
+  assert.equal(normalizeHostEmbeddingVector([1, false, 3]), null);
+  assert.equal(normalizeHostEmbeddingVector([1, "", 3]), null);
   assert.equal(normalizeHostEmbeddingVector([1, Number.NaN, 3]), null);
   assert.equal(normalizeHostEmbeddingVector([1, Number.POSITIVE_INFINITY, 3]), null);
   assert.deepEqual(normalizeHostEmbeddingVector(new Float32Array([0.25, 0.5])), [0.25, 0.5]);

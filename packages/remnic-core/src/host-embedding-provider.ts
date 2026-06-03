@@ -64,10 +64,11 @@ export function normalizeHostEmbeddingVector(value: unknown): number[] | null {
   if (!Array.isArray(value) && (!ArrayBuffer.isView(value) || value instanceof DataView)) {
     return null;
   }
-  const vector = Array.from(value as unknown as ArrayLike<unknown>, (component) => {
-    return Number(component);
-  });
-  return vector.length > 0 && vector.every((component) => Number.isFinite(component))
+  const vector = Array.from(value as unknown as ArrayLike<unknown>);
+  return vector.length > 0 &&
+    vector.every((component): component is number => {
+      return typeof component === "number" && Number.isFinite(component);
+    })
     ? vector
     : null;
 }
