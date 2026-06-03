@@ -258,31 +258,28 @@ export class EmbeddingFallback {
     const provider = await this.resolveProvider();
     if (!provider) return [];
 
-    let queryResult: EmbeddingResult | null;
-    try {
-      queryResult = await this.embedWithEffectiveProvider(query, provider, {
-        mode: "lookup",
-      });
-    } catch (err) {
-      if (isLookupBackendUnavailableError(err)) {
-        if (options.throwOnTimeout) {
-          throw err;
-        }
-        // Fail-open: recall-path callers get an empty result rather than an
-        // unhandled rejection that would abort recall entirely.
-        log.debug("embedding fallback search: backend unavailable on lookup, returning [] (throwOnTimeout=false)");
-        return [];
-      }
-      throw err;
-    }
+    let queryResult = await this.embedForSearch(query, provider, options);
     if (!queryResult) return [];
 
     const diskIdentity = await this.readIndexIdentityFromDisk();
     if (diskIdentity && !sameIndexIdentity(diskIdentity, queryResult.provider)) {
-      log.debug(
-        `embedding fallback search skipped: query provider ${queryResult.provider.type}/${queryResult.provider.model} does not match existing ${diskIdentity.provider}/${diskIdentity.model} index`,
-      );
-      return [];
+      const diskProvider = await this.resolveFallbackProviderForIndexIdentity(diskIdentity);
+      if (diskProvider) {
+        const diskQueryResult = await this.embedForSearch(query, diskProvider, options);
+        if (diskQueryResult && sameIndexIdentity(diskIdentity, diskQueryResult.provider)) {
+          queryResult = diskQueryResult;
+        } else {
+          log.debug(
+            `embedding fallback search skipped: preserved ${diskIdentity.provider}/${diskIdentity.model} index is unavailable for lookup`,
+          );
+          return [];
+        }
+      } else {
+        log.debug(
+          `embedding fallback search skipped: query provider ${queryResult.provider.type}/${queryResult.provider.model} does not match existing ${diskIdentity.provider}/${diskIdentity.model} index`,
+        );
+        return [];
+      }
     }
 
     const index = await this.loadIndex(queryResult.provider);
@@ -416,42 +413,91 @@ export class EmbeddingFallback {
     const providers = preferred === "auto" ? ["openai", "local"] : [preferred];
 
     for (const p of providers) {
-      if (p === "openai" && this.config.openaiApiKey) {
-        const baseUrl = this.config.openaiBaseUrl ?? "https://api.openai.com/v1";
-        return {
-          type: "openai",
-          model: DEFAULT_OPENAI_MODEL,
-          endpoint: `${baseUrl.replace(/\/$/, "")}/embeddings`,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.config.openaiApiKey}`,
-          },
-        };
+      if (p === "openai") {
+        const provider = this.createOpenAiProvider();
+        if (provider) return provider;
       }
 
-      if (p === "local" && this.config.localLlmEnabled && this.config.localLlmUrl) {
-        const base = this.config.localLlmUrl.replace(/\/$/, "");
-        const endpoint = /\/v1$/i.test(base) ? `${base}/embeddings` : `${base}/v1/embeddings`;
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-          ...(this.config.localLlmHeaders ?? {}),
-        };
-        if (this.config.localLlmApiKey && this.config.localLlmAuthHeader !== false) {
-          headers.Authorization = `Bearer ${this.config.localLlmApiKey}`;
-        }
-        return {
-          type: "local",
-          model:
-            this.config.embeddingFallbackModel ||
-            this.config.localLlmModel ||
-            DEFAULT_OPENAI_MODEL,
-          endpoint,
-          headers,
-        };
+      if (p === "local") {
+        const provider = this.createLocalProvider();
+        if (provider) return provider;
       }
     }
 
     return null;
+  }
+
+  private async resolveFallbackProviderForIndexIdentity(
+    identity: EmbeddingIndexIdentity,
+  ): Promise<ProviderConfig | null> {
+    if (identity.provider === "openai") {
+      const provider = this.createOpenAiProvider();
+      return provider && sameIndexIdentity(provider, identity) ? provider : null;
+    }
+    if (identity.provider === "local") {
+      const provider = this.createLocalProvider();
+      return provider && sameIndexIdentity(provider, identity) ? provider : null;
+    }
+    return null;
+  }
+
+  private createOpenAiProvider(): ProviderConfig | null {
+    if (!this.config.openaiApiKey) return null;
+    const baseUrl = this.config.openaiBaseUrl ?? "https://api.openai.com/v1";
+    return {
+      type: "openai",
+      model: DEFAULT_OPENAI_MODEL,
+      endpoint: `${baseUrl.replace(/\/$/, "")}/embeddings`,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.config.openaiApiKey}`,
+      },
+    };
+  }
+
+  private createLocalProvider(): ProviderConfig | null {
+    if (!this.config.localLlmEnabled || !this.config.localLlmUrl) return null;
+    const base = this.config.localLlmUrl.replace(/\/$/, "");
+    const endpoint = /\/v1$/i.test(base) ? `${base}/embeddings` : `${base}/v1/embeddings`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(this.config.localLlmHeaders ?? {}),
+    };
+    if (this.config.localLlmApiKey && this.config.localLlmAuthHeader !== false) {
+      headers.Authorization = `Bearer ${this.config.localLlmApiKey}`;
+    }
+    return {
+      type: "local",
+      model:
+        this.config.embeddingFallbackModel ||
+        this.config.localLlmModel ||
+        DEFAULT_OPENAI_MODEL,
+      endpoint,
+      headers,
+    };
+  }
+
+  private async embedForSearch(
+    query: string,
+    provider: ProviderConfig,
+    options: { throwOnTimeout?: boolean } = {},
+  ): Promise<EmbeddingResult | null> {
+    try {
+      return await this.embedWithEffectiveProvider(query, provider, {
+        mode: "lookup",
+      });
+    } catch (err) {
+      if (isLookupBackendUnavailableError(err)) {
+        if (options.throwOnTimeout) {
+          throw err;
+        }
+        // Fail-open: recall-path callers get an empty result rather than an
+        // unhandled rejection that would abort recall entirely.
+        log.debug("embedding fallback search: backend unavailable on lookup, returning [] (throwOnTimeout=false)");
+        return null;
+      }
+      throw err;
+    }
   }
 
   private async embed(

@@ -326,6 +326,60 @@ test("EmbeddingFallback does not replace an existing fallback index when host em
   }
 });
 
+test("EmbeddingFallback searches preserved fallback index when host embeddings succeed", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-search-preserved-"));
+  const originalFetch = globalThis.fetch;
+  const indexPath = path.join(memoryDir, "state", "embeddings.json");
+  await mkdir(path.dirname(indexPath), { recursive: true });
+  await writeFile(
+    indexPath,
+    JSON.stringify({
+      version: 1,
+      provider: "openai",
+      model: "text-embedding-3-small",
+      entries: {
+        "mem-openai": {
+          vector: [1, 0],
+          path: "facts/openai.md",
+        },
+      },
+    }),
+    "utf-8",
+  );
+  let hostCalls = 0;
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    model: "host-model",
+    async embed() {
+      hostCalls += 1;
+      return [0, 1];
+    },
+  });
+  try {
+    let fetchCalls = 0;
+    globalThis.fetch = (async (_url, init) => {
+      fetchCalls += 1;
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { input?: string };
+      assert.equal(payload.input, "launch planning");
+      return new Response(JSON.stringify({ data: [{ embedding: [1, 0] }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
+    const results = await fallback.search("launch planning", 5);
+
+    assert.equal(hostCalls, 1);
+    assert.equal(fetchCalls, 1);
+    assert.deepEqual(results.map((result) => result.id), ["mem-openai"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+  }
+});
+
 test("EmbeddingFallback removes stale fallback index entries when host provider is active", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-remove-stale-"));
   const indexPath = path.join(memoryDir, "state", "embeddings.json");
