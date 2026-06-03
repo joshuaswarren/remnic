@@ -25,6 +25,11 @@ type HostEmbeddingScopeConfig = PluginConfig & {
   hostEmbeddingProviderScope?: string;
 };
 
+type EmbedHelperOptions = {
+  /** Backend-local vector schema dimension for host-provider validation. */
+  hostEmbeddingExpectedDimension?: number;
+};
+
 export type EmbedProviderIdentity = `${ProviderConfig["type"]}:${string}`;
 
 export type EmbedWithProviderResult = {
@@ -54,7 +59,10 @@ export class EmbedHelper {
   private cachedProviderAt = 0;
   private providerCacheTtlMs = DEFAULT_PROVIDER_CACHE_TTL_MS;
 
-  constructor(private readonly config: PluginConfig) {}
+  constructor(
+    private readonly config: PluginConfig,
+    private readonly options: EmbedHelperOptions = {},
+  ) {}
 
   /**
    * Whether an embedding provider is available.
@@ -350,7 +358,7 @@ export class EmbedHelper {
         signal: withTimeoutSignal(signal, 30_000),
         inputType,
       });
-      return normalizeHostEmbeddingVector(vector);
+      return this.normalizeHostEmbeddingVector(vector);
     } catch (err) {
       if (isAbortError(err)) throw err;
       log.debug(`EmbedHelper host provider error: ${err}`);
@@ -372,12 +380,29 @@ export class EmbedHelper {
         },
       );
       if (!Array.isArray(vectors)) return inputs.map(() => null);
-      return inputs.map((_, index) => normalizeHostEmbeddingVector(vectors[index]));
+      return inputs.map((_, index) => this.normalizeHostEmbeddingVector(vectors[index]));
     } catch (err) {
       if (isAbortError(err)) throw err;
       log.debug(`EmbedHelper host provider batch error: ${err}`);
       return inputs.map(() => null);
     }
+  }
+
+  private normalizeHostEmbeddingVector(value: unknown): number[] | null {
+    const vector = normalizeHostEmbeddingVector(value);
+    if (!vector) return null;
+    const expectedDimension = this.resolveHostEmbeddingExpectedDimension();
+    if (expectedDimension !== null && vector.length !== expectedDimension) {
+      return null;
+    }
+    return vector;
+  }
+
+  private resolveHostEmbeddingExpectedDimension(): number | null {
+    const value = this.options.hostEmbeddingExpectedDimension;
+    return typeof value === "number" && Number.isInteger(value) && value > 0
+      ? value
+      : null;
   }
 }
 

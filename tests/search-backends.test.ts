@@ -508,6 +508,47 @@ describe("embed helper", () => {
     }
   });
 
+  it("closes a replaced host embedding provider for the same scope", async () => {
+    const {
+      clearHostEmbeddingProvidersForTest,
+      getHostEmbeddingProvider,
+      registerHostEmbeddingProvider,
+    } = await import("../src/host-embedding-provider.js");
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-host-replace-"));
+    const closes: string[] = [];
+    const unregisterFirst = registerHostEmbeddingProvider(memoryDir, {
+      id: "first-host",
+      async embed() {
+        return [1, 0];
+      },
+      close() {
+        closes.push("first");
+      },
+    });
+    const unregisterSecond = registerHostEmbeddingProvider(memoryDir, {
+      id: "second-host",
+      async embed() {
+        return [0, 1];
+      },
+      close() {
+        closes.push("second");
+      },
+    });
+    try {
+      assert.equal(getHostEmbeddingProvider(memoryDir)?.id, "second-host");
+      assert.deepEqual(closes, ["first"]);
+      unregisterFirst();
+      assert.deepEqual(closes, ["first"]);
+      assert.equal(getHostEmbeddingProvider(memoryDir)?.id, "second-host");
+      unregisterSecond();
+      assert.deepEqual(closes, ["first", "second"]);
+      assert.equal(getHostEmbeddingProvider(memoryDir), undefined);
+    } finally {
+      clearHostEmbeddingProvidersForTest();
+      await rm(memoryDir, { recursive: true, force: true });
+    }
+  });
+
   it("passes query input type for search embeddings and document input type for batches", async () => {
     const { EmbedHelper } = await import("../src/search/embed-helper.js");
     const {
@@ -703,6 +744,59 @@ describe("embed helper", () => {
       globalThis.fetch = originalFetch;
       unregister();
       clearHostEmbeddingProvidersForTest();
+    }
+  });
+
+  it("falls back the whole host batch when host vectors have the wrong dimension", async () => {
+    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const {
+      clearHostEmbeddingProvidersForTest,
+      registerHostEmbeddingProvider,
+    } = await import("../src/host-embedding-provider.js");
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-host-dimension-"));
+    const originalFetch = globalThis.fetch;
+    const hostInputs: string[] = [];
+    const fallbackInputs: string[] = [];
+    const unregister = registerHostEmbeddingProvider(memoryDir, {
+      id: "host-test",
+      dimensions: 3,
+      async embed() {
+        return [1, 0, 0];
+      },
+      async embedBatch(texts) {
+        hostInputs.push(...texts);
+        return texts.map(() => [1, 0, 0]);
+      },
+    });
+    try {
+      globalThis.fetch = (async (_url, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { input?: string };
+        fallbackInputs.push(body.input ?? "");
+        return new Response(JSON.stringify({ data: [{ embedding: [0, 1] }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as typeof fetch;
+      const helper = new EmbedHelper(fakeConfig({
+        embeddingFallbackEnabled: true,
+        embeddingFallbackProvider: "openai",
+        openaiApiKey: "test-key",
+        memoryDir,
+      }) as any, { hostEmbeddingExpectedDimension: 2 });
+
+      const result = await helper.embedBatchWithProvider(["doc one", "doc two"]);
+      assert.deepEqual(result?.vectors, [
+        [0, 1],
+        [0, 1],
+      ]);
+      assert.equal(result?.providerIdentity, "openai:text-embedding-3-small");
+      assert.deepEqual(hostInputs, ["doc one", "doc two"]);
+      assert.deepEqual(fallbackInputs, ["doc one", "doc two"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      unregister();
+      clearHostEmbeddingProvidersForTest();
+      await rm(memoryDir, { recursive: true, force: true });
     }
   });
 

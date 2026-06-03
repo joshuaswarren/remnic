@@ -41,7 +41,9 @@ function resolveNonQmdBackend(config: PluginConfig): SearchBackend | undefined {
   }
 
   if (backend === "lancedb") {
-    const embedHelper = new EmbedHelper(config);
+    const embedHelper = new EmbedHelper(config, {
+      hostEmbeddingExpectedDimension: config.lanceEmbeddingDimension,
+    });
     return new LanceDbBackend({
       dbPath: config.lanceDbPath!,
       collection,
@@ -63,7 +65,9 @@ function resolveNonQmdBackend(config: PluginConfig): SearchBackend | undefined {
   }
 
   if (backend === "orama") {
-    const embedHelper = new EmbedHelper(config);
+    const embedHelper = new EmbedHelper(config, {
+      hostEmbeddingExpectedDimension: config.oramaEmbeddingDimension,
+    });
     return new OramaBackend({
       dbPath: config.oramaDbPath!,
       collection,

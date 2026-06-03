@@ -40,13 +40,18 @@ export function registerHostEmbeddingProvider(
   provider: HostEmbeddingProvider,
 ): () => void {
   const key = normalizeScope(scope);
-  providerMap().set(key, provider);
+  const providers = providerMap();
+  const previous = providers.get(key);
+  if (previous && previous !== provider) {
+    void previous.close?.();
+  }
+  providers.set(key, provider);
   return () => {
     const providers = providerMap();
     if (providers.get(key) === provider) {
       providers.delete(key);
+      void provider.close?.();
     }
-    void provider.close?.();
   };
 }
 
