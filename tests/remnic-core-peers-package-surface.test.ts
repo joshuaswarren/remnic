@@ -17,7 +17,7 @@ test("@remnic/core exposes the peers public subpath", async () => {
   );
   const pkg = JSON.parse(packageJsonRaw) as PackageJson;
   const expected = {
-    types: "./src/peers/index.ts",
+    types: "./dist/peers/index.d.ts",
     "remnic-source": "./src/peers/index.ts",
     import: "./dist/peers/index.js",
   };

@@ -238,7 +238,7 @@ describe("root CLI package boundaries", () => {
       );
       assert.equal(
         manifest.exports?.[subpath]?.types,
-        "./src/bulk-import/index.ts",
+        "./dist/bulk-import/index.d.ts",
         `${subpath} must publish bulk-import declarations`,
       );
     }

@@ -17,7 +17,7 @@ test("@remnic/core exposes the importers public subpath", async () => {
   );
   const pkg = JSON.parse(packageJsonRaw) as PackageJson;
   const expected = {
-    types: "./src/importers/index.ts",
+    types: "./dist/importers/index.d.ts",
     "remnic-source": "./src/importers/index.ts",
     import: "./dist/importers/index.js",
   };
