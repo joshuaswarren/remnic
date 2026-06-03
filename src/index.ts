@@ -397,6 +397,7 @@ async function loadOpenClawSecretRefResolver(): Promise<ResolveSecretRefFn | nul
 type ServiceKeys = {
   REGISTERED_GUARD: string;
   HOST_EMBEDDING_UNREGISTER: string;
+  HOST_EMBEDDING_SIGNATURE: string;
   /** Tracks which api objects have already had hooks bound to prevent duplicate handlers. */
   HOOK_APIS: string;
   ACCESS_SERVICE: string;
@@ -424,6 +425,7 @@ function buildServiceKeys(serviceId: string): ServiceKeys {
   return {
     REGISTERED_GUARD: `__openclawEngramRegistered${suffix}`,
     HOST_EMBEDDING_UNREGISTER: `__openclawEngramHostEmbeddingUnregister${suffix}`,
+    HOST_EMBEDDING_SIGNATURE: `__openclawEngramHostEmbeddingSignature${suffix}`,
     HOOK_APIS: `__openclawEngramHookApis${suffix}`,
     ACCESS_SERVICE: `__openclawEngramAccessService${suffix}`,
     ACCESS_HTTP_SERVER: `__openclawEngramAccessHttpServer${suffix}`,
@@ -884,6 +886,22 @@ function registerOpenClawHostEmbeddingProvider(params: {
   return unregister;
 }
 
+function openClawHostEmbeddingConfigSignature(cfg: {
+  memoryDir: string;
+  hostEmbeddingProviderEnabled: boolean;
+  hostEmbeddingProviderId?: string;
+  hostEmbeddingProviderModel?: string;
+  embeddingFallbackModel?: string;
+}): string {
+  return JSON.stringify({
+    enabled: cfg.hostEmbeddingProviderEnabled !== false,
+    memoryDir: cfg.memoryDir,
+    providerId: cfg.hostEmbeddingProviderId ?? "",
+    providerModel: cfg.hostEmbeddingProviderModel ?? "",
+    fallbackModel: cfg.embeddingFallbackModel ?? "",
+  });
+}
+
 function selectOpenClawEmbeddingAdapter(
   api: OpenClawPluginApi,
   requestedId?: string,
@@ -1139,6 +1157,21 @@ const pluginDefinition = {
     const orchestrator = existing?.recall ? existing : new Orchestrator(cfg);
     const isFirstRegistration = !(globalThis as any)[keys.REGISTERED_GUARD];
     (globalThis as any)[keys.REGISTERED_GUARD] = true;
+    const hostEmbeddingSignature = openClawHostEmbeddingConfigSignature(cfg);
+    const existingHostEmbeddingSignature = (globalThis as any)[
+      keys.HOST_EMBEDDING_SIGNATURE
+    ] as string | undefined;
+    if (
+      (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER] &&
+      existingHostEmbeddingSignature !== hostEmbeddingSignature
+    ) {
+      const unregisterHostEmbedding = (globalThis as any)[
+        keys.HOST_EMBEDDING_UNREGISTER
+      ] as (() => void) | undefined;
+      unregisterHostEmbedding?.();
+      delete (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER];
+      delete (globalThis as any)[keys.HOST_EMBEDDING_SIGNATURE];
+    }
     if (!(globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER]) {
       const unregisterHostEmbedding = registerOpenClawHostEmbeddingProvider({
         api,
@@ -1148,6 +1181,8 @@ const pluginDefinition = {
       if (unregisterHostEmbedding) {
         (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER] =
           unregisterHostEmbedding;
+        (globalThis as any)[keys.HOST_EMBEDDING_SIGNATURE] =
+          hostEmbeddingSignature;
       }
     }
 
@@ -3471,9 +3506,8 @@ const pluginDefinition = {
             "default";
           const inboundMessageKeys = getOpenClawMessageDedupeKeys(event, event, ctx, sessionKey);
           const inboundMessageKey = inboundMessageKeys[0];
-          if (inboundMessageKeys.length > 0) {
-            if (inboundMessageKeys.some((key) => observedInboundMessageIds.has(key))) return;
-          }
+          if (inboundMessageKeys.length === 0) return;
+          if (inboundMessageKeys.some((key) => observedInboundMessageIds.has(key))) return;
           const metadata = buildOpenClawMessageMetadata(event, event, ctx, cfg);
           const eventDate =
             typeof event.timestamp === "number" && Number.isFinite(event.timestamp)
@@ -5166,6 +5200,7 @@ const pluginDefinition = {
           ] as (() => void) | undefined;
           unregisterOpenClawHostEmbeddingProvider?.();
           delete (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER];
+          delete (globalThis as any)[keys.HOST_EMBEDDING_SIGNATURE];
           delete (globalThis as any)[keys.ACCESS_HTTP_SERVER];
           delete (globalThis as any)[keys.ACCESS_HTTP_AUTH_STATE];
           delete (globalThis as any)[keys.ACCESS_SERVICE];

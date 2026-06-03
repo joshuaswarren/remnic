@@ -880,6 +880,47 @@ test("scenario: inbound message dedupe matches sparse thread and run metadata", 
   );
 });
 
+test("scenario: message_received without messageId defers transcript capture to agent_end", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      const content = "Remember the no-id inbound capture fallback.";
+
+      await messageReceived(
+        {
+          content,
+          threadId: "thread-without-message-id",
+        },
+        { sessionKey: "no-id-inbound-session" },
+      );
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            {
+              role: "user",
+              content,
+            },
+          ],
+        },
+        { sessionKey: "no-id-inbound-session" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal(
+        (transcriptText.match(/no-id inbound capture fallback/g) ?? []).length,
+        1,
+      );
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: agent_end does not dedupe assistant turns with inbound user message ids", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {
