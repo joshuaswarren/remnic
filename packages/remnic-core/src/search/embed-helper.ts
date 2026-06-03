@@ -17,6 +17,14 @@ type ProviderConfig = {
   hostProvider?: HostEmbeddingProvider;
 };
 
+type HostEmbeddingScopeConfig = PluginConfig & {
+  /**
+   * Internal namespace-router metadata. Host adapters register providers at
+   * the root memoryDir while namespace backends operate under scoped dirs.
+   */
+  hostEmbeddingProviderScope?: string;
+};
+
 export type EmbedProviderIdentity = `${ProviderConfig["type"]}:${string}`;
 
 export type EmbedWithProviderResult = {
@@ -183,7 +191,7 @@ export class EmbedHelper {
       options.includeHost !== false &&
       this.config.hostEmbeddingProviderEnabled !== false
     ) {
-      const hostProvider = getHostEmbeddingProvider(this.config.memoryDir);
+      const hostProvider = this.resolveHostEmbeddingProvider();
       if (hostProvider) {
         return {
           type: "host",
@@ -233,6 +241,20 @@ export class EmbedHelper {
     }
 
     return null;
+  }
+
+  private resolveHostEmbeddingProvider(): HostEmbeddingProvider | undefined {
+    const scopedConfig = this.config as HostEmbeddingScopeConfig;
+    const scopes = [
+      scopedConfig.memoryDir,
+      scopedConfig.hostEmbeddingProviderScope,
+    ].filter((scope): scope is string => typeof scope === "string" && scope.trim().length > 0);
+
+    for (const scope of new Set(scopes)) {
+      const provider = getHostEmbeddingProvider(scope);
+      if (provider) return provider;
+    }
+    return undefined;
   }
 
   private async callEmbed(

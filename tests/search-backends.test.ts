@@ -536,6 +536,39 @@ describe("embed helper", () => {
     }
   });
 
+  it("uses the root host embedding scope for namespace-scoped memory dirs", async () => {
+    const { EmbedHelper } = await import("../src/search/embed-helper.js");
+    const {
+      clearHostEmbeddingProvidersForTest,
+      registerHostEmbeddingProvider,
+    } = await import("../src/host-embedding-provider.js");
+    const rootMemoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-embed-helper-root-host-"));
+    const namespaceMemoryDir = path.join(rootMemoryDir, "namespaces", "shared");
+    let hostCalls = 0;
+    const unregister = registerHostEmbeddingProvider(rootMemoryDir, {
+      id: "host-test",
+      async embed() {
+        hostCalls += 1;
+        return [0.2, 0.8];
+      },
+    });
+    try {
+      const helper = new EmbedHelper(fakeConfig({
+        embeddingFallbackEnabled: true,
+        memoryDir: namespaceMemoryDir,
+        hostEmbeddingProviderScope: rootMemoryDir,
+      }) as any);
+
+      assert.deepEqual(await helper.embed("namespaced query"), [0.2, 0.8]);
+      assert.equal(helper.getProviderIdentity(), "host:host-test");
+      assert.equal(hostCalls, 1);
+    } finally {
+      unregister();
+      clearHostEmbeddingProvidersForTest();
+      await rm(rootMemoryDir, { recursive: true, force: true });
+    }
+  });
+
   it("falls back a whole host batch instead of mixing vector spaces", async () => {
     const { EmbedHelper } = await import("../src/search/embed-helper.js");
     const {

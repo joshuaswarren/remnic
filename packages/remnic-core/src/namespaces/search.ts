@@ -35,6 +35,10 @@ type NamespaceBackendRecord = {
   collectionState: "present" | "missing" | "unknown" | "skipped";
 };
 
+type NamespaceScopedSearchConfig = PluginConfig & {
+  hostEmbeddingProviderScope?: string;
+};
+
 export class NamespaceSearchRouter {
   private readonly cache = new Map<string, Promise<NamespaceBackendRecord>>();
 
@@ -183,9 +187,13 @@ export class NamespaceSearchRouter {
       const storage = await this.storageRouter.storageFor(key);
       const useLegacyDefaultCollection =
         key === this.config.defaultNamespace && storage.dir === this.config.memoryDir;
-      const scopedConfig: PluginConfig = {
+      const rootHostEmbeddingScope =
+        (this.config as NamespaceScopedSearchConfig).hostEmbeddingProviderScope ??
+        this.config.memoryDir;
+      const scopedConfig: NamespaceScopedSearchConfig = {
         ...this.config,
         memoryDir: storage.dir,
+        hostEmbeddingProviderScope: rootHostEmbeddingScope,
         qmdCollection: namespaceCollectionName(this.config.qmdCollection, key, {
           defaultNamespace: this.config.defaultNamespace,
           useLegacyDefaultCollection,
