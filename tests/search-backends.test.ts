@@ -257,6 +257,64 @@ describe("lancedb backend refresh", () => {
     }
   });
 
+  it("zero-fills malformed current-provider vectors during refresh", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-refresh-malformed-"));
+    try {
+      const factsDir = path.join(tempDir, "facts");
+      await mkdir(factsDir);
+      await writeFile(path.join(factsDir, "nan.md"), "Malformed vector row.", "utf8");
+      await writeFile(path.join(factsDir, "placeholder.md"), "Placeholder vector row.", "utf8");
+
+      const addCalls: Array<{ rows: any[]; options: any }> = [];
+      const table = {
+        query: () => ({
+          select: () => ({
+            toArray: async () => [
+              {
+                docid: "nan",
+                vector: [Number.NaN, 1],
+                vectorProvider: "host:openclaw-memory",
+              },
+              {
+                docid: "placeholder",
+                vector: [0, 0],
+                vectorProvider: "host:openclaw-memory",
+              },
+            ],
+          }),
+        }),
+        add: async (rows: any[], options: any) => {
+          addCalls.push({ rows, options });
+        },
+        createIndex: async () => {},
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          getProviderIdentity: () => "host:openclaw-memory",
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+      (backend as any).lanceModule = { Index: { fts: () => ({}) } };
+
+      await backend.updateCollection("memories");
+
+      assert.equal(addCalls.length, 1);
+      const rowsByDocid = new Map(addCalls[0].rows.map((row) => [row.docid, row]));
+      assert.deepEqual(rowsByDocid.get("nan")?.vector, [0, 0]);
+      assert.equal(rowsByDocid.get("nan")?.vectorProvider, "");
+      assert.deepEqual(rowsByDocid.get("placeholder")?.vector, [0, 0]);
+      assert.equal(rowsByDocid.get("placeholder")?.vectorProvider, "");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not drop the existing table when overwrite fails", async () => {
     const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-overwrite-failure-"));

@@ -180,7 +180,7 @@ export class LanceDbBackend implements SearchBackend {
       const existing = existingVectors.get(d.docid);
       const canPreserveVector =
         existing &&
-        existing.vector.length === this.embeddingDimension &&
+        this.isCompatibleStoredVector(existing.vector) &&
         (!embeddingProviderIdentity ||
           existing.providerIdentity === embeddingProviderIdentity);
       return {
