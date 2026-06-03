@@ -813,6 +813,7 @@ function registerOpenClawHostEmbeddingProvider(params: {
     cfg.hostEmbeddingProviderModel ||
     selected.adapter.defaultModel ||
     "text-embedding-3-small";
+  const workspaceDir = getOpenClawRuntimeWorkspaceDir(api);
 
   let providerPromise: Promise<unknown | null> | null = null;
   let providerInstance: unknown | null = null;
@@ -824,10 +825,8 @@ function registerOpenClawHostEmbeddingProvider(params: {
     providerPromise ??= selected.adapter
       .create({
         config: api.config ?? {},
-        agentDir:
-          typeof (api as any).runtime?.agent?.workspaceDir === "string"
-            ? (api as any).runtime.agent.workspaceDir
-            : undefined,
+        workspaceDir,
+        agentDir: workspaceDir,
         provider: cfg.hostEmbeddingProviderId || selected.adapter.id,
         model,
       })
@@ -884,6 +883,13 @@ function registerOpenClawHostEmbeddingProvider(params: {
   return unregister;
 }
 
+function getOpenClawRuntimeWorkspaceDir(api: OpenClawPluginApi): string | undefined {
+  const runtimeWorkspaceDir = (api as any).runtime?.agent?.workspaceDir;
+  return typeof runtimeWorkspaceDir === "string" && runtimeWorkspaceDir.length > 0
+    ? runtimeWorkspaceDir
+    : undefined;
+}
+
 function stableOpenClawConfigSignature(value: unknown, seen = new WeakSet<object>()): string {
   if (value === null) return "null";
   const valueType = typeof value;
@@ -919,12 +925,13 @@ function openClawHostEmbeddingConfigSignature(cfg: {
   hostEmbeddingProviderEnabled: boolean;
   hostEmbeddingProviderId?: string;
   hostEmbeddingProviderModel?: string;
-}, apiConfig: unknown): string {
+}, apiConfig: unknown, workspaceDir?: string): string {
   return JSON.stringify({
     enabled: cfg.hostEmbeddingProviderEnabled !== false,
     memoryDir: cfg.memoryDir,
     providerId: cfg.hostEmbeddingProviderId ?? "",
     providerModel: cfg.hostEmbeddingProviderModel ?? "",
+    workspaceDir: workspaceDir ?? "",
     openClawConfig: stableOpenClawConfigSignature(apiConfig),
   });
 }
@@ -1184,32 +1191,38 @@ const pluginDefinition = {
     const orchestrator = existing?.recall ? existing : new Orchestrator(cfg);
     const isFirstRegistration = !(globalThis as any)[keys.REGISTERED_GUARD];
     (globalThis as any)[keys.REGISTERED_GUARD] = true;
-    const hostEmbeddingSignature = openClawHostEmbeddingConfigSignature(cfg, api.config);
-    const existingHostEmbeddingSignature = (globalThis as any)[
-      keys.HOST_EMBEDDING_SIGNATURE
-    ] as string | undefined;
-    if (
-      (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER] &&
-      existingHostEmbeddingSignature !== hostEmbeddingSignature
-    ) {
-      const unregisterHostEmbedding = (globalThis as any)[
-        keys.HOST_EMBEDDING_UNREGISTER
-      ] as (() => void) | undefined;
-      unregisterHostEmbedding?.();
-      delete (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER];
-      delete (globalThis as any)[keys.HOST_EMBEDDING_SIGNATURE];
-    }
-    if (!(globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER]) {
-      const unregisterHostEmbedding = registerOpenClawHostEmbeddingProvider({
-        api,
+    if (!passiveMode) {
+      const hostEmbeddingSignature = openClawHostEmbeddingConfigSignature(
         cfg,
-        serviceId,
-      });
-      if (unregisterHostEmbedding) {
-        (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER] =
-          unregisterHostEmbedding;
-        (globalThis as any)[keys.HOST_EMBEDDING_SIGNATURE] =
-          hostEmbeddingSignature;
+        api.config,
+        getOpenClawRuntimeWorkspaceDir(api),
+      );
+      const existingHostEmbeddingSignature = (globalThis as any)[
+        keys.HOST_EMBEDDING_SIGNATURE
+      ] as string | undefined;
+      if (
+        (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER] &&
+        existingHostEmbeddingSignature !== hostEmbeddingSignature
+      ) {
+        const unregisterHostEmbedding = (globalThis as any)[
+          keys.HOST_EMBEDDING_UNREGISTER
+        ] as (() => void) | undefined;
+        unregisterHostEmbedding?.();
+        delete (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER];
+        delete (globalThis as any)[keys.HOST_EMBEDDING_SIGNATURE];
+      }
+      if (!(globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER]) {
+        const unregisterHostEmbedding = registerOpenClawHostEmbeddingProvider({
+          api,
+          cfg,
+          serviceId,
+        });
+        if (unregisterHostEmbedding) {
+          (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER] =
+            unregisterHostEmbedding;
+          (globalThis as any)[keys.HOST_EMBEDDING_SIGNATURE] =
+            hostEmbeddingSignature;
+        }
       }
     }
 
