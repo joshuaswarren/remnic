@@ -223,6 +223,7 @@ export class OramaBackend implements SearchBackend {
           payload.vectorProvider = existing.vectorProvider ?? "";
           allRowsCompatible = false;
         } else {
+          payload.vector = this.zeroVector();
           payload.vectorProvider = "";
           allRowsCompatible = false;
         }
@@ -240,6 +241,7 @@ export class OramaBackend implements SearchBackend {
             path: doc.path,
             content: doc.content,
             snippet: doc.snippet,
+            vector: this.zeroVector(),
             vectorProvider: "",
           });
         } catch {
@@ -427,6 +429,8 @@ export class OramaBackend implements SearchBackend {
       };
       if (vector) {
         payload.vector = vector;
+      } else {
+        payload.vector = this.zeroVector();
       }
       try {
         await insert(migrated, payload);
@@ -586,6 +590,10 @@ export class OramaBackend implements SearchBackend {
 
   private isExpectedDimensionVector(vector: number[] | null | undefined): vector is number[] {
     return Array.isArray(vector) && vector.length === this.embeddingDimension;
+  }
+
+  private zeroVector(): number[] {
+    return Array.from({ length: this.embeddingDimension }, () => 0);
   }
 
   private normalizeStoredVector(vector: unknown): number[] | null {

@@ -973,7 +973,7 @@ describe("embedded backend provider identity", () => {
 
   it("OramaBackend clears provider tags for persisted rows with missing vectors", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
-    const { create, insert, search } = await import("@orama/orama");
+    const { create, getByID, insert, search } = await import("@orama/orama");
     const { persist } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-compatible-cache-"));
     try {
@@ -1137,6 +1137,8 @@ describe("embedded backend provider identity", () => {
 
       assert.equal(await noProviderBackend.probe(), true);
       await noProviderBackend.update();
+      const noProviderResults = await noProviderBackend.bm25Search("handoff", "memories", 5);
+      assert.equal(noProviderResults[0]?.docid, "handoff");
 
       const vectorBackend = new OramaBackend({
         dbPath,
@@ -1163,6 +1165,52 @@ describe("embedded backend provider identity", () => {
 
       const results = await vectorBackend.vectorSearch("handoff", "memories", 5);
       assert.equal(results[0]?.docid, "handoff");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("OramaBackend zero-fills vector fields when migrating legacy text-only documents", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-text-legacy-"));
+    try {
+      const insertCalls: Array<Record<string, unknown>> = [];
+      const backend = new OramaBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: fakeEmbedHelper(),
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).oramaModule = {
+        count: async () => 1,
+        create: async () => ({}),
+        search: async () => ({
+          hits: [
+            {
+              id: "text-only-internal",
+              document: {
+                id: "text-only",
+                path: "facts/text-only.md",
+                content: "legacy text-only content",
+                snippet: "legacy text",
+              },
+            },
+          ],
+        }),
+        insert: async (_db: unknown, payload: Record<string, unknown>) => {
+          insertCalls.push(payload);
+        },
+      };
+      (backend as any).persistModule = {
+        persist: async () => "{}",
+      };
+
+      await (backend as any).migrateLegacyVectorProviderSchema({}, "memories");
+
+      assert.equal(insertCalls.length, 1);
+      assert.deepEqual(insertCalls[0]?.vector, [0, 0]);
+      assert.equal(insertCalls[0]?.vectorProvider, "");
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
