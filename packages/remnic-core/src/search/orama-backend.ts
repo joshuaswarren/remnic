@@ -508,8 +508,13 @@ export class OramaBackend implements SearchBackend {
     try {
       await this.ensureModules();
       const raw = await readFile(filePath, "utf-8");
-      return await this.persistModule.restore("json", raw);
-    } catch {
+      const collection = path.basename(filePath, ".msp");
+      return await this.migrateLegacyVectorProviderSchema(
+        await this.persistModule.restore("json", raw),
+        collection,
+      );
+    } catch (err) {
+      log.debug(`OramaBackend failed to load ${filePath}: ${err}`);
       return null;
     }
   }

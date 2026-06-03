@@ -1358,6 +1358,53 @@ test("scenario: reply extraction hints reuse inbound-only reply metadata", async
   );
 });
 
+test("scenario: reply extraction hints reuse inbound metadata when transcripts are disabled", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const processed: Array<{ role: string; content: string }> = [];
+      orchestrator.processTurn = async (role: string, content: string) => {
+        processed.push({ role, content });
+      };
+
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      await messageReceived(
+        {
+          content: "Please remember that this note belongs to the mobile rollout.",
+          messageId: "reply-transcript-disabled-1",
+          replyToBody: "The quoted mobile rollout decision lives in #launch.",
+          replyToSender: "Ada",
+        },
+        { sessionKey: "reply-transcript-disabled-session" },
+      );
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            {
+              role: "user",
+              content: "Please remember that this note belongs to the mobile rollout.",
+              messageId: "reply-transcript-disabled-1",
+            },
+          ],
+        },
+        { sessionKey: "reply-transcript-disabled-session" },
+      );
+
+      assert.match(processed[0].content, /^Reply context from Ada:/);
+      assert.match(processed[0].content, /quoted mobile rollout decision/);
+      assert.match(processed[0].content, /Current message: Please remember/);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: false,
+        openclawReplyMetadataCaptureEnabled: false,
+        openclawReplyMetadataExtractionHintsEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: agent_end objective-state snapshots use namespaced configured store overrides", async () => {
   await withScenarioRegistration(async ({ capture, orchestrator, memoryDir }) => {
     const namespace = "project-a";

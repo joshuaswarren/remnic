@@ -1565,6 +1565,59 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("OramaBackend migrates legacy files loaded by global search", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { create, insert, search } = await import("@orama/orama");
+    const { persist, restore } = await import("@orama/plugin-data-persistence");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-global-provider-migrate-"));
+    try {
+      const dbPath = path.join(tempDir, "db");
+      await mkdir(dbPath, { recursive: true });
+      const legacyDb = await create({
+        schema: {
+          id: "string",
+          path: "string",
+          content: "string",
+          snippet: "string",
+          vector: "vector[2]",
+        },
+      });
+      await insert(legacyDb, {
+        id: "same",
+        path: "facts/same.md",
+        content: "legacy global content",
+        snippet: "legacy global",
+        vector: [1, 0],
+      });
+      await writeFile(
+        path.join(dbPath, "memories.msp"),
+        await persist(legacyDb, "json") as string,
+        "utf-8",
+      );
+
+      const backend = new OramaBackend({
+        dbPath,
+        collection: "other",
+        embedHelper: fakeEmbedHelper(),
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).available = true;
+
+      const results = await backend.searchGlobal("legacy global", 5);
+      assert.equal(results[0]?.docid, "same");
+
+      const migrated = await restore(
+        "json",
+        await readFile(path.join(dbPath, "memories.msp"), "utf-8"),
+      );
+      const migratedResults = await search(migrated, { term: "", limit: 10 });
+      assert.equal(migratedResults.hits[0]?.document.vectorProvider, "");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("OramaBackend aborts legacy vectorProvider migration without persisting partial copies", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-migrate-fail-"));

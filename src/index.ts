@@ -3701,13 +3701,13 @@ const pluginDefinition = {
                 )
               : 0;
           if (!orchestrator.config.transcriptEnabled || transcriptContent.length === 0) {
+            rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             if (processedExplicitNotes > 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
               rememberObservedInboundContentFingerprint(inboundContentFingerprint);
               if (inboundMessageKeys.length === 0) {
                 rememberPendingSparseInboundContentFingerprint(sparseInboundContentFingerprint);
               }
-              rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
             return;
           }
