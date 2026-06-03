@@ -766,6 +766,49 @@ test("scenario: message_received dedupes agent_end transcript when metadata capt
   );
 });
 
+test("scenario: message_received dedupes agent_end transcript when agent_end omits messageId", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      const content = "Remember the no-id agent_end dedupe handoff.";
+
+      await messageReceived(
+        {
+          content,
+          messageId: "msg-content-dedupe-1",
+        },
+        { sessionKey: "content-dedupe-session" },
+      );
+      await agentEnd(
+        {
+          success: true,
+          messages: [
+            {
+              role: "user",
+              content,
+            },
+            { role: "assistant", content: "I will keep the assistant reply." },
+          ],
+        },
+        { sessionKey: "content-dedupe-session" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal(
+        (transcriptText.match(/no-id agent_end dedupe handoff/g) ?? []).length,
+        1,
+      );
+      assert.match(transcriptText, /keep the assistant reply/);
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: message_received only dedupes after transcript append succeeds", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir, orchestrator }) => {

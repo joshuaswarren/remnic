@@ -291,21 +291,48 @@ export class OramaBackend implements SearchBackend {
       return;
     }
 
-    const texts = needsEmbed.map((h: any) => h.document.content as string);
-    const embedResult = await this.embedHelper.embedBatchWithProvider(texts);
+    let rowsToEmbed = needsEmbed;
+    let embedResult = await this.embedHelper.embedBatchWithProvider(
+      rowsToEmbed.map((h: any) => h.document.content as string),
+    );
     if (!embedResult) return;
+    if (
+      embeddingProviderIdentity &&
+      embedResult.providerIdentity !== embeddingProviderIdentity
+    ) {
+      const effectiveProviderIdentity = embedResult.providerIdentity;
+      const originalIds = new Set(rowsToEmbed.map((h: any) => h.id));
+      const effectiveNeedsEmbed = allHits.hits.filter((h: any) => {
+        const vector = this.normalizeStoredVector(h.document?.vector);
+        return (
+          h.document?.vectorProvider !== effectiveProviderIdentity ||
+          !this.isCompatibleStoredVector(vector)
+        );
+      });
+      const sameRows =
+        effectiveNeedsEmbed.length === rowsToEmbed.length &&
+        effectiveNeedsEmbed.every((h: any) => originalIds.has(h.id));
+      if (!sameRows) {
+        const effectiveTexts = effectiveNeedsEmbed.map((h: any) => h.document.content as string);
+        const effectiveEmbedResult = await this.embedHelper.embedBatchWithProvider(effectiveTexts);
+        if (effectiveEmbedResult) {
+          rowsToEmbed = effectiveNeedsEmbed;
+          embedResult = effectiveEmbedResult;
+        }
+      }
+    }
     const { vectors, providerIdentity } = embedResult;
 
     let allEmbedded = true;
-    for (let i = 0; i < needsEmbed.length; i++) {
+    for (let i = 0; i < rowsToEmbed.length; i++) {
       const vec = vectors[i];
       if (!this.isExpectedDimensionVector(vec)) {
         allEmbedded = false;
         continue;
       }
       // Orama update is remove+insert — must include all fields to avoid data loss
-      const doc = needsEmbed[i].document;
-      await oramaUpdate(db, needsEmbed[i].id, {
+      const doc = rowsToEmbed[i].document;
+      await oramaUpdate(db, rowsToEmbed[i].id, {
         id: doc.id,
         path: doc.path,
         content: doc.content,

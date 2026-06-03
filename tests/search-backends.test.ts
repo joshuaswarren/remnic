@@ -1115,7 +1115,7 @@ describe("embedded backend provider identity", () => {
     }
   });
 
-  it("LanceDbBackend rechecks all rows before caching fallback provider compatibility", async () => {
+  it("LanceDbBackend re-embeds current-provider rows when embedding falls back", async () => {
     const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-fallback-cache-"));
     try {
@@ -1133,6 +1133,7 @@ describe("embedded backend provider identity", () => {
           vectorProvider: "",
         },
       ];
+      let embedCalls = 0;
       const updateCalls: Array<Record<string, unknown>> = [];
       const table = {
         query: () => ({
@@ -1156,10 +1157,13 @@ describe("embedded backend provider identity", () => {
           ...fakeEmbedHelper(),
           isAvailable: () => true,
           getProviderIdentity: () => "host:openclaw-memory",
-          embedBatchWithProvider: async () => ({
-            vectors: [[0, 1]],
-            providerIdentity: "openai:text-embedding-3-small",
-          }),
+          embedBatchWithProvider: async (texts: string[]) => {
+            embedCalls += 1;
+            return {
+              vectors: texts.map((_, index) => [index + 1, 1]),
+              providerIdentity: "openai:text-embedding-3-small",
+            };
+          },
         },
         memoryDir: tempDir,
         embeddingDimension: 2,
@@ -1168,14 +1172,15 @@ describe("embedded backend provider identity", () => {
 
       await backend.embedCollection("memories");
 
-      assert.equal(updateCalls.length, 1);
+      assert.equal(embedCalls, 2);
+      assert.equal(updateCalls.length, 2);
       assert.deepEqual(rows.map((row) => row.vectorProvider), [
-        "host:openclaw-memory",
+        "openai:text-embedding-3-small",
         "openai:text-embedding-3-small",
       ]);
       assert.deepEqual((backend as any).vectorProviderCompatibility.get(table), {
         providerIdentity: "openai:text-embedding-3-small",
-        compatible: false,
+        compatible: true,
       });
     } finally {
       await rm(tempDir, { recursive: true, force: true });
@@ -1372,6 +1377,87 @@ describe("embedded backend provider identity", () => {
       assert.equal(embedCalls, 1);
       assert.deepEqual(document?.vector, [0, 1]);
       assert.equal(document?.vectorProvider, "host:openclaw-memory");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("OramaBackend re-embeds current-provider rows when embedding falls back", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-fallback-converge-"));
+    try {
+      const db = {};
+      const rows = [
+        {
+          id: "host-row",
+          path: "facts/host.md",
+          content: "Already embedded by the host.",
+          snippet: "host",
+          vector: [1, 0],
+          vectorProvider: "host:openclaw-memory",
+        },
+        {
+          id: "fallback-row",
+          path: "facts/fallback.md",
+          content: "Needs fallback embedding.",
+          snippet: "fallback",
+          vector: [0, 0],
+          vectorProvider: "",
+        },
+      ];
+      let embedCalls = 0;
+      const updateCalls: Array<{ id: string; payload: Record<string, unknown> }> = [];
+
+      const backend = new OramaBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedBatchWithProvider: async (texts: string[]) => {
+            embedCalls += 1;
+            return {
+              vectors: texts.map((_, index) => [index + 1, 1]),
+              providerIdentity: "openai:text-embedding-3-small",
+            };
+          },
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).ensureDbForCollection = async () => db;
+      (backend as any).persistDbForCollection = async () => {};
+      (backend as any).oramaModule = {
+        count: async () => rows.length,
+        search: async () => ({
+          hits: rows.map((row) => ({
+            id: row.id,
+            document: { ...row },
+          })),
+        }),
+        update: async (_db: unknown, id: string, payload: Record<string, unknown>) => {
+          updateCalls.push({ id, payload });
+          const row = rows.find((entry) => entry.id === id);
+          if (row) Object.assign(row, payload);
+        },
+      };
+
+      await backend.embedCollection("memories");
+
+      assert.equal(embedCalls, 2);
+      assert.deepEqual(updateCalls.map((call) => call.id).sort(), [
+        "fallback-row",
+        "host-row",
+      ]);
+      assert.deepEqual(rows.map((row) => row.vectorProvider), [
+        "openai:text-embedding-3-small",
+        "openai:text-embedding-3-small",
+      ]);
+      assert.deepEqual((backend as any).vectorProviderCompatibility.get(db), {
+        providerIdentity: "openai:text-embedding-3-small",
+        compatible: true,
+      });
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

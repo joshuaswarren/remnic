@@ -243,19 +243,43 @@ export class LanceDbBackend implements SearchBackend {
         return;
       }
 
-      const texts = needsEmbed.map((row: any) => row.content as string);
-      const embedResult = await this.embedHelper.embedBatchWithProvider(texts);
+      let rowsToEmbed = needsEmbed;
+      let embedResult = await this.embedHelper.embedBatchWithProvider(
+        rowsToEmbed.map((row: any) => row.content as string),
+      );
       if (!embedResult) return;
+      if (
+        embeddingProviderIdentity &&
+        embedResult.providerIdentity !== embeddingProviderIdentity
+      ) {
+        const effectiveProviderIdentity = embedResult.providerIdentity;
+        const originalDocids = new Set(rowsToEmbed.map((row: any) => row.docid));
+        const effectiveNeedsEmbed = allRows.filter((row: any) => (
+          row.vectorProvider !== effectiveProviderIdentity ||
+          !this.isCompatibleStoredVector(row.vector)
+        ));
+        const sameRows =
+          effectiveNeedsEmbed.length === rowsToEmbed.length &&
+          effectiveNeedsEmbed.every((row: any) => originalDocids.has(row.docid));
+        if (!sameRows) {
+          const effectiveTexts = effectiveNeedsEmbed.map((row: any) => row.content as string);
+          const effectiveEmbedResult = await this.embedHelper.embedBatchWithProvider(effectiveTexts);
+          if (effectiveEmbedResult) {
+            rowsToEmbed = effectiveNeedsEmbed;
+            embedResult = effectiveEmbedResult;
+          }
+        }
+      }
       const { vectors, providerIdentity } = embedResult;
 
       let allEmbedded = true;
-      for (let i = 0; i < needsEmbed.length; i++) {
+      for (let i = 0; i < rowsToEmbed.length; i++) {
         const vec = vectors[i];
         if (!this.isExpectedDimensionVector(vec)) {
           allEmbedded = false;
           continue;
         }
-        const docid = needsEmbed[i].docid;
+        const docid = rowsToEmbed[i].docid;
         await table.update({
           where: `docid = '${docid.replace(/'/g, "''")}'`,
           values: { vector: vec, vectorProvider: providerIdentity },

@@ -1599,6 +1599,8 @@ const pluginDefinition = {
     const codexMessageCountByBufferKey = new Map<string, number>();
     const observedInboundMessageIds = new Set<string>();
     const observedInboundMessageIdOrder: string[] = [];
+    const observedInboundContentFingerprints = new Set<string>();
+    const observedInboundContentFingerprintOrder: string[] = [];
     const inboundReplyMetadataByMessageKey = new Map<string, OpenClawTranscriptMetadata>();
     const inboundReplyMetadataKeyOrder: string[] = [];
     const observedInlineExplicitCaptureKeys = new Set<string>();
@@ -1622,6 +1624,23 @@ const pluginDefinition = {
     function rememberObservedInboundMessageKeys(messageKeys: string[]): void {
       for (const messageKey of messageKeys) {
         rememberObservedInboundMessageId(messageKey);
+      }
+    }
+
+    function rememberObservedInboundContentFingerprint(
+      contentFingerprint: string | null,
+    ): void {
+      if (!contentFingerprint) return;
+      if (!observedInboundContentFingerprints.has(contentFingerprint)) {
+        observedInboundContentFingerprints.add(contentFingerprint);
+        observedInboundContentFingerprintOrder.push(contentFingerprint);
+      }
+      while (
+        observedInboundContentFingerprintOrder.length >
+        MAX_OBSERVED_INBOUND_MESSAGE_IDS
+      ) {
+        const expired = observedInboundContentFingerprintOrder.shift();
+        if (expired) observedInboundContentFingerprints.delete(expired);
       }
     }
 
@@ -3616,6 +3635,10 @@ const pluginDefinition = {
             inlineCaptureEnabled && hasInlineExplicitCaptureMarkup(cleaned)
               ? stripInlineExplicitCaptureNotes(cleaned)
               : cleaned;
+          const inboundContentFingerprint = buildOpenClawInboundContentFingerprint(
+            transcriptContent,
+            sessionKey,
+          );
           const processedExplicitNotes =
             explicitNotes.length > 0
               ? await processInlineExplicitCaptureNotes(
@@ -3626,6 +3649,7 @@ const pluginDefinition = {
           if (transcriptContent.length === 0) {
             if (inboundMessageKey && processedExplicitNotes > 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
+              rememberObservedInboundContentFingerprint(inboundContentFingerprint);
               rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
             return;
@@ -3641,6 +3665,7 @@ const pluginDefinition = {
             });
             if (inboundMessageKey) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
+              rememberObservedInboundContentFingerprint(inboundContentFingerprint);
               rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
           } catch (err) {
@@ -3804,8 +3829,12 @@ const pluginDefinition = {
             const messageDedupeKey = messageDedupeKeys[0];
             const transcriptAlreadyCaptured =
               role === "user" &&
-              messageDedupeKeys.length > 0 &&
-              messageDedupeKeys.some((key) => observedInboundMessageIds.has(key));
+              ((messageDedupeKeys.length > 0 &&
+                messageDedupeKeys.some((key) => observedInboundMessageIds.has(key))) ||
+                (messageDedupeKeys.length === 0 &&
+                  observedInboundContentFingerprints.has(
+                    buildOpenClawInboundContentFingerprint(stripped, sessionKey) ?? "",
+                  )));
 
             await processInlineExplicitCaptureNotes(
               explicitNotes,
@@ -5455,6 +5484,19 @@ function getOpenClawMessageDedupeKeys(
   if (runScope) dedupeScopes.add(runScope);
   dedupeScopes.add("");
   return [...dedupeScopes].map((scope) => `${sessionPart}\u0000${scope}\u0000${messageId}`);
+}
+
+function buildOpenClawInboundContentFingerprint(
+  content: string,
+  sessionKey: string,
+): string | null {
+  const normalizedContent = content.trim();
+  if (!normalizedContent) return null;
+  const sessionPart = truncateMetadataValue(sessionKey || "default", 512);
+  const contentHash = createHash("sha256")
+    .update(normalizedContent)
+    .digest("hex");
+  return `${sessionPart}\u0000content\u0000${contentHash}`;
 }
 
 function withReplyExtractionHint(
