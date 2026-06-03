@@ -1099,7 +1099,7 @@ test("host embedding bridge retries provider creation after transient null resul
   }
 });
 
-test("passive slot registrations do not replace the active host embedding bridge", async () => {
+test("passive slot registrations unregister the active host embedding bridge", async () => {
   const saved = saveAndResetGlobals();
   const previousDisableMigration = disableRegisterMigrationForTest();
   const memoryDir = await mkdtemp(join(tmpdir(), "remnic-host-embedding-passive-"));
@@ -1190,11 +1190,7 @@ test("passive slot registrations do not replace the active host embedding bridge
     await passive.api._registeredStart?.();
     await passive.api._registeredStop?.();
 
-    assert.equal(
-      getHostEmbeddingProvider(memoryDir)?.model,
-      "memory:active-memory-provider/text-embedding-3-small",
-    );
-    assert.deepEqual(await getHostEmbeddingProvider(memoryDir)?.embed("input"), [1, 0]);
+    assert.equal(getHostEmbeddingProvider(memoryDir), undefined);
   } finally {
     Module._load = originalLoad;
     clearHostEmbeddingProvidersForTest?.();

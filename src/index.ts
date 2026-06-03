@@ -1192,7 +1192,17 @@ const pluginDefinition = {
     const orchestrator = existing?.recall ? existing : new Orchestrator(cfg);
     const isFirstRegistration = !(globalThis as any)[keys.REGISTERED_GUARD];
     (globalThis as any)[keys.REGISTERED_GUARD] = true;
-    if (!passiveMode) {
+    const unregisterExistingHostEmbeddingProvider = () => {
+      const unregisterHostEmbedding = (globalThis as any)[
+        keys.HOST_EMBEDDING_UNREGISTER
+      ] as (() => void) | undefined;
+      unregisterHostEmbedding?.();
+      delete (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER];
+      delete (globalThis as any)[keys.HOST_EMBEDDING_SIGNATURE];
+    };
+    if (passiveMode) {
+      unregisterExistingHostEmbeddingProvider();
+    } else {
       const hostEmbeddingSignature = openClawHostEmbeddingConfigSignature(
         cfg,
         api.config,
@@ -1205,12 +1215,7 @@ const pluginDefinition = {
         (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER] &&
         existingHostEmbeddingSignature !== hostEmbeddingSignature
       ) {
-        const unregisterHostEmbedding = (globalThis as any)[
-          keys.HOST_EMBEDDING_UNREGISTER
-        ] as (() => void) | undefined;
-        unregisterHostEmbedding?.();
-        delete (globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER];
-        delete (globalThis as any)[keys.HOST_EMBEDDING_SIGNATURE];
+        unregisterExistingHostEmbeddingProvider();
       }
       if (!(globalThis as any)[keys.HOST_EMBEDDING_UNREGISTER]) {
         const unregisterHostEmbedding = registerOpenClawHostEmbeddingProvider({
@@ -3589,7 +3594,6 @@ const pluginDefinition = {
           event: Record<string, unknown>,
           ctx: Record<string, unknown>,
         ) => {
-          if (!orchestrator.config.transcriptEnabled) return;
           if (
             cfg.heartbeat.enabled &&
             cfg.heartbeat.gateExtractionDuringHeartbeat &&
@@ -3646,7 +3650,7 @@ const pluginDefinition = {
                   inboundMessageKeys,
                 )
               : 0;
-          if (transcriptContent.length === 0) {
+          if (!orchestrator.config.transcriptEnabled || transcriptContent.length === 0) {
             if (inboundMessageKey && processedExplicitNotes > 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
               rememberObservedInboundContentFingerprint(inboundContentFingerprint);
@@ -3855,8 +3859,13 @@ const pluginDefinition = {
                 turnId: crypto.randomUUID(),
                 ...(messageMetadata ? { metadata: messageMetadata } : {}),
               });
-              if (role === "user" && messageDedupeKey) {
-                rememberObservedInboundMessageKeys(messageDedupeKeys);
+              if (role === "user") {
+                if (messageDedupeKey) {
+                  rememberObservedInboundMessageKeys(messageDedupeKeys);
+                }
+                rememberObservedInboundContentFingerprint(
+                  buildOpenClawInboundContentFingerprint(stripped, sessionKey),
+                );
               }
             }
 

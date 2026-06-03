@@ -550,6 +550,43 @@ test("scenario: message_received persists inline explicit captures without agent
   );
 });
 
+test("scenario: message_received persists inline explicit captures when transcripts are disabled", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+
+      await messageReceived(
+        {
+          content: [
+            "Remember the launch inbound note preference without transcript.",
+            "<memory_note>",
+            "content: The inbound launch note should persist when transcripts are disabled.",
+            "category: preference",
+            "</memory_note>",
+          ].join("\n"),
+          messageId: "msg-inline-transcript-disabled-1",
+        },
+        { sessionKey: "inline-transcript-disabled-session" },
+      );
+
+      const memoryText = readAllText(memoryDir);
+      assert.match(memoryText, /inbound launch note should persist when transcripts are disabled/);
+      assert.doesNotMatch(memoryText, /Remember the launch inbound note preference without transcript/);
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: false,
+      },
+    },
+  );
+});
+
 test("scenario: message_received inline captures are not duplicated by agent_end", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {
@@ -889,6 +926,41 @@ test("scenario: agent_end only dedupes after transcript append succeeds", async 
       const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
       assert.equal(
         (transcriptText.match(/agent_end retry transcript fallback/g) ?? []).length,
+        1,
+      );
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
+test("scenario: agent_end dedupes repeated user transcript content without messageId", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const agentEnd = registeredHook(capture, "agent_end");
+      const event = {
+        success: true,
+        messages: [
+          {
+            role: "user",
+            content: "Remember the idless repeated agent_end transcript.",
+          },
+          {
+            role: "assistant",
+            content: "Recorded.",
+          },
+        ],
+      };
+
+      await agentEnd(event, { sessionKey: "agent-end-idless-dedupe-session" });
+      await agentEnd(event, { sessionKey: "agent-end-idless-dedupe-session" });
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal(
+        (transcriptText.match(/idless repeated agent_end transcript/g) ?? []).length,
         1,
       );
     },
