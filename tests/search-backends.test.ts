@@ -1165,6 +1165,119 @@ describe("embedded backend provider identity", () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("OramaBackend re-embeds malformed current-provider vectors", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-reembed-"));
+    try {
+      const backend = new OramaBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedBatchWithProvider: async () => ({
+            vectors: [[0, 1]],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      const updateCalls: Array<{ id: string; payload: Record<string, unknown> }> = [];
+      (backend as any).db = {};
+      (backend as any).oramaModule = {
+        count: async () => 1,
+        search: async () => ({
+          hits: [
+            {
+              id: "internal-malformed",
+              document: {
+                id: "malformed",
+                path: "facts/malformed.md",
+                content: "Malformed vector should be embedded again.",
+                snippet: "Malformed vector",
+                vector: [1, 0, 0],
+                vectorProvider: "host:openclaw-memory",
+              },
+            },
+          ],
+        }),
+        update: async (_db: unknown, id: string, payload: Record<string, unknown>) => {
+          updateCalls.push({ id, payload });
+        },
+      };
+      (backend as any).persistModule = {
+        persist: async () => "{}",
+      };
+
+      await backend.embedCollection("memories");
+
+      assert.equal(updateCalls.length, 1);
+      assert.equal(updateCalls[0]?.id, "internal-malformed");
+      assert.deepEqual(updateCalls[0]?.payload.vector, [0, 1]);
+      assert.equal(updateCalls[0]?.payload.vectorProvider, "host:openclaw-memory");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("OramaBackend falls back to fulltext for incompatible stored vector dimensions", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { create, insert } = await import("@orama/orama");
+    const { persist } = await import("@orama/plugin-data-persistence");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-dim-fallback-"));
+    try {
+      const dbPath = path.join(tempDir, "db");
+      await mkdir(dbPath, { recursive: true });
+      const db = await create({
+        schema: {
+          id: "string",
+          path: "string",
+          content: "string",
+          snippet: "string",
+          vector: "vector[3]",
+          vectorProvider: "string",
+        },
+      });
+      await insert(db, {
+        id: "dimension-mismatch",
+        path: "facts/dimension-mismatch.md",
+        content: "The dimension mismatch memory must remain searchable.",
+        snippet: "dimension mismatch",
+        vector: [1, 0, 0],
+        vectorProvider: "host:openclaw-memory",
+      });
+      await writeFile(
+        path.join(dbPath, "memories.msp"),
+        await persist(db, "json") as string,
+        "utf-8",
+      );
+
+      const backend = new OramaBackend({
+        dbPath,
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedWithProvider: async () => ({
+            vector: [1, 0],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+
+      assert.equal(await backend.probe(), true);
+      const results = await backend.vectorSearch("dimension mismatch", "memories", 5);
+      assert.equal(results[0]?.docid, "dimension-mismatch");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 /** Minimal fake PluginConfig for factory routing tests. */

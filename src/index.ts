@@ -1538,6 +1538,12 @@ const pluginDefinition = {
       }
     }
 
+    function rememberObservedInboundMessageKeys(messageKeys: string[]): void {
+      for (const messageKey of messageKeys) {
+        rememberObservedInboundMessageId(messageKey);
+      }
+    }
+
     function rememberObservedInlineExplicitCaptureKey(noteKey: string): void {
       if (!observedInlineExplicitCaptureKeys.has(noteKey)) {
         observedInlineExplicitCaptureKeys.add(noteKey);
@@ -3463,9 +3469,10 @@ const pluginDefinition = {
             normalizeOptionalString(ctx.sessionKey) ??
             normalizeOptionalString(event.sessionKey) ??
             "default";
-          const inboundMessageKey = getOpenClawMessageDedupeKey(event, event, ctx, sessionKey);
-          if (inboundMessageKey) {
-            if (observedInboundMessageIds.has(inboundMessageKey)) return;
+          const inboundMessageKeys = getOpenClawMessageDedupeKeys(event, event, ctx, sessionKey);
+          const inboundMessageKey = inboundMessageKeys[0];
+          if (inboundMessageKeys.length > 0) {
+            if (inboundMessageKeys.some((key) => observedInboundMessageIds.has(key))) return;
           }
           const metadata = buildOpenClawMessageMetadata(event, event, ctx, cfg);
           const eventDate =
@@ -3495,7 +3502,7 @@ const pluginDefinition = {
               : 0;
           if (transcriptContent.length === 0) {
             if (inboundMessageKey && processedExplicitNotes > 0) {
-              rememberObservedInboundMessageId(inboundMessageKey);
+              rememberObservedInboundMessageKeys(inboundMessageKeys);
             }
             return;
           }
@@ -3509,7 +3516,7 @@ const pluginDefinition = {
               ...(metadata ? { metadata } : {}),
             });
             if (inboundMessageKey) {
-              rememberObservedInboundMessageId(inboundMessageKey);
+              rememberObservedInboundMessageKeys(inboundMessageKeys);
             }
           } catch (err) {
             log.debug(`message_received transcript append failed: ${err}`);
@@ -3664,11 +3671,12 @@ const pluginDefinition = {
                   openclawReplyMetadataCaptureEnabled: true,
                 })
               : messageMetadata;
-            const messageDedupeKey = getOpenClawMessageDedupeKey(msg, event, ctx, sessionKey);
+            const messageDedupeKeys = getOpenClawMessageDedupeKeys(msg, event, ctx, sessionKey);
+            const messageDedupeKey = messageDedupeKeys[0];
             const transcriptAlreadyCaptured =
               role === "user" &&
-              !!messageDedupeKey &&
-              observedInboundMessageIds.has(messageDedupeKey);
+              messageDedupeKeys.length > 0 &&
+              messageDedupeKeys.some((key) => observedInboundMessageIds.has(key));
 
             await processInlineExplicitCaptureNotes(
               explicitNotes,
@@ -3690,7 +3698,7 @@ const pluginDefinition = {
                 ...(messageMetadata ? { metadata: messageMetadata } : {}),
               });
               if (role === "user" && messageDedupeKey) {
-                rememberObservedInboundMessageId(messageDedupeKey);
+                rememberObservedInboundMessageKeys(messageDedupeKeys);
               }
             }
 
@@ -5284,27 +5292,39 @@ function getOpenClawMessageId(
   return messageId ? truncateMetadataValue(messageId, 512) : undefined;
 }
 
-function getOpenClawMessageDedupeKey(
+function getOpenClawMessageDedupeKeys(
   message: Record<string, unknown>,
   event: Record<string, unknown>,
   ctx: Record<string, unknown>,
   sessionKey: string,
-): string | undefined {
+): string[] {
   const messageId = getOpenClawMessageId(message, event, ctx);
-  if (!messageId) return undefined;
+  if (!messageId) return [];
   const sessionScope =
     normalizeOptionalString(message.sessionKey) ??
     normalizeOptionalString(event.sessionKey) ??
     normalizeOptionalString(ctx.sessionKey) ??
     sessionKey;
-  const threadScope =
+  const threadScope = truncateMetadataValue(
     normalizeThreadId(message.threadId) ??
     normalizeThreadId(event.threadId) ??
     normalizeThreadId(ctx.threadId) ??
+    "",
+    512,
+  );
+  const runScope = truncateMetadataValue(
+    normalizeOptionalString(message.runId) ??
     normalizeOptionalString(event.runId) ??
     normalizeOptionalString(ctx.runId) ??
-    "";
-  return `${truncateMetadataValue(sessionScope, 512)}\u0000${truncateMetadataValue(threadScope, 512)}\u0000${messageId}`;
+    "",
+    512,
+  );
+  const sessionPart = truncateMetadataValue(sessionScope, 512);
+  const dedupeScopes = new Set<string>();
+  if (threadScope) dedupeScopes.add(threadScope);
+  if (runScope) dedupeScopes.add(runScope);
+  dedupeScopes.add("");
+  return [...dedupeScopes].map((scope) => `${sessionPart}\u0000${scope}\u0000${messageId}`);
 }
 
 function withReplyExtractionHint(

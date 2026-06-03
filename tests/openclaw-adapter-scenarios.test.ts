@@ -836,6 +836,50 @@ test("scenario: inbound message dedupe is scoped per session", async () => {
   );
 });
 
+test("scenario: inbound message dedupe matches sparse thread and run metadata", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      const content = "Remember the sparse OpenClaw dedupe handoff.";
+
+      await messageReceived(
+        {
+          content,
+          messageId: "sparse-openclaw-msg-id",
+          threadId: "thread-only-on-message-received",
+        },
+        { sessionKey: "sparse-dedupe-session" },
+      );
+      await agentEnd(
+        {
+          success: true,
+          runId: "run-only-on-agent-end",
+          messages: [
+            {
+              role: "user",
+              content,
+              messageId: "sparse-openclaw-msg-id",
+            },
+          ],
+        },
+        { sessionKey: "sparse-dedupe-session" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal(
+        (transcriptText.match(/sparse OpenClaw dedupe handoff/g) ?? []).length,
+        1,
+      );
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: agent_end does not dedupe assistant turns with inbound user message ids", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {

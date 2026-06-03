@@ -268,11 +268,14 @@ export class OramaBackend implements SearchBackend {
     const embeddingProviderIdentity = this.embedHelper.getProviderIdentity();
     // Find docs without vectors or with vectors from a different provider.
     const allHits = await oramaSearch(db, { term: "", limit: existingCount + 100 });
-    const needsEmbed = allHits.hits.filter((h: any) =>
-      (embeddingProviderIdentity && h.document.vectorProvider !== embeddingProviderIdentity) ||
-      !h.document.vector ||
-      h.document.vector.length === 0
-    );
+    const needsEmbed = allHits.hits.filter((h: any) => {
+      const vector = this.normalizeStoredVector(h.document?.vector);
+      return (
+        (embeddingProviderIdentity &&
+          h.document?.vectorProvider !== embeddingProviderIdentity) ||
+        !this.isExpectedDimensionVector(vector)
+      );
+    });
 
     if (needsEmbed.length === 0) {
       this.rememberVectorProviderCompatibility(db, embeddingProviderIdentity, true);
@@ -542,13 +545,16 @@ export class OramaBackend implements SearchBackend {
       const allHits = await oramaSearch(db, {
         term: "",
         limit: existingCount + 100,
-        properties: ["vectorProvider"],
+        properties: ["vectorProvider", "vector"],
       });
       let compatible = (allHits.hits ?? []).length > 0;
       for (const hit of allHits.hits ?? []) {
         throwIfSearchAborted(execution, "OramaBackend vector provider check aborted");
         const doc = hit.document ?? {};
-        if (doc.vectorProvider !== providerIdentity) {
+        if (
+          doc.vectorProvider !== providerIdentity ||
+          !this.isExpectedDimensionVector(this.normalizeStoredVector(doc.vector))
+        ) {
           compatible = false;
           break;
         }
