@@ -1606,6 +1606,8 @@ const pluginDefinition = {
     const observedInboundMessageIdOrder: string[] = [];
     const observedInboundContentFingerprints = new Set<string>();
     const observedInboundContentFingerprintOrder: string[] = [];
+    const pendingSparseInboundContentFingerprints = new Set<string>();
+    const pendingSparseInboundContentFingerprintOrder: string[] = [];
     const inboundReplyMetadataByMessageKey = new Map<string, OpenClawTranscriptMetadata>();
     const inboundReplyMetadataKeyOrder: string[] = [];
     const observedInlineExplicitCaptureKeys = new Set<string>();
@@ -1647,6 +1649,35 @@ const pluginDefinition = {
         const expired = observedInboundContentFingerprintOrder.shift();
         if (expired) observedInboundContentFingerprints.delete(expired);
       }
+    }
+
+    function rememberPendingSparseInboundContentFingerprint(
+      contentFingerprint: string | null,
+    ): void {
+      if (!contentFingerprint) return;
+      if (!pendingSparseInboundContentFingerprints.has(contentFingerprint)) {
+        pendingSparseInboundContentFingerprints.add(contentFingerprint);
+        pendingSparseInboundContentFingerprintOrder.push(contentFingerprint);
+      }
+      while (
+        pendingSparseInboundContentFingerprintOrder.length >
+        MAX_OBSERVED_INBOUND_MESSAGE_IDS
+      ) {
+        const expired = pendingSparseInboundContentFingerprintOrder.shift();
+        if (expired) pendingSparseInboundContentFingerprints.delete(expired);
+      }
+    }
+
+    function consumePendingSparseInboundContentFingerprint(
+      contentFingerprint: string | null,
+    ): boolean {
+      if (!contentFingerprint || !pendingSparseInboundContentFingerprints.has(contentFingerprint)) {
+        return false;
+      }
+      pendingSparseInboundContentFingerprints.delete(contentFingerprint);
+      const index = pendingSparseInboundContentFingerprintOrder.indexOf(contentFingerprint);
+      if (index >= 0) pendingSparseInboundContentFingerprintOrder.splice(index, 1);
+      return true;
     }
 
     function rememberInboundReplyMetadata(
@@ -3639,10 +3670,16 @@ const pluginDefinition = {
               : cleaned;
           const inboundContentFingerprint = buildOpenClawInboundContentFingerprint(
             transcriptContent,
+            event,
+            event,
+            ctx,
+            sessionKey,
+          );
+          const sparseInboundContentFingerprint = buildOpenClawSparseInboundContentFingerprint(
+            transcriptContent,
             sessionKey,
           );
           if (
-            inboundMessageKeys.length === 0 &&
             inboundContentFingerprint &&
             observedInboundContentFingerprints.has(inboundContentFingerprint)
           ) {
@@ -3653,6 +3690,8 @@ const pluginDefinition = {
               ? inboundMessageKeys
               : inboundContentFingerprint
                 ? [inboundContentFingerprint]
+                : sparseInboundContentFingerprint
+                  ? [sparseInboundContentFingerprint]
                 : [];
           const processedExplicitNotes =
             explicitNotes.length > 0
@@ -3665,6 +3704,9 @@ const pluginDefinition = {
             if (processedExplicitNotes > 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
               rememberObservedInboundContentFingerprint(inboundContentFingerprint);
+              if (inboundMessageKeys.length === 0) {
+                rememberPendingSparseInboundContentFingerprint(sparseInboundContentFingerprint);
+              }
               rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
             return;
@@ -3683,6 +3725,9 @@ const pluginDefinition = {
               rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
             rememberObservedInboundContentFingerprint(inboundContentFingerprint);
+            if (inboundMessageKeys.length === 0) {
+              rememberPendingSparseInboundContentFingerprint(sparseInboundContentFingerprint);
+            }
           } catch (err) {
             log.debug(`message_received transcript append failed: ${err}`);
           }
@@ -3832,7 +3877,15 @@ const pluginDefinition = {
               cfg,
             );
             const messageDedupeKeys = getOpenClawMessageDedupeKeys(msg, event, ctx, sessionKey);
-            const messageContentFingerprint = buildOpenClawInboundContentFingerprint(stripped, sessionKey);
+            const messageContentFingerprint = buildOpenClawInboundContentFingerprint(
+              stripped,
+              msg,
+              event,
+              ctx,
+              sessionKey,
+            );
+            const sparseMessageContentFingerprint =
+              buildOpenClawSparseInboundContentFingerprint(stripped, sessionKey);
             const cachedReplyHintMetadata =
               role === "user" && cfg.openclawReplyMetadataExtractionHintsEnabled
                 ? getInboundReplyMetadata(messageDedupeKeys)
@@ -3843,18 +3896,24 @@ const pluginDefinition = {
                 })
               : messageMetadata;
             const messageDedupeKey = messageDedupeKeys[0];
+            const sparseInboundAlreadyCaptured =
+              role === "user" &&
+              messageDedupeKeys.length === 0 &&
+              consumePendingSparseInboundContentFingerprint(sparseMessageContentFingerprint);
             const transcriptAlreadyCaptured =
               role === "user" &&
               ((messageDedupeKeys.length > 0 &&
                 messageDedupeKeys.some((key) => observedInboundMessageIds.has(key))) ||
-                (messageDedupeKeys.length === 0 &&
-                  messageContentFingerprint !== null &&
+                sparseInboundAlreadyCaptured ||
+                (messageContentFingerprint !== null &&
                   observedInboundContentFingerprints.has(messageContentFingerprint)));
             const inlineCaptureDedupeKeys =
               messageDedupeKeys.length > 0
                 ? messageDedupeKeys
                 : messageContentFingerprint
                   ? [messageContentFingerprint]
+                  : sparseMessageContentFingerprint
+                    ? [sparseMessageContentFingerprint]
                   : [];
 
             await processInlineExplicitCaptureNotes(
@@ -5512,6 +5571,60 @@ function getOpenClawMessageDedupeKeys(
 
 function buildOpenClawInboundContentFingerprint(
   content: string,
+  message: Record<string, unknown>,
+  event: Record<string, unknown>,
+  ctx: Record<string, unknown>,
+  sessionKey: string,
+): string | null {
+  const normalizedContent = content.trim();
+  if (!normalizedContent) return null;
+  const sessionPart = truncateMetadataValue(sessionKey || "default", 512);
+  const runScope = truncateMetadataValue(
+    normalizeOptionalString(message.runId) ??
+      normalizeOptionalString(event.runId) ??
+      normalizeOptionalString(ctx.runId) ??
+      "",
+    512,
+  );
+  const rawTimestamp =
+    normalizeOptionalString(message.timestamp) ??
+    normalizeOptionalString(event.timestamp) ??
+    normalizeOptionalString(ctx.timestamp) ??
+    (typeof message.timestamp === "number" && Number.isFinite(message.timestamp)
+      ? String(message.timestamp)
+      : undefined) ??
+    (typeof event.timestamp === "number" && Number.isFinite(event.timestamp)
+      ? String(event.timestamp)
+      : undefined) ??
+    (typeof ctx.timestamp === "number" && Number.isFinite(ctx.timestamp)
+      ? String(ctx.timestamp)
+      : undefined);
+  const timestampScope = rawTimestamp
+    ? truncateMetadataValue(rawTimestamp, 512)
+    : "";
+  if (!runScope && !timestampScope) return null;
+  const threadScope = truncateMetadataValue(
+    normalizeThreadId(message.threadId) ??
+      normalizeThreadId(event.threadId) ??
+      normalizeThreadId(ctx.threadId) ??
+      "",
+    512,
+  );
+  const contentHash = createHash("sha256")
+    .update(normalizedContent)
+    .digest("hex");
+  return [
+    sessionPart,
+    "content",
+    threadScope,
+    runScope,
+    timestampScope,
+    contentHash,
+  ].join("\u0000");
+}
+
+function buildOpenClawSparseInboundContentFingerprint(
+  content: string,
   sessionKey: string,
 ): string | null {
   const normalizedContent = content.trim();
@@ -5520,7 +5633,7 @@ function buildOpenClawInboundContentFingerprint(
   const contentHash = createHash("sha256")
     .update(normalizedContent)
     .digest("hex");
-  return `${sessionPart}\u0000content\u0000${contentHash}`;
+  return `${sessionPart}\u0000sparse-content\u0000${contentHash}`;
 }
 
 function withReplyExtractionHint(

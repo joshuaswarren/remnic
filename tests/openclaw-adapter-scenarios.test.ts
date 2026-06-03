@@ -848,17 +848,22 @@ test("scenario: message_received dedupes agent_end transcript when agent_end omi
       const messageReceived = registeredHook(capture, "message_received");
       const agentEnd = registeredHook(capture, "agent_end");
       const content = "Remember the no-id agent_end dedupe handoff.";
+      const sharedTimestamp = 1_780_000_100_000;
 
       await messageReceived(
         {
           content,
           messageId: "msg-content-dedupe-1",
+          runId: "content-dedupe-run",
+          timestamp: sharedTimestamp,
         },
         { sessionKey: "content-dedupe-session" },
       );
       await agentEnd(
         {
           success: true,
+          runId: "content-dedupe-run",
+          timestamp: sharedTimestamp,
           messages: [
             {
               role: "user",
@@ -976,7 +981,7 @@ test("scenario: agent_end only dedupes after transcript append succeeds", async 
   );
 });
 
-test("scenario: agent_end dedupes repeated user transcript content without messageId", async () => {
+test("scenario: agent_end records repeated user transcript content without messageId", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {
       const agentEnd = registeredHook(capture, "agent_end");
@@ -1000,6 +1005,46 @@ test("scenario: agent_end dedupes repeated user transcript content without messa
       const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
       assert.equal(
         (transcriptText.match(/idless repeated agent_end transcript/g) ?? []).length,
+        2,
+      );
+    },
+    {
+      pluginConfig: {
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
+test("scenario: message_received dedupes same delivery content with changed messageId", async () => {
+  await withScenarioRegistration(
+    async ({ capture, memoryDir }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const content = "Remember the same delivery changed id inbound message.";
+      const sharedTimestamp = 1_780_000_000_000;
+
+      await messageReceived(
+        {
+          content,
+          messageId: "same-delivery-id-1",
+          runId: "same-delivery-run",
+          timestamp: sharedTimestamp,
+        },
+        { sessionKey: "same-delivery-inbound-session" },
+      );
+      await messageReceived(
+        {
+          content,
+          messageId: "same-delivery-id-2",
+          runId: "same-delivery-run",
+          timestamp: sharedTimestamp,
+        },
+        { sessionKey: "same-delivery-inbound-session" },
+      );
+
+      const transcriptText = readAllText(path.join(memoryDir, "transcripts"));
+      assert.equal(
+        (transcriptText.match(/same delivery changed id inbound message/g) ?? []).length,
         1,
       );
     },
