@@ -286,7 +286,7 @@ export class LanceDbBackend implements SearchBackend {
         });
       }
       if (allEmbedded) {
-        await this.tableHasCompatibleVectors(table, providerIdentity);
+        this.rememberVectorProviderCompatibility(table, providerIdentity, true);
       } else {
         this.rememberVectorProviderCompatibility(table, providerIdentity, false);
       }

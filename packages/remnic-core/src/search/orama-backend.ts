@@ -215,6 +215,7 @@ export class OramaBackend implements SearchBackend {
             payload.vector = existing.vector;
             payload.vectorProvider = existing.vectorProvider ?? "";
           } else {
+            payload.vector = this.zeroVector();
             payload.vectorProvider = "";
             allRowsCompatible = false;
           }
@@ -344,7 +345,7 @@ export class OramaBackend implements SearchBackend {
 
     await this.persistDbForCollection(db, collection);
     if (allEmbedded) {
-      await this.dbHasCompatibleVectors(db, providerIdentity);
+      this.rememberVectorProviderCompatibility(db, providerIdentity, true);
     } else {
       this.rememberVectorProviderCompatibility(db, providerIdentity, false);
     }

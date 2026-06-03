@@ -1124,6 +1124,10 @@ describe("embedded backend provider identity", () => {
         embeddingDimension: 2,
       });
       (backend as any).table = table;
+      (backend as any).vectorProviderCompatibility.set(table, {
+        providerIdentity: "openai:text-embedding-3-small",
+        compatible: false,
+      });
 
       await backend.embedCollection("memories");
 
@@ -1377,6 +1381,10 @@ describe("embedded backend provider identity", () => {
       });
       const hits = await search((backend as any).db, { term: "", limit: 1 });
       assert.equal(hits.hits[0]?.document.vectorProvider, "");
+      const internalId = (backend as any).db.internalDocumentIDStore.idToInternalId.get("same");
+      const vectorEntry =
+        (backend as any).db.data.index.vectorIndexes.vector.node.vectors.get(internalId);
+      assert.deepEqual(Array.from(vectorEntry[1]), [0, 0]);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -1510,6 +1518,10 @@ describe("embedded backend provider identity", () => {
           if (row) Object.assign(row, payload);
         },
       };
+      (backend as any).vectorProviderCompatibility.set(db, {
+        providerIdentity: "openai:text-embedding-3-small",
+        compatible: false,
+      });
 
       await backend.embedCollection("memories");
 
