@@ -869,6 +869,91 @@ test("host embedding bridge re-registers when host embedding config changes", as
   }
 });
 
+test("host embedding bridge re-registers when OpenClaw host config changes", async () => {
+  const saved = saveAndResetGlobals();
+  const previousDisableMigration = disableRegisterMigrationForTest();
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-host-embedding-openclaw-config-"));
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const Module = require("node:module") as {
+    _load: (
+      request: string,
+      parent?: unknown,
+      isMain?: boolean,
+    ) => unknown;
+  };
+  const originalLoad = Module._load;
+  let first: ReturnType<typeof buildApi> | undefined;
+  let second: ReturnType<typeof buildApi> | undefined;
+  let clearHostEmbeddingProvidersForTest: (() => void) | undefined;
+  try {
+    Module._load = function patchedLoad(
+      request: string,
+      parent?: unknown,
+      isMain?: boolean,
+    ) {
+      if (request === "openclaw/plugin-sdk/memory-core-host-engine-embeddings") {
+        return {
+          listMemoryEmbeddingProviders: () => [
+            {
+              id: "config-aware-memory-provider",
+              create: async (options: { config?: { embeddingMarker?: string } }) => {
+                const marker = options.config?.embeddingMarker;
+                return {
+                  provider: {
+                    embed: async () => (marker === "second" ? [0, 1] : [1, 0]),
+                  },
+                };
+              },
+            },
+          ],
+        };
+      }
+      return originalLoad.call(this, request, parent, isMain);
+    };
+
+    const { default: plugin } = await import("../src/index.js");
+    const hostEmbeddingProviders = await import("../src/host-embedding-provider.js");
+    clearHostEmbeddingProvidersForTest =
+      hostEmbeddingProviders.clearHostEmbeddingProvidersForTest;
+    const { getHostEmbeddingProvider } = hostEmbeddingProviders;
+
+    first = buildApi("host-embedding-openclaw-config-first");
+    first.api.config = { embeddingMarker: "first" };
+    first.api.pluginConfig = {
+      ...BASE_TEST_PLUGIN_CONFIG,
+      memoryDir,
+      hostEmbeddingProviderEnabled: true,
+      hostEmbeddingProviderId: "config-aware-memory-provider",
+      hostEmbeddingProviderModel: "model-a",
+    } as any;
+
+    plugin.register(first.api as any);
+    assert.deepEqual(await getHostEmbeddingProvider(memoryDir)?.embed("input"), [1, 0]);
+
+    second = buildApi("host-embedding-openclaw-config-second");
+    second.api.config = { embeddingMarker: "second" };
+    second.api.pluginConfig = {
+      ...BASE_TEST_PLUGIN_CONFIG,
+      memoryDir,
+      hostEmbeddingProviderEnabled: true,
+      hostEmbeddingProviderId: "config-aware-memory-provider",
+      hostEmbeddingProviderModel: "model-a",
+    } as any;
+
+    plugin.register(second.api as any);
+    assert.deepEqual(await getHostEmbeddingProvider(memoryDir)?.embed("input"), [0, 1]);
+  } finally {
+    Module._load = originalLoad;
+    clearHostEmbeddingProvidersForTest?.();
+    await safeStop(first?.api, second?.api);
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    restoreGlobals(saved);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("stop-during-init without takeover: REGISTERED_GUARD stays set — original CLI registration persists", async () => {
   // Scenario: one registry starts init, stop() fires before initialize() resolves
   // (no secondary registry is waiting to take over), then a brand-new register()

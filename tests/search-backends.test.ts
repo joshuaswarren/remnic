@@ -1225,6 +1225,61 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("OramaBackend preserves valid vectors when provider identity is unavailable", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-no-provider-preserve-"));
+    try {
+      await mkdir(path.join(tempDir, "facts"), { recursive: true });
+      await writeFile(
+        path.join(tempDir, "facts", "same.md"),
+        "---\nid: same\n---\nThe same launch fact should keep an existing vector.",
+        "utf-8",
+      );
+      const backend = new OramaBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: fakeEmbedHelper(),
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      const updateCalls: Array<{ id: string; payload: Record<string, unknown> }> = [];
+      (backend as any).db = {};
+      (backend as any).oramaModule = {
+        count: async () => 1,
+        search: async () => ({
+          hits: [
+            {
+              id: "same",
+              document: {
+                id: "same",
+                path: "facts/same.md",
+                content: "Old content with a vector.",
+                snippet: "Old content",
+                vector: [1, 0],
+                vectorProvider: "host:older-openclaw-memory",
+              },
+            },
+          ],
+        }),
+        update: async (_db: unknown, id: string, payload: Record<string, unknown>) => {
+          updateCalls.push({ id, payload });
+        },
+      };
+      (backend as any).persistModule = {
+        persist: async () => "{}",
+      };
+
+      await backend.updateCollection("memories");
+
+      assert.equal(updateCalls.length, 1);
+      assert.equal(updateCalls[0]?.id, "same");
+      assert.deepEqual(updateCalls[0]?.payload.vector, [1, 0]);
+      assert.equal(updateCalls[0]?.payload.vectorProvider, "host:older-openclaw-memory");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("OramaBackend falls back to fulltext for incompatible stored vector dimensions", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
     const { create, insert } = await import("@orama/orama");

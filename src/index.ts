@@ -886,19 +886,50 @@ function registerOpenClawHostEmbeddingProvider(params: {
   return unregister;
 }
 
+function stableOpenClawConfigSignature(value: unknown, seen = new WeakSet<object>()): string {
+  if (value === null) return "null";
+  const valueType = typeof value;
+  if (valueType === "string" || valueType === "number" || valueType === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (valueType === "bigint") return JSON.stringify(String(value));
+  if (valueType === "undefined" || valueType === "function" || valueType === "symbol") {
+    return JSON.stringify(`[${valueType}]`);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableOpenClawConfigSignature(entry, seen)).join(",")}]`;
+  }
+  if (value && valueType === "object") {
+    if (seen.has(value)) return JSON.stringify("[Circular]");
+    seen.add(value);
+    const entries = Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) =>
+        `${JSON.stringify(key)}:${stableOpenClawConfigSignature(
+          (value as Record<string, unknown>)[key],
+          seen,
+        )}`
+      );
+    seen.delete(value);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(String(value));
+}
+
 function openClawHostEmbeddingConfigSignature(cfg: {
   memoryDir: string;
   hostEmbeddingProviderEnabled: boolean;
   hostEmbeddingProviderId?: string;
   hostEmbeddingProviderModel?: string;
   embeddingFallbackModel?: string;
-}): string {
+}, apiConfig: unknown): string {
   return JSON.stringify({
     enabled: cfg.hostEmbeddingProviderEnabled !== false,
     memoryDir: cfg.memoryDir,
     providerId: cfg.hostEmbeddingProviderId ?? "",
     providerModel: cfg.hostEmbeddingProviderModel ?? "",
     fallbackModel: cfg.embeddingFallbackModel ?? "",
+    openClawConfig: stableOpenClawConfigSignature(apiConfig),
   });
 }
 
@@ -1157,7 +1188,7 @@ const pluginDefinition = {
     const orchestrator = existing?.recall ? existing : new Orchestrator(cfg);
     const isFirstRegistration = !(globalThis as any)[keys.REGISTERED_GUARD];
     (globalThis as any)[keys.REGISTERED_GUARD] = true;
-    const hostEmbeddingSignature = openClawHostEmbeddingConfigSignature(cfg);
+    const hostEmbeddingSignature = openClawHostEmbeddingConfigSignature(cfg, api.config);
     const existingHostEmbeddingSignature = (globalThis as any)[
       keys.HOST_EMBEDDING_SIGNATURE
     ] as string | undefined;
