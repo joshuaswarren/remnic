@@ -800,7 +800,6 @@ function registerOpenClawHostEmbeddingProvider(params: {
     hostEmbeddingProviderEnabled: boolean;
     hostEmbeddingProviderId?: string;
     hostEmbeddingProviderModel?: string;
-    embeddingFallbackModel?: string;
   };
   serviceId: string;
 }): (() => void) | null {
@@ -812,7 +811,6 @@ function registerOpenClawHostEmbeddingProvider(params: {
 
   const model =
     cfg.hostEmbeddingProviderModel ||
-    cfg.embeddingFallbackModel ||
     selected.adapter.defaultModel ||
     "text-embedding-3-small";
 
@@ -921,14 +919,12 @@ function openClawHostEmbeddingConfigSignature(cfg: {
   hostEmbeddingProviderEnabled: boolean;
   hostEmbeddingProviderId?: string;
   hostEmbeddingProviderModel?: string;
-  embeddingFallbackModel?: string;
 }, apiConfig: unknown): string {
   return JSON.stringify({
     enabled: cfg.hostEmbeddingProviderEnabled !== false,
     memoryDir: cfg.memoryDir,
     providerId: cfg.hostEmbeddingProviderId ?? "",
     providerModel: cfg.hostEmbeddingProviderModel ?? "",
-    fallbackModel: cfg.embeddingFallbackModel ?? "",
     openClawConfig: stableOpenClawConfigSignature(apiConfig),
   });
 }

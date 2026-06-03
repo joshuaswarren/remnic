@@ -911,6 +911,56 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("LanceDbBackend re-embeds same-provider rows with stale vector dimensions", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-stale-dim-"));
+    try {
+      const updateCalls: Array<Record<string, unknown>> = [];
+      const table = {
+        query: () => ({
+          select: () => ({
+            toArray: async () => [{
+              docid: "same",
+              content: "Updated content.",
+              vector: [0, 0, 0],
+              vectorProvider: "host:openclaw-memory",
+            }],
+          }),
+        }),
+        update: async (payload: Record<string, unknown>) => {
+          updateCalls.push(payload);
+        },
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedBatchWithProvider: async () => ({
+            vectors: [[1, 0]],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+
+      await backend.embedCollection("memories");
+
+      assert.equal(updateCalls.length, 1);
+      assert.deepEqual((updateCalls[0]?.values as Record<string, unknown>)?.vector, [1, 0]);
+      assert.equal(
+        (updateCalls[0]?.values as Record<string, unknown>)?.vectorProvider,
+        "host:openclaw-memory",
+      );
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("OramaBackend migrates legacy documents missing vectorProvider", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
     const { create, insert, search } = await import("@orama/orama");

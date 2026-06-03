@@ -239,7 +239,11 @@ export class LanceDbBackend implements SearchBackend {
         if (!vec || (typeof vec !== "object")) return true;
         // Support both Array and typed arrays (e.g. Float32Array from Arrow)
         const arr = Array.from(vec as ArrayLike<number>);
-        return arr.length === 0 || arr.every((v: number) => v === 0);
+        return (
+          arr.length === 0 ||
+          arr.length !== this.embeddingDimension ||
+          arr.every((v: number) => v === 0)
+        );
       });
 
       if (needsEmbed.length === 0) {

@@ -869,6 +869,83 @@ test("host embedding bridge re-registers when host embedding config changes", as
   }
 });
 
+test("host embedding bridge uses adapter default instead of fallback model", async () => {
+  const saved = saveAndResetGlobals();
+  const previousDisableMigration = disableRegisterMigrationForTest();
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-host-embedding-default-model-"));
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const Module = require("node:module") as {
+    _load: (
+      request: string,
+      parent?: unknown,
+      isMain?: boolean,
+    ) => unknown;
+  };
+  const originalLoad = Module._load;
+  let registry: ReturnType<typeof buildApi> | undefined;
+  let clearHostEmbeddingProvidersForTest: (() => void) | undefined;
+  const requestedModels: Array<unknown> = [];
+  try {
+    Module._load = function patchedLoad(
+      request: string,
+      parent?: unknown,
+      isMain?: boolean,
+    ) {
+      if (request === "openclaw/plugin-sdk/memory-core-host-engine-embeddings") {
+        return {
+          listMemoryEmbeddingProviders: () => [
+            {
+              id: "default-model-memory-provider",
+              defaultModel: "adapter-default-model",
+              create: async (options: { model?: string }) => {
+                requestedModels.push(options.model);
+                return {
+                  provider: {
+                    embed: async () => [1, 0],
+                  },
+                };
+              },
+            },
+          ],
+        };
+      }
+      return originalLoad.call(this, request, parent, isMain);
+    };
+
+    const { default: plugin } = await import("../src/index.js");
+    const hostEmbeddingProviders = await import("../src/host-embedding-provider.js");
+    clearHostEmbeddingProvidersForTest =
+      hostEmbeddingProviders.clearHostEmbeddingProvidersForTest;
+    const { getHostEmbeddingProvider } = hostEmbeddingProviders;
+
+    registry = buildApi("host-embedding-default-model");
+    registry.api.pluginConfig = {
+      ...BASE_TEST_PLUGIN_CONFIG,
+      memoryDir,
+      hostEmbeddingProviderEnabled: true,
+      hostEmbeddingProviderId: "default-model-memory-provider",
+      embeddingFallbackModel: "fallback-only-model",
+    } as any;
+
+    plugin.register(registry.api as any);
+    assert.equal(
+      getHostEmbeddingProvider(memoryDir)?.model,
+      "memory:default-model-memory-provider/adapter-default-model",
+    );
+    assert.deepEqual(await getHostEmbeddingProvider(memoryDir)?.embed("input"), [1, 0]);
+    assert.deepEqual(requestedModels, ["adapter-default-model"]);
+  } finally {
+    Module._load = originalLoad;
+    clearHostEmbeddingProvidersForTest?.();
+    await safeStop(registry?.api);
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    restoreGlobals(saved);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("host embedding bridge re-registers when OpenClaw host config changes", async () => {
   const saved = saveAndResetGlobals();
   const previousDisableMigration = disableRegisterMigrationForTest();
