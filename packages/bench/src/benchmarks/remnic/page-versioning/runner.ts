@@ -2,26 +2,21 @@
  * Stateful page versioning benchmark for Remnic's snapshot sidecars.
  */
 
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import {
+  type VersioningConfig,
   createVersion,
   diffVersions,
   getVersion,
   listVersions,
   revertToVersion,
-  type VersioningConfig,
 } from "@remnic/core";
-import type {
-  BenchmarkDefinition,
-  BenchmarkResult,
-  ResolvedRunBenchmarkOptions,
-  TaskResult,
-} from "../../../types.js";
-import { aggregateTaskScores, exactMatch } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
+import { aggregateTaskScores, exactMatch } from "../../../scorer.js";
+import type { BenchmarkDefinition, BenchmarkResult, ResolvedRunBenchmarkOptions, TaskResult } from "../../../types.js";
 import {
   PAGE_VERSIONING_FIXTURE,
   PAGE_VERSIONING_SMOKE_FIXTURE,
@@ -38,22 +33,42 @@ export const pageVersioningDefinition: BenchmarkDefinition = {
   meta: {
     name: "page-versioning",
     version: "1.0.0",
-    description:
-      "File-backed benchmark covering sequential snapshots, revert behavior, pruning, and line diffs.",
+    description: "File-backed benchmark covering sequential snapshots, revert behavior, pruning, and line diffs.",
     category: "retrieval",
     citation: "Remnic internal synthetic benchmark for issue #445",
   },
 };
 
+interface PageVersioningDependencies {
+  createVersion: typeof createVersion;
+  diffVersions: typeof diffVersions;
+  getVersion: typeof getVersion;
+  listVersions: typeof listVersions;
+  revertToVersion: typeof revertToVersion;
+}
+
+const DEFAULT_PAGE_VERSIONING_DEPENDENCIES: PageVersioningDependencies = {
+  createVersion,
+  diffVersions,
+  getVersion,
+  listVersions,
+  revertToVersion,
+};
+
 export async function runPageVersioningBenchmark(
   options: ResolvedRunBenchmarkOptions,
+  dependencyOverrides: Partial<PageVersioningDependencies> = {}
 ): Promise<BenchmarkResult> {
+  const dependencies = {
+    ...DEFAULT_PAGE_VERSIONING_DEPENDENCIES,
+    ...dependencyOverrides,
+  };
   const cases = loadCases(options.mode, options.limit);
   const tasks: TaskResult[] = [];
 
   for (const sample of cases) {
     const startedAt = performance.now();
-    const actual = await executeCase(sample);
+    const actual = await executeCase(sample, dependencies);
     const latencyMs = Math.round(performance.now() - startedAt);
     const expectedJson = JSON.stringify(sample.expected);
     const actualJson = JSON.stringify(actual);
@@ -73,7 +88,7 @@ export async function runPageVersioningBenchmark(
           JSON.stringify({
             versionIds: sample.expected.versionIds,
             currentVersion: sample.expected.currentVersion,
-          }),
+          })
         ),
         page_content_match: exactMatch(actual.pageContent, sample.expected.pageContent),
         observed_match: exactMatch(actual.observed, sample.expected.observed),
@@ -128,13 +143,8 @@ export async function runPageVersioningBenchmark(
   };
 }
 
-function loadCases(
-  mode: "quick" | "full",
-  limit?: number,
-): PageVersioningCase[] {
-  const baseCases = mode === "quick"
-    ? PAGE_VERSIONING_SMOKE_FIXTURE
-    : PAGE_VERSIONING_FIXTURE;
+function loadCases(mode: "quick" | "full", limit?: number): PageVersioningCase[] {
+  const baseCases = mode === "quick" ? PAGE_VERSIONING_SMOKE_FIXTURE : PAGE_VERSIONING_FIXTURE;
 
   if (limit === undefined) {
     return baseCases;
@@ -153,6 +163,7 @@ function loadCases(
 
 async function executeCase(
   sample: PageVersioningCase,
+  dependencies: PageVersioningDependencies
 ): Promise<PageVersioningExpectation> {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-page-versioning-"));
 
@@ -165,13 +176,13 @@ async function executeCase(
     switch (sample.scenario) {
       case "revert-flow": {
         await writeFile(pagePath, "original content", "utf-8");
-        await createVersion(pagePath, "original content", "write", config, undefined, undefined, tmpDir);
+        await dependencies.createVersion(pagePath, "original content", "write", config, undefined, undefined, tmpDir);
         await writeFile(pagePath, "modified content", "utf-8");
-        await createVersion(pagePath, "modified content", "write", config, undefined, undefined, tmpDir);
-        await revertToVersion(pagePath, "1", config, undefined, tmpDir);
-        const history = await listVersions(pagePath, config, tmpDir);
+        await dependencies.createVersion(pagePath, "modified content", "write", config, undefined, undefined, tmpDir);
+        await dependencies.revertToVersion(pagePath, "1", config, undefined, tmpDir);
+        const history = await dependencies.listVersions(pagePath, config, tmpDir);
         const pageContent = await readFile(pagePath, "utf-8");
-        const observed = await getVersion(pagePath, "3", config, tmpDir);
+        const observed = await dependencies.getVersion(pagePath, "3", config, tmpDir);
         return {
           versionIds: history.versions.map((version) => version.versionId),
           currentVersion: history.currentVersion,
@@ -184,15 +195,18 @@ async function executeCase(
         for (let index = 1; index <= 4; index += 1) {
           const content = `content v${index}`;
           await writeFile(pagePath, content, "utf-8");
-          await createVersion(pagePath, content, "write", pruningConfig, undefined, undefined, tmpDir);
+          await dependencies.createVersion(pagePath, content, "write", pruningConfig, undefined, undefined, tmpDir);
         }
-        const history = await listVersions(pagePath, pruningConfig, tmpDir);
+        const history = await dependencies.listVersions(pagePath, pruningConfig, tmpDir);
         const pageContent = await readFile(pagePath, "utf-8");
         const prunedIds: string[] = [];
         for (const versionId of ["1", "2"]) {
           try {
-            await getVersion(pagePath, versionId, pruningConfig, tmpDir);
-          } catch {
+            await dependencies.getVersion(pagePath, versionId, pruningConfig, tmpDir);
+          } catch (error) {
+            if (!isMissingPageVersionError(error, pagePath, versionId)) {
+              throw error;
+            }
             prunedIds.push(versionId);
           }
         }
@@ -205,28 +219,28 @@ async function executeCase(
       }
       case "diff-output": {
         await writeFile(pagePath, "line 1\nline 2\nline 3", "utf-8");
-        await createVersion(
+        await dependencies.createVersion(
           pagePath,
           "line 1\nline 2\nline 3",
           "write",
           config,
           undefined,
           undefined,
-          tmpDir,
+          tmpDir
         );
         await writeFile(pagePath, "line 1\nline 2 changed\nline 3\nline 4", "utf-8");
-        await createVersion(
+        await dependencies.createVersion(
           pagePath,
           "line 1\nline 2 changed\nline 3\nline 4",
           "write",
           config,
           undefined,
           undefined,
-          tmpDir,
+          tmpDir
         );
-        const history = await listVersions(pagePath, config, tmpDir);
+        const history = await dependencies.listVersions(pagePath, config, tmpDir);
         const pageContent = await readFile(pagePath, "utf-8");
-        const diff = await diffVersions(pagePath, "1", "2", config, tmpDir);
+        const diff = await dependencies.diffVersions(pagePath, "1", "2", config, tmpDir);
         const observedLines = normalizeDiffChangedLines(diff);
         return {
           versionIds: history.versions.map((version) => version.versionId),
@@ -239,6 +253,10 @@ async function executeCase(
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
+}
+
+export function isMissingPageVersionError(error: unknown, pagePath: string, versionId: string): boolean {
+  return error instanceof Error && error.message === `Version ${versionId} not found for ${pagePath}`;
 }
 
 export function normalizeDiffChangedLines(diff: string): string {
@@ -254,9 +272,7 @@ export function normalizeDiffChangedLines(diff: string): string {
     .join("|");
 }
 
-function versioningConfig(
-  overrides?: Partial<VersioningConfig>,
-): VersioningConfig {
+function versioningConfig(overrides?: Partial<VersioningConfig>): VersioningConfig {
   return {
     enabled: true,
     maxVersionsPerPage: 50,
