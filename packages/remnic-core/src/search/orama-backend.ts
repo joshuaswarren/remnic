@@ -211,14 +211,14 @@ export class OramaBackend implements SearchBackend {
           !!embeddingProviderIdentity &&
           existing.vectorProvider === embeddingProviderIdentity;
         if (preservesCompatibleProvider) {
-          if (this.isExpectedDimensionVector(existing.vector)) {
+          if (this.isCompatibleStoredVector(existing.vector)) {
             payload.vector = existing.vector;
             payload.vectorProvider = existing.vectorProvider ?? "";
           } else {
             payload.vectorProvider = "";
             allRowsCompatible = false;
           }
-        } else if (!embeddingProviderIdentity && this.isExpectedDimensionVector(existing.vector)) {
+        } else if (!embeddingProviderIdentity && this.isCompatibleStoredVector(existing.vector)) {
           payload.vector = existing.vector;
           payload.vectorProvider = existing.vectorProvider ?? "";
           allRowsCompatible = false;
@@ -282,7 +282,7 @@ export class OramaBackend implements SearchBackend {
       return (
         (embeddingProviderIdentity &&
           h.document?.vectorProvider !== embeddingProviderIdentity) ||
-        !this.isExpectedDimensionVector(vector)
+        !this.isCompatibleStoredVector(vector)
       );
     });
 
@@ -568,7 +568,7 @@ export class OramaBackend implements SearchBackend {
         const doc = hit.document ?? {};
         if (
           doc.vectorProvider !== providerIdentity ||
-          !this.isExpectedDimensionVector(this.normalizeStoredVector(doc.vector))
+          !this.isCompatibleStoredVector(this.normalizeStoredVector(doc.vector))
         ) {
           compatible = false;
           break;
@@ -594,6 +594,16 @@ export class OramaBackend implements SearchBackend {
 
   private isExpectedDimensionVector(vector: number[] | null | undefined): vector is number[] {
     return Array.isArray(vector) && vector.length === this.embeddingDimension;
+  }
+
+  private isCompatibleStoredVector(vector: unknown): vector is number[] {
+    if (!vector || typeof vector !== "object") return false;
+    const arr = Array.from(vector as ArrayLike<number>);
+    return (
+      arr.length === this.embeddingDimension &&
+      arr.every((value) => Number.isFinite(value)) &&
+      arr.some((value) => value !== 0)
+    );
   }
 
   private zeroVector(): number[] {

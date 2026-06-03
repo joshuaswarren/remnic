@@ -1251,6 +1251,74 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("OramaBackend re-embeds same-provider rows with placeholder zero vectors", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { create, getByID, insert } = await import("@orama/orama");
+    const { persist, restore } = await import("@orama/plugin-data-persistence");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-zero-vector-"));
+    try {
+      const dbPath = path.join(tempDir, "db");
+      await mkdir(dbPath, { recursive: true });
+      const db = await create({
+        schema: {
+          id: "string",
+          path: "string",
+          content: "string",
+          snippet: "string",
+          vector: "vector[2]",
+          vectorProvider: "string",
+        },
+      });
+      await insert(db, {
+        id: "zero",
+        path: "facts/zero.md",
+        content: "placeholder vector row",
+        snippet: "placeholder",
+        vector: [0, 0],
+        vectorProvider: "host:openclaw-memory",
+      });
+      await writeFile(
+        path.join(dbPath, "memories.msp"),
+        await persist(db, "json") as string,
+        "utf-8",
+      );
+      let embedCalls = 0;
+
+      const backend = new OramaBackend({
+        dbPath,
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          getProviderIdentity: () => "host:openclaw-memory",
+          embedBatchWithProvider: async () => {
+            embedCalls += 1;
+            return {
+              vectors: [[0, 1]],
+              providerIdentity: "host:openclaw-memory",
+            };
+          },
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+
+      assert.equal(await backend.probe(), true);
+      await backend.embedCollection("memories");
+
+      const updated = await restore(
+        "json",
+        await readFile(path.join(dbPath, "memories.msp"), "utf-8"),
+      );
+      const document = await getByID(updated, "zero");
+      assert.equal(embedCalls, 1);
+      assert.deepEqual(document?.vector, [0, 1]);
+      assert.equal(document?.vectorProvider, "host:openclaw-memory");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("OramaBackend recreates empty legacy DBs before embedding new documents", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
     const { create, search } = await import("@orama/orama");

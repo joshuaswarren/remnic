@@ -1024,6 +1024,81 @@ test("host embedding bridge passes workspaceDir to OpenClaw adapters", async () 
   }
 });
 
+test("host embedding bridge retries provider creation after transient null result", async () => {
+  const saved = saveAndResetGlobals();
+  const previousDisableMigration = disableRegisterMigrationForTest();
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-host-embedding-retry-"));
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const Module = require("node:module") as {
+    _load: (
+      request: string,
+      parent?: unknown,
+      isMain?: boolean,
+    ) => unknown;
+  };
+  const originalLoad = Module._load;
+  let registry: ReturnType<typeof buildApi> | undefined;
+  let clearHostEmbeddingProvidersForTest: (() => void) | undefined;
+  let createCalls = 0;
+  try {
+    Module._load = function patchedLoad(
+      request: string,
+      parent?: unknown,
+      isMain?: boolean,
+    ) {
+      if (request === "openclaw/plugin-sdk/memory-core-host-engine-embeddings") {
+        return {
+          listMemoryEmbeddingProviders: () => [
+            {
+              id: "retry-memory-provider",
+              create: async () => {
+                createCalls += 1;
+                if (createCalls === 1) {
+                  return null;
+                }
+                return {
+                  provider: {
+                    embed: async () => [1, 0],
+                  },
+                };
+              },
+            },
+          ],
+        };
+      }
+      return originalLoad.call(this, request, parent, isMain);
+    };
+
+    const { default: plugin } = await import("../src/index.js");
+    const hostEmbeddingProviders = await import("../src/host-embedding-provider.js");
+    clearHostEmbeddingProvidersForTest =
+      hostEmbeddingProviders.clearHostEmbeddingProvidersForTest;
+    const { getHostEmbeddingProvider } = hostEmbeddingProviders;
+
+    registry = buildApi("host-embedding-retry");
+    registry.api.pluginConfig = {
+      ...BASE_TEST_PLUGIN_CONFIG,
+      memoryDir,
+      hostEmbeddingProviderEnabled: true,
+      hostEmbeddingProviderId: "retry-memory-provider",
+    } as any;
+
+    plugin.register(registry.api as any);
+    assert.equal(await getHostEmbeddingProvider(memoryDir)?.embed("first"), null);
+    assert.deepEqual(await getHostEmbeddingProvider(memoryDir)?.embed("second"), [1, 0]);
+    assert.equal(createCalls, 2);
+  } finally {
+    Module._load = originalLoad;
+    clearHostEmbeddingProvidersForTest?.();
+    await safeStop(registry?.api);
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    restoreGlobals(saved);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("passive slot registrations do not replace the active host embedding bridge", async () => {
   const saved = saveAndResetGlobals();
   const previousDisableMigration = disableRegisterMigrationForTest();

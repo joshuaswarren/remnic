@@ -817,11 +817,9 @@ function registerOpenClawHostEmbeddingProvider(params: {
 
   let providerPromise: Promise<unknown | null> | null = null;
   let providerInstance: unknown | null = null;
-  let createFailed = false;
 
   const resolveProvider = async (): Promise<unknown | null> => {
     if (providerInstance) return providerInstance;
-    if (createFailed) return null;
     providerPromise ??= selected.adapter
       .create({
         config: api.config ?? {},
@@ -836,7 +834,6 @@ function registerOpenClawHostEmbeddingProvider(params: {
             ? (result as Record<string, unknown>).provider ?? null
             : null;
         if (!providerInstance) {
-          createFailed = true;
           log.debug(
             `OpenClaw host embedding provider ${selected.adapter.id} did not create a provider; using Remnic fallback embeddings`,
           );
@@ -844,11 +841,15 @@ function registerOpenClawHostEmbeddingProvider(params: {
         return providerInstance;
       })
       .catch((error) => {
-        createFailed = true;
         log.debug(
           `OpenClaw host embedding provider ${selected.adapter.id} unavailable: ${error}`,
         );
         return null;
+      })
+      .finally(() => {
+        if (!providerInstance) {
+          providerPromise = null;
+        }
       });
     return providerPromise;
   };

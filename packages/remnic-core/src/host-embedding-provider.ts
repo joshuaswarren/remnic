@@ -65,10 +65,11 @@ export function normalizeHostEmbeddingVector(value: unknown): number[] | null {
     return null;
   }
   const vector = Array.from(value as unknown as ArrayLike<unknown>, (component) => {
-    const numeric = Number(component);
-    return Number.isFinite(numeric) ? numeric : 0;
+    return Number(component);
   });
-  return vector.length > 0 ? vector : null;
+  return vector.length > 0 && vector.every((component) => Number.isFinite(component))
+    ? vector
+    : null;
 }
 
 function normalizeScope(scope: string): string {
