@@ -235,15 +235,7 @@ export class LanceDbBackend implements SearchBackend {
         if (embeddingProviderIdentity && row.vectorProvider !== embeddingProviderIdentity) {
           return true;
         }
-        const vec = row.vector;
-        if (!vec || (typeof vec !== "object")) return true;
-        // Support both Array and typed arrays (e.g. Float32Array from Arrow)
-        const arr = Array.from(vec as ArrayLike<number>);
-        return (
-          arr.length === 0 ||
-          arr.length !== this.embeddingDimension ||
-          arr.every((v: number) => v === 0)
-        );
+        return !this.isCompatibleStoredVector(row.vector);
       });
 
       if (needsEmbed.length === 0) {
@@ -478,11 +470,14 @@ export class LanceDbBackend implements SearchBackend {
     try {
       const cached = this.vectorProviderCompatibility.get(table);
       if (cached?.providerIdentity === providerIdentity) return cached.compatible;
-      const rows = await table.query().select(["vectorProvider"]).toArray();
+      const rows = await table.query().select(["vector", "vectorProvider"]).toArray();
       let compatible = rows.length > 0;
       for (const row of rows ?? []) {
         throwIfSearchAborted(execution, "LanceDbBackend vector provider check aborted");
-        if (row.vectorProvider !== providerIdentity) {
+        if (
+          row.vectorProvider !== providerIdentity ||
+          !this.isCompatibleStoredVector(row.vector)
+        ) {
           compatible = false;
           break;
         }
@@ -507,5 +502,15 @@ export class LanceDbBackend implements SearchBackend {
 
   private isExpectedDimensionVector(vector: number[] | null | undefined): vector is number[] {
     return Array.isArray(vector) && vector.length === this.embeddingDimension;
+  }
+
+  private isCompatibleStoredVector(vector: unknown): boolean {
+    if (!vector || typeof vector !== "object") return false;
+    const arr = Array.from(vector as ArrayLike<number>);
+    return (
+      arr.length === this.embeddingDimension &&
+      arr.every((value) => Number.isFinite(value)) &&
+      arr.some((value) => value !== 0)
+    );
   }
 }

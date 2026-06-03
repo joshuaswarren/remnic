@@ -866,6 +866,69 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("LanceDbBackend falls back to FTS when stored same-provider vectors have stale dimensions", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-stale-dim-search-"));
+    try {
+      const searchCalls: string[] = [];
+      const selectCalls: string[][] = [];
+      const table = {
+        query: () => ({
+          select: (columns: string[]) => ({
+            toArray: async () => {
+              selectCalls.push(columns);
+              return [{
+                docid: "same",
+                vector: [1, 0, 0],
+                vectorProvider: "host:openclaw-memory",
+              }];
+            },
+          }),
+        }),
+        search: (value: unknown, mode?: string) => {
+          searchCalls.push(mode ?? (Array.isArray(value) ? "vector" : "unknown"));
+          return {
+            limit: () => ({
+              toArray: async () => [{
+                docid: "same",
+                path: "facts/same.md",
+                snippet: "same",
+                _relevance_score: 0.9,
+              }],
+            }),
+          };
+        },
+      };
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          embedWithProvider: async () => ({
+            vector: [1, 0],
+            providerIdentity: "host:openclaw-memory",
+          }),
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+
+      const results = await backend.vectorSearch("same", "memories", 5);
+
+      assert.deepEqual(selectCalls, [["vector", "vectorProvider"]]);
+      assert.deepEqual(searchCalls, ["fts"]);
+      assert.deepEqual(results.map((result) => result.docid), ["same"]);
+      assert.deepEqual((backend as any).vectorProviderCompatibility.get(table), {
+        providerIdentity: "host:openclaw-memory",
+        compatible: false,
+      });
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("LanceDbBackend skips writes for mismatched embedding dimensions", async () => {
     const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-dim-embed-"));
