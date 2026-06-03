@@ -600,6 +600,58 @@ test("scenario: message_received inline captures are not duplicated by agent_end
   );
 });
 
+test("scenario: inline capture dedupe matches sparse thread and run metadata", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const messageReceived = registeredHook(capture, "message_received");
+      const agentEnd = registeredHook(capture, "agent_end");
+      const maintenanceTools: string[] = [];
+      orchestrator.requestQmdMaintenanceForTool = (tool: string) => {
+        maintenanceTools.push(tool);
+      };
+      const content = [
+        "Remember the sparse inline dedupe note.",
+        "<memory_note>",
+        "content: The sparse inline note should only be processed once.",
+        "category: preference",
+        "</memory_note>",
+      ].join("\n");
+
+      await messageReceived(
+        {
+          content,
+          messageId: "msg-inline-sparse-dedupe-1",
+          threadId: "thread-only-on-message-received",
+        },
+        { sessionKey: "inline-sparse-dedupe-session" },
+      );
+      await agentEnd(
+        {
+          success: true,
+          runId: "run-only-on-agent-end",
+          messages: [
+            {
+              role: "user",
+              content,
+              messageId: "msg-inline-sparse-dedupe-1",
+            },
+            { role: "assistant", content: "I will remember that." },
+          ],
+        },
+        { sessionKey: "inline-sparse-dedupe-session" },
+      );
+
+      assert.deepEqual(maintenanceTools, ["inline.memory_note"]);
+    },
+    {
+      pluginConfig: {
+        captureMode: "hybrid",
+        transcriptEnabled: true,
+      },
+    },
+  );
+});
+
 test("scenario: message_received transcript append failures do not escape the hook", async () => {
   await withScenarioRegistration(
     async ({ capture, orchestrator }) => {

@@ -1636,12 +1636,17 @@ const pluginDefinition = {
 
     async function processInlineExplicitCaptureNotes(
       notes: ReturnType<typeof parseInlineExplicitCaptureNotes>,
-      messageKey: string | null | undefined,
+      messageKeys: readonly string[] | null | undefined,
     ): Promise<number> {
       let processed = 0;
       for (const note of notes) {
-        const noteKey = buildInlineExplicitCaptureDedupeKey(messageKey, note);
-        if (noteKey && observedInlineExplicitCaptureKeys.has(noteKey)) {
+        const noteKeys = (messageKeys ?? [])
+          .map((messageKey) => buildInlineExplicitCaptureDedupeKey(messageKey, note))
+          .filter((noteKey): noteKey is string => typeof noteKey === "string");
+        if (
+          noteKeys.length > 0 &&
+          noteKeys.some((noteKey) => observedInlineExplicitCaptureKeys.has(noteKey))
+        ) {
           continue;
         }
         try {
@@ -1651,7 +1656,9 @@ const pluginDefinition = {
             "inline",
           );
           orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
-          if (noteKey) rememberObservedInlineExplicitCaptureKey(noteKey);
+          for (const noteKey of noteKeys) {
+            rememberObservedInlineExplicitCaptureKey(noteKey);
+          }
           processed += 1;
         } catch (error) {
           try {
@@ -1664,7 +1671,9 @@ const pluginDefinition = {
             orchestrator.requestQmdMaintenanceForTool(
               "inline.memory_note.review",
             );
-            if (noteKey) rememberObservedInlineExplicitCaptureKey(noteKey);
+            for (const noteKey of noteKeys) {
+              rememberObservedInlineExplicitCaptureKey(noteKey);
+            }
             processed += 1;
             log.warn(
               `explicit inline capture queued for review: ${queued.id}${queued.duplicateOf ? ` (duplicate of ${queued.duplicateOf})` : ""}`,
@@ -3562,7 +3571,7 @@ const pluginDefinition = {
             explicitNotes.length > 0
               ? await processInlineExplicitCaptureNotes(
                   explicitNotes,
-                  inboundMessageKey,
+                  inboundMessageKeys,
                 )
               : 0;
           if (transcriptContent.length === 0) {
@@ -3745,7 +3754,7 @@ const pluginDefinition = {
 
             await processInlineExplicitCaptureNotes(
               explicitNotes,
-              messageDedupeKey,
+              messageDedupeKeys,
             );
 
             // Append to transcript
