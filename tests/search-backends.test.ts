@@ -1565,6 +1565,70 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("OramaBackend aborts legacy vectorProvider migration without persisting partial copies", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-migrate-fail-"));
+    try {
+      const migratedDb = {};
+      const inserted: string[] = [];
+      let persisted = false;
+      const backend = new OramaBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: fakeEmbedHelper(),
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).oramaModule = {
+        count: async () => 2,
+        search: async () => ({
+          hits: [
+            {
+              id: "one",
+              document: {
+                id: "one",
+                path: "facts/one.md",
+                content: "one",
+                snippet: "one",
+                vector: [1, 0],
+              },
+            },
+            {
+              id: "two",
+              document: {
+                id: "two",
+                path: "facts/two.md",
+                content: "two",
+                snippet: "two",
+                vector: [0, 1],
+              },
+            },
+          ],
+        }),
+        create: async () => migratedDb,
+        insert: async (_db: unknown, payload: Record<string, unknown>) => {
+          inserted.push(String(payload.id));
+          if (payload.id === "two") {
+            throw new Error("insert failed");
+          }
+        },
+      };
+      (backend as any).persistDbForCollection = async () => {
+        persisted = true;
+      };
+
+      await assert.rejects(
+        () => (backend as any).migrateLegacyVectorProviderSchema({}, "memories"),
+        /insert failed/,
+      );
+
+      assert.deepEqual(inserted, ["one", "two"]);
+      assert.equal(persisted, false);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("OramaBackend preserves internal vectors during legacy vectorProvider migration", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
     const { create, insert, search } = await import("@orama/orama");

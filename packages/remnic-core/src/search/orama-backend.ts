@@ -377,18 +377,19 @@ export class OramaBackend implements SearchBackend {
     await mkdir(this.dbPath, { recursive: true });
     const filePath = this.dbFilePath(this.collection);
 
+    let raw: string;
     try {
-      const raw = await readFile(filePath, "utf-8");
-      this.db = await this.migrateLegacyVectorProviderSchema(
-        await this.persistModule.restore("json", raw),
-        this.collection,
-      );
-      return this.db;
+      raw = await readFile(filePath, "utf-8");
     } catch {
       // No existing DB — create fresh
+      this.db = await this.createDb();
+      return this.db;
     }
 
-    this.db = await this.createDb();
+    this.db = await this.migrateLegacyVectorProviderSchema(
+      await this.persistModule.restore("json", raw),
+      this.collection,
+    );
     return this.db;
   }
 
@@ -400,17 +401,18 @@ export class OramaBackend implements SearchBackend {
     await mkdir(this.dbPath, { recursive: true });
     const filePath = this.dbFilePath(collection);
 
+    let raw: string;
     try {
-      const raw = await readFile(filePath, "utf-8");
-      return await this.migrateLegacyVectorProviderSchema(
-        await this.persistModule.restore("json", raw),
-        collection,
-      );
+      raw = await readFile(filePath, "utf-8");
     } catch {
       // No existing DB — create fresh
+      return await this.createDb();
     }
 
-    return await this.createDb();
+    return await this.migrateLegacyVectorProviderSchema(
+      await this.persistModule.restore("json", raw),
+      collection,
+    );
   }
 
   private async createDb(): Promise<any> {
@@ -464,11 +466,7 @@ export class OramaBackend implements SearchBackend {
       } else {
         payload.vector = this.zeroVector();
       }
-      try {
-        await insert(migrated, payload);
-      } catch (err) {
-        log.debug(`OramaBackend legacy vectorProvider migration skipped a document: ${err}`);
-      }
+      await insert(migrated, payload);
     }
     await this.persistDbForCollection(migrated, collection);
     return migrated;
