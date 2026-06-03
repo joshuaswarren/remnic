@@ -971,9 +971,9 @@ describe("embedded backend provider identity", () => {
     }
   });
 
-  it("OramaBackend caches compatible vectors after preserving them during update", async () => {
+  it("OramaBackend clears provider tags for persisted rows with missing vectors", async () => {
     const { OramaBackend } = await import("../src/search/orama-backend.js");
-    const { create, insert } = await import("@orama/orama");
+    const { create, insert, search } = await import("@orama/orama");
     const { persist } = await import("@orama/plugin-data-persistence");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-compatible-cache-"));
     try {
@@ -1029,8 +1029,10 @@ describe("embedded backend provider identity", () => {
       );
       assert.deepEqual(cache, {
         providerIdentity: "host:openclaw-memory",
-        compatible: true,
+        compatible: false,
       });
+      const hits = await search((backend as any).db, { term: "", limit: 1 });
+      assert.equal(hits.hits[0]?.document.vectorProvider, "");
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

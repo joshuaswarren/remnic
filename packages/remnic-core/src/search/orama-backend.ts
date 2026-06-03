@@ -213,8 +213,11 @@ export class OramaBackend implements SearchBackend {
         if (preservesCompatibleProvider) {
           if (this.isExpectedDimensionVector(existing.vector)) {
             payload.vector = existing.vector;
+            payload.vectorProvider = existing.vectorProvider ?? "";
+          } else {
+            payload.vectorProvider = "";
+            allRowsCompatible = false;
           }
-          payload.vectorProvider = existing.vectorProvider ?? "";
         } else {
           payload.vectorProvider = "";
           allRowsCompatible = false;

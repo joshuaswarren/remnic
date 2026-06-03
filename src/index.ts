@@ -858,7 +858,7 @@ function registerOpenClawHostEmbeddingProvider(params: {
 
   const hostProvider: HostEmbeddingProvider = {
     id: `openclaw:${selected.kind}:${selected.adapter.id}`,
-    model: `${selected.adapter.id}/${model}`,
+    model: `${selected.kind}:${selected.adapter.id}/${model}`,
     async embed(text, options) {
       const provider = await resolveProvider();
       if (!provider) return null;

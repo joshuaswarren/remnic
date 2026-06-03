@@ -840,7 +840,7 @@ test("host embedding bridge re-registers when host embedding config changes", as
     plugin.register(first.api as any);
     assert.equal(
       getHostEmbeddingProvider(memoryDir)?.model,
-      "first-memory-provider/model-a",
+      "memory:first-memory-provider/model-a",
     );
 
     second = buildApi("host-embedding-config-second");
@@ -855,7 +855,7 @@ test("host embedding bridge re-registers when host embedding config changes", as
     plugin.register(second.api as any);
     assert.equal(
       getHostEmbeddingProvider(memoryDir)?.model,
-      "second-memory-provider/model-b",
+      "memory:second-memory-provider/model-b",
     );
 
   } finally {
