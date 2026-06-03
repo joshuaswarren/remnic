@@ -97,6 +97,22 @@ export class EmbedHelper {
       : null;
   }
 
+  async embedWithFallbackProviderIdentity(
+    text: string,
+    identity: EmbedProviderIdentity,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<EmbedWithProviderResult | null> {
+    const provider = this.resolveFallbackProviderForIdentity(identity);
+    if (!provider) return null;
+    const result = await this.callEmbed(text, provider, options.signal, "query");
+    return result
+      ? {
+          vector: result,
+          providerIdentity: providerIdentity(provider),
+        }
+      : null;
+  }
+
   /**
    * Embed a batch of texts. Returns an array parallel to input; entries are null on failure.
    */
@@ -205,42 +221,72 @@ export class EmbedHelper {
     const providers = preferred === "auto" ? ["openai", "local"] : [preferred];
 
     for (const p of providers) {
-      if (p === "openai" && this.config.openaiApiKey) {
-        const baseUrl = this.config.openaiBaseUrl ?? "https://api.openai.com/v1";
-        return {
-          type: "openai",
-          model: DEFAULT_OPENAI_MODEL,
-          endpoint: `${baseUrl.replace(/\/$/, "")}/embeddings`,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.config.openaiApiKey}`,
-          },
-        };
+      if (p === "openai") {
+        const provider = this.createOpenAiProvider();
+        if (provider) return provider;
       }
 
-      if (p === "local" && this.config.localLlmEnabled && this.config.localLlmUrl) {
-        const base = this.config.localLlmUrl.replace(/\/$/, "");
-        const endpoint = /\/v1$/i.test(base) ? `${base}/embeddings` : `${base}/v1/embeddings`;
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-          ...(this.config.localLlmHeaders ?? {}),
-        };
-        if (this.config.localLlmApiKey && this.config.localLlmAuthHeader !== false) {
-          headers.Authorization = `Bearer ${this.config.localLlmApiKey}`;
-        }
-        return {
-          type: "local",
-          model:
-            this.config.embeddingFallbackModel ||
-            this.config.localLlmModel ||
-            DEFAULT_OPENAI_MODEL,
-          endpoint,
-          headers,
-        };
+      if (p === "local") {
+        const provider = this.createLocalProvider();
+        if (provider) return provider;
       }
     }
 
     return null;
+  }
+
+  private resolveFallbackProviderForIdentity(identity: EmbedProviderIdentity): ProviderConfig | null {
+    if (!this.config.embeddingFallbackEnabled) return null;
+    const separator = identity.indexOf(":");
+    if (separator <= 0 || separator === identity.length - 1) return null;
+    const type = identity.slice(0, separator);
+    const model = identity.slice(separator + 1);
+
+    if (type === "openai") {
+      const provider = this.createOpenAiProvider();
+      return provider && provider.model === model ? provider : null;
+    }
+    if (type === "local") {
+      const provider = this.createLocalProvider();
+      return provider && provider.model === model ? provider : null;
+    }
+    return null;
+  }
+
+  private createOpenAiProvider(): ProviderConfig | null {
+    if (!this.config.openaiApiKey) return null;
+    const baseUrl = this.config.openaiBaseUrl ?? "https://api.openai.com/v1";
+    return {
+      type: "openai",
+      model: DEFAULT_OPENAI_MODEL,
+      endpoint: `${baseUrl.replace(/\/$/, "")}/embeddings`,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.config.openaiApiKey}`,
+      },
+    };
+  }
+
+  private createLocalProvider(): ProviderConfig | null {
+    if (!this.config.localLlmEnabled || !this.config.localLlmUrl) return null;
+    const base = this.config.localLlmUrl.replace(/\/$/, "");
+    const endpoint = /\/v1$/i.test(base) ? `${base}/embeddings` : `${base}/v1/embeddings`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...(this.config.localLlmHeaders ?? {}),
+    };
+    if (this.config.localLlmApiKey && this.config.localLlmAuthHeader !== false) {
+      headers.Authorization = `Bearer ${this.config.localLlmApiKey}`;
+    }
+    return {
+      type: "local",
+      model:
+        this.config.embeddingFallbackModel ||
+        this.config.localLlmModel ||
+        DEFAULT_OPENAI_MODEL,
+      endpoint,
+      headers,
+    };
   }
 
   private resolveHostEmbeddingProvider(): HostEmbeddingProvider | undefined {

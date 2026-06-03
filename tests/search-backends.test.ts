@@ -904,6 +904,74 @@ describe("embedded backend provider identity", () => {
     }
   });
 
+  it("LanceDbBackend searches stored fallback vectors before FTS", async () => {
+    const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-fallback-search-"));
+    try {
+      const searchCalls: Array<{ mode: string; value: unknown }> = [];
+      const fallbackProviderIdentity = "openai:text-embedding-3-small";
+      const table = {
+        query: () => ({
+          select: () => ({
+            toArray: async () => [{
+              docid: "fallback",
+              vector: [0.25, 0.75],
+              vectorProvider: fallbackProviderIdentity,
+            }],
+          }),
+        }),
+        search: (value: unknown, mode?: string) => {
+          searchCalls.push({ mode: mode ?? (Array.isArray(value) ? "vector" : "unknown"), value });
+          return {
+            limit: () => ({
+              toArray: async () => [{
+                docid: "fallback",
+                path: "facts/fallback.md",
+                snippet: "fallback",
+                _distance: 0,
+              }],
+            }),
+          };
+        },
+      };
+      const fallbackEmbeds: string[] = [];
+      const backend = new LanceDbBackend({
+        dbPath: path.join(tempDir, "db"),
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          embedWithProvider: async () => ({
+            vector: [1, 0],
+            providerIdentity: "host:openclaw-memory",
+          }),
+          embedWithFallbackProviderIdentity: async (
+            _query: string,
+            providerIdentity: string,
+          ) => {
+            fallbackEmbeds.push(providerIdentity);
+            return {
+              vector: [0.25, 0.75],
+              providerIdentity,
+            };
+          },
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+      (backend as any).table = table;
+
+      const results = await backend.vectorSearch("semantic only", "memories", 5);
+
+      assert.deepEqual(fallbackEmbeds, [fallbackProviderIdentity]);
+      assert.deepEqual(searchCalls.map((call) => call.mode), ["vector"]);
+      assert.deepEqual(searchCalls[0]?.value, [0.25, 0.75]);
+      assert.deepEqual(results.map((result) => result.docid), ["fallback"]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("LanceDbBackend falls back to FTS when query vector dimensions do not match schema", async () => {
     const { LanceDbBackend } = await import("../src/search/lancedb-backend.js");
     const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-lance-provider-dim-search-"));
@@ -1804,6 +1872,75 @@ describe("embedded backend provider identity", () => {
       assert.equal(await backend.probe(), true);
       const results = await backend.vectorSearch("dimension mismatch", "memories", 5);
       assert.equal(results[0]?.docid, "dimension-mismatch");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("OramaBackend searches stored fallback vectors before fulltext", async () => {
+    const { OramaBackend } = await import("../src/search/orama-backend.js");
+    const { create, insert } = await import("@orama/orama");
+    const { persist } = await import("@orama/plugin-data-persistence");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-orama-provider-fallback-search-"));
+    try {
+      const dbPath = path.join(tempDir, "db");
+      await mkdir(dbPath, { recursive: true });
+      const fallbackProviderIdentity = "openai:text-embedding-3-small";
+      const db = await create({
+        schema: {
+          id: "string",
+          path: "string",
+          content: "string",
+          snippet: "string",
+          vector: "vector[2]",
+          vectorProvider: "string",
+        },
+      });
+      await insert(db, {
+        id: "fallback-vector",
+        path: "facts/fallback-vector.md",
+        content: "A stored fallback embedding should be found without lexical overlap.",
+        snippet: "fallback vector",
+        vector: [0.25, 0.75],
+        vectorProvider: fallbackProviderIdentity,
+      });
+      await writeFile(
+        path.join(dbPath, "memories.msp"),
+        await persist(db, "json") as string,
+        "utf-8",
+      );
+
+      const fallbackEmbeds: string[] = [];
+      const backend = new OramaBackend({
+        dbPath,
+        collection: "memories",
+        embedHelper: {
+          ...fakeEmbedHelper(),
+          isAvailable: () => true,
+          embedWithProvider: async () => ({
+            vector: [1, 0],
+            providerIdentity: "host:openclaw-memory",
+          }),
+          embedWithFallbackProviderIdentity: async (
+            _query: string,
+            providerIdentity: string,
+          ) => {
+            fallbackEmbeds.push(providerIdentity);
+            return {
+              vector: [0.25, 0.75],
+              providerIdentity,
+            };
+          },
+        },
+        memoryDir: tempDir,
+        embeddingDimension: 2,
+      });
+
+      assert.equal(await backend.probe(), true);
+      const results = await backend.vectorSearch("semantic only", "memories", 5);
+
+      assert.deepEqual(fallbackEmbeds, [fallbackProviderIdentity]);
+      assert.equal(results[0]?.docid, "fallback-vector");
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

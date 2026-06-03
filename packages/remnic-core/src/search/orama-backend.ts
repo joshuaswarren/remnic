@@ -2,7 +2,7 @@ import path from "node:path";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { log } from "../logger.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
-import type { EmbedHelper, EmbedProviderIdentity } from "./embed-helper.js";
+import type { EmbedHelper, EmbedProviderIdentity, EmbedWithProviderResult } from "./embed-helper.js";
 import { scanMemoryDir } from "./document-scanner.js";
 import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
 
@@ -531,13 +531,9 @@ export class OramaBackend implements SearchBackend {
       if (mode === "fulltext") {
         searchParams = { term: query, limit };
       } else if (mode === "vector") {
-        const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
+        const embedResult = await this.resolveCompatibleQueryEmbedding(db, query, execution);
         throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
-        if (
-          !embedResult ||
-          !this.isExpectedDimensionVector(embedResult.vector) ||
-          !(await this.dbHasCompatibleVectors(db, embedResult.providerIdentity, execution))
-        ) {
+        if (!embedResult) {
           // Fall back to fulltext if no embeddings available
           searchParams = { term: query, limit };
         } else {
@@ -545,13 +541,9 @@ export class OramaBackend implements SearchBackend {
         }
       } else {
         // hybrid
-        const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
+        const embedResult = await this.resolveCompatibleQueryEmbedding(db, query, execution);
         throwIfSearchAborted(execution, `OramaBackend ${mode} search aborted`);
-        if (
-          !embedResult ||
-          !this.isExpectedDimensionVector(embedResult.vector) ||
-          !(await this.dbHasCompatibleVectors(db, embedResult.providerIdentity, execution))
-        ) {
+        if (!embedResult) {
           searchParams = { term: query, limit };
         } else {
           searchParams = { mode: "hybrid", term: query, vector: { value: embedResult.vector, property: "vector" }, limit };
@@ -573,6 +565,101 @@ export class OramaBackend implements SearchBackend {
     }
   }
 
+  private async resolveCompatibleQueryEmbedding(
+    db: any,
+    query: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<EmbedWithProviderResult | null> {
+    const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
+    throwIfSearchAborted(execution, "OramaBackend query embedding aborted");
+    if (!embedResult || !this.isExpectedDimensionVector(embedResult.vector)) return null;
+
+    const storedProviderIdentity = await this.findCompatibleStoredVectorProvider(db, execution);
+    if (!storedProviderIdentity) {
+      this.rememberVectorProviderCompatibility(db, embedResult.providerIdentity, false);
+      return null;
+    }
+    if (storedProviderIdentity === embedResult.providerIdentity) return embedResult;
+
+    const fallbackEmbed = await this.embedQueryWithStoredFallbackProvider(query, storedProviderIdentity, execution);
+    throwIfSearchAborted(execution, "OramaBackend fallback query embedding aborted");
+    if (
+      fallbackEmbed &&
+      fallbackEmbed.providerIdentity === storedProviderIdentity &&
+      this.isExpectedDimensionVector(fallbackEmbed.vector)
+    ) {
+      return fallbackEmbed;
+    }
+
+    this.rememberVectorProviderCompatibility(db, embedResult.providerIdentity, false);
+    return null;
+  }
+
+  private async embedQueryWithStoredFallbackProvider(
+    query: string,
+    providerIdentity: EmbedProviderIdentity,
+    execution?: SearchExecutionOptions,
+  ): Promise<EmbedWithProviderResult | null> {
+    const embedWithIdentity = (this.embedHelper as unknown as {
+      embedWithFallbackProviderIdentity?: (
+        text: string,
+        identity: EmbedProviderIdentity,
+        options?: { signal?: AbortSignal },
+      ) => Promise<EmbedWithProviderResult | null>;
+    }).embedWithFallbackProviderIdentity;
+    if (typeof embedWithIdentity !== "function") return null;
+    return embedWithIdentity.call(this.embedHelper, query, providerIdentity, { signal: execution?.signal });
+  }
+
+  private async findCompatibleStoredVectorProvider(
+    db: any,
+    execution?: SearchExecutionOptions,
+  ): Promise<EmbedProviderIdentity | null> {
+    const { search: oramaSearch, count } = this.oramaModule;
+    try {
+      const cached = this.vectorProviderCompatibility.get(db);
+      if (cached?.compatible) return cached.providerIdentity;
+      const existingCount = await count(db);
+      if (existingCount === 0) return null;
+      const allHits = await oramaSearch(db, {
+        term: "",
+        limit: existingCount + 100,
+        properties: ["vectorProvider"],
+      });
+      let providerIdentity: EmbedProviderIdentity | null = null;
+      let compatible = (allHits.hits ?? []).length > 0;
+      for (const hit of allHits.hits ?? []) {
+        throwIfSearchAborted(execution, "OramaBackend vector provider check aborted");
+        const doc = this.getStoredDocument(db, hit);
+        if (
+          typeof doc.vectorProvider !== "string" ||
+          doc.vectorProvider.length === 0 ||
+          !this.isCompatibleStoredVector(this.getStoredVector(db, hit, doc))
+        ) {
+          compatible = false;
+          break;
+        }
+        if (providerIdentity && doc.vectorProvider !== providerIdentity) {
+          compatible = false;
+          break;
+        }
+        providerIdentity = doc.vectorProvider as EmbedProviderIdentity;
+      }
+      if (compatible && providerIdentity) {
+        this.vectorProviderCompatibility.set(db, {
+          providerIdentity,
+          compatible: true,
+        });
+        return providerIdentity;
+      }
+      return null;
+    } catch (err) {
+      if (isSearchAborted(execution)) throw err;
+      log.debug(`OramaBackend stored vector provider check failed: ${err}`);
+      return null;
+    }
+  }
+
   private async dbHasCompatibleVectors(
     db: any,
     providerIdentity: EmbedProviderIdentity,
@@ -587,15 +674,15 @@ export class OramaBackend implements SearchBackend {
       const allHits = await oramaSearch(db, {
         term: "",
         limit: existingCount + 100,
-        properties: ["vectorProvider", "vector"],
+        properties: ["vectorProvider"],
       });
       let compatible = (allHits.hits ?? []).length > 0;
       for (const hit of allHits.hits ?? []) {
         throwIfSearchAborted(execution, "OramaBackend vector provider check aborted");
-        const doc = hit.document ?? {};
+        const doc = this.getStoredDocument(db, hit);
         if (
           doc.vectorProvider !== providerIdentity ||
-          !this.isCompatibleStoredVector(this.normalizeStoredVector(doc.vector))
+          !this.isCompatibleStoredVector(this.getStoredVector(db, hit, doc))
         ) {
           compatible = false;
           break;
@@ -617,6 +704,42 @@ export class OramaBackend implements SearchBackend {
   ): void {
     if (!providerIdentity || !db || typeof db !== "object") return;
     this.vectorProviderCompatibility.set(db, { providerIdentity, compatible });
+  }
+
+  private getStoredDocument(db: any, hit: any): Record<string, unknown> {
+    const internalId = this.getInternalDocumentId(db, hit);
+    const internalDoc =
+      internalId !== undefined && internalId !== null
+        ? db?.data?.docs?.docs?.[String(internalId)]
+        : undefined;
+    if (internalDoc && typeof internalDoc === "object") {
+      return internalDoc as Record<string, unknown>;
+    }
+    return hit?.document && typeof hit.document === "object"
+      ? hit.document as Record<string, unknown>
+      : {};
+  }
+
+  private getStoredVector(db: any, hit: any, doc: Record<string, unknown>): number[] | null {
+    const documentVector = this.normalizeStoredVector(doc.vector);
+    if (documentVector) return documentVector;
+    const internalId = this.getInternalDocumentId(db, hit);
+    if (internalId === undefined || internalId === null) return null;
+    const vectorEntry = db?.data?.index?.vectorIndexes?.vector?.node?.vectors?.get?.(internalId);
+    const vector = Array.isArray(vectorEntry) ? vectorEntry[1] : vectorEntry;
+    return this.normalizeStoredVector(vector);
+  }
+
+  private getInternalDocumentId(db: any, hit: any): unknown {
+    const publicId =
+      typeof hit?.id === "string"
+        ? hit.id
+        : typeof hit?.document?.id === "string"
+          ? hit.document.id
+          : undefined;
+    return publicId && typeof db?.internalDocumentIDStore?.idToInternalId?.get === "function"
+      ? db.internalDocumentIDStore.idToInternalId.get(publicId)
+      : undefined;
   }
 
   private isExpectedDimensionVector(vector: number[] | null | undefined): vector is number[] {

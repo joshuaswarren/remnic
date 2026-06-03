@@ -1,6 +1,6 @@
 import { log } from "../logger.js";
 import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
-import type { EmbedHelper, EmbedProviderIdentity } from "./embed-helper.js";
+import type { EmbedHelper, EmbedProviderIdentity, EmbedWithProviderResult } from "./embed-helper.js";
 import { scanMemoryDir } from "./document-scanner.js";
 import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
 
@@ -429,13 +429,9 @@ export class LanceDbBackend implements SearchBackend {
       }
 
       if (mode === "vector") {
-        const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
+        const embedResult = await this.resolveCompatibleQueryEmbedding(table, query, execution);
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
-        if (
-          !embedResult ||
-          !this.isExpectedDimensionVector(embedResult.vector) ||
-          !(await this.tableHasCompatibleVectors(table, embedResult.providerIdentity, execution))
-        ) {
+        if (!embedResult) {
           // Fall back to FTS
           const results = await table.search(query, "fts").limit(limit).toArray();
           throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
@@ -447,13 +443,9 @@ export class LanceDbBackend implements SearchBackend {
       }
 
       // hybrid — try FTS+vector with RRF reranking
-      const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
+      const embedResult = await this.resolveCompatibleQueryEmbedding(table, query, execution);
       throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
-      if (
-        !embedResult ||
-        !this.isExpectedDimensionVector(embedResult.vector) ||
-        !(await this.tableHasCompatibleVectors(table, embedResult.providerIdentity, execution))
-      ) {
+      if (!embedResult) {
         const results = await table.search(query, "fts").limit(limit).toArray();
         throwIfSearchAborted(execution, `LanceDbBackend ${mode} search aborted`);
         return this.mapRows(results);
@@ -476,6 +468,93 @@ export class LanceDbBackend implements SearchBackend {
     } catch (err) {
       log.debug(`LanceDbBackend search (${mode}) failed: ${err}`);
       return [];
+    }
+  }
+
+  private async resolveCompatibleQueryEmbedding(
+    table: any,
+    query: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<EmbedWithProviderResult | null> {
+    const embedResult = await this.embedHelper.embedWithProvider(query, { signal: execution?.signal });
+    throwIfSearchAborted(execution, "LanceDbBackend query embedding aborted");
+    if (!embedResult || !this.isExpectedDimensionVector(embedResult.vector)) return null;
+
+    const storedProviderIdentity = await this.findCompatibleStoredVectorProvider(table, execution);
+    if (!storedProviderIdentity) {
+      this.rememberVectorProviderCompatibility(table, embedResult.providerIdentity, false);
+      return null;
+    }
+    if (storedProviderIdentity === embedResult.providerIdentity) return embedResult;
+
+    const fallbackEmbed = await this.embedQueryWithStoredFallbackProvider(query, storedProviderIdentity, execution);
+    throwIfSearchAborted(execution, "LanceDbBackend fallback query embedding aborted");
+    if (
+      fallbackEmbed &&
+      fallbackEmbed.providerIdentity === storedProviderIdentity &&
+      this.isExpectedDimensionVector(fallbackEmbed.vector)
+    ) {
+      return fallbackEmbed;
+    }
+
+    this.rememberVectorProviderCompatibility(table, embedResult.providerIdentity, false);
+    return null;
+  }
+
+  private async embedQueryWithStoredFallbackProvider(
+    query: string,
+    providerIdentity: EmbedProviderIdentity,
+    execution?: SearchExecutionOptions,
+  ): Promise<EmbedWithProviderResult | null> {
+    const embedWithIdentity = (this.embedHelper as unknown as {
+      embedWithFallbackProviderIdentity?: (
+        text: string,
+        identity: EmbedProviderIdentity,
+        options?: { signal?: AbortSignal },
+      ) => Promise<EmbedWithProviderResult | null>;
+    }).embedWithFallbackProviderIdentity;
+    if (typeof embedWithIdentity !== "function") return null;
+    return embedWithIdentity.call(this.embedHelper, query, providerIdentity, { signal: execution?.signal });
+  }
+
+  private async findCompatibleStoredVectorProvider(
+    table: any,
+    execution?: SearchExecutionOptions,
+  ): Promise<EmbedProviderIdentity | null> {
+    try {
+      const cached = this.vectorProviderCompatibility.get(table);
+      if (cached?.compatible) return cached.providerIdentity;
+      const rows = await table.query().select(["vector", "vectorProvider"]).toArray();
+      let providerIdentity: EmbedProviderIdentity | null = null;
+      let compatible = rows.length > 0;
+      for (const row of rows ?? []) {
+        throwIfSearchAborted(execution, "LanceDbBackend vector provider check aborted");
+        if (
+          typeof row.vectorProvider !== "string" ||
+          row.vectorProvider.length === 0 ||
+          !this.isCompatibleStoredVector(row.vector)
+        ) {
+          compatible = false;
+          break;
+        }
+        if (providerIdentity && row.vectorProvider !== providerIdentity) {
+          compatible = false;
+          break;
+        }
+        providerIdentity = row.vectorProvider as EmbedProviderIdentity;
+      }
+      if (compatible && providerIdentity) {
+        this.vectorProviderCompatibility.set(table, {
+          providerIdentity,
+          compatible: true,
+        });
+        return providerIdentity;
+      }
+      return null;
+    } catch (err) {
+      if (isSearchAborted(execution)) throw err;
+      log.debug(`LanceDbBackend stored vector provider check failed: ${err}`);
+      return null;
     }
   }
 
