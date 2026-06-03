@@ -152,12 +152,12 @@ export class LanceDbBackend implements SearchBackend {
       vector: number[];
       providerIdentity?: string;
     }>();
-    const hasVectorProviderColumn = await this.tableHasVectorProviderColumn(table);
-    if (!hasVectorProviderColumn) {
+    const vectorProviderColumnState = await this.tableVectorProviderColumnState(table);
+    if (vectorProviderColumnState === "missing") {
       table = await this.recreateTableForCollection(collection);
       if (isSearchAborted(execution)) return;
       if (!table) return;
-    } else {
+    } else if (vectorProviderColumnState === "present") {
       try {
         const existingRows = await table.query().select(["docid", "vector", "vectorProvider"]).toArray();
         for (const row of existingRows ?? []) {
@@ -174,6 +174,8 @@ export class LanceDbBackend implements SearchBackend {
       } catch {
         // Vector preservation is best-effort; refresh can proceed without it.
       }
+    } else {
+      log.debug("LanceDbBackend skipped vector preservation after vectorProvider probe failed");
     }
 
     const rows = docs.map((d) => {
@@ -368,12 +370,16 @@ export class LanceDbBackend implements SearchBackend {
     return this.ensureTableForCollection(collection);
   }
 
-  private async tableHasVectorProviderColumn(table: any): Promise<boolean> {
+  private async tableVectorProviderColumnState(table: any): Promise<"present" | "missing" | "unknown"> {
     try {
       await table.query().select(["vectorProvider"]).toArray();
-      return true;
-    } catch {
-      return false;
+      return "present";
+    } catch (err) {
+      if (isMissingVectorProviderColumnError(err)) {
+        return "missing";
+      }
+      log.debug(`LanceDbBackend vectorProvider column probe failed: ${err}`);
+      return "unknown";
     }
   }
 
@@ -620,4 +626,10 @@ export class LanceDbBackend implements SearchBackend {
       arr.some((value) => value !== 0)
     );
   }
+}
+
+function isMissingVectorProviderColumnError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /\bvectorProvider\b/i.test(message) &&
+    /\b(column|field|schema|missing|not found|not exist|does not exist|unknown)\b/i.test(message);
 }

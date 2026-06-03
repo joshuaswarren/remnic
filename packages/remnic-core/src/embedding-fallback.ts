@@ -333,7 +333,11 @@ export class EmbeddingFallback {
 
     await this.enqueueIndexMutation(async () => {
       const existing = await this.readIndexIdentityFromDisk();
-      if (existing && !sameIndexIdentity(existing, result.provider)) {
+      if (
+        existing &&
+        !sameIndexIdentity(existing, result.provider) &&
+        !canReplaceIndexIdentity(existing, result.provider)
+      ) {
         log.debug(
           `embedding fallback index update skipped: ${result.provider.type}/${result.provider.model} would replace existing ${existing.provider}/${existing.model} index`,
         );
@@ -790,6 +794,13 @@ function sameIndexIdentity(
 
 function indexIdentityProvider(identity: EmbeddingIndexComparable): EmbeddingProviderType {
   return "provider" in identity ? identity.provider : identity.type;
+}
+
+function canReplaceIndexIdentity(
+  existing: EmbeddingIndexIdentity,
+  replacement: Pick<ProviderConfig, "type" | "model">,
+): boolean {
+  return existing.provider === "host" && !sameIndexIdentity(existing, replacement);
 }
 
 function providerFromIndexIdentity(identity: EmbeddingIndexIdentity): ProviderConfig {

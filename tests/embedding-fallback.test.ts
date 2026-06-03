@@ -175,8 +175,8 @@ test("EmbeddingFallback indexes and searches fallback vectors under the fallback
   }
 });
 
-test("EmbeddingFallback does not replace an existing host index during transient fallback", async () => {
-  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-skip-fallback-"));
+test("EmbeddingFallback replaces an existing host index after fallback embedding succeeds", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-replace-fallback-"));
   const originalFetch = globalThis.fetch;
   const indexPath = path.join(memoryDir, "state", "embeddings.json");
   await mkdir(path.dirname(indexPath), { recursive: true });
@@ -222,12 +222,61 @@ test("EmbeddingFallback does not replace an existing host index during transient
       model: string;
       entries: Record<string, unknown>;
     };
-    assert.equal(parsed.provider, "host");
-    assert.equal(parsed.model, "host-model");
-    assert.ok(parsed.entries["mem-host"]);
-    assert.equal(parsed.entries["mem-openai"], undefined);
+    assert.equal(parsed.provider, "openai");
+    assert.equal(parsed.model, "text-embedding-3-small");
+    assert.equal(parsed.entries["mem-host"], undefined);
+    assert.ok(parsed.entries["mem-openai"]);
   } finally {
     globalThis.fetch = originalFetch;
+    unregister();
+    clearHostEmbeddingProvidersForTest();
+  }
+});
+
+test("EmbeddingFallback replaces an existing host index when host model changes", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-host-embed-replace-host-"));
+  const indexPath = path.join(memoryDir, "state", "embeddings.json");
+  await mkdir(path.dirname(indexPath), { recursive: true });
+  await writeFile(
+    indexPath,
+    JSON.stringify({
+      version: 1,
+      provider: "host",
+      model: "old-host-model",
+      entries: {
+        "mem-host": {
+          vector: [1, 0],
+          path: "facts/host.md",
+        },
+      },
+    }),
+    "utf-8",
+  );
+  const unregister = registerHostEmbeddingProvider(memoryDir, {
+    id: "host-test",
+    model: "new-host-model",
+    async embed() {
+      return [0, 1];
+    },
+  });
+  try {
+    const fallback = new EmbeddingFallback(stubConfig({ memoryDir }));
+    await fallback.indexFile(
+      "mem-host-new",
+      "launch planning",
+      path.join(memoryDir, "facts", "launch.md"),
+    );
+
+    const parsed = JSON.parse(await readFile(indexPath, "utf-8")) as {
+      provider: string;
+      model: string;
+      entries: Record<string, unknown>;
+    };
+    assert.equal(parsed.provider, "host");
+    assert.equal(parsed.model, "new-host-model");
+    assert.equal(parsed.entries["mem-host"], undefined);
+    assert.ok(parsed.entries["mem-host-new"]);
+  } finally {
     unregister();
     clearHostEmbeddingProvidersForTest();
   }
