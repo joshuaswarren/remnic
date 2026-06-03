@@ -1585,6 +1585,8 @@ const pluginDefinition = {
     const codexMessageCountByBufferKey = new Map<string, number>();
     const observedInboundMessageIds = new Set<string>();
     const observedInboundMessageIdOrder: string[] = [];
+    const inboundReplyMetadataByMessageKey = new Map<string, OpenClawTranscriptMetadata>();
+    const inboundReplyMetadataKeyOrder: string[] = [];
     const observedInlineExplicitCaptureKeys = new Set<string>();
     const observedInlineExplicitCaptureKeyOrder: string[] = [];
     let codexCompactionModeLogged = false;
@@ -1596,7 +1598,10 @@ const pluginDefinition = {
       }
       while (observedInboundMessageIdOrder.length > MAX_OBSERVED_INBOUND_MESSAGE_IDS) {
         const expired = observedInboundMessageIdOrder.shift();
-        if (expired) observedInboundMessageIds.delete(expired);
+        if (expired) {
+          observedInboundMessageIds.delete(expired);
+          inboundReplyMetadataByMessageKey.delete(expired);
+        }
       }
     }
 
@@ -1604,6 +1609,35 @@ const pluginDefinition = {
       for (const messageKey of messageKeys) {
         rememberObservedInboundMessageId(messageKey);
       }
+    }
+
+    function rememberInboundReplyMetadata(
+      messageKeys: readonly string[],
+      metadata: OpenClawTranscriptMetadata | null,
+    ): void {
+      if (!metadata?.replyToBody?.trim()) return;
+      for (const messageKey of messageKeys) {
+        if (!inboundReplyMetadataByMessageKey.has(messageKey)) {
+          inboundReplyMetadataKeyOrder.push(messageKey);
+        }
+        inboundReplyMetadataByMessageKey.set(messageKey, metadata);
+      }
+      while (inboundReplyMetadataKeyOrder.length > MAX_OBSERVED_INBOUND_MESSAGE_IDS) {
+        const expired = inboundReplyMetadataKeyOrder.shift();
+        if (expired && !observedInboundMessageIds.has(expired)) {
+          inboundReplyMetadataByMessageKey.delete(expired);
+        }
+      }
+    }
+
+    function getInboundReplyMetadata(
+      messageKeys: readonly string[],
+    ): OpenClawTranscriptMetadata | null {
+      for (const messageKey of messageKeys) {
+        const metadata = inboundReplyMetadataByMessageKey.get(messageKey);
+        if (metadata?.replyToBody?.trim()) return metadata;
+      }
+      return null;
     }
 
     function rememberObservedInlineExplicitCaptureKey(noteKey: string): void {
@@ -3545,6 +3579,11 @@ const pluginDefinition = {
           if (inboundMessageKeys.length === 0) return;
           if (inboundMessageKeys.some((key) => observedInboundMessageIds.has(key))) return;
           const metadata = buildOpenClawMessageMetadata(event, event, ctx, cfg);
+          const inboundReplyHintMetadata = cfg.openclawReplyMetadataExtractionHintsEnabled
+            ? buildOpenClawMessageMetadata(event, event, ctx, {
+                openclawReplyMetadataCaptureEnabled: true,
+              })
+            : metadata;
           const eventDate =
             typeof event.timestamp === "number" && Number.isFinite(event.timestamp)
               ? new Date(event.timestamp)
@@ -3573,6 +3612,7 @@ const pluginDefinition = {
           if (transcriptContent.length === 0) {
             if (inboundMessageKey && processedExplicitNotes > 0) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
+              rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
             return;
           }
@@ -3587,6 +3627,7 @@ const pluginDefinition = {
             });
             if (inboundMessageKey) {
               rememberObservedInboundMessageKeys(inboundMessageKeys);
+              rememberInboundReplyMetadata(inboundMessageKeys, inboundReplyHintMetadata);
             }
           } catch (err) {
             log.debug(`message_received transcript append failed: ${err}`);
@@ -3736,12 +3777,16 @@ const pluginDefinition = {
               ctx,
               cfg,
             );
+            const messageDedupeKeys = getOpenClawMessageDedupeKeys(msg, event, ctx, sessionKey);
+            const cachedReplyHintMetadata =
+              role === "user" && cfg.openclawReplyMetadataExtractionHintsEnabled
+                ? getInboundReplyMetadata(messageDedupeKeys)
+                : null;
             const replyHintMetadata = cfg.openclawReplyMetadataExtractionHintsEnabled
-              ? buildOpenClawMessageMetadata(msg, event, ctx, {
+              ? cachedReplyHintMetadata ?? buildOpenClawMessageMetadata(msg, event, ctx, {
                   openclawReplyMetadataCaptureEnabled: true,
                 })
               : messageMetadata;
-            const messageDedupeKeys = getOpenClawMessageDedupeKeys(msg, event, ctx, sessionKey);
             const messageDedupeKey = messageDedupeKeys[0];
             const transcriptAlreadyCaptured =
               role === "user" &&
