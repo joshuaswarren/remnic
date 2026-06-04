@@ -8,7 +8,7 @@ import { TierMigrationExecutor } from "../src/tier-migration.js";
 import type { MemoryFile } from "../src/types.js";
 
 type QmdCallLog = {
-  updates: string[];
+  updates: string[]; updateDirs?: Array<{ collection: string; memoryDir: string }>;
   embeds: string[];
 };
 
@@ -78,7 +78,7 @@ function createQmdStub(logs: QmdCallLog) {
   };
 }
 
-test("tier migration demotes hot memory into cold path and cold collection", async () => {
+test("tier migration demotes hot memory and refreshes source and destination collections", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-tier-migrate-"));
   try {
     const storage = new StorageManager(memoryDir);
@@ -116,14 +116,14 @@ test("tier migration demotes hot memory into cold path and cold collection", asy
     const oldPathMemory = await storage.readMemoryByPath(source.path);
     assert.equal(oldPathMemory, null, "expected source hot file to be removed after demotion");
 
-    assert.deepEqual(logs.updates, ["openclaw-engram-cold"]);
+    assert.deepEqual(logs.updates, ["openclaw-engram-cold", "openclaw-engram"]);
     assert.deepEqual(logs.embeds, []);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
 
-test("tier migration promotes cold memory back into hot path and collection", async () => {
+test("tier migration promotes cold memory and refreshes source and destination collections", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-tier-promote-"));
   try {
     const storage = new StorageManager(memoryDir);
@@ -164,7 +164,7 @@ test("tier migration promotes cold memory back into hot path and collection", as
     assert.ok(hotAgain, "expected promoted memory in hot path");
     assert.equal(hotAgain!.frontmatter.id, source.frontmatter.id);
 
-    assert.deepEqual(logs.updates, ["openclaw-engram"]);
+    assert.deepEqual(logs.updates, ["openclaw-engram", "openclaw-engram-cold"]);
     assert.deepEqual(logs.embeds, []);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -276,8 +276,77 @@ test("tier migration autoEmbed embeds both destination and source collections", 
       reason: "autoembed",
     });
 
-    assert.deepEqual(logs.updates, ["openclaw-engram-cold"]);
+    assert.deepEqual(logs.updates, ["openclaw-engram-cold", "openclaw-engram"]);
     assert.deepEqual(logs.embeds, ["openclaw-engram-cold", "openclaw-engram"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("tier migration avoids duplicate source update for global-update backends", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-tier-global-update-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    const source = await createHotFactWithParityFields(storage);
+
+    const logs: QmdCallLog = { updates: [], embeds: [] };
+    const executor = new TierMigrationExecutor({
+      storage,
+      qmd: {
+        ...createQmdStub(logs),
+        updatesAllCollections: () => true,
+      } as any,
+      hotCollection: "openclaw-engram",
+      coldCollection: "openclaw-engram-cold",
+      autoEmbed: false,
+    });
+
+    await executor.migrateMemory({
+      memory: source,
+      fromTier: "hot",
+      toTier: "cold",
+      reason: "global-update",
+    });
+
+    assert.deepEqual(logs.updates, ["openclaw-engram-cold"]);
+    assert.deepEqual(logs.embeds, []);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("tier migration refreshes scoped collections from their tier roots", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-tier-scoped-roots-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    const source = await createHotFactWithParityFields(storage);
+
+    const logs: QmdCallLog = { updates: [], updateDirs: [], embeds: [] };
+    const executor = new TierMigrationExecutor({
+      storage,
+      qmd: {
+        ...createQmdStub(logs),
+        updateCollectionFromDir: async (collection: string, dir: string): Promise<void> => {
+          logs.updateDirs!.push({ collection, memoryDir: dir });
+        },
+      } as any,
+      hotCollection: "openclaw-engram",
+      coldCollection: "openclaw-engram-cold",
+      autoEmbed: false,
+    });
+
+    await executor.migrateMemory({
+      memory: source,
+      fromTier: "hot",
+      toTier: "cold",
+      reason: "scoped-roots",
+    });
+
+    assert.deepEqual(logs.updates, []);
+    assert.deepEqual(logs.updateDirs, [
+      { collection: "openclaw-engram-cold", memoryDir: path.join(memoryDir, "cold") },
+      { collection: "openclaw-engram", memoryDir },
+    ]);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

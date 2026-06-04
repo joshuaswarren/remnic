@@ -149,13 +149,17 @@ export class OramaBackend implements SearchBackend {
   }
 
   async updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void> {
+    await this.updateCollectionFromDir(collection, this.memoryDir, execution);
+  }
+
+  async updateCollectionFromDir(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<void> {
     if (isSearchAborted(execution)) return;
     const db = await this.ensureDbForCollection(collection);
     if (isSearchAborted(execution)) return;
     if (!db) return;
     const { search: oramaSearch, insert, remove, count, getByID } = this.oramaModule;
 
-    const docs = await scanMemoryDir(this.memoryDir);
+    const docs = await scanMemoryDir(memoryDir);
     if (isSearchAborted(execution)) return;
     const docMap = new Map(docs.map((d) => [d.docid, d]));
     const { update: oramaUpdate } = this.oramaModule;

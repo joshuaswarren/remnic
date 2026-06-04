@@ -124,14 +124,19 @@ export class MeilisearchBackend implements SearchBackend {
   }
 
   async updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void> {
-    if (!this.autoIndex || !this.memoryDir) return;
+    if (!this.memoryDir) return;
+    await this.updateCollectionFromDir(collection, this.memoryDir, execution);
+  }
+
+  async updateCollectionFromDir(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<void> {
+    if (!this.autoIndex) return;
     if (!this.available) return;
     if (isSearchAborted(execution)) return;
 
     try {
       const client = await this.ensureClient();
       if (isSearchAborted(execution)) return;
-      const docs = await scanMemoryDir(this.memoryDir);
+      const docs = await scanMemoryDir(memoryDir);
       if (isSearchAborted(execution)) return;
       const index = client.index(collection);
 

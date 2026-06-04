@@ -91,8 +91,10 @@ export class TierMigrationExecutor {
     if (result.changed) {
       const destinationCollection = this.collectionForTier(toTier);
       const sourceCollection = this.collectionForTier(fromTier);
-      // QMD update is effectively global in current CLI versions. One update call is enough.
-      await this.qmd.updateCollection(destinationCollection);
+      await this.updateCollectionFromTierRoot(destinationCollection, toTier);
+      if (sourceCollection !== destinationCollection && this.qmd.updatesAllCollections?.() !== true) {
+        await this.updateCollectionFromTierRoot(sourceCollection, fromTier);
+      }
       if (this.autoEmbed) {
         await this.qmd.embedCollection(destinationCollection);
         if (sourceCollection !== destinationCollection) {
@@ -106,6 +108,15 @@ export class TierMigrationExecutor {
 
   private collectionForTier(tier: MemoryTier): string {
     return tier === "cold" ? this.coldCollection : this.hotCollection;
+  }
+
+  private async updateCollectionFromTierRoot(collection: string, tier: MemoryTier): Promise<void> {
+    const memoryDir = tier === "cold" ? path.join(this.storage.dir, "cold") : this.storage.dir;
+    if (this.qmd.updatesAllCollections?.() !== true && this.qmd.updateCollectionFromDir) {
+      await this.qmd.updateCollectionFromDir(collection, memoryDir);
+      return;
+    }
+    await this.qmd.updateCollection(collection);
   }
 
   private async appendJournal(result: TierMigrationResult): Promise<void> {

@@ -128,12 +128,16 @@ export class LanceDbBackend implements SearchBackend {
   }
 
   async updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void> {
+    await this.updateCollectionFromDir(collection, this.memoryDir, execution);
+  }
+
+  async updateCollectionFromDir(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<void> {
     if (isSearchAborted(execution)) return;
     let table = await this.ensureTableForCollection(collection);
     if (isSearchAborted(execution)) return;
     if (!table) return;
 
-    const docs = await scanMemoryDir(this.memoryDir);
+    const docs = await scanMemoryDir(memoryDir);
     if (isSearchAborted(execution)) return;
     if (docs.length === 0) {
       // Clear stale data when no docs remain

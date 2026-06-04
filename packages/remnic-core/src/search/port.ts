@@ -66,6 +66,7 @@ export interface SearchBackend {
   // ── Maintenance ──
   update(execution?: SearchExecutionOptions): Promise<void>;
   updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void>;
+  updateCollectionFromDir?(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<void>;
   /**
    * True when update() refreshes every indexed collection, not just this
    * backend's configured collection. Namespace routers use this to avoid

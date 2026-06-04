@@ -282,7 +282,7 @@ test("first-start migration: journals demotions and updates cold QMD collection"
     });
 
     assert.equal(result.demotedCount, 1);
-    assert.deepEqual(qmdUpdates, ["cold-test"]);
+    assert.deepEqual(qmdUpdates, ["cold-test", "hot-test"]);
 
     const journalPath = path.join(dir, "state", "tier-migration-journal.jsonl");
     const journalRaw = await readFile(journalPath, "utf-8");
