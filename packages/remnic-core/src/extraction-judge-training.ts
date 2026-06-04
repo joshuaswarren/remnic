@@ -22,7 +22,7 @@
 
 import path from "node:path";
 import { homedir } from "node:os";
-import { appendFile, chmod, mkdir, readFile, readdir } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { log } from "./logger.js";
 import type { JudgeVerdictKind } from "./extraction-judge.js";
 
@@ -101,11 +101,13 @@ function dateStamp(iso: string): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-export function trainingFilePathFor(
-  directory: string,
-  iso: string,
-): string {
+export function trainingFilePathFor(directory: string, iso: string): string {
   return path.join(directory, `${dateStamp(iso)}.jsonl`);
+}
+
+function isPathInsideDirectory(filePath: string, directory: string): boolean {
+  const relative = path.relative(directory, filePath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 /**
@@ -113,10 +115,7 @@ export function trainingFilePathFor(
  * debug level and swallowed, same policy as the telemetry emitter.
  * No-op when `options.enabled` is false.
  */
-export async function recordJudgeTrainingPair(
-  row: JudgeTrainingPair,
-  options: JudgeTrainingOptions,
-): Promise<void> {
+export async function recordJudgeTrainingPair(row: JudgeTrainingPair, options: JudgeTrainingOptions): Promise<void> {
   if (!options.enabled) return;
   const dir = resolveTrainingDir(options);
   const filePath = trainingFilePathFor(dir, row.ts);
@@ -129,7 +128,7 @@ export async function recordJudgeTrainingPair(
     await chmod(filePath, 0o600);
   } catch (err) {
     log.debug(
-      `extraction-judge-training: append failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      `extraction-judge-training: append failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`
     );
   }
 }
@@ -140,9 +139,23 @@ export async function recordJudgeTrainingPair(
  * counted in the returned `malformed` tally.
  */
 export async function readJudgeTrainingPairs(
-  options: Pick<JudgeTrainingOptions, "directory">,
+  options: Pick<JudgeTrainingOptions, "directory">
 ): Promise<{ rows: JudgeTrainingPair[]; malformed: number }> {
   const dir = resolveTrainingDir({ enabled: true, ...options });
+  try {
+    const dirStat = await lstat(dir);
+    if (dirStat.isSymbolicLink()) {
+      throw new Error("Judge training directory must not be a symlink");
+    }
+    if (!dirStat.isDirectory()) {
+      throw new Error("Judge training path must be a directory");
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { rows: [], malformed: 0 };
+    throw err;
+  }
+
   let entries: string[];
   try {
     entries = await readdir(dir);
@@ -154,11 +167,33 @@ export async function readJudgeTrainingPairs(
 
   const rows: JudgeTrainingPair[] = [];
   let malformed = 0;
+  const resolvedDir = await realpath(dir);
   // Sort so reads are deterministic across platforms.
   entries.sort();
   for (const name of entries) {
     if (!name.endsWith(".jsonl")) continue;
-    const raw = await readFile(path.join(dir, name), "utf-8");
+    const filePath = path.join(dir, name);
+    let fileStat: Awaited<ReturnType<typeof lstat>>;
+    try {
+      fileStat = await lstat(filePath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") continue;
+      throw err;
+    }
+    if (fileStat.isSymbolicLink() || !fileStat.isFile()) continue;
+
+    let resolvedFilePath: string;
+    try {
+      resolvedFilePath = await realpath(filePath);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") continue;
+      throw err;
+    }
+    if (!isPathInsideDirectory(resolvedFilePath, resolvedDir)) continue;
+
+    const raw = await readFile(resolvedFilePath, "utf-8");
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue;
       let parsed: unknown;
@@ -192,18 +227,11 @@ export function isValidTrainingPair(value: unknown): value is JudgeTrainingPair 
   if (typeof p.ts !== "string") return false;
   if (typeof p.candidateText !== "string") return false;
   if (typeof p.candidateCategory !== "string") return false;
-  if (
-    p.verdictKind !== "accept" &&
-    p.verdictKind !== "reject" &&
-    p.verdictKind !== "defer"
-  ) {
+  if (p.verdictKind !== "accept" && p.verdictKind !== "reject" && p.verdictKind !== "defer") {
     return false;
   }
   if (typeof p.reason !== "string") return false;
-  if (
-    p.candidateConfidence !== undefined &&
-    typeof p.candidateConfidence !== "number"
-  ) {
+  if (p.candidateConfidence !== undefined && typeof p.candidateConfidence !== "number") {
     return false;
   }
   if (p.priorDeferrals !== undefined && typeof p.priorDeferrals !== "number") {
