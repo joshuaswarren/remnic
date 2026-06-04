@@ -1,4 +1,4 @@
-import type { ImportedMemory } from "@remnic/core";
+import { type ImportedMemory, parseIsoOffsetTimestamp } from "@remnic/core";
 import type { ParsedSupermemoryExport, SupermemoryRecord } from "./parser.js";
 
 export const SUPERMEMORY_SOURCE_LABEL = "supermemory";
@@ -10,7 +10,7 @@ export interface SupermemoryTransformOptions {
 
 export function transformSupermemoryExport(
   parsed: ParsedSupermemoryExport,
-  options: SupermemoryTransformOptions = {},
+  options: SupermemoryTransformOptions = {}
 ): ImportedMemory[] {
   const out: ImportedMemory[] = [];
   const cap = options.maxMemories;
@@ -57,17 +57,7 @@ function pickValidTimestamp(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   if (trimmed.length === 0) return undefined;
-  const match = /^(\d{4})-(\d{2})-(\d{2})T/.exec(trimmed);
-  if (!match) return undefined;
-  const parsed = Date.parse(trimmed);
-  if (!Number.isFinite(parsed)) return undefined;
-  const date = new Date(parsed);
-  const [, year, month, day] = match;
-  if (
-    date.getUTCFullYear() !== Number(year) ||
-    date.getUTCMonth() + 1 !== Number(month) ||
-    date.getUTCDate() !== Number(day)
-  ) {
+  if (parseIsoOffsetTimestamp(trimmed) === null) {
     return undefined;
   }
   return trimmed;

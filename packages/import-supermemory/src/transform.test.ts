@@ -1,5 +1,5 @@
-import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { describe, it } from "node:test";
 import { transformSupermemoryExport } from "./transform.js";
 
 describe("transformSupermemoryExport", () => {
@@ -17,7 +17,7 @@ describe("transformSupermemoryExport", () => {
           { id: "b", content: "second memo" },
         ],
       },
-      { maxMemories: 1 },
+      { maxMemories: 1 }
     );
 
     assert.equal(out.length, 1);
@@ -36,10 +36,7 @@ describe("transformSupermemoryExport", () => {
   it("does not synthesize colliding source IDs for id-less memories", () => {
     const sharedPrefix = "x".repeat(64);
     const out = transformSupermemoryExport({
-      memories: [
-        { content: `${sharedPrefix}a` },
-        { content: `${sharedPrefix}b` },
-      ],
+      memories: [{ content: `${sharedPrefix}a` }, { content: `${sharedPrefix}b` }],
       importedFromPath: "/exports/supermemory.json",
     });
 
@@ -87,11 +84,40 @@ describe("transformSupermemoryExport", () => {
 
   it("falls back to createdAt when updatedAt is an impossible calendar date", () => {
     const out = transformSupermemoryExport({
-      memories: [{ id: "a", content: "memo", updatedAt: "2026-02-31T00:00:00.000Z", createdAt: "2026-05-05T00:00:00.000Z" }],
+      memories: [
+        { id: "a", content: "memo", updatedAt: "2026-02-31T00:00:00.000Z", createdAt: "2026-05-05T00:00:00.000Z" },
+      ],
     });
 
     assert.equal(out.length, 1);
     assert.equal(out[0]?.sourceTimestamp, "2026-05-05T00:00:00.000Z");
+  });
+
+  it("falls back to createdAt when updatedAt uses an invalid RFC 3339 hour", () => {
+    const out = transformSupermemoryExport({
+      memories: [{ id: "a", content: "memo", updatedAt: "2026-05-05T24:00:00Z", createdAt: "2026-05-05T00:00:00Z" }],
+    });
+
+    assert.equal(out.length, 1);
+    assert.equal(out[0]?.sourceTimestamp, "2026-05-05T00:00:00Z");
+  });
+
+  it("preserves valid positive-offset timestamps across UTC date boundaries", () => {
+    const out = transformSupermemoryExport({
+      memories: [{ id: "a", content: "memo", updatedAt: "2026-05-05T00:30:00+02:00" }],
+    });
+
+    assert.equal(out.length, 1);
+    assert.equal(out[0]?.sourceTimestamp, "2026-05-05T00:30:00+02:00");
+  });
+
+  it("preserves valid negative-offset timestamps across UTC date boundaries", () => {
+    const out = transformSupermemoryExport({
+      memories: [{ id: "a", content: "memo", updatedAt: "2026-05-04T23:30:00-02:00" }],
+    });
+
+    assert.equal(out.length, 1);
+    assert.equal(out[0]?.sourceTimestamp, "2026-05-04T23:30:00-02:00");
   });
 
   it("omits sourceTimestamp when exported timestamps are invalid", () => {
