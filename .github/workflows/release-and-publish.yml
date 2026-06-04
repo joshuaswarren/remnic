@@ -599,7 +599,7 @@ jobs:
             exit 0
           fi
 
-          npm install -g clawhub@0.12.2
+          npm install -g clawhub@0.18.0
           clawhub login --token "${CLAWHUB_TOKEN}" --no-browser
 
           package_version="$(node -p "require('./${NPM_PACKAGE_PATH}/package.json').version")"
@@ -640,6 +640,12 @@ jobs:
             cat "${publish_log}"
             if grep -q "publisher does not exist on ClawHub" "${publish_log}"; then
               echo "::notice title=ClawHub publish skipped::The authenticated ClawHub account is not provisioned as a package publisher yet."
+              rm -f "${publish_log}"
+              exit 0
+            fi
+            if grep -q "Too many bytes read in a single function execution" "${publish_log}" \
+              && grep -q "syncPackageCapabilitySearchDigests" "${publish_log}"; then
+              echo "::notice title=ClawHub publish skipped::ClawHub publish failed in its backend search-digest sync. npm and GitHub release publication will continue; retry the ClawHub publish after ClawHub fixes or clears the digest limit."
               rm -f "${publish_log}"
               exit 0
             fi

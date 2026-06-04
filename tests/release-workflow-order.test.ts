@@ -121,5 +121,7 @@ test("release workflow fails existing tags with incomplete npm publication", () 
 
 test("release workflow pins publish tooling", () => {
   assert.doesNotMatch(workflow, /npm install -g npm@latest/);
+  assert.doesNotMatch(workflow, /npm install -g clawhub@latest/);
   assert.match(workflow, /npm install -g npm@11\.16\.0/);
+  assert.match(workflow, /npm install -g clawhub@0\.18\.0/);
 });

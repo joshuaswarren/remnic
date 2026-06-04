@@ -79,6 +79,31 @@ test("release workflow verifies the OpenClaw ClawHub packlist after build", asyn
   );
 });
 
+test("release workflow treats known ClawHub backend digest limits as nonfatal", async () => {
+  const workflow = await readFile(".github/workflows/release-and-publish.yml", "utf8");
+
+  assert.match(
+    workflow,
+    /Too many bytes read in a single function execution/,
+    "release workflow must recognize ClawHub's Convex read-limit backend failure",
+  );
+  assert.match(
+    workflow,
+    /syncPackageCapabilitySearchDigests/,
+    "release workflow must constrain the nonfatal skip to ClawHub search-digest failures",
+  );
+  assert.match(
+    workflow,
+    /ClawHub publish failed in its backend search-digest sync[\s\S]*exit 0/,
+    "known external ClawHub backend failures should not block GitHub release creation after npm publish",
+  );
+  assert.match(
+    workflow,
+    /rm -f "\$\{publish_log\}"\n            exit "\$\{publish_status\}"/,
+    "unknown ClawHub publish failures must remain fatal",
+  );
+});
+
 test("@remnic/server build verifies declared bin artifacts", async () => {
   const packageJson = JSON.parse(await readFile("packages/remnic-server/package.json", "utf8"));
 

@@ -547,7 +547,7 @@ tests/recall-hardening.test.ts(754,3): TS2349
 tests/recall-hardening.test.ts(812,3): TS2349
 tests/recall-hardening.test.ts(814,3): TS2349
 tests/recall-no-recall-short-circuit.test.ts(14,3): TS2740
-tests/release-workflow-public-packages.test.ts(123,41): TS7016
+tests/release-workflow-public-packages.test.ts(148,41): TS7016
 tests/remnic-cli-service-candidates.test.ts(17,82): TS7006
 tests/remnic-plugin-register-migration.test.ts(66,12): TS2352
 tests/remnic-server-cli.test.ts(9,30): TS7016
