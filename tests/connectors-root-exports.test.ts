@@ -69,24 +69,31 @@ test("root package export map exposes compat and source shims", async () => {
     ["secure-store/index", "./dist/secure-store/index.js"],
     ["temporal-index", "./dist/temporal-index.js"],
     ["temporal-validity", "./dist/temporal-validity.js"],
+    ["tier-migration", "./dist/tier-migration.js"],
+    ["tier-routing", "./dist/tier-routing.js"],
   ] as const) {
     assert.deepEqual(exportsMap[`./${subpath}`], { import: expectedTarget }, subpath);
     assert.deepEqual(exportsMap[`./${subpath}.js`], { import: expectedTarget }, `${subpath}.js`);
   }
 });
 
-test("root package resolver exposes temporal shims", () => {
-  for (const subpath of ["temporal-index", "temporal-validity"] as const) {
+test("root package resolver exposes temporal and tier shims", () => {
+  for (const subpath of ["temporal-index", "temporal-validity", "tier-migration", "tier-routing"] as const) {
     const expectedUrl = new URL(`../dist/${subpath}.js`, import.meta.url).href;
     assert.equal(import.meta.resolve(`remnic-workspace/${subpath}`), expectedUrl, subpath);
     assert.equal(import.meta.resolve(`remnic-workspace/${subpath}.js`), expectedUrl, `${subpath}.js`);
   }
 });
 
-test("root build emits temporal shim artifacts", () => {
+test("root build emits temporal and tier shim artifacts", () => {
   const tsupConfig = readFileSync(new URL("../tsup.config.ts", import.meta.url), "utf8");
 
-  for (const entry of ["src/temporal-index.ts", "src/temporal-validity.ts"] as const) {
+  for (const entry of [
+    "src/temporal-index.ts",
+    "src/temporal-validity.ts",
+    "src/tier-migration.ts",
+    "src/tier-routing.ts",
+  ] as const) {
     assert.match(tsupConfig, new RegExp(`"${entry}"`), entry);
   }
 });

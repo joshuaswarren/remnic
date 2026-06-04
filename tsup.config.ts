@@ -123,6 +123,8 @@ export default defineConfig({
     "src/summary-snapshot.ts",
     "src/temporal-index.ts",
     "src/temporal-validity.ts",
+    "src/tier-migration.ts",
+    "src/tier-routing.ts",
     "src/threading.ts",
     "src/tmt.ts",
     "src/topics.ts",
