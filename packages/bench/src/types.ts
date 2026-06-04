@@ -2,10 +2,7 @@
  * @remnic/bench — Phase 1 benchmark engine types
  */
 
-import type {
-  BenchmarkIntegrityMeta,
-  BenchmarkSplitType,
-} from "./integrity/types.js";
+import type { BenchmarkIntegrityMeta, BenchmarkSplitType } from "./integrity/types.js";
 
 export type BenchmarkMode = "full" | "quick";
 export type BenchmarkTier = "published" | "remnic" | "custom";
@@ -26,13 +23,7 @@ export type AmaBenchJudgeProtocol = "default" | "recommended";
  * responder/judge target. It is intentionally not routed through Remnic
  * memory or OpenClaw gateway state.
  */
-export type BuiltInProvider =
-  | "openai"
-  | "anthropic"
-  | "ollama"
-  | "litellm"
-  | "local-llm"
-  | "codex-cli";
+export type BuiltInProvider = "openai" | "anthropic" | "ollama" | "litellm" | "local-llm" | "codex-cli";
 
 export type BenchReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
@@ -41,7 +32,13 @@ export interface ProviderConfig {
   model: string;
   baseUrl?: string;
   apiKey?: string;
-  retryOptions?: { maxAttempts?: number; baseBackoffMs?: number; timeoutMs?: number; max429WaitMs?: number };
+  retryOptions?: {
+    maxAttempts?: number;
+    baseBackoffMs?: number;
+    timeoutMs?: number;
+    retryOnTimeout?: boolean;
+    max429WaitMs?: number;
+  };
   disableThinking?: boolean;
   reasoningEffort?: BenchReasoningEffort;
   responderContextBudgetChars?: number;
@@ -80,11 +77,7 @@ export interface ConfidenceInterval {
   level: number;
 }
 
-export type EffectSizeInterpretation =
-  | "negligible"
-  | "small"
-  | "medium"
-  | "large";
+export type EffectSizeInterpretation = "negligible" | "small" | "medium" | "large";
 
 export interface EffectSizeSummary {
   cohensD: number;
@@ -107,15 +100,9 @@ export interface ComparisonResult {
 }
 
 export interface StatisticalReport {
-  confidenceIntervals: Record<
-    string,
-    ConfidenceInterval
-  >;
+  confidenceIntervals: Record<string, ConfidenceInterval>;
   bootstrapSamples: number;
-  effectSizes?: Record<
-    string,
-    EffectSizeSummary
-  >;
+  effectSizes?: Record<string, EffectSizeSummary>;
   pairedComparison?: {
     baselineId: string;
     pValue: number;

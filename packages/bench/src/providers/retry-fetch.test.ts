@@ -54,7 +54,7 @@ test("retryFetch retries on 429 with Retry-After header", async () => {
     const response = await retryFetch(
       "https://example.com/api",
       { method: "GET" },
-      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 },
+      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 }
     );
     assert.equal(response.status, 200);
     assert.equal(mock.calls.length, 2);
@@ -64,15 +64,12 @@ test("retryFetch retries on 429 with Retry-After header", async () => {
 });
 
 test("retryFetch retries on 429 without Retry-After using exponential backoff", async () => {
-  const mock = mockFetchSequence([
-    { status: 429 },
-    { status: 200, body: "ok" },
-  ]);
+  const mock = mockFetchSequence([{ status: 429 }, { status: 200, body: "ok" }]);
   try {
     const response = await retryFetch(
       "https://example.com/api",
       { method: "GET" },
-      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 },
+      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 }
     );
     assert.equal(response.status, 200);
     assert.equal(mock.calls.length, 2);
@@ -82,16 +79,12 @@ test("retryFetch retries on 429 without Retry-After using exponential backoff", 
 });
 
 test("retryFetch returns 429 response when all retries exhausted", async () => {
-  const mock = mockFetchSequence([
-    { status: 429 },
-    { status: 429 },
-    { status: 429 },
-  ]);
+  const mock = mockFetchSequence([{ status: 429 }, { status: 429 }, { status: 429 }]);
   try {
     const response = await retryFetch(
       "https://example.com/api",
       { method: "GET" },
-      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 },
+      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 }
     );
     assert.equal(response.status, 429);
     assert.equal(mock.calls.length, 3);
@@ -101,14 +94,12 @@ test("retryFetch returns 429 response when all retries exhausted", async () => {
 });
 
 test("retryFetch does not retry on 401", async () => {
-  const mock = mockFetchSequence([
-    { status: 401 },
-  ]);
+  const mock = mockFetchSequence([{ status: 401 }]);
   try {
     const response = await retryFetch(
       "https://example.com/api",
       { method: "GET" },
-      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 },
+      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 }
     );
     assert.equal(response.status, 401);
     assert.equal(mock.calls.length, 1);
@@ -123,7 +114,7 @@ test("retryFetch does not retry on 400", async () => {
     const response = await retryFetch(
       "https://example.com/api",
       { method: "GET" },
-      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 },
+      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 }
     );
     assert.equal(response.status, 400);
     assert.equal(mock.calls.length, 1);
@@ -138,7 +129,7 @@ test("retryFetch does not retry on 3xx redirect", async () => {
     const response = await retryFetch(
       "https://example.com/api",
       { method: "GET" },
-      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 },
+      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 }
     );
     assert.equal(response.status, 302);
     assert.equal(mock.calls.length, 1);
@@ -162,7 +153,7 @@ test("retryFetch retries 429 beyond maxAttempts when max429WaitMs is set", async
       "https://example.com/api",
       { method: "GET" },
       // maxAttempts=3 but max429WaitMs=30s allows retries beyond 3 attempts
-      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000, max429WaitMs: 30_000 },
+      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000, max429WaitMs: 30_000 }
     );
     assert.equal(response.status, 200);
     assert.equal(mock.calls.length, 6);
@@ -186,7 +177,7 @@ test("retryFetch retries provider 5xx beyond maxAttempts within extended wait bu
     const response = await retryFetch(
       "https://example.com/api",
       { method: "GET" },
-      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000, max429WaitMs: 1000 },
+      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000, max429WaitMs: 1000 }
     );
     const elapsedMs = Date.now() - startedAt;
     assert.equal(response.status, 200);
@@ -207,12 +198,8 @@ test("retryFetch still fails repeated 5xx when no extended wait budget is config
   try {
     await assert.rejects(
       () =>
-        retryFetch(
-          "https://example.com/api",
-          { method: "GET" },
-          { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 },
-        ),
-      /HTTP 500/,
+        retryFetch("https://example.com/api", { method: "GET" }, { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000 }),
+      /HTTP 500/
     );
     assert.equal(mock.calls.length, 3);
   } finally {
@@ -232,9 +219,9 @@ test("retryFetch treats explicitly undefined retry fields as defaults", async ()
         retryFetch(
           "https://example.com/api",
           { method: "GET" },
-          { maxAttempts: undefined, baseBackoffMs: 1, timeoutMs: 5000 },
+          { maxAttempts: undefined, baseBackoffMs: 1, timeoutMs: 5000 }
         ),
-      /HTTP 500/,
+      /HTTP 500/
     );
     assert.equal(mock.calls.length, 3);
   } finally {
@@ -244,13 +231,8 @@ test("retryFetch treats explicitly undefined retry fields as defaults", async ()
 
 test("retryFetch rejects invalid retry option values", async () => {
   await assert.rejects(
-    () =>
-      retryFetch(
-        "https://example.com/api",
-        { method: "GET" },
-        { maxAttempts: 0 },
-      ),
-    /maxAttempts must be a positive integer/,
+    () => retryFetch("https://example.com/api", { method: "GET" }, { maxAttempts: 0 }),
+    /maxAttempts must be a positive integer/
   );
 });
 
@@ -268,11 +250,81 @@ test("retryFetch caps thrown transport failures at maxAttempts despite extended 
         retryFetch(
           "http://127.0.0.1:9",
           { method: "GET" },
-          { maxAttempts: 1, baseBackoffMs: 1, timeoutMs: 1000, max429WaitMs: 600_000 },
+          { maxAttempts: 1, baseBackoffMs: 1, timeoutMs: 1000, max429WaitMs: 600_000 }
         ),
-      /ECONNREFUSED/,
+      /ECONNREFUSED/
     );
     assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("retryFetch does not retry internal timeout aborts by default", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  let firstRequestAborted = false;
+
+  globalThis.fetch = async (_url, init) => {
+    calls += 1;
+    const signal = init?.signal as AbortSignal | undefined;
+    return new Promise<Response>((_resolve, reject) => {
+      signal?.addEventListener(
+        "abort",
+        () => {
+          firstRequestAborted = true;
+          setTimeout(() => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          }, 5);
+        },
+        { once: true }
+      );
+    });
+  };
+
+  try {
+    await assert.rejects(
+      () =>
+        retryFetch("https://example.com/api", { method: "POST" }, { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 1 }),
+      /retryFetch timed out after 1ms/
+    );
+    assert.equal(firstRequestAborted, true);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("retryFetch retries internal timeout aborts only when explicitly enabled", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+
+  globalThis.fetch = async (_url, init) => {
+    calls += 1;
+    if (calls > 1) {
+      return new Response("ok", { status: 200 });
+    }
+
+    const signal = init?.signal as AbortSignal | undefined;
+    return new Promise<Response>((_resolve, reject) => {
+      signal?.addEventListener(
+        "abort",
+        () => {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        },
+        { once: true }
+      );
+    });
+  };
+
+  try {
+    const response = await retryFetch(
+      "https://example.com/api",
+      { method: "POST" },
+      { maxAttempts: 2, baseBackoffMs: 1, timeoutMs: 1, retryOnTimeout: true }
+    );
+    assert.equal(response.status, 200);
+    assert.equal(calls, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -286,7 +338,7 @@ test("retryFetch respects max429WaitMs budget and returns 429 when exhausted", a
     const response = await retryFetch(
       "https://example.com/api",
       { method: "GET" },
-      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000, max429WaitMs: 10 },
+      { maxAttempts: 3, baseBackoffMs: 1, timeoutMs: 5000, max429WaitMs: 10 }
     );
     assert.equal(response.status, 429);
     assert.equal(await response.text(), "quota exhausted");

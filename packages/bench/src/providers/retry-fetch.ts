@@ -1,16 +1,26 @@
 /**
  * Fetch wrapper with retry for transient failures.
- * Retries on ECONNREFUSED, ECONNRESET, ETIMEDOUT, HTTP 429 (rate limit),
- * and HTTP 5xx. 429 pauses according to the Retry-After header (or a
- * default backoff) before retrying. When max429WaitMs is set, the same
- * wall-clock budget also covers transient 5xx responses from throttled
- * provider backends that surface quota resets as server errors.
+ * Retries on ECONNREFUSED, ECONNRESET, transport ETIMEDOUT, HTTP 429
+ * (rate limit), and HTTP 5xx. Per-attempt timeout aborts are not retried
+ * unless retryOnTimeout is explicitly enabled, because completion requests
+ * may keep running provider-side after client abort. 429 pauses according
+ * to the Retry-After header (or a default backoff) before retrying. When
+ * max429WaitMs is set, the same wall-clock budget also covers transient
+ * 5xx responses from throttled provider backends that surface quota resets
+ * as server errors.
  */
 
 export interface RetryFetchOptions {
   maxAttempts?: number;
   baseBackoffMs?: number;
   timeoutMs?: number;
+  /**
+   * Retry requests that were aborted by retryFetch's own per-attempt timeout.
+   *
+   * Defaults to false so non-idempotent completion requests do not start a
+   * duplicate request while the timed-out provider-side work may still run.
+   */
+  retryOnTimeout?: boolean;
   /**
    * Maximum wall-clock time (ms) to keep retrying 429 responses.
    * When set, 429s are retried with capped exponential backoff
@@ -25,6 +35,7 @@ const DEFAULTS: Required<RetryFetchOptions> = {
   maxAttempts: 3,
   baseBackoffMs: 1000,
   timeoutMs: 120_000,
+  retryOnTimeout: false,
   max429WaitMs: 0,
 };
 
@@ -33,10 +44,14 @@ function normalizeRetryFetchOptions(options?: RetryFetchOptions): Required<Retry
     maxAttempts: options?.maxAttempts ?? DEFAULTS.maxAttempts,
     baseBackoffMs: options?.baseBackoffMs ?? DEFAULTS.baseBackoffMs,
     timeoutMs: options?.timeoutMs ?? DEFAULTS.timeoutMs,
+    retryOnTimeout: options?.retryOnTimeout ?? DEFAULTS.retryOnTimeout,
     max429WaitMs: options?.max429WaitMs ?? DEFAULTS.max429WaitMs,
   };
   if (!Number.isInteger(normalized.maxAttempts) || normalized.maxAttempts <= 0) {
     throw new Error("retryFetch maxAttempts must be a positive integer");
+  }
+  if (typeof normalized.retryOnTimeout !== "boolean") {
+    throw new Error("retryFetch retryOnTimeout must be a boolean");
   }
   for (const field of ["baseBackoffMs", "timeoutMs", "max429WaitMs"] as const) {
     if (!Number.isFinite(normalized[field]) || normalized[field] < 0) {
@@ -75,6 +90,10 @@ function isTransientError(err: unknown): boolean {
   );
 }
 
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
 /**
  * Parse a Retry-After header value into milliseconds.
  * Accepts either an integer number of seconds or an HTTP-date.
@@ -110,8 +129,14 @@ function parseBodySuggestedRetryMs(body: string): number | undefined {
 
 function abortAwareSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise<void>((resolve) => {
-    if (signal?.aborted) { resolve(); return; }
-    const onAbort = () => { clearTimeout(timer); resolve(); };
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
       resolve();
@@ -120,11 +145,7 @@ function abortAwareSleep(ms: number, signal: AbortSignal | undefined): Promise<v
   });
 }
 
-export async function retryFetch(
-  url: string,
-  init: RequestInit,
-  options?: RetryFetchOptions,
-): Promise<Response> {
+export async function retryFetch(url: string, init: RequestInit, options?: RetryFetchOptions): Promise<Response> {
   const opts = normalizeRetryFetchOptions(options);
   let lastError: Error | null = null;
   let last429Response: Response | null = null;
@@ -132,9 +153,7 @@ export async function retryFetch(
   const loopStartMs = Date.now();
 
   const remainingExtendedBudgetMs = () =>
-    opts.max429WaitMs > 0
-      ? Math.max(0, opts.max429WaitMs - (Date.now() - loopStartMs))
-      : 0;
+    opts.max429WaitMs > 0 ? Math.max(0, opts.max429WaitMs - (Date.now() - loopStartMs)) : 0;
 
   for (let attempt = 1; ; attempt++) {
     const callerSignal = init.signal as AbortSignal | undefined;
@@ -163,7 +182,11 @@ export async function retryFetch(
     const controller = new AbortController();
     const onCallerAbort = () => controller.abort();
     callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
-    const timeout = setTimeout(() => controller.abort(), opts.timeoutMs);
+    let timeoutFired = false;
+    const timeout = setTimeout(() => {
+      timeoutFired = true;
+      controller.abort();
+    }, opts.timeoutMs);
 
     try {
       const { signal: _callerSignal, ...initWithoutSignal } = init;
@@ -207,10 +230,7 @@ export async function retryFetch(
         let waitMs =
           retryAfter != null
             ? Math.max(retryAfter, 100)
-            : Math.min(
-                opts.baseBackoffMs * Math.pow(2, attempt - 1),
-                MAX_429_BACKOFF_S * 1000,
-              );
+            : Math.min(opts.baseBackoffMs * Math.pow(2, attempt - 1), MAX_429_BACKOFF_S * 1000);
 
         // Clamp to remaining 429 budget so we don't overshoot.
         if (opts.max429WaitMs > 0) {
@@ -223,7 +243,7 @@ export async function retryFetch(
 
         console.error(
           `[rate-limit] 429 received (attempt ${attempt}/${opts.maxAttempts})${budgetTag}, ` +
-            `pausing ${Math.round(waitMs / 1000)}s before retry…`,
+            `pausing ${Math.round(waitMs / 1000)}s before retry…`
         );
         await abortAwareSleep(waitMs, callerSignal);
 
@@ -245,25 +265,24 @@ export async function retryFetch(
       if (attempt >= opts.maxAttempts && remainingExtendedBudgetMs() <= 0) {
         callerSignal?.removeEventListener("abort", onCallerAbort);
         throw new Error(
-          `HTTP ${response.status} ${response.statusText} (attempt ${attempt}/${opts.maxAttempts}): ${bodyPreview}`,
+          `HTTP ${response.status} ${response.statusText} (attempt ${attempt}/${opts.maxAttempts}): ${bodyPreview}`
         );
       }
       lastError = new Error(
-        `HTTP ${response.status} ${response.statusText} (attempt ${attempt}/${opts.maxAttempts}): ${bodyPreview}`,
+        `HTTP ${response.status} ${response.statusText} (attempt ${attempt}/${opts.maxAttempts}): ${bodyPreview}`
       );
       last429IsStale = true;
 
       if (attempt >= opts.maxAttempts) {
         const retryAfter =
-          parseRetryAfterMs(response.headers.get("retry-after")) ??
-          parseBodySuggestedRetryMs(bodyPreview);
+          parseRetryAfterMs(response.headers.get("retry-after")) ?? parseBodySuggestedRetryMs(bodyPreview);
         const waitMs = Math.min(
           Math.max(retryAfter ?? opts.baseBackoffMs * Math.pow(2, attempt - 1), 100),
-          remainingExtendedBudgetMs(),
+          remainingExtendedBudgetMs()
         );
         console.error(
           `[transient] HTTP ${response.status} received (attempt ${attempt}/${opts.maxAttempts}) ` +
-            `within extended provider budget, pausing ${Math.round(waitMs / 1000)}s before retry…`,
+            `within extended provider budget, pausing ${Math.round(waitMs / 1000)}s before retry…`
         );
         await abortAwareSleep(waitMs, callerSignal);
         callerSignal?.removeEventListener("abort", onCallerAbort);
@@ -275,16 +294,28 @@ export async function retryFetch(
         callerSignal?.removeEventListener("abort", onCallerAbort);
         throw err;
       }
-      if (!isTransientError(err)) {
+      if (timeoutFired && isAbortError(err)) {
+        const timeoutError = new Error(
+          `retryFetch timed out after ${opts.timeoutMs}ms (attempt ${attempt}/${opts.maxAttempts})`
+        );
+        lastError = timeoutError;
+        last429IsStale = true;
         callerSignal?.removeEventListener("abort", onCallerAbort);
-        throw err;
-      }
-      lastError = err instanceof Error ? err : new Error(String(err));
-      last429IsStale = true;
-      callerSignal?.removeEventListener("abort", onCallerAbort);
+        if (!opts.retryOnTimeout || attempt >= opts.maxAttempts) {
+          throw timeoutError;
+        }
+      } else {
+        if (!isTransientError(err)) {
+          callerSignal?.removeEventListener("abort", onCallerAbort);
+          throw err;
+        }
+        lastError = err instanceof Error ? err : new Error(String(err));
+        last429IsStale = true;
+        callerSignal?.removeEventListener("abort", onCallerAbort);
 
-      if (attempt >= opts.maxAttempts) {
-        throw lastError;
+        if (attempt >= opts.maxAttempts) {
+          throw lastError;
+        }
       }
     }
 

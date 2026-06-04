@@ -2,10 +2,7 @@
  * Minimal LLM provider contract for the bench engine.
  */
 
-import type {
-  BenchReasoningEffort,
-  BuiltInProvider,
-} from "../types.js";
+import type { BenchReasoningEffort, BuiltInProvider } from "../types.js";
 
 export interface CompletionOpts {
   systemPrompt?: string;
@@ -36,7 +33,13 @@ export interface ProviderBaseConfig {
   baseUrl?: string;
   apiKey?: string;
   headers?: Record<string, string>;
-  retryOptions?: { maxAttempts?: number; baseBackoffMs?: number; timeoutMs?: number; max429WaitMs?: number };
+  retryOptions?: {
+    maxAttempts?: number;
+    baseBackoffMs?: number;
+    timeoutMs?: number;
+    retryOnTimeout?: boolean;
+    max429WaitMs?: number;
+  };
   /** Suppress thinking/reasoning tokens for thinking-capable models (Qwen 3.5, Gemma 4, DeepSeek). */
   disableThinking?: boolean;
   /**
