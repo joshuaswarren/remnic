@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { extractUserPrompt, parseGeminiExport } from "./parser.js";
 
-const FIXTURE_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../fixtures",
-);
+const FIXTURE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
 
 function loadFixture(name: string): string {
   return readFileSync(path.join(FIXTURE_DIR, name), "utf-8");
@@ -42,10 +39,7 @@ describe("parseGeminiExport", () => {
   });
 
   it("strict mode rejects non-object top-level entries", () => {
-    assert.throws(
-      () => parseGeminiExport(JSON.stringify(["bad"]), { strict: true }),
-      /must be an object/,
-    );
+    assert.throws(() => parseGeminiExport(JSON.stringify(["bad"]), { strict: true }), /must be an object/);
   });
 
   it("preserves filePath in output", () => {
@@ -68,10 +62,7 @@ describe("parseGeminiExport", () => {
   // which reports "object" for null (JS trap). The message must say
   // "null" instead.
   it("strict mode reports 'null' for JSON null input, not 'object'", () => {
-    assert.throws(
-      () => parseGeminiExport("null", { strict: true }),
-      /received null/,
-    );
+    assert.throws(() => parseGeminiExport("null", { strict: true }), /received null/);
   });
 
   // Codex review on PR #600 — pointing --file at a random JSON object
@@ -79,14 +70,8 @@ describe("parseGeminiExport", () => {
   // of surfacing an error. Now throws for objects that lack any of the
   // recognized activity keys.
   it("rejects object payloads without a recognized activity key", () => {
-    assert.throws(
-      () => parseGeminiExport({ foo: "bar" }),
-      /no recognized activity key/,
-    );
-    assert.throws(
-      () => parseGeminiExport(JSON.stringify({ random: [1, 2] })),
-      /no recognized activity key/,
-    );
+    assert.throws(() => parseGeminiExport({ foo: "bar" }), /no recognized activity key/);
+    assert.throws(() => parseGeminiExport(JSON.stringify({ random: [1, 2] })), /no recognized activity key/);
   });
 
   // Codex review on PR #600 — a JSON primitive payload (number, boolean,
@@ -94,18 +79,9 @@ describe("parseGeminiExport", () => {
   // returning 0 memories on `true`, `123`, or `"text"` would let an
   // automation pipeline treat an obviously broken invocation as healthy.
   it("rejects primitive JSON payloads in every mode", () => {
-    assert.throws(
-      () => parseGeminiExport("true"),
-      /must be a JSON array or object/,
-    );
-    assert.throws(
-      () => parseGeminiExport("123"),
-      /must be a JSON array or object/,
-    );
-    assert.throws(
-      () => parseGeminiExport('"some text"'),
-      /must be a JSON array or object/,
-    );
+    assert.throws(() => parseGeminiExport("true"), /must be a JSON array or object/);
+    assert.throws(() => parseGeminiExport("123"), /must be a JSON array or object/);
+    assert.throws(() => parseGeminiExport('"some text"'), /must be a JSON array or object/);
   });
 
   it("rejects invalid Gemini activity timestamps", () => {
@@ -130,7 +106,7 @@ describe("parseGeminiExport", () => {
             },
           ]),
         /Gemini activity time must be/,
-        `time should be rejected: ${time}`,
+        `time should be rejected: ${time}`
       );
     }
   });
@@ -149,6 +125,11 @@ describe("parseGeminiExport", () => {
       },
       {
         header: "Gemini Apps",
+        text: "Tell me about sub-millisecond timestamp imports.",
+        time: "2026-01-02T00:00:00.123456Z",
+      },
+      {
+        header: "Gemini Apps",
         text: "Tell me about zero-offset timestamp imports.",
         time: "2026-01-03T00:00:00+00:00",
       },
@@ -156,35 +137,22 @@ describe("parseGeminiExport", () => {
 
     assert.deepEqual(
       parsed.activities.map((activity) => activity.time),
-      [
-        "2026-01-01T00:00:00Z",
-        "2026-01-02T00:00:00.123Z",
-        "2026-01-03T00:00:00+00:00",
-      ],
+      ["2026-01-01T00:00:00Z", "2026-01-02T00:00:00.123Z", "2026-01-02T00:00:00.123456Z", "2026-01-03T00:00:00+00:00"]
     );
   });
 });
 
 describe("extractUserPrompt", () => {
   it("prefers `text` when present", () => {
-    assert.equal(
-      extractUserPrompt({ header: "Gemini Apps", text: "hello" }),
-      "hello",
-    );
+    assert.equal(extractUserPrompt({ header: "Gemini Apps", text: "hello" }), "hello");
   });
 
   it("falls back to `title` and strips legacy Asked: prefix", () => {
-    assert.equal(
-      extractUserPrompt({ header: "Bard", title: "Asked: why is the sky blue?" }),
-      "why is the sky blue?",
-    );
+    assert.equal(extractUserPrompt({ header: "Bard", title: "Asked: why is the sky blue?" }), "why is the sky blue?");
   });
 
   it("returns undefined for records with no usable text", () => {
     assert.equal(extractUserPrompt({ header: "Gemini Apps" }), undefined);
-    assert.equal(
-      extractUserPrompt({ header: "Gemini Apps", title: "   " }),
-      undefined,
-    );
+    assert.equal(extractUserPrompt({ header: "Gemini Apps", title: "   " }), undefined);
   });
 });

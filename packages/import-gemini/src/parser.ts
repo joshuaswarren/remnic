@@ -1,6 +1,8 @@
 // ---------------------------------------------------------------------------
 // Gemini (Google Takeout "Gemini Apps Activity") parser (issue #568 slice 4)
 // ---------------------------------------------------------------------------
+
+import { parseIsoOffsetTimestamp } from "@remnic/core";
 //
 // Google Takeout bundles Gemini Apps activity into `My Activity.json` (and a
 // legacy `MyActivity.json` spelling). Each record represents one prompt the
@@ -48,8 +50,7 @@ export interface GeminiActivityRecord {
   details?: Array<{ name?: string }>;
 }
 
-const UTC_ISO_INSTANT_RE =
-  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?(Z|[+-]00:00)$/;
+const UTC_ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]00:00)$/;
 
 export interface ParsedGeminiExport {
   /** Prompts filtered to `header === "Gemini Apps"`. */
@@ -75,10 +76,7 @@ export interface GeminiParseOptions {
  * Parse a Takeout activity payload. Accepts a JSON string, parsed object, or
  * parsed array. Non-Gemini records are filtered out by default.
  */
-export function parseGeminiExport(
-  input: unknown,
-  options: GeminiParseOptions = {},
-): ParsedGeminiExport {
+export function parseGeminiExport(input: unknown, options: GeminiParseOptions = {}): ParsedGeminiExport {
   // File-backed adapter contract: `runImportCommand` passes `undefined` when
   // `--file` is omitted. Gemini is a file-only importer (Takeout doesn't
   // expose an API), so a missing payload MUST surface as a user-facing
@@ -87,7 +85,7 @@ export function parseGeminiExport(
   if (input === undefined || input === null) {
     throw new Error(
       "The 'gemini' importer requires a file. Pass `--file <path>` pointing at " +
-        "your Google Takeout `My Activity.json` (Gemini Apps section).",
+        "your Google Takeout `My Activity.json` (Gemini Apps section)."
     );
   }
   const raw = coerceJson(input);
@@ -122,7 +120,7 @@ export function parseGeminiExport(
       throw new Error(
         "Gemini export object has no recognized activity key. Expected one of " +
           "'activities', 'MyActivity', or 'activity'. Point --file at your " +
-          "Google Takeout `My Activity.json` (Gemini Apps section).",
+          "Google Takeout `My Activity.json` (Gemini Apps section)."
       );
     }
     return result;
@@ -136,9 +134,7 @@ export function parseGeminiExport(
   // `typeof null === "object"` is the JS trap CLAUDE.md rule 18 calls
   // out. Using describeType() sidesteps the "received object" message
   // for null inputs.
-  throw new Error(
-    `Gemini export must be a JSON array or object; received ${describeType(raw)}`,
-  );
+  throw new Error(`Gemini export must be a JSON array or object; received ${describeType(raw)}`);
 }
 
 function describeType(value: unknown): string {
@@ -146,11 +142,7 @@ function describeType(value: unknown): string {
   return typeof value;
 }
 
-function appendActivities(
-  dest: GeminiActivityRecord[],
-  src: unknown[],
-  options: GeminiParseOptions,
-): void {
+function appendActivities(dest: GeminiActivityRecord[], src: unknown[], options: GeminiParseOptions): void {
   for (const entry of src) {
     if (!entry || typeof entry !== "object") {
       if (options.strict) {
@@ -170,14 +162,10 @@ function validateGeminiTimestamp(value: unknown): void {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error("Gemini activity time must be an ISO-8601 UTC timestamp");
   }
-  const match = UTC_ISO_INSTANT_RE.exec(value);
-  if (!match) {
+  if (!UTC_ISO_INSTANT_RE.test(value)) {
     throw new Error("Gemini activity time must be an ISO-8601 UTC timestamp");
   }
-  const milliseconds = (match[2] ?? "").padEnd(3, "0");
-  const canonical = `${match[1]}.${milliseconds}Z`;
-  const parsedMs = Date.parse(canonical);
-  if (!Number.isFinite(parsedMs) || new Date(parsedMs).toISOString() !== canonical) {
+  if (parseIsoOffsetTimestamp(value) === null) {
     throw new Error("Gemini activity time must be a valid ISO-8601 UTC timestamp");
   }
 }
@@ -185,10 +173,7 @@ function validateGeminiTimestamp(value: unknown): void {
 function isGeminiRecord(record: GeminiActivityRecord): boolean {
   if (record.header === "Gemini Apps") return true;
   if (record.header === "Bard") return true; // pre-rebrand exports
-  if (
-    Array.isArray(record.products) &&
-    record.products.some((p) => p === "Gemini Apps" || p === "Bard")
-  ) {
+  if (Array.isArray(record.products) && record.products.some((p) => p === "Gemini Apps" || p === "Bard")) {
     return true;
   }
   return false;
@@ -203,11 +188,7 @@ function coerceJson(input: unknown): unknown {
     try {
       return JSON.parse(input);
     } catch (err) {
-      throw new Error(
-        `Gemini export is not valid JSON: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      throw new Error(`Gemini export is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   return input;
