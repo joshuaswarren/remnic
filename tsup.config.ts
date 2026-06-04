@@ -131,6 +131,8 @@ export default defineConfig({
     "src/transcript.ts",
     "src/trust-zones.ts",
     "src/types.ts",
+    "src/utility-learner.ts",
+    "src/utility-telemetry.ts",
     "src/transfer/autodetect.ts",
     "src/transfer/backup.ts",
     "src/transfer/capsule-export.ts",
