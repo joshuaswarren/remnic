@@ -141,6 +141,58 @@ test("retrieval-temporal scores adapter-returned page ids instead of fixture ran
   }
 });
 
+test("retrieval-temporal scores pages whose only in-window evidence is top-level timeline", async () => {
+  const sample: RetrievalTemporalCase = {
+    id: "clean:top-level-timeline-only",
+    title: "top-level-timeline-only (clean)",
+    tier: "clean",
+    query: "Which page has an in-window top-level timeline entry?",
+    window: {
+      start: "2026-03-01T00:00:00.000Z",
+      end: "2026-04-01T00:00:00.000Z",
+    },
+    expectedPageIds: ["timeline-only-page"],
+    pages: [
+      {
+        id: "timeline-only-page",
+        owner: "alex",
+        namespace: "personal",
+        canonicalTitle: "Timeline Only Page",
+        title: "Timeline Only Page",
+        type: "note",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        aliases: [],
+        body: "The only qualifying temporal evidence is in the top-level timeline.",
+        frontmatter: {
+          created: "2026-01-01T00:00:00.000Z",
+          timeline: ["2026-01-15: outside the target window"],
+        },
+        seeAlso: [],
+        timeline: ["2026-03-12: top-level in-window evidence"],
+        dirtySignals: [],
+      },
+    ],
+  };
+  RETRIEVAL_TEMPORAL_SMOKE_FIXTURE.unshift(sample);
+  const adapter = new SpyTemporalAdapter((caseSample) => `recall hit\npage_id: ${caseSample.expectedPageIds[0]}`);
+
+  try {
+    const result = await runRetrievalTemporalBenchmark({
+      ...buildOptions(adapter),
+      limit: 1,
+    } as ResolvedRunBenchmarkOptions);
+
+    const [task] = result.results.tasks;
+    assert.ok(task);
+    assert.ok(task.details);
+    assert.equal(task.scores.qrel_at_1, 1);
+    assert.deepEqual(task.details.matchingPageIds, ["timeline-only-page"]);
+  } finally {
+    const removed = RETRIEVAL_TEMPORAL_SMOKE_FIXTURE.shift();
+    assert.equal(removed, sample);
+  }
+});
+
 test("retrieval-temporal does not score prefixed page id matches", async () => {
   const adapter = new SpyTemporalAdapter(
     (sample) => `recall hit\npage_id: ${sample.expectedPageIds[0]}-shadow`,

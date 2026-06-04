@@ -196,6 +196,11 @@ function collectEvidenceTimestamps(page: SchemaTierPage): number[] {
     if (timestamp !== null) timestamps.add(timestamp);
   }
 
+  for (const entry of page.timeline) {
+    const timestamp = parseTimelineEntry(entry);
+    if (timestamp !== null) timestamps.add(timestamp);
+  }
+
   return [...timestamps];
 }
 

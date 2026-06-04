@@ -260,11 +260,13 @@ test("runBenchmark rejects overflowed timeline dates in retrieval-temporal evide
   const originalCreatedAt = targetPage.createdAt;
   const originalCreated = targetPage.frontmatter.created;
   const originalTimeline = targetPage.frontmatter.timeline ? [...targetPage.frontmatter.timeline] : undefined;
+  const originalTopLevelTimeline = [...targetPage.timeline];
 
   try {
     targetPage.createdAt = "2026-06-30T23:59:59.000Z";
     targetPage.frontmatter.created = undefined;
     targetPage.frontmatter.timeline = ["2026-08-32 impossible training block"];
+    targetPage.timeline = ["2026-08-32 impossible training block"];
 
     const result = await runBenchmark("retrieval-temporal", {
       mode: "full",
@@ -278,6 +280,7 @@ test("runBenchmark rejects overflowed timeline dates in retrieval-temporal evide
     targetPage.createdAt = originalCreatedAt;
     targetPage.frontmatter.created = originalCreated;
     targetPage.frontmatter.timeline = originalTimeline;
+    targetPage.timeline = originalTopLevelTimeline;
   }
 });
 
@@ -357,11 +360,13 @@ test("runBenchmark rejects overflowed created timestamps in retrieval-temporal e
   const originalCreatedAt = targetPage.createdAt;
   const originalCreated = targetPage.frontmatter.created;
   const originalTimeline = targetPage.frontmatter.timeline ? [...targetPage.frontmatter.timeline] : undefined;
+  const originalTopLevelTimeline = [...targetPage.timeline];
 
   try {
     targetPage.createdAt = "2026-06-31T07:00:00.000Z";
     targetPage.frontmatter.created = "2026-06-31T07:00:00.000Z";
     targetPage.frontmatter.timeline = [];
+    targetPage.timeline = [];
 
     const result = await runBenchmark("retrieval-temporal", {
       mode: "full",
@@ -375,6 +380,7 @@ test("runBenchmark rejects overflowed created timestamps in retrieval-temporal e
     targetPage.createdAt = originalCreatedAt;
     targetPage.frontmatter.created = originalCreated;
     targetPage.frontmatter.timeline = originalTimeline;
+    targetPage.timeline = originalTopLevelTimeline;
   }
 });
 
@@ -388,11 +394,13 @@ test("runBenchmark rejects timeline entries with extra day digits in retrieval-t
   const originalCreatedAt = targetPage.createdAt;
   const originalCreated = targetPage.frontmatter.created;
   const originalTimeline = targetPage.frontmatter.timeline ? [...targetPage.frontmatter.timeline] : undefined;
+  const originalTopLevelTimeline = [...targetPage.timeline];
 
   try {
     targetPage.createdAt = "2026-06-30T23:59:59.000Z";
     targetPage.frontmatter.created = undefined;
     targetPage.frontmatter.timeline = ["2026-08-032 malformed day"];
+    targetPage.timeline = ["2026-08-032 malformed day"];
 
     const result = await runBenchmark("retrieval-temporal", {
       mode: "full",
@@ -406,6 +414,7 @@ test("runBenchmark rejects timeline entries with extra day digits in retrieval-t
     targetPage.createdAt = originalCreatedAt;
     targetPage.frontmatter.created = originalCreated;
     targetPage.frontmatter.timeline = originalTimeline;
+    targetPage.timeline = originalTopLevelTimeline;
   }
 });
 
@@ -419,11 +428,13 @@ test("runBenchmark rejects timeline entries with trailing alpha suffixes in retr
   const originalCreatedAt = targetPage.createdAt;
   const originalCreated = targetPage.frontmatter.created;
   const originalTimeline = targetPage.frontmatter.timeline ? [...targetPage.frontmatter.timeline] : undefined;
+  const originalTopLevelTimeline = [...targetPage.timeline];
 
   try {
     targetPage.createdAt = "2026-06-30T23:59:59.000Z";
     targetPage.frontmatter.created = undefined;
     targetPage.frontmatter.timeline = ["2026-08-03x malformed day token"];
+    targetPage.timeline = ["2026-08-03x malformed day token"];
 
     const result = await runBenchmark("retrieval-temporal", {
       mode: "full",
@@ -437,5 +448,6 @@ test("runBenchmark rejects timeline entries with trailing alpha suffixes in retr
     targetPage.createdAt = originalCreatedAt;
     targetPage.frontmatter.created = originalCreated;
     targetPage.frontmatter.timeline = originalTimeline;
+    targetPage.timeline = originalTopLevelTimeline;
   }
 });
