@@ -117,11 +117,17 @@ fi
 if command -v pnpm &>/dev/null; then
   # Check if pnpm-lock.yaml is stale
   # Simple check: does running install change anything?
-  DIFF=$(pnpm install --frozen-lockfile 2>&1 || true)
-  if echo "$DIFF" | grep -qE "ERR_PNPM_FROZEN_LOCKFILE|ERR_PNPM_OUTDATED_LOCKFILE"; then
-    fail "pnpm-lock.yaml is out of sync — run 'pnpm install' and commit the updated lockfile"
-  else
+  PNPM_OUTPUT=""
+  if PNPM_OUTPUT=$(pnpm install --frozen-lockfile 2>&1); then
     echo "  OK: Lock file is in sync"
+  else
+    PNPM_STATUS=$?
+    if echo "$PNPM_OUTPUT" | grep -qE "ERR_PNPM_FROZEN_LOCKFILE|ERR_PNPM_OUTDATED_LOCKFILE"; then
+      fail "pnpm-lock.yaml is out of sync — run 'pnpm install' and commit the updated lockfile"
+    else
+      fail "pnpm lockfile verification failed with exit ${PNPM_STATUS} — inspect 'pnpm install --frozen-lockfile' output"
+      printf '%s\n' "$PNPM_OUTPUT" | sed 's/^/    /' | head -20 || true
+    fi
   fi
 fi
 
