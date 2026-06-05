@@ -98,6 +98,28 @@ test("writeConversationChunks keeps distinct raw session keys from overwriting a
   }
 });
 
+test("writeConversationChunks quotes metadata scalars in front matter", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-conversation-index-"));
+  try {
+    const sessionKey = "agent\nkind: other\n---\ncolon: value";
+    const written = await writeConversationChunks(root, [
+      sampleChunk({
+        sessionKey,
+        startTs: "2026-05-17T00:00:00.000Z",
+        endTs: "2026-05-17T00:01:00.000Z",
+      }),
+    ]);
+
+    const content = await readFile(written[0]!, "utf-8");
+    assert.match(content, /^sessionKey: "agent\\nkind: other\\n---\\ncolon: value"$/m);
+    assert.match(content, /^startTs: "2026-05-17T00:00:00.000Z"$/m);
+    assert.match(content, /^endTs: "2026-05-17T00:01:00.000Z"$/m);
+    assert.doesNotMatch(content, /^kind: other$/m);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("writeConversationChunks rejects invalid chunk timestamps before deriving paths", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-conversation-index-"));
   try {

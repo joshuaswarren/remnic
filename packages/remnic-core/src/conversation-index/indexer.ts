@@ -40,6 +40,10 @@ function sanitizeChunkId(id: string): string {
   return sanitizePathComponent(id, "chunk");
 }
 
+function yamlQuotedScalar(value: string): string {
+  return JSON.stringify(value);
+}
+
 function datePathComponent(startTs: string): string {
   const match = typeof startTs === "string"
     ? /^(\d{4})-(\d{2})-(\d{2})T/.exec(startTs)
@@ -153,9 +157,9 @@ export async function writeConversationChunks(
     const content =
       `---\n` +
       `kind: conversation_chunk\n` +
-      `sessionKey: ${c.sessionKey}\n` +
-      `startTs: ${c.startTs}\n` +
-      `endTs: ${c.endTs}\n` +
+      `sessionKey: ${yamlQuotedScalar(c.sessionKey)}\n` +
+      `startTs: ${yamlQuotedScalar(c.startTs)}\n` +
+      `endTs: ${yamlQuotedScalar(c.endTs)}\n` +
       `---\n\n` +
       c.text +
       "\n";
