@@ -46,6 +46,36 @@ describe("message-parts parsers", () => {
     assert.equal(parts[0]!.filePath, "src/config.ts");
   });
 
+  it("preserves OpenAI message content arrays with mixed tool and result blocks", () => {
+    const parts = parseOpenAiMessageParts({
+      type: "message",
+      content: [
+        { type: "output_text", text: "Updated src/a.ts" },
+        {
+          type: "function_call",
+          name: "apply_patch",
+          arguments: JSON.stringify({
+            patch: "*** Begin Patch\n*** Update File: src/a.ts\n*** End Patch",
+          }),
+        },
+        {
+          type: "function_call_output",
+          call_id: "call_1",
+          output: "Patched src/a.ts",
+        },
+      ],
+    });
+
+    assert.equal(parts.length, 3);
+    assert.equal(parts[0]!.kind, "text");
+    assert.equal(parts[0]!.filePath, "src/a.ts");
+    assert.equal(parts[1]!.kind, "patch");
+    assert.equal(parts[1]!.toolName, "apply_patch");
+    assert.equal(parts[1]!.filePath, "src/a.ts");
+    assert.equal(parts[2]!.kind, "tool_result");
+    assert.equal(parts[2]!.filePath, "src/a.ts");
+  });
+
   it("infers top-level OpenAI response item arrays before Anthropic arrays", () => {
     const parts = parseMessageParts([
       {

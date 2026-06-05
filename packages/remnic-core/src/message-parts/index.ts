@@ -143,6 +143,12 @@ export function parseOpenAiMessageParts(
     }
     if (type === "message") {
       for (const block of gatherContentBlocks(item.content)) {
+        if (isOpenAiResponseItem(block)) {
+          parts.push(
+            ...parseOpenAiMessageParts([block]).map(({ ordinal: _ordinal, ...part }) => part),
+          );
+          continue;
+        }
         const text = asNonEmptyString(block.text ?? block.content);
         if (text) parts.push(makePart("text", { type, text }, { filePath: firstFilePath(text) }));
       }
