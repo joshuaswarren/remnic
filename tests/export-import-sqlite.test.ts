@@ -78,6 +78,24 @@ test("sqlite re-export to an existing archive removes stale rows", async () => {
   await assertPathMissing(path.join(targetDir, "b.md"));
 });
 
+test("sqlite export creates missing output parent directories", async () => {
+  const memDir = await mkdtemp(path.join(os.tmpdir(), "engram-mem-"));
+  await writeFixtureMemoryDir(memDir);
+
+  const outRoot = await mkdtemp(path.join(os.tmpdir(), "engram-sqlite-"));
+  const sqliteFile = path.join(outRoot, "new-parent", "remnic", "export.sqlite");
+
+  await exportSqlite({ memoryDir: memDir, outFile: sqliteFile, pluginVersion: "2.2.3" });
+
+  const db = openBetterSqlite3(sqliteFile);
+  try {
+    const count = db.prepare("SELECT COUNT(*) AS count FROM files").get() as { count: number };
+    assert.ok(count.count > 0);
+  } finally {
+    db.close();
+  }
+});
+
 test("sqlite export rejects non-UTF8 files instead of emitting unverifiable v1 checksums", async () => {
   const memDir = await mkdtemp(path.join(os.tmpdir(), "engram-mem-"));
   await mkdir(path.join(memDir, "binary-lifecycle"), { recursive: true });

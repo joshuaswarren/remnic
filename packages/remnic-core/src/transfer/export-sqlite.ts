@@ -1,4 +1,5 @@
 import path from "node:path";
+import { mkdir } from "node:fs/promises";
 import { SQLITE_SCHEMA_VERSION, SQLITE_TABLES_SQL } from "./sqlite-schema.js";
 import { listFilesRecursive, readUtf8FileStrict, toPosixRelPath } from "./fs-utils.js";
 import { openBetterSqlite3 } from "../runtime/better-sqlite.js";
@@ -25,6 +26,8 @@ export async function exportSqlite(opts: ExportSqliteOptions): Promise<void> {
     const { content, sha256, bytes } = await readUtf8FileStrict(abs);
     rows.push({ rel: relPosix, bytes, sha256, content });
   }
+
+  await mkdir(path.dirname(outAbs), { recursive: true });
 
   const db = openBetterSqlite3(outAbs);
   try {
