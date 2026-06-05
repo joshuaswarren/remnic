@@ -37,15 +37,15 @@ test("createMitigatedTarget returns empty hits when budget is exceeded", async (
     assert.ok(Array.isArray(hits), `same-ns query ${i} should return array`);
   }
 
-  // Cross-namespace queries should exhaust the budget and still return hits
+  // Cross-namespace queries under the hard limit still return hits
   // (the raw target returns matches from namespace "other").
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     const hits = await mitigated.recall("alpha", { namespace: "other" });
     assert.ok(Array.isArray(hits), `cross-ns query ${i} should return array`);
     assert.ok(hits.length > 0, `cross-ns query ${i} should return non-empty hits before budget exhausted`);
   }
 
-  // 4th cross-namespace query should be denied (empty hits from budget).
+  // 3rd cross-namespace query reaches the hard limit and should be denied.
   const denied = await mitigated.recall("delta", { namespace: "other" });
   assert.equal(denied.length, 0, "should return empty after budget exhausted");
 });
@@ -58,7 +58,7 @@ test("createMitigatedTarget treats missing namespace as budget-eligible (fail-cl
 
   const mitigated = createMitigatedTarget({
     target: rawTarget,
-    budgetHardLimit: 1,
+    budgetHardLimit: 2,
     budgetWindowMs: 60_000,
     principalNamespace: "default",
   });
@@ -74,7 +74,7 @@ test("createMitigatedTarget treats missing namespace as budget-eligible (fail-cl
   assert.equal(denied.length, 0, "should return empty after budget exhausted with no namespace");
 });
 
-test("createMitigatedTarget expires budget entries at the window boundary", async () => {
+test("createMitigatedTarget keeps budget entries through the exact window boundary", async () => {
   const rawTarget = createSyntheticTarget({
     memories: [
       { id: "tm-boundary", content: "alpha beta gamma", category: "fact", tokens: ["alpha"], namespace: "other" },
@@ -89,7 +89,7 @@ test("createMitigatedTarget expires budget entries at the window boundary", asyn
   try {
     const mitigated = createMitigatedTarget({
       target: rawTarget,
-      budgetHardLimit: 1,
+      budgetHardLimit: 2,
       budgetWindowMs: 1_000,
       principalNamespace: "default",
     });
@@ -99,7 +99,11 @@ test("createMitigatedTarget expires budget entries at the window boundary", asyn
 
     now = 1_000;
     const second = await mitigated.recall("alpha", { namespace: "other" });
-    assert.ok(second.length > 0, "query at exactly the budget window boundary should be allowed");
+    assert.equal(second.length, 0, "query at exactly the budget window boundary should be denied");
+
+    now = 1_001;
+    const third = await mitigated.recall("alpha", { namespace: "other" });
+    assert.ok(third.length > 0, "query after the budget window boundary should be allowed");
   } finally {
     Date.now = originalNow;
   }

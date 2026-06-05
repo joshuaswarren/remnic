@@ -75,10 +75,11 @@ export function createMitigatedTarget(
 
   function recordAndCheck(now: number): boolean {
     const cutoff = now - budgetWindowMs;
-    while (timestamps.length > 0 && timestamps[0].ts <= cutoff) {
+    while (timestamps.length > 0 && timestamps[0].ts < cutoff) {
       timestamps.shift();
     }
-    if (timestamps.length >= budgetHardLimit) {
+    const projected = timestamps.length + 1;
+    if (projected >= budgetHardLimit) {
       return false;
     }
     timestamps.push({ ts: now });

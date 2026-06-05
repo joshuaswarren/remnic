@@ -40,16 +40,45 @@ test("enabled budget warns past soft and denies past hard", () => {
   const limiter = new CrossNamespaceBudget({
     enabled: true,
     softLimit: 2,
-    hardLimit: 3,
+    hardLimit: 4,
     windowMs: 10_000,
   });
   assert.equal(limiter.record("p1", 1).reason, "allowed-under-soft");
   assert.equal(limiter.record("p1", 2).reason, "allowed-under-soft");
   assert.equal(limiter.record("p1", 3).reason, "warn-over-soft");
-  // 4th call crosses hardLimit (count would be 4 > 3) => deny.
+  // 4th call reaches hardLimit and is denied.
   const deny = limiter.record("p1", 4);
   assert.equal(deny.allowed, false);
   assert.equal(deny.reason, "deny-over-hard");
+});
+
+test("enabled budget denies the threshold-crossing hard-limit request", () => {
+  const limiter = new CrossNamespaceBudget({
+    enabled: true,
+    softLimit: 0,
+    hardLimit: 2,
+    windowMs: 10_000,
+  });
+
+  const first = limiter.record("p1", 1);
+  assert.equal(first.allowed, true);
+  assert.equal(first.reason, "warn-over-soft");
+  assert.equal(first.count, 1);
+
+  const beforeSecond = limiter.peek({
+    principal: "p1",
+    principalNamespace: "alice",
+    queryNamespace: "bob",
+    now: 2,
+  });
+  assert.equal(beforeSecond.allowed, false);
+  assert.equal(beforeSecond.reason, "deny-over-hard");
+  assert.equal(beforeSecond.count, 1);
+
+  const second = limiter.record("p1", 2);
+  assert.equal(second.allowed, false);
+  assert.equal(second.reason, "deny-over-hard");
+  assert.equal(second.count, 1);
 });
 
 test("sliding window drops old timestamps", () => {
@@ -61,10 +90,9 @@ test("sliding window drops old timestamps", () => {
   });
   // Fill to hard.
   limiter.record("p1", 0);
-  limiter.record("p1", 50);
-  assert.equal(limiter.record("p1", 80).reason, "deny-over-hard");
+  assert.equal(limiter.record("p1", 50).reason, "deny-over-hard");
 
-  // Walk past the window so the first two slide out.
+  // Walk past the window so the first allowed timestamp slides out.
   const d = limiter.record("p1", 201);
   assert.equal(d.allowed, true);
   assert.equal(d.reason, "allowed-under-soft");
@@ -75,7 +103,7 @@ test("per-principal isolation: one principal's denial does not affect another", 
   const limiter = new CrossNamespaceBudget({
     enabled: true,
     softLimit: 1,
-    hardLimit: 1,
+    hardLimit: 2,
     windowMs: 10_000,
   });
   limiter.record("alice", 10);
@@ -107,7 +135,7 @@ test("check() engages on cross-namespace", () => {
   const limiter = new CrossNamespaceBudget({
     enabled: true,
     softLimit: 1,
-    hardLimit: 1,
+    hardLimit: 2,
     windowMs: 10_000,
   });
   const d1 = limiter.check({
@@ -131,7 +159,7 @@ test("denied calls do not push bucket forward", () => {
   const limiter = new CrossNamespaceBudget({
     enabled: true,
     softLimit: 1,
-    hardLimit: 1,
+    hardLimit: 2,
     windowMs: 100,
   });
   limiter.record("p1", 0);
@@ -150,7 +178,7 @@ test("missing principal is bucketed under __anonymous__ rather than failing open
   const limiter = new CrossNamespaceBudget({
     enabled: true,
     softLimit: 0,
-    hardLimit: 1,
+    hardLimit: 2,
     windowMs: 10_000,
   });
   // An empty-string principal shares the anonymous bucket.
@@ -168,8 +196,7 @@ test("reset clears all state", () => {
     windowMs: 10_000,
   });
   limiter.record("p1", 1);
-  limiter.record("p1", 2);
-  assert.equal(limiter.record("p1", 3).reason, "deny-over-hard");
+  assert.equal(limiter.record("p1", 2).reason, "deny-over-hard");
   limiter.reset();
   const after = limiter.record("p1", 4);
   assert.equal(after.allowed, true);
@@ -231,7 +258,7 @@ test("record() normalizes non-finite clocks before mutating limiter state", () =
   const limiter = new CrossNamespaceBudget({
     enabled: true,
     softLimit: 1,
-    hardLimit: 1,
+    hardLimit: 2,
     windowMs: 100,
   });
 
@@ -254,7 +281,7 @@ test("peek() with a non-finite clock is read-only and does not poison state", ()
   const limiter = new CrossNamespaceBudget({
     enabled: true,
     softLimit: 0,
-    hardLimit: 1,
+    hardLimit: 2,
     windowMs: 100,
   });
 
@@ -293,14 +320,10 @@ test("bucket is evicted after a denial rolls the only timestamp back", () => {
     hardLimit: 1,
     windowMs: 100,
   });
-  limiter.record("p1", 0);
-  // Denial at t=150 after the earlier timestamp has slid out. The
-  // timestamp just added gets rolled back; bucket becomes empty; must
-  // be evicted.
-  limiter.record("p1", 150);
-  // (wait — the above is allowed because the earlier timestamp slid out.)
-  // Force a deny path differently:
-  assert.equal(limiter.bucketCount(), 1);
+  const denied = limiter.record("p1", 0);
+  assert.equal(denied.allowed, false);
+  assert.equal(denied.reason, "deny-over-hard");
+  assert.equal(limiter.bucketCount(), 0);
 });
 
 test("check() does NOT fail-open when both namespaces are empty or undefined", () => {

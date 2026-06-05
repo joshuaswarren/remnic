@@ -207,7 +207,7 @@ export class CrossNamespaceBudget {
     this.buckets.set(principal, bucket);
     const count = bucket.timestamps.length;
 
-    if (count > hardLimit) {
+    if (count >= hardLimit) {
       // Denied: roll back the timestamp we just added so a repeated denied
       // call does not push the bucket further into the future. This keeps
       // the limiter stateless with respect to denied attempts.
@@ -290,7 +290,7 @@ export class CrossNamespaceBudget {
       if (ts >= cutoff) liveCount++;
     }
     const projected = liveCount + 1; // +1 for the current call
-    if (projected > hardLimit) {
+    if (projected >= hardLimit) {
       return { allowed: false, reason: "deny-over-hard", count: liveCount, limit };
     }
     if (projected > softLimit) {

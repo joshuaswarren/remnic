@@ -3808,7 +3808,7 @@ test("access service recall enforces cross-namespace budget when enabled", async
       recallCrossNamespaceBudgetEnabled: true,
       recallCrossNamespaceBudgetWindowMs: 60_000,
       recallCrossNamespaceBudgetSoftLimit: 2,
-      recallCrossNamespaceBudgetHardLimit: 3,
+      recallCrossNamespaceBudgetHardLimit: 4,
     },
     recall: async () => "ctx",
     lastRecall: {
@@ -3822,7 +3822,7 @@ test("access service recall enforces cross-namespace budget when enabled", async
   };
   const service = new EngramAccessService(orchestrator as any);
 
-  // First 3 cross-namespace recalls should succeed (under hard limit)
+  // First 3 cross-namespace recalls should succeed (under hard limit).
   for (let i = 0; i < 3; i++) {
     const res = await service.recall({
       query: `query ${i}`,
@@ -3832,7 +3832,7 @@ test("access service recall enforces cross-namespace budget when enabled", async
     assert.ok(res, `recall ${i} should succeed`);
   }
 
-  // 4th cross-namespace recall should be denied
+  // 4th cross-namespace recall reaches the hard limit and should be denied.
   await assert.rejects(
     () => service.recall({
       query: "one more",
@@ -3968,7 +3968,7 @@ test("access service idempotent recall retries do not double count cross-namespa
       recallCrossNamespaceBudgetEnabled: true,
       recallCrossNamespaceBudgetWindowMs: 60_000,
       recallCrossNamespaceBudgetSoftLimit: 0,
-      recallCrossNamespaceBudgetHardLimit: 1,
+      recallCrossNamespaceBudgetHardLimit: 2,
       dreamsPhases: dreamsPhasesConfig(),
     },
     recall: async () => {
@@ -4045,7 +4045,7 @@ test("access service serializes recall budget records under the hard limit", asy
       recallCrossNamespaceBudgetEnabled: true,
       recallCrossNamespaceBudgetWindowMs: 60_000,
       recallCrossNamespaceBudgetSoftLimit: 0,
-      recallCrossNamespaceBudgetHardLimit: 1,
+      recallCrossNamespaceBudgetHardLimit: 2,
       dreamsPhases: dreamsPhasesConfig(),
     },
     recall: async () => {
