@@ -72,12 +72,10 @@ export function buildChatGptMemoryInspectorActionRequest(
   recall: EngramAccessRecallResponse,
   xray: RecallXraySnapshot | null,
 ): ActionConfidenceRequest {
-  const provenances = xray === null
-    ? recall.results.map(missingRecallProvenance)
-    : xray.results.map((result) => result.provenance ?? missingProvenance(result));
+  const provenances = buildRecallProvenances(recall, xray);
   const hasUnsafeOrMissingProvenance = provenances.some(
     (provenance) => provenance.safeToUse === false || provenance.safety === "blocked",
-  ) || provenances.length < recall.count;
+  );
 
   const request: ActionConfidenceRequest = {
     intendedAction: `Use Remnic memory to answer: ${input.query}`,
@@ -117,15 +115,7 @@ export function buildChatGptMemoryInspectorResult(
   actionConfidence: ActionConfidenceResult,
 ): RemnicChatGptMemoryInspectorResult {
   const xrayUnavailable = xray === null;
-  const xrayById = new Map<string, RecallXrayResult>();
-  const xrayByPath = new Map<string, RecallXrayResult>();
-  for (const result of xray?.results ?? []) {
-    xrayById.set(result.memoryId, result);
-    xrayByPath.set(result.path, result);
-  }
-  const matchXrayResult = (summary: EngramAccessRecallResponse["results"][number]) =>
-    (summary.path ? xrayByPath.get(summary.path) : undefined)
-    ?? xrayById.get(summary.id);
+  const matchXrayResult = buildXrayResultMatcher(xray);
   const matchedXrayResults = recall.results.map(matchXrayResult);
 
   const memories = recall.results.slice(0, 8).map((summary) => {
@@ -375,6 +365,40 @@ function average(values: number[]): number | undefined {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function buildRecallProvenances(
+  recall: EngramAccessRecallResponse,
+  xray: RecallXraySnapshot | null,
+): RetrievedMemoryProvenance[] {
+  if (xray === null) {
+    return recall.results.map(missingRecallProvenance);
+  }
+  const matchXrayResult = buildXrayResultMatcher(xray);
+  return recall.results.map((summary) => {
+    const result = matchXrayResult(summary);
+    if (result === undefined) {
+      return missingXrayResultProvenance(summary);
+    }
+    return result.provenance ?? missingProvenance(result);
+  });
+}
+
+function buildXrayResultMatcher(
+  xray: RecallXraySnapshot | null,
+): (summary: EngramAccessRecallResponse["results"][number]) => RecallXrayResult | undefined {
+  const xrayById = new Map<string, RecallXrayResult>();
+  const xrayByPath = new Map<string, RecallXrayResult>();
+  for (const result of xray?.results ?? []) {
+    xrayById.set(result.memoryId, result);
+    xrayByPath.set(result.path, result);
+  }
+  return (summary) => {
+    if (summary.path) {
+      return xrayByPath.get(summary.path);
+    }
+    return xrayById.get(summary.id);
+  };
+}
+
 function missingProvenance(result: RecallXrayResult): RetrievedMemoryProvenance {
   return {
     source: "unknown",
@@ -388,6 +412,24 @@ function missingProvenance(result: RecallXrayResult): RetrievedMemoryProvenance 
     safeToUse: false,
     safety: "blocked",
     safetyReasons: ["X-ray provenance was missing for this memory."],
+  };
+}
+
+function missingXrayResultProvenance(
+  summary: EngramAccessRecallResponse["results"][number],
+): RetrievedMemoryProvenance {
+  return {
+    source: "unknown",
+    scope: "unknown",
+    userContextScopes: [],
+    retrievalReason: `X-ray result missing for ${summary.path || summary.id}`,
+    confidence: 0,
+    stale: false,
+    corrected: false,
+    correctionState: "none",
+    safeToUse: false,
+    safety: "blocked",
+    safetyReasons: ["X-ray result was missing for this recalled memory."],
   };
 }
 

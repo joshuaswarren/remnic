@@ -852,3 +852,83 @@ test("ChatGPT Apps inspector rejects malformed currentContextScopes before servi
   assert.match(resultText(response), /currentContextScopes must be an array of strings/);
   assert.deepEqual(capture, { recalls: [], xrays: [], actionRequests: [] });
 });
+
+test("ChatGPT Apps inspector action confidence blocks recalled memories missing X-ray rows", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "safe work detail\nunverified private detail",
+    count: 2,
+    memoryIds: ["mem-shared", "mem-shared"],
+    results: [
+      {
+        id: "mem-shared",
+        path: "work/mem-shared.md",
+        category: "preference",
+        status: "active",
+        tags: [],
+        preview: "safe work detail",
+      },
+      {
+        id: "mem-shared",
+        path: "private/mem-shared.md",
+        category: "preference",
+        status: "active",
+        tags: [],
+        preview: "unverified private detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const xray = {
+    schemaVersion: "1",
+    query: "show preferences",
+    snapshotId: "snap-missing-xray-row",
+    capturedAt: 1_779_000_000_000,
+    tierExplain: null,
+    results: [
+      {
+        memoryId: "mem-shared",
+        path: "work/mem-shared.md",
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.8 },
+        admittedBy: ["test"],
+        provenance: {
+          source: "conversation",
+          scope: "namespace:work",
+          userContextScopes: ["work"],
+          retrievalReason: "test",
+          confidence: 0.8,
+          stale: false,
+          corrected: false,
+          correctionState: "none",
+          safeToUse: true,
+          safety: "safe",
+          safetyReasons: [],
+        },
+      },
+    ],
+    filters: [],
+    budget: { chars: 4096, used: 100 },
+    namespace: "work",
+  } satisfies import("../src/recall-xray.js").RecallXraySnapshot;
+  const actionRequest = buildChatGptMemoryInspectorActionRequest(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    xray,
+  );
+
+  assert.equal(actionRequest.contextReadiness, "partial");
+  assert.equal(actionRequest.confidence, 0.4);
+  assert.equal(actionRequest.retrievedMemories?.length, 2);
+  assert.equal(actionRequest.retrievedMemories?.[0]?.safeToUse, true);
+  assert.equal(actionRequest.retrievedMemories?.[0]?.safety, "safe");
+  assert.equal(actionRequest.retrievedMemories?.[1]?.safeToUse, false);
+  assert.equal(actionRequest.retrievedMemories?.[1]?.safety, "blocked");
+  assert.match(
+    actionRequest.retrievedMemories?.[1]?.safetyReasons?.[0] ?? "",
+    /X-ray result was missing/,
+  );
+});
