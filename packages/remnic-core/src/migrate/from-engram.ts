@@ -30,6 +30,7 @@ interface RollbackManifestEntry {
   backupPath?: string;
   createdByMigration?: boolean;
   contentHash?: string;
+  mode?: number;
 }
 
 interface RollbackManifest {
@@ -42,6 +43,7 @@ interface ValidatedRollbackManifestEntry extends RollbackManifestEntry {
   targetPath: string;
   backupPath?: string;
   contentHash?: string;
+  mode?: number;
 }
 
 export interface MigrationOptions {
@@ -308,11 +310,19 @@ function parseRollbackManifestEntry(raw: unknown, index: number): RollbackManife
   if (raw.contentHash !== undefined && (typeof raw.contentHash !== "string" || !/^[a-f0-9]{64}$/u.test(raw.contentHash))) {
     throw new Error(`rollback manifest entry ${index} has an invalid contentHash`);
   }
+  const rawMode = raw.mode;
+  if (
+    rawMode !== undefined &&
+    (typeof rawMode !== "number" || !Number.isInteger(rawMode) || rawMode < 0 || rawMode > 0o777)
+  ) {
+    throw new Error(`rollback manifest entry ${index} has an invalid mode`);
+  }
   return {
     targetPath: raw.targetPath,
     ...(raw.backupPath === undefined ? {} : { backupPath: raw.backupPath }),
     ...(raw.createdByMigration === undefined ? {} : { createdByMigration: raw.createdByMigration }),
     ...(raw.contentHash === undefined ? {} : { contentHash: raw.contentHash }),
+    ...(rawMode === undefined ? {} : { mode: rawMode }),
   };
 }
 
@@ -486,6 +496,7 @@ async function validateRollbackManifestEntries(
       ...(backupPath === undefined ? {} : { backupPath }),
       ...(entry.createdByMigration === undefined ? {} : { createdByMigration: entry.createdByMigration }),
       ...(entry.contentHash === undefined ? {} : { contentHash: entry.contentHash }),
+      ...(entry.mode === undefined ? {} : { mode: entry.mode }),
     });
   }
 
@@ -697,14 +708,16 @@ async function backupFile(
   }
   const backupPath = connectorBackupPathForTarget(targetPath, homeDir);
   await ensureParent(backupPath);
+  const originalMode = isRemnicTokenStorePath(targetPath, homeDir)
+    ? TOKEN_STORE_MODE
+    : (await stat(targetPath)).mode & 0o777;
   if (isRemnicTokenStorePath(targetPath, homeDir)) {
     await writeOwnerOnlyFile(backupPath, originalContent);
   } else {
-    const originalMode = (await stat(targetPath)).mode & 0o777;
     await writeFile(backupPath, originalContent, { encoding: "utf8", mode: originalMode });
     await chmod(backupPath, originalMode);
   }
-  manifest.entries.push({ targetPath, backupPath });
+  manifest.entries.push({ targetPath, backupPath, mode: originalMode });
   await persistManifest?.();
 }
 
@@ -990,9 +1003,10 @@ export async function rollbackFromEngramMigration(options?: MigrationOptions): P
       await assertExistingRegularFileNoFollow(entry.backupPath, "rollback manifest backup");
       await ensureParent(entry.targetPath);
       await copyFile(entry.backupPath, entry.targetPath);
-      if (isRemnicTokenStorePath(entry.targetPath, homeDir)) {
-        await secureTokenFilePermissions(entry.targetPath);
-      }
+      const restoreMode = isRemnicTokenStorePath(entry.targetPath, homeDir)
+        ? TOKEN_STORE_MODE
+        : entry.mode ?? ((await lstat(entry.backupPath)).mode & 0o777);
+      await chmod(entry.targetPath, restoreMode);
       restored.push(entry.targetPath);
       continue;
     }

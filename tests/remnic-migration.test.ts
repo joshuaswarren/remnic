@@ -851,6 +851,63 @@ test("rollbackFromEngramMigration restores backed up connector configs and remov
   await assertFileMode(claudeConfig, 0o644);
 });
 
+test("rollbackFromEngramMigration restores backed up connector config permissions", {
+  skip: process.platform === "win32",
+}, async () => {
+  const homeDir = await makeTempHome("remnic-migrate-rollback-mode-");
+  const cwd = path.join(homeDir, "repo");
+  const claudeConfig = path.join(cwd, "packages", "plugin-claude-code", ".mcp.json");
+  const legacyRoot = path.join(homeDir, ".engram");
+
+  await mkdir(legacyRoot, { recursive: true });
+  await mkdir(path.dirname(claudeConfig), { recursive: true });
+  await writeFile(path.join(legacyRoot, "tokens.json"), JSON.stringify({ tokens: [] }), "utf8");
+  await writeFile(
+    claudeConfig,
+    JSON.stringify({
+      mcpServers: {
+        engram: {
+          headers: {
+            Authorization: "Bearer {{ENGRAM_TOKEN}}",
+          },
+        },
+      },
+    }),
+    "utf8",
+  );
+  await setModeIfPosix(claudeConfig, 0o600);
+
+  await migrateFromEngram({
+    homeDir,
+    cwd,
+    quiet: true,
+    connectorConfigPaths: [claudeConfig],
+  });
+
+  const manifest = JSON.parse(await readFile(path.join(homeDir, ".remnic", ".rollback.json"), "utf8")) as {
+    entries: Array<{ targetPath: string; backupPath?: string; mode?: number }>;
+  };
+  const configEntry = manifest.entries.find((entry) => entry.targetPath === claudeConfig);
+  assert.equal(configEntry?.mode, 0o600);
+
+  await writeFile(claudeConfig, "mode drift\n", "utf8");
+  await setModeIfPosix(claudeConfig, 0o644);
+
+  const rollback = await rollbackFromEngramMigration({
+    homeDir,
+    cwd,
+    quiet: true,
+  });
+
+  assert.ok(rollback.restored.includes(claudeConfig));
+  const restoredConfig = JSON.parse(await readFile(claudeConfig, "utf8")) as {
+    mcpServers: Record<string, unknown>;
+  };
+  assert.ok(restoredConfig.mcpServers.engram);
+  assert.equal(restoredConfig.mcpServers.remnic, undefined);
+  await assertFileMode(claudeConfig, 0o600);
+});
+
 test("rollbackFromEngramMigration restores repo connector configs from a different cwd", async () => {
   const homeDir = await makeTempHome("remnic-migrate-repo-rollback-home-");
   const rollbackCwd = await makeTempHome("remnic-migrate-repo-rollback-other-cwd-");
