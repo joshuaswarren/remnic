@@ -61,6 +61,7 @@ export function recallAtK(
   relevant: string[],
   k: number,
 ): number {
+  if (!Number.isInteger(k) || k <= 0) return 0;
   if (relevant.length === 0) return 1;
 
   const topK = retrieved.slice(0, k).map(normalizeText);

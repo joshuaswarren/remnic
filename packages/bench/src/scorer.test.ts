@@ -5,6 +5,7 @@ import {
   containsAnswer,
   llmBinaryJudgeScoreDetailed,
   llmJudgeScoreDetailed,
+  recallAtK,
 } from "./scorer.ts";
 
 function delay(ms: number): Promise<void> {
@@ -126,4 +127,11 @@ test("containsAnswer does not match short labels inside unrelated words", () => 
 test("containsAnswer allows short numeric answers with attached units", () => {
   assert.equal(containsAnswer("250ms", "250"), 1);
   assert.equal(containsAnswer("$50", "50"), 1);
+});
+
+test("recallAtK rejects invalid cutoff values", () => {
+  assert.equal(recallAtK(["a", "b"], ["a"], -1), 0);
+  assert.equal(recallAtK(["a"], ["a"], 0), 0);
+  assert.equal(recallAtK(["a"], ["a"], 1.5), 0);
+  assert.equal(recallAtK(["a"], ["a"], 1), 1);
 });
