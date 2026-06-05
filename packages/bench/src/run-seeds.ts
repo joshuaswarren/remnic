@@ -11,12 +11,12 @@ export function buildBenchmarkRunSeeds(
   baseSeed?: number,
 ): number[] {
   if (!Number.isSafeInteger(runCount) || runCount <= 0) {
-    throw new Error("benchmark run count must be a positive safe integer");
+    throw new Error("benchmark run count must be a positive integer within JavaScript safe integer range");
   }
 
   const firstSeed = baseSeed ?? 0;
   if (!Number.isSafeInteger(firstSeed) || firstSeed < 0) {
-    throw new Error("benchmark seed must be a non-negative safe integer");
+    throw new Error("benchmark seed must be a non-negative integer within JavaScript safe integer range");
   }
 
   const maxOffset = Number.MAX_SAFE_INTEGER - firstSeed;

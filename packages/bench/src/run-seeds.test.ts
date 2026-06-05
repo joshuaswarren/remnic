@@ -21,7 +21,7 @@ test("buildBenchmarkRunSeeds allows the maximum safe integer only as the final s
 test("buildBenchmarkRunSeeds rejects unsafe starting seeds", () => {
   assert.throws(
     () => buildBenchmarkRunSeeds(1, Number.MAX_SAFE_INTEGER + 1),
-    /non-negative safe integer/,
+    /non-negative integer/,
   );
 });
 
