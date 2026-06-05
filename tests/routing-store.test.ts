@@ -32,15 +32,17 @@ test("routing store round-trips valid rules", async () => {
   }
 });
 
-test("routing store fail-opens malformed file", async () => {
+test("routing store surfaces malformed file read failures", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-routing-store-malformed-"));
   try {
     const statePath = path.join(memoryDir, "state", "routing-rules.json");
     await mkdir(path.dirname(statePath), { recursive: true });
     await writeFile(statePath, "{bad-json", "utf-8");
     const store = new RoutingRulesStore(memoryDir);
-    const rules = await store.read();
-    assert.deepEqual(rules, []);
+    await assert.rejects(
+      async () => store.read(),
+      /failed to parse routing rules state/,
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -296,8 +298,10 @@ test("routing store blocks symlink-based state path escapes", async () => {
     await assert.rejects(async () => store.write([sampleRule()]));
 
     await assert.rejects(async () => readFile(path.join(outsideDir, "routing-rules.json"), "utf-8"));
-    const rules = await store.read();
-    assert.deepEqual(rules, []);
+    await assert.rejects(
+      async () => store.read(),
+      /routing rules state path escaped memoryDir/,
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
@@ -322,8 +326,10 @@ test("routing store blocks final state-file symlink escapes", async () => {
 
     const outsideRaw = await readFile(outsideFile, "utf-8");
     assert.equal(outsideRaw, "{}");
-    const rules = await store.read();
-    assert.deepEqual(rules, []);
+    await assert.rejects(
+      async () => store.read(),
+      /routing rules state path must not be a symlink/,
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
@@ -423,8 +429,10 @@ test("routing store does not create out-of-root directories before scope rejecti
   try {
     await symlink(outsideDir, path.join(memoryDir, "state-link"));
     const store = new RoutingRulesStore(memoryDir, "state-link/sub/routing-rules.json");
-    const rules = await store.read();
-    assert.deepEqual(rules, []);
+    await assert.rejects(
+      async () => store.read(),
+      /routing rules state path escaped memoryDir/,
+    );
 
     await assert.rejects(async () => stat(path.join(outsideDir, "sub")));
   } finally {

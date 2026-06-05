@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { access, mkdtemp, readFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { selectRouteRule } from "../src/routing/engine.js";
@@ -193,4 +193,17 @@ test("persistExtraction preserves index bootstrap when no memory IDs are persist
   }
   assert.equal(await exists(timeIndexPath), true);
   assert.equal(await exists(tagIndexPath), true);
+});
+
+test("RoutingRulesStore read surfaces malformed persisted state", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-routing-malformed-"));
+  const stateDir = path.join(memoryDir, "state");
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(path.join(stateDir, "routing-rules.json"), "{not json", "utf-8");
+
+  const store = new RoutingRulesStore(memoryDir);
+  await assert.rejects(
+    () => store.read(),
+    /failed to parse routing rules state/,
+  );
 });

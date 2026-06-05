@@ -85,14 +85,10 @@ export class RoutingRulesStore {
   }
 
   async read(options?: RoutingEngineOptions): Promise<RouteRule[]> {
-    try {
-      const persisted = await this.readPersistedRules();
-      return persisted
-        .map((rule) => normalizeRule(rule, options))
-        .filter((rule): rule is RouteRule => rule !== null);
-    } catch {
-      return [];
-    }
+    const persisted = await this.readPersistedRules();
+    return persisted
+      .map((rule) => normalizeRule(rule, options))
+      .filter((rule): rule is RouteRule => rule !== null);
   }
 
   async write(rules: RouteRule[], options?: RoutingEngineOptions): Promise<RouteRule[]> {
