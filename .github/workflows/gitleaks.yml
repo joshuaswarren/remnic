@@ -24,7 +24,9 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="8.24.3"
+          EXPECTED_SHA256="9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c"
           curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" -o gitleaks.tar.gz
+          echo "${EXPECTED_SHA256}  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
 
