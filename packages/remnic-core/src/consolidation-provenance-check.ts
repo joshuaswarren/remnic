@@ -18,7 +18,7 @@
  */
 
 import path from "node:path";
-import { access, readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import type { StorageManager } from "./storage.js";
 import {
@@ -499,7 +499,7 @@ export async function runConsolidationProvenanceCheck(options: {
     const scanRoots = ["facts", "corrections", "procedures", "reasoning-traces"];
     for (const rootName of scanRoots) {
       const rootPath = path.join(memoryDir, rootName);
-      for await (const file of walkMarkdownFiles(rootPath)) {
+      for await (const file of walkMarkdownFiles(rootPath, memoryDir)) {
         if (seenPaths.has(file)) continue;
         try {
           const raw = await readFile(file, "utf-8");
@@ -531,21 +531,40 @@ export async function runConsolidationProvenanceCheck(options: {
 /**
  * Recursively yield all `.md` file paths under `root`.  Silent on
  * missing directories — the facts/corrections dirs may not exist in
- * fresh installs.
+ * fresh installs.  Symlinked roots/directories are skipped so the
+ * best-effort parse-failure pass cannot escape `memoryDir`.
  */
-async function* walkMarkdownFiles(root: string): AsyncGenerator<string> {
+async function* walkMarkdownFiles(root: string, memoryDir: string): AsyncGenerator<string> {
   let entries;
+  let memoryDirReal: string;
   try {
+    const rootStat = await lstat(root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return;
+    memoryDirReal = await realpath(memoryDir);
+    const rootReal = await realpath(root);
+    if (!isPathWithin(rootReal, memoryDirReal)) return;
     entries = await readdir(root, { withFileTypes: true });
   } catch {
     return;
   }
   for (const entry of entries) {
     const full = path.join(root, entry.name);
+    if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
-      yield* walkMarkdownFiles(full);
+      yield* walkMarkdownFiles(full, memoryDirReal);
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      try {
+        const fileReal = await realpath(full);
+        if (!isPathWithin(fileReal, memoryDirReal)) continue;
+      } catch {
+        continue;
+      }
       yield full;
     }
   }
+}
+
+function isPathWithin(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }

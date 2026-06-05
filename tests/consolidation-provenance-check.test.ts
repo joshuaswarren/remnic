@@ -18,7 +18,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { StorageManager } from "../src/storage.ts";
 import {
   runConsolidationProvenanceCheck,
@@ -404,6 +404,39 @@ test("runConsolidationProvenanceCheck surfaces parse-failed files that carry pro
     assert.equal(parseFailed.length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runConsolidationProvenanceCheck does not follow symlinked scan roots outside memoryDir", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-symlink-root-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-outside-"));
+  try {
+    await mkdir(path.join(outsideDir, "2026-04-20"), { recursive: true });
+    const outsideFile = path.join(outsideDir, "2026-04-20", "outside.md");
+    await writeFile(
+      outsideFile,
+      [
+        "---",
+        "id: outside-fact",
+        "category: fact",
+        'derived_from: ["facts/a.md:1"]',
+        "derived_via: merge",
+        "body text with no closing delimiter",
+      ].join("\n"),
+      "utf-8",
+    );
+    await symlink(outsideDir, path.join(dir, "facts"), "dir");
+    const storage = {
+      readAllMemories: async () => [],
+    } as unknown as StorageManager;
+
+    const report = await runConsolidationProvenanceCheck({ storage, memoryDir: dir });
+
+    assert.equal(report.withProvenance, 0);
+    assert.deepEqual(report.issues, []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
   }
 });
 
