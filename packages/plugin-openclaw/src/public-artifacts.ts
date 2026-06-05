@@ -12,7 +12,7 @@
  * is explicitly excluded.
  */
 
-import { readdir, access, stat, lstat, realpath } from "node:fs/promises";
+import { access, lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 /**
@@ -57,9 +57,7 @@ const PUBLIC_FILES: ReadonlyArray<{
   relativePath: string;
   kind: string;
   contentType: PublicArtifactContentType;
-}> = [
-  { relativePath: "profile.md", kind: "memory-root", contentType: "markdown" },
-];
+}> = [{ relativePath: "profile.md", kind: "memory-root", contentType: "markdown" }];
 
 /**
  * Check whether a path is contained within a boundary directory.
@@ -67,13 +65,20 @@ const PUBLIC_FILES: ReadonlyArray<{
  * starts with the boundary prefix, preventing symlink traversal.
  */
 async function isContainedWithin(target: string, boundary: string): Promise<boolean> {
+  return (await resolveContainedPath(target, boundary)) !== undefined;
+}
+
+async function resolveContainedPath(target: string, boundary: string): Promise<string | undefined> {
   try {
     const resolvedTarget = await realpath(target);
     const resolvedBoundary = await realpath(boundary);
     // Ensure the resolved path is within the boundary (with trailing sep)
-    return resolvedTarget === resolvedBoundary || resolvedTarget.startsWith(resolvedBoundary + path.sep);
+    if (resolvedTarget === resolvedBoundary || resolvedTarget.startsWith(resolvedBoundary + path.sep)) {
+      return resolvedTarget;
+    }
+    return undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -85,7 +90,7 @@ async function isContainedWithin(target: string, boundary: string): Promise<bool
 async function listMarkdownFilesRecursive(
   rootDir: string,
   boundary?: string,
-  ancestorRealPaths?: ReadonlySet<string>,
+  ancestorRealPaths?: ReadonlySet<string>
 ): Promise<string[]> {
   const boundaryDir = boundary ?? rootDir;
   // Cycle detection uses only the current recursion path — the set of real
@@ -108,7 +113,7 @@ async function listMarkdownFilesRecursive(
 
   let entries: import("node:fs").Dirent[];
   try {
-    entries = await readdir(rootDir, { withFileTypes: true }) as import("node:fs").Dirent[];
+    entries = (await readdir(rootDir, { withFileTypes: true })) as import("node:fs").Dirent[];
   } catch {
     return [];
   }
@@ -149,7 +154,10 @@ async function listMarkdownFilesRecursive(
       continue;
     }
     if (isFile && String(entry.name).endsWith(".md")) {
-      files.push(fullPath);
+      const resolvedFilePath = await resolveContainedPath(fullPath, boundaryDir);
+      if (resolvedFilePath !== undefined) {
+        files.push(resolvedFilePath);
+      }
     }
   }
   return files.sort((a, b) => a.localeCompare(b));
@@ -190,6 +198,12 @@ export async function listRemnicPublicArtifacts(params: {
 }): Promise<RemnicPublicArtifact[]> {
   const { memoryDir, workspaceDir, agentIds } = params;
   const artifacts: RemnicPublicArtifact[] = [];
+  let resolvedMemoryDir: string;
+  try {
+    resolvedMemoryDir = await realpath(memoryDir);
+  } catch {
+    return [];
+  }
 
   // Scan public directories
   for (const spec of PUBLIC_DIRS) {
@@ -220,7 +234,7 @@ export async function listRemnicPublicArtifacts(params: {
     const files = await listMarkdownFilesRecursive(dirPath, dirPath);
 
     for (const absolutePath of files) {
-      const relativePath = path.relative(memoryDir, absolutePath).replace(/\\/g, "/");
+      const relativePath = path.relative(resolvedMemoryDir, absolutePath).replace(/\\/g, "/");
       artifacts.push({
         kind: spec.kind,
         workspaceDir,
@@ -237,23 +251,19 @@ export async function listRemnicPublicArtifacts(params: {
     const absolutePath = path.join(memoryDir, spec.relativePath);
     if (!(await pathExists(absolutePath))) continue;
     // Block symlink traversal for standalone files
-    if (!(await isContainedWithin(absolutePath, memoryDir))) continue;
-    // Reject symlinks that redirect to a different file (e.g., profile.md -> state/index.md)
+    const resolvedPath = await resolveContainedPath(absolutePath, memoryDir);
+    if (resolvedPath === undefined) continue;
+    // Reject symlinks for standalone files so returned paths cannot be swapped
+    // after validation but before downstream ingestion reads them.
     try {
       const linkStat = await lstat(absolutePath);
-      if (linkStat.isSymbolicLink()) {
-        const resolvedPath = await realpath(absolutePath);
-        const expectedParent = await realpath(memoryDir);
-        // Resolved path must be directly in memoryDir with the expected basename
-        if (path.dirname(resolvedPath) !== expectedParent) continue;
-        if (path.basename(resolvedPath) !== path.basename(spec.relativePath)) continue;
-      }
+      if (linkStat.isSymbolicLink()) continue;
     } catch {
       continue;
     }
     // Verify it's a file (not a directory)
     try {
-      const fileStat = await stat(absolutePath);
+      const fileStat = await stat(resolvedPath);
       if (!fileStat.isFile()) continue;
     } catch {
       continue;
@@ -262,7 +272,7 @@ export async function listRemnicPublicArtifacts(params: {
       kind: spec.kind,
       workspaceDir,
       relativePath: spec.relativePath,
-      absolutePath,
+      absolutePath: resolvedPath,
       agentIds: [...agentIds],
       contentType: spec.contentType,
     });
@@ -272,9 +282,7 @@ export async function listRemnicPublicArtifacts(params: {
   // overlapping scans or symlinks.
   const deduped = new Map<string, RemnicPublicArtifact>();
   for (const artifact of artifacts) {
-    const key = [artifact.workspaceDir, artifact.relativePath, artifact.kind].join(
-      String.fromCharCode(0),
-    );
+    const key = [artifact.workspaceDir, artifact.relativePath, artifact.kind].join(String.fromCharCode(0));
     deduped.set(key, artifact);
   }
 

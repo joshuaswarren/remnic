@@ -1,11 +1,11 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, mkdir, writeFile, symlink } from "node:fs/promises";
+import test from "node:test";
 import {
-  listRemnicPublicArtifacts,
   type RemnicPublicArtifact,
+  listRemnicPublicArtifacts,
 } from "../packages/plugin-openclaw/src/public-artifacts.ts";
 
 const AGENT_IDS = ["generalist"];
@@ -58,7 +58,7 @@ test("discovers facts in dated subdirectories", async () => {
       assert.equal(a.workspaceDir, "/tmp/workspace");
       assert.deepStrictEqual(a.agentIds, AGENT_IDS);
       assert.ok(a.relativePath.startsWith("facts/2026-04-10/"));
-      assert.ok(a.absolutePath.startsWith(dir));
+      assert.ok(path.isAbsolute(a.absolutePath));
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -313,12 +313,54 @@ test("follows symlinks within memoryDir boundary", async () => {
       agentIds: AGENT_IDS,
     });
 
-    // Should find both the real file and the symlinked file (since it's within boundary)
+    // Should find the contained symlink target, but report the resolved
+    // target path so later symlink swaps cannot redirect ingestion reads.
     const entityPaths = artifacts.filter((a) => a.kind === "entity").map((a) => a.relativePath);
     assert.ok(
-      entityPaths.some((p) => p.includes("linked-data/entity.md")),
-      "should follow contained symlinks: " + JSON.stringify(entityPaths),
+      entityPaths.some((p) => p.includes("real-target/entity.md")),
+      `should expose contained symlink targets by resolved path: ${JSON.stringify(entityPaths)}`
     );
+    assert.ok(
+      !entityPaths.some((p) => p.includes("linked-data/entity.md")),
+      `should not expose mutable symlink alias paths: ${JSON.stringify(entityPaths)}`
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("returns resolved file targets for public symlinks to prevent later swaps", async () => {
+  const dir = await createTempMemoryDir();
+  try {
+    const factsDir = path.join(dir, "facts");
+    const stateDir = path.join(dir, "state");
+    await mkdir(factsDir, { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+
+    const publicPath = path.join(factsDir, "public.md");
+    const privatePath = path.join(stateDir, "private.md");
+    const linkPath = path.join(factsDir, "link.md");
+    await writeFile(publicPath, "public fact");
+    await writeFile(privatePath, "private runtime state");
+    await symlink(publicPath, linkPath, "file");
+
+    const artifacts = await listRemnicPublicArtifacts({
+      memoryDir: dir,
+      workspaceDir: "/tmp/workspace",
+      agentIds: AGENT_IDS,
+    });
+
+    assert.ok(
+      !artifacts.some((a) => a.absolutePath === linkPath || a.relativePath === "facts/link.md"),
+      "public artifacts must not return mutable symlink paths"
+    );
+
+    await rm(linkPath, { force: true });
+    await symlink(privatePath, linkPath, "file");
+
+    const publicArtifact = artifacts.find((a) => a.relativePath === "facts/public.md");
+    assert.ok(publicArtifact, "should expose the resolved public target");
+    assert.equal(await readFile(publicArtifact.absolutePath, "utf8"), "public fact");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
