@@ -203,6 +203,8 @@ export interface RunBenchmarkOptions {
   outputDir?: string;
   limit?: number;
   seed?: number;
+  /** Override the number of full-mode benchmark iterations. Quick mode remains single-run. */
+  iterations?: number;
   adapterMode?: string;
   runtimeProfile?: BenchRuntimeProfile | null;
   system: import("./adapters/types.js").BenchMemoryAdapter;

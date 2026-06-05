@@ -36,7 +36,7 @@ async function runCustomBenchmark(
     );
   }
 
-  const runCount = resolveBenchmarkRunCount(options.mode);
+  const runCount = resolveBenchmarkRunCount(options.mode, options.iterations);
   const tasksPerRun = selectTasks(spec, options.limit);
   const totalTaskCount = runCount * tasksPerRun.length;
   let completedTaskCount = 0;
@@ -54,7 +54,7 @@ async function runCustomBenchmark(
           options.onTaskComplete?.(taskResult, completedTaskCount, totalTaskCount);
         },
       ),
-    undefined,
+    options.iterations,
     options.seed,
   );
   const tasks = runs.flat();

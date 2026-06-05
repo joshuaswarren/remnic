@@ -255,3 +255,89 @@ test("custom benchmarks score responder output and include responder usage", asy
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("custom benchmark full mode honors requested iterations", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-custom-bench-"));
+  const benchmarkPath = path.join(tempDir, "iterations.yaml");
+  const completions: Array<{ completed: number; total: number | undefined }> = [];
+
+  try {
+    await writeFile(
+      benchmarkPath,
+      [
+        "name: Custom Iterations",
+        "scoring: exact_match",
+        "tasks:",
+        "  - question: What is alpha?",
+        "    expected: alpha",
+        "  - question: What is beta?",
+        "    expected: beta",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await runCustomBenchmarkFile(benchmarkPath, {
+      mode: "full",
+      iterations: 2,
+      seed: 7,
+      system: {
+        async store() {},
+        async recall() {
+          return "";
+        },
+        async search(query) {
+          return [
+            {
+              turnIndex: 0,
+              role: "assistant",
+              snippet: query.includes("alpha") ? "alpha" : "beta",
+              sessionId: "session-1",
+            },
+          ];
+        },
+        async reset() {},
+        async getStats() {
+          return {
+            totalMessages: 0,
+            totalSummaryNodes: 0,
+            maxDepth: 0,
+          };
+        },
+        async destroy() {},
+      },
+      onTaskComplete(_task, completedCount, totalCount) {
+        completions.push({ completed: completedCount, total: totalCount });
+      },
+    });
+
+    assert.equal(result.meta.runCount, 2);
+    assert.deepEqual(result.meta.seeds, [7, 8]);
+    assert.equal(result.results.tasks.length, 4);
+    assert.deepEqual(
+      result.results.tasks.map((task) => task.question),
+      [
+        "What is alpha?",
+        "What is beta?",
+        "What is alpha?",
+        "What is beta?",
+      ],
+    );
+    assert.deepEqual(
+      result.results.tasks.map((task) => task.details?.runIndex),
+      [0, 0, 1, 1],
+    );
+    assert.deepEqual(
+      result.results.tasks.map((task) => task.details?.seed),
+      [7, 7, 8, 8],
+    );
+    assert.deepEqual(completions, [
+      { completed: 1, total: 4 },
+      { completed: 2, total: 4 },
+      { completed: 3, total: 4 },
+      { completed: 4, total: 4 },
+    ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
