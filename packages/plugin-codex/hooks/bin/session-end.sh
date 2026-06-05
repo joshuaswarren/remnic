@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Remnic Stop hook for Codex.
-# Performs final observe flush then cleans up cursor/lock files.
+# Performs final observe flush then cleans up cursor/lock files only after the
+# pending transcript tail is observed or confirmed empty.
 
 set -euo pipefail
 
@@ -167,11 +168,13 @@ remove_cursor_file() {
 }
 
 # Final observe flush if we have transcript
+REMOVE_CURSOR_AFTER_FLUSH=1
 if [ -n "$REMNIC_TOKEN" ] && [ "$SESSION_ID_SAFE" -eq 1 ] && [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
   LAST_COUNT=0
   migrate_tmp_cursor_file
   if LAST_COUNT="$(read_cursor_file)"; then
-    PAYLOAD="$(node -e "
+    PAYLOAD=""
+    if ! PAYLOAD="$(node -e "
       const fs = require('fs');
       const lines = fs.readFileSync(process.argv[1], 'utf8').split('\n').filter(Boolean);
       const messages = [];
@@ -192,16 +195,28 @@ if [ -n "$REMNIC_TOKEN" ] && [ "$SESSION_ID_SAFE" -eq 1 ] && [ -n "$TRANSCRIPT_P
       if (newMessages.length) {
         process.stdout.write(JSON.stringify({ sessionKey: process.argv[2], messages: newMessages }));
       }
-    " "$TRANSCRIPT_PATH" "$SESSION_ID" "$LAST_COUNT" 2>/dev/null)"
+    " "$TRANSCRIPT_PATH" "$SESSION_ID" "$LAST_COUNT" 2>/dev/null)"; then
+      log "final flush parse failed for $SESSION_ID; cursor retained for retry"
+      REMOVE_CURSOR_AFTER_FLUSH=0
+      PAYLOAD=""
+    fi
 
     if [ -n "$PAYLOAD" ]; then
       log "final flush for $SESSION_ID"
-      curl -s --max-time 30 \
+      CURL_EXIT=0
+      RAW="$(curl -s -w "\n%{http_code}" --max-time 30 \
         -X POST "$REMNIC_URL" \
         -H "Authorization: Bearer ${REMNIC_TOKEN}" \
         -H "Content-Type: application/json" \
         -H "X-Engram-Client-Id: codex" \
-        -d "$PAYLOAD" >/dev/null 2>&1 || log "final flush failed"
+        -d "$PAYLOAD" 2>/dev/null)" || CURL_EXIT=$?
+      HTTP_STATUS="$(printf '%s\n' "$RAW" | tail -1)"
+      if [ "$CURL_EXIT" -eq 0 ] && [[ "$HTTP_STATUS" =~ ^2 ]]; then
+        log "final flush OK for $SESSION_ID"
+      else
+        log "final flush failed for $SESSION_ID (curl=$CURL_EXIT http=${HTTP_STATUS:-unknown}); cursor retained for retry"
+        REMOVE_CURSOR_AFTER_FLUSH=0
+      fi
     fi
   else
     log "final flush skipped for $SESSION_ID due to unsafe cursor"
@@ -210,7 +225,9 @@ fi
 
 # Cleanup
 if [ "$SESSION_ID_SAFE" -eq 1 ]; then
-  remove_cursor_file || true
+  if [ "$REMOVE_CURSOR_AFTER_FLUSH" -eq 1 ]; then
+    remove_cursor_file || true
+  fi
   rmdir "$LOCK_DIR" 2>/dev/null || true
   if [ "$CURSOR_FILE" != "$LEGACY_CURSOR_FILE" ] && [ -e "$LEGACY_CURSOR_FILE" ] && [ ! -L "$LEGACY_CURSOR_FILE" ]; then
     rm -f "$LEGACY_CURSOR_FILE" 2>/dev/null || true
