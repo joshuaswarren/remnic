@@ -388,40 +388,50 @@ export async function ensureGraphEdgeDecayCron(
 
   const scheduleLabel = graphEdgeDecayScheduleLabel(scheduleExpr);
 
-  return ensureCronJob(jobsPath, GRAPH_EDGE_DECAY_CRON_ID, () => ({
-    id: GRAPH_EDGE_DECAY_CRON_ID,
-    agentId,
-    // Schedule label reflects the actual cron expression (`daily` /
-    // `weekly` / `custom`) so cron dashboards do not show "weekly"
-    // when the schedule is in fact daily — Cursor review on PR #729.
-    name: `Remnic Graph Edge Decay (${scheduleLabel})`,
-    enabled: true,
-    schedule: {
-      kind: "cron",
-      expr: scheduleExpr,
-      tz: options.timezone,
+  return ensureCronJob(
+    jobsPath,
+    GRAPH_EDGE_DECAY_CRON_ID,
+    () => ({
+      id: GRAPH_EDGE_DECAY_CRON_ID,
+      agentId,
+      // Schedule label reflects the actual cron expression (`daily` /
+      // `weekly` / `custom`) so cron dashboards do not show "weekly"
+      // when the schedule is in fact daily — Cursor review on PR #729.
+      name: `Remnic Graph Edge Decay (${scheduleLabel})`,
+      enabled: true,
+      schedule: {
+        kind: "cron",
+        expr: scheduleExpr,
+        tz: options.timezone,
+      },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: {
+        kind: "agentTurn",
+        timeoutSeconds: 900,
+        thinking: "off",
+        message:
+          "You are OpenClaw automation. Call tool `engram.graph_edge_decay_run` with empty params. " +
+          "If successful output exactly NO_REPLY. On error output one concise line. Do NOT use message tool.",
+      },
+      delivery: { mode: "none" },
+    }),
+    {
+      updateExisting: true,
+      updateFields: ["name", "schedule"],
     },
-    sessionTarget: "isolated",
-    wakeMode: "now",
-    payload: {
-      kind: "agentTurn",
-      timeoutSeconds: 900,
-      thinking: "off",
-      message:
-        "You are OpenClaw automation. Call tool `engram.graph_edge_decay_run` with empty params. " +
-        "If successful output exactly NO_REPLY. On error output one concise line. Do NOT use message tool.",
-    },
-    delivery: { mode: "none" },
-  }));
+  );
 }
 
 /**
  * Pick a cron expression that approximates a cadence in milliseconds.
  *
- * - cadence < 7 days → daily at 04:13 (sub-daily cadence is not natively
- *   expressible in 5-field cron without `*\/N` patterns; daily is the
- *   safe upper bound that won't trip the cron more often than requested).
- * - cadence ≥ 7 days → weekly on Sunday 04:13.
+ * - cadence <= 1 day → daily at 04:13. Sub-daily cadence is not natively
+ *   expressible in 5-field cron without hour/minute step patterns; daily
+ *   preserves the previous conservative behavior for those values.
+ * - cadence > 1 day → weekly on Sunday 04:13. Multi-day intervals like
+ *   2-6 days cannot be represented accurately by a portable 5-field cron
+ *   expression, and daily would run more often than requested.
  *
  * Operators who need finer-grained control should set `scheduleExpr`
  * directly via `ensureGraphEdgeDecayCron`.
@@ -431,7 +441,7 @@ export function graphEdgeDecayCadenceToCronExpr(cadenceMs: number): string {
     return "13 4 * * 0";
   }
   const day = 24 * 60 * 60 * 1000;
-  if (cadenceMs < 7 * day) return "13 4 * * *";
+  if (cadenceMs <= day) return "13 4 * * *";
   return "13 4 * * 0";
 }
 
