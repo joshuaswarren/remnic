@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { ImportTurn } from "@remnic/core";
 import { mapParticipants } from "./participant.js";
+import { parseWeCloneExport } from "./parser.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,6 +31,10 @@ const T1 = "2025-01-10T08:00:00.000Z";
 const T2 = "2025-01-10T09:00:00.000Z";
 const T3 = "2025-01-10T10:00:00.000Z";
 const T4 = "2025-01-10T11:00:00.000Z";
+
+function makeMsg(sender: string, text: string, timestamp: string) {
+  return { sender, text, timestamp };
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -60,6 +65,47 @@ describe("mapParticipants", () => {
     const participants = mapParticipants(turns);
     const alice = participants.find((p) => p.id === "Alice");
     assert.equal(alice?.relationship, "self");
+  });
+
+  it("uses explicit parser selfSender roles instead of top sender volume", () => {
+    const source = parseWeCloneExport(
+      {
+        platform: "telegram",
+        messages: [
+          makeMsg("Alice", "first", T1),
+          makeMsg("Alice", "second", T2),
+          makeMsg("Bob", "self reply", T3),
+        ],
+      },
+      { selfSender: "Bob" },
+    );
+
+    const participants = mapParticipants(source.turns);
+    const alice = participants.find((p) => p.id === "Alice");
+    const bob = participants.find((p) => p.id === "Bob");
+
+    assert.equal(source.turns.find((t) => t.participantId === "Bob")?.role, "user");
+    assert.equal(bob?.relationship, "self");
+    assert.equal(alice?.relationship, "frequent");
+  });
+
+  it("uses parser-inferred user roles instead of top sender volume", () => {
+    const source = parseWeCloneExport({
+      platform: "telegram",
+      messages: [
+        makeMsg("Bob", "self first", T1),
+        makeMsg("Alice", "first", T2),
+        makeMsg("Alice", "second", T3),
+      ],
+    });
+
+    const participants = mapParticipants(source.turns);
+    const alice = participants.find((p) => p.id === "Alice");
+    const bob = participants.find((p) => p.id === "Bob");
+
+    assert.equal(source.turns.find((t) => t.participantId === "Bob")?.role, "user");
+    assert.equal(bob?.relationship, "self");
+    assert.equal(alice?.relationship, "frequent");
   });
 
   it("classifies participants with >10% messages as 'frequent'", () => {

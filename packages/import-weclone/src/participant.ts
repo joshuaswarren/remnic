@@ -33,7 +33,8 @@ const FREQUENT_THRESHOLD = 0.1;
 /**
  * Build participant entity records from an array of import turns.
  *
- * - The participant with the most messages is tagged "self".
+ * - The parser-inferred user participant is tagged "self" when role data exists.
+ * - The participant with the most messages is tagged "self" as a fallback.
  * - Participants with >10% of total messages are "frequent".
  * - Everyone else is "occasional".
  * - Turns without `participantId` are silently skipped.
@@ -46,6 +47,7 @@ export function mapParticipants(turns: ImportTurn[]): ParticipantEntity[] {
     {
       name: string;
       count: number;
+      userRoleCount: number;
       firstTs: number;
       lastTs: number;
       firstRaw: string;
@@ -62,6 +64,7 @@ export function mapParticipants(turns: ImportTurn[]): ParticipantEntity[] {
 
     if (existing) {
       existing.count += 1;
+      if (turn.role === "user") existing.userRoleCount += 1;
       if (ts < existing.firstTs) {
         existing.firstTs = ts;
         existing.firstRaw = turn.timestamp;
@@ -74,6 +77,7 @@ export function mapParticipants(turns: ImportTurn[]): ParticipantEntity[] {
       stats.set(id, {
         name: turn.participantName ?? id,
         count: 1,
+        userRoleCount: turn.role === "user" ? 1 : 0,
         firstTs: ts,
         lastTs: ts,
         firstRaw: turn.timestamp,
@@ -84,7 +88,17 @@ export function mapParticipants(turns: ImportTurn[]): ParticipantEntity[] {
 
   if (stats.size === 0) return [];
 
-  // Find the top sender (most messages)
+  // Prefer the participant the parser already classified as the user.
+  let roleSelfId = "";
+  let topUserRoleCount = 0;
+  for (const [id, s] of stats.entries()) {
+    if (s.userRoleCount > topUserRoleCount) {
+      topUserRoleCount = s.userRoleCount;
+      roleSelfId = id;
+    }
+  }
+
+  // Fall back to the top sender for legacy turns without role data.
   let topId = "";
   let topCount = 0;
   for (const [id, s] of stats.entries()) {
@@ -101,9 +115,10 @@ export function mapParticipants(turns: ImportTurn[]): ParticipantEntity[] {
   const totalMessages = turns.filter((t) => !!t.participantId).length;
 
   const result: ParticipantEntity[] = [];
+  const selfId = roleSelfId || topId;
   for (const [id, s] of stats.entries()) {
     let relationship: string;
-    if (id === topId) {
+    if (id === selfId) {
       relationship = "self";
     } else if (s.count / totalMessages > FREQUENT_THRESHOLD) {
       relationship = "frequent";
