@@ -68,13 +68,15 @@ function aggregateSignalPressure(signals: BehaviorSignalEvent[]): number {
 }
 
 function selectRecentSignals(input: BehaviorLearnerInput): BehaviorSignalEvent[] {
-  if (input.learningWindowDays <= 0) return [...input.signals];
   const nowMs = (input.now ?? new Date()).getTime();
-  const minTs = nowMs - input.learningWindowDays * 86_400_000;
+  const minTs =
+    input.learningWindowDays <= 0
+      ? Number.NEGATIVE_INFINITY
+      : nowMs - input.learningWindowDays * 86_400_000;
   return input.signals.filter((signal) => {
     const ts = Date.parse(signal.timestamp);
     if (!Number.isFinite(ts)) return false;
-    return ts >= minTs;
+    return ts >= minTs && ts <= nowMs;
   });
 }
 

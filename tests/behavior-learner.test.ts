@@ -141,6 +141,84 @@ test("learner rejects updates below min signal count", () => {
   assert.equal(state.adjustments.length, 0);
 });
 
+test("learner ignores future-dated signals when selecting recent evidence", () => {
+  const state = learnBehaviorPolicyAdjustments({
+    signals: [
+      signal({
+        memoryId: "current-positive",
+        signalHash: "current-positive",
+        timestamp: "2026-02-28T00:00:00.000Z",
+        direction: "positive",
+        confidence: 0.6,
+      }),
+      signal({
+        memoryId: "future-negative",
+        signalHash: "future-negative",
+        timestamp: "2026-03-01T00:00:00.000Z",
+        direction: "negative",
+        category: "correction",
+        signalType: "correction_override",
+        confidence: 1,
+      }),
+    ],
+    learningWindowDays: 14,
+    minSignalCount: 1,
+    maxDeltaPerCycle: 0.1,
+    protectedParams: [],
+    currentPolicy: {
+      recencyWeight: 0.2,
+      lifecyclePromoteHeatThreshold: 0.55,
+      lifecycleStaleDecayThreshold: 0.65,
+      cronRecallInstructionHeavyTokenCap: 24,
+    },
+    now: new Date("2026-02-28T00:00:00.000Z"),
+  });
+
+  const recency = state.adjustments.find((a) => a.parameter === "recencyWeight");
+  assert.ok(recency);
+  assert.equal(recency.evidenceCount, 1);
+  assert.equal(recency.delta > 0, true);
+});
+
+test("learner ignores future-dated signals when the learning window is disabled", () => {
+  const state = learnBehaviorPolicyAdjustments({
+    signals: [
+      signal({
+        memoryId: "historical-positive",
+        signalHash: "historical-positive",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        direction: "positive",
+        confidence: 0.6,
+      }),
+      signal({
+        memoryId: "future-negative",
+        signalHash: "future-negative",
+        timestamp: "2026-03-01T00:00:00.000Z",
+        direction: "negative",
+        category: "correction",
+        signalType: "correction_override",
+        confidence: 1,
+      }),
+    ],
+    learningWindowDays: 0,
+    minSignalCount: 1,
+    maxDeltaPerCycle: 0.1,
+    protectedParams: [],
+    currentPolicy: {
+      recencyWeight: 0.2,
+      lifecyclePromoteHeatThreshold: 0.55,
+      lifecycleStaleDecayThreshold: 0.65,
+      cronRecallInstructionHeavyTokenCap: 24,
+    },
+    now: new Date("2026-02-28T00:00:00.000Z"),
+  });
+
+  const recency = state.adjustments.find((a) => a.parameter === "recencyWeight");
+  assert.ok(recency);
+  assert.equal(recency.evidenceCount, 1);
+  assert.equal(recency.delta > 0, true);
+});
+
 test("learner treats maxDeltaPerCycle=0 as hard no-op for all parameters", () => {
   const signals = Array.from({ length: 20 }, (_, idx) =>
     signal({
