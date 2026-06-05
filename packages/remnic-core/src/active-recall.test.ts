@@ -198,6 +198,46 @@ test("active recall cache hits report cache-hit latency instead of reusing gener
   assert.equal(second.latencyMs, 1);
 });
 
+test("active recall cache hits append a fresh transcript entry", async () => {
+  const transcriptDir = await mkdtemp(path.join(os.tmpdir(), "active-recall-cache-transcript-"));
+  let generateCalls = 0;
+  const engine = createActiveRecallEngine(
+    {
+      async recall() {
+        return "CI worker drain after Redis reconnect storm.";
+      },
+      async generateSummary() {
+        generateCalls += 1;
+        return { text: "Redis reconnect storm caused the worker drain." };
+      },
+      now: (() => {
+        let tick = 40_000;
+        return () => tick++;
+      })(),
+    },
+    baseConfig({
+      cacheTtlMs: 5000,
+      persistTranscripts: true,
+      transcriptDir,
+    }),
+  );
+
+  const first = await engine.run(baseInput());
+  const second = await engine.run(baseInput());
+
+  assert.equal(generateCalls, 1);
+  assert.equal(first.cacheHit, false);
+  assert.equal(second.cacheHit, true);
+  assert.ok(first.transcriptPath, "expected first transcript path");
+  assert.ok(second.transcriptPath, "expected cache-hit transcript path");
+
+  const raw = await readFile(second.transcriptPath ?? "", "utf8");
+  const entries = raw.trim().split("\n").map((line) => JSON.parse(line) as { cacheHit: boolean });
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0].cacheHit, false);
+  assert.equal(entries[1].cacheHit, true);
+});
+
 test("active recall cache stores an isolated snapshot instead of a mutable caller reference", async () => {
   let generateCalls = 0;
   const engine = createActiveRecallEngine(

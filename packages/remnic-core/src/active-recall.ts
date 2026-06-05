@@ -361,11 +361,26 @@ export function createActiveRecallEngine(
       }
       const cached = cache.get(cacheKey);
       if (cacheEnabled && cached) {
-        return {
+        const result: ActiveRecallResult = {
           ...cloneRecallResult(cached.value),
           latencyMs: Math.max(0, now() - currentTime),
           cacheHit: true,
         };
+        result.transcriptPath = null;
+        if (config.persistTranscripts) {
+          try {
+            result.transcriptPath = await appendActiveRecallTranscript(
+              config.transcriptDir,
+              input,
+              config,
+              result,
+              queryBundle,
+            );
+          } catch {
+            result.transcriptPath = null;
+          }
+        }
+        return result;
       }
 
       const start = currentTime;
@@ -451,9 +466,11 @@ export function createActiveRecallEngine(
 
       if (cacheEnabled) {
         const completedAt = now();
+        const cachedValue = cloneRecallResult(result);
+        cachedValue.transcriptPath = null;
         cache.set(cacheKey, {
           expiresAt: completedAt + config.cacheTtlMs,
-          value: cloneRecallResult(result),
+          value: cachedValue,
         });
         enforceCacheLimit(cache);
       }
