@@ -10,13 +10,18 @@ export function buildBenchmarkRunSeeds(
   runCount: number,
   baseSeed?: number,
 ): number[] {
-  if (!Number.isInteger(runCount) || runCount <= 0) {
-    throw new Error("benchmark run count must be a positive integer");
+  if (!Number.isSafeInteger(runCount) || runCount <= 0) {
+    throw new Error("benchmark run count must be a positive safe integer");
   }
 
   const firstSeed = baseSeed ?? 0;
-  if (!Number.isInteger(firstSeed) || firstSeed < 0) {
-    throw new Error("benchmark seed must be a non-negative integer");
+  if (!Number.isSafeInteger(firstSeed) || firstSeed < 0) {
+    throw new Error("benchmark seed must be a non-negative safe integer");
+  }
+
+  const maxOffset = Number.MAX_SAFE_INTEGER - firstSeed;
+  if (runCount - 1 > maxOffset) {
+    throw new Error("benchmark seed sequence must stay within JavaScript safe integer range");
   }
 
   return Array.from({ length: runCount }, (_, index) => firstSeed + index);
