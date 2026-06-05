@@ -125,3 +125,25 @@ test("release workflow pins publish tooling", () => {
   assert.match(workflow, /npm install -g npm@11\.16\.0/);
   assert.match(workflow, /npm install -g clawhub@0\.18\.0/);
 });
+
+test("release workflow pins GitHub SSH host keys for deploy-key pushes", () => {
+  assert.doesNotMatch(workflow, /StrictHostKeyChecking=no/);
+  assert.match(workflow, /github\.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl/);
+  assert.match(workflow, /github\.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY/);
+  assert.match(workflow, /github\.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQow/);
+
+  const strictCommands = workflow.match(/GIT_SSH_COMMAND="ssh -i ~\/\.ssh\/release_deploy_key -o UserKnownHostsFile=\$HOME\/\.ssh\/known_hosts -o StrictHostKeyChecking=yes"/g) ?? [];
+  assert.equal(strictCommands.length, 2);
+
+  const knownHostsWrites = workflow.match(/cat > ~\/\.ssh\/known_hosts <<'EOF'/g) ?? [];
+  assert.equal(knownHostsWrites.length, 2);
+
+  assert.ok(
+    workflow.indexOf("cat > ~/.ssh/known_hosts <<'EOF'") <
+      workflow.indexOf('git push "git@github.com:${{ github.repository }}.git" "${RELEASE_COMMIT}:refs/heads/main"'),
+  );
+  assert.ok(
+    workflow.lastIndexOf("cat > ~/.ssh/known_hosts <<'EOF'") <
+      workflow.indexOf('git push "git@github.com:${{ github.repository }}.git" "refs/tags/${TAG}"'),
+  );
+});
