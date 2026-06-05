@@ -10,6 +10,7 @@
  *   - Calendar overflows (Feb 30, Feb 29 in non-leap years, Apr 31, etc.)
  *     regardless of timezone suffix
  *   - Out-of-range time components (hour >= 24, minute >= 60, second >= 60)
+ *   - Out-of-range timezone offsets (beyond ±14:00, or offset minute >= 60)
  *
  * Calendar overflow is validated structurally on the Y-M-D components, so
  * results are independent of the host's local timezone.
@@ -65,7 +66,7 @@ export function parseStrictCliDate(value: string, flagName: string): Date {
   // 1. Shape check: must begin YYYY-MM-DD and use ISO 8601 structure.
   //    This rejects "12/25/2026", "December 25, 2026", RFC 2822, etc.
   const shape =
-    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+    /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:Z|([+-])(\d{2}):(\d{2}))?)?$/;
   const match = value.match(shape);
   if (!match) {
     throw new Error(
@@ -103,7 +104,25 @@ export function parseStrictCliDate(value: string, flagName: string): Date {
     }
   }
 
-  // 4. Finally parse via Date for the actual timestamp value. At this point
+  // 4. Timezone offset validation.
+  //    Date accepts offset hours beyond the real-world UTC offset range and
+  //    normalizes impossible offsets into a shifted instant. Reject those
+  //    before constructing the Date so the CLI cannot silently apply them.
+  if (match[8] !== undefined) {
+    const offsetHour = Number(match[9]);
+    const offsetMinute = Number(match[10]);
+    if (
+      offsetHour > 14 ||
+      offsetMinute > 59 ||
+      (offsetHour === 14 && offsetMinute !== 0)
+    ) {
+      throw new Error(
+        `Invalid ${flagName} value "${value}": timezone offset out of range.`,
+      );
+    }
+  }
+
+  // 5. Finally parse via Date for the actual timestamp value. At this point
   //    we've already validated structure and calendar correctness, so any
   //    remaining NaN (extremely unlikely) still fails closed.
   const d = new Date(value);

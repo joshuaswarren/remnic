@@ -135,6 +135,42 @@ describe("parseStrictCliDate", () => {
     assert.equal(d.getUTCHours(), 9);
   });
 
+  it("accepts ISO datetime with ordinary negative timezone offset", () => {
+    const d = parseStrictCliDate("2026-01-15T23:00:00-08:00", "--since");
+    // 2026-01-15T23:00:00-08:00 => 2026-01-16T07:00:00Z
+    assert.equal(d.getUTCFullYear(), 2026);
+    assert.equal(d.getUTCDate(), 16);
+    assert.equal(d.getUTCHours(), 7);
+  });
+
+  it("rejects timezone offset hour beyond UTC+14", () => {
+    assert.throws(
+      () => parseStrictCliDate("2024-01-15T10:00:00+15:00", "--since"),
+      /timezone offset out of range/,
+    );
+  });
+
+  it("rejects timezone offset minute beyond 59", () => {
+    assert.throws(
+      () => parseStrictCliDate("2024-01-15T10:00:00+05:61", "--since"),
+      /timezone offset out of range/,
+    );
+  });
+
+  it("rejects timezone offset minutes at the UTC+14 boundary", () => {
+    assert.throws(
+      () => parseStrictCliDate("2024-01-15T10:00:00+14:01", "--until"),
+      /timezone offset out of range/,
+    );
+  });
+
+  it("rejects timezone offset minutes at the UTC-14 boundary", () => {
+    assert.throws(
+      () => parseStrictCliDate("2024-01-15T10:00:00-14:01", "--until"),
+      /timezone offset out of range/,
+    );
+  });
+
   it("still rejects overflow dates in UTC form (Z suffix)", () => {
     assert.throws(
       () => parseStrictCliDate("2026-02-31T00:00:00Z", "--since"),
