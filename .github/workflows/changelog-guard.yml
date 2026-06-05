@@ -1,7 +1,7 @@
 name: Changelog Guard
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 permissions:
@@ -17,9 +17,100 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const RELEASE_HEADING_RE = /^## \[(?:Unreleased|v?\d+\.\d+\.\d+)/;
+            const SECTION_HEADING_RE = /^##\s+/;
+
+            function parseAllowedReleaseSections(content) {
+              const lines = content.split(/\r?\n/);
+              const ranges = [];
+
+              for (let index = 0; index < lines.length; index += 1) {
+                if (!RELEASE_HEADING_RE.test(lines[index])) continue;
+
+                let end = lines.length;
+                for (let next = index + 1; next < lines.length; next += 1) {
+                  if (SECTION_HEADING_RE.test(lines[next])) {
+                    end = next;
+                    break;
+                  }
+                }
+                ranges.push({ start: index + 1, end });
+              }
+
+              return ranges;
+            }
+
+            function parseChangedLineNumbers(patch) {
+              const oldLines = [];
+              const newLines = [];
+              let oldLine = 0;
+              let newLine = 0;
+
+              for (const line of patch.split(/\r?\n/)) {
+                const header = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+                if (header) {
+                  oldLine = Number(header[1]);
+                  newLine = Number(header[2]);
+                  continue;
+                }
+
+                if (line.startsWith("\\ No newline")) continue;
+
+                if (line.startsWith("+") && !line.startsWith("+++")) {
+                  newLines.push(newLine);
+                  newLine += 1;
+                  continue;
+                }
+
+                if (line.startsWith("-") && !line.startsWith("---")) {
+                  oldLines.push(oldLine);
+                  oldLine += 1;
+                  continue;
+                }
+
+                if (oldLine > 0 || newLine > 0) {
+                  oldLine += 1;
+                  newLine += 1;
+                }
+              }
+
+              return { oldLines, newLines };
+            }
+
+            function lineInRanges(line, ranges) {
+              return ranges.some((range) => line >= range.start && line <= range.end);
+            }
+
+            function validateChangelogPatch({ patch, baseContent, headContent }) {
+              if (!patch || !patch.trim()) {
+                return { allowed: false, reason: 'CHANGELOG.md patch data is unavailable.' };
+              }
+
+              const changed = parseChangedLineNumbers(patch);
+              const baseRanges = parseAllowedReleaseSections(baseContent ?? '');
+              const headRanges = parseAllowedReleaseSections(headContent ?? '');
+
+              const invalidOld = changed.oldLines.filter((line) => !lineInRanges(line, baseRanges));
+              const invalidNew = changed.newLines.filter((line) => !lineInRanges(line, headRanges));
+
+              if (invalidOld.length > 0 || invalidNew.length > 0) {
+                return {
+                  allowed: false,
+                  reason: 'CHANGELOG.md changes must be inside `## [Unreleased]` or a versioned release section.',
+                };
+              }
+
+              if (changed.oldLines.length === 0 && changed.newLines.length === 0) {
+                return { allowed: false, reason: 'CHANGELOG.md patch did not contain changed lines.' };
+              }
+
+              return { allowed: true };
+            }
+
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const pull_number = context.payload.pull_request.number;
+            const pull = context.payload.pull_request;
 
             const labels = (context.payload.pull_request.labels || []).map(l => (l.name || '').toLowerCase());
             if (labels.includes('skip-changelog')) {
@@ -44,13 +135,37 @@ jobs:
 
             const changelogFile = files.find(f => f.filename === 'CHANGELOG.md');
             const patch = changelogFile?.patch || '';
-            const touchedReleaseSection =
-              patch.includes('## [Unreleased]') ||
-              /## \[v?\d+\.\d+\.\d+/.test(patch);
+            async function readChangelogAt(ref) {
+              const response = await github.rest.repos.getContent({
+                owner,
+                repo,
+                path: 'CHANGELOG.md',
+                ref,
+              });
+              const data = response.data;
+              if (Array.isArray(data) || data.type !== 'file' || typeof data.content !== 'string') {
+                throw new Error(`CHANGELOG.md at ${ref} is not a file`);
+              }
+              return Buffer.from(data.content, data.encoding || 'base64').toString('utf8');
+            }
 
-            if (!touchedReleaseSection) {
+            const comparison = await github.rest.repos.compareCommitsWithBasehead({
+              owner,
+              repo,
+              basehead: `${pull.base.sha}...${pull.head.sha}`,
+            });
+            const mergeBaseSha = comparison.data.merge_base_commit?.sha;
+            if (!mergeBaseSha) {
+              throw new Error('Unable to determine PR merge base for CHANGELOG.md validation');
+            }
+
+            const baseContent = await readChangelogAt(mergeBaseSha);
+            const headContent = await readChangelogAt(pull.head.sha);
+            const verdict = validateChangelogPatch({ patch, baseContent, headContent });
+
+            if (!verdict.allowed) {
               core.setFailed(
-                'CHANGELOG.md was edited directly, but the diff does not update `## [Unreleased]` or a versioned release section. Keep normal PRs out of CHANGELOG.md, or edit the actual release section intentionally.',
+                `CHANGELOG.md was edited directly, but ${verdict.reason} Keep normal PRs out of CHANGELOG.md, or edit the actual release section intentionally.`,
               );
               return;
             }
