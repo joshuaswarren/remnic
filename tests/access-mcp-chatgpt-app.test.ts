@@ -932,3 +932,68 @@ test("ChatGPT Apps inspector action confidence blocks recalled memories missing 
     /X-ray result was missing/,
   );
 });
+
+test("ChatGPT Apps inspector action confidence stays partial when recall count exceeds summaries", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "safe work detail",
+    count: 2,
+    memoryIds: ["mem-safe", "mem-unlisted"],
+    results: [
+      {
+        id: "mem-safe",
+        path: "work/mem-safe.md",
+        category: "preference",
+        status: "active",
+        tags: [],
+        preview: "safe work detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const xray = {
+    schemaVersion: "1",
+    query: "show preferences",
+    snapshotId: "snap-short-summaries",
+    capturedAt: 1_779_000_000_000,
+    tierExplain: null,
+    results: [
+      {
+        memoryId: "mem-safe",
+        path: "work/mem-safe.md",
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.8 },
+        admittedBy: ["test"],
+        provenance: {
+          source: "conversation",
+          scope: "namespace:work",
+          userContextScopes: ["work"],
+          retrievalReason: "test",
+          confidence: 0.8,
+          stale: false,
+          corrected: false,
+          correctionState: "none",
+          safeToUse: true,
+          safety: "safe",
+          safetyReasons: [],
+        },
+      },
+    ],
+    filters: [],
+    budget: { chars: 4096, used: 100 },
+    namespace: "work",
+  } satisfies import("../src/recall-xray.js").RecallXraySnapshot;
+
+  const actionRequest = buildChatGptMemoryInspectorActionRequest(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    xray,
+  );
+
+  assert.equal(actionRequest.contextReadiness, "partial");
+  assert.equal(actionRequest.confidence, 0.8);
+  assert.equal(actionRequest.retrievedMemories?.length, 1);
+});

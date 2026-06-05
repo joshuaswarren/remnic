@@ -75,7 +75,7 @@ export function buildChatGptMemoryInspectorActionRequest(
   const provenances = buildRecallProvenances(recall, xray);
   const hasUnsafeOrMissingProvenance = provenances.some(
     (provenance) => provenance.safeToUse === false || provenance.safety === "blocked",
-  );
+  ) || provenances.length < recall.count;
 
   const request: ActionConfidenceRequest = {
     intendedAction: `Use Remnic memory to answer: ${input.query}`,
