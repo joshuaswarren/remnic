@@ -97,6 +97,19 @@ read_cursor_file() {
   [ -f "$CURSOR_FILE" ] && cat "$CURSOR_FILE" 2>/dev/null || echo 0
 }
 
+normalize_cursor_value() {
+  RAW_CURSOR_VALUE="$1"
+  case "$RAW_CURSOR_VALUE" in
+    ""|*[!0-9]*)
+      log "session-end[$SESSION_ID]: invalid cursor value; defaulting to 0"
+      echo 0
+      ;;
+    *)
+      echo "$RAW_CURSOR_VALUE"
+      ;;
+  esac
+}
+
 write_cursor_file() {
   NEW_CURSOR_VALUE="$1"
   validate_cursor_file || {
@@ -197,6 +210,7 @@ remove_cursor_file() {
 
   LAST_COUNT=0
   LAST_COUNT="$(read_cursor_file)" || exit 0
+  LAST_COUNT="$(normalize_cursor_value "$LAST_COUNT")"
 
   PAYLOAD="$(python3 - "$TRANSCRIPT_PATH" "$SESSION_ID" "$LAST_COUNT" <<'PYEOF'
 import sys, json

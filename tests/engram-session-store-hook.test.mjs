@@ -211,3 +211,84 @@ test("codex session store preserves cursor when final-stop observe fails", async
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
+
+test("claude-code session end flushes final messages when cursor is malformed", async () => {
+  const fixture = await makeFixture();
+  const sessionId = `bad-cursor-session-claude-${process.pid}`;
+  const stateDir = path.join(fixture.stateHome, "remnic", "hooks");
+  const cursorPath = path.join(stateDir, `engram-cursor-${sessionId}`);
+  const fakeBin = path.join(fixture.root, "bin");
+  const fakeCurl = path.join(fakeBin, "curl");
+  const capturePath = path.join(fixture.root, "observe-payload.json");
+  const logPath = path.join(fixture.home, ".claude", "logs", "engram-session-store.log");
+
+  try {
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await mkdir(fakeBin, { recursive: true });
+    await writeFile(cursorPath, "abc\n", "utf8");
+    await writeFile(
+      fixture.transcript,
+      [
+        JSON.stringify({ type: "user", message: { role: "user", content: "first final turn" } }),
+        JSON.stringify({ type: "assistant", message: { role: "assistant", content: "second final turn" } }),
+      ].join("\n") + "\n",
+      "utf8"
+    );
+    await writeFile(
+      fakeCurl,
+      [
+        "#!/usr/bin/env bash",
+        "payload=''",
+        "while [ $# -gt 0 ]; do",
+        "  case \"$1\" in",
+        "    -d)",
+        "      shift",
+        "      payload=\"$1\"",
+        "      ;;",
+        "  esac",
+        "  shift || true",
+        "done",
+        "printf '%s\\n' \"$payload\" > \"$CURL_CAPTURE_PATH\"",
+        "printf '{\"accepted\":2,\"lcmArchived\":0,\"extractionQueued\":true}\\n200\\n'",
+        "",
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(fakeCurl, 0o700);
+
+    const result = spawnSync("bash", ["scripts/hooks/claude-code/engram-session-end.sh"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        HOME: fixture.home,
+        XDG_STATE_HOME: fixture.stateHome,
+        OPENCLAW_ENGRAM_ACCESS_TOKEN: "test-token",
+        CURL_CAPTURE_PATH: capturePath,
+        PATH: `${fakeBin}:${process.env.PATH}`,
+      },
+      input: JSON.stringify({
+        session_id: sessionId,
+        transcript_path: fixture.transcript,
+        cwd: process.cwd(),
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "{}\n");
+
+    await waitFor(
+      async () => existsSync(capturePath) && !existsSync(cursorPath),
+      "observe payload was not emitted or cursor was not removed"
+    );
+
+    const payload = JSON.parse(await readFile(capturePath, "utf8"));
+    assert.equal(payload.sessionKey, sessionId);
+    assert.deepEqual(payload.messages, [
+      { role: "user", content: "first final turn" },
+      { role: "assistant", content: "second final turn" },
+    ]);
+    assert.match(await readFile(logPath, "utf8"), /invalid cursor value; defaulting to 0/);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
