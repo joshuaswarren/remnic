@@ -12,6 +12,7 @@ on:
       - "src/**"
       - "scripts/openclaw-plugin-security-scan.mjs"
       - "tests/openclaw-plugin-dangerous-scan.test.ts"
+      - "tests/openclaw-plugin-security-workflow-policy.test.ts"
   push:
     branches: [main]
     paths:
@@ -23,6 +24,7 @@ on:
       - "src/**"
       - "scripts/openclaw-plugin-security-scan.mjs"
       - "tests/openclaw-plugin-dangerous-scan.test.ts"
+      - "tests/openclaw-plugin-security-workflow-policy.test.ts"
   schedule:
     - cron: "17 9 * * *"
   workflow_dispatch:
@@ -42,6 +44,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout trusted scanner source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          path: trusted-scanner-source
+          sparse-checkout: |
+            scripts/openclaw-plugin-security-scan.mjs
+          sparse-checkout-cone-mode: false
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
@@ -81,7 +92,7 @@ jobs:
           echo "OPENCLAW_PACKAGE_DIR=$install_dir/node_modules/openclaw" >> "$GITHUB_ENV"
 
       - name: Run real OpenClaw dangerous-plugin scanner
-        run: pnpm run scan:openclaw-plugin -- "$SCANNED_PACKAGE_DIR"
+        run: node "$GITHUB_WORKSPACE/trusted-scanner-source/scripts/openclaw-plugin-security-scan.mjs" "$SCANNED_PACKAGE_DIR"
 
   latest-openclaw-scanner:
     name: latest-openclaw-scanner
@@ -94,6 +105,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout trusted scanner source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          path: trusted-scanner-source
+          sparse-checkout: |
+            scripts/openclaw-plugin-security-scan.mjs
+          sparse-checkout-cone-mode: false
+
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
@@ -133,4 +153,4 @@ jobs:
           echo "OPENCLAW_PACKAGE_DIR=$install_dir/node_modules/openclaw" >> "$GITHUB_ENV"
 
       - name: Run real OpenClaw dangerous-plugin scanner
-        run: pnpm run scan:openclaw-plugin -- "$SCANNED_PACKAGE_DIR"
+        run: node "$GITHUB_WORKSPACE/trusted-scanner-source/scripts/openclaw-plugin-security-scan.mjs" "$SCANNED_PACKAGE_DIR"
