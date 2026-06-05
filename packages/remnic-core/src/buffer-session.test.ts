@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
+import type { BufferSurpriseProbe } from "./buffer.js";
 import type { BufferState, BufferTurn } from "./types.js";
 
 class FakeStorage {
@@ -108,6 +109,63 @@ test("SmartBuffer serializes concurrent addTurn mutations", async () => {
   assert.deepEqual(
     turns.map((turn) => turn.content).sort(),
     ["alpha memory", "beta memory"],
+  );
+});
+
+test("SmartBuffer ignores stale surprise promotion after newer turns arrive", async () => {
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+  let resolveFirstProbe = (_score: number): void => {
+    throw new Error("first surprise probe did not start");
+  };
+  let markFirstProbeStarted = (): void => {
+    throw new Error("probe start marker was not initialized");
+  };
+  const firstProbeStarted = new Promise<void>((resolve) => {
+    markFirstProbeStarted = resolve;
+  });
+  const probe: BufferSurpriseProbe = {
+    async scoreTurn(_bufferKey, turn) {
+      if (turn.content !== "turn A") return null;
+      markFirstProbeStarted();
+      return new Promise<number>((probeResolve) => {
+        resolveFirstProbe = probeResolve;
+      });
+    },
+  };
+  const buffer = new SmartBuffer(
+    parseConfig({
+      bufferSurpriseTriggerEnabled: true,
+      bufferSurpriseThreshold: 0.35,
+      bufferSurpriseProbeTimeoutMs: 10_000,
+      triggerMode: "smart",
+    }),
+    storage as any,
+    probe,
+  );
+
+  const firstOutcomePromise = buffer.addTurnWithOutcome(
+    "thread-a",
+    makeTurn("thread-a", "turn A"),
+  );
+  await firstProbeStarted;
+
+  const secondOutcome = await buffer.addTurnWithOutcome(
+    "thread-a",
+    makeTurn("thread-a", "turn B"),
+  );
+  assert.deepEqual(secondOutcome, { decision: "keep_buffering" });
+
+  resolveFirstProbe(1);
+  const firstOutcome = await firstOutcomePromise;
+
+  assert.deepEqual(firstOutcome, { decision: "keep_buffering" });
+  assert.deepEqual(
+    buffer.getTurns("thread-a").map((turn) => turn.content),
+    ["turn A", "turn B"],
   );
 });
 

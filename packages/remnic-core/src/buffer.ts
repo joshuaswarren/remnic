@@ -85,7 +85,8 @@ interface AddTurnMutationResult {
   decision: TriggerDecision;
   signalLevel: SignalLevel;
   priorTurns: BufferTurn[];
-  turnSnapshot: BufferTurn;
+  activeTurnsSnapshot: BufferTurn[];
+  retainedTurnsSnapshot: BufferTurn[];
   turnCountInWindow: number;
 }
 
@@ -298,9 +299,10 @@ export class SmartBuffer {
         const shouldPromote = surprise > this.config.bufferSurpriseThreshold;
         let triggered = false;
         if (shouldPromote) {
-          const currentTurns = await this.getExtractionTurnsIfTurnSnapshotStillCurrent(
+          const currentTurns = await this.getExtractionTurnsIfBufferSnapshotStillCurrent(
             bufferKey,
-            mutation.turnSnapshot,
+            mutation.activeTurnsSnapshot,
+            mutation.retainedTurnsSnapshot,
           );
           if (currentTurns) {
             log.debug(
@@ -361,7 +363,8 @@ export class SmartBuffer {
     const entry = this.entryFor(bufferKey);
     const priorTurns = entry.turns.slice();
     entry.turns.push(turn);
-    const turnSnapshot = copyBufferTurn(turn);
+    const activeTurnsSnapshot = entry.turns.map(copyBufferTurn);
+    const retainedTurnsSnapshot = (entry.retainedTurns ?? []).map(copyBufferTurn);
     if (bufferKey === "default") {
       this.state.turns = entry.turns;
     }
@@ -376,24 +379,26 @@ export class SmartBuffer {
       decision,
       signalLevel: signal.level,
       priorTurns,
-      turnSnapshot,
+      activeTurnsSnapshot,
+      retainedTurnsSnapshot,
       turnCountInWindow,
     };
   }
 
-  private async getExtractionTurnsIfTurnSnapshotStillCurrent(
+  private async getExtractionTurnsIfBufferSnapshotStillCurrent(
     bufferKey: string,
-    turnSnapshot: BufferTurn,
+    activeTurnsSnapshot: readonly BufferTurn[],
+    retainedTurnsSnapshot: readonly BufferTurn[],
   ): Promise<BufferTurn[] | null> {
     return this.enqueueMutation(async () => {
       await this.loadUnlocked();
       const entry = this.peekEntry(bufferKey);
       if (!entry) return null;
-      const stillCurrent = entry.turns.some((turn) =>
-        bufferTurnsEqual(turn, turnSnapshot),
-      );
-      if (!stillCurrent) return null;
       const retained = entry.retainedTurns ?? [];
+      const stillCurrent =
+        bufferTurnArrayIsSuffixOfSnapshot(entry.turns, activeTurnsSnapshot) &&
+        bufferTurnArraysEqual(retained, retainedTurnsSnapshot);
+      if (!stillCurrent) return null;
       return [...retained, ...entry.turns];
     });
   }
@@ -799,6 +804,29 @@ function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): bool
     left.providerThreadId === right.providerThreadId &&
     left.turnFingerprint === right.turnFingerprint &&
     left.persistProcessedFingerprint === right.persistProcessedFingerprint
+  );
+}
+
+function bufferTurnArraysEqual(
+  left: readonly BufferTurn[],
+  right: readonly BufferTurn[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((turn, index) => bufferTurnsEqual(turn, right[index]))
+  );
+}
+
+function bufferTurnArrayIsSuffixOfSnapshot(
+  liveTurns: readonly BufferTurn[],
+  snapshot: readonly BufferTurn[],
+): boolean {
+  if (liveTurns.length === 0 || liveTurns.length > snapshot.length) {
+    return false;
+  }
+  const offset = snapshot.length - liveTurns.length;
+  return liveTurns.every((turn, index) =>
+    bufferTurnsEqual(turn, snapshot[offset + index]),
   );
 }
 

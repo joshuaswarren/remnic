@@ -643,7 +643,7 @@ test("flag on: slow-probe promotion survives prefix clears before the scored tur
   );
 });
 
-test("flag on: slow-probe promotion survives later appends to same buffer", async () => {
+test("flag on: slow-probe promotion is ignored after later appends to same buffer", async () => {
   const storage = new FakeStorage(emptyBuffer());
   let releaseOldProbe: (() => void) | null = null;
   let oldProbeStarted: (() => void) | null = null;
@@ -684,8 +684,8 @@ test("flag on: slow-probe promotion survives later appends to same buffer", asyn
   (releaseOldProbe as () => void)();
   assert.equal(
     await oldDecision,
-    "extract_now",
-    "a later append must not suppress a valid surprise flush for the older turn",
+    "keep_buffering",
+    "a later append must suppress stale surprise promotion for the older turn",
   );
   const turns = buffer.getTurns("sess-1");
   assert.equal(turns.length, 2);
@@ -695,18 +695,9 @@ test("flag on: slow-probe promotion survives later appends to same buffer", asyn
 
 test("flag on: extraction clear preserves turns appended after the queued snapshot", async () => {
   const storage = new FakeStorage(emptyBuffer());
-  let releaseOldProbe: (() => void) | null = null;
-  let oldProbeStarted: (() => void) | null = null;
-  const oldProbeStartedPromise = new Promise<void>((resolve) => {
-    oldProbeStarted = resolve;
-  });
   const probe: BufferSurpriseProbe = {
     async scoreTurn(_key, turn) {
-      if (turn.content !== "old surprising turn") return null;
-      oldProbeStarted?.();
-      return new Promise<number | null>((resolve) => {
-        releaseOldProbe = () => resolve(0.99);
-      });
+      return turn.content === "old surprising turn" ? 0.99 : null;
     },
   };
   const config = parseConfig({
@@ -722,11 +713,6 @@ test("flag on: extraction clear preserves turns appended after the queued snapsh
     "sess-1",
     makeTurn("sess-1", "old surprising turn"),
   );
-  await oldProbeStartedPromise;
-
-  await buffer.addTurn("sess-1", makeTurn("sess-1", "newer ordinary turn"));
-  assert.ok(releaseOldProbe);
-  (releaseOldProbe as () => void)();
   assert.equal(await oldDecision, "extract_now");
 
   const queuedSnapshot = buffer.getTurns("sess-1");
