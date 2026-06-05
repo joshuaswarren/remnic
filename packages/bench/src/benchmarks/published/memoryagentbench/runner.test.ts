@@ -555,13 +555,13 @@ test("MemoryAgentBench rejects malformed primary dataset instead of falling back
   }
 });
 
-test("MemoryAgentBench trialLimit caps scored questions before extra adapter work", async () => {
+test("MemoryAgentBench trialLimit numeric string caps scored questions before extra adapter work", async () => {
   let resetCount = 0;
 
   const result = await runMemoryAgentBenchBenchmark({
     benchmark: memoryAgentBenchDefinition,
     mode: "quick",
-    benchmarkOptions: { trialLimit: 2 },
+    benchmarkOptions: { trialLimit: "2" },
     system: {
       async reset() {
         resetCount += 1;
@@ -737,6 +737,63 @@ test("MemoryAgentBench trialLimit null is treated as unlimited", async () => {
       "mab-smoke-cr-q1",
     ],
   );
+});
+
+test("MemoryAgentBench trialLimit rejects values that coerce to zero", async () => {
+  const invalidTrialLimits: unknown[] = ["", "   ", false, true, []];
+
+  for (const trialLimit of invalidTrialLimits) {
+    let resetCalled = false;
+
+    await assert.rejects(
+      runMemoryAgentBenchBenchmark({
+        benchmark: memoryAgentBenchDefinition,
+        mode: "quick",
+        benchmarkOptions: { trialLimit },
+        system: {
+          async reset() {
+            resetCalled = true;
+          },
+          async store() {},
+          async recall() {
+            return "";
+          },
+          async search() {
+            return [];
+          },
+          async destroy() {},
+          async getStats() {
+            return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+          },
+          responder: {
+            async respond() {
+              return {
+                text: "",
+                tokens: { input: 0, output: 0 },
+                latencyMs: 0,
+                model: "mab-test-responder",
+              };
+            },
+          },
+          judge: {
+            async score() {
+              return 0;
+            },
+            async scoreWithMetrics() {
+              return {
+                score: 0,
+                tokens: { input: 0, output: 0 },
+                latencyMs: 0,
+                model: "mab-test-judge",
+              };
+            },
+          },
+        },
+      }),
+      /MemoryAgentBench benchmarkOptions\.trialLimit must be a non-negative integer/,
+    );
+    assert.equal(resetCalled, false);
+  }
 });
 
 test("MemoryAgentBench trialLimit 0 runs zero scored questions", async () => {

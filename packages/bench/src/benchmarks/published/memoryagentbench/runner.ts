@@ -396,7 +396,12 @@ function resolveTrialLimit(raw: unknown): number | undefined {
   if (raw === undefined || raw === null) {
     return undefined;
   }
-  const parsed = typeof raw === "number" ? raw : Number(raw);
+  const parsed =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && raw.trim().length > 0 && /^[0-9]+$/.test(raw.trim())
+        ? Number(raw.trim())
+        : Number.NaN;
   if (!Number.isInteger(parsed) || parsed < 0) {
     throw new Error(
       "MemoryAgentBench benchmarkOptions.trialLimit must be a non-negative integer.",
