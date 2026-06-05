@@ -218,3 +218,21 @@ test("tag queries distinguish missing index from valid no-match results", async 
   assert.deepEqual(noFilterPrefilter.expandedTags, []);
   assert.equal(noFilterPrefilter.paths, null);
 });
+
+test("indexMemory replaces stale date and tag memberships for an existing path", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-index-update-"));
+  const memoryPath = "/tmp/remnic-temporal-updated-memory.md";
+
+  indexMemory(memoryDir, memoryPath, "2026-01-01T00:00:00.000Z", ["alpha"]);
+  indexMemory(memoryDir, memoryPath, "2026-02-01T00:00:00.000Z", ["beta"]);
+
+  const januaryMatches = await queryByDateRangeAsync(memoryDir, "2026-01-01", "2026-01-02");
+  const februaryMatches = await queryByDateRangeAsync(memoryDir, "2026-02-01", "2026-02-02");
+  const alphaMatches = await queryByTagsAsync(memoryDir, ["alpha"]);
+  const betaMatches = await queryByTagsAsync(memoryDir, ["beta"]);
+
+  assert.deepEqual(januaryMatches, new Set());
+  assert.deepEqual(februaryMatches, new Set([memoryPath]));
+  assert.deepEqual(alphaMatches, new Set());
+  assert.deepEqual(betaMatches, new Set([memoryPath]));
+});

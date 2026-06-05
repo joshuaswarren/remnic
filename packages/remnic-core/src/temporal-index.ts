@@ -322,6 +322,12 @@ function removePathFromSet(record: Record<string, string[]>, key: string, p: str
   }
 }
 
+function removePathFromAllSets(record: Record<string, string[]>, p: string): void {
+  for (const key of Object.keys(record)) {
+    removePathFromSet(record, key, p);
+  }
+}
+
 function normalizeTagSegment(segment: string): string {
   return segment
     .trim()
@@ -499,6 +505,41 @@ function removeTagGraphEntry(index: TagIndex, rawTag: string, memoryPath: string
   node.paths = node.paths.filter((value) => value !== memoryPath);
   if (node.paths.length === 0) {
     delete index.tags[canonical];
+    pruneTagAliases(index);
+  }
+}
+
+function removePathFromAllTagEntries(index: TagIndex, memoryPath: string): void {
+  for (const [canonical, nodeOrPaths] of Object.entries(index.tags)) {
+    if (Array.isArray(nodeOrPaths)) {
+      const paths = nodeOrPaths.filter((value) => value !== memoryPath);
+      if (paths.length === 0) {
+        delete index.tags[canonical];
+      } else {
+        index.tags[canonical] = paths;
+      }
+      continue;
+    }
+
+    nodeOrPaths.paths = nodeOrPaths.paths.filter((value) => value !== memoryPath);
+    if (nodeOrPaths.paths.length === 0) {
+      delete index.tags[canonical];
+    }
+  }
+  pruneTagAliases(index);
+}
+
+function pruneTagAliases(index: TagIndex): void {
+  if (!index.aliases) return;
+  for (const [alias, canonicals] of Object.entries(index.aliases)) {
+    const filtered = [...new Set(canonicals.map(normalizeCanonicalTag))].filter(
+      (canonical) => canonical.length > 0 && index.tags[canonical] !== undefined
+    );
+    if (filtered.length === 0) {
+      delete index.aliases[alias];
+    } else {
+      index.aliases[alias] = filtered;
+    }
   }
 }
 
@@ -555,10 +596,12 @@ export function indexMemory(memoryDir: string, memoryPath: string, createdAt: st
 
     const dateKey = isoDateFromTimestamp(createdAt);
     updateTemporalIndex(memoryDir, (index) => {
+      removePathFromAllSets(index.dates, memoryPath);
       addPathToSet(index.dates, dateKey, memoryPath);
     });
 
     updateTagIndex(memoryDir, (index) => {
+      removePathFromAllTagEntries(index, memoryPath);
       for (const tag of tags) {
         if (tag && typeof tag === "string") {
           addTagGraphEntry(index, tag, memoryPath);
@@ -645,12 +688,14 @@ export function indexMemoriesBatch(
     updateTemporalIndex(memoryDir, (index) => {
       for (const entry of entries) {
         const dateKey = isoDateFromTimestamp(entry.createdAt);
+        removePathFromAllSets(index.dates, entry.path);
         addPathToSet(index.dates, dateKey, entry.path);
       }
     });
 
     updateTagIndex(memoryDir, (index) => {
       for (const entry of entries) {
+        removePathFromAllTagEntries(index, entry.path);
         for (const tag of entry.tags) {
           if (tag && typeof tag === "string") {
             addTagGraphEntry(index, tag, entry.path);
