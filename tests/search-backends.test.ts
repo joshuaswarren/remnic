@@ -452,6 +452,153 @@ describe("non-QMD backend cancellation", () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("MeilisearchBackend ensures the requested collection before auto-indexing it", async () => {
+    const { MeilisearchBackend } = await import("../src/search/meilisearch-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-meili-target-collection-"));
+    try {
+      await mkdir(path.join(tempDir, "facts"), { recursive: true });
+      await writeFile(path.join(tempDir, "facts", "other.md"), "Other collection memory.", "utf8");
+
+      const existingIndexes = new Set(["default"]);
+      const getIndexCalls: string[] = [];
+      const createIndexCalls: Array<{ uid: string; options: Record<string, unknown> }> = [];
+      const indexCalls: string[] = [];
+      const addCalls: Array<{ collection: string; docs: unknown[] }> = [];
+      const waitForTaskCalls: Array<{ taskUid: number; knownIndexes: string[] }> = [];
+      const client = {
+        getIndex: async (uid: string) => {
+          getIndexCalls.push(uid);
+          if (!existingIndexes.has(uid)) throw new Error("index not found");
+          return { uid };
+        },
+        createIndex: async (uid: string, options: Record<string, unknown>) => {
+          createIndexCalls.push({ uid, options });
+          existingIndexes.add(uid);
+          return { taskUid: 1 };
+        },
+        index: (uid: string) => {
+          indexCalls.push(uid);
+          return {
+            addDocuments: async (docs: unknown[]) => {
+              addCalls.push({ collection: uid, docs });
+              return { taskUid: 2 };
+            },
+            getDocuments: async () => ({ results: [] }),
+            deleteDocuments: async () => ({ taskUid: 3 }),
+          };
+        },
+        waitForTask: async (taskUid: number) => {
+          waitForTaskCalls.push({
+            taskUid,
+            knownIndexes: Array.from(existingIndexes).sort(),
+          });
+        },
+      };
+      const backend = new MeilisearchBackend({
+        host: "http://localhost:7700",
+        collection: "default",
+        autoIndex: true,
+        memoryDir: tempDir,
+      });
+      (backend as any).available = true;
+      (backend as any).client = client;
+
+      await backend.updateCollection("other");
+
+      assert.deepEqual(getIndexCalls, ["other"]);
+      assert.deepEqual(createIndexCalls, [{ uid: "other", options: { primaryKey: "id" } }]);
+      assert.deepEqual(indexCalls, ["other"]);
+      assert.deepEqual(waitForTaskCalls, [
+        { taskUid: 1, knownIndexes: ["default", "other"] },
+        { taskUid: 2, knownIndexes: ["default", "other"] },
+      ]);
+      assert.equal(addCalls.length, 1);
+      assert.equal(addCalls[0]?.collection, "other");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("MeilisearchBackend still auto-indexes when collection status check is unavailable", async () => {
+    const { MeilisearchBackend } = await import("../src/search/meilisearch-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-meili-transient-collection-check-"));
+    try {
+      await mkdir(path.join(tempDir, "facts"), { recursive: true });
+      await writeFile(path.join(tempDir, "facts", "kept.md"), "Index this despite a transient status check failure.", "utf8");
+
+      const createIndexCalls: string[] = [];
+      const indexCalls: string[] = [];
+      const addCalls: Array<{ collection: string; docs: unknown[] }> = [];
+      const client = {
+        getIndex: async () => {
+          throw new Error("getIndex upstream timeout");
+        },
+        createIndex: async (uid: string) => {
+          createIndexCalls.push(uid);
+          throw new Error("createIndex should only run when getIndex reports a missing index");
+        },
+        index: (uid: string) => {
+          indexCalls.push(uid);
+          return {
+            addDocuments: async (docs: unknown[]) => {
+              addCalls.push({ collection: uid, docs });
+              return { taskUid: 4 };
+            },
+            getDocuments: async () => ({ results: [] }),
+            deleteDocuments: async () => ({ taskUid: 5 }),
+          };
+        },
+        waitForTask: async () => {},
+      };
+      const backend = new MeilisearchBackend({
+        host: "http://localhost:7700",
+        collection: "default",
+        autoIndex: true,
+        memoryDir: tempDir,
+      });
+      (backend as any).available = true;
+      (backend as any).client = client;
+
+      await backend.updateCollection("other");
+
+      assert.deepEqual(createIndexCalls, []);
+      assert.deepEqual(indexCalls, ["other"]);
+      assert.equal(addCalls.length, 1);
+      assert.equal(addCalls[0]?.collection, "other");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("MeilisearchBackend preserves legacy ensureCollection execution-argument calls", async () => {
+    const { MeilisearchBackend } = await import("../src/search/meilisearch-backend.js");
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "engram-meili-ensure-legacy-"));
+    try {
+      const getIndexCalls: unknown[] = [];
+      const client = {
+        getIndex: async (uid: unknown) => {
+          getIndexCalls.push(uid);
+          return { uid };
+        },
+      };
+      const backend = new MeilisearchBackend({
+        host: "http://localhost:7700",
+        collection: "default",
+        autoIndex: true,
+        memoryDir: tempDir,
+      });
+      (backend as any).available = true;
+      (backend as any).client = client;
+      const controller = new AbortController();
+
+      assert.equal(await backend.ensureCollection(tempDir, { signal: controller.signal }), "present");
+
+      assert.deepEqual(getIndexCalls, ["default"]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("embed helper", () => {

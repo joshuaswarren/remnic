@@ -8,6 +8,7 @@ class FakeBackend implements SearchBackend {
   updates = 0;
   calls: Array<{ method: string; collection: string | undefined }> = [];
   ensureSignals: Array<AbortSignal | undefined> = [];
+  ensureCollections: Array<string | undefined> = [];
 
   constructor(
     private readonly globalUpdate: boolean,
@@ -64,8 +65,19 @@ class FakeBackend implements SearchBackend {
 
   async embedCollection(): Promise<void> {}
 
-  async ensureCollection(_memoryDir?: string, execution?: { signal?: AbortSignal }): Promise<"present"> {
-    this.ensureSignals.push(execution?.signal);
+  async ensureCollection(
+    _memoryDir?: string,
+    collectionOrExecution?: string | { signal?: AbortSignal },
+    execution?: { signal?: AbortSignal },
+  ): Promise<"present"> {
+    const collection = typeof collectionOrExecution === "string"
+      ? collectionOrExecution
+      : undefined;
+    const effectiveExecution = typeof collectionOrExecution === "string"
+      ? execution
+      : collectionOrExecution ?? execution;
+    this.ensureCollections.push(collection);
+    this.ensureSignals.push(effectiveExecution?.signal);
     return "present";
   }
 }
@@ -191,4 +203,5 @@ test("ensureNamespaceCollection forwards abort signals to backend collection che
 
   assert.equal(state, "present");
   assert.deepEqual(backend.ensureSignals, [controller.signal]);
+  assert.deepEqual(backend.ensureCollections, ["openclaw-engram--ns-6d61696e"]);
 });

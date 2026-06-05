@@ -16,6 +16,16 @@ export interface SearchExecutionOptions {
   signal?: AbortSignal;
 }
 
+export function resolveEnsureCollectionArgs(
+  collectionOrExecution?: string | SearchExecutionOptions,
+  execution?: SearchExecutionOptions,
+): { collection?: string; execution?: SearchExecutionOptions } {
+  if (typeof collectionOrExecution === "string") {
+    return { collection: collectionOrExecution, execution };
+  }
+  return { collection: undefined, execution: collectionOrExecution ?? execution };
+}
+
 /**
  * Abstract search backend interface.
  *
@@ -85,6 +95,11 @@ export interface SearchBackend {
   // ── Collection management ──
   ensureCollection(
     memoryDir: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<"present" | "missing" | "unknown" | "skipped">;
+  ensureCollection(
+    memoryDir: string,
+    collection?: string,
     execution?: SearchExecutionOptions,
   ): Promise<"present" | "missing" | "unknown" | "skipped">;
 }

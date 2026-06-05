@@ -203,7 +203,7 @@ export class NamespaceSearchRouter {
       const backend = this.createBackend(scopedConfig);
       const available = await backend.probe().catch(() => false);
       const collectionState = available
-        ? await backend.ensureCollection(storage.dir, execution).catch(() => "unknown" as const)
+        ? await backend.ensureCollection(storage.dir, scopedConfig.qmdCollection, execution).catch(() => "unknown" as const)
         : "unknown";
       return {
         backend,

@@ -9,7 +9,12 @@ import {
   throwIfAborted,
 } from "./abort-error.js";
 import type { QmdSearchExplain, QmdSearchResult } from "./types.js";
-import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "./search/port.js";
+import {
+  resolveEnsureCollectionArgs,
+  type SearchBackend,
+  type SearchExecutionOptions,
+  type SearchQueryOptions,
+} from "./search/port.js";
 import { launchProcess, type CommandChildProcess } from "./runtime/child-process.js";
 import { mergeEnv } from "./runtime/env.js";
 
@@ -2597,16 +2602,22 @@ export class QmdClient implements SearchBackend {
 
   async ensureCollection(
     memoryDir: string,
+    collectionOrExecution?: string | SearchExecutionOptions,
     execution?: SearchExecutionOptions,
   ): Promise<"present" | "missing" | "unknown" | "skipped"> {
+    const { collection, execution: effectiveExecution } = resolveEnsureCollectionArgs(
+      collectionOrExecution,
+      execution,
+    );
     if (this.available === false && !this.daemonAvailable) return "unknown";
     // If only daemon is available (no CLI), skip collection check
     if (this.available === false) return "skipped";
+    const targetCollection = collection ?? this.collection;
     try {
-      const { stdout } = await this.runQmdCommand(["collection", "list"], QMD_TIMEOUT_MS, execution?.signal);
+      const { stdout } = await this.runQmdCommand(["collection", "list"], QMD_TIMEOUT_MS, effectiveExecution?.signal);
       // Parse text output: "openclaw-engram (qmd://openclaw-engram/)"
       const collectionRegex = new RegExp(
-        `^${this.collection}\\s+\\(qmd://`,
+        `^${escapeRegExp(targetCollection)}\\s+\\(qmd://`,
         "m",
       );
       if (collectionRegex.test(stdout)) {
@@ -2616,15 +2627,19 @@ export class QmdClient implements SearchBackend {
       // Treat command/probe failures as unknown so callers do not disable features
       // permanently after a transient CLI or daemon hiccup.
       log.debug(
-        `QMD collection check unavailable for "${this.collection}" (will not disable features): ${err instanceof Error ? err.message : String(err)}`,
+        `QMD collection check unavailable for "${targetCollection}" (will not disable features): ${err instanceof Error ? err.message : String(err)}`,
       );
       return "unknown";
     }
 
     log.info(
-      `QMD collection "${this.collection}" not found. ` +
+      `QMD collection "${targetCollection}" not found. ` +
         `Add it to ~/.config/qmd/index.yml pointing at ${memoryDir}`,
     );
     return "missing";
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

@@ -1,5 +1,11 @@
 import { log } from "../logger.js";
-import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
+import {
+  resolveEnsureCollectionArgs,
+  type SearchBackend,
+  type SearchExecutionOptions,
+  type SearchQueryOptions,
+  type SearchResult,
+} from "./port.js";
 import type { EmbedHelper, EmbedProviderIdentity, EmbedWithProviderResult } from "./embed-helper.js";
 import { scanMemoryDir } from "./document-scanner.js";
 import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
@@ -305,10 +311,16 @@ export class LanceDbBackend implements SearchBackend {
 
   async ensureCollection(
     _memoryDir: string,
-    _execution?: SearchExecutionOptions,
+    collectionOrExecution?: string | SearchExecutionOptions,
+    execution?: SearchExecutionOptions,
   ): Promise<"present" | "missing" | "unknown" | "skipped"> {
+    const { collection, execution: effectiveExecution } = resolveEnsureCollectionArgs(
+      collectionOrExecution,
+      execution,
+    );
+    if (isSearchAborted(effectiveExecution)) return "skipped";
     try {
-      await this.ensureTable();
+      await this.ensureTableForCollection(collection ?? this.collection);
       return "present";
     } catch {
       return "missing";

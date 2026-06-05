@@ -2512,9 +2512,11 @@ export class Orchestrator {
                       namespace,
                       { signal: collectionCheckAbort.signal },
                     )
-                  : this.qmd.ensureCollection(this.config.memoryDir, {
-                      signal: collectionCheckAbort.signal,
-                    }),
+                  : this.qmd.ensureCollection(
+                      this.config.memoryDir,
+                      this.config.qmdCollection,
+                      { signal: collectionCheckAbort.signal },
+                    ),
                 collectionCheckAbort,
                 namespace,
               );
@@ -2860,7 +2862,7 @@ export class Orchestrator {
         namespace,
         state: this.config.namespacesEnabled
           ? await this.namespaceSearchRouter.ensureNamespaceCollection(namespace, { signal })
-          : await this.qmd.ensureCollection(this.config.memoryDir, { signal }),
+          : await this.qmd.ensureCollection(this.config.memoryDir, this.config.qmdCollection, { signal }),
       })),
     );
 

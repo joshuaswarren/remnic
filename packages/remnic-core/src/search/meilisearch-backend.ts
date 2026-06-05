@@ -1,5 +1,11 @@
 import { log } from "../logger.js";
-import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
+import {
+  resolveEnsureCollectionArgs,
+  type SearchBackend,
+  type SearchExecutionOptions,
+  type SearchQueryOptions,
+  type SearchResult,
+} from "./port.js";
 import { scanMemoryDir } from "./document-scanner.js";
 import { isSearchAborted, throwIfSearchAborted } from "./abort.js";
 
@@ -134,6 +140,8 @@ export class MeilisearchBackend implements SearchBackend {
     if (isSearchAborted(execution)) return;
 
     try {
+      const ensured = await this.ensureCollection(memoryDir, collection, execution);
+      if (ensured === "skipped" || ensured === "missing") return;
       const client = await this.ensureClient();
       if (isSearchAborted(execution)) return;
       const docs = await scanMemoryDir(memoryDir);
@@ -196,21 +204,47 @@ export class MeilisearchBackend implements SearchBackend {
 
   async ensureCollection(
     _memoryDir: string,
-    _execution?: SearchExecutionOptions,
+    collectionOrExecution?: string | SearchExecutionOptions,
+    execution?: SearchExecutionOptions,
   ): Promise<"present" | "missing" | "unknown" | "skipped"> {
+    const { collection, execution: effectiveExecution } = resolveEnsureCollectionArgs(
+      collectionOrExecution,
+      execution,
+    );
     if (!this.available) return "skipped";
+    if (isSearchAborted(effectiveExecution)) return "skipped";
+    const targetCollection = collection ?? this.collection;
     try {
       const client = await this.ensureClient();
+      if (isSearchAborted(effectiveExecution)) return "skipped";
       try {
-        await client.getIndex(this.collection);
+        await client.getIndex(targetCollection);
         return "present";
-      } catch {
+      } catch (err) {
+        if (!isMeilisearchIndexNotFoundError(err)) {
+          log.debug(
+            `MeilisearchBackend collection check unavailable for "${targetCollection}" (will not skip update): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          return "unknown";
+        }
         // Index doesn't exist — create it
-        await client.createIndex(this.collection, { primaryKey: "id" });
+        if (isSearchAborted(effectiveExecution)) return "skipped";
+        const createTask = await client.createIndex(targetCollection, { primaryKey: "id" });
+        if (isSearchAborted(effectiveExecution)) return "skipped";
+        if (createTask?.taskUid !== undefined && createTask?.taskUid !== null) {
+          await client.waitForTask(createTask.taskUid, { timeOutMs: this.timeoutMs });
+        }
         return "present";
       }
-    } catch {
-      return "skipped";
+    } catch (err) {
+      log.debug(
+        `MeilisearchBackend collection check failed for "${targetCollection}" (will not disable updates): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return "unknown";
     }
   }
 
@@ -260,4 +294,33 @@ export class MeilisearchBackend implements SearchBackend {
       score: hit._rankingScore ?? 0.5,
     }));
   }
+}
+
+function isMeilisearchIndexNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== "object") {
+    return false;
+  }
+  const record = err as Record<string, unknown>;
+  const code = typeof record.code === "string" ? record.code.toLowerCase() : "";
+  const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+  const status =
+    typeof record.status === "number"
+      ? record.status
+      : typeof record.statusCode === "number"
+        ? record.statusCode
+        : undefined;
+  const message = err instanceof Error
+    ? err.message.toLowerCase()
+    : typeof record.message === "string"
+      ? record.message.toLowerCase()
+      : "";
+
+  return (
+    code === "index_not_found"
+    || type === "index_not_found"
+    || status === 404
+    || message.includes("index_not_found")
+    || /index .*not found/.test(message)
+    || /index .*does not exist/.test(message)
+  );
 }

@@ -89,6 +89,7 @@ interface QmdRuntimeLike {
   isAvailable(): boolean;
   ensureCollection(
     memoryDir: string,
+    collectionOrExecution?: string | { signal?: AbortSignal },
     execution?: { signal?: AbortSignal },
   ): Promise<"present" | "missing" | "unknown" | "skipped">;
   debugStatus(): string;
@@ -730,7 +731,10 @@ export async function runOperatorSetup(options: OperatorSetupOptions): Promise<O
 
   const qmdAvailable = await options.orchestrator.qmd.probe();
   const collectionState = options.orchestrator.config.qmdEnabled
-    ? await options.orchestrator.qmd.ensureCollection(options.orchestrator.config.memoryDir)
+    ? await options.orchestrator.qmd.ensureCollection(
+        options.orchestrator.config.memoryDir,
+        options.orchestrator.config.qmdCollection,
+      )
     : "skipped";
   const nativeKnowledgeStatus = await summarizeNativeKnowledgeStatus(options.orchestrator.config);
 
@@ -1108,7 +1112,7 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
 
   const qmdAvailable = await options.orchestrator.qmd.probe();
   const collectionState = config.qmdEnabled
-    ? await options.orchestrator.qmd.ensureCollection(config.memoryDir)
+    ? await options.orchestrator.qmd.ensureCollection(config.memoryDir, config.qmdCollection)
     : "skipped";
   checks.push({
     key: "qmd",
