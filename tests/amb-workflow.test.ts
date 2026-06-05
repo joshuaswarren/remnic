@@ -41,3 +41,28 @@ test("AMB BEAM workflow job env avoids runner-only expression contexts", async (
   assert.match(beamEnv, /^\s+AMB_DIR: \/tmp\/agent-memory-benchmark$/m);
   assert.match(beamEnv, /^\s+UV_CACHE_DIR: \/tmp\/uv-cache$/m);
 });
+
+test("AMB BEAM workflow preserves leaderboard comparison failures through tee", async () => {
+  const workflow = await readFile(
+    path.join(repoRoot, ".github", "workflows", "amb-beam-remnic.yml"),
+    "utf8",
+  );
+  const lines = workflow.split(/\r?\n/);
+  const compareStep = readIndentedBlock(
+    lines,
+    "      - name: Compare against public BEAM leaderboard",
+    6,
+  );
+  const runBlock = readIndentedBlock(compareStep.split(/\r?\n/), "        run: |", 8);
+  const pipefailIndex = runBlock.indexOf("set -o pipefail");
+  const comparisonIndex = runBlock.indexOf(
+    'node integrations/amb/compare-beam-result.mjs "$result" | tee "$RUNNER_TEMP/remnic-beam-comparison.txt"',
+  );
+
+  assert.notEqual(pipefailIndex, -1, "compare step must enable pipefail before piping through tee");
+  assert.notEqual(comparisonIndex, -1, "compare step must pipe comparison output through tee");
+  assert.ok(
+    pipefailIndex < comparisonIndex,
+    "pipefail must be enabled before the compare-beam-result.mjs pipeline",
+  );
+});

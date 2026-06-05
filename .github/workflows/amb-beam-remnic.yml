@@ -121,6 +121,7 @@ jobs:
       - name: Compare against public BEAM leaderboard
         if: env.BEAM_QUERY_LIMIT == ''
         run: |
+          set -o pipefail
           result="$AMB_DIR/outputs/beam/remnic/rag/$BEAM_SPLIT.json"
           node integrations/amb/compare-beam-result.mjs "$result" | tee "$RUNNER_TEMP/remnic-beam-comparison.txt"
 
