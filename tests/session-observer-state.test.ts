@@ -174,6 +174,53 @@ test("session observer save merges shared state across instances", async () => {
   }
 });
 
+test("session observer persists prototype-sensitive session keys as data", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-session-observer-special-key-"));
+  try {
+    const observer = new SessionObserverState({
+      memoryDir: dir,
+      debounceMs: 60_000,
+      bands: [{ maxBytes: 100_000, triggerDeltaBytes: 1_000, triggerDeltaTokens: 200 }],
+    });
+    await observer.load();
+
+    await observer.observe({
+      sessionKey: "__proto__",
+      totalBytes: 100,
+      totalTokens: 10,
+      observedAt: "2026-02-25T00:00:00.000Z",
+    });
+
+    const raw = await readFile(path.join(dir, "state", "session-observer-state.json"), "utf-8");
+    const parsed = JSON.parse(raw) as {
+      sessions: Record<string, { cursorBytes: number; cursorTokens: number }>;
+    };
+    assert.equal(Object.hasOwn(parsed.sessions, "__proto__"), true);
+    assert.equal(parsed.sessions["__proto__"].cursorBytes, 100);
+    assert.equal(parsed.sessions["__proto__"].cursorTokens, 10);
+    assert.equal(({} as { cursorBytes?: number }).cursorBytes, undefined);
+
+    const reloaded = new SessionObserverState({
+      memoryDir: dir,
+      debounceMs: 60_000,
+      bands: [{ maxBytes: 100_000, triggerDeltaBytes: 1_000, triggerDeltaTokens: 200 }],
+    });
+    await reloaded.load();
+
+    const decision = await reloaded.observe({
+      sessionKey: "__proto__",
+      totalBytes: 1_600,
+      totalTokens: 320,
+      observedAt: "2026-02-25T00:01:00.000Z",
+    });
+    assert.equal(decision.triggered, true);
+    assert.equal(decision.deltaBytes, 1_500);
+    assert.equal(decision.deltaTokens, 310);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("session observer does not trigger when both thresholds are zero", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-session-observer-zero-threshold-"));
   try {

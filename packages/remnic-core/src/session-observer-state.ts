@@ -242,7 +242,7 @@ export class SessionObserverState {
   }
 
   private async writeSessions(sessionsMap: Map<string, SessionObserverCursor>): Promise<void> {
-    const sessions: Record<string, SessionObserverCursor> = {};
+    const sessions = Object.create(null) as Record<string, SessionObserverCursor>;
     for (const [key, value] of sessionsMap.entries()) {
       sessions[key] = value;
     }
