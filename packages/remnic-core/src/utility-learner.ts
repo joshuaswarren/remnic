@@ -293,6 +293,7 @@ export async function learnUtilityPromotionWeights(options: {
   };
 
   if (weights.length === 0) {
+    await writeUtilityLearningSnapshot(statePath, snapshot);
     return {
       applied: false,
       reason: "insufficient_events",

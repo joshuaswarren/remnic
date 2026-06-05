@@ -154,6 +154,68 @@ test("offline utility learner ignores stale events and no-ops below minimum samp
     assert.equal(result.applied, false);
     assert.equal(result.reason, "insufficient_events");
     assert.equal(result.snapshot?.weights.length, 0);
+
+    const persisted = await readUtilityLearningSnapshot(memoryDir);
+    assert.equal(persisted?.weights.length, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("offline utility learner clears stale persisted weights when samples become insufficient", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-utility-learner-clear-"));
+  try {
+    await recordEvent(memoryDir, {
+      eventId: "utility-pr30-clear-1",
+      target: "promotion",
+      decision: "promote",
+      outcome: "helpful",
+      utilityScore: 1,
+    });
+    await recordEvent(memoryDir, {
+      eventId: "utility-pr30-clear-2",
+      target: "promotion",
+      decision: "promote",
+      outcome: "helpful",
+      utilityScore: 0.8,
+    });
+
+    const learned = await learnUtilityPromotionWeights({
+      memoryDir,
+      enabled: true,
+      now: new Date("2026-03-08T06:00:00.000Z"),
+      learningWindowDays: 7,
+      minEventCount: 2,
+      maxWeightMagnitude: 0.35,
+    });
+    assert.equal(learned.applied, true);
+    assert.equal(learned.snapshot?.weights.length, 1);
+
+    const insufficient = await learnUtilityPromotionWeights({
+      memoryDir,
+      enabled: true,
+      now: new Date("2026-03-08T07:00:00.000Z"),
+      learningWindowDays: 7,
+      minEventCount: 3,
+      maxWeightMagnitude: 0.35,
+    });
+    assert.equal(insufficient.applied, false);
+    assert.equal(insufficient.reason, "insufficient_events");
+    assert.equal(insufficient.snapshot?.weights.length, 0);
+
+    const persisted = await readUtilityLearningSnapshot(memoryDir);
+    assert.equal(persisted?.weights.length, 0);
+    assert.equal(persisted?.updatedAt, "2026-03-08T07:00:00.000Z");
+
+    const status = await getUtilityLearningStatus({
+      memoryDir,
+      enabled: true,
+      promotionByOutcomeEnabled: true,
+    });
+    assert.equal(status.weights.total, 0);
+    assert.equal(status.weights.positive, 0);
+    assert.equal(status.weights.negative, 0);
+    assert.equal(status.weights.latestUpdatedAt, "2026-03-08T07:00:00.000Z");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -217,7 +279,12 @@ test("utility learner sanitizes NaN numeric inputs before persisting a snapshot"
     assert.equal(result.snapshot?.minEventCount, 3);
     assert.equal(result.snapshot?.maxWeightMagnitude, 0.35);
     assert.equal(result.snapshot?.weights.length, 0);
-    assert.equal(await readUtilityLearningSnapshot(memoryDir), null);
+
+    const persisted = await readUtilityLearningSnapshot(memoryDir);
+    assert.equal(persisted?.weights.length, 0);
+    assert.equal(persisted?.windowDays, 14);
+    assert.equal(persisted?.minEventCount, 3);
+    assert.equal(persisted?.maxWeightMagnitude, 0.35);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
