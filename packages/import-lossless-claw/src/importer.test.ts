@@ -58,9 +58,11 @@ function buildSourceDb(seed: {
   conversations: SeedConversation[];
   messages: SeedMessage[];
   messageParts?: SeedMessagePart[];
+  messagePartsHaveOrdinal?: boolean;
   summaries?: SeedSummary[];
 }): DbHandle {
   const db = new BetterSqlite3(":memory:");
+  const messagePartsHaveOrdinal = seed.messagePartsHaveOrdinal ?? true;
   db.exec(`
     CREATE TABLE conversations (
       conversation_id TEXT PRIMARY KEY,
@@ -96,15 +98,24 @@ function buildSourceDb(seed: {
       parent_summary_id TEXT NOT NULL,
       ordinal           INTEGER NOT NULL
     );
-    CREATE TABLE message_parts (
-      message_id TEXT NOT NULL,
-      ordinal    INTEGER NOT NULL,
-      kind       TEXT NOT NULL,
-      payload    TEXT NOT NULL,
-      tool_name  TEXT,
-      file_path  TEXT,
-      created_at TEXT
-    );
+    ${messagePartsHaveOrdinal
+      ? `CREATE TABLE message_parts (
+          message_id TEXT NOT NULL,
+          ordinal    INTEGER NOT NULL,
+          kind       TEXT NOT NULL,
+          payload    TEXT NOT NULL,
+          tool_name  TEXT,
+          file_path  TEXT,
+          created_at TEXT
+        );`
+      : `CREATE TABLE message_parts (
+          message_id TEXT NOT NULL,
+          kind       TEXT NOT NULL,
+          payload    TEXT NOT NULL,
+          tool_name  TEXT,
+          file_path  TEXT,
+          created_at TEXT
+        );`}
   `);
 
   const insConv = db.prepare(
@@ -136,20 +147,37 @@ function buildSourceDb(seed: {
     );
   }
 
-  const insPart = db.prepare(
-    "INSERT INTO message_parts (message_id, ordinal, kind, payload, tool_name, file_path, created_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?)",
-  );
-  for (const part of seed.messageParts ?? []) {
-    insPart.run(
-      part.message_id,
-      part.ordinal,
-      part.kind,
-      part.payload,
-      part.tool_name ?? null,
-      part.file_path ?? null,
-      part.created_at ?? null,
+  if (messagePartsHaveOrdinal) {
+    const insPart = db.prepare(
+      "INSERT INTO message_parts (message_id, ordinal, kind, payload, tool_name, file_path, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
+    for (const part of seed.messageParts ?? []) {
+      insPart.run(
+        part.message_id,
+        part.ordinal,
+        part.kind,
+        part.payload,
+        part.tool_name ?? null,
+        part.file_path ?? null,
+        part.created_at ?? null,
+      );
+    }
+  } else {
+    const insPart = db.prepare(
+      "INSERT INTO message_parts (message_id, kind, payload, tool_name, file_path, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    for (const part of seed.messageParts ?? []) {
+      insPart.run(
+        part.message_id,
+        part.kind,
+        part.payload,
+        part.tool_name ?? null,
+        part.file_path ?? null,
+        part.created_at ?? null,
+      );
+    }
   }
 
   if (seed.summaries) {
@@ -268,6 +296,7 @@ const TWO_CONVS = (): {
   conversations: SeedConversation[];
   messages: SeedMessage[];
   messageParts?: SeedMessagePart[];
+  messagePartsHaveOrdinal?: boolean;
   summaries: SeedSummary[];
 } => ({
   conversations: [
@@ -498,6 +527,114 @@ describe("importLosslessClaw — idempotency", () => {
 
     assert.equal(result.messagePartsInserted, 1);
     assert.equal(result.messagePartsSkipped, 0);
+  });
+
+  it("retries insert missing message_parts when a previous import was partial", () => {
+    const partialSeed = TWO_CONVS();
+    partialSeed.messageParts = [
+      {
+        message_id: "m-a-2",
+        ordinal: 0,
+        kind: "file_write",
+        payload: JSON.stringify({ path: "src/auth.ts" }),
+        tool_name: "Edit",
+        file_path: "src/auth.ts",
+        created_at: "2026-04-01T00:00:01.500Z",
+      },
+    ];
+    const retrySeed = TWO_CONVS();
+    retrySeed.messageParts = [
+      ...partialSeed.messageParts,
+      {
+        message_id: "m-a-2",
+        ordinal: 1,
+        kind: "file_write",
+        payload: JSON.stringify({ path: "src/session.ts" }),
+        tool_name: "Edit",
+        file_path: "src/session.ts",
+        created_at: "2026-04-01T00:00:01.750Z",
+      },
+    ];
+    const dst = buildDestDb();
+
+    const first = importLosslessClaw({
+      sourceDb: buildSourceDb(partialSeed),
+      destDb: dst,
+    });
+    const retry = importLosslessClaw({
+      sourceDb: buildSourceDb(retrySeed),
+      destDb: dst,
+    });
+
+    assert.equal(first.messagePartsInserted, 1);
+    assert.equal(retry.messagePartsInserted, 1);
+    assert.equal(retry.messagePartsSkipped, 1);
+
+    const parts = dst
+      .prepare(
+        "SELECT p.ordinal, p.file_path, m.session_id, m.turn_index " +
+          "FROM lcm_message_parts p JOIN lcm_messages m ON m.id = p.message_id " +
+          "ORDER BY p.ordinal",
+      )
+      .all();
+    assert.deepEqual(parts, [
+      {
+        ordinal: 0,
+        file_path: "src/auth.ts",
+        session_id: "sess-A",
+        turn_index: 1,
+      },
+      {
+        ordinal: 1,
+        file_path: "src/session.ts",
+        session_id: "sess-A",
+        turn_index: 1,
+      },
+    ]);
+  });
+
+  it("imports multiple legacy message_parts rows when ordinal is absent", () => {
+    const seed = TWO_CONVS();
+    seed.messagePartsHaveOrdinal = false;
+    seed.messageParts = [
+      {
+        message_id: "m-a-2",
+        ordinal: 0,
+        kind: "file_write",
+        payload: JSON.stringify({ path: "src/auth.ts" }),
+        tool_name: "Edit",
+        file_path: "src/auth.ts",
+        created_at: "2026-04-01T00:00:01.500Z",
+      },
+      {
+        message_id: "m-a-2",
+        ordinal: 0,
+        kind: "file_write",
+        payload: JSON.stringify({ path: "src/session.ts" }),
+        tool_name: "Edit",
+        file_path: "src/session.ts",
+        created_at: "2026-04-01T00:00:01.750Z",
+      },
+    ];
+    const dst = buildDestDb();
+
+    const result = importLosslessClaw({
+      sourceDb: buildSourceDb(seed),
+      destDb: dst,
+    });
+
+    assert.equal(result.messagePartsInserted, 2);
+    assert.equal(result.messagePartsSkipped, 0);
+
+    const parts = dst
+      .prepare(
+        "SELECT ordinal, file_path FROM lcm_message_parts ORDER BY ordinal",
+      )
+      .all();
+    assert.deepEqual(parts, [
+      { ordinal: 0, file_path: "src/auth.ts" },
+      { ordinal: 1, file_path: "src/session.ts" },
+    ]);
   });
 });
 

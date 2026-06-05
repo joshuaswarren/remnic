@@ -335,7 +335,7 @@ export function importLosslessClaw(
   const destHasMessageParts = sqliteTableExists(destDb, "lcm_message_parts");
   const existingPartsStmt = destHasMessageParts
     ? destDb.prepare(
-      "SELECT COUNT(*) AS cnt FROM lcm_message_parts WHERE message_id = ?",
+      "SELECT ordinal FROM lcm_message_parts WHERE message_id = ?",
     )
     : undefined;
   const insertPartStmt = destHasMessageParts
@@ -346,8 +346,22 @@ export function importLosslessClaw(
     : undefined;
 
   function processMessageParts(forWrite: boolean): void {
-    const seenDestMessages = new Set<number>();
-    const blockedDestMessages = new Set<number>();
+    const existingPartOrdinalsByMessage = new Map<number, Set<number>>();
+    const getExistingPartOrdinals = (destMessageId: number): Set<number> => {
+      let ordinals = existingPartOrdinalsByMessage.get(destMessageId);
+      if (!ordinals) {
+        ordinals = new Set<number>();
+        if (existingPartsStmt) {
+          const rows = existingPartsStmt.all(destMessageId) as Array<{ ordinal: number }>;
+          for (const row of rows) {
+            ordinals.add(row.ordinal);
+          }
+        }
+        existingPartOrdinalsByMessage.set(destMessageId, ordinals);
+      }
+      return ordinals;
+    };
+
     for (const sourcePart of messageParts) {
       if (!turnIndexByMessageId.has(sourcePart.message_id)) {
         result.messagePartsSkipped += 1;
@@ -355,19 +369,10 @@ export function importLosslessClaw(
       }
       const destMessageId = destRowIdByMessageId.get(sourcePart.message_id);
       if (destMessageId !== undefined && destMessageId >= 0) {
-        if (blockedDestMessages.has(destMessageId)) {
+        const existingOrdinals = getExistingPartOrdinals(destMessageId);
+        if (existingOrdinals.has(sourcePart.ordinal)) {
           result.messagePartsSkipped += 1;
           continue;
-        }
-        if (existingPartsStmt && !seenDestMessages.has(destMessageId)) {
-          const existing = existingPartsStmt.get(destMessageId) as { cnt: number };
-          if (existing.cnt > 0) {
-            seenDestMessages.add(destMessageId);
-            blockedDestMessages.add(destMessageId);
-            result.messagePartsSkipped += 1;
-            continue;
-          }
-          seenDestMessages.add(destMessageId);
         }
       } else if (forWrite) {
         result.messagePartsSkipped += 1;
@@ -388,6 +393,9 @@ export function importLosslessClaw(
           mapped.filePath ?? null,
           mapped.createdAt ?? sourcePart.created_at ?? new Date().toISOString(),
         );
+      }
+      if (destMessageId !== undefined && destMessageId >= 0) {
+        getExistingPartOrdinals(destMessageId).add(sourcePart.ordinal);
       }
       result.messagePartsInserted += 1;
       const session = sessionByMessageId.get(sourcePart.message_id);

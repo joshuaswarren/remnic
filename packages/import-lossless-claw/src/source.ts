@@ -199,11 +199,14 @@ export function listMessageParts(db: Database.Database): LosslessClawMessagePart
 
   const select = (name: string, fallback: string): string =>
     columns.has(name) ? name : `${fallback} AS ${name}`;
+  const ordinalSelect = columns.has("ordinal")
+    ? "ordinal"
+    : "ROW_NUMBER() OVER (PARTITION BY message_id ORDER BY rowid) - 1 AS ordinal";
   return db
     .prepare(
       "SELECT " +
         "message_id, " +
-        `${select("ordinal", "0")}, ` +
+        `${ordinalSelect}, ` +
         `${select("kind", "'tool_call'")}, ` +
         `${select("payload", "'{}'")}, ` +
         `${select("tool_name", "NULL")}, ` +
