@@ -86,7 +86,7 @@ export class WebDavServer {
 
   private constructor(
     options: Required<Omit<WebDavServerOptions, "auth">> & Pick<WebDavServerOptions, "auth">,
-    allowedRoots: AllowedRoot[],
+    allowedRoots: AllowedRoot[]
   ) {
     this.options = options;
     this.allowedRoots = allowedRoots;
@@ -313,7 +313,9 @@ export class WebDavServer {
     return out;
   }
 
-  private async resolvePath(requestPathname: string): Promise<
+  private async resolvePath(
+    requestPathname: string
+  ): Promise<
     | { ok: true; absolutePath: string; displayPath: string; rootAbsolute: string }
     | { ok: false; code: number; message: string }
   > {
@@ -355,11 +357,21 @@ export class WebDavServer {
       if (!this.isPathInside(root.absolute, canonicalCandidate)) {
         return { ok: false, code: 403, message: "path escaped allowlist via symlink" };
       }
-      return { ok: true, absolutePath: canonicalCandidate, displayPath: `/${segments.join("/")}`, rootAbsolute: root.absolute };
+      return {
+        ok: true,
+        absolutePath: canonicalCandidate,
+        displayPath: `/${segments.join("/")}`,
+        rootAbsolute: root.absolute,
+      };
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === "ENOENT") {
-        return { ok: true, absolutePath: candidate, displayPath: `/${segments.join("/")}`, rootAbsolute: root.absolute };
+        return {
+          ok: true,
+          absolutePath: candidate,
+          displayPath: `/${segments.join("/")}`,
+          rootAbsolute: root.absolute,
+        };
       }
       if (code === "ENOTDIR" || code === "ELOOP") {
         return { ok: false, code: 400, message: "invalid path" };
@@ -372,7 +384,7 @@ export class WebDavServer {
     method: "GET" | "HEAD",
     absolutePath: string,
     rootAbsolute: string,
-    res: ServerResponse,
+    res: ServerResponse
   ): Promise<void> {
     const revalidated = await this.revalidatePathInsideRoot(absolutePath, rootAbsolute);
     if (!revalidated.ok) {
@@ -410,7 +422,7 @@ export class WebDavServer {
     absolutePath: string,
     rootAbsolute: string,
     displayPath: string,
-    res: ServerResponse,
+    res: ServerResponse
   ): Promise<void> {
     const revalidated = await this.revalidatePathInsideRoot(absolutePath, rootAbsolute);
     if (!revalidated.ok) {
@@ -432,25 +444,56 @@ export class WebDavServer {
     if (info.isDirectory()) {
       const children = await readdir(absolutePath, { withFileTypes: true });
       for (const child of children) {
-        const childHref = toEncodedHref(`${displayPath.replace(/\/$/, "")}/${child.name}`);
-        entries.push(`
-  <d:response>
-    <d:href>${xmlEscape(childHref)}</d:href>
-    <d:propstat><d:prop><d:resourcetype>${child.isDirectory() ? "<d:collection/>" : ""}</d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
-  </d:response>`);
+        const entry = await this.renderPropfindChildEntry(absolutePath, rootAbsolute, displayPath, child.name);
+        if (entry) {
+          entries.push(entry);
+        }
       }
     }
 
     const xml = `<?xml version="1.0" encoding="utf-8"?>
 <d:multistatus xmlns:d="DAV:">
-  <d:response>
-    <d:href>${xmlEscape(toEncodedHref(displayPath))}</d:href>
-    <d:propstat><d:prop><d:resourcetype>${info.isDirectory() ? "<d:collection/>" : ""}</d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
-  </d:response>${entries.join("")}
+${this.renderPropfindResponse(toEncodedHref(displayPath), info.isDirectory())}${entries.join("")}
 </d:multistatus>`;
 
     res.writeHead(207, { "Content-Type": "application/xml; charset=utf-8" });
     res.end(xml);
+  }
+
+  private async renderPropfindChildEntry(
+    parentAbsolutePath: string,
+    rootAbsolute: string,
+    displayPath: string,
+    childName: string
+  ): Promise<string | null> {
+    const childAbsolutePath = path.join(parentAbsolutePath, childName);
+    let revalidated;
+    try {
+      revalidated = await this.revalidatePathInsideRoot(childAbsolutePath, rootAbsolute);
+    } catch {
+      return null;
+    }
+    if (!revalidated.ok) {
+      return null;
+    }
+
+    let info;
+    try {
+      info = await stat(revalidated.absolutePath);
+    } catch {
+      return null;
+    }
+
+    const childHref = toEncodedHref(`${displayPath.replace(/\/$/, "")}/${childName}`);
+    return this.renderPropfindResponse(childHref, info.isDirectory());
+  }
+
+  private renderPropfindResponse(href: string, isDirectory: boolean): string {
+    return `  <d:response>
+    <d:href>${xmlEscape(href)}</d:href>
+    <d:propstat><d:prop><d:resourcetype>${isDirectory ? "<d:collection/>" : ""}</d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+`;
   }
 
   private isPathInside(root: string, target: string): boolean {
@@ -463,11 +506,8 @@ export class WebDavServer {
 
   private async revalidatePathInsideRoot(
     absolutePath: string,
-    rootAbsolute: string,
-  ): Promise<
-    | { ok: true; absolutePath: string }
-    | { ok: false; code: number; message: string }
-  > {
+    rootAbsolute: string
+  ): Promise<{ ok: true; absolutePath: string } | { ok: false; code: number; message: string }> {
     try {
       const canonical = await realpath(absolutePath);
       if (!this.isPathInside(rootAbsolute, canonical)) {

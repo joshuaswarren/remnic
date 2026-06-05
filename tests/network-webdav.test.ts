@@ -16,7 +16,7 @@ async function httpRequest(
   method: string,
   port: number,
   pathname: string,
-  headers?: Record<string, string>,
+  headers?: Record<string, string>
 ): Promise<HttpResult> {
   return new Promise((resolve, reject) => {
     const req = request(
@@ -37,7 +37,7 @@ async function httpRequest(
             headers: res.headers,
           });
         });
-      },
+      }
     );
     req.on("error", reject);
     req.end();
@@ -179,7 +179,7 @@ test("webdav rejects empty basic auth credentials at create time", async () => {
         allowlistDirs: [root],
         auth: { username: "", password: "pass123" },
       }),
-    /webdav auth\.username must be a non-empty string/,
+    /webdav auth\.username must be a non-empty string/
   );
   await assert.rejects(
     () =>
@@ -189,7 +189,7 @@ test("webdav rejects empty basic auth credentials at create time", async () => {
         allowlistDirs: [root],
         auth: { username: "engram", password: "" },
       }),
-    /webdav auth\.password must be a non-empty string/,
+    /webdav auth\.password must be a non-empty string/
   );
   await assert.rejects(
     () =>
@@ -199,7 +199,7 @@ test("webdav rejects empty basic auth credentials at create time", async () => {
         allowlistDirs: [root],
         auth: { username: "   ", password: "\t" },
       }),
-    /webdav auth\.username must be a non-empty string/,
+    /webdav auth\.username must be a non-empty string/
   );
 });
 
@@ -250,7 +250,82 @@ test("webdav blocks symlink escapes outside allowlisted root", async () => {
     const leakAttempt = await httpRequest("GET", started.port, `/${alias}/leak.txt`);
     assert.equal(leakAttempt.status, 403);
     assert.match(leakAttempt.body, /allowlist/i);
+
+    const listing = await httpRequest("PROPFIND", started.port, `/${alias}`);
+    assert.equal(listing.status, 207);
+    assert.doesNotMatch(listing.body, /leak\.txt/);
   } finally {
+    await server.stop();
+  }
+});
+
+test("webdav PROPFIND revalidates symlinked child directories before advertising collections", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-propfind-symlink-"));
+  const targetDir = path.join(root, "target-dir");
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(path.join(targetDir, "inside.txt"), "inside", "utf-8");
+
+  try {
+    await symlink(targetDir, path.join(root, "linked-dir"), "dir");
+  } catch {
+    return; // symlinks unavailable
+  }
+
+  const server = await WebDavServer.create({
+    enabled: true,
+    port: 0,
+    allowlistDirs: [root],
+  });
+  const started = await server.start();
+  const alias = path.basename(root);
+
+  try {
+    const listing = await httpRequest("PROPFIND", started.port, `/${alias}`);
+    assert.equal(listing.status, 207);
+    assert.match(listing.body, /<d:href>\/[^<]*\/linked-dir<\/d:href>[\s\S]*<d:collection\/>/);
+
+    const linkedListing = await httpRequest("PROPFIND", started.port, `/${alias}/linked-dir`);
+    assert.equal(linkedListing.status, 207);
+    assert.match(linkedListing.body, /inside\.txt/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("webdav PROPFIND skips children whose symlink revalidation cannot traverse", async () => {
+  if (typeof process.getuid === "function" && process.getuid() === 0) {
+    return;
+  }
+
+  const root = await mkdtemp(path.join(os.tmpdir(), "engram-webdav-propfind-inaccessible-symlink-"));
+  await writeFile(path.join(root, "visible.txt"), "visible", "utf-8");
+  const blockedDir = path.join(root, "blocked");
+  const blockedTarget = path.join(blockedDir, "target");
+  await mkdir(blockedTarget, { recursive: true });
+
+  try {
+    await symlink(blockedTarget, path.join(root, "blocked-link"), "dir");
+  } catch {
+    return; // symlinks unavailable
+  }
+
+  await chmod(blockedDir, 0o000);
+
+  const server = await WebDavServer.create({
+    enabled: true,
+    port: 0,
+    allowlistDirs: [root],
+  });
+  const started = await server.start();
+  const alias = path.basename(root);
+
+  try {
+    const listing = await httpRequest("PROPFIND", started.port, `/${alias}`);
+    assert.equal(listing.status, 207);
+    assert.match(listing.body, /visible\.txt/);
+    assert.doesNotMatch(listing.body, /blocked-link/);
+  } finally {
+    await chmod(blockedDir, 0o700).catch(() => {});
     await server.stop();
   }
 });
@@ -454,7 +529,7 @@ test("webdav create rejects duplicate root aliases", async () => {
         port: 0,
         allowlistDirs: [dirA, dirB],
       }),
-    /duplicate webdav allowlist alias: shared/,
+    /duplicate webdav allowlist alias: shared/
   );
 });
 
