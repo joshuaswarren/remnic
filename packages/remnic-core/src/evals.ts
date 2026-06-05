@@ -359,7 +359,7 @@ export function validateEvalBenchmarkManifest(
 
   return {
     schemaVersion: 1,
-    benchmarkId: assertString(raw.benchmarkId, "benchmarkId"),
+    benchmarkId: assertSafeBenchmarkId(assertString(raw.benchmarkId, "benchmarkId")),
     benchmarkType,
     title: assertString(raw.title, "title"),
     description:

@@ -8,6 +8,7 @@ import {
   runBenchmarkStatusCliCommand,
   runBenchmarkValidateCliCommand,
 } from "../src/cli.js";
+import { validateEvalBenchmarkManifest } from "../packages/remnic-core/src/evals.js";
 
 async function writeManifest(
   filePath: string,
@@ -36,6 +37,30 @@ async function writeManifest(
     "utf8",
   );
 }
+
+test("validateEvalBenchmarkManifest rejects unsafe benchmarkId path segments", () => {
+  const baseManifest = {
+    schemaVersion: 1,
+    benchmarkId: "ama-memory",
+    title: "AMA-style benchmark pack",
+    cases: [
+      {
+        id: "case-1",
+        prompt: "Recover the last changed system state and explain the next action.",
+      },
+    ],
+  };
+
+  assert.equal(validateEvalBenchmarkManifest(baseManifest).benchmarkId, "ama-memory");
+
+  for (const benchmarkId of [".", "..", "../x", "a/b"]) {
+    assert.throws(
+      () => validateEvalBenchmarkManifest({ ...baseManifest, benchmarkId }),
+      /benchmarkId must be a safe path segment/,
+      `${benchmarkId} should be rejected`,
+    );
+  }
+});
 
 test("benchmark-validate accepts a manifest JSON file", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "engram-bench-validate-file-"));
