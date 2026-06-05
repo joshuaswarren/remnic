@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -39,7 +39,7 @@ async function makeFixture() {
   return { root, home, stateHome, transcript };
 }
 
-function runHook(hookCase, fixture, sessionId) {
+function runHook(hookCase, fixture, sessionId, options = {}) {
   return spawnSync("bash", [hookCase.scriptPath], {
     cwd: process.cwd(),
     encoding: "utf8",
@@ -48,11 +48,13 @@ function runHook(hookCase, fixture, sessionId) {
       HOME: fixture.home,
       XDG_STATE_HOME: fixture.stateHome,
       OPENCLAW_ENGRAM_ACCESS_TOKEN: "test-token",
+      PATH: options.pathPrefix ? `${options.pathPrefix}:${process.env.PATH}` : process.env.PATH,
     },
     input: JSON.stringify({
       session_id: sessionId,
       transcript_path: fixture.transcript,
       cwd: process.cwd(),
+      ...options.input,
     }),
   });
 }
@@ -120,7 +122,7 @@ for (const hookCase of hookCases) {
       await writeFile(
         fixture.transcript,
         `${JSON.stringify({ type: "user", message: { role: "user", content: "hello" } })}\n`,
-        "utf8",
+        "utf8"
       );
 
       const result = runHook(hookCase, fixture, sessionId);
@@ -164,3 +166,48 @@ for (const hookCase of hookCases) {
     }
   });
 }
+
+test("codex session store preserves cursor when final-stop observe fails", async () => {
+  const hookCase = hookCases.find((entry) => entry.name === "codex");
+  assert.ok(hookCase);
+  const fixture = await makeFixture();
+  const sessionId = `final-fail-session-codex-${process.pid}`;
+  const stateDir = path.join(fixture.stateHome, "remnic", "hooks");
+  const cursorPath = path.join(stateDir, `engram-cursor-${sessionId}`);
+  const fakeBin = path.join(fixture.root, "bin");
+  const fakeCurl = path.join(fakeBin, "curl");
+
+  try {
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await mkdir(fakeBin, { recursive: true });
+    await writeFile(cursorPath, "1\n", "utf8");
+    await writeFile(
+      fixture.transcript,
+      [
+        JSON.stringify({ type: "user", message: { role: "user", content: "already observed" } }),
+        JSON.stringify({ type: "assistant", message: { role: "assistant", content: "pending tail" } }),
+      ].join("\n") + "\n",
+      "utf8"
+    );
+    await writeFile(fakeCurl, "#!/usr/bin/env bash\nexit 7\n", "utf8");
+    await chmod(fakeCurl, 0o700);
+
+    const result = runHook(hookCase, fixture, sessionId, {
+      input: { stop_hook_active: false },
+      pathPrefix: fakeBin,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "{}\n");
+
+    const logPath = path.join(fixture.home, ...hookCase.logPath);
+    await waitFor(async () => {
+      if (!existsSync(logPath)) return false;
+      const log = await readFile(logPath, "utf8");
+      return log.includes("final-stop") && log.includes("cursor retained for retry");
+    }, "final-stop failure was not logged");
+
+    assert.equal(await readFile(cursorPath, "utf8"), "1\n");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});

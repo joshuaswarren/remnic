@@ -4,7 +4,8 @@
 # Fires after every agent turn (Stop) and also on final exit (stop_hook_active=false).
 # Tracks a cursor per session in a private per-user state directory so only NEW
 # messages are sent each call. When stop_hook_active is false (final stop),
-# the cursor file is also cleaned up.
+# the cursor file is cleaned up only after the pending transcript tail is
+# observed or confirmed empty.
 # Runs observe in the background — never blocks the stop.
 #
 # Required env vars:
@@ -264,7 +265,7 @@ PYEOF
 
   if [ -z "$PAYLOAD" ]; then
     log "stop[$SESSION_ID]: parse failed"
-    [ "$IS_FINAL_STOP" = "true" ] && remove_cursor_file
+    [ "$IS_FINAL_STOP" = "true" ] && log "final-stop[$SESSION_ID]: parse failed, cursor retained for retry"
     exit 0
   fi
 
@@ -310,7 +311,7 @@ print(f\"accepted={d.get('accepted','?')} lcm={d.get('lcmArchived','?')} extract
     [ "$IS_FINAL_STOP" = "true" ] && remove_cursor_file
   else
     log "$LABEL[$SESSION_ID]: observe failed (curl=$CURL_EXIT http=$HTTP_STATUS) — cursor not advanced"
-    [ "$IS_FINAL_STOP" = "true" ] && remove_cursor_file
+    [ "$IS_FINAL_STOP" = "true" ] && log "$LABEL[$SESSION_ID]: final stop observe failed, cursor retained for retry"
   fi
 ) >> "$LOG" 2>&1 &
 
