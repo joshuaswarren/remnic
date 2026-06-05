@@ -32,12 +32,12 @@ interface RateLimitBucket {
 
 const rateBuckets = new Map<string, RateLimitBucket>();
 
-function isRateLimited(
+function reserveRateLimitSlot(
   provider: EnrichmentProvider,
   config: EnrichmentPipelineConfig,
 ): boolean {
   const providerCfg = config.providers.find((p) => p.id === provider.id);
-  if (!providerCfg?.rateLimit) return false;
+  if (!providerCfg?.rateLimit) return true;
 
   const now = Date.now();
   let bucket = rateBuckets.get(provider.id);
@@ -62,17 +62,13 @@ function isRateLimited(
   }
 
   const { maxPerMinute, maxPerDay } = providerCfg.rateLimit;
-  return bucket.minuteCount >= maxPerMinute || bucket.dayCount >= maxPerDay;
-}
-
-function recordCall(
-  providerId: string,
-): void {
-  const bucket = rateBuckets.get(providerId);
-  if (bucket) {
-    bucket.minuteCount += 1;
-    bucket.dayCount += 1;
+  if (bucket.minuteCount >= maxPerMinute || bucket.dayCount >= maxPerDay) {
+    return false;
   }
+
+  bucket.minuteCount += 1;
+  bucket.dayCount += 1;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,8 +125,9 @@ export async function runEnrichmentPipeline(
         continue;
       }
 
-      // Check rate limit
-      if (isRateLimited(provider, config)) {
+      // Reserve quota before the awaited provider call so concurrent pipelines
+      // cannot all pass the same pre-await rate-limit check.
+      if (!reserveRateLimitSlot(provider, config)) {
         log.debug?.(
           `enrichment: skipping provider ${provider.id} for ${entity.name} — rate limited`,
         );
@@ -154,7 +151,6 @@ export async function runEnrichmentPipeline(
       try {
         candidates = await provider.enrich(entity);
       } catch (err) {
-        recordCall(provider.id);
         log.error?.(
           `enrichment: provider ${provider.id} failed for ${entity.name}: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -169,7 +165,6 @@ export async function runEnrichmentPipeline(
         });
         continue;
       }
-      recordCall(provider.id);
 
       // Tag each candidate with provider id
       for (const candidate of candidates) {

@@ -305,6 +305,76 @@ test("Pipeline: rate limiting persists across pipeline invocations", async () =>
   assert.equal(second[0].acceptedCandidates.length, 0);
 });
 
+test("Pipeline: concurrent calls reserve provider rate limit before await", async () => {
+  let callCount = 0;
+  let resolveProvider: (() => void) | undefined;
+  let resolveFirstStarted: (() => void) | undefined;
+  const providerRelease = new Promise<void>((resolve) => {
+    resolveProvider = resolve;
+  });
+  const firstStarted = new Promise<void>((resolve) => {
+    resolveFirstStarted = resolve;
+  });
+
+  const provider: EnrichmentProvider = {
+    id: "concurrent-limited",
+    costTier: "cheap",
+    async enrich() {
+      callCount++;
+      resolveFirstStarted?.();
+      await providerRelease;
+      return [{ text: "fact", source: "concurrent-limited", confidence: 0.5, category: "fact" }];
+    },
+    async isAvailable() {
+      return true;
+    },
+  };
+
+  const registry = new EnrichmentProviderRegistry();
+  registry.register(provider);
+
+  const config = enabledConfig({
+    providers: [
+      {
+        id: "concurrent-limited",
+        enabled: true,
+        costTier: "cheap",
+        rateLimit: { maxPerMinute: 1, maxPerDay: 100 },
+      },
+    ],
+    importanceThresholds: {
+      critical: ["concurrent-limited"],
+      high: ["concurrent-limited"],
+      normal: ["concurrent-limited"],
+      low: ["concurrent-limited"],
+    },
+  });
+
+  const firstRun = runEnrichmentPipeline(
+    [makeEntity({ name: "ConcurrentA" })],
+    registry,
+    config,
+    NOOP_LOG,
+  );
+  const secondRun = runEnrichmentPipeline(
+    [makeEntity({ name: "ConcurrentB" })],
+    registry,
+    config,
+    NOOP_LOG,
+  );
+
+  await firstStarted;
+  assert.equal(callCount, 1);
+  resolveProvider?.();
+
+  const [first, second] = await Promise.all([firstRun, secondRun]);
+
+  assert.equal(callCount, 1);
+  assert.equal(first[0].candidatesFound, 1);
+  assert.equal(second[0].candidatesFound, 0);
+  assert.equal(second[0].acceptedCandidates.length, 0);
+});
+
 test("Pipeline: max candidates trims excess", async () => {
   const candidates: EnrichmentCandidate[] = Array.from({ length: 30 }, (_, i) => ({
     text: `Fact ${i}`,
