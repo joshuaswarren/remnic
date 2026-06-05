@@ -48,15 +48,24 @@ const PREFERENCE_EXTRACTORS: Array<{
 }> = [
   // "Avoids X" / negated use/work/code statements → negative preference
   {
-    pattern: /(?:avoids?|dislikes?|hates?|does\s+not\s+like|doesn'?t\s+like|never\s+uses?|does\s+not\s+uses?|doesn'?t\s+uses?|does\s+not\s+use|doesn'?t\s+use|never\s+works?\s+(?:with|in)|does\s+not\s+works?\s+(?:with|in)|doesn'?t\s+works?\s+(?:with|in)|never\s+codes?\s+(?:in|with)|does\s+not\s+codes?\s+(?:in|with)|doesn'?t\s+codes?\s+(?:in|with)|refuses\s+to\s+(?:use|work\s+(?:with|in)|code\s+(?:in|with)))\s+(.+?)$/im,
+    pattern: /(?:avoids?|avoided|dislikes?|disliked|hates?|hated|does\s+not\s+(?:prefer|like|love|enjoy|favou?r)s?|doesn'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|did\s+not\s+(?:prefer|like|love|enjoy|favou?r)s?|didn'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|would\s+not\s+(?:prefer|like|love|enjoy|favou?r)s?|wouldn'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|won'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|never\s+(?:prefers?|likes?|loves?|enjoys?|favou?rs?)|no\s+longer\s+(?:prefers?|likes?|loves?|enjoys?|favou?rs?)|never\s+uses?|does\s+not\s+uses?|doesn'?t\s+uses?|does\s+not\s+use|doesn'?t\s+use|would\s+not\s+use|wouldn'?t\s+use|won'?t\s+use|never\s+works?\s+(?:with|in)|does\s+not\s+works?\s+(?:with|in)|doesn'?t\s+works?\s+(?:with|in)|would\s+not\s+works?\s+(?:with|in)|wouldn'?t\s+works?\s+(?:with|in)|won'?t\s+works?\s+(?:with|in)|never\s+codes?\s+(?:in|with)|does\s+not\s+codes?\s+(?:in|with)|doesn'?t\s+codes?\s+(?:in|with)|would\s+not\s+codes?\s+(?:in|with)|wouldn'?t\s+codes?\s+(?:in|with)|won'?t\s+codes?\s+(?:in|with)|refuses\s+to\s+(?:use|work\s+(?:with|in)|code\s+(?:in|with)))\s+([^.!?]+?)(?=\s+(?:(?:but|however|though|although|except|instead|rather)\b|and\s+(?:(?:now|currently|instead|rather)\b|(?=(?:prefer\w*|enjoy\w*|likes|like\s+to|loves?|loving|favou?r\w*|uses?|works?\s+(?:with|in)|codes?\s+(?:in|with)|interested\s+in|passionate\s+about|focused\s+on|specializ\w*)\b)))|[.!?]|$)/im,
     transform: (match) => {
       const subject = match[1].replace(/\.$/, "").trim();
       return `The user would not prefer ${subject}`;
     },
   },
+  // "Would like to X" / "like to X" → preference for doing X
+  {
+    pattern: /\blikes?\s+to\s+([^.!?]+?)(?:\s+(?:for|when|in|over)\s+([^.!?]+?))?(?=[.!?]|$)/im,
+    transform: (match) => {
+      const action = match[1].replace(/\.$/, "").trim();
+      const context = match[2] ? ` for ${match[2].replace(/\.$/, "").trim()}` : "";
+      return `The user prefers to ${action}${context}`;
+    },
+  },
   // Direct preference statements
   {
-    pattern: /(?:prefers?|enjoys?|likes?|loves?|favou?rs?)\s+(.+?)(?:\s+(?:for|when|in|over)\s+(.+?))?$/im,
+    pattern: /\b(?:prefers?|enjoys?|likes|loves?|loving|favou?rs?)\s+(.+?)(?:\s+(?:for|when|in|over)\s+(.+?))?$/im,
     transform: (match) => {
       const subject = match[1].replace(/\.$/, "").trim();
       const context = match[2] ? ` for ${match[2].replace(/\.$/, "").trim()}` : "";
@@ -65,10 +74,12 @@ const PREFERENCE_EXTRACTORS: Array<{
   },
   // "Uses X for Y" → preference for X in Y context
   {
-    pattern: /(?:uses?|works?\s+(?:with|in)|codes?\s+(?:in|with))\s+(.+?)(?:\s+(?:for|to|when)\s+(.+?))?$/im,
+    pattern: /(?:uses?|works?\s+(?:with|in)|codes?\s+(?:in|with))\s+([^.!?]+?)(?:\s+(?:for|to|when)\s+([^.!?]+?))?(?=[.!?]|$)/i,
     transform: (match) => {
-      const tool = match[1].replace(/\.$/, "").trim();
-      const context = match[2] ? ` for ${match[2].replace(/\.$/, "").trim()}` : "";
+      const tool = match[1].replace(/\s+/g, " ").replace(/\.$/, "").trim();
+      const context = match[2]
+        ? ` for ${match[2].replace(/\s+/g, " ").replace(/\.$/, "").trim()}`
+        : "";
       return `The user prefers to use ${tool}${context}`;
     },
   },
@@ -90,6 +101,26 @@ const PREFERENCE_EXTRACTORS: Array<{
     },
   },
 ];
+
+const FACT_PREFERENCE_LANGUAGE_PATTERN =
+  /\b(?:prefer\w*|enjoy\w*|likes|like\s+to|loves?|loving|favou?r\w*|avoid\w*|dislik\w*|hat(?:e|es|ed|ing)|interested\s+in|passionate\s+about|specializ\w*|go-to)\b/i;
+const FACT_USE_CONTEXT_PATTERN =
+  /\b(?:uses?|works?\s+(?:with|in)|codes?\s+(?:in|with))\b[^.!?]+\b(?:for|to|when)\b/i;
+const DOUBLE_NEGATED_AVERSION_PATTERN =
+  /\b(?:does\s+not|doesn'?t|did\s+not|didn'?t|never|no\s+longer)\s+(?:avoids?|avoided|dislikes?|disliked|hates?|hated)\b/i;
+const DOUBLE_NEGATED_AVERSION_GLOBAL_PATTERN =
+  /\b(?:does\s+not|doesn'?t|did\s+not|didn'?t|never|no\s+longer)\s+(?:avoids?|avoided|dislikes?|disliked|hates?|hated)\b/gi;
+const WITHDRAWN_PREFERENCE_PATTERN =
+  /\b(?:avoids?|avoided|dislikes?|disliked|hates?|hated|does\s+not\s+(?:prefer|like|love|enjoy|favou?r)s?|doesn'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|did\s+not\s+(?:prefer|like|love|enjoy|favou?r)s?|didn'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|would\s+not\s+(?:prefer|like|love|enjoy|favou?r)s?|wouldn'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|won'?t\s+(?:prefer|like|love|enjoy|favou?r)s?|never\s+(?:prefers?|likes?|loves?|enjoys?|favou?rs?)|no\s+longer\s+(?:prefers?|likes?|loves?|enjoys?|favou?rs?))\b/i;
+const REPLACEMENT_PREFERENCE_CLAUSE_PATTERN =
+  /\b(?:(?:but|however|though|although)\s+(?:now\s+|currently\s+|instead\s+|rather\s+)?|and\s+(?:now\s+|currently\s+|instead\s+|rather\s+)?)(?=(?:prefer\w*|enjoy\w*|likes|like\s+to|loves?|loving|favou?r\w*|uses?|works?\s+(?:with|in)|codes?\s+(?:in|with)|interested\s+in|passionate\s+about|focused\s+on|specializ\w*)\b)/i;
+
+function replacementPreferenceClause(content: string): string | null {
+  const match = REPLACEMENT_PREFERENCE_CLAUSE_PATTERN.exec(content);
+  if (!match) return null;
+  const clause = content.slice(match.index + match[0].length).trim();
+  return clause.replace(/[.!?]+$/, "").trim().length > 0 ? clause : null;
+}
 
 /**
  * Fallback: convert any preference/correction memory content into a
@@ -184,17 +215,9 @@ export function consolidatePreferences(
     if (m.frontmatter.category !== "fact") return false;
     if (m.frontmatter.status && m.frontmatter.status !== "active") return false;
     if ((m.frontmatter.confidence ?? 0) < minConfidence) return false;
-    const lower = m.content.toLowerCase();
     return (
-      lower.includes("prefer") ||
-      lower.includes("enjoy") ||
-      lower.includes("like to") ||
-      lower.includes("interested in") ||
-      lower.includes("passionate about") ||
-      lower.includes("specializ") ||
-      lower.includes("favourite") ||
-      lower.includes("favorite") ||
-      (lower.includes("use") && lower.includes("for"))
+      FACT_PREFERENCE_LANGUAGE_PATTERN.test(m.content) ||
+      FACT_USE_CONTEXT_PATTERN.test(m.content)
     );
   });
 
@@ -225,24 +248,37 @@ export function consolidatePreferences(
 
   for (const mem of deduped.slice(0, maxPreferences * 2)) {
     const content = mem.content.trim();
+    const hasDoubleNegatedAversion = DOUBLE_NEGATED_AVERSION_PATTERN.test(content);
+    const hasWithdrawnPreference = WITHDRAWN_PREFERENCE_PATTERN.test(content);
+    const strippedContent = hasDoubleNegatedAversion
+      ? content.replace(DOUBLE_NEGATED_AVERSION_GLOBAL_PATTERN, " ").trim()
+      : content;
+    const replacementContent = hasWithdrawnPreference
+      ? replacementPreferenceClause(strippedContent)
+      : null;
+    const extractionContent = replacementContent ?? strippedContent;
     let statement: string | null = null;
 
     // Try pattern-based extraction first
     for (const extractor of PREFERENCE_EXTRACTORS) {
-      const match = content.match(extractor.pattern);
+      const match = extractionContent.match(extractor.pattern);
       if (match) {
-        statement = extractor.transform(match, content);
+        statement = extractor.transform(match, extractionContent);
         break;
       }
     }
 
+    if (!statement && hasDoubleNegatedAversion) {
+      continue;
+    }
+
     // Fallback: generic prefix
     if (!statement) {
-      statement = fallbackPreferenceStatement(content, mem.frontmatter.category);
+      statement = fallbackPreferenceStatement(replacementContent ?? content, mem.frontmatter.category);
     }
 
     // Skip if statement is too short or too generic
-    if (statement.length < 20) continue;
+    if (statement.length < 20 && !replacementContent) continue;
 
     const keywords = extractKeywords(statement);
 
