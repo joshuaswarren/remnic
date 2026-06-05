@@ -199,8 +199,10 @@ function resolveNamespaceDir(
 ): string {
   if (!cfg.namespacesEnabled) return memoryDir;
 
-  const defaultNamespace = (cfg.defaultNamespace ?? "").trim();
-  const ns = (namespace || defaultNamespace || "default").trim();
+  const configuredDefaultNamespace = (cfg.defaultNamespace ?? "").trim();
+  const defaultNamespace =
+    configuredDefaultNamespace.length > 0 ? configuredDefaultNamespace : "default";
+  const ns = (namespace || defaultNamespace).trim();
   if (!isSafeRouteNamespace(ns)) {
     throw new Error(`invalid materialize namespace: ${ns}`);
   }

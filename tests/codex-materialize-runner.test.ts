@@ -367,6 +367,56 @@ test("runner falls back to legacy root for trimmed default namespace without mig
   }
 });
 
+test("runner falls back to legacy root for implicit default namespace without migrated directory", async () => {
+  const memoryDir = makeTempDir("codex-materialize-runner-implicit-default-memdir-");
+  const workspaceDir = makeTempDir("codex-materialize-runner-implicit-default-workspace-");
+  const { root: codexHome, memoriesDir } = makeCodexHome();
+
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.writeMemory(
+      "fact",
+      "synthetic implicit default legacy-root memory.",
+      { source: "runner-test" },
+    );
+    assert.equal(
+      existsSync(path.join(memoryDir, "namespaces", "default")),
+      false,
+      "test setup should not create a migrated default namespace directory",
+    );
+    ensureSentinel(memoriesDir, "default", new Date("2026-04-02T00:00:00Z"));
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir,
+      qmdEnabled: false,
+      namespacesEnabled: true,
+      codexMaterializeMemories: true,
+    });
+    (config as any).defaultNamespace = undefined;
+
+    const result = await runCodexMaterialize({
+      config,
+      codexHome,
+      reason: "manual",
+      now: new Date("2026-04-02T00:00:00Z"),
+    });
+
+    assert.ok(result, "runner should materialize from the legacy root");
+    assert.equal(result.namespace, "default");
+    const rawContents = (await import("node:fs")).readFileSync(
+      path.join(memoriesDir, "raw_memories.md"),
+      "utf-8",
+    );
+    assert.match(rawContents, /synthetic implicit default legacy-root memory/);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+    rmSync(workspaceDir, { recursive: true, force: true });
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+});
+
 test("runner skips when reason=session_end and codexMaterializeOnSessionEnd=false (P2 fix)", async () => {
   const memoryDir = makeTempDir("codex-materialize-runner-sessend-memdir-");
   const workspaceDir = makeTempDir("codex-materialize-runner-sessend-workspace-");
