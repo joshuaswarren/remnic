@@ -23,6 +23,7 @@ const TASK_TRANSITIONS: Record<WorkTaskStatus, Set<WorkTaskStatus>> = {
 };
 
 const PROJECT_MUTATION_CHAINS = new Map<string, Promise<unknown>>();
+const TASK_MUTATION_CHAINS = new Map<string, Promise<unknown>>();
 
 function serializeFrontmatter(values: object): string {
   const lines = Object.entries(values).map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
@@ -179,6 +180,19 @@ export class WorkStorage {
     return run;
   }
 
+  private async enqueueTaskMutation<T>(taskId: string, op: () => Promise<T>): Promise<T> {
+    const mutationKey = this.taskPath(taskId);
+    const previous = TASK_MUTATION_CHAINS.get(mutationKey) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(op);
+    const cleanup = run.then(() => undefined, () => undefined).then(() => {
+      if (TASK_MUTATION_CHAINS.get(mutationKey) === cleanup) {
+        TASK_MUTATION_CHAINS.delete(mutationKey);
+      }
+    });
+    TASK_MUTATION_CHAINS.set(mutationKey, cleanup);
+    return run;
+  }
+
   private parseTask(raw: string): WorkTask | null {
     const parsed = parseFrontmatter(raw);
     if (!parsed) return null;
@@ -289,6 +303,15 @@ export class WorkStorage {
   }
 
   async updateTask(
+    id: string,
+    patch: UpdateWorkTaskInput,
+    now = new Date(),
+    options?: { skipStatusTransitionValidation?: boolean },
+  ): Promise<WorkTask | null> {
+    return this.enqueueTaskMutation(id, async () => this.updateTaskUnlocked(id, patch, now, options));
+  }
+
+  private async updateTaskUnlocked(
     id: string,
     patch: UpdateWorkTaskInput,
     now = new Date(),

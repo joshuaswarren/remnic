@@ -10,6 +10,10 @@ import {
   importWorkBoardSnapshot,
 } from "../src/work/board.js";
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 test("work board export groups tasks by status and filters by project", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-work-board-export-"));
   const storage = new WorkStorage(memoryDir);
@@ -135,6 +139,38 @@ test("work board import creates missing tasks and updates existing tasks", async
   assert.ok(created);
   assert.equal(created.projectId, project.id);
   assert.deepEqual(created.tags, ["imported"]);
+});
+
+test("work storage serializes concurrent task updates for the same task", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-work-task-concurrent-update-"));
+  const storage = new WorkStorage(memoryDir);
+
+  await storage.createTask({
+    id: "task-race",
+    title: "Race",
+    status: "todo",
+  });
+
+  const originalGetTask = storage.getTask.bind(storage);
+  let getTaskCalls = 0;
+  storage.getTask = async (id: string) => {
+    const call = ++getTaskCalls;
+    const task = await originalGetTask(id);
+    if (id === "task-race" && call === 1) {
+      await delay(50);
+    }
+    return task;
+  };
+
+  await Promise.all([
+    storage.updateTask("task-race", { status: "in_progress" }, new Date("2026-02-27T00:00:00.000Z")),
+    storage.updateTask("task-race", { assignee: "alice" }, new Date("2026-02-27T00:00:01.000Z")),
+  ]);
+
+  const updated = await originalGetTask("task-race");
+  assert.ok(updated);
+  assert.equal(updated.status, "in_progress");
+  assert.equal(updated.assignee, "alice");
 });
 
 test("work board import bypasses transition guardrails for snapshot restores", async () => {
