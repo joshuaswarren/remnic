@@ -29,11 +29,7 @@ function collectTsFiles(dirPath: string): string[] {
         stack.push(full);
         continue;
       }
-      if (
-        entry.isFile() &&
-        full.endsWith(".ts") &&
-        !full.endsWith(".d.ts")
-      ) {
+      if (entry.isFile() && full.endsWith(".ts") && !full.endsWith(".d.ts")) {
         out.push(full);
       }
     }
@@ -82,24 +78,86 @@ function formatNodePos(sourceFile: ts.SourceFile, node: ts.Node): { line: number
   return { line: pos.line + 1, column: pos.character + 1 };
 }
 
+function typeReferencesSymbol(
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  targetSymbol: ts.Symbol,
+  seen = new Set<ts.Type>()
+): boolean {
+  if (seen.has(type)) return false;
+  seen.add(type);
+
+  if (type.getSymbol() === targetSymbol || type.aliasSymbol === targetSymbol) {
+    return true;
+  }
+
+  if (type.isUnionOrIntersection()) {
+    return type.types.some((child) => typeReferencesSymbol(checker, child, targetSymbol, seen));
+  }
+
+  const aliasArgs = type.aliasTypeArguments ?? [];
+  if (aliasArgs.some((child) => typeReferencesSymbol(checker, child, targetSymbol, seen))) {
+    return true;
+  }
+
+  if (
+    (type.flags & ts.TypeFlags.Object) !== 0 &&
+    ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0
+  ) {
+    const reference = type as ts.TypeReference;
+    const referenceArgs = checker.getTypeArguments(reference);
+    if (reference.target && typeReferencesSymbol(checker, reference.target, targetSymbol, seen)) {
+      return true;
+    }
+    if (referenceArgs.some((child) => typeReferencesSymbol(checker, child, targetSymbol, seen))) {
+      return true;
+    }
+  }
+
+  if (type.isClassOrInterface()) {
+    const baseTypes = checker.getBaseTypes(type) ?? [];
+    if (baseTypes.some((child) => typeReferencesSymbol(checker, child, targetSymbol, seen))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function typeHasPluginConfigShape(type: ts.Type, pluginConfigKeys: Set<string>): boolean {
+  return type.getProperties().some((prop) => pluginConfigKeys.has(prop.getName()));
+}
+
+function typeHasIndexSignature(checker: ts.TypeChecker, type: ts.Type): boolean {
+  return (
+    checker.getIndexTypeOfType(type, ts.IndexKind.String) !== undefined ||
+    checker.getIndexTypeOfType(type, ts.IndexKind.Number) !== undefined
+  );
+}
+
 function collectUnknownPluginConfigObjectKeys(
   program: ts.Program,
   pluginConfigType: ts.Type,
-  pluginConfigKeys: Set<string>,
+  pluginConfigKeys: Set<string>
 ): Failure[] {
   const checker = program.getTypeChecker();
   const failures: Failure[] = [];
-  const pluginConfigSymbolName = pluginConfigType.getSymbol()?.getName();
+  const pluginConfigSymbol = pluginConfigType.getSymbol();
+  if (!pluginConfigSymbol) {
+    throw new Error("Could not resolve TypeScript symbol for PluginConfig");
+  }
 
   function visit(sourceFile: ts.SourceFile, node: ts.Node) {
     if (ts.isObjectLiteralExpression(node)) {
       const contextualType = checker.getContextualType(node);
-      const contextualSymbolName = contextualType?.getSymbol()?.getName();
       const contextualIsPluginConfig =
         contextualType !== undefined &&
-        (contextualSymbolName === pluginConfigSymbolName || checker.typeToString(contextualType) === "PluginConfig");
+        typeReferencesSymbol(checker, contextualType, pluginConfigSymbol) &&
+        !typeHasIndexSignature(checker, contextualType) &&
+        typeHasPluginConfigShape(contextualType, pluginConfigKeys);
 
       if (contextualIsPluginConfig) {
+        const contextualKeys = new Set(contextualType.getProperties().map((prop) => prop.getName()));
         for (const prop of node.properties) {
           let key: string | null = null;
           if (ts.isPropertyAssignment(prop)) {
@@ -108,7 +166,7 @@ function collectUnknownPluginConfigObjectKeys(
             key = prop.name.text;
           }
 
-          if (key && !pluginConfigKeys.has(key)) {
+          if (key && !pluginConfigKeys.has(key) && !contextualKeys.has(key)) {
             const pos = formatNodePos(sourceFile, prop);
             failures.push({
               message: `Unknown PluginConfig key "${key}" in object literal`,
@@ -125,7 +183,11 @@ function collectUnknownPluginConfigObjectKeys(
 
   for (const sourceFile of program.getSourceFiles()) {
     if (sourceFile.isDeclarationFile) continue;
-    if (!sourceFile.fileName.includes(`${path.sep}src${path.sep}`) && !sourceFile.fileName.includes(`${path.sep}tests${path.sep}`)) continue;
+    if (
+      !sourceFile.fileName.includes(`${path.sep}src${path.sep}`) &&
+      !sourceFile.fileName.includes(`${path.sep}tests${path.sep}`)
+    )
+      continue;
     visit(sourceFile, sourceFile);
   }
 
@@ -140,12 +202,7 @@ function main() {
   const repoRoot = process.cwd();
   const tsconfigPath = path.join(repoRoot, "tsconfig.json");
   const parsed = loadTsConfig(tsconfigPath);
-  const rootNames = Array.from(
-    new Set([
-      ...parsed.fileNames,
-      ...collectTsFiles(path.join(repoRoot, "tests")),
-    ]),
-  );
+  const rootNames = Array.from(new Set([...parsed.fileNames, ...collectTsFiles(path.join(repoRoot, "tests"))]));
   const program = ts.createProgram({
     rootNames,
     options: parsed.options,
@@ -159,7 +216,9 @@ function main() {
   const typesSf = program.getSourceFile(typesPath);
   const configSf = program.getSourceFile(configPath);
   if (!typesSf || !configSf) {
-    throw new Error("Could not load packages/remnic-core/src/types.ts or packages/remnic-core/src/config.ts from TypeScript program");
+    throw new Error(
+      "Could not load packages/remnic-core/src/types.ts or packages/remnic-core/src/config.ts from TypeScript program"
+    );
   }
 
   const pluginConfigKeys = getPluginConfigKeys(typesSf);
@@ -174,10 +233,7 @@ function main() {
     "runtimeAuthForModelResolver",
   ]);
   const expectedSchemaExtra = new Set(["dreams"]);
-  const expectedParseMissing = new Set<string>([
-    "providerApiKeyResolver",
-    "runtimeAuthForModelResolver",
-  ]);
+  const expectedParseMissing = new Set<string>(["providerApiKeyResolver", "runtimeAuthForModelResolver"]);
 
   const failures: Failure[] = [];
 
@@ -225,7 +281,7 @@ function main() {
   }
 
   console.log(
-    `Config contract OK: PluginConfig=${pluginConfigKeys.size}, parseConfig.return=${parseConfigReturnKeys.size}, schema=${schemaKeys.size}`,
+    `Config contract OK: PluginConfig=${pluginConfigKeys.size}, parseConfig.return=${parseConfigReturnKeys.size}, schema=${schemaKeys.size}`
   );
 }
 
