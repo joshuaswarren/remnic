@@ -13,6 +13,7 @@ const SECRET_KEY_SEGMENT_SUFFIXES: ReadonlySet<string> = new Set([
   "bearertoken",
   "clientsecret",
   "secretkey",
+  "secretaccesskey",
   "privatekey",
 ] as const);
 
@@ -46,7 +47,7 @@ function isSecretSegments(segments: readonly string[]): boolean {
   }
 
   for (let width = 2; width <= Math.min(3, segments.length); width += 1) {
-    const candidate = segments.slice(-width).join("");
+    const candidate = segments.slice(segments.length - width).join("");
     if (SECRET_KEY_SEGMENT_SUFFIXES.has(candidate)) {
       return true;
     }
