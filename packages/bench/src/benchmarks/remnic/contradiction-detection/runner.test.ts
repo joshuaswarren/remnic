@@ -31,14 +31,13 @@ test("contradictionDetectionDefinition has the expected shape", () => {
   assert.equal(contradictionDetectionDefinition.meta.category, "retrieval");
 });
 
-test("runContradictionDetectionBenchmark produces tasks per fixture case plus aggregate", async () => {
+test("runContradictionDetectionBenchmark produces tasks only for real fixture cases", async () => {
   const result = await runContradictionDetectionBenchmark(
     buildOptions({ mode: "full" }),
   );
-  // 19 cases + 1 aggregate task
-  assert.equal(
-    result.results.tasks.length,
-    CONTRADICTION_DETECTION_FIXTURE.length + 1,
+  assert.equal(result.results.tasks.length, CONTRADICTION_DETECTION_FIXTURE.length);
+  assert.ok(
+    !result.results.tasks.some((task) => task.taskId === "_aggregate_verdict_metrics"),
   );
   for (const task of result.results.tasks) {
     assert.ok(typeof task.scores === "object");
@@ -49,16 +48,29 @@ test("runContradictionDetectionBenchmark includes per-verdict metrics", async ()
   const result = await runContradictionDetectionBenchmark(
     buildOptions({ mode: "full" }),
   );
-  const agg = result.results.tasks.find(
-    (t) => t.taskId === "_aggregate_verdict_metrics",
+  assert.ok(typeof result.results.aggregates.precision_contradicts?.mean === "number");
+  assert.ok(typeof result.results.aggregates.recall_contradicts?.mean === "number");
+  assert.ok(typeof result.results.aggregates.f1_contradicts?.mean === "number");
+  assert.ok(typeof result.results.aggregates.precision_duplicates?.mean === "number");
+  assert.ok(typeof result.results.aggregates.recall_independent?.mean === "number");
+  assert.ok(typeof result.results.aggregates.overall_accuracy?.mean === "number");
+});
+
+test("runContradictionDetectionBenchmark quick mode exposes only smoke tasks plus verdict aggregates", async () => {
+  const result = await runContradictionDetectionBenchmark(
+    buildOptions({ mode: "quick" }),
   );
-  assert.ok(agg, "aggregate task must exist");
-  assert.ok(typeof agg.scores.precision_contradicts === "number");
-  assert.ok(typeof agg.scores.recall_contradicts === "number");
-  assert.ok(typeof agg.scores.f1_contradicts === "number");
-  assert.ok(typeof agg.scores.precision_duplicates === "number");
-  assert.ok(typeof agg.scores.recall_independent === "number");
-  assert.ok(typeof agg.scores.overall_accuracy === "number");
+  assert.equal(result.results.tasks.length, CONTRADICTION_DETECTION_SMOKE_FIXTURE.length);
+  assert.deepEqual(
+    result.results.tasks.map((task) => task.taskId),
+    CONTRADICTION_DETECTION_SMOKE_FIXTURE.map((sample) => sample.id),
+  );
+  assert.ok(
+    !result.results.tasks.some((task) => task.taskId === "_aggregate_verdict_metrics"),
+  );
+  assert.ok(typeof result.results.aggregates.precision_contradicts?.mean === "number");
+  assert.ok(typeof result.results.aggregates.recall_contradicts?.mean === "number");
+  assert.ok(typeof result.results.aggregates.f1_contradicts?.mean === "number");
 });
 
 test("runContradictionDetectionBenchmark emits per-task completion callbacks", async () => {
@@ -67,7 +79,14 @@ test("runContradictionDetectionBenchmark emits per-task completion callbacks", a
     buildOptions({
       mode: "full",
       onTaskComplete(task, completedCount, totalCount) {
-        progress.push({ taskId: task.taskId, completedCount, totalCount });
+        const taskId = task.taskId;
+        if (typeof taskId !== "string") {
+          throw new Error("expected completed task to include a taskId");
+        }
+        if (typeof completedCount !== "number" || typeof totalCount !== "number") {
+          throw new Error("expected progress counts");
+        }
+        progress.push({ taskId, completedCount, totalCount });
       },
     }),
   );
@@ -88,7 +107,7 @@ test("runContradictionDetectionBenchmark quick mode runs the smoke subset", asyn
     buildOptions({ mode: "quick" }),
   );
   assert.ok(quick.results.tasks.length < full.results.tasks.length);
-  assert.ok(quick.results.tasks.length > 0);
+  assert.equal(quick.results.tasks.length, CONTRADICTION_DETECTION_SMOKE_FIXTURE.length);
 });
 
 test("runContradictionDetectionBenchmark rejects invalid limit", async () => {

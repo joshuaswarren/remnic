@@ -53,7 +53,6 @@ packages/bench/src/benchmarks/remnic/assistant-morning-brief/fixture.test.ts(16,
 packages/bench/src/benchmarks/remnic/coding-recall/runner.test.ts(133,20): TS7006
 packages/bench/src/benchmarks/remnic/coding-recall/runner.test.ts(133,26): TS7006
 packages/bench/src/benchmarks/remnic/coding-recall/runner.test.ts(133,42): TS7006
-packages/bench/src/benchmarks/remnic/contradiction-detection/runner.test.ts(70,62): TS2322
 packages/bench/src/benchmarks/remnic/enrichment-fidelity/runner.test.ts(29,62): TS2322
 packages/bench/src/benchmarks/remnic/ingestion-schema-completeness/runner.test.ts(113,20): TS18048
 packages/bench/src/benchmarks/remnic/ingestion-schema-completeness/runner.test.ts(114,20): TS18048
