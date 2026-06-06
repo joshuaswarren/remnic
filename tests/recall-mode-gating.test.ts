@@ -102,6 +102,11 @@ test("resolveRecallModeDecisionAsync applies the LLM classification when opted i
   assert.equal(decision.plannedMode, "graph_mode");
   assert.equal(decision.plannerSource, "llm");
   assert.equal(decision.plannerReason, "wants history");
+  // The heuristic baseline is preserved distinctly from the LLM's choice so
+  // telemetry can compare them (cursor review on PR #1428): "restart the
+  // gateway" → heuristic "minimal", LLM → "graph_mode".
+  assert.equal(decision.plannerHeuristicMode, "minimal");
+  assert.notEqual(decision.plannerHeuristicMode, decision.plannedMode);
 });
 
 test("resolveRecallModeDecisionAsync gates an LLM graph_mode to full when graph recall is disabled (gotcha #39)", async () => {

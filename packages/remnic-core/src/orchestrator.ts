@@ -546,6 +546,12 @@ export interface RecallModeDecision {
   /** Model that served the LLM classification, when one was used. */
   plannerModelUsed?: string;
   /**
+   * The regex-heuristic baseline mode, captured whenever the LLM planner ran
+   * (any source). Lets operators compare planned-vs-heuristic during rollout —
+   * distinct from `plannedMode`, which on the LLM path is the LLM's choice.
+   */
+  plannerHeuristicMode?: RecallPlanMode;
+  /**
    * In shadow mode, the mode the LLM *would* have chosen (recorded for
    * comparison) while `effectiveMode` stays on the heuristic decision.
    */
@@ -1170,6 +1176,7 @@ export async function resolveRecallModeDecisionAsync(
       plannerLatencyMs: planned.latencyMs,
       plannerFallbackUsed: planned.fallbackUsed,
       plannerModelUsed: planned.modelUsed,
+      plannerHeuristicMode: planned.heuristicMode,
       shadowLlmMode: planned.mode,
     };
   }
@@ -1182,6 +1189,7 @@ export async function resolveRecallModeDecisionAsync(
     plannerLatencyMs: planned.latencyMs,
     plannerFallbackUsed: planned.fallbackUsed,
     plannerModelUsed: planned.modelUsed,
+    plannerHeuristicMode: planned.heuristicMode,
   };
 }
 
@@ -6523,7 +6531,8 @@ export class Orchestrator {
       log.debug(
         `[recall-planner] mode=${recallDecision.shadowLlmMode ?? recallDecision.effectiveMode} ` +
           `source=${recallDecision.plannerSource} ` +
-          `heuristic=${recallDecision.plannedMode} ` +
+          `planned=${recallDecision.plannedMode} ` +
+          `heuristic=${recallDecision.plannerHeuristicMode ?? recallDecision.plannedMode} ` +
           `model=${recallDecision.plannerModelUsed ?? "n/a"} ` +
           `latencyMs=${recallDecision.plannerLatencyMs ?? 0} ` +
           `fallback=${recallDecision.plannerFallbackUsed ?? false}` +
