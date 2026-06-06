@@ -229,6 +229,34 @@ test("parseConfig rejects a present-but-malformed taskModelChain (gotcha #51)", 
   );
 });
 
+test("parseConfig rejects unqualified taskModelChain model strings (codex review #1425)", () => {
+  // A slash-less id like "gpt-4.1" parses here but FallbackLlmClient.parseModelString
+  // drops it, leaving the chain silently using a different model — reject at parse.
+  assert.throws(
+    () => parseConfig({ taskModelChain: { primary: "gpt-4.1" } }),
+    /taskModelChain\.primary must be in "provider\/model" form/,
+  );
+  assert.throws(
+    () => parseConfig({ taskModelChain: { primary: "openai/" } }),
+    /taskModelChain\.primary must be in "provider\/model" form/,
+  );
+  assert.throws(
+    () => parseConfig({ taskModelChain: { primary: "/gpt-4.1" } }),
+    /taskModelChain\.primary must be in "provider\/model" form/,
+  );
+  assert.throws(
+    () => parseConfig({ taskModelChain: { primary: "openai/gpt", fallbacks: ["bare-model"] } }),
+    /taskModelChain\.fallbacks entries must be in "provider\/model" form/,
+  );
+  // Multi-slash provider/model paths remain valid.
+  assert.deepEqual(
+    parseConfig({
+      taskModelChain: { primary: "fireworks/accounts/fireworks/models/glm-5p1" },
+    }).taskModelChain,
+    { primary: "fireworks/accounts/fireworks/models/glm-5p1" },
+  );
+});
+
 test("parseConfig modelSource=gateway still honors an explicit openaiApiKey override", () => {
   const original = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "sk-env-should-not-be-used";

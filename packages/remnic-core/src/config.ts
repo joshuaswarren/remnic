@@ -70,6 +70,15 @@ function parseBoundedIntegerMs(
   return Math.min(max, Math.max(min, Math.floor(coerced)));
 }
 
+// A gateway model string must be "provider/model" — at least one "/" with a
+// non-empty provider segment and a non-empty model segment. This mirrors
+// FallbackLlmClient.parseModelString (which requires >= 2 slash-parts), so a
+// model the runtime would silently drop is rejected at config time instead.
+function isQualifiedModelString(value: string): boolean {
+  const slash = value.indexOf("/");
+  return slash > 0 && slash < value.length - 1;
+}
+
 function parseModelChainConfig(
   value: unknown,
   keyName: string,
@@ -92,6 +101,11 @@ function parseModelChainConfig(
     );
   }
   const primary = raw.primary.trim();
+  if (!isQualifiedModelString(primary)) {
+    throw new Error(
+      `${keyName}.primary must be in "provider/model" form (e.g. "zai/glm-4.7-flash"); got ${JSON.stringify(primary)}`,
+    );
+  }
 
   let dedupedFallbacks: string[] | undefined;
   if (raw.fallbacks !== undefined) {
@@ -106,6 +120,13 @@ function parseModelChainConfig(
     const trimmed = raw.fallbacks
       .map((item) => (item as string).trim())
       .filter((item) => item.length > 0 && item !== primary);
+    for (const fb of trimmed) {
+      if (!isQualifiedModelString(fb)) {
+        throw new Error(
+          `${keyName}.fallbacks entries must be in "provider/model" form; got ${JSON.stringify(fb)}`,
+        );
+      }
+    }
     dedupedFallbacks = [...new Set(trimmed)];
   }
 
