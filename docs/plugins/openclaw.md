@@ -95,12 +95,13 @@ plugin id.
 ## Compatibility Policy
 
 Remnic supports OpenClaw releases from at least the previous 60 days. As of
-June 3, 2026, that window starts on April 4, 2026. The OpenClaw installer
+June 6, 2026, that window starts on April 7, 2026. The OpenClaw installer
 floor remains the single supported `>=2026.4.1` shape because it is more
 permissive than the active 60-day floor, while the peer and plugin-API
 compatibility ranges explicitly include reviewed prerelease hosts in that
-window. The adapter records `2026.6.3-alpha.1` as the latest reviewed
-source-tag target.
+window. The adapter records `2026.6.6-alpha.1` as the latest reviewed
+source-tag target, with its plugin SDK surface verified against the newest
+npm-published build (`2026.6.5-beta.1`).
 
 When OpenClaw adds a new manifest or setup surface, Remnic should add that new
 surface without dropping older metadata that still helps hosts inside the
@@ -305,6 +306,52 @@ GitHub release page at review time.
   `openclaw.build.pluginSdkVersion` record `2026.6.3-alpha.1` as the reviewed
   target. `openclaw.install.minHostVersion` remains the more permissive
   `>=2026.4.1` floor for older supported hosts.
+
+### 2026.6.4–2026.6.6 Compatibility Sweep
+
+Issues #1338, #1348, #1387, #1412, #1423, and #1424 were reviewed together on
+June 6, 2026, covering OpenClaw source tags `v2026.6.4-alpha.1`,
+`v2026.6.5-alpha.1`, `v2026.6.5-alpha.2`, and `v2026.6.6-alpha.1` plus the npm
+beta builds `2026.6.2-beta.1` and `2026.6.5-beta.1`. The `-alpha` versions are
+published only as GitHub source tags (no npm release and no GitHub release
+page); the `-beta` versions are published to npm under the `beta` dist-tag.
+
+- Reviewed source diff: `v2026.6.3-alpha.1 → v2026.6.6-alpha.1` (1,264
+  commits). The only plugin-relevant change is *"Add operator install policy
+  and remove dangerous-code install scanners (#89516)"* — a host-side install
+  behavior change (operator `security.installPolicy`, `before_install`
+  ordering, and removal of the built-in dangerous-code install scanners). The
+  rest is auth-profile storage migration to SQLite, channel/UI fixes, and
+  documentation; none of it changes the plugin SDK contract Remnic consumes.
+- Plugin SDK surface: verified with `npm run check:openclaw-sdk-surface`
+  against the newest npm-published build (`2026.6.5-beta.1`). The surface is
+  **additive only — nothing Remnic registers or depends on was removed or
+  changed**. New optional surfaces appeared: registrars `registerCliMetadata`,
+  `registerCommandGroups`, `registerToolEventRecipient`; and hooks including
+  session lifecycle (`session_*`), provider request/response
+  (`before_provider_request`, `after_provider_response`,
+  `before_provider_payload`), dispatch (`agent_dispatch`,
+  `after_agent_dispatch`), streamed chunks (`agent_message_chunk`,
+  `agent_thought_chunk`), compaction (`session_before_compact`,
+  `session_compact`), and gateway lifecycle (`gateway_draining`,
+  `gateway_timeout`).
+- Remnic impact: **no runtime adapter change is required.** Remnic's existing
+  hooks (`before_prompt_build`, `agent_end`, `message_received`,
+  `before_reset`) and registrars are unchanged, and the install-policy change
+  is host-side and does not affect Remnic's ClawHub-first install path or
+  manifest. The new optional hooks/registrars are candidates for future
+  enhancement (e.g. compaction-aware capture via `session_compact`, or
+  provider-response capture) but are not adopted here: per the standing
+  guidance above, do not add unconditional registrations for optional surfaces
+  unless a Remnic feature actually needs them. The conservative SDK-surface
+  snapshot is intentionally left unrefreshed so these additions remain visible
+  for a dedicated future adoption review.
+- Compatibility metadata: the peer and plugin-API ranges now explicitly
+  include `2026.6.2-beta.1`, `2026.6.4-alpha.1`, `2026.6.5-alpha.1`,
+  `2026.6.5-alpha.2`, `2026.6.5-beta.1`, and `2026.6.6-alpha.1`;
+  `openclaw.build.openclawVersion` and `openclaw.build.pluginSdkVersion` record
+  `2026.6.6-alpha.1` as the reviewed target. `openclaw.install.minHostVersion`
+  remains the more permissive `>=2026.4.1` floor for older supported hosts.
 
 ## Reset Flush Contract
 
