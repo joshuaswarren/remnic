@@ -49,6 +49,8 @@ export interface EngramAccessHttpServerOptions {
   citationsEnabled?: boolean;
   /** Auto-enable citations for Codex adapter connections (issue #379). */
   citationsAutoDetect?: boolean;
+  /** Advertise legacy engram.* tool aliases on tools/list (issue #1427). Default true. */
+  emitLegacyTools?: boolean;
 }
 
 export interface EngramAccessHttpServerStatus {
@@ -247,6 +249,7 @@ export class EngramAccessHttpServer {
       principal: options.principal,
       citationsEnabled: options.citationsEnabled,
       citationsAutoDetect: options.citationsAutoDetect,
+      emitLegacyTools: options.emitLegacyTools,
     });
   }
 

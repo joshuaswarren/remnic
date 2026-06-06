@@ -1759,6 +1759,14 @@ export interface PluginConfig {
   /** Base path for the filesystem backend. Required when backendType is "filesystem". */
   binaryLifecycleBackendPath: string;
 
+  /**
+   * Advertise legacy `engram_*` / `engram.*` MCP tool aliases alongside the
+   * canonical `remnic_*` names (issue #1427). Default true for backward
+   * compatibility. Set false to halve the advertised MCP `tools/list` surface;
+   * tools stay callable under both names regardless. Also settable via
+   * `REMNIC_EMIT_LEGACY_TOOLS` (falls back to `ENGRAM_EMIT_LEGACY_TOOLS`).
+   */
+  emitLegacyTools: boolean;
   // Codex citation parity (issue #379)
   /** Enable oai-mem-citation blocks in recall responses. Default false. */
   citationsEnabled: boolean;

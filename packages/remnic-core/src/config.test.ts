@@ -3,6 +3,34 @@ import test from "node:test";
 
 import { parseConfig } from "./config.js";
 
+test("parseConfig emitLegacyTools defaults to true and coerces config/env (issue #1427)", () => {
+  // Default: legacy aliases on, for backward compatibility.
+  assert.equal(parseConfig({}).emitLegacyTools, true);
+  // Boolean + boolean-like string config values.
+  assert.equal(parseConfig({ emitLegacyTools: false }).emitLegacyTools, false);
+  assert.equal(parseConfig({ emitLegacyTools: "false" }).emitLegacyTools, false);
+  assert.equal(parseConfig({ emitLegacyTools: "0" }).emitLegacyTools, false);
+  assert.equal(parseConfig({ emitLegacyTools: "true" }).emitLegacyTools, true);
+
+  // Env var fallback (REMNIC_ preferred, ENGRAM_ legacy) when config field absent.
+  const prevRemnic = process.env.REMNIC_EMIT_LEGACY_TOOLS;
+  const prevEngram = process.env.ENGRAM_EMIT_LEGACY_TOOLS;
+  try {
+    process.env.REMNIC_EMIT_LEGACY_TOOLS = "false";
+    assert.equal(parseConfig({}).emitLegacyTools, false, "REMNIC_ env disables");
+    // Explicit config field wins over env.
+    assert.equal(parseConfig({ emitLegacyTools: true }).emitLegacyTools, true, "config field wins over env");
+    delete process.env.REMNIC_EMIT_LEGACY_TOOLS;
+    process.env.ENGRAM_EMIT_LEGACY_TOOLS = "false";
+    assert.equal(parseConfig({}).emitLegacyTools, false, "ENGRAM_ env fallback disables");
+  } finally {
+    if (prevRemnic === undefined) delete process.env.REMNIC_EMIT_LEGACY_TOOLS;
+    else process.env.REMNIC_EMIT_LEGACY_TOOLS = prevRemnic;
+    if (prevEngram === undefined) delete process.env.ENGRAM_EMIT_LEGACY_TOOLS;
+    else process.env.ENGRAM_EMIT_LEGACY_TOOLS = prevEngram;
+  }
+});
+
 test("parseConfig expands tilde paths for core storage directories", () => {
   const previousHome = process.env.HOME;
   process.env.HOME = "/Users/remnic-test";

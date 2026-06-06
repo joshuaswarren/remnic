@@ -1328,6 +1328,7 @@ const pluginDefinition = {
             maxBodyBytes: cfg.agentAccessHttp.maxBodyBytes,
             citationsEnabled: cfg.citationsEnabled,
             citationsAutoDetect: cfg.citationsAutoDetect,
+            emitLegacyTools: cfg.emitLegacyTools,
           });
     (globalThis as any)[keys.ACCESS_HTTP_SERVER] = accessHttpServer;
 

@@ -792,6 +792,7 @@ export interface AccessHttpServeCliCommandOptions {
   trustPrincipalHeader?: boolean;
   citationsEnabled?: boolean;
   citationsAutoDetect?: boolean;
+  emitLegacyTools?: boolean;
   createServer?: (options: {
     service: EngramAccessService;
     host?: string;
@@ -802,6 +803,7 @@ export interface AccessHttpServeCliCommandOptions {
     trustPrincipalHeader?: boolean;
     citationsEnabled?: boolean;
     citationsAutoDetect?: boolean;
+    emitLegacyTools?: boolean;
   }) => AccessHttpServerLike;
 }
 
@@ -2732,6 +2734,7 @@ export async function runAccessHttpServeCliCommand(
         trustPrincipalHeader: input.trustPrincipalHeader,
         citationsEnabled: input.citationsEnabled,
         citationsAutoDetect: input.citationsAutoDetect,
+        emitLegacyTools: input.emitLegacyTools,
       }));
 
     const server = createServer(options);
@@ -2772,14 +2775,24 @@ export async function runAccessMcpServeCliCommand(
   service: EngramAccessService,
   options: {
     principal?: string;
-    createServer?: (service: EngramAccessService, options: { principal?: string }) => EngramMcpServerLike;
+    emitLegacyTools?: boolean;
+    createServer?: (
+      service: EngramAccessService,
+      options: { principal?: string; emitLegacyTools?: boolean },
+    ) => EngramMcpServerLike;
     stdin?: Readable;
     stdout?: Writable;
   } = {},
 ): Promise<{ ok: true }> {
-  const server = options.createServer?.(service, { principal: options.principal }) ?? new EngramMcpServer(service, {
-    principal: options.principal,
-  });
+  const server =
+    options.createServer?.(service, {
+      principal: options.principal,
+      emitLegacyTools: options.emitLegacyTools,
+    }) ??
+    new EngramMcpServer(service, {
+      principal: options.principal,
+      emitLegacyTools: options.emitLegacyTools,
+    });
   await server.runStdio(options.stdin ?? process.stdin, options.stdout ?? process.stdout);
   return { ok: true };
 }
@@ -6939,6 +6952,7 @@ export function registerCli(
             trustPrincipalHeader: options.trustPrincipalHeader === true,
             citationsEnabled: orchestrator.config.citationsEnabled,
             citationsAutoDetect: orchestrator.config.citationsAutoDetect,
+            emitLegacyTools: orchestrator.config.emitLegacyTools,
           });
           console.log(JSON.stringify(status, null, 2));
           console.log("OK");
@@ -6977,6 +6991,7 @@ export function registerCli(
           const options = (args[0] ?? {}) as Record<string, unknown>;
           await runAccessMcpServeCliCommand(accessService, {
             principal: resolveAccessPrincipalOverride(options.principal, orchestrator.config.agentAccessHttp.principal),
+            emitLegacyTools: orchestrator.config.emitLegacyTools,
           });
         });
 

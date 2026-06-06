@@ -988,6 +988,7 @@ of truth for similarity logic across read-time and write-time code paths.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
+| `emitLegacyTools` | `true` | Advertise legacy `engram_*`/`engram.*` MCP tool aliases alongside canonical `remnic_*` names. Set `false` to halve the advertised `tools/list` surface (only `remnic_*`); tools stay callable under both names. Also settable via `REMNIC_EMIT_LEGACY_TOOLS`. (issue #1427) |
 | `citationsEnabled` | `false` | Emit oai-mem-citation blocks in recall responses |
 | `citationsAutoDetect` | `true` | Auto-detect Codex citation context |
 
@@ -1621,6 +1622,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `versioningEnabled` | `false` | `false` |
 | `versioningMaxPerPage` | `50` | `50` |
 | `versioningSidecarDir` | `".versions"` | `".versions"` |
+| `emitLegacyTools` | `true` | `true` |
 | `citationsEnabled` | `false` | `false` |
 | `citationsAutoDetect` | `true` | `true` |
 | `taxonomyEnabled` | `false` | `false` |

@@ -1314,6 +1314,11 @@
         "default": true,
         "description": "Auto-regenerate RESOLVER.md when the taxonomy changes."
       },
+      "emitLegacyTools": {
+        "type": "boolean",
+        "default": true,
+        "description": "Advertise legacy engram_* / engram.* MCP tool aliases alongside the canonical remnic_* names (issue #1427). Default true for backward compatibility. Set false to halve the advertised tools/list surface (only remnic_* names); tools remain callable under both names. Also settable via REMNIC_EMIT_LEGACY_TOOLS."
+      },
       "citationsEnabled": {
         "type": "boolean",
         "default": false,

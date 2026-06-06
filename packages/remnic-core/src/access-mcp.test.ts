@@ -721,3 +721,54 @@ test("MCP profiling report rejects invalid argument types before dispatch", asyn
   assert.equal((badFormat as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, true);
   assert.equal((badLimit as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, true);
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// Issue #1427: opt-out of legacy engram.* tool aliases on tools/list
+// ──────────────────────────────────────────────────────────────────────────
+
+function listToolNames(response: unknown): string[] {
+  const tools = (response as { result?: { tools?: Array<{ name: string }> } }).result?.tools ?? [];
+  return tools.map((t) => t.name);
+}
+
+const TOOLS_LIST_REQUEST = { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} };
+
+test("tools/list advertises both remnic.* and engram.* by default (back-compat)", async () => {
+  const server = new EngramMcpServer(makeMockService());
+  const names = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));
+  assert.ok(names.includes("remnic.recall"), "canonical name present");
+  assert.ok(names.includes("engram.recall"), "legacy alias present by default");
+  const legacyCount = names.filter((n) => n.startsWith("engram.")).length;
+  assert.ok(legacyCount > 0, "legacy aliases advertised by default");
+});
+
+test("tools/list omits engram.* aliases when emitLegacyTools is false", async () => {
+  const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
+  const names = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));
+  assert.ok(names.includes("remnic.recall"), "canonical name still present");
+  assert.equal(
+    names.filter((n) => n.startsWith("engram.")).length,
+    0,
+    "no engram.* aliases advertised when opted out",
+  );
+  // Every advertised tool uses the canonical prefix; the surface is halved.
+  assert.ok(names.every((n) => n.startsWith("remnic.")), "all advertised tools are canonical");
+});
+
+test("emitLegacyTools=false still allows calling tools under BOTH names (advertising-only opt-out)", async () => {
+  const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
+  // Canonical call works.
+  const canonical = await server.handleRequest(makeToolRequest("remnic.recall", { query: "hello" }));
+  assert.notEqual(
+    (canonical as { result?: { isError?: boolean } }).result?.isError,
+    true,
+    "canonical remnic.recall call succeeds",
+  );
+  // Legacy call still dispatches even though it is no longer advertised.
+  const legacy = await server.handleRequest(makeToolRequest("engram.recall", { query: "hello" }));
+  assert.notEqual(
+    (legacy as { result?: { isError?: boolean } }).result?.isError,
+    true,
+    "legacy engram.recall call still works (callability preserved)",
+  );
+});

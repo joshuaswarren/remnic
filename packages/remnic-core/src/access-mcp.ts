@@ -81,11 +81,15 @@ function toLegacyToolName(name: string): string {
     : name;
 }
 
-function withToolAliases(tool: McpTool): McpTool[] {
+function withToolAliases(tool: McpTool, emitLegacyTools = true): McpTool[] {
   const canonicalName = toCanonicalToolName(tool.name);
   const canonicalTool = canonicalName === tool.name ? tool : { ...tool, name: canonicalName };
   if (canonicalName === tool.name) return [canonicalTool];
-  return [canonicalTool, tool];
+  // Issue #1427: when legacy aliases are opted out, advertise only the
+  // canonical `remnic.*` name and drop the `engram.*` duplicate. Tool *calls*
+  // still accept both names (the dispatch canonicalizes), so suppressing the
+  // alias only trims `tools/list`, not callability.
+  return emitLegacyTools ? [canonicalTool, tool] : [canonicalTool];
 }
 
 function resolveChatGptInspectorRecallSessionKey(
@@ -212,13 +216,25 @@ export class EngramMcpServer {
   private readonly citationsEnabled: boolean;
   /** Whether to auto-enable citations for Codex adapter connections. */
   private readonly citationsAutoDetect: boolean;
+  /**
+   * Whether to advertise legacy `engram.*` tool aliases alongside the canonical
+   * `remnic.*` names (issue #1427). Defaults to true for backward compatibility;
+   * set false to halve the advertised `tools/list` surface.
+   */
+  private readonly emitLegacyTools: boolean;
 
   constructor(
     private readonly service: EngramAccessService,
-    options: { principal?: string; citationsEnabled?: boolean; citationsAutoDetect?: boolean } = {},
+    options: {
+      principal?: string;
+      citationsEnabled?: boolean;
+      citationsAutoDetect?: boolean;
+      emitLegacyTools?: boolean;
+    } = {},
   ) {
     this.citationsEnabled = options.citationsEnabled === true;
     this.citationsAutoDetect = options.citationsAutoDetect !== false;
+    this.emitLegacyTools = options.emitLegacyTools !== false;
     this.authenticatedPrincipal =
       options.principal?.trim() ||
       readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() ||
@@ -1703,7 +1719,7 @@ export class EngramMcpServer {
           additionalProperties: false,
         },
       },
-    ].flatMap((tool) => withToolAliases(tool));
+    ].flatMap((tool) => withToolAliases(tool, this.emitLegacyTools));
   }
 
   /** Get clientInfo for a specific MCP session. Returns undefined for non-MCP requests. */
@@ -1985,7 +2001,12 @@ export class EngramMcpServer {
   }
 
   private toolAcceptsArgument(name: string, key: string): boolean {
-    const tool = this.tools.find((entry) => entry.name === name);
+    // Match by canonical name so argument validation resolves whether the
+    // caller used the `engram.*` or `remnic.*` name and regardless of whether
+    // legacy aliases are advertised (issue #1427) — a tool stays callable under
+    // both names even when only the canonical alias appears in `tools/list`.
+    const target = toCanonicalToolName(name);
+    const tool = this.tools.find((entry) => toCanonicalToolName(entry.name) === target);
     const inputSchema = getObjectProperties(tool?.inputSchema);
     const properties = getObjectProperties(inputSchema?.properties);
     if (properties && Object.prototype.hasOwnProperty.call(properties, key)) {

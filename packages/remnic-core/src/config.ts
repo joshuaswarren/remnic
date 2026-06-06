@@ -3557,6 +3557,14 @@ export function parseConfig(raw: unknown): PluginConfig {
         ? cfg.binaryLifecycleBackendPath.trim()
         : "",
 
+    // Legacy MCP tool aliases opt-out (issue #1427). Config field wins; then
+    // the REMNIC_/ENGRAM_ env var (gotcha #9); default true for back-compat.
+    emitLegacyTools:
+      coerceBooleanLike(cfg.emitLegacyTools) ??
+      coerceBooleanLike(
+        readEnvVar("REMNIC_EMIT_LEGACY_TOOLS") ?? readEnvVar("ENGRAM_EMIT_LEGACY_TOOLS"),
+      ) ??
+      true,
     // Codex citation parity (issue #379)
     citationsEnabled: cfg.citationsEnabled === true,
     citationsAutoDetect: cfg.citationsAutoDetect !== false,

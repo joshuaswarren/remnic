@@ -349,6 +349,7 @@ export async function startServer(options?: {
       : undefined,
     citationsEnabled: config.citationsEnabled,
     citationsAutoDetect: config.citationsAutoDetect,
+    emitLegacyTools: config.emitLegacyTools,
   });
 
   let host: string;
