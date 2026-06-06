@@ -3151,6 +3151,28 @@
         "default": "",
         "description": "Agent persona ID for fast-tier ops (rerank, entity summaries, compression guidelines). When modelSource is 'gateway' and this is empty, fast ops use the same chain as gatewayAgentId."
       },
+      "taskModelChain": {
+        "type": "object",
+        "description": "Optional task-specific gateway model chain for Remnic's background LLM work (extraction, fact/profile/identity consolidation, summarization, causal consolidation). When set, this chain is resolved through gateway providers instead of gatewayAgentId or agents.defaults.model. Only applies when modelSource is 'gateway'.",
+        "required": ["primary"],
+        "additionalProperties": false,
+        "properties": {
+          "primary": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Primary gateway model, e.g. zai/glm-4.7-flash"
+          },
+          "fallbacks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": [],
+            "description": "Fallback gateway models tried after primary"
+          }
+        }
+      },
       "localLlmEnabled": {
         "type": "boolean",
         "default": false,
@@ -5472,6 +5494,11 @@
       "advanced": true,
       "placeholder": "engram-llm-fast",
       "help": "Agent persona ID for fast-tier ops. Leave empty to use the primary gatewayAgentId."
+    },
+    "taskModelChain": {
+      "label": "Task Model Chain",
+      "advanced": true,
+      "help": "Optional primary/fallback gateway model chain for Remnic background tasks (extraction, consolidation, summarization). Overrides gatewayAgentId/defaults for these tasks only. Requires modelSource: 'gateway'."
     },
     "localLlmEnabled": {
       "label": "Enable Local LLM",
