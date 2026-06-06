@@ -31,6 +31,32 @@ test("parseConfig emitLegacyTools defaults to true and coerces config/env (issue
   }
 });
 
+test("parseConfig rejects a present-but-malformed emitLegacyTools (gotcha #51, #1427)", () => {
+  // A typo must fail fast, not silently fall through to the default (true) and
+  // re-enable legacy tool advertising.
+  for (const bad of ["fales", "maybe", 2, "2", "enabled"]) {
+    assert.throws(
+      () => parseConfig({ emitLegacyTools: bad }),
+      /emitLegacyTools must be a boolean-like value/,
+      `emitLegacyTools=${JSON.stringify(bad)} should throw`,
+    );
+  }
+  // Malformed env var also fails fast (only when the config field is absent).
+  const prev = process.env.REMNIC_EMIT_LEGACY_TOOLS;
+  try {
+    process.env.REMNIC_EMIT_LEGACY_TOOLS = "maybe";
+    assert.throws(
+      () => parseConfig({}),
+      /REMNIC_EMIT_LEGACY_TOOLS must be a boolean-like value/,
+    );
+    // An explicit valid config field overrides a malformed env (field wins first).
+    assert.equal(parseConfig({ emitLegacyTools: false }).emitLegacyTools, false);
+  } finally {
+    if (prev === undefined) delete process.env.REMNIC_EMIT_LEGACY_TOOLS;
+    else process.env.REMNIC_EMIT_LEGACY_TOOLS = prev;
+  }
+});
+
 test("parseConfig expands tilde paths for core storage directories", () => {
   const previousHome = process.env.HOME;
   process.env.HOME = "/Users/remnic-test";

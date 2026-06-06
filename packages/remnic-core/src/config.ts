@@ -351,6 +351,38 @@ function coerceBooleanLike(value: unknown): boolean | undefined {
   return undefined;
 }
 
+/**
+ * Resolve the `emitLegacyTools` opt-out (issue #1427): config field wins, then
+ * the REMNIC_/ENGRAM_ env var, then default true. A *present-but-malformed*
+ * value fails fast rather than silently re-enabling legacy aliases — this knob
+ * controls the advertised MCP `tools/list` surface, so a typo like
+ * `emitLegacyTools=fales` must not be misread as `true` (gotcha #51).
+ */
+function resolveEmitLegacyTools(configValue: unknown): boolean {
+  const ACCEPTED = "true/false/1/0/yes/no/on/off";
+  if (configValue !== undefined && configValue !== null) {
+    const coerced = coerceBooleanLike(configValue);
+    if (coerced === undefined) {
+      throw new Error(
+        `emitLegacyTools must be a boolean-like value (${ACCEPTED}); got ${JSON.stringify(configValue)}`,
+      );
+    }
+    return coerced;
+  }
+  const envRaw =
+    readEnvVar("REMNIC_EMIT_LEGACY_TOOLS") ?? readEnvVar("ENGRAM_EMIT_LEGACY_TOOLS");
+  if (envRaw !== undefined) {
+    const coerced = coerceBooleanLike(envRaw);
+    if (coerced === undefined) {
+      throw new Error(
+        `REMNIC_EMIT_LEGACY_TOOLS must be a boolean-like value (${ACCEPTED}); got "${envRaw}"`,
+      );
+    }
+    return coerced;
+  }
+  return true;
+}
+
 export function isOpenaiApiKeyDisabled(value: unknown): boolean {
   return value === false || (typeof value === "string" && value.trim().toLowerCase() === "false");
 }
@@ -3559,12 +3591,8 @@ export function parseConfig(raw: unknown): PluginConfig {
 
     // Legacy MCP tool aliases opt-out (issue #1427). Config field wins; then
     // the REMNIC_/ENGRAM_ env var (gotcha #9); default true for back-compat.
-    emitLegacyTools:
-      coerceBooleanLike(cfg.emitLegacyTools) ??
-      coerceBooleanLike(
-        readEnvVar("REMNIC_EMIT_LEGACY_TOOLS") ?? readEnvVar("ENGRAM_EMIT_LEGACY_TOOLS"),
-      ) ??
-      true,
+    // Malformed values fail fast rather than silently defaulting (gotcha #51).
+    emitLegacyTools: resolveEmitLegacyTools(cfg.emitLegacyTools),
     // Codex citation parity (issue #379)
     citationsEnabled: cfg.citationsEnabled === true,
     citationsAutoDetect: cfg.citationsAutoDetect !== false,
