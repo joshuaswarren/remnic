@@ -1884,7 +1884,15 @@ export class QmdClient implements SearchBackend {
     // repeated queries within the same recall cycle (e.g., primary + hybrid
     // top-up, or conversation recall using the same collection).
     const optionsFingerprint = searchOptions ? JSON.stringify(searchOptions) : "";
-    const cacheKey = createHash("sha256").update(`${col}:${n}:${optionsFingerprint}:${trimmed}`).digest("hex");
+    // The QMD search cache is a process-global keyed map (memory-cache.ts), so the
+    // key must capture every input that changes the result — including the daemon
+    // and subprocess strategies. Otherwise two QmdClient instances (or a reloaded
+    // config) with different strategies collide within the TTL and one plan serves
+    // another plan's cached results. Issue #1335 (codex review on #1422).
+    const strategyFingerprint = `${this.qmdSearchStrategy}:${this.qmdSubprocessStrategy}`;
+    const cacheKey = createHash("sha256")
+      .update(`${strategyFingerprint}:${col}:${n}:${optionsFingerprint}:${trimmed}`)
+      .digest("hex");
     const cached = getCachedQmdSearch(cacheKey);
     if (cached) {
       log.debug(`QMD search cache hit (${cached.length} results)`);

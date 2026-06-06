@@ -93,3 +93,38 @@ test("qmdSubprocessStrategy 'search' applies BM25 to scoped AND global recall (g
   // Global BM25 must NOT pass a collection flag.
   assert.ok(!calls[1]?.includes("-c"), "global BM25 search must not include -c");
 });
+
+test("QMD search cache key isolates results by strategy (codex review on #1422)", async () => {
+  // Two clients with different strategies must not serve each other's cached
+  // results for the same query/collection within the global cache TTL.
+  function makeClient(opts: Record<string, unknown>): {
+    client: QmdClient;
+    calls: string[][];
+  } {
+    const client = new QmdClient("memories", 3, opts);
+    const internals = client as unknown as SubprocessInternals & {
+      daemonAvailable: boolean;
+    };
+    internals.available = true;
+    internals.daemonAvailable = false;
+    const calls: string[][] = [];
+    internals.runQmdCommand = async (args: string[]) => {
+      calls.push(args);
+      return { stdout: "[]", stderr: "" };
+    };
+    return { client, calls };
+  }
+
+  // Unique query avoids colliding with cache entries from other tests.
+  const query = "strategy-cache-isolation-probe-xyz";
+  const a = makeClient({ qmdSearchStrategy: "hybrid" });
+  const b = makeClient({ qmdSearchStrategy: "lex" });
+
+  await a.client.search(query, "memories", 3);
+  await b.client.search(query, "memories", 3);
+
+  // If the cache key ignored strategy, b would hit a's cached entry and never
+  // invoke the subprocess. Both must register their own subprocess call.
+  assert.equal(a.calls.length, 1, "first strategy populates its own cache entry");
+  assert.equal(b.calls.length, 1, "second strategy must NOT reuse the first's cached result");
+});
