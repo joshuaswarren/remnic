@@ -2384,15 +2384,24 @@ export class QmdClient implements SearchBackend {
 
     const startedAtMs = Date.now();
     try {
-      const args = ["query", query];
+      // Mirror searchViaSubprocess: default `qmd query` keeps LLM expansion +
+      // rerank (gotcha #7); `qmdSubprocessStrategy: "search"` opts into BM25-only
+      // `qmd search` for both scoped AND global recall so the gate stays uniform
+      // across every subprocess path (gotcha #39). Issue #1335.
+      const bm25 = this.qmdSubprocessStrategy === "search";
+      const args = bm25 ? ["search", query] : ["query", query];
       this.addQmdJsonOutputArgs(args);
       args.push("-n", String(maxResults));
-      this.addResolvedSearchOptionsToArgs(args, options);
+      // BM25 `qmd search` takes no expansion/rerank options — only forward them
+      // for the `query` command.
+      if (!bm25) {
+        this.addResolvedSearchOptionsToArgs(args, options);
+      }
       const { stdout } = await this.runQmdCommand(args, QMD_TIMEOUT_MS, signal);
       const durationMs = Date.now() - startedAtMs;
       if (this.slowLog?.enabled && durationMs >= this.slowLog.thresholdMs) {
         log.warn(
-          `SLOW QMD global query: durationMs=${durationMs} maxResults=${maxResults} queryChars=${query.length}`,
+          `SLOW QMD global ${bm25 ? "search" : "query"}: durationMs=${durationMs} maxResults=${maxResults} queryChars=${query.length}`,
         );
       }
 
