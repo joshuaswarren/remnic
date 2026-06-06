@@ -1932,7 +1932,7 @@
       "recallPlannerMaxMemoryHints": {
         "type": "number",
         "default": 24,
-        "description": "Maximum number of recent memory hints included in the recall planner prompt."
+        "description": "Reserved. Caps recent-memory hints in the recall planner prompt when a caller supplies them; the default recall path does not populate hints (the LLM planner classifies on the prompt alone)."
       },
       "recallPlannerShadowMode": {
         "type": "boolean",

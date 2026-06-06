@@ -84,7 +84,8 @@ By default the mode above is chosen by a fast regex heuristic (`planRecallMode()
   - `recallPlannerModel` must be a **`provider/model`** string (e.g. `openai/gpt-5.5`, `anthropic/claude-haiku-4-5`) — a bare model name cannot be resolved and is ignored (routing then relies on the gateway chain). The legacy default `gpt-5.5` is bare, so to enable LLM planning you must either set a `provider/model` value **or** have a gateway model chain / agent persona configured. If you opt in but nothing routable resolves, the planner logs a one-time warning and stays on the heuristic.
 - Is bounded by `recallPlannerTimeoutMs` and **always falls back to the heuristic** on timeout, error, empty response, or an unavailable backend — recall never fails because of the planner.
 - Honors `recallPlannerShadowMode` (run the LLM for comparison/telemetry but keep the heuristic's effective decision) and `recallPlannerTelemetryEnabled` (log planned-vs-heuristic mode, model, latency, and fallback).
-- Is skipped entirely when the caller forces a `mode`, when the planner is disabled, or for empty prompts.
+- Is skipped entirely when the caller forces a `mode`, when the planner is disabled, when the recall is already aborted, or for empty prompts. It also participates in the recall cancellation contract — an aborted/timed-out outer recall cancels the planner call.
+- Classifies on the prompt alone today. `recallPlannerMaxMemoryHints` is **reserved**: the planner accepts optional recent-memory hints, but the default recall path runs before search and does not gather them, so none are sent yet.
 
 The `src/index.ts` active-recall preflight stays heuristic-only (it runs before recall and is latency-sensitive); the LLM decision is authoritative for the main recall path.
 
