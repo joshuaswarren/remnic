@@ -6,6 +6,9 @@ import { parseConfig } from "./config.js";
 test("parseConfig emitLegacyTools defaults to true and coerces config/env (issue #1427)", () => {
   // Default: legacy aliases on, for backward compatibility.
   assert.equal(parseConfig({}).emitLegacyTools, true);
+  // `null` means "unset → use default", consistent with the repo convention for
+  // optional fields (e.g. taskModelChain: null → undefined). Not a hard error.
+  assert.equal(parseConfig({ emitLegacyTools: null }).emitLegacyTools, true);
   // Boolean + boolean-like string config values.
   assert.equal(parseConfig({ emitLegacyTools: false }).emitLegacyTools, false);
   assert.equal(parseConfig({ emitLegacyTools: "false" }).emitLegacyTools, false);
