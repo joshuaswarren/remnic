@@ -2841,7 +2841,11 @@ export function parseConfig(raw: unknown): PluginConfig {
           .filter((param): param is string => typeof param === "string" && param.trim().length > 0)
       : [...DEFAULT_BEHAVIOR_LOOP_PROTECTED_PARAMS],
     // v8.0 phase 1
-    recallPlannerEnabled: cfg.recallPlannerEnabled !== false,
+    // All recallPlanner boolean gates coerce boolean-like strings so CLI/env
+    // surfaces (`--config recallPlanner*=true|false`) behave correctly — the
+    // shadow-mode/telemetry/enable flags are documented rollout switches and
+    // must not silently ignore string values (gotcha #36, #1428 review).
+    recallPlannerEnabled: coerceBooleanLike(cfg.recallPlannerEnabled) ?? true,
     // Issue #1367 / Option C: LLM-based recall planning is opt-in so the
     // default recall path stays heuristic (no added latency / LLM call unless
     // the operator asks for it — gotcha #30). Coerce boolean-like strings so
@@ -2854,13 +2858,13 @@ export function parseConfig(raw: unknown): PluginConfig {
         : DEFAULT_REASONING_MODEL,
     recallPlannerTimeoutMs:
       typeof cfg.recallPlannerTimeoutMs === "number" ? cfg.recallPlannerTimeoutMs : 1500,
-    recallPlannerUseResponsesApi: cfg.recallPlannerUseResponsesApi !== false,
+    recallPlannerUseResponsesApi: coerceBooleanLike(cfg.recallPlannerUseResponsesApi) ?? true,
     recallPlannerMaxPromptChars:
       typeof cfg.recallPlannerMaxPromptChars === "number" ? cfg.recallPlannerMaxPromptChars : 4000,
     recallPlannerMaxMemoryHints:
       typeof cfg.recallPlannerMaxMemoryHints === "number" ? cfg.recallPlannerMaxMemoryHints : 24,
-    recallPlannerShadowMode: cfg.recallPlannerShadowMode === true,
-    recallPlannerTelemetryEnabled: cfg.recallPlannerTelemetryEnabled !== false,
+    recallPlannerShadowMode: coerceBooleanLike(cfg.recallPlannerShadowMode) ?? false,
+    recallPlannerTelemetryEnabled: coerceBooleanLike(cfg.recallPlannerTelemetryEnabled) ?? true,
     recallPlannerMaxQmdResultsMinimal:
       typeof cfg.recallPlannerMaxQmdResultsMinimal === "number"
         ? cfg.recallPlannerMaxQmdResultsMinimal

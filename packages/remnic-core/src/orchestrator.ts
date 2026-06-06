@@ -1149,6 +1149,7 @@ export async function resolveRecallModeDecisionAsync(
     config: PluginConfig;
     hints?: string[];
     llm?: FallbackLlmClient;
+    signal?: AbortSignal;
   },
 ): Promise<RecallModeDecision> {
   const heuristicDecision = resolveRecallModeDecision(options);
@@ -1164,6 +1165,7 @@ export async function resolveRecallModeDecisionAsync(
     options.hints,
     options.config,
     options.llm,
+    options.signal,
   );
 
   // Shadow mode: record what the LLM would have chosen but keep the heuristic
@@ -6522,6 +6524,7 @@ export class Orchestrator {
         : await resolveRecallModeDecisionAsync({
             ...recallModeDecisionOptions,
             config: this.config,
+            signal: options.abortSignal,
           });
     if (
       this.config.recallPlannerTelemetryEnabled &&

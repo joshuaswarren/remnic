@@ -163,6 +163,33 @@ test("attempts the call (and falls back) when a provider-qualified model overrid
   assert.equal(result.reason, "llm-empty");
 });
 
+test("an already-aborted recall short-circuits to the heuristic without an LLM call", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true, recallPlannerModel: "openai/gpt-5.5" });
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = stubLlm({ capturedOptions: captured, result: { mode: "full" } });
+  const ac = new AbortController();
+  ac.abort();
+
+  const result = await planRecallModeLLM("what did we decide?", undefined, config, llm, ac.signal);
+
+  assert.equal(captured.length, 0, "no LLM call when the recall is already aborted");
+  assert.equal(result.source, "heuristic-fallback");
+  assert.equal(result.reason, "aborted");
+  assert.equal(result.fallbackUsed, true);
+});
+
+test("forwards the abort signal into the LLM call (cancellation contract)", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true, recallPlannerModel: "openai/gpt-5.5" });
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = stubLlm({ capturedOptions: captured, result: { mode: "minimal" } });
+  const ac = new AbortController();
+
+  await planRecallModeLLM("check status", undefined, config, llm, ac.signal);
+
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0]?.signal, ac.signal, "recall abort signal must reach FallbackLlmClient");
+});
+
 test("empty prompts skip the LLM entirely", async () => {
   const config = parseConfig({ recallPlannerLlmEnabled: true });
   const captured: Array<Record<string, unknown>> = [];

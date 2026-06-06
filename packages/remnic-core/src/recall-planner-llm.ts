@@ -188,11 +188,19 @@ export async function planRecallModeLLM(
   hints: string[] | undefined,
   config: PluginConfig,
   llm?: FallbackLlmClient,
+  signal?: AbortSignal,
 ): Promise<RecallPlannerLlmResult> {
   const heuristicMode = planRecallMode(prompt);
 
   if (!config.recallPlannerLlmEnabled) {
     return heuristicResult(heuristicMode, "heuristic", "llm-disabled", 0, false);
+  }
+
+  // Participate in the recall cancellation contract: if the outer recall is
+  // already aborted (outer timeout / reset / session abort), don't start an LLM
+  // round-trip — fall back to the heuristic immediately (#1428 review).
+  if (signal?.aborted) {
+    return heuristicResult(heuristicMode, "heuristic-fallback", "aborted", 0, true);
   }
 
   const safePrompt = typeof prompt === "string" ? prompt.trim() : "";
@@ -208,7 +216,9 @@ export async function planRecallModeLLM(
       fallbackLlmRuntimeContextFromConfig(config),
     );
 
-  const options = resolveRecallPlannerLlmOptions(config);
+  // Forward the recall abort signal so an aborted/timed-out outer recall can
+  // cancel an in-flight planner call (FallbackLlmClient honors `signal`).
+  const options = { ...resolveRecallPlannerLlmOptions(config), signal };
 
   // Availability check uses the same routing options so plugin-mode / empty
   // chains short-circuit to the heuristic without a network attempt. `model`
@@ -262,6 +272,10 @@ export async function planRecallModeLLM(
     };
   } catch (err) {
     const latencyMs = Date.now() - start;
+    if (signal?.aborted) {
+      // Cancelled by the outer recall — expected, not an error worth warning on.
+      return heuristicResult(heuristicMode, "heuristic-fallback", "aborted", latencyMs, true);
+    }
     const message = err instanceof Error ? err.message : String(err);
     log.warn(`[recall-planner] LLM failed, falling back to heuristic: ${message}`);
     return heuristicResult(

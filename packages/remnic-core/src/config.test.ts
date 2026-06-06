@@ -84,6 +84,21 @@ test("parseConfig recallPlannerLlmEnabled defaults to false and coerces boolean-
   assert.equal(parseConfig({ recallPlannerLlmEnabled: "0" }).recallPlannerLlmEnabled, false);
 });
 
+test("parseConfig coerces boolean-like strings for all recallPlanner gates (issue #1367, gotcha #36)", () => {
+  // Rollout switches must honor string config from CLI/env surfaces.
+  assert.equal(parseConfig({ recallPlannerShadowMode: "true" }).recallPlannerShadowMode, true);
+  assert.equal(parseConfig({ recallPlannerShadowMode: "off" }).recallPlannerShadowMode, false);
+  assert.equal(parseConfig({}).recallPlannerShadowMode, false);
+
+  assert.equal(parseConfig({ recallPlannerTelemetryEnabled: "false" }).recallPlannerTelemetryEnabled, false);
+  assert.equal(parseConfig({}).recallPlannerTelemetryEnabled, true);
+
+  // The enable gate must be disableable via string "false" (the old `!== false`
+  // check treated "false" as truthy → could not disable).
+  assert.equal(parseConfig({ recallPlannerEnabled: "false" }).recallPlannerEnabled, false);
+  assert.equal(parseConfig({}).recallPlannerEnabled, true);
+});
+
 test("parseConfig dreaming.maxEntries=0 preserves the runtime disable switch", () => {
   const result = parseConfig({ dreaming: { maxEntries: 0 } });
   assert.equal(result.dreaming.maxEntries, 0);
