@@ -2,9 +2,14 @@ import type {
   ConsolidationObservation,
   MemoryFile,
   MemoryFrontmatter,
+  PluginConfig,
 } from "@remnic/core";
 import type { DreamEntry } from "@remnic/core/surfaces/dreams";
 import type { HeartbeatEntry } from "@remnic/core/surfaces/heartbeat";
+import {
+  type FallbackLlmOptions,
+  gatewayTaskChainOptions,
+} from "@remnic/core/fallback-llm";
 
 type StorageWriteOptions = {
   confidence?: number;
@@ -44,6 +49,55 @@ export interface DreamNarrativePlan {
   suggestedTags: string[];
   sessionLikeCount: number;
   memoryContext: string[];
+}
+
+/**
+ * How dream-narrative generation should reach an LLM.
+ * - `gateway`: route through FallbackLlmClient (so dreams work without a direct
+ *   OpenAI key — issue #1366). `options` carry the per-call model override and
+ *   the shared task chain; `hasExplicitModel` is true when
+ *   `dreaming.narrativeModel` supplied an explicit `model` override (in which
+ *   case the caller can skip the chain-only availability check, since
+ *   `FallbackLlmClient.isAvailable()` ignores the override).
+ * - `direct`: use the direct OpenAI Responses client.
+ * - `skip`: no LLM available; generation should be skipped.
+ */
+export type DreamNarrativeRoute =
+  | { kind: "gateway"; hasExplicitModel: boolean; options: FallbackLlmOptions }
+  | { kind: "direct" }
+  | { kind: "skip" };
+
+/**
+ * Decide how dream-narrative generation should reach an LLM. Keys on
+ * `modelSource` — not on the presence of `openaiApiKey` — so the routing gate
+ * stays identical to extraction/consolidation (gotcha #39). In gateway mode,
+ * `dreaming.narrativeModel` is tried first as an explicit override, then the
+ * shared task chain (`taskModelChain` → gateway default) provides fallbacks,
+ * exactly like every other background task (issue #1365). Issue #1366.
+ */
+export function resolveDreamNarrativeRoute(
+  config: Pick<
+    PluginConfig,
+    "modelSource" | "taskModelChain" | "gatewayAgentId" | "dreaming"
+  >,
+  directClientAvailable: boolean,
+): DreamNarrativeRoute {
+  if (config.modelSource === "gateway") {
+    const narrativeModel =
+      typeof config.dreaming.narrativeModel === "string"
+        ? config.dreaming.narrativeModel.trim()
+        : "";
+    const hasExplicitModel = narrativeModel.length > 0;
+    return {
+      kind: "gateway",
+      hasExplicitModel,
+      options: {
+        ...gatewayTaskChainOptions(config),
+        ...(hasExplicitModel ? { model: narrativeModel } : {}),
+      },
+    };
+  }
+  return directClientAvailable ? { kind: "direct" } : { kind: "skip" };
 }
 
 const DREAM_SURFACE_TYPE = "dream";

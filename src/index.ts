@@ -20,6 +20,10 @@ import { registerTools } from "./tools.js";
 import { registerLcmTools } from "@remnic/core/lcm/index";
 import { estimateTokens as estimateLcmTokens } from "@remnic/core/lcm/archive";
 import { registerCli } from "@remnic/core/cli";
+import {
+  FallbackLlmClient,
+  fallbackLlmRuntimeContextFromConfig,
+} from "@remnic/core/fallback-llm";
 import { objectiveStateStoreOverrideForNamespace } from "./objective-state.js";
 import { recordObjectiveStateSnapshotsFromAgentMessages } from "./objective-state-writers.js";
 import { probeQmdAvailability } from "./qmd-availability-probe.js";
@@ -52,6 +56,7 @@ import {
   matchesDelimitedPhrase,
   parseDreamNarrativeResponse,
   planDreamEntryFromConsolidation,
+  resolveDreamNarrativeRoute,
   syncDreamSurfaceEntries,
   syncHeartbeatOutcomeLinks,
   syncHeartbeatSurfaceEntries,
@@ -1452,8 +1457,14 @@ const pluginDefinition = {
       observation: ConsolidationObservation,
     ): Promise<void> {
       if (!cfg.dreaming.enabled) return;
-      if (!dreamNarrativeClient) {
-        log.debug("dreaming narrative skipped: direct OpenAI Responses client unavailable");
+      // Route the same way every other background LLM task does: gateway mode
+      // goes through FallbackLlmClient (so dreams work without a direct OpenAI
+      // key, issue #1366), otherwise use the direct OpenAI Responses client.
+      const route = resolveDreamNarrativeRoute(cfg, !!dreamNarrativeClient);
+      if (route.kind === "skip") {
+        log.debug(
+          "dreaming narrative skipped: no LLM available (set openaiApiKey or use modelSource=gateway)",
+        );
         return;
       }
       const journalPath = resolveDreamJournalPath();
@@ -1471,25 +1482,50 @@ const pluginDefinition = {
           : cfg.dreaming.narrativePromptStyle === "analytical"
             ? "Write like an analytical retrospective with explicit patterns."
             : "Write like a reflective narrative that notices patterns and emotional tone.";
+      const instructions =
+        "You write short reflective dream-journal entries for an AI memory system. " +
+        `${styleInstruction} Return exactly this structure:\n` +
+        "Title: <short title>\nTags: #tag #tag\nBody:\n<2-4 concise paragraphs>";
+      const input =
+        `The last consolidation spanned ${plan.sessionLikeCount} session-like windows.\n` +
+        `Keep the reflection grounded in the evidence below.\n\n` +
+        plan.memoryContext.join("\n");
       let rawNarrative = "";
       try {
-        const response = await dreamNarrativeClient.responses.create({
-          model: cfg.dreaming.narrativeModel ?? cfg.model,
-          instructions:
-            "You write short reflective dream-journal entries for an AI memory system. " +
-            `${styleInstruction} Return exactly this structure:\n` +
-            "Title: <short title>\nTags: #tag #tag\nBody:\n<2-4 concise paragraphs>",
-          input:
-            `The last consolidation spanned ${plan.sessionLikeCount} session-like windows.\n` +
-            `Keep the reflection grounded in the evidence below.\n\n` +
-            plan.memoryContext.join("\n"),
-          temperature: 0.4,
-          max_output_tokens: 400,
-        });
-        rawNarrative =
-          typeof response.output_text === "string"
-            ? response.output_text
-            : JSON.stringify(response.output_text ?? "");
+        if (route.kind === "gateway") {
+          const llm = new FallbackLlmClient(
+            cfg.gatewayConfig,
+            fallbackLlmRuntimeContextFromConfig(cfg),
+          );
+          // isAvailable() ignores the per-call model override, so an explicit
+          // dreaming.narrativeModel counts as availability on its own.
+          if (!route.hasExplicitModel && !llm.isAvailable(route.options)) {
+            log.debug(
+              "dreaming narrative skipped: no gateway model configured (set dreaming.narrativeModel or taskModelChain)",
+            );
+            return;
+          }
+          const response = await llm.chatCompletion(
+            [
+              { role: "system", content: instructions },
+              { role: "user", content: input },
+            ],
+            { temperature: 0.4, maxTokens: 400, ...route.options },
+          );
+          rawNarrative = response?.content ?? "";
+        } else {
+          const response = await dreamNarrativeClient!.responses.create({
+            model: cfg.dreaming.narrativeModel ?? cfg.model,
+            instructions,
+            input,
+            temperature: 0.4,
+            max_output_tokens: 400,
+          });
+          rawNarrative =
+            typeof response.output_text === "string"
+              ? response.output_text
+              : JSON.stringify(response.output_text ?? "");
+        }
       } catch (error) {
         log.warn(`dreaming narrative generation failed: ${String(error)}`);
         return;

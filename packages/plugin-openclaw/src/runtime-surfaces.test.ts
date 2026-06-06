@@ -5,10 +5,12 @@ import type {
   ConsolidationObservation,
   MemoryFile,
   MemoryFrontmatter,
+  PluginConfig,
 } from "@remnic/core";
 import {
   parseDreamNarrativeResponse,
   planDreamEntryFromConsolidation,
+  resolveDreamNarrativeRoute,
   syncDreamSurfaceEntries,
   syncHeartbeatOutcomeLinks,
   syncHeartbeatSurfaceEntries,
@@ -1407,4 +1409,131 @@ test("parseDreamNarrativeResponse extracts title, body, and tags with fallback t
     body: "Only trailing metadata should become the returned tags once.",
     tags: ["trailing-tag"],
   });
+});
+
+type DreamRouteConfig = Pick<
+  PluginConfig,
+  "modelSource" | "taskModelChain" | "gatewayAgentId" | "dreaming"
+>;
+
+function dreamRouteConfig(overrides: {
+  modelSource: "plugin" | "gateway";
+  narrativeModel?: string | null;
+  taskModelChain?: PluginConfig["taskModelChain"];
+  gatewayAgentId?: string;
+}): DreamRouteConfig {
+  const config: DreamRouteConfig = {
+    modelSource: overrides.modelSource,
+    // gatewayAgentId is a required string (default ""); an empty value makes
+    // gatewayTaskChainOptions fall through to the default chain.
+    gatewayAgentId: overrides.gatewayAgentId ?? "",
+    // Only narrativeModel is read by resolveDreamNarrativeRoute.
+    dreaming: {
+      narrativeModel: overrides.narrativeModel ?? null,
+    } as PluginConfig["dreaming"],
+  };
+  // Assign the optional task chain only when defined: under
+  // exactOptionalPropertyTypes it rejects an explicit `undefined` value.
+  if (overrides.taskModelChain !== undefined) {
+    config.taskModelChain = overrides.taskModelChain;
+  }
+  return config;
+}
+
+test("resolveDreamNarrativeRoute uses the direct client in plugin mode when available", () => {
+  assert.deepEqual(
+    resolveDreamNarrativeRoute(dreamRouteConfig({ modelSource: "plugin" }), true),
+    { kind: "direct" },
+  );
+});
+
+test("resolveDreamNarrativeRoute skips in plugin mode without a direct client (issue #1366 unchanged)", () => {
+  assert.deepEqual(
+    resolveDreamNarrativeRoute(dreamRouteConfig({ modelSource: "plugin" }), false),
+    { kind: "skip" },
+  );
+});
+
+test("resolveDreamNarrativeRoute routes through the gateway without a direct OpenAI key (issue #1366)", () => {
+  // The core fix: gateway mode never depends on the direct client, so dreams
+  // work for gateway-only operators (ZAI/Fireworks/OpenRouter, no OpenAI key).
+  const route = resolveDreamNarrativeRoute(
+    dreamRouteConfig({
+      modelSource: "gateway",
+      narrativeModel: "zai/glm-4.7-flash",
+    }),
+    false,
+  );
+  assert.equal(route.kind, "gateway");
+  if (route.kind !== "gateway") return;
+  assert.equal(route.hasExplicitModel, true);
+  assert.equal(route.options.model, "zai/glm-4.7-flash");
+});
+
+test("resolveDreamNarrativeRoute layers narrativeModel over the task chain in gateway mode (#1365)", () => {
+  const route = resolveDreamNarrativeRoute(
+    dreamRouteConfig({
+      modelSource: "gateway",
+      narrativeModel: "zai/glm-4.7-flash",
+      taskModelChain: { primary: "fireworks/x/glm-5p1" },
+    }),
+    true, // direct client present, but gateway mode still wins
+  );
+  assert.equal(route.kind, "gateway");
+  if (route.kind !== "gateway") return;
+  assert.equal(route.hasExplicitModel, true);
+  // narrativeModel is the explicit override; taskModelChain supplies fallbacks.
+  assert.equal(route.options.model, "zai/glm-4.7-flash");
+  assert.deepEqual(route.options.modelChain, { primary: "fireworks/x/glm-5p1" });
+});
+
+test("resolveDreamNarrativeRoute falls back to the task chain when no narrativeModel is set", () => {
+  const route = resolveDreamNarrativeRoute(
+    dreamRouteConfig({
+      modelSource: "gateway",
+      taskModelChain: { primary: "fireworks/x/glm-5p1" },
+    }),
+    false,
+  );
+  assert.equal(route.kind, "gateway");
+  if (route.kind !== "gateway") return;
+  assert.equal(route.hasExplicitModel, false);
+  assert.equal(route.options.model, undefined);
+  assert.deepEqual(route.options.modelChain, { primary: "fireworks/x/glm-5p1" });
+});
+
+test("resolveDreamNarrativeRoute uses the gateway agent persona when that is all that is configured", () => {
+  const route = resolveDreamNarrativeRoute(
+    dreamRouteConfig({ modelSource: "gateway", gatewayAgentId: "dreamer" }),
+    false,
+  );
+  assert.equal(route.kind, "gateway");
+  if (route.kind !== "gateway") return;
+  assert.equal(route.hasExplicitModel, false);
+  assert.equal(route.options.agentId, "dreamer");
+  assert.equal(route.options.model, undefined);
+});
+
+test("resolveDreamNarrativeRoute leaves gateway options empty when nothing is configured", () => {
+  // hasExplicitModel false + empty options → the caller's isAvailable() gate
+  // decides whether to skip.
+  const route = resolveDreamNarrativeRoute(
+    dreamRouteConfig({ modelSource: "gateway" }),
+    false,
+  );
+  assert.equal(route.kind, "gateway");
+  if (route.kind !== "gateway") return;
+  assert.equal(route.hasExplicitModel, false);
+  assert.deepEqual(route.options, {});
+});
+
+test("resolveDreamNarrativeRoute treats a blank narrativeModel as no explicit model", () => {
+  const route = resolveDreamNarrativeRoute(
+    dreamRouteConfig({ modelSource: "gateway", narrativeModel: "   " }),
+    false,
+  );
+  assert.equal(route.kind, "gateway");
+  if (route.kind !== "gateway") return;
+  assert.equal(route.hasExplicitModel, false);
+  assert.equal(route.options.model, undefined);
 });
