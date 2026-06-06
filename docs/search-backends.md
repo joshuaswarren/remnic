@@ -155,6 +155,20 @@ If you run QMD models on CPU and want to trade some recall for speed, lower the 
 }
 ```
 
+`qmdSearchStrategy` and reranking are **orthogonal knobs** — `qmdSearchStrategy`
+chooses which retrieval legs run, while `qmdQueryRerankEnabled` controls QMD's
+reranker model pass, and reranking stays **on by default for every strategy**
+(including `lex`) so default behavior is never silently reduced. For the absolute
+lowest-latency BM25 path on CPU, pair `lex` with the reranker off — this skips the
+extra reranker-model inference on top of the BM25-only retrieval:
+
+```jsonc
+{
+  "qmdSearchStrategy": "lex",
+  "qmdQueryRerankEnabled": false  // skip the reranker model pass for max speed
+}
+```
+
 When the daemon is **disabled** (`qmdDaemonEnabled: false`), Remnic falls back to a
 `qmd query` subprocess, which runs LLM query expansion + reranking. On very large
 collections that can be slow; set `qmdSubprocessStrategy: "search"` to use BM25-only
