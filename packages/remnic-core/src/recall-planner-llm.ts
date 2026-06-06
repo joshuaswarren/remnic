@@ -125,6 +125,20 @@ function buildMessages(
  *   implicit gateway default appended by the client.
  * - In plugin mode only the explicit model + gateway providers apply.
  */
+/**
+ * A `recallPlannerModel` value is only usable as a FallbackLlmClient `model`
+ * override when it is provider-qualified (`provider/model`). The client's
+ * `parseModelString` rejects bare names, so forwarding a bare value (e.g. the
+ * legacy default `"gpt-5.5"`) would log "invalid model format" on every call
+ * and never resolve. Bare values are dropped so routing falls through to the
+ * gateway chain / agent / default instead (issue #1367 review on PR #1428).
+ */
+function qualifiedPlannerModel(recallPlannerModel: string | undefined): string | undefined {
+  if (typeof recallPlannerModel !== "string") return undefined;
+  const trimmed = recallPlannerModel.trim();
+  return trimmed.includes("/") ? trimmed : undefined;
+}
+
 export function resolveRecallPlannerLlmOptions(
   config: Pick<
     PluginConfig,
@@ -133,13 +147,9 @@ export function resolveRecallPlannerLlmOptions(
 ): FallbackLlmOptions {
   const chainOptions =
     config.modelSource === "gateway" ? gatewayTaskChainOptions(config) : {};
-  const model =
-    typeof config.recallPlannerModel === "string" && config.recallPlannerModel.trim().length > 0
-      ? config.recallPlannerModel.trim()
-      : undefined;
   return {
     ...chainOptions,
-    model,
+    model: qualifiedPlannerModel(config.recallPlannerModel),
     temperature: 0,
     maxTokens: 64,
     timeoutMs:
@@ -148,6 +158,11 @@ export function resolveRecallPlannerLlmOptions(
         : 1500,
   };
 }
+
+// One-time warning per distinct routing signature so an opted-in operator with
+// no usable model learns why planning silently uses the heuristic, without
+// spamming a line on every recall.
+const warnedNoRoutingSignatures = new Set<string>();
 
 function heuristicResult(
   heuristicMode: RecallPlanMode,
@@ -196,13 +211,27 @@ export async function planRecallModeLLM(
   const options = resolveRecallPlannerLlmOptions(config);
 
   // Availability check uses the same routing options so plugin-mode / empty
-  // chains short-circuit to the heuristic without a network attempt.
+  // chains short-circuit to the heuristic without a network attempt. `model`
+  // here is already provider-qualified (bare names were dropped), so a present
+  // model means the override is genuinely routable.
   const availabilityProbe = {
     agentId: options.agentId,
     modelChain: options.modelChain,
   };
   if (!client.isAvailable(availabilityProbe) && !options.model) {
-    return heuristicResult(heuristicMode, "heuristic-fallback", "llm-unavailable", 0, true);
+    // Opted-in but nothing routable resolves (e.g. plugin mode with the bare
+    // default `recallPlannerModel` and no gateway chain). Warn once so it's not
+    // a silent no-op, then fall back to the heuristic.
+    const signature = `${config.modelSource}:${config.recallPlannerModel ?? ""}`;
+    if (!warnedNoRoutingSignatures.has(signature)) {
+      warnedNoRoutingSignatures.add(signature);
+      log.warn(
+        "[recall-planner] recallPlannerLlmEnabled is on but no routable model resolves — " +
+          "set recallPlannerModel to a 'provider/model' value or configure a gateway model chain. " +
+          "Falling back to the heuristic planner.",
+      );
+    }
+    return heuristicResult(heuristicMode, "heuristic-fallback", "llm-no-model", 0, true);
   }
 
   const clampedHints = clampHints(hints, config.recallPlannerMaxMemoryHints);

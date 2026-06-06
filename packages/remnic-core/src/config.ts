@@ -2844,8 +2844,10 @@ export function parseConfig(raw: unknown): PluginConfig {
     recallPlannerEnabled: cfg.recallPlannerEnabled !== false,
     // Issue #1367 / Option C: LLM-based recall planning is opt-in so the
     // default recall path stays heuristic (no added latency / LLM call unless
-    // the operator asks for it — gotcha #30).
-    recallPlannerLlmEnabled: cfg.recallPlannerLlmEnabled === true,
+    // the operator asks for it — gotcha #30). Coerce boolean-like strings so
+    // CLI/env surfaces (`--config recallPlannerLlmEnabled=true`) actually
+    // enable it (gotcha #36); defaults off.
+    recallPlannerLlmEnabled: coerceBooleanLike(cfg.recallPlannerLlmEnabled) ?? false,
     recallPlannerModel:
       typeof cfg.recallPlannerModel === "string" && cfg.recallPlannerModel.trim().length > 0
         ? cfg.recallPlannerModel.trim()

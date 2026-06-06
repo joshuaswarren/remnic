@@ -130,11 +130,12 @@ test("falls back to heuristic when the LLM returns no parseable result", async (
   assert.equal(result.reason, "llm-empty");
 });
 
-test("falls back to heuristic when no model is available and no explicit model override", async () => {
-  // parseConfig always defaults recallPlannerModel to gpt-5.5, so to exercise
-  // the "unavailable" guard (no chain AND no model override) we clear the model
-  // explicitly — mirrors a hand-built config with no planner model.
-  const config = { ...parseConfig({ recallPlannerLlmEnabled: true }), recallPlannerModel: "" };
+test("falls back without a network attempt when the chain is empty and the model is bare (default gpt-5.5)", async () => {
+  // The legacy default recallPlannerModel "gpt-5.5" is bare (no provider/),
+  // which FallbackLlmClient cannot resolve — so with no gateway chain there is
+  // nothing routable and the planner must short-circuit to the heuristic
+  // (issue #1367 review on PR #1428), not log an invalid-model warning per call.
+  const config = parseConfig({ recallPlannerLlmEnabled: true });
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ available: false, capturedOptions: captured, result: { mode: "full" } });
 
@@ -143,19 +144,21 @@ test("falls back to heuristic when no model is available and no explicit model o
   assert.equal(captured.length, 0, "no network attempt when nothing is routable");
   assert.equal(result.source, "heuristic-fallback");
   assert.equal(result.fallbackUsed, true);
-  assert.equal(result.reason, "llm-unavailable");
+  assert.equal(result.reason, "llm-no-model");
 });
 
-test("attempts the call (and falls back) when a model override is set even if the chain is empty", async () => {
-  // recallPlannerModel defaults to gpt-5.5, so the override may still resolve to
-  // a provider the chain probe doesn't know about — we attempt, then fall back.
-  const config = parseConfig({ recallPlannerLlmEnabled: true });
+test("attempts the call (and falls back) when a provider-qualified model override is set even if the chain is empty", async () => {
+  // A qualified `provider/model` override is genuinely routable, so we attempt
+  // it even when the chain probe reports unavailable, then fall back on a null
+  // response.
+  const config = parseConfig({ recallPlannerLlmEnabled: true, recallPlannerModel: "openai/gpt-5.5" });
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ available: false, capturedOptions: captured, result: null });
 
   const result = await planRecallModeLLM("anything", undefined, config, llm);
 
-  assert.equal(captured.length, 1, "model override → still attempt the call");
+  assert.equal(captured.length, 1, "qualified model override → still attempt the call");
+  assert.equal(captured[0]?.model, "openai/gpt-5.5");
   assert.equal(result.source, "heuristic-fallback");
   assert.equal(result.reason, "llm-empty");
 });
@@ -178,4 +181,17 @@ test("resolveRecallPlannerLlmOptions clamps timeout and sets deterministic decod
   assert.equal(options.temperature, 0);
   assert.equal(options.maxTokens, 64);
   assert.equal(options.timeoutMs, 1500, "non-positive timeout falls back to 1500");
+});
+
+test("resolveRecallPlannerLlmOptions drops bare model names but keeps provider-qualified ones", () => {
+  // Bare "gpt-5.5" is unresolvable by FallbackLlmClient → dropped (routing falls
+  // through to the chain); a qualified value is forwarded as the override.
+  const bare = resolveRecallPlannerLlmOptions(
+    parseConfig({ recallPlannerLlmEnabled: true, recallPlannerModel: "gpt-5.5" }),
+  );
+  assert.equal(bare.model, undefined);
+  const qualified = resolveRecallPlannerLlmOptions(
+    parseConfig({ recallPlannerLlmEnabled: true, recallPlannerModel: "anthropic/claude-haiku-4-5" }),
+  );
+  assert.equal(qualified.model, "anthropic/claude-haiku-4-5");
 });

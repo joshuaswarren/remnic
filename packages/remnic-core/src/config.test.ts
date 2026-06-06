@@ -72,11 +72,16 @@ test("parseConfig codex missing entirely → installExtension defaults to true",
   assert.equal(result.codex.installExtension, true);
 });
 
-test("parseConfig recallPlannerLlmEnabled defaults to false (opt-in, issue #1367)", () => {
+test("parseConfig recallPlannerLlmEnabled defaults to false and coerces boolean-like strings (opt-in, issue #1367)", () => {
   assert.equal(parseConfig({}).recallPlannerLlmEnabled, false);
   assert.equal(parseConfig({ recallPlannerLlmEnabled: true }).recallPlannerLlmEnabled, true);
-  // Only an explicit boolean true enables it; truthy strings must not.
-  assert.equal(parseConfig({ recallPlannerLlmEnabled: "true" }).recallPlannerLlmEnabled, false);
+  // CLI/env surfaces pass strings — these must enable the gate (gotcha #36).
+  assert.equal(parseConfig({ recallPlannerLlmEnabled: "true" }).recallPlannerLlmEnabled, true);
+  assert.equal(parseConfig({ recallPlannerLlmEnabled: "1" }).recallPlannerLlmEnabled, true);
+  assert.equal(parseConfig({ recallPlannerLlmEnabled: "on" }).recallPlannerLlmEnabled, true);
+  // Boolean-like falses and junk stay off.
+  assert.equal(parseConfig({ recallPlannerLlmEnabled: "false" }).recallPlannerLlmEnabled, false);
+  assert.equal(parseConfig({ recallPlannerLlmEnabled: "0" }).recallPlannerLlmEnabled, false);
 });
 
 test("parseConfig dreaming.maxEntries=0 preserves the runtime disable switch", () => {

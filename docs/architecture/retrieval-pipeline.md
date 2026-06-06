@@ -81,6 +81,7 @@ Config: `recallPlannerEnabled` (default `true`).
 By default the mode above is chosen by a fast regex heuristic (`planRecallMode()` in `intent.ts`). Operators can opt into **LLM-based planning** with `recallPlannerLlmEnabled: true` (requires `recallPlannerEnabled`). The LLM classifier:
 
 - Routes through the gateway/fallback chain, so it is **provider-agnostic** — OpenAI, Anthropic, Ollama, Codex, or gateway agent personas all work. The configured `recallPlannerModel` is tried first; `taskModelChain` / gateway defaults are resilient fallbacks.
+  - `recallPlannerModel` must be a **`provider/model`** string (e.g. `openai/gpt-5.5`, `anthropic/claude-haiku-4-5`) — a bare model name cannot be resolved and is ignored (routing then relies on the gateway chain). The legacy default `gpt-5.5` is bare, so to enable LLM planning you must either set a `provider/model` value **or** have a gateway model chain / agent persona configured. If you opt in but nothing routable resolves, the planner logs a one-time warning and stays on the heuristic.
 - Is bounded by `recallPlannerTimeoutMs` and **always falls back to the heuristic** on timeout, error, empty response, or an unavailable backend — recall never fails because of the planner.
 - Honors `recallPlannerShadowMode` (run the LLM for comparison/telemetry but keep the heuristic's effective decision) and `recallPlannerTelemetryEnabled` (log planned-vs-heuristic mode, model, latency, and fallback).
 - Is skipped entirely when the caller forces a `mode`, when the planner is disabled, or for empty prompts.
