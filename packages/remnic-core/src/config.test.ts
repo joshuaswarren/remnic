@@ -116,6 +116,48 @@ test("parseConfig initGateTimeoutMs defaults to OpenClaw cold-start budget", () 
   assert.equal(result.initGateTimeoutMs, 30_000);
 });
 
+test("parseConfig qmdSearchStrategy defaults to hybrid and validates the enum", () => {
+  // Default must equal the historical lex+vec+hyde behavior. Issue #1335.
+  assert.equal(parseConfig({}).qmdSearchStrategy, "hybrid");
+  assert.equal(parseConfig({ qmdSearchStrategy: "hybrid" }).qmdSearchStrategy, "hybrid");
+  assert.equal(parseConfig({ qmdSearchStrategy: "lex-vec" }).qmdSearchStrategy, "lex-vec");
+  assert.equal(parseConfig({ qmdSearchStrategy: "lex" }).qmdSearchStrategy, "lex");
+  assert.equal(parseConfig({ qmdSearchStrategy: "LEX" }).qmdSearchStrategy, "lex");
+
+  for (const value of ["hyde", "vec", "bm25", "", 42]) {
+    assert.throws(
+      () => parseConfig({ qmdSearchStrategy: value }),
+      /qmdSearchStrategy must be one of/,
+      `invalid qmdSearchStrategy ${String(value)} should throw`,
+    );
+  }
+});
+
+test("parseConfig qmdSubprocessStrategy defaults to query (honors QMD query intent)", () => {
+  // Default must remain `qmd query` (LLM expansion + rerank) per CLAUDE.md gotcha #7.
+  assert.equal(parseConfig({}).qmdSubprocessStrategy, "query");
+  assert.equal(parseConfig({ qmdSubprocessStrategy: "query" }).qmdSubprocessStrategy, "query");
+  assert.equal(parseConfig({ qmdSubprocessStrategy: "search" }).qmdSubprocessStrategy, "search");
+  assert.equal(parseConfig({ qmdSubprocessStrategy: "SEARCH" }).qmdSubprocessStrategy, "search");
+
+  for (const value of ["bm25", "vsearch", "", 7]) {
+    assert.throws(
+      () => parseConfig({ qmdSubprocessStrategy: value }),
+      /qmdSubprocessStrategy must be one of/,
+      `invalid qmdSubprocessStrategy ${String(value)} should throw`,
+    );
+  }
+});
+
+test("parseConfig qmdDaemonTimeoutMs defaults to 8000 and clamps to bounds", () => {
+  assert.equal(parseConfig({}).qmdDaemonTimeoutMs, 8_000);
+  assert.equal(parseConfig({ qmdDaemonTimeoutMs: 20_000 }).qmdDaemonTimeoutMs, 20_000);
+  assert.equal(parseConfig({ qmdDaemonTimeoutMs: "20000" }).qmdDaemonTimeoutMs, 20_000);
+  // Below floor clamps up; above ceiling clamps down.
+  assert.equal(parseConfig({ qmdDaemonTimeoutMs: 100 }).qmdDaemonTimeoutMs, 1_000);
+  assert.equal(parseConfig({ qmdDaemonTimeoutMs: 999_999 }).qmdDaemonTimeoutMs, 120_000);
+});
+
 test("parseConfig initGateTimeoutMs accepts CLI-style numeric strings", () => {
   const result = parseConfig({ initGateTimeoutMs: "45000" });
   assert.equal(result.initGateTimeoutMs, 45_000);

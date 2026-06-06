@@ -139,6 +139,38 @@ function parseQmdChunkStrategy(value: unknown): "auto" | "regex" {
   throw new Error(`qmdChunkStrategy must be "auto" or "regex"; got ${JSON.stringify(value)}`);
 }
 
+// Issue #1335. Default "hybrid" preserves the historical lex+vec+hyde daemon plan.
+function parseQmdSearchStrategy(value: unknown): "hybrid" | "lex-vec" | "lex" {
+  if (value === undefined || value === null) return "hybrid";
+  if (typeof value !== "string") {
+    throw new Error(
+      `qmdSearchStrategy must be one of "hybrid", "lex-vec", or "lex"; got ${JSON.stringify(value)}`,
+    );
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "hybrid" || normalized === "lex-vec" || normalized === "lex") {
+    return normalized;
+  }
+  throw new Error(
+    `qmdSearchStrategy must be one of "hybrid", "lex-vec", or "lex"; got ${JSON.stringify(value)}`,
+  );
+}
+
+// Issue #1335. Default "query" keeps `qmd query` (LLM expansion + rerank) per gotcha #7.
+function parseQmdSubprocessStrategy(value: unknown): "query" | "search" {
+  if (value === undefined || value === null) return "query";
+  if (typeof value !== "string") {
+    throw new Error(
+      `qmdSubprocessStrategy must be one of "query" or "search"; got ${JSON.stringify(value)}`,
+    );
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "query" || normalized === "search") return normalized;
+  throw new Error(
+    `qmdSubprocessStrategy must be one of "query" or "search"; got ${JSON.stringify(value)}`,
+  );
+}
+
 function parseOptionalNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
@@ -1379,6 +1411,9 @@ export function parseConfig(raw: unknown): PluginConfig {
     qmdChunkStrategy: parseQmdChunkStrategy(cfg.qmdChunkStrategy),
     qmdCandidateLimit: parsePositiveInteger(cfg.qmdCandidateLimit, "qmdCandidateLimit"),
     qmdQueryRerankEnabled: coerceBooleanLike(cfg.qmdQueryRerankEnabled) ?? true,
+    qmdSearchStrategy: parseQmdSearchStrategy(cfg.qmdSearchStrategy),
+    qmdSubprocessStrategy: parseQmdSubprocessStrategy(cfg.qmdSubprocessStrategy),
+    qmdDaemonTimeoutMs: parseBoundedIntegerMs(cfg.qmdDaemonTimeoutMs, 8_000, 1_000, 120_000),
     qmdIndexName: parseOptionalNonEmptyString(cfg.qmdIndexName),
     qmdForceCpu: coerceBooleanLike(cfg.qmdForceCpu) ?? false,
     qmdGpuBackend: parseQmdGpuBackend(cfg.qmdGpuBackend),

@@ -105,6 +105,9 @@ function qmdOptions(config: PluginConfig): QmdClientOptions {
     qmdEmbedModel: config.qmdEmbedModel,
     qmdRerankModel: config.qmdRerankModel,
     qmdGenerateModel: config.qmdGenerateModel,
+    qmdSearchStrategy: config.qmdSearchStrategy,
+    qmdSubprocessStrategy: config.qmdSubprocessStrategy,
+    qmdDaemonTimeoutMs: config.qmdDaemonTimeoutMs,
   };
 }
 

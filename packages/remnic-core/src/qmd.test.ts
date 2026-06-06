@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { parseConfig } from "./config.js";
 import {
+  buildDefaultStructuredSearches,
   getQmdCommandName,
   getQmdPostInstallProbeTargets,
   parseQmdVersionOutput,
@@ -65,6 +66,59 @@ test("resolveQmdCapabilities gates qmd 2.5 features by installed version", () =>
 
   const v201 = resolveQmdCapabilities("qmd 2.0.1");
   assert.equal(v201.legacySkillInstall, true);
+});
+
+test("buildDefaultStructuredSearches defaults to the full hybrid lex+vec+hyde plan", () => {
+  // Default (no strategy argument) must preserve historical behavior so an
+  // upgrade never silently drops vector/HyDE recall. Issue #1335.
+  const searches = buildDefaultStructuredSearches("hermes deployment");
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["lex", "vec", "hyde"],
+  );
+});
+
+test("buildDefaultStructuredSearches honors the hybrid strategy explicitly", () => {
+  const searches = buildDefaultStructuredSearches("hermes deployment", undefined, "hybrid");
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["lex", "vec", "hyde"],
+  );
+});
+
+test("buildDefaultStructuredSearches lex-vec strategy drops the expensive HyDE leg", () => {
+  const searches = buildDefaultStructuredSearches("hermes deployment", undefined, "lex-vec");
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["lex", "vec"],
+  );
+});
+
+test("buildDefaultStructuredSearches lex strategy is BM25-only", () => {
+  const searches = buildDefaultStructuredSearches("hermes deployment", undefined, "lex");
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["lex"],
+  );
+});
+
+test("buildDefaultStructuredSearches lets an explicit per-call override win over the strategy", () => {
+  // Per-call structuredSearches override must still take precedence regardless
+  // of the configured default strategy.
+  const searches = buildDefaultStructuredSearches(
+    "hermes deployment",
+    { structuredSearches: [{ type: "vec", query: "hermes deployment" }] },
+    "lex",
+  );
+  assert.deepEqual(
+    searches.map((s) => s.type),
+    ["vec"],
+  );
+});
+
+test("buildDefaultStructuredSearches returns empty for blank queries under any strategy", () => {
+  assert.deepEqual(buildDefaultStructuredSearches("   ", undefined, "hybrid"), []);
+  assert.deepEqual(buildDefaultStructuredSearches("   ", undefined, "lex"), []);
 });
 
 test("shouldAutoUpgradeQmd only upgrades below Remnic supported version", () => {

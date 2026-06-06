@@ -121,6 +121,50 @@ Engram automatically prefers the shared MCP session when available and falls bac
 | `qmdChunkStrategy` | `auto` | Forward QMD's AST-aware chunk strategy when supported |
 | `qmdCandidateLimit` | `(none)` | Optional QMD candidate limit forwarded when supported |
 | `qmdQueryRerankEnabled` | `true` | Set `false` to pass QMD's rerank-disable flag when supported |
+| `qmdSearchStrategy` | `hybrid` | Daemon search plan: `hybrid` (lex+vec+hyde), `lex-vec`, or `lex`. See tuning note below |
+| `qmdSubprocessStrategy` | `query` | CLI fallback command: `query` (LLM expansion + rerank) or `search` (BM25-only) |
+| `qmdDaemonTimeoutMs` | `8000` | Per-call daemon search timeout in ms (1000–120000) |
+
+### Tuning daemon latency on CPU-only models
+
+By design, each daemon search runs **three** sub-queries in one request so QMD can
+fuse and rerank across all of them:
+
+| Sub-query | Models used | Relative cost (CPU-only) |
+|-----------|-------------|--------------------------|
+| `lex` | none (BM25) | fast (~200ms) |
+| `vec` | embedding | medium (~3–4s) |
+| `hyde` | generate **+** embedding | slow (~8–12s) |
+
+This is why a raw `qmd search "..."` (BM25-only) returns in ~200ms while a full
+Remnic recall through the daemon can take many seconds on CPU — the daemon is doing
+strictly more work, not adding overhead. The default `hybrid` plan maximizes recall
+quality and is unchanged.
+
+If you run QMD models on CPU and want to trade some recall for speed, lower the plan:
+
+```jsonc
+{
+  // Drop only the expensive HyDE generate leg (keeps BM25 + vector):
+  "qmdSearchStrategy": "lex-vec",
+  // …or BM25-only for the fastest possible recall:
+  // "qmdSearchStrategy": "lex",
+
+  // Give CPU-only HyDE more headroom before the daemon times out:
+  "qmdDaemonTimeoutMs": 20000
+}
+```
+
+When the daemon is **disabled** (`qmdDaemonEnabled: false`), Remnic falls back to a
+`qmd query` subprocess, which runs LLM query expansion + reranking. On very large
+collections that can be slow; set `qmdSubprocessStrategy: "search"` to use BM25-only
+`qmd search` instead. This is faster but **drops** expansion + reranking, so it stays
+opt-in and `query` remains the default. (See issue #1335.)
+
+> **Why `qmd query` and not `qmd search` by default?** `qmd query` performs the LLM
+> query expansion + reranking that Remnic relies on (Remnic disables its own rerank
+> because QMD handles it). Switching the default to `qmd search` would silently remove
+> that capability, so it is gated behind `qmdSubprocessStrategy` instead.
 
 ## Orama
 

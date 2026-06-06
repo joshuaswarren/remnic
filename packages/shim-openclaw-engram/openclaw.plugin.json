@@ -314,6 +314,32 @@
         "default": true,
         "description": "When false, ask supported QMD versions to skip the built-in rerank step"
       },
+      "qmdSearchStrategy": {
+        "type": "string",
+        "enum": [
+          "hybrid",
+          "lex-vec",
+          "lex"
+        ],
+        "default": "hybrid",
+        "description": "Daemon search plan. 'hybrid' (default) runs lex+vec+hyde for best recall; 'lex-vec' drops the expensive HyDE generate leg; 'lex' is BM25-only (fastest). Lower tiers trade recall for latency on CPU-only models. Default preserves existing behavior (issue #1335)."
+      },
+      "qmdSubprocessStrategy": {
+        "type": "string",
+        "enum": [
+          "query",
+          "search"
+        ],
+        "default": "query",
+        "description": "Command for the QMD CLI subprocess fallback, used only when the daemon is unavailable. 'query' (default) keeps LLM query expansion + rerank; 'search' is BM25-only and faster on very large collections but loses expansion/rerank. Default preserves existing behavior (issue #1335)."
+      },
+      "qmdDaemonTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 120000,
+        "default": 8000,
+        "description": "Per-call timeout (ms) for QMD daemon searches. Default 8000; raise (e.g. 20000) to give CPU-only HyDE queries more headroom before the daemon call times out (issue #1335)."
+      },
       "qmdIndexName": {
         "type": "string",
         "description": "Optional QMD named index forwarded as qmd --index <name> when supported. Leave unset during upgrades unless existing QMD data already lives in that named index."
@@ -5036,6 +5062,23 @@
     "qmdQueryRerankEnabled": {
       "label": "QMD Query Rerank",
       "advanced": true
+    },
+    "qmdSearchStrategy": {
+      "label": "QMD Search Strategy",
+      "advanced": true,
+      "placeholder": "hybrid",
+      "help": "hybrid = lex+vec+hyde (default, best recall). lex-vec drops HyDE. lex = BM25-only (fastest). Lower tiers reduce CPU latency at the cost of recall."
+    },
+    "qmdSubprocessStrategy": {
+      "label": "QMD Subprocess Strategy",
+      "advanced": true,
+      "placeholder": "query",
+      "help": "query = qmd query with LLM expansion + rerank (default). search = BM25-only fallback, faster on huge collections but loses expansion/rerank."
+    },
+    "qmdDaemonTimeoutMs": {
+      "label": "QMD Daemon Timeout (ms)",
+      "advanced": true,
+      "placeholder": "8000"
     },
     "qmdIndexName": {
       "label": "QMD Index Name",

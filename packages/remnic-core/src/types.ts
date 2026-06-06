@@ -576,6 +576,12 @@ export interface PluginConfig {
   qmdChunkStrategy: "auto" | "regex";
   qmdCandidateLimit?: number;
   qmdQueryRerankEnabled: boolean;
+  // Daemon search plan; "hybrid" (default) = lex+vec+hyde. Issue #1335.
+  qmdSearchStrategy: "hybrid" | "lex-vec" | "lex";
+  // Subprocess fallback command; "query" (default) keeps LLM expansion. Issue #1335.
+  qmdSubprocessStrategy: "query" | "search";
+  // Per-call daemon search timeout in ms; default 8000. Issue #1335.
+  qmdDaemonTimeoutMs: number;
   qmdIndexName?: string;
   qmdForceCpu: boolean;
   qmdGpuBackend?: "auto" | "metal" | "cuda" | "vulkan" | "false";

@@ -38,11 +38,32 @@ export interface QmdClientOptions {
   qmdEmbedModel?: string;
   qmdRerankModel?: string;
   qmdGenerateModel?: string;
+  /** Daemon search plan; default "hybrid" preserves lex+vec+hyde. Issue #1335. */
+  qmdSearchStrategy?: QmdSearchStrategy;
+  /** Subprocess fallback command; default "query" keeps LLM expansion. Issue #1335. */
+  qmdSubprocessStrategy?: QmdSubprocessStrategy;
+  /** Per-call daemon search timeout in ms; default 8000. Issue #1335. */
+  qmdDaemonTimeoutMs?: number;
 }
 
 export type QmdVersionTuple = [number, number, number];
 export type QmdChunkStrategy = "auto" | "regex";
 export type QmdStructuredSearchType = "lex" | "vec" | "hyde";
+/**
+ * Daemon search plan. Issue #1335.
+ * - "hybrid" → lex + vec + hyde (DEFAULT — full recall; runs an embedding pass
+ *   plus a HyDE generate pass, which dominates latency on CPU-only models).
+ * - "lex-vec" → lex + vec (drops the expensive HyDE generate leg).
+ * - "lex" → lex only (BM25; fastest, no model inference).
+ */
+export type QmdSearchStrategy = "hybrid" | "lex-vec" | "lex";
+/**
+ * Subprocess fallback command (used only when the daemon is unavailable). Issue #1335.
+ * - "query" → `qmd query` (DEFAULT — LLM query expansion + rerank; see CLAUDE.md
+ *   gotcha #7, this is intentional and must remain the default).
+ * - "search" → `qmd search` (BM25-only; fast, but no expansion/rerank).
+ */
+export type QmdSubprocessStrategy = "query" | "search";
 export interface QmdStructuredSearch {
   type: QmdStructuredSearchType;
   query: string;
@@ -105,6 +126,9 @@ const QMD_TIMEOUT_MS = 30_000;
 // During the loading window, searches will timeout/return [] quickly — this is preferable to
 // blocking the full 75s on every recall request.
 // Note: keep this ≥ 5s to allow normal searches (post-load) to complete reliably.
+// This is the DEFAULT only — operators can override per-client via the
+// `qmdDaemonTimeoutMs` config knob (issue #1335), e.g. to give CPU-only HyDE
+// queries more headroom. The effective value lives in `this.daemonTimeoutMs`.
 const QMD_DAEMON_TIMEOUT_MS = 8_000;
 const QMD_PROBE_TIMEOUT_MS = 8_000;
 const QMD_UPDATE_BACKOFF_MS = 15 * 60 * 1000; // 15m
@@ -409,17 +433,32 @@ function buildSyntheticHydeQuery(query: string, intent?: string): string {
     : base;
 }
 
-function buildDefaultStructuredSearches(
+/**
+ * Build the structured sub-queries the daemon `query` tool runs in one request.
+ *
+ * The default `"hybrid"` plan (lex + vec + hyde) intentionally exercises QMD's
+ * full RRF + rerank path for best recall. On CPU-only models the `hyde` leg
+ * (1.7B generate + embed) dominates wall-clock — operators on constrained
+ * hardware can trade recall for latency via `qmdSearchStrategy` (issue #1335)
+ * without losing the default behavior. A per-call `structuredSearches` override
+ * always wins so callers with stronger query-document structure stay in control.
+ */
+export function buildDefaultStructuredSearches(
   query: string,
   options?: SearchQueryOptions,
+  strategy: QmdSearchStrategy = "hybrid",
 ): QmdStructuredSearch[] {
   const explicit = normalizeStructuredSearches(options?.structuredSearches);
   if (explicit.length > 0) return explicit;
   const trimmed = query.trim();
   if (!trimmed) return [];
+  const lex: QmdStructuredSearch = { type: "lex", query: trimmed };
+  if (strategy === "lex") return [lex];
+  const vec: QmdStructuredSearch = { type: "vec", query: trimmed };
+  if (strategy === "lex-vec") return [lex, vec];
   return [
-    { type: "lex", query: trimmed },
-    { type: "vec", query: trimmed },
+    lex,
+    vec,
     { type: "hyde", query: buildSyntheticHydeQuery(trimmed, options?.intent) },
   ];
 }
@@ -1207,6 +1246,9 @@ export class QmdClient implements SearchBackend {
   private readonly qmdCandidateLimit?: number;
   private readonly qmdQueryRerankEnabled: boolean;
   private readonly qmdIndexName?: string;
+  private readonly qmdSearchStrategy: QmdSearchStrategy;
+  private readonly qmdSubprocessStrategy: QmdSubprocessStrategy;
+  private readonly daemonTimeoutMs: number;
   private readonly qmdRuntimeEnv: QmdRuntimeEnv;
   private qmdPathSource: "auto-path" | "auto-fallback" | "configured" = "auto-path";
   private cliVersion: string | null = null;
@@ -1254,6 +1296,20 @@ export class QmdClient implements SearchBackend {
         : undefined;
     this.qmdQueryRerankEnabled = opts?.qmdQueryRerankEnabled !== false;
     this.qmdIndexName = opts?.qmdIndexName?.trim() || undefined;
+    // Default "hybrid" preserves the historical lex+vec+hyde daemon plan. Issue #1335.
+    this.qmdSearchStrategy =
+      opts?.qmdSearchStrategy === "lex" || opts?.qmdSearchStrategy === "lex-vec"
+        ? opts.qmdSearchStrategy
+        : "hybrid";
+    // Default "query" keeps `qmd query` (LLM expansion + rerank) per gotcha #7. Issue #1335.
+    this.qmdSubprocessStrategy = opts?.qmdSubprocessStrategy === "search" ? "search" : "query";
+    // Default 8000ms preserves the historical hardcoded daemon timeout. Issue #1335.
+    // Floor of 1000ms avoids absurdly small values; callers wanting CPU-only HyDE
+    // headroom can raise this (e.g. 20000) without code changes.
+    this.daemonTimeoutMs =
+      typeof opts?.qmdDaemonTimeoutMs === "number" && Number.isFinite(opts.qmdDaemonTimeoutMs)
+        ? Math.max(1_000, Math.floor(opts.qmdDaemonTimeoutMs))
+        : QMD_DAEMON_TIMEOUT_MS;
     this.qmdRuntimeEnv = this.buildRuntimeEnv(opts);
     if (this.configuredQmdPath) {
       this.qmdPath = this.configuredQmdPath;
@@ -2071,8 +2127,9 @@ export class QmdClient implements SearchBackend {
         // QMD v2: query tool expects { searches: [...], collections?: [...] }
         // The MCP tool is structured-only in 2.x; use lex+vec+hyde by default
         // to exercise QMD's RRF + rerank path and let callers override when
-        // they have stronger query-document structure.
-        const searches = buildDefaultStructuredSearches(query, options);
+        // they have stronger query-document structure. Operators on CPU-only
+        // models can downgrade the plan via qmdSearchStrategy (issue #1335).
+        const searches = buildDefaultStructuredSearches(query, options, this.qmdSearchStrategy);
         args = { searches, limit: maxResults };
         if (collection) {
           args.collections = [collection];
@@ -2087,7 +2144,7 @@ export class QmdClient implements SearchBackend {
         this.addResolvedSearchOptionsToMcpArgs(args, options);
       }
 
-      const result = await this.daemonSession.callTool("query", args, QMD_DAEMON_TIMEOUT_MS, signal);
+      const result = await this.daemonSession.callTool("query", args, this.daemonTimeoutMs, signal);
       const durationMs = Date.now() - startedAtMs;
 
       if (this.slowLog?.enabled && durationMs >= this.slowLog.thresholdMs) {
@@ -2139,7 +2196,7 @@ export class QmdClient implements SearchBackend {
             collections: [collection],
             limit: maxResults,
           },
-          QMD_DAEMON_TIMEOUT_MS,
+          this.daemonTimeoutMs,
           signal,
         );
       } else {
@@ -2147,7 +2204,7 @@ export class QmdClient implements SearchBackend {
         result = await this.daemonSession.callTool(
           "search",
           { query, limit: maxResults, collection },
-          QMD_DAEMON_TIMEOUT_MS,
+          this.daemonTimeoutMs,
           signal,
         );
       }
@@ -2192,7 +2249,7 @@ export class QmdClient implements SearchBackend {
             collections: [collection],
             limit: maxResults,
           },
-          QMD_DAEMON_TIMEOUT_MS,
+          this.daemonTimeoutMs,
           signal,
         );
       } else {
@@ -2200,7 +2257,7 @@ export class QmdClient implements SearchBackend {
         result = await this.daemonSession.callTool(
           "vsearch",
           { query, limit: maxResults, collection },
-          QMD_DAEMON_TIMEOUT_MS,
+          this.daemonTimeoutMs,
           signal,
         );
       }
@@ -2232,6 +2289,17 @@ export class QmdClient implements SearchBackend {
     signal?: AbortSignal,
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
+
+    // INTENTIONAL — DO NOT change the default command from `query` to `search`.
+    // `qmd query` performs LLM query expansion + reranking that Remnic depends on
+    // (Remnic's own reranking is disabled because `qmd query` handles it). This is
+    // CLAUDE.md gotcha #7. On very large collections `qmd query` can be slow/hang
+    // (issue #1335), so operators may opt into BM25-only `qmd search` by setting
+    // `qmdSubprocessStrategy: "search"` — but that trades away expansion + rerank,
+    // so it stays opt-in and the default remains `query`.
+    if (this.qmdSubprocessStrategy === "search") {
+      return this.bm25SearchViaSubprocess(query, collection, maxResults, signal);
+    }
 
     const startedAtMs = Date.now();
     try {
