@@ -95,6 +95,15 @@ function parseModelChainConfig(
     );
   }
   const raw = value as Record<string, unknown>;
+  // Reject unknown keys (matches the manifest's additionalProperties:false) so a
+  // misspelled "fallback"/"fallbackModels" doesn't silently drop the fallback
+  // chain (gotcha #51, codex review #1425).
+  const unknownKeys = Object.keys(raw).filter((k) => k !== "primary" && k !== "fallbacks");
+  if (unknownKeys.length > 0) {
+    throw new Error(
+      `${keyName} has unknown propert${unknownKeys.length === 1 ? "y" : "ies"}: ${unknownKeys.join(", ")}. Allowed: "primary", "fallbacks".`,
+    );
+  }
   if (typeof raw.primary !== "string" || raw.primary.trim().length === 0) {
     throw new Error(
       `${keyName}.primary is required and must be a non-empty "provider/model" string; got ${JSON.stringify(raw.primary)}`,

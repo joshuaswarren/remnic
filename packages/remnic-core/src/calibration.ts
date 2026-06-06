@@ -416,6 +416,8 @@ export async function runCalibrationIfEnabled(options: {
   memoryDir: string;
   calibrationEnabled: boolean;
   gatewayConfig?: GatewayConfig;
+  gatewayAgentId?: string;
+  modelChain?: AgentPersonaModelConfig;
   workspaceDir?: string;
 }): Promise<CalibrationRule[]> {
   if (!options.calibrationEnabled) {
@@ -424,6 +426,8 @@ export async function runCalibrationIfEnabled(options: {
   return runCalibrationConsolidation({
     memoryDir: options.memoryDir,
     gatewayConfig: options.gatewayConfig,
+    gatewayAgentId: options.gatewayAgentId,
+    modelChain: options.modelChain,
     workspaceDir: options.workspaceDir,
   });
 }

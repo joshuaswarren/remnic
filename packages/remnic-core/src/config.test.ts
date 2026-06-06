@@ -257,6 +257,18 @@ test("parseConfig rejects unqualified taskModelChain model strings (codex review
   );
 });
 
+test("parseConfig rejects unknown taskModelChain keys (codex review #1425)", () => {
+  // A misspelled "fallback" must not silently drop the fallback chain.
+  assert.throws(
+    () => parseConfig({ taskModelChain: { primary: "openai/p", fallback: ["openai/q"] } }),
+    /taskModelChain has unknown property: fallback/,
+  );
+  assert.throws(
+    () => parseConfig({ taskModelChain: { primary: "openai/p", fallbackModels: ["openai/q"], extra: 1 } }),
+    /taskModelChain has unknown properties:/,
+  );
+});
+
 test("parseConfig modelSource=gateway still honors an explicit openaiApiKey override", () => {
   const original = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "sk-env-should-not-be-used";
