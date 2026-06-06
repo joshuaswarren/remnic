@@ -656,13 +656,20 @@ async function callJudgeLlm(
   // routing preference.
   const skipLocal = config.modelSource === "gateway";
 
-  // Resolve the gateway agent ID so the fallback LLM routes through the
-  // correct agent persona's model chain — identical to the pattern used
-  // by ExtractionEngine.withGatewayAgent().
-  const agentId =
+  // Resolve gateway routing for the fallback LLM using the SAME precedence as
+  // ExtractionEngine.withGatewayAgent(): in gateway mode, an explicit
+  // taskModelChain wins over the gateway agent persona, so judge-gated
+  // extractions use the same task chain as extraction/consolidation rather
+  // than silently falling back to the persona/default chain (gotcha #39).
+  // Issue #1365 / PR #1425.
+  const gatewayChain: { modelChain?: typeof config.taskModelChain; agentId?: string } =
     config.modelSource === "gateway"
-      ? (config.gatewayAgentId || undefined)
-      : undefined;
+      ? config.taskModelChain
+        ? { modelChain: config.taskModelChain }
+        : config.gatewayAgentId
+          ? { agentId: config.gatewayAgentId }
+          : {}
+      : {};
 
   // Try local LLM first (unless modelSource says gateway)
   if (localLlm && !skipLocal) {
@@ -695,7 +702,7 @@ async function callJudgeLlm(
           maxTokens: 2048,
           timeoutMs: 1500,
           ...(modelOverride ? { model: modelOverride } : {}),
-          ...(agentId ? { agentId } : {}),
+          ...gatewayChain,
         },
       );
       if (result?.content) {

@@ -344,10 +344,11 @@ export class FallbackLlmClient {
     // Implicit last-resort: when a task-specific modelChain override is active,
     // append the gateway default model so a stale or exhausted taskModelChain
     // never leaves the chain empty — Remnic should never be the reason a chat is
-    // interrupted by a flush failure. Scoped to the override path so the main
-    // agent's persona/default chains keep their exact configured fallback
-    // behavior (gotcha #39). Issue #1365 / PR #1370.
-    if (modelChainOverride && modelStrings.length > 0) {
+    // interrupted by a flush failure. Keyed on `modelChainOverride?.primary` —
+    // the SAME activation condition chain resolution uses above — so a
+    // primary-less override (e.g. {}) that falls through to a persona/default
+    // chain does NOT get the default appended (gotcha #39). Issue #1365 / PR #1370.
+    if (modelChainOverride?.primary && modelStrings.length > 0) {
       const defaultModel = this.gatewayConfig?.agents?.defaults?.model?.primary;
       if (
         defaultModel &&
