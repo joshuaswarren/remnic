@@ -2842,6 +2842,10 @@ export function parseConfig(raw: unknown): PluginConfig {
       : [...DEFAULT_BEHAVIOR_LOOP_PROTECTED_PARAMS],
     // v8.0 phase 1
     recallPlannerEnabled: cfg.recallPlannerEnabled !== false,
+    // Issue #1367 / Option C: LLM-based recall planning is opt-in so the
+    // default recall path stays heuristic (no added latency / LLM call unless
+    // the operator asks for it — gotcha #30).
+    recallPlannerLlmEnabled: cfg.recallPlannerLlmEnabled === true,
     recallPlannerModel:
       typeof cfg.recallPlannerModel === "string" && cfg.recallPlannerModel.trim().length > 0
         ? cfg.recallPlannerModel.trim()

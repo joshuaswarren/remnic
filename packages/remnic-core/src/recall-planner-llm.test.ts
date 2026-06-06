@@ -1,0 +1,181 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { parseConfig } from "./config.js";
+import {
+  planRecallModeLLM,
+  resolveRecallPlannerLlmOptions,
+} from "./recall-planner-llm.js";
+import type { FallbackLlmClient } from "./fallback-llm.js";
+import type { RecallPlanMode } from "./types.js";
+
+// A stub FallbackLlmClient that records the options it was called with and
+// returns a scripted classification (or simulates a failure).
+function stubLlm(opts: {
+  available?: boolean;
+  capturedOptions?: Array<Record<string, unknown>>;
+  result?: { mode: RecallPlanMode; reason?: string | null } | null;
+  modelUsed?: string;
+  throwError?: string;
+}): FallbackLlmClient {
+  return {
+    isAvailable: () => opts.available !== false,
+    parseWithSchemaDetailed: async (
+      _messages: unknown,
+      schema: { parse: (v: unknown) => unknown },
+      options: Record<string, unknown>,
+    ) => {
+      opts.capturedOptions?.push(options);
+      if (opts.throwError) throw new Error(opts.throwError);
+      if (opts.result === null || opts.result === undefined) return null;
+      // Exercise the real schema so malformed scripted output is caught too.
+      const parsed = schema.parse(opts.result);
+      return { result: parsed, modelUsed: opts.modelUsed ?? "test/model" };
+    },
+  } as unknown as FallbackLlmClient;
+}
+
+test("returns heuristic without calling the LLM when recallPlannerLlmEnabled is false", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: false });
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = stubLlm({ capturedOptions: captured, result: { mode: "no_recall" } });
+
+  const result = await planRecallModeLLM("what did we decide about auth?", undefined, config, llm);
+
+  assert.equal(captured.length, 0, "LLM must not be contacted when disabled");
+  assert.equal(result.source, "heuristic");
+  assert.equal(result.fallbackUsed, false);
+  // Memory-seeking question → heuristic "full".
+  assert.equal(result.mode, "full");
+  assert.equal(result.heuristicMode, "full");
+});
+
+test("uses the LLM classification when enabled", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true });
+  const llm = stubLlm({ result: { mode: "graph_mode", reason: "asks for root cause" }, modelUsed: "anthropic/claude" });
+
+  const result = await planRecallModeLLM("restart the gateway", undefined, config, llm);
+
+  assert.equal(result.source, "llm");
+  assert.equal(result.mode, "graph_mode");
+  assert.equal(result.reason, "asks for root cause");
+  assert.equal(result.modelUsed, "anthropic/claude");
+  assert.equal(result.fallbackUsed, false);
+});
+
+test("forwards taskModelChain AND recallPlannerModel in gateway mode (provider-agnostic routing)", async () => {
+  const config = parseConfig({
+    recallPlannerLlmEnabled: true,
+    modelSource: "gateway",
+    gatewayAgentId: "persona-agent",
+    taskModelChain: { primary: "zai/glm-4.7-flash", fallbacks: ["fireworks/x/glm-5p1"] },
+    recallPlannerModel: "anthropic/claude-haiku-4-5",
+  });
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = stubLlm({ capturedOptions: captured, result: { mode: "minimal" } });
+
+  await planRecallModeLLM("check status", undefined, config, llm);
+
+  assert.equal(captured.length, 1);
+  // recallPlannerModel is tried first (prepended), taskModelChain is the fallback chain.
+  assert.equal(captured[0]?.model, "anthropic/claude-haiku-4-5");
+  assert.deepEqual(captured[0]?.modelChain, {
+    primary: "zai/glm-4.7-flash",
+    fallbacks: ["fireworks/x/glm-5p1"],
+  });
+  // taskModelChain wins over the agent persona (gotcha #22).
+  assert.equal(captured[0]?.agentId, undefined);
+  assert.equal(captured[0]?.timeoutMs, config.recallPlannerTimeoutMs);
+});
+
+test("plugin mode passes only the explicit model, no gateway chain", async () => {
+  const config = parseConfig({
+    recallPlannerLlmEnabled: true,
+    modelSource: "plugin",
+    recallPlannerModel: "openai/gpt-5.5",
+  });
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = stubLlm({ capturedOptions: captured, result: { mode: "full" } });
+
+  await planRecallModeLLM("summarize the project", undefined, config, llm);
+
+  assert.equal(captured.length, 1);
+  assert.equal(captured[0]?.model, "openai/gpt-5.5");
+  assert.equal(captured[0]?.modelChain, undefined);
+  assert.equal(captured[0]?.agentId, undefined);
+});
+
+test("falls back to heuristic when the LLM throws", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true });
+  const llm = stubLlm({ throwError: "boom" });
+
+  const result = await planRecallModeLLM("what happened during the outage?", undefined, config, llm);
+
+  assert.equal(result.source, "heuristic-fallback");
+  assert.equal(result.fallbackUsed, true);
+  assert.match(result.reason, /llm-error:boom/);
+  // "what happened" → heuristic graph_mode.
+  assert.equal(result.mode, "graph_mode");
+  assert.equal(result.mode, result.heuristicMode);
+});
+
+test("falls back to heuristic when the LLM returns no parseable result", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true });
+  const llm = stubLlm({ result: null });
+
+  const result = await planRecallModeLLM("how did we get here?", undefined, config, llm);
+
+  assert.equal(result.source, "heuristic-fallback");
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.reason, "llm-empty");
+});
+
+test("falls back to heuristic when no model is available and no explicit model override", async () => {
+  // parseConfig always defaults recallPlannerModel to gpt-5.5, so to exercise
+  // the "unavailable" guard (no chain AND no model override) we clear the model
+  // explicitly — mirrors a hand-built config with no planner model.
+  const config = { ...parseConfig({ recallPlannerLlmEnabled: true }), recallPlannerModel: "" };
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = stubLlm({ available: false, capturedOptions: captured, result: { mode: "full" } });
+
+  const result = await planRecallModeLLM("anything", undefined, config, llm);
+
+  assert.equal(captured.length, 0, "no network attempt when nothing is routable");
+  assert.equal(result.source, "heuristic-fallback");
+  assert.equal(result.fallbackUsed, true);
+  assert.equal(result.reason, "llm-unavailable");
+});
+
+test("attempts the call (and falls back) when a model override is set even if the chain is empty", async () => {
+  // recallPlannerModel defaults to gpt-5.5, so the override may still resolve to
+  // a provider the chain probe doesn't know about — we attempt, then fall back.
+  const config = parseConfig({ recallPlannerLlmEnabled: true });
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = stubLlm({ available: false, capturedOptions: captured, result: null });
+
+  const result = await planRecallModeLLM("anything", undefined, config, llm);
+
+  assert.equal(captured.length, 1, "model override → still attempt the call");
+  assert.equal(result.source, "heuristic-fallback");
+  assert.equal(result.reason, "llm-empty");
+});
+
+test("empty prompts skip the LLM entirely", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true });
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = stubLlm({ capturedOptions: captured, result: { mode: "full" } });
+
+  const result = await planRecallModeLLM("   ", undefined, config, llm);
+
+  assert.equal(captured.length, 0);
+  assert.equal(result.mode, "no_recall"); // heuristic returns no_recall for empty
+  assert.equal(result.source, "heuristic");
+});
+
+test("resolveRecallPlannerLlmOptions clamps timeout and sets deterministic decoding", () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true, recallPlannerTimeoutMs: 0 });
+  const options = resolveRecallPlannerLlmOptions(config);
+  assert.equal(options.temperature, 0);
+  assert.equal(options.maxTokens, 64);
+  assert.equal(options.timeoutMs, 1500, "non-positive timeout falls back to 1500");
+});

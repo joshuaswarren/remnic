@@ -72,6 +72,13 @@ test("parseConfig codex missing entirely → installExtension defaults to true",
   assert.equal(result.codex.installExtension, true);
 });
 
+test("parseConfig recallPlannerLlmEnabled defaults to false (opt-in, issue #1367)", () => {
+  assert.equal(parseConfig({}).recallPlannerLlmEnabled, false);
+  assert.equal(parseConfig({ recallPlannerLlmEnabled: true }).recallPlannerLlmEnabled, true);
+  // Only an explicit boolean true enables it; truthy strings must not.
+  assert.equal(parseConfig({ recallPlannerLlmEnabled: "true" }).recallPlannerLlmEnabled, false);
+});
+
 test("parseConfig dreaming.maxEntries=0 preserves the runtime disable switch", () => {
   const result = parseConfig({ dreaming: { maxEntries: 0 } });
   assert.equal(result.dreaming.maxEntries, 0);

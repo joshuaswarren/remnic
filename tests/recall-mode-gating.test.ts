@@ -4,7 +4,21 @@ import {
   hasIdentityRecoveryIntent,
   resolveEffectiveIdentityInjectionMode,
   resolveEffectiveRecallMode,
+  resolveRecallModeDecisionAsync,
 } from "../src/orchestrator.js";
+import { parseConfig } from "../src/config.js";
+import type { FallbackLlmClient } from "../src/fallback-llm.js";
+import type { RecallPlanMode } from "../src/types.js";
+
+function stubPlannerLlm(mode: RecallPlanMode, reason = "stub"): FallbackLlmClient {
+  return {
+    isAvailable: () => true,
+    parseWithSchemaDetailed: async (
+      _messages: unknown,
+      schema: { parse: (v: unknown) => unknown },
+    ) => ({ result: schema.parse({ mode, reason }), modelUsed: "test/model" }),
+  } as unknown as FallbackLlmClient;
+}
 
 test("resolveEffectiveRecallMode downgrades graph_mode to full when graph recall is disabled", () => {
   const mode = resolveEffectiveRecallMode({
@@ -55,6 +69,96 @@ test("resolveEffectiveRecallMode broad intent can escalate to graph_mode when en
     prompt: "How did we get here with recall regressions?",
   });
   assert.equal(mode, "graph_mode");
+});
+
+// --- LLM recall planning (issue #1367 / Option C) ---
+
+test("resolveRecallModeDecisionAsync uses heuristic when LLM planning is not opted in", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: false });
+  const decision = await resolveRecallModeDecisionAsync({
+    plannerEnabled: true,
+    graphRecallEnabled: true,
+    multiGraphMemoryEnabled: true,
+    prompt: "restart the gateway",
+    config,
+    llm: stubPlannerLlm("graph_mode"),
+  });
+  // LLM stub says graph_mode, but it must not be consulted.
+  assert.equal(decision.effectiveMode, "minimal");
+  assert.equal(decision.plannerSource, undefined);
+});
+
+test("resolveRecallModeDecisionAsync applies the LLM classification when opted in", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true });
+  const decision = await resolveRecallModeDecisionAsync({
+    plannerEnabled: true,
+    graphRecallEnabled: true,
+    multiGraphMemoryEnabled: true,
+    prompt: "restart the gateway",
+    config,
+    llm: stubPlannerLlm("graph_mode", "wants history"),
+  });
+  assert.equal(decision.effectiveMode, "graph_mode");
+  assert.equal(decision.plannedMode, "graph_mode");
+  assert.equal(decision.plannerSource, "llm");
+  assert.equal(decision.plannerReason, "wants history");
+});
+
+test("resolveRecallModeDecisionAsync gates an LLM graph_mode to full when graph recall is disabled (gotcha #39)", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true });
+  const decision = await resolveRecallModeDecisionAsync({
+    plannerEnabled: true,
+    graphRecallEnabled: false,
+    multiGraphMemoryEnabled: true,
+    prompt: "restart the gateway",
+    config,
+    llm: stubPlannerLlm("graph_mode"),
+  });
+  // Same graph gating as the heuristic path.
+  assert.equal(decision.plannedMode, "graph_mode");
+  assert.equal(decision.effectiveMode, "full");
+  assert.equal(decision.graphReason, "graph recall disabled by config");
+});
+
+test("resolveRecallModeDecisionAsync shadow mode keeps the heuristic effective decision", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true, recallPlannerShadowMode: true });
+  const decision = await resolveRecallModeDecisionAsync({
+    plannerEnabled: true,
+    graphRecallEnabled: true,
+    multiGraphMemoryEnabled: true,
+    prompt: "restart the gateway", // heuristic → minimal
+    config,
+    llm: stubPlannerLlm("graph_mode"),
+  });
+  // Effective stays on the heuristic; the LLM's choice is recorded for comparison.
+  assert.equal(decision.effectiveMode, "minimal");
+  assert.equal(decision.shadowLlmMode, "graph_mode");
+  assert.match(decision.plannerReason ?? "", /^shadow:/);
+});
+
+test("resolveRecallModeDecisionAsync skips the LLM entirely when the planner is disabled", async () => {
+  const config = parseConfig({ recallPlannerLlmEnabled: true });
+  let called = false;
+  const llm = {
+    isAvailable: () => {
+      called = true;
+      return true;
+    },
+    parseWithSchemaDetailed: async () => {
+      called = true;
+      return null;
+    },
+  } as unknown as FallbackLlmClient;
+  const decision = await resolveRecallModeDecisionAsync({
+    plannerEnabled: false,
+    graphRecallEnabled: true,
+    multiGraphMemoryEnabled: true,
+    prompt: "what happened in the timeline",
+    config,
+    llm,
+  });
+  assert.equal(decision.effectiveMode, "full");
+  assert.equal(called, false, "planner disabled → LLM must not be consulted");
 });
 
 test("hasIdentityRecoveryIntent detects recovery/continuity phrasing", () => {

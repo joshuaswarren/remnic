@@ -76,6 +76,19 @@ The planner classifies each request and selects a recall mode before any search:
 
 Config: `recallPlannerEnabled` (default `true`).
 
+### Heuristic vs LLM planning (issue #1367, Option C)
+
+By default the mode above is chosen by a fast regex heuristic (`planRecallMode()` in `intent.ts`). Operators can opt into **LLM-based planning** with `recallPlannerLlmEnabled: true` (requires `recallPlannerEnabled`). The LLM classifier:
+
+- Routes through the gateway/fallback chain, so it is **provider-agnostic** — OpenAI, Anthropic, Ollama, Codex, or gateway agent personas all work. The configured `recallPlannerModel` is tried first; `taskModelChain` / gateway defaults are resilient fallbacks.
+- Is bounded by `recallPlannerTimeoutMs` and **always falls back to the heuristic** on timeout, error, empty response, or an unavailable backend — recall never fails because of the planner.
+- Honors `recallPlannerShadowMode` (run the LLM for comparison/telemetry but keep the heuristic's effective decision) and `recallPlannerTelemetryEnabled` (log planned-vs-heuristic mode, model, latency, and fallback).
+- Is skipped entirely when the caller forces a `mode`, when the planner is disabled, or for empty prompts.
+
+The `src/index.ts` active-recall preflight stays heuristic-only (it runs before recall and is latency-sensitive); the LLM decision is authoritative for the main recall path.
+
+> `recallPlannerUseResponsesApi` is reserved: the chat-vs-Responses API dialect is chosen per-provider by the gateway/fallback client based on each provider's `api` field, so this flag does not override routing.
+
 ## QMD Retrieval
 
 The current QMD architecture is documented in [QMD 2.0 Integration Decision](./qmd-2-integration-decision.md).

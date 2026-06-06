@@ -332,6 +332,7 @@ Direct `includeFiles` sync plus the OpenClaw workspace adapter both persist incr
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `recallPlannerEnabled` | `true` | Lightweight retrieve-vs-think gating |
+| `recallPlannerLlmEnabled` | `false` | Opt in to **LLM-based** recall planning (issue #1367). When off, recall mode is decided by the regex heuristic. When on, `recallPlannerModel` classifies recall intent via the gateway/fallback LLM chain (provider-agnostic) and falls back to the heuristic on timeout/error. Requires `recallPlannerEnabled`. See [Heuristic vs LLM planning](architecture/retrieval-pipeline.md#heuristic-vs-llm-planning-issue-1367-option-c). |
 | `recallPlannerMaxQmdResultsMinimal` | `4` | QMD cap in `minimal` recall mode |
 | `memoryBoxesEnabled` | `false` | Enable Memory Box topic-windowed grouping |
 | `traceWeaverEnabled` | `false` | Link recurring-topic boxes into named traces |
@@ -1219,6 +1220,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `boostAccessCount` | `true` | `true` |
 | `recordEmptyRecallImpressions` | `false` | `false` |
 | `recallPlannerEnabled` | `true` | `true` |
+| `recallPlannerLlmEnabled` | `false` | `false` |
 | `recallPlannerModel` | `gpt-5.5` | `gpt-5.5` |
 | `recallPlannerTimeoutMs` | `1500` | `1500` |
 | `recallPlannerUseResponsesApi` | `true` | `true` |

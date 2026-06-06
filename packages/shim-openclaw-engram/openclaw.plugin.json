@@ -1904,10 +1904,15 @@
         "default": true,
         "description": "Use lightweight retrieve-vs-think planning to avoid unnecessary recall work."
       },
+      "recallPlannerLlmEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Opt in to LLM-based recall planning (issue #1367). When false, recall mode is decided by the regex heuristic. When true, the configured recallPlannerModel classifies recall intent via the gateway/fallback LLM chain (provider-agnostic) and falls back to the heuristic on timeout/error. Requires recallPlannerEnabled."
+      },
       "recallPlannerModel": {
         "type": "string",
         "default": "gpt-5.5",
-        "description": "Model to use for the recall planner."
+        "description": "Model for LLM-based recall planning (recallPlannerLlmEnabled). A 'provider/model' string resolved through the gateway providers/chain — any configured provider works (OpenAI, Anthropic, Ollama, Codex, gateway personas). Tried first, with taskModelChain / gateway defaults as fallback."
       },
       "recallPlannerTimeoutMs": {
         "type": "number",
@@ -1917,7 +1922,7 @@
       "recallPlannerUseResponsesApi": {
         "type": "boolean",
         "default": true,
-        "description": "Use OpenAI Responses API for recall planner calls."
+        "description": "Reserved. The chat vs Responses API dialect is chosen per-provider by the gateway/fallback client based on each provider's api field, so this flag does not override routing; OpenAI providers already use Responses (gotcha #1)."
       },
       "recallPlannerMaxPromptChars": {
         "type": "number",

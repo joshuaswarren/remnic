@@ -1471,6 +1471,15 @@ export interface PluginConfig {
   behaviorLoopProtectedParams: string[];
   // v8.0 Phase 1: recall planner + intent routing + verbatim artifacts
   recallPlannerEnabled: boolean;
+  /**
+   * Opt-in gate for LLM-based recall planning (issue #1367 / Option C). When
+   * false (the default) recall mode is decided by the regex heuristic
+   * `planRecallMode()`. When true, the planner consults an LLM (routed through
+   * the gateway/fallback chain — provider-agnostic) and falls back to the
+   * heuristic on timeout/error/unavailable. `recallPlannerShadowMode` runs the
+   * LLM for telemetry only without changing the effective mode.
+   */
+  recallPlannerLlmEnabled: boolean;
   recallPlannerModel: string;
   recallPlannerTimeoutMs: number;
   recallPlannerUseResponsesApi: boolean;

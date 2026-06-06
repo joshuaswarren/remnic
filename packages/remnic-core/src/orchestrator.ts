@@ -530,6 +530,26 @@ export interface RecallModeDecision {
   effectiveMode: RecallPlanMode;
   graphExpandedIntentDetected: boolean;
   graphReason?: string;
+  /**
+   * Where `plannedMode` came from (issue #1367 / Option C). `"heuristic"` for
+   * the regex planner; `"llm"` when the LLM planner classified it; and
+   * `"heuristic-fallback"` when the LLM was enabled but errored/timed out and we
+   * fell back. Absent on the synchronous heuristic-only path.
+   */
+  plannerSource?: "heuristic" | "llm" | "heuristic-fallback";
+  /** Short rationale from the planner (for telemetry / x-ray). */
+  plannerReason?: string;
+  /** Wall-clock spent in the LLM planner call, when one was made. */
+  plannerLatencyMs?: number;
+  /** True when the LLM planner was enabled but fell back to the heuristic. */
+  plannerFallbackUsed?: boolean;
+  /** Model that served the LLM classification, when one was used. */
+  plannerModelUsed?: string;
+  /**
+   * In shadow mode, the mode the LLM *would* have chosen (recorded for
+   * comparison) while `effectiveMode` stays on the heuristic decision.
+   */
+  shadowLlmMode?: RecallPlanMode;
 }
 
 /**
@@ -1053,16 +1073,27 @@ export function resolveEffectiveRecallMode(options: {
   return resolveRecallModeDecision(options).effectiveMode;
 }
 
-export function resolveRecallModeDecision(options: {
+interface RecallModeGraphOptions {
   plannerEnabled: boolean;
   graphRecallEnabled: boolean;
   multiGraphMemoryEnabled: boolean;
   graphExpandedIntentEnabled?: boolean;
   prompt: string;
-}): RecallModeDecision {
-  let plannedMode: RecallPlanMode = options.plannerEnabled
-    ? planRecallMode(options.prompt)
-    : "full";
+}
+
+/**
+ * Apply the graph-mode overlay + gating to a planner-produced mode.
+ *
+ * Shared by the heuristic ({@link resolveRecallModeDecision}) and LLM
+ * ({@link resolveRecallModeDecisionAsync}) paths so graph promotion and the
+ * "graph disabled → fall back to full" gating behave identically regardless of
+ * which planner produced `plannedModeRaw` (gotcha #39).
+ */
+function finalizeRecallModeDecision(
+  plannedModeRaw: RecallPlanMode,
+  options: RecallModeGraphOptions,
+): RecallModeDecision {
+  let plannedMode: RecallPlanMode = plannedModeRaw;
   const graphExpandedIntentDetected =
     options.plannerEnabled &&
     options.graphExpandedIntentEnabled === true &&
@@ -1087,6 +1118,70 @@ export function resolveRecallModeDecision(options: {
     plannedMode,
     effectiveMode: plannedMode,
     graphExpandedIntentDetected,
+  };
+}
+
+export function resolveRecallModeDecision(options: RecallModeGraphOptions): RecallModeDecision {
+  const plannedMode: RecallPlanMode = options.plannerEnabled
+    ? planRecallMode(options.prompt)
+    : "full";
+  return finalizeRecallModeDecision(plannedMode, options);
+}
+
+/**
+ * Async recall-mode decision with optional LLM-based planning (issue #1367 /
+ * Option C). Falls back to the heuristic decision when the LLM planner is
+ * disabled, in shadow mode, or unavailable/failed — so this is always safe to
+ * await on the recall hot path. Provider-agnostic: the LLM call routes through
+ * the gateway/fallback chain.
+ *
+ * `recallPlannerEnabled === false` keeps the legacy "always full" behavior and
+ * skips the LLM entirely (the planner as a whole is off).
+ */
+export async function resolveRecallModeDecisionAsync(
+  options: RecallModeGraphOptions & {
+    config: PluginConfig;
+    hints?: string[];
+    llm?: FallbackLlmClient;
+  },
+): Promise<RecallModeDecision> {
+  const heuristicDecision = resolveRecallModeDecision(options);
+
+  // Planner globally off, or LLM planning not opted into → heuristic only.
+  if (!options.plannerEnabled || !options.config.recallPlannerLlmEnabled) {
+    return heuristicDecision;
+  }
+
+  const { planRecallModeLLM } = await import("./recall-planner-llm.js");
+  const planned = await planRecallModeLLM(
+    options.prompt,
+    options.hints,
+    options.config,
+    options.llm,
+  );
+
+  // Shadow mode: record what the LLM would have chosen but keep the heuristic
+  // effective decision (safe rollout / comparison — gotcha #30).
+  if (options.config.recallPlannerShadowMode) {
+    return {
+      ...heuristicDecision,
+      plannerSource: planned.source,
+      plannerReason: `shadow:${planned.reason}`,
+      plannerLatencyMs: planned.latencyMs,
+      plannerFallbackUsed: planned.fallbackUsed,
+      plannerModelUsed: planned.modelUsed,
+      shadowLlmMode: planned.mode,
+    };
+  }
+
+  const llmDecision = finalizeRecallModeDecision(planned.mode, options);
+  return {
+    ...llmDecision,
+    plannerSource: planned.source,
+    plannerReason: planned.reason,
+    plannerLatencyMs: planned.latencyMs,
+    plannerFallbackUsed: planned.fallbackUsed,
+    plannerModelUsed: planned.modelUsed,
   };
 }
 
@@ -6400,16 +6495,42 @@ export class Orchestrator {
     let identityInjectedChars = 0;
     let identityInjectionTruncated = false;
     timings.queryPolicy = `${queryPolicy.promptShape}/${queryPolicy.retrievalBudgetMode}${queryPolicy.skipConversationRecall ? "/skip-conv" : ""}`;
-    const recallDecision = resolveRecallModeDecision({
+    const recallModeDecisionOptions = {
       plannerEnabled: this.config.recallPlannerEnabled,
       graphRecallEnabled: this.config.graphRecallEnabled,
       multiGraphMemoryEnabled: this.config.multiGraphMemoryEnabled,
       graphExpandedIntentEnabled:
         this.config.graphExpandedIntentEnabled === true,
       prompt,
-    });
-    this.profiler.endSpan("planning", profileTraceId);
+    };
     const requestedMode = options.mode;
+    // When the caller forces a mode, skip the (async, possibly LLM-backed)
+    // planner entirely — the decision is overridden anyway. Otherwise consult
+    // the LLM planner when opted in (issue #1367 / Option C); it falls back to
+    // the heuristic on disable / shadow / timeout / error.
+    const recallDecision =
+      requestedMode !== undefined
+        ? resolveRecallModeDecision(recallModeDecisionOptions)
+        : await resolveRecallModeDecisionAsync({
+            ...recallModeDecisionOptions,
+            config: this.config,
+          });
+    if (
+      this.config.recallPlannerTelemetryEnabled &&
+      recallDecision.plannerSource &&
+      recallDecision.plannerSource !== "heuristic"
+    ) {
+      log.debug(
+        `[recall-planner] mode=${recallDecision.shadowLlmMode ?? recallDecision.effectiveMode} ` +
+          `source=${recallDecision.plannerSource} ` +
+          `heuristic=${recallDecision.plannedMode} ` +
+          `model=${recallDecision.plannerModelUsed ?? "n/a"} ` +
+          `latencyMs=${recallDecision.plannerLatencyMs ?? 0} ` +
+          `fallback=${recallDecision.plannerFallbackUsed ?? false}` +
+          (recallDecision.shadowLlmMode ? " (shadow)" : ""),
+      );
+    }
+    this.profiler.endSpan("planning", profileTraceId);
     const recallMode: RecallPlanMode =
       requestedMode ?? recallDecision.effectiveMode;
     const queryIntent = inferIntentFromText(retrievalQuery);

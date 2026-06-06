@@ -249,6 +249,9 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
 
     assert.equal(configSchema.model?.default, "gpt-5.5");
     assert.equal(configSchema.recallPlannerModel?.default, "gpt-5.5");
+    // Issue #1367 / Option C: LLM recall planning is opt-in (default off).
+    assert.equal(configSchema.recallPlannerLlmEnabled?.type, "boolean");
+    assert.equal(configSchema.recallPlannerLlmEnabled?.default, false);
   });
 
   test(`${manifestPath} keeps memory-slot compatibility metadata for older OpenClaw hosts`, () => {
