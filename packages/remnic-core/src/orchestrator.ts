@@ -5630,6 +5630,12 @@ export class Orchestrator {
       ) {
         if (debugSearchOptions?.intent) {
           lastHybridTopUpSkippedReason = "intent_hint_active";
+        } else if (this.config.qmdSearchStrategy === "lex") {
+          // BM25-only strategy: a hybrid top-up runs vectorSearch (see
+          // QmdClient.hybridSearch), which would reintroduce the vector path the
+          // operator opted out of. Keep "lex" BM25-only end-to-end so the gate is
+          // uniform across primary + top-up (gotcha #39). Issue #1335 (codex review #1422).
+          lastHybridTopUpSkippedReason = "lex_strategy";
         } else {
           const hybridResults = options.collection
             ? await this.qmd.hybridSearch(
@@ -7782,6 +7788,8 @@ export class Orchestrator {
           maxResults: qmdFetchLimit,
           memoryDir: this.config.memoryDir,
           searchOptions: qmdSearchOptions,
+          searchStrategy: this.config.qmdSearchStrategy,
+          subprocessStrategy: this.config.qmdSubprocessStrategy,
         });
         const cachedQmd = getCachedQmdRecall<Exclude<QmdPhaseResult, null>>(
           qmdCacheKey,

@@ -149,13 +149,24 @@ test("parseConfig qmdSubprocessStrategy defaults to query (honors QMD query inte
   }
 });
 
-test("parseConfig qmdDaemonTimeoutMs defaults to 8000 and clamps to bounds", () => {
+test("parseConfig qmdDaemonTimeoutMs defaults to 8000 and clamps valid integers", () => {
   assert.equal(parseConfig({}).qmdDaemonTimeoutMs, 8_000);
   assert.equal(parseConfig({ qmdDaemonTimeoutMs: 20_000 }).qmdDaemonTimeoutMs, 20_000);
   assert.equal(parseConfig({ qmdDaemonTimeoutMs: "20000" }).qmdDaemonTimeoutMs, 20_000);
   // Below floor clamps up; above ceiling clamps down.
   assert.equal(parseConfig({ qmdDaemonTimeoutMs: 100 }).qmdDaemonTimeoutMs, 1_000);
   assert.equal(parseConfig({ qmdDaemonTimeoutMs: 999_999 }).qmdDaemonTimeoutMs, 120_000);
+});
+
+test("parseConfig qmdDaemonTimeoutMs rejects non-numeric and non-integer input", () => {
+  // gotcha #51 + codex review on #1422: silent coercion hides config mistakes.
+  for (const value of ["abc", "", 2500.9, "2500.9", Number.NaN, Infinity, true, {}]) {
+    assert.throws(
+      () => parseConfig({ qmdDaemonTimeoutMs: value }),
+      /qmdDaemonTimeoutMs must be an integer/,
+      `invalid qmdDaemonTimeoutMs ${String(value)} should throw`,
+    );
+  }
 });
 
 test("parseConfig initGateTimeoutMs accepts CLI-style numeric strings", () => {

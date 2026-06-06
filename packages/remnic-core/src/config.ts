@@ -156,6 +156,19 @@ function parseQmdSearchStrategy(value: unknown): "hybrid" | "lex-vec" | "lex" {
   );
 }
 
+// Issue #1335. Reject non-numeric / non-integer timeouts rather than silently
+// coercing them (gotcha #51), then clamp valid integers to the documented bounds.
+function parseQmdDaemonTimeoutMs(value: unknown): number {
+  if (value === undefined || value === null) return 8_000;
+  const coerced = coerceNumber(value);
+  if (coerced === undefined || !Number.isInteger(coerced)) {
+    throw new Error(
+      `qmdDaemonTimeoutMs must be an integer number of milliseconds between 1000 and 120000; got ${JSON.stringify(value)}`,
+    );
+  }
+  return Math.min(120_000, Math.max(1_000, coerced));
+}
+
 // Issue #1335. Default "query" keeps `qmd query` (LLM expansion + rerank) per gotcha #7.
 function parseQmdSubprocessStrategy(value: unknown): "query" | "search" {
   if (value === undefined || value === null) return "query";
@@ -1413,7 +1426,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     qmdQueryRerankEnabled: coerceBooleanLike(cfg.qmdQueryRerankEnabled) ?? true,
     qmdSearchStrategy: parseQmdSearchStrategy(cfg.qmdSearchStrategy),
     qmdSubprocessStrategy: parseQmdSubprocessStrategy(cfg.qmdSubprocessStrategy),
-    qmdDaemonTimeoutMs: parseBoundedIntegerMs(cfg.qmdDaemonTimeoutMs, 8_000, 1_000, 120_000),
+    qmdDaemonTimeoutMs: parseQmdDaemonTimeoutMs(cfg.qmdDaemonTimeoutMs),
     qmdIndexName: parseOptionalNonEmptyString(cfg.qmdIndexName),
     qmdForceCpu: coerceBooleanLike(cfg.qmdForceCpu) ?? false,
     qmdGpuBackend: parseQmdGpuBackend(cfg.qmdGpuBackend),

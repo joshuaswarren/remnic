@@ -97,6 +97,22 @@ test("qmd recall cache key reflects all defined search options", () => {
   assert.notEqual(left, right);
 });
 
+test("qmd recall cache key reflects search and subprocess strategy (codex review #1422)", () => {
+  const base = {
+    query: "api rate limit",
+    namespaces: ["a", "b"],
+    recallMode: "minimal" as const,
+    maxResults: 4,
+    memoryDir: "/tmp/engram-a",
+  };
+  const hybrid = buildQmdRecallCacheKey({ ...base, searchStrategy: "hybrid", subprocessStrategy: "query" });
+  const lex = buildQmdRecallCacheKey({ ...base, searchStrategy: "lex", subprocessStrategy: "query" });
+  const bm25Fallback = buildQmdRecallCacheKey({ ...base, searchStrategy: "hybrid", subprocessStrategy: "search" });
+
+  assert.notEqual(hybrid, lex, "different search strategies must not share a recall cache entry");
+  assert.notEqual(hybrid, bm25Fallback, "different subprocess strategies must not share a recall cache entry");
+});
+
 test("qmd recall cache returns cloned values so callers cannot mutate cached entries", () => {
   clearQmdRecallCache();
   const key = buildQmdRecallCacheKey({
