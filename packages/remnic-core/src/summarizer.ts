@@ -3,7 +3,7 @@ import path from "node:path";
 import { z } from "zod";
 import { log } from "./logger.js";
 import { LocalLlmClient } from "./local-llm.js";
-import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig } from "./fallback-llm.js";
+import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
 import { ModelRegistry } from "./model-registry.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import type { HourlySummary, TranscriptEntry, PluginConfig, GatewayConfig } from "./types.js";
@@ -85,10 +85,8 @@ export class HourlySummarizer {
 
   private withGatewayAgent(options: import("./fallback-llm.js").FallbackLlmOptions): import("./fallback-llm.js").FallbackLlmOptions {
     if (!this.useGatewayModelSource) return options;
-    const modelChain = this.config.taskModelChain;
-    if (modelChain) return { ...options, modelChain };
-    const agentId = this.config.gatewayAgentId || undefined;
-    return agentId ? { ...options, agentId } : options;
+    // Shared resolution (taskModelChain > gatewayAgentId) — gotcha #22. Issue #1365.
+    return { ...options, ...gatewayTaskChainOptions(this.config) };
   }
 
   async initialize(): Promise<void> {

@@ -535,6 +535,7 @@ export class CompoundingEngine {
           memoryDir: this.config.memoryDir,
           gatewayConfig: this.config.gatewayConfig,
           gatewayAgentId: this.config.modelSource === "gateway" ? (this.config.gatewayAgentId || undefined) : undefined,
+          modelChain: this.config.modelSource === "gateway" ? this.config.taskModelChain : undefined,
           workspaceDir: this.config.workspaceDir,
         });
         log.debug(`[calibration] weekly synthesis produced ${calRules.length} calibration rule(s)`);

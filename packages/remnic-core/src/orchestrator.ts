@@ -263,6 +263,7 @@ import {
 import { normalizeReplaySessionKey, type ReplayTurn } from "./replay/types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
 import {
+  type AgentPersonaModelConfig,
   confidenceTier,
   type MemoryIntent,
   type MemorySummary,
@@ -3392,22 +3393,31 @@ export class Orchestrator {
 
     // Use FallbackLlmClient for LLM calls (same pattern as causal-consolidation.ts)
     // Honor semanticConsolidationModel: "auto" = primary, "fast" = local fast, or specific model
-    const { FallbackLlmClient } = await import("./fallback-llm.js");
+    const { FallbackLlmClient, gatewayTaskChainOptions } = await import("./fallback-llm.js");
     const useGateway = this.config.modelSource === "gateway";
     const modelSetting = this.config.semanticConsolidationModel;
     if (modelSetting === "fast" && this.fastLlm && !useGateway) {
       log.info("[semantic-consolidation] using fast local LLM for synthesis");
     }
-    const gatewayAgentId = useGateway
-      ? (modelSetting === "fast" && this.config.fastGatewayAgentId
-          ? this.config.fastGatewayAgentId
-          : this.config.gatewayAgentId || undefined)
-      : undefined;
+    // Gateway routing: an explicit "fast" setting keeps the fast persona chain
+    // (the operator's deliberate fast-tier choice). Otherwise route through the
+    // shared task-chain resolution so taskModelChain applies to semantic
+    // consolidation like every other background task (gotcha #22). Issue #1365.
+    const gatewayChainOptions: { modelChain?: AgentPersonaModelConfig; agentId?: string } =
+      !useGateway
+        ? {}
+        : modelSetting === "fast"
+          ? (this.config.fastGatewayAgentId
+              ? { agentId: this.config.fastGatewayAgentId }
+              : this.config.gatewayAgentId
+                ? { agentId: this.config.gatewayAgentId }
+                : {})
+          : gatewayTaskChainOptions(this.config);
     const llm = new FallbackLlmClient(
       this.config.gatewayConfig,
       fallbackLlmRuntimeContextFromConfig(this.config),
     );
-    if (!llm.isAvailable(gatewayAgentId) && !(modelSetting === "fast" && this.fastLlm && !useGateway)) {
+    if (!llm.isAvailable(gatewayChainOptions) && !(modelSetting === "fast" && this.fastLlm && !useGateway)) {
       log.warn(
         "[semantic-consolidation] no LLM available — skipping synthesis",
       );
@@ -3456,7 +3466,7 @@ export class Orchestrator {
         let response: { content: string } | null = null;
         if (useGateway) {
           // Gateway model source — use the appropriate agent chain
-          response = await llm.chatCompletion(messages, { ...llmOpts, agentId: gatewayAgentId });
+          response = await llm.chatCompletion(messages, { ...llmOpts, ...gatewayChainOptions });
         } else if (modelSetting === "fast" && this.fastLlm) {
           const fastResult = await this.fastLlm.chatCompletion(messages, {
             operation: "semantic-consolidation",

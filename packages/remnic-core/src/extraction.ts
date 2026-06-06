@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { log } from "./logger.js";
 import { delinearize } from "./delinearize.js";
 import { LocalLlmClient } from "./local-llm.js";
-import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig } from "./fallback-llm.js";
+import { FallbackLlmClient, fallbackLlmRuntimeContextFromConfig, gatewayTaskChainOptions } from "./fallback-llm.js";
 import {
   ExtractionResultSchema,
   ConsolidationResultSchema,
@@ -166,10 +166,9 @@ export class ExtractionEngine {
    */
   private withGatewayAgent(options: import("./fallback-llm.js").FallbackLlmOptions): import("./fallback-llm.js").FallbackLlmOptions {
     if (!this.useGatewayModelSource) return options;
-    const modelChain = this.config.taskModelChain;
-    if (modelChain) return { ...options, modelChain };
-    const agentId = this.config.gatewayAgentId || undefined;
-    return agentId ? { ...options, agentId } : options;
+    // Shared resolution (taskModelChain > gatewayAgentId) so every background
+    // task routes identically (gotcha #22). Issue #1365.
+    return { ...options, ...gatewayTaskChainOptions(this.config) };
   }
 
   private emit(event: LlmTraceEvent): void {

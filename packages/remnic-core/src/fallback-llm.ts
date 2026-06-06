@@ -1,6 +1,6 @@
 import { log } from "./logger.js";
 import path from "node:path";
-import type { AgentPersonaModelConfig, GatewayConfig, ModelProviderConfig } from "./types.js";
+import type { AgentPersonaModelConfig, GatewayConfig, ModelProviderConfig, PluginConfig } from "./types.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import {
   buildChatCompletionTemperature,
@@ -34,6 +34,23 @@ export interface FallbackLlmOptions {
 export interface FallbackLlmAvailabilityOptions {
   agentId?: string;
   modelChain?: AgentPersonaModelConfig;
+}
+
+/**
+ * Resolve the gateway routing options Remnic's background tasks should pass to
+ * FallbackLlmClient — extraction, fact/profile/identity consolidation,
+ * summarization, calibration, and causal/semantic consolidation. Single source
+ * of truth so every task path stays consistent and can't diverge (gotcha #22):
+ * in gateway mode an explicit `taskModelChain` wins over the gateway agent
+ * persona; otherwise the persona (if any) is used. Returns `{}` in plugin mode
+ * because the chain resolves through gateway providers only. Issue #1365.
+ */
+export function gatewayTaskChainOptions(
+  config: Pick<PluginConfig, "modelSource" | "taskModelChain" | "gatewayAgentId">,
+): Pick<FallbackLlmOptions, "modelChain" | "agentId"> {
+  if (config.modelSource !== "gateway") return {};
+  if (config.taskModelChain) return { modelChain: config.taskModelChain };
+  return config.gatewayAgentId ? { agentId: config.gatewayAgentId } : {};
 }
 
 export interface FallbackLlmResponse {
@@ -349,18 +366,24 @@ export class FallbackLlmClient {
     // primary-less override (e.g. {}) that falls through to a persona/default
     // chain does NOT get the default appended (gotcha #39). Issue #1365 / PR #1370.
     if (modelChainOverride?.primary && modelStrings.length > 0) {
-      const defaultModel = this.gatewayConfig?.agents?.defaults?.model?.primary;
-      if (
-        defaultModel &&
-        typeof defaultModel === "string" &&
-        defaultModel.trim().length > 0 &&
-        !modelStrings.includes(defaultModel.trim())
-      ) {
-        const defaultRef = this.parseModelString(defaultModel.trim(), providers);
+      // Append the FULL gateway default chain (primary + fallbacks), not just
+      // the primary — if the default primary is also unreachable, a listed
+      // default fallback may still succeed (cursor review #1425).
+      const defaults = this.gatewayConfig?.agents?.defaults?.model;
+      const defaultStrings: string[] = [
+        ...(typeof defaults?.primary === "string" ? [defaults.primary] : []),
+        ...(Array.isArray(defaults?.fallbacks) ? defaults.fallbacks : []),
+      ];
+      for (const candidate of defaultStrings) {
+        if (typeof candidate !== "string") continue;
+        const trimmed = candidate.trim();
+        if (trimmed.length === 0 || modelStrings.includes(trimmed)) continue;
+        const defaultRef = this.parseModelString(trimmed, providers);
         if (defaultRef) {
           chain.push(defaultRef);
+          modelStrings.push(trimmed); // keep dedupe correct for later default fallbacks
           log.debug(
-            `fallback LLM: appended gateway default model "${defaultModel.trim()}" as implicit last resort`,
+            `fallback LLM: appended gateway default model "${trimmed}" as implicit last resort`,
           );
         }
       }

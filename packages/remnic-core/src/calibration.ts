@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { FallbackLlmClient } from "./fallback-llm.js";
-import type { GatewayConfig, MemoryFile } from "./types.js";
+import type { AgentPersonaModelConfig, GatewayConfig, MemoryFile } from "./types.js";
 import { listJsonFiles, readJsonFile } from "./json-store.js";
 import { isRecord } from "./store-contract.js";
 import { log } from "./logger.js";
@@ -226,6 +226,7 @@ export async function synthesizeCalibrationRules(
   llm: FallbackLlmClient,
   existingRules: CalibrationRule[],
   agentId?: string,
+  modelChain?: AgentPersonaModelConfig,
 ): Promise<CalibrationRule[]> {
   if (corrections.length < 2) return [];
 
@@ -244,7 +245,7 @@ export async function synthesizeCalibrationRules(
       { role: "system", content: CLUSTER_PROMPT },
       { role: "user", content: `Here are ${corrections.length} corrections from this user:\n\n${correctionText}${existingRulesText}` },
     ],
-    { temperature: 0.3, maxTokens: 3000, agentId },
+    { temperature: 0.3, maxTokens: 3000, agentId, modelChain },
   );
 
   if (!response?.content) return [];
@@ -349,13 +350,14 @@ export async function runCalibrationConsolidation(options: {
   memoryDir: string;
   gatewayConfig?: GatewayConfig;
   gatewayAgentId?: string;
+  modelChain?: AgentPersonaModelConfig;
   workspaceDir?: string;
 }): Promise<CalibrationRule[]> {
   try {
     const llm = new FallbackLlmClient(options.gatewayConfig, {
       workspaceDir: options.workspaceDir,
     });
-    if (!llm.isAvailable(options.gatewayAgentId)) {
+    if (!llm.isAvailable({ agentId: options.gatewayAgentId, modelChain: options.modelChain })) {
       log.debug("[calibration] no LLM available — skipping consolidation");
       return [];
     }
@@ -368,7 +370,7 @@ export async function runCalibrationConsolidation(options: {
 
     const existingIndex = await readCalibrationIndex(options.memoryDir);
 
-    const newRules = await synthesizeCalibrationRules(corrections, llm, existingIndex.rules, options.gatewayAgentId);
+    const newRules = await synthesizeCalibrationRules(corrections, llm, existingIndex.rules, options.gatewayAgentId, options.modelChain);
     if (newRules.length === 0) {
       log.debug("[calibration] no new calibration rules synthesized");
       return existingIndex.rules;

@@ -490,7 +490,7 @@ Route all Engram LLM calls through the OpenClaw gateway's agent model chain inst
 | `modelSource` | `gateway` for new OpenClaw installs; `plugin` otherwise | `gateway` delegates to a gateway agent's model chain; `plugin` uses Engram's own openai/localLlm config |
 | `gatewayAgentId` | `""` | Agent persona ID from `openclaw.json → agents.list[]` for primary LLM calls (extraction, consolidation, summarization). Falls back to `agents.defaults.model` if empty. |
 | `fastGatewayAgentId` | `""` | Agent persona ID for fast-tier ops (rerank, entity summaries, compression guidelines). Uses `gatewayAgentId` chain when empty. |
-| `taskModelChain` | _(unset)_ | Optional inline `{ "primary", "fallbacks": [] }` model chain for Remnic's background tasks (extraction, fact/profile/identity consolidation, summarization, causal consolidation). Resolves through gateway providers. When set, it overrides `gatewayAgentId`/`agents.defaults.model` for these tasks only. **Requires `modelSource: "gateway"`** — ignored (with a startup warning) in `plugin` mode. |
+| `taskModelChain` | _(unset)_ | Optional inline `{ "primary", "fallbacks": [] }` model chain for Remnic's background tasks (extraction, extraction judge, fact/profile/identity consolidation, summarization, semantic consolidation, calibration, causal consolidation). Resolves through gateway providers. When set, it overrides `gatewayAgentId`/`agents.defaults.model` for these tasks only. **Requires `modelSource: "gateway"`** — ignored (with a startup warning) in `plugin` mode. |
 
 When `modelSource` is `gateway`:
 
@@ -502,7 +502,7 @@ When `modelSource` is `gateway`:
 
 #### Task-specific model chain (`taskModelChain`)
 
-By default, gateway-mode background work (extraction, consolidation, summarization, causal consolidation) shares the `gatewayAgentId` persona chain — or `agents.defaults.model` when no persona is set. That ties lightweight memory tasks to whatever chain the main agent uses, which is often larger/pricier than these tasks need.
+By default, gateway-mode background work — extraction, the extraction judge, fact/profile/identity consolidation, summarization, semantic consolidation, calibration, and causal consolidation — shares the `gatewayAgentId` persona chain, or `agents.defaults.model` when no persona is set. That ties lightweight memory tasks to whatever chain the main agent uses, which is often larger/pricier than these tasks need. (The one exception: `semanticConsolidationModel: "fast"` keeps using `fastGatewayAgentId` — an explicit fast-tier choice is honored over `taskModelChain`.)
 
 Set `taskModelChain` to give those tasks their own cheap/fast chain **without** defining a persona or touching `agents.defaults.model`:
 
