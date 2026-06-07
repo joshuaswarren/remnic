@@ -368,6 +368,18 @@ test("runner source: remnic→engram fallthrough is PATH-gated and Windows-shim 
   );
 });
 
+test("runner source: materialize child receives an explicit HOME (#1443 review)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  // The spawned materializer must get the runner's resolved HOME so Windows
+  // (HOME usually unset) resolves the same config home as the hook.
+  assert.match(
+    src,
+    /const childEnv = \{ \.\.\.process\.env, HOME \}/,
+    "runMaterialize must pass an explicit HOME to the materializer child",
+  );
+  assert.match(src, /env:\s*childEnv/, "materialize spawnSync must use childEnv");
+});
+
 test("runner source: stdin is the single payload source — no env-var override (#1443 review)", () => {
   const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
   // An inherited REMNIC_HOOK_INPUT must NOT be able to override the piped

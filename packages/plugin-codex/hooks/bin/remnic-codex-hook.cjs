@@ -876,11 +876,18 @@ function runMaterialize(log) {
     }
   }
 
+  // Force HOME to the home dir the runner resolved (HOME → USERPROFILE →
+  // os.homedir()). The materializer resolves config paths from HOME and only
+  // falls back to os.homedir(); on Windows, where HOME is typically unset,
+  // passing it explicitly guarantees the child uses the SAME home as the hook
+  // instead of diverging (#1443 review).
+  const childEnv = { ...process.env, HOME };
   try {
     if (bin && fs.existsSync(bin)) {
       const r = spawnSync(process.execPath, [bin, "--reason", "session_end"], {
         stdio: "ignore",
         timeout: 60000,
+        env: childEnv,
       });
       if (r.status !== 0) log(`codex-materialize session_end failed (packaged bin=${bin})`);
     } else if (repoRoot) {
@@ -889,6 +896,7 @@ function runMaterialize(log) {
         stdio: "ignore",
         timeout: 120000,
         shell: process.platform === "win32",
+        env: childEnv,
       });
       if (r.status !== 0) log("codex-materialize session_end failed (dev script)");
     } else {
