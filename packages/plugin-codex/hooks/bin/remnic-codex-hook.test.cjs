@@ -341,18 +341,25 @@ test("hooks.json: every event resolves via ${PLUGIN_ROOT} and uses powershell (#
   for (const event of ["SessionStart", "PostToolUse", "UserPromptSubmit", "Stop"]) {
     for (const matcher of cfg.hooks[event]) {
       for (const hook of matcher.hooks) {
-        // Codex runs plugin hooks from the session cwd and substitutes
-        // ${PLUGIN_ROOT} into the command (openai/codex discovery.rs), so the
-        // path must be PLUGIN_ROOT-relative, not cwd-relative `./hooks/...`.
+        // Codex runs plugin hooks from the session cwd via sh -lc / cmd /C and
+        // substitutes ${PLUGIN_ROOT} (openai/codex discovery.rs + command_runner.rs),
+        // so the path must be PLUGIN_ROOT-relative AND quoted — an unquoted path
+        // would word-split on a plugin root containing spaces (e.g.
+        // C:\Users\Jane Doe).
         assert.ok(
-          hook.command.startsWith("${PLUGIN_ROOT}/hooks/bin/"),
-          `${event}.command must resolve via \${PLUGIN_ROOT}, got: ${hook.command}`,
+          hook.command.startsWith('"${PLUGIN_ROOT}/hooks/bin/'),
+          `${event}.command must resolve via a quoted \${PLUGIN_ROOT}, got: ${hook.command}`,
+        );
+        assert.match(
+          hook.command,
+          /^"\$\{PLUGIN_ROOT\}\/hooks\/bin\/remnic-codex-hook\.sh"\s/,
+          `${event}.command path must be wrapped in double quotes`,
         );
         assert.ok(hook.commandWindows, `${event} must declare commandWindows`);
         assert.match(
           hook.commandWindows,
-          /\$\{PLUGIN_ROOT\}\\hooks\\bin\\/,
-          `${event}.commandWindows must resolve via \${PLUGIN_ROOT}`,
+          /-File "\$\{PLUGIN_ROOT\}\\hooks\\bin\\remnic-codex-hook\.ps1"\s/,
+          `${event}.commandWindows must pass a quoted \${PLUGIN_ROOT} -File path`,
         );
         // Use `powershell` not `pwsh` so stock Windows 10/11 works without
         // PowerShell 7 installed (#1443 review).
