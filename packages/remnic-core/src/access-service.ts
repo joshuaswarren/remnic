@@ -769,12 +769,15 @@ export interface CodingScopedWriteInput {
   cwd?: string;
   projectTag?: string;
   /**
-   * Internal, server-set only: a write namespace already resolved AND
-   * authorized by `resolveWriteNamespace` for THIS request. Callers that both
-   * pre-peek idempotency and write (the HTTP surface) resolve once and reuse it,
-   * so a concurrent change to the session's coding context can't make the peek
-   * fingerprint and the write namespace diverge. Never populated from a client
-   * request body (not in any input schema).
+   * A write namespace already resolved by `resolveWriteNamespace` for THIS
+   * request. Callers that both pre-peek idempotency and write (the HTTP surface)
+   * resolve once and reuse it, so a concurrent change to the session's coding
+   * context can't make the peek fingerprint and the write namespace diverge.
+   *
+   * Not trusted blindly: the resolver re-verifies it against a fresh authorized
+   * resolution of the same request and rejects any mismatch, so it can never
+   * widen access (it is not in any input schema, and even a forged value cannot
+   * escalate to another principal's namespace).
    */
   writeNamespaceOverride?: string;
 }
@@ -1203,15 +1206,26 @@ export class EngramAccessService {
       authenticatedPrincipal?: string;
     },
   ): Promise<string> {
-    // Reuse a namespace already resolved+authorized for this request (HTTP
-    // resolves once via resolveWriteNamespace and threads it through the
-    // idempotency peek AND the write, so a concurrent session change can't make
-    // them diverge). Server-set only — never sourced from a client body.
+    // Reuse a namespace already resolved for this request (HTTP resolves once
+    // via resolveWriteNamespace and threads it through the idempotency peek AND
+    // the write, so a concurrent session change can't make them diverge). The
+    // override is NOT trusted blindly — it is re-verified against a fresh
+    // authorized resolution of the same request, so it can never widen access
+    // (a forged override pointing at another principal's namespace is rejected).
     if (
       typeof request.writeNamespaceOverride === "string" &&
       request.writeNamespaceOverride.length > 0
     ) {
-      return request.writeNamespaceOverride;
+      const authorized = await this.resolveCodingScopedWriteNamespace({
+        ...request,
+        writeNamespaceOverride: undefined,
+      });
+      if (request.writeNamespaceOverride !== authorized) {
+        throw new EngramAccessInputError(
+          `namespace is not writable: ${request.writeNamespaceOverride}`,
+        );
+      }
+      return authorized;
     }
     const hasExplicitNamespace =
       typeof request.namespace === "string" && request.namespace.trim().length > 0;

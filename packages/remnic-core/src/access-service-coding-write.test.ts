@@ -173,26 +173,40 @@ test("#1434 unqualified write with no principal policy stays on the default name
   assert.equal(resolved, "default");
 });
 
-test("#1434 writeNamespaceOverride is reused verbatim (HTTP resolve-once, no peek/write race)", async () => {
+test("#1434 resolveWriteNamespace once + writeNamespaceOverride reuse agree (HTTP peek/write)", async () => {
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
-  // resolveWriteNamespace resolves once...
-  const once = await service.resolveWriteNamespace({
+  const req = {
     sessionKey: "sess-http",
     authenticatedPrincipal: "alice",
     projectTag: "Blend/Supply",
-  });
+  };
+  // HTTP resolves the namespace once...
+  const once = await service.resolveWriteNamespace(req);
   assert.equal(once, projectNamespaceFor("Blend/Supply"));
-  // ...and reusing it via writeNamespaceOverride returns it verbatim even if the
-  // session context / cwd would now resolve differently.
-  const reused = await resolver(service)({
-    sessionKey: "sess-http",
-    authenticatedPrincipal: "alice",
-    projectTag: "Different/Project",
-    writeNamespaceOverride: once,
-    content: "x",
-  });
+  // ...then the peek and the write reuse it; the resolver re-verifies it matches
+  // this request's authorized resolution and returns the same value, so the
+  // idempotency fingerprint and the write namespace can't diverge.
+  const reused = await resolver(service)({ ...req, writeNamespaceOverride: once, content: "x" });
   assert.equal(reused, once);
+});
+
+test("#1434 a forged writeNamespaceOverride cannot widen access (re-verified)", async () => {
+  // A caller setting an override that does NOT match this request's authorized
+  // resolution must be rejected — the override can't escalate to another
+  // namespace.
+  const orch = makeOrchestratorStub();
+  const service = new EngramAccessService(orch);
+  await assert.rejects(
+    resolver(service)({
+      sessionKey: "sess-forge",
+      authenticatedPrincipal: "alice",
+      // no cwd/projectTag => authorized resolution is "default"
+      writeNamespaceOverride: "victim-secret",
+      content: "x",
+    }),
+    /not writable/,
+  );
 });
 
 test("#1434 namespaces disabled: cwd/projectTag are a no-op (common single-tenant MCP case)", async () => {

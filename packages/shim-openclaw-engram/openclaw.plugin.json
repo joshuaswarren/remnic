@@ -511,7 +511,8 @@
           },
           "narrativeModel": {
             "type": "string",
-            "default": ""
+            "default": "",
+            "description": "Model used to write dream-journal narratives. Under modelSource=plugin this must be an OpenAI model id used with the direct OpenAI key. Under modelSource=gateway it accepts a provider-qualified id (e.g. zai/glm-4.7-flash) routed through gateway providers — no direct OpenAI key required; leave empty to fall back to taskModelChain / the gateway default chain."
           },
           "narrativePromptStyle": {
             "type": "string",
@@ -3164,7 +3165,9 @@
       "taskModelChain": {
         "type": "object",
         "description": "Optional task-specific gateway model chain for Remnic's background LLM work (extraction, fact/profile/identity consolidation, summarization, causal consolidation). When set, this chain is resolved through gateway providers instead of gatewayAgentId or agents.defaults.model. Only applies when modelSource is 'gateway'.",
-        "required": ["primary"],
+        "required": [
+          "primary"
+        ],
         "additionalProperties": false,
         "properties": {
           "primary": {
