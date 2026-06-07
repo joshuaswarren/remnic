@@ -2822,6 +2822,18 @@ export class EngramAccessService {
   private xrayQueue: Promise<void> = Promise.resolve();
 
   async memoryStore(request: EngramAccessMemoryStoreRequest): Promise<EngramAccessWriteResponse> {
+    // A real (non-dryRun) store attaches coding context to the session exactly
+    // as recall does (executeRecall → maybeAttachCodingContext), so a store made
+    // with per-call cwd/projectTag seeds the session binding and a LATER bare
+    // recall on the same session (no per-call context) is scoped to the same
+    // project and finds the memory (Cursor review). dryRun stays read-only — it
+    // previews the namespace via the read-only resolver without mutating state.
+    if (request.dryRun !== true) {
+      await this.maybeAttachCodingContext(request.sessionKey, {
+        cwd: request.cwd,
+        projectTag: request.projectTag,
+      });
+    }
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
@@ -2903,6 +2915,16 @@ export class EngramAccessService {
   }
 
   async suggestionSubmit(request: EngramAccessSuggestionSubmitRequest): Promise<EngramAccessWriteResponse> {
+    // Mirror recall's coding-context attach on a real submit so a per-call
+    // cwd/projectTag seeds the session binding and a later bare recall on the
+    // same session is scoped to the same project (Cursor review). dryRun stays
+    // read-only (preview only).
+    if (request.dryRun !== true) {
+      await this.maybeAttachCodingContext(request.sessionKey, {
+        cwd: request.cwd,
+        projectTag: request.projectTag,
+      });
+    }
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {

@@ -314,6 +314,72 @@ test("#1434 namespaces disabled: cwd/projectTag are a no-op (common single-tenan
   assert.equal(resolved, "default");
 });
 
+test("#1434 a real memory_store attaches coding context so a later bare recall on the session is scoped (Cursor review)", async () => {
+  // A store with sessionKey + per-call projectTag must seed the session's
+  // coding binding (like recall's maybeAttachCodingContext), so a SUBSEQUENT
+  // bare recall on the same session — one that omits cwd/projectTag — is scoped
+  // to the same project and finds the memory.
+  const contexts = new Map<string, CodingContext>();
+  const getStorageCalls: Array<string | undefined> = [];
+  const orch = {
+    config: {
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      codingMode: { projectScope: true },
+      memoryDir: "/synthetic/remnic-coding-write-attach",
+      recallCrossNamespaceBudgetEnabled: false,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 10,
+      recallCrossNamespaceBudgetHardLimit: 30,
+    },
+    getCodingContextForSession: (sk: string) => contexts.get(sk) ?? null,
+    setCodingContextForSession: (sk: string, ctx: CodingContext) => {
+      contexts.set(sk, ctx);
+    },
+    getStorage: async (ns?: string) => {
+      getStorageCalls.push(ns);
+      return {
+        readAllMemories: async () => [],
+        writeMemory: async () => "mem-1",
+        appendMemoryLifecycleEvents: async () => {},
+      };
+    },
+  } as unknown as Orchestrator;
+  const service = new EngramAccessService(orch);
+
+  const res = await service.memoryStore({
+    sessionKey: "sess-attach",
+    authenticatedPrincipal: "alice",
+    projectTag: "Blend/Supply",
+    content: "durable project memory",
+    category: "fact",
+    confidence: 0.9,
+    tags: [],
+  } as unknown as Parameters<EngramAccessService["memoryStore"]>[0]);
+
+  assert.equal(res.status, "stored");
+  assert.equal(res.namespace, projectNamespaceFor("Blend/Supply"));
+  // The store attached the coding context the recall path reads.
+  assert.equal(
+    contexts.get("sess-attach")?.projectId,
+    projectTagProjectId("Blend/Supply"),
+  );
+  assert.ok(
+    getStorageCalls.every((ns) => ns === projectNamespaceFor("Blend/Supply")),
+    `expected all getStorage calls on the project namespace, got ${JSON.stringify(getStorageCalls)}`,
+  );
+  // A later BARE resolve (no per-call context) on the same session — what a
+  // subsequent recall on this session uses — is now scoped to the same project.
+  const bare = await resolver(service)({
+    sessionKey: "sess-attach",
+    authenticatedPrincipal: "alice",
+    content: "y",
+  });
+  assert.equal(bare, projectNamespaceFor("Blend/Supply"));
+});
+
 // ── Persist layer (#1434 P1/High): a pre-resolved project namespace must reach
 // storage instead of being rejected by the static policy allow-list. ──────────
 
