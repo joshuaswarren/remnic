@@ -150,7 +150,12 @@ function parseMcpRequest<N extends SchemaName>(
   const allowedKeys = STRICT_MCP_SCHEMA_KEYS[schemaName];
   if (allowedKeys) {
     const allowed = new Set(allowedKeys);
-    const unexpected = Object.keys(args).filter((key) => !allowed.has(key));
+    // Strip known synthetic client-injected properties (e.g., cwd, projectTag)
+    // that are sent by MCP clients for git context resolution but are not
+    // part of the explicit business-logic schema for write tools.
+    // This matches the behavior of recall/observe which accept these fields.
+    const syntheticKeys = new Set(["cwd", "projectTag"]);
+    const unexpected = Object.keys(args).filter((key) => !allowed.has(key) && !syntheticKeys.has(key));
     if (unexpected.length > 0) {
       throw new EngramAccessInputError(
         `request validation failed: (root): Unrecognized key(s) in object: ${unexpected.join(", ")}`,
@@ -755,6 +760,8 @@ export class EngramMcpServer {
             entityRef: { type: "string" },
             ttl: { type: "string" },
             sourceReason: { type: "string" },
+            cwd: { type: "string", description: "Working directory for auto git-context resolution (ignored by this tool)." },
+            projectTag: { type: "string", description: "Project tag for non-git project scoping (ignored by this tool)." },
           },
           required: ["content"],
           additionalProperties: false,
@@ -778,6 +785,8 @@ export class EngramMcpServer {
             entityRef: { type: "string" },
             ttl: { type: "string" },
             sourceReason: { type: "string" },
+            cwd: { type: "string", description: "Working directory for auto git-context resolution (ignored by this tool)." },
+            projectTag: { type: "string", description: "Project tag for non-git project scoping (ignored by this tool)." },
           },
           required: ["content"],
           additionalProperties: false,
