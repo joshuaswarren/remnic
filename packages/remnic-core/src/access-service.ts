@@ -1229,7 +1229,18 @@ export class EngramAccessService {
     // Mirror that precedence here: session context first, per-call as fallback
     // (Codex review — a per-call-wins write would land in a project that the
     // same session's recall, still on the bound project, never searches).
+    //
+    // A sessionKey is REQUIRED to apply the overlay. The recall path can only
+    // attach/look up coding context per session (`maybeAttachCodingContext` and
+    // `applyCodingNamespaceOverlay` both no-op without a sessionKey), so a
+    // sessionless recall always searches the base namespace. A sessionless
+    // write must therefore also stay on the base — otherwise a client that
+    // injects cwd/projectTag but no sessionKey would store into
+    // `default-project-*` that its own recall never searches (Codex review).
+    const hasSession =
+      typeof request.sessionKey === "string" && request.sessionKey.length > 0;
     const overlay =
+      hasSession &&
       this.orchestrator.config.namespacesEnabled &&
       this.orchestrator.config.codingMode?.projectScope
         ? resolveCodingNamespaceOverlay(

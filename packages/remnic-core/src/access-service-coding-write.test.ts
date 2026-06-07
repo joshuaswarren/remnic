@@ -90,6 +90,22 @@ test("#1434 projectTag scopes the write to the project namespace, read-only", as
   );
 });
 
+test("#1434 a sessionless write with projectTag stays on the base namespace (recall symmetry)", async () => {
+  // Without a sessionKey the recall path can't attach or look up coding context
+  // (maybeAttachCodingContext / applyCodingNamespaceOverlay both no-op), so a
+  // sessionless recall searches the base namespace. A sessionless write must
+  // therefore also stay on the base — else the store would be hidden from the
+  // same client's recall (Codex review).
+  const orch = makeOrchestratorStub();
+  const service = new EngramAccessService(orch);
+  const resolved = await resolver(service)({
+    authenticatedPrincipal: "alice",
+    projectTag: "Blend/Supply",
+    content: "x",
+  });
+  assert.equal(resolved, "default");
+});
+
 test("#1434 an existing session coding context scopes the write (recall-then-store flow)", async () => {
   const orch = makeOrchestratorStub();
   orch.setCodingContextForSession("sess-ctx", {
