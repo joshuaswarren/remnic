@@ -243,6 +243,17 @@ export const memoryStoreRequestSchema = z.object({
   entityRef: entityRefSchema,
   ttl: ttlSchema,
   sourceReason: sourceReasonSchema,
+  // Git/project context for project-scoped writes (#1434). When no explicit
+  // `namespace` is given, these route the write to the same project namespace
+  // recall/observe resolve from `cwd`/`projectTag` (issue #569, rule 42). Also
+  // lets MCP clients that auto-inject `cwd` (e.g. Pi MCPorter) call write tools.
+  cwd: z.string().trim().min(1, "cwd must be non-empty when provided").max(2048).optional(),
+  projectTag: z
+    .string()
+    .trim()
+    .min(1, "projectTag must be non-empty when provided")
+    .max(256)
+    .optional(),
 });
 
 export const suggestionSubmitRequestSchema = memoryStoreRequestSchema;

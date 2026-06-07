@@ -262,6 +262,115 @@ test("MCP memory write tools reject malformed arguments before dispatch", async 
   }
 });
 
+test("MCP write tools accept and forward client-injected cwd/projectTag (#1434)", async () => {
+  for (const toolName of ["engram.memory_store", "engram.suggestion_submit"]) {
+    let received: Record<string, unknown> | undefined;
+    const service = {
+      ...makeMockService(),
+      memoryStore: async (args: Record<string, unknown>) => {
+        received = args;
+        return {
+          schemaVersion: 1,
+          operation: "memory_store",
+          namespace: "default",
+          dryRun: true,
+          accepted: true,
+          queued: false,
+          status: "validated",
+        };
+      },
+      suggestionSubmit: async (args: Record<string, unknown>) => {
+        received = args;
+        return {
+          schemaVersion: 1,
+          operation: "suggestion_submit",
+          namespace: "default",
+          dryRun: true,
+          accepted: true,
+          queued: false,
+          status: "validated",
+        };
+      },
+    } as unknown as EngramAccessService;
+    const server = new EngramMcpServer(service);
+
+    const response = await server.handleRequest(
+      makeToolRequest(toolName, {
+        content: "valid durable content",
+        category: "fact",
+        dryRun: true,
+        cwd: "/home/dev/project-x",
+        projectTag: "Blend/Supply",
+      }),
+    );
+    const result = (response as Record<string, unknown> & {
+      result?: { isError?: boolean };
+    }).result;
+
+    assert.equal(result?.isError, false, `${toolName} should accept cwd/projectTag`);
+    assert.equal(received?.cwd, "/home/dev/project-x", `${toolName} must forward cwd`);
+    assert.equal(received?.projectTag, "Blend/Supply", `${toolName} must forward projectTag`);
+  }
+});
+
+test("MCP write tools still reject genuinely-unknown keys after the cwd fix (#1434)", async () => {
+  let dispatched = false;
+  const service = {
+    ...makeMockService(),
+    memoryStore: async () => {
+      dispatched = true;
+      return {
+        schemaVersion: 1,
+        operation: "memory_store",
+        namespace: "default",
+        dryRun: true,
+        accepted: true,
+        queued: false,
+        status: "validated",
+      };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+  const response = await server.handleRequest(
+    makeToolRequest("engram.memory_store", {
+      content: "valid durable content",
+      category: "fact",
+      dryRun: true,
+      cwd: "/ok",
+      bogusField: "must still be rejected",
+    }),
+  );
+  const result = (response as Record<string, unknown> & {
+    result?: { isError?: boolean; content?: Array<{ text?: string }> };
+  }).result;
+  assert.equal(result?.isError, true, "unknown keys must still be rejected");
+  assert.equal(dispatched, false, "malformed write must not dispatch");
+});
+
+test("MCP capsule tools tolerate client-injected cwd/projectTag (#1434)", async () => {
+  for (const toolName of [
+    "engram.capsule_list",
+    "engram.capsule_export",
+    "engram.capsule_import",
+  ]) {
+    const service = {
+      ...makeMockService(),
+      capsuleList: async () => ({ capsules: [] }),
+      capsuleExport: async () => ({ exported: true }),
+      capsuleImport: async () => ({ imported: true }),
+    } as unknown as EngramAccessService;
+    const server = new EngramMcpServer(service);
+    const args: Record<string, unknown> = { cwd: "/x", projectTag: "t" };
+    if (toolName === "engram.capsule_export") args.name = "cap-1";
+    if (toolName === "engram.capsule_import") args.archivePath = "/tmp/a.capsule.json.gz";
+    const response = await server.handleRequest(makeToolRequest(toolName, args));
+    const result = (response as Record<string, unknown> & {
+      result?: { isError?: boolean };
+    }).result;
+    assert.equal(result?.isError, false, `${toolName} should tolerate cwd/projectTag`);
+  }
+});
+
 test("MCP session override is injected only into tools that accept sessionKey", async () => {
   let capsuleListArgs: Record<string, unknown> | undefined;
   let observeArgs: Record<string, unknown> | undefined;

@@ -755,9 +755,25 @@ export interface EngramAccessWriteEnvelope {
   authenticatedPrincipal?: string;
 }
 
-export interface EngramAccessMemoryStoreRequest extends EngramAccessWriteEnvelope, ExplicitCaptureInput {}
+/**
+ * Optional git/project context for project-scoped writes (#1434). When no
+ * explicit `namespace` is supplied, these route the write to the same project
+ * namespace recall/observe resolve from `cwd`/`projectTag` (rule 42 symmetry).
+ */
+export interface CodingScopedWriteInput {
+  cwd?: string;
+  projectTag?: string;
+}
 
-export interface EngramAccessSuggestionSubmitRequest extends EngramAccessWriteEnvelope, ExplicitCaptureInput {}
+export interface EngramAccessMemoryStoreRequest
+  extends EngramAccessWriteEnvelope,
+    ExplicitCaptureInput,
+    CodingScopedWriteInput {}
+
+export interface EngramAccessSuggestionSubmitRequest
+  extends EngramAccessWriteEnvelope,
+    ExplicitCaptureInput,
+    CodingScopedWriteInput {}
 
 export interface EngramAccessWriteResponse {
   schemaVersion: 1;
@@ -1113,6 +1129,61 @@ export class EngramAccessService {
       throw new EngramAccessInputError(`namespace is not writable: ${resolved}`);
     }
     return resolved;
+  }
+
+  /**
+   * Resolve the write namespace for explicit-write tools (memory_store /
+   * suggestion_submit), applying the same project-scope overlay the read path
+   * uses so writes are discoverable by project-scoped recall (#1434, rule 42).
+   *
+   * Precedence mirrors recall/observe:
+   *  - An explicit `namespace` always wins (no coding overlay).
+   *  - Otherwise the session's coding context — attached here from
+   *    `cwd`/`projectTag`, or earlier by recall/observe on the same session —
+   *    overlays the principal-default base namespace.
+   *
+   * `defaultNamespaceForPrincipal` + `applyCodingNamespaceOverlay` both collapse
+   * to the global default namespace when `namespacesEnabled` is false or
+   * `codingMode.projectScope` is off, so behavior is unchanged for
+   * non-coding-mode deployments (the common single-tenant MCP case).
+   */
+  private async resolveCodingScopedWriteNamespace(
+    request: CodingScopedWriteInput & {
+      namespace?: string;
+      sessionKey?: string;
+      authenticatedPrincipal?: string;
+    },
+  ): Promise<string> {
+    const hasExplicitNamespace =
+      typeof request.namespace === "string" && request.namespace.trim().length > 0;
+    if (hasExplicitNamespace) {
+      return this.resolveWritableNamespace(
+        request.namespace,
+        request.sessionKey,
+        request.authenticatedPrincipal,
+      );
+    }
+    if (request.sessionKey && (request.cwd || request.projectTag)) {
+      await this.maybeAttachCodingContext(request.sessionKey, {
+        cwd: request.cwd,
+        projectTag: request.projectTag,
+      });
+    }
+    const principal = this.resolveRequestPrincipal(
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
+    const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
+    // Authorize the BASE namespace, then apply the project overlay (mirrors
+    // observe's objective-state write path). The overlay is a principal-owned
+    // `project-*` sub-namespace derived from an authorized base (rule 42), so it
+    // needs no separate write policy — and re-checking it would wrongly reject
+    // project writes, since canWriteNamespace denies unpolicied non-default
+    // namespaces.
+    if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
+      throw new EngramAccessInputError(`namespace is not writable: ${base}`);
+    }
+    return this.orchestrator.applyCodingNamespaceOverlay(request.sessionKey, base);
   }
 
   private async objectiveStateStoreLocationForNamespace(namespace: string): Promise<{
@@ -2663,11 +2734,7 @@ export class EngramAccessService {
   private xrayQueue: Promise<void> = Promise.resolve();
 
   async memoryStore(request: EngramAccessMemoryStoreRequest): Promise<EngramAccessWriteResponse> {
-    const namespace = this.resolveWritableNamespace(
-      request.namespace,
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
+    const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
       throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);
@@ -2724,11 +2791,7 @@ export class EngramAccessService {
   }
 
   async peekMemoryStoreIdempotency(request: EngramAccessMemoryStoreRequest): Promise<EngramAccessIdempotencyStatus> {
-    const namespace = this.resolveWritableNamespace(
-      request.namespace,
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
+    const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
       throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);
@@ -2752,11 +2815,7 @@ export class EngramAccessService {
   }
 
   async suggestionSubmit(request: EngramAccessSuggestionSubmitRequest): Promise<EngramAccessWriteResponse> {
-    const namespace = this.resolveWritableNamespace(
-      request.namespace,
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
+    const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
       throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);

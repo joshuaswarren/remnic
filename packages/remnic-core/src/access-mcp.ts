@@ -115,6 +115,8 @@ const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
     "entityRef",
     "ttl",
     "sourceReason",
+    "cwd",
+    "projectTag",
   ],
   suggestionSubmit: [
     "schemaVersion",
@@ -129,6 +131,8 @@ const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
     "entityRef",
     "ttl",
     "sourceReason",
+    "cwd",
+    "projectTag",
   ],
   capsuleExport: [
     "name",
@@ -138,9 +142,40 @@ const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
     "peerIds",
     "includeTranscripts",
     "encrypt",
+    "cwd",
+    "projectTag",
   ],
-  capsuleImport: ["archivePath", "namespace", "mode", "passphrase"],
-  capsuleList: ["namespace"],
+  capsuleImport: ["archivePath", "namespace", "mode", "passphrase", "cwd", "projectTag"],
+  capsuleList: ["namespace", "cwd", "projectTag"],
+};
+
+// Shared JSON-schema fragments for the client-injected git/project context
+// fields (#1434). Declared once to avoid drift across tool definitions.
+// `_SCOPED` is for write tools that resolve a project namespace from these
+// fields; `_IGNORED` is for tools that merely tolerate them for MCP client
+// compatibility (clients like Pi MCPorter auto-inject `cwd` on every call).
+const MCP_GIT_CONTEXT_SCHEMA_PROPS_SCOPED: Record<string, unknown> = {
+  cwd: {
+    type: "string",
+    description:
+      "Optional working directory. When no explicit namespace is given, resolves the project namespace this write is stored in (mirrors recall/observe).",
+  },
+  projectTag: {
+    type: "string",
+    description:
+      "Optional project tag for non-git project scoping. When no explicit namespace is given, routes this write to the tagged project namespace.",
+  },
+};
+const MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED: Record<string, unknown> = {
+  cwd: {
+    type: "string",
+    description:
+      "Accepted for MCP client compatibility (git-context auto-injection); ignored by this tool.",
+  },
+  projectTag: {
+    type: "string",
+    description: "Accepted for MCP client compatibility; ignored by this tool.",
+  },
 };
 
 function parseMcpRequest<N extends SchemaName>(
@@ -614,6 +649,7 @@ export class EngramMcpServer {
             },
             includeTranscripts: { type: "boolean" },
             encrypt: { type: "boolean" },
+            ...MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED,
           },
           required: ["name"],
           additionalProperties: false,
@@ -639,6 +675,7 @@ export class EngramMcpServer {
               type: "string",
               description: "Passphrase for encrypted capsule archives.",
             },
+            ...MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED,
           },
           required: ["archivePath"],
           additionalProperties: false,
@@ -651,6 +688,7 @@ export class EngramMcpServer {
           type: "object",
           properties: {
             namespace: { type: "string" },
+            ...MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED,
           },
           additionalProperties: false,
         },
@@ -755,6 +793,7 @@ export class EngramMcpServer {
             entityRef: { type: "string" },
             ttl: { type: "string" },
             sourceReason: { type: "string" },
+            ...MCP_GIT_CONTEXT_SCHEMA_PROPS_SCOPED,
           },
           required: ["content"],
           additionalProperties: false,
@@ -778,6 +817,7 @@ export class EngramMcpServer {
             entityRef: { type: "string" },
             ttl: { type: "string" },
             sourceReason: { type: "string" },
+            ...MCP_GIT_CONTEXT_SCHEMA_PROPS_SCOPED,
           },
           required: ["content"],
           additionalProperties: false,
@@ -2502,6 +2542,8 @@ export class EngramMcpServer {
           entityRef: body.entityRef,
           ttl: body.ttl,
           sourceReason: body.sourceReason,
+          cwd: body.cwd,
+          projectTag: body.projectTag,
         });
       }
       case "engram.suggestion_submit": {
@@ -2520,6 +2562,8 @@ export class EngramMcpServer {
           entityRef: body.entityRef,
           ttl: body.ttl,
           sourceReason: body.sourceReason,
+          cwd: body.cwd,
+          projectTag: body.projectTag,
         });
       }
       case "engram.entity_get":
