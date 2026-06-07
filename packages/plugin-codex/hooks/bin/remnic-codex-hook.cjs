@@ -7,7 +7,6 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const https = require("https");
-const readline = require("readline");
 const { spawnSync } = require("child_process");
 
 const eventName = process.argv[2] || "";
@@ -129,15 +128,10 @@ function requestJson(endpointPath, token, body, timeoutMs) {
   });
 }
 
-async function transcriptMessages(transcriptPath, startLine) {
+function transcriptMessages(transcriptPath) {
   const messages = [];
-  let lineNumber = 0;
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) return { messages, totalLines: 0 };
-  const stream = fs.createReadStream(transcriptPath, { encoding: "utf8" });
-  const reader = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  for await (const line of reader) {
-    lineNumber++;
-    if (lineNumber <= startLine) continue;
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) return messages;
+  for (const line of fs.readFileSync(transcriptPath, "utf8").split("\n")) {
     if (!line.trim()) continue;
     let entry;
     try {
@@ -158,7 +152,7 @@ async function transcriptMessages(transcriptPath, startLine) {
     }
     if (text) messages.push({ role: msg.role, content: text });
   }
-  return { messages, totalLines: lineNumber };
+  return messages;
 }
 
 function stateDir() {
@@ -320,6 +314,7 @@ async function userPromptRecall(input, token) {
 }
 
 async function observeTranscript(input, token, isFinal) {
+  output({ continue: true });
   const sessionId = input.session_id || "";
   const transcriptPath = input.transcript_path || "";
   if (
@@ -329,8 +324,8 @@ async function observeTranscript(input, token, isFinal) {
     !fs.existsSync(transcriptPath)
   )
     return;
-  const cursor = readCursor(sessionId);
-  const { messages: newMessages, totalLines } = await transcriptMessages(transcriptPath, cursor);
+  const messages = transcriptMessages(transcriptPath);
+  const newMessages = messages.slice(readCursor(sessionId));
   if (newMessages.length > 0) {
     const response = await requestJson(
       "/engram/v1/observe",
@@ -338,9 +333,9 @@ async function observeTranscript(input, token, isFinal) {
       { sessionKey: sessionId, messages: newMessages },
       isFinal ? 30000 : 120000
     );
-    if (response !== null && !isFinal) writeCursor(sessionId, totalLines);
+    if (response !== null && !isFinal) writeCursor(sessionId, messages.length);
   } else if (!isFinal) {
-    writeCursor(sessionId, totalLines);
+    writeCursor(sessionId, messages.length);
   }
   if (isFinal) clearSessionState(sessionId);
 }
@@ -365,8 +360,8 @@ async function main() {
   }
   if (eventName === "session-start") return sessionStart(input, token);
   if (eventName === "user-prompt-recall") return userPromptRecall(input, token);
-  if (eventName === "post-tool-observe") { await observeTranscript(input, token, false); output({ continue: true }); return; }
-  if (eventName === "session-end") { await observeTranscript(input, token, true); output({ continue: true }); return; }
+  if (eventName === "post-tool-observe") return observeTranscript(input, token, false);
+  if (eventName === "session-end") return observeTranscript(input, token, true);
   output({ continue: true });
 }
 
