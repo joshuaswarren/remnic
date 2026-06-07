@@ -1220,17 +1220,21 @@ export class EngramAccessService {
     }
     // Project scoping only applies when namespaces are enabled (else overlaying
     // would create false isolation over a single storage dir) and projectScope
-    // is on. Mirror the orchestrator's read/write overlay using the per-call
-    // cwd/projectTag (the project explicitly identified for THIS write), else
-    // the session's existing context. Per-call wins so a client that reuses one
-    // sessionKey across projects (auto-injecting the current cwd) is not stored
-    // under a stale session binding (Codex review).
+    // is on. The coding context MUST be resolved exactly as the recall path
+    // resolves it, or a scoped store won't be discoverable by scoped recall
+    // (the whole point of #1434). Recall calls `maybeAttachCodingContext`, which
+    // returns early when the session already has a context — so recall is
+    // SESSION-FIRST: an existing session binding wins, and the per-call
+    // cwd/projectTag is only used to seed a context when none is attached yet.
+    // Mirror that precedence here: session context first, per-call as fallback
+    // (Codex review — a per-call-wins write would land in a project that the
+    // same session's recall, still on the bound project, never searches).
     const overlay =
       this.orchestrator.config.namespacesEnabled &&
       this.orchestrator.config.codingMode?.projectScope
         ? resolveCodingNamespaceOverlay(
-            (await this.resolveCodingContextFromOptions(request)) ??
-              this.orchestrator.getCodingContextForSession(request.sessionKey),
+            this.orchestrator.getCodingContextForSession(request.sessionKey) ??
+              (await this.resolveCodingContextFromOptions(request)),
             this.orchestrator.config.codingMode,
             this.orchestrator.config.defaultNamespace,
           )

@@ -108,9 +108,12 @@ test("#1434 an existing session coding context scopes the write (recall-then-sto
   assert.equal(resolved, projectNamespaceFor("Blend/Supply"));
 });
 
-test("#1434 per-call projectTag overrides a stale session coding binding", async () => {
-  // Session is bound to project A, but this write explicitly identifies B —
-  // the per-call value must win so the memory lands in B's namespace.
+test("#1434 an existing session binding wins over per-call projectTag (recall symmetry)", async () => {
+  // Session is bound to project A; this write also passes per-call projectTag B.
+  // The write MUST resolve to A — the same project the session's recall searches
+  // (recall is session-first: maybeAttachCodingContext returns early when a
+  // context is already attached). A per-call-wins write would land in B, which
+  // that session's recall never searches, so the memory would be undiscoverable.
   const orch = makeOrchestratorStub();
   orch.setCodingContextForSession("sess-reuse", {
     projectId: projectTagProjectId("Project/A"),
@@ -125,8 +128,8 @@ test("#1434 per-call projectTag overrides a stale session coding binding", async
     projectTag: "Project/B",
     content: "x",
   });
-  assert.equal(resolved, projectNamespaceFor("Project/B"));
-  assert.notEqual(resolved, projectNamespaceFor("Project/A"));
+  assert.equal(resolved, projectNamespaceFor("Project/A"));
+  assert.notEqual(resolved, projectNamespaceFor("Project/B"));
 });
 
 test("#1434 explicit namespace wins and bypasses coding overlay", async () => {
