@@ -25,6 +25,16 @@ export type ValidExplicitCapture = {
   entityRef?: string;
   expiresAt?: string;
   sourceReason?: string;
+  /**
+   * When true, `namespace` was already resolved AND authorized by the caller
+   * (the access service's `resolveCodingScopedWriteNamespace`, which auth-checks
+   * the base and derives a session-owned `project-*` overlay). The persist /
+   * queue layer then routes to it directly instead of re-validating against the
+   * static policy allow-list — which would otherwise reject legitimately-derived
+   * dynamic project namespaces (#1434). Callers that do NOT pre-authorize the
+   * namespace must leave this unset so the allow-list guard still applies.
+   */
+  namespacePreResolved?: boolean;
 };
 
 export type ExplicitCaptureSource = "memory_store" | "memory_capture" | "suggestion_submit" | "inline";
@@ -404,7 +414,9 @@ export async function persistExplicitCapture(
   candidate: ValidExplicitCapture,
   source: ExplicitCaptureSource,
 ): Promise<{ id: string; duplicateOf?: string }> {
-  const resolvedNamespace = resolveExplicitCaptureNamespace(orchestrator, candidate.namespace);
+  const resolvedNamespace = candidate.namespacePreResolved
+    ? asTrimmed(candidate.namespace)
+    : resolveExplicitCaptureNamespace(orchestrator, candidate.namespace);
   const duplicateOf = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate);
   if (duplicateOf) {
     return { id: duplicateOf, duplicateOf };
@@ -490,7 +502,12 @@ export async function queueExplicitCaptureForReview(
 ): Promise<{ id: string; duplicateOf?: string }> {
   const reason = sanitizeReviewText(normalizeExplicitCaptureError(error), "explicit capture failed");
   const requestedNamespace = asTrimmed(input.namespace);
-  const queueNamespace = resolveExplicitCaptureReviewNamespace(orchestrator, requestedNamespace);
+  // A caller-pre-authorized namespace (e.g. a session-owned project overlay
+  // from the access service) routes directly; otherwise apply the static
+  // policy allow-list guard (#1434).
+  const queueNamespace = (input as { namespacePreResolved?: boolean }).namespacePreResolved
+    ? requestedNamespace
+    : resolveExplicitCaptureReviewNamespace(orchestrator, requestedNamespace);
   const content = buildExplicitCaptureReviewContent(input, reason);
   const duplicateOf = await findQueuedExplicitCaptureDuplicate(orchestrator, queueNamespace, content);
   if (duplicateOf) {

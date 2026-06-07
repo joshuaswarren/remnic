@@ -1207,10 +1207,14 @@ export class EngramAccessService {
       request.sessionKey,
       request.authenticatedPrincipal,
     );
-    // Preserve the pre-#1434 unqualified-write base. The project overlay below
-    // is a principal-owned `project-*` sub-namespace derived from this
-    // authorized base (rule 42), so it needs no separate write policy.
-    const base = this.resolveNamespace(undefined);
+    // Base is the principal's self namespace — the SAME base recall, observe,
+    // and the orchestrator buffer-flush write path overlay onto (rule 42), so a
+    // project-scoped store lands exactly where project-scoped recall searches.
+    // Collapses to config.defaultNamespace when namespaces are disabled or the
+    // principal has no self policy. The project overlay below is a
+    // principal-owned `project-*` sub-namespace derived from this authorized
+    // base, so it needs no separate write policy.
+    const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
     if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not writable: ${base}`);
     }
@@ -2951,13 +2955,21 @@ export class EngramAccessService {
     namespace: string,
   ): ValidExplicitCapture {
     try {
-      return validateExplicitCaptureInput(
-        {
-          ...request,
-          namespace,
-        },
-        "legacy_tool",
-      );
+      return {
+        ...validateExplicitCaptureInput(
+          {
+            ...request,
+            namespace,
+          },
+          "legacy_tool",
+        ),
+        // The namespace was resolved AND authorized by
+        // resolveCodingScopedWriteNamespace (explicit namespaces via
+        // resolveWritableNamespace; otherwise an auth-checked base + a
+        // session-owned project overlay), so the persist/queue layer must not
+        // re-reject a legitimately-derived dynamic project namespace (#1434).
+        namespacePreResolved: true,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new EngramAccessInputError(message);
