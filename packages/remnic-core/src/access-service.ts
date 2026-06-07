@@ -11,6 +11,7 @@ import {
   combineNamespaces,
   projectTagProjectId,
   resolveCodingNamespaceOverlay,
+  sanitizeBaseFragment,
 } from "./coding/coding-namespace.js";
 import { WorkStorage } from "./work/storage.js";
 import {
@@ -768,18 +769,6 @@ export interface EngramAccessWriteEnvelope {
 export interface CodingScopedWriteInput {
   cwd?: string;
   projectTag?: string;
-  /**
-   * A write namespace already resolved by `resolveWriteNamespace` for THIS
-   * request. Callers that both pre-peek idempotency and write (the HTTP surface)
-   * resolve once and reuse it, so a concurrent change to the session's coding
-   * context can't make the peek fingerprint and the write namespace diverge.
-   *
-   * Not trusted blindly: the resolver re-verifies it against a fresh authorized
-   * resolution of the same request and rejects any mismatch, so it can never
-   * widen access (it is not in any input schema, and even a forged value cannot
-   * escalate to another principal's namespace).
-   */
-  writeNamespaceOverride?: string;
 }
 
 export interface EngramAccessMemoryStoreRequest
@@ -1149,6 +1138,50 @@ export class EngramAccessService {
   }
 
   /**
+   * Authorize a write namespace for the explicit-write tools, accepting BOTH a
+   * normally-writable namespace AND a principal-owned coding-overlay
+   * sub-namespace (`<base>-project-*` / `<base>-branch-*`) derived from an
+   * authorized base. The HTTP surface resolves the write namespace once (so the
+   * idempotency peek and the write can't diverge) and threads the result back as
+   * the request's explicit `namespace`; that resolved value is a `project-*`
+   * overlay which `canWriteNamespace` alone would reject.
+   *
+   * The authorization is STRUCTURAL — derived purely from the namespace string
+   * plus the principal/config, never by re-reading the session's mutable coding
+   * context. That resolves the two competing review constraints at once:
+   *  - No race (Cursor): we never re-read session state between peek and write,
+   *    so a concurrent coding-context change can't make them disagree.
+   *  - No ACL bypass (Codex): a forged namespace pointing at another principal's
+   *    base (or any namespace not prefixed by one of THIS principal's authorized
+   *    bases) is rejected, so the threaded value can't widen access.
+   */
+  private isWritableCodingNamespace(
+    principal: string | undefined,
+    namespace: string,
+  ): boolean {
+    if (canWriteNamespace(principal, namespace, this.orchestrator.config)) return true;
+    const config = this.orchestrator.config;
+    // Coding overlays only exist when namespaces are enabled (else the router
+    // maps every namespace to one dir — false isolation) and projectScope is on.
+    if (!config.namespacesEnabled) return false;
+    if (!config.codingMode?.projectScope) return false;
+    // The overlay is built as combineNamespaces(base, "project-…"/"branch-…"),
+    // where `base` is one of THIS principal's authorized bases. Accept only the
+    // `<baseFragment>-project-…` shape (branchNamespaceName also begins with
+    // `project-`), which keeps the namespace within the principal's own subtree.
+    const bases = new Set<string>([
+      config.defaultNamespace,
+      defaultNamespaceForPrincipal(principal, config),
+    ]);
+    for (const base of bases) {
+      const baseFrag = sanitizeBaseFragment(base);
+      if (!baseFrag) continue;
+      if (namespace.startsWith(`${baseFrag}-project-`)) return true;
+    }
+    return false;
+  }
+
+  /**
    * Resolve a coding context from `cwd`/`projectTag` WITHOUT persisting it to
    * any session — the read-only half of `maybeAttachCodingContext`. Returns
    * null when project scoping is off or nothing resolves. `projectTag` takes
@@ -1188,11 +1221,17 @@ export class EngramAccessService {
    * project-scoped recall (#1434, rule 42).
    *
    * Precedence:
-   *  - An explicit `namespace` always wins (no coding overlay).
-   *  - Otherwise the base namespace is `config.defaultNamespace` — exactly the
-   *    pre-#1434 behavior, so unqualified writes are NOT silently moved to a
-   *    principal self namespace (Codex review). The project overlay is then
-   *    applied on top when a coding context exists and projectScope is on.
+   *  - An explicit `namespace` always wins. It is authorized via
+   *    {@link isWritableCodingNamespace}, which accepts a normally-writable
+   *    namespace AND a principal-owned coding overlay (so the HTTP surface can
+   *    resolve once and thread the resolved overlay back as `namespace`).
+   *  - With NO coding overlay, the write stays on `config.defaultNamespace` —
+   *    exactly the pre-#1434 behavior, so an unqualified write is NOT silently
+   *    moved to a principal self namespace (Codex review).
+   *  - WITH a coding overlay, the base is the principal self namespace
+   *    (`defaultNamespaceForPrincipal`) — the SAME base recall, observe, and the
+   *    orchestrator buffer-flush write path overlay onto (rule 42 / Cursor) — so
+   *    a project-scoped store lands exactly where project-scoped recall searches.
    *
    * Read-only: this NEVER mutates session coding context, so the idempotency
    * peeks and dryRun preflights that call it stay side-effect free (Codex
@@ -1206,76 +1245,67 @@ export class EngramAccessService {
       authenticatedPrincipal?: string;
     },
   ): Promise<string> {
-    // Reuse a namespace already resolved for this request (HTTP resolves once
-    // via resolveWriteNamespace and threads it through the idempotency peek AND
-    // the write, so a concurrent session change can't make them diverge). The
-    // override is NOT trusted blindly — it is re-verified against a fresh
-    // authorized resolution of the same request, so it can never widen access
-    // (a forged override pointing at another principal's namespace is rejected).
-    if (
-      typeof request.writeNamespaceOverride === "string" &&
-      request.writeNamespaceOverride.length > 0
-    ) {
-      const authorized = await this.resolveCodingScopedWriteNamespace({
-        ...request,
-        writeNamespaceOverride: undefined,
-      });
-      if (request.writeNamespaceOverride !== authorized) {
-        throw new EngramAccessInputError(
-          `namespace is not writable: ${request.writeNamespaceOverride}`,
-        );
-      }
-      return authorized;
-    }
     const hasExplicitNamespace =
       typeof request.namespace === "string" && request.namespace.trim().length > 0;
     if (hasExplicitNamespace) {
+      const resolved = this.resolveNamespace(request.namespace);
+      const principal = this.resolveRequestPrincipal(
+        request.sessionKey,
+        request.authenticatedPrincipal,
+      );
+      if (!this.isWritableCodingNamespace(principal, resolved)) {
+        throw new EngramAccessInputError(`namespace is not writable: ${resolved}`);
+      }
+      return resolved;
+    }
+    // Project scoping only applies when namespaces are enabled (else overlaying
+    // would create false isolation over a single storage dir) and projectScope
+    // is on. Mirror the orchestrator's read/write overlay using the per-call
+    // cwd/projectTag (the project explicitly identified for THIS write), else
+    // the session's existing context. Per-call wins so a client that reuses one
+    // sessionKey across projects (auto-injecting the current cwd) is not stored
+    // under a stale session binding (Codex review).
+    const overlay =
+      this.orchestrator.config.namespacesEnabled &&
+      this.orchestrator.config.codingMode?.projectScope
+        ? resolveCodingNamespaceOverlay(
+            (await this.resolveCodingContextFromOptions(request)) ??
+              this.orchestrator.getCodingContextForSession(request.sessionKey),
+            this.orchestrator.config.codingMode,
+            this.orchestrator.config.defaultNamespace,
+          )
+        : null;
+    if (!overlay) {
+      // No coding overlay → unqualified write stays on config.defaultNamespace,
+      // exactly the pre-#1434 behavior (auth-checked, like the legacy path).
       return this.resolveWritableNamespace(
-        request.namespace,
+        undefined,
         request.sessionKey,
         request.authenticatedPrincipal,
       );
     }
+    // Coding overlay → overlay onto the principal self base, the SAME namespace
+    // recall/observe/buffer-flush use. The result is a principal-owned
+    // `project-*` sub-namespace derived from this authorized base, so it needs
+    // no separate write policy.
     const principal = this.resolveRequestPrincipal(
       request.sessionKey,
       request.authenticatedPrincipal,
     );
-    // Base is the principal's self namespace — the SAME base recall, observe,
-    // and the orchestrator buffer-flush write path overlay onto (rule 42), so a
-    // project-scoped store lands exactly where project-scoped recall searches.
-    // Collapses to config.defaultNamespace when namespaces are disabled or the
-    // principal has no self policy. The project overlay below is a
-    // principal-owned `project-*` sub-namespace derived from this authorized
-    // base, so it needs no separate write policy.
     const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
     if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not writable: ${base}`);
     }
-    // Project scoping only applies when namespaces are enabled (else overlaying
-    // would create false isolation over a single storage dir) and projectScope
-    // is on. Mirror the orchestrator's read/write overlay using the session's
-    // per-call cwd/projectTag (the project explicitly identified for THIS
-    // write), else the session's existing context. Per-call wins so a client
-    // that reuses one sessionKey across projects (auto-injecting the current
-    // cwd) is not stored under a stale session binding (Codex review).
-    if (!this.orchestrator.config.namespacesEnabled) return base;
-    const codingContext =
-      (await this.resolveCodingContextFromOptions(request)) ??
-      this.orchestrator.getCodingContextForSession(request.sessionKey);
-    const overlay = resolveCodingNamespaceOverlay(
-      codingContext,
-      this.orchestrator.config.codingMode,
-      this.orchestrator.config.defaultNamespace,
-    );
-    return overlay ? combineNamespaces(base, overlay.namespace) : base;
+    return combineNamespaces(base, overlay.namespace);
   }
 
   /**
    * Resolve the write namespace once for a memory_store / suggestion_submit
    * request. Callers that both pre-peek idempotency and then write (the HTTP
-   * surface) should call this once and pass the result back as
-   * `writeNamespaceOverride` on both calls, so a concurrent change to the
-   * session's coding context cannot make the peek and the write diverge.
+   * surface) should call this once and thread the result back as the request's
+   * explicit `namespace` on both calls, so a concurrent change to the session's
+   * coding context cannot make the peek and the write diverge. The threaded
+   * value is re-authorized structurally by {@link isWritableCodingNamespace}.
    */
   async resolveWriteNamespace(
     request: CodingScopedWriteInput & {

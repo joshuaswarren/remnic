@@ -155,7 +155,7 @@ export function projectTagProjectId(projectTag: string): string {
  * polynomial-backtracking quantifiers, unsafe chars collapse to `-` with
  * leading/trailing dashes suppressed.
  */
-function sanitizeBaseFragment(input: string): string {
+export function sanitizeBaseFragment(input: string): string {
   if (typeof input !== "string") return "";
   const trimmed = input.trim();
   let out = "";

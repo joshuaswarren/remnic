@@ -142,10 +142,12 @@ test("#1434 explicit namespace wins and bypasses coding overlay", async () => {
   assert.equal(resolved, "default");
 });
 
-test("#1434 unqualified write uses the principal self namespace, matching recall", async () => {
-  // Principal "alice" has a self policy: an unqualified write resolves to the
-  // same self namespace recall/observe/buffer use (defaultNamespaceForPrincipal),
-  // so explicit writes are discoverable by that principal's recall.
+test("#1434 unqualified write (self policy) stays on config.defaultNamespace", async () => {
+  // Even when principal "alice" has a self policy, an UNQUALIFIED write (no
+  // coding overlay) stays on config.defaultNamespace — exactly the pre-#1434
+  // behavior. #1434 only re-scopes project-identified writes; it must not
+  // silently move plain unqualified writes to a principal self namespace (Codex
+  // review). The symmetry fix applies to the coding-overlay path only.
   const orch = makeOrchestratorStub({
     namespacePolicies: [
       { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
@@ -157,12 +159,12 @@ test("#1434 unqualified write uses the principal self namespace, matching recall
     authenticatedPrincipal: "alice",
     content: "x",
   });
-  assert.equal(resolved, "alice");
+  assert.equal(resolved, "default");
 });
 
 test("#1434 unqualified write with no principal policy stays on the default namespace", async () => {
-  // No policy named after the principal => base collapses to defaultNamespace,
-  // so behavior is unchanged for the common deployment.
+  // No policy named after the principal => base is defaultNamespace, so behavior
+  // is unchanged for the common deployment.
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
   const resolved = await resolver(service)({
@@ -173,7 +175,30 @@ test("#1434 unqualified write with no principal policy stays on the default name
   assert.equal(resolved, "default");
 });
 
-test("#1434 resolveWriteNamespace once + writeNamespaceOverride reuse agree (HTTP peek/write)", async () => {
+test("#1434 project write overlays onto the principal self base (recall symmetry)", async () => {
+  // With a self policy, a project-scoped write overlays onto the principal self
+  // base (defaultNamespaceForPrincipal) — the SAME base recall/observe/buffer
+  // overlay onto — so the store is discoverable by that principal's
+  // project-scoped recall (Cursor review / rule 42).
+  const orch = makeOrchestratorStub({
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(orch);
+  const resolved = await resolver(service)({
+    sessionKey: "sess-3c",
+    authenticatedPrincipal: "alice",
+    projectTag: "Blend/Supply",
+    content: "x",
+  });
+  assert.equal(
+    resolved,
+    combineNamespaces("alice", projectNamespaceName(projectTagProjectId("Blend/Supply"))),
+  );
+});
+
+test("#1434 HTTP resolves once + threads the result as explicit namespace (peek/write agree)", async () => {
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
   const req = {
@@ -184,25 +209,35 @@ test("#1434 resolveWriteNamespace once + writeNamespaceOverride reuse agree (HTT
   // HTTP resolves the namespace once...
   const once = await service.resolveWriteNamespace(req);
   assert.equal(once, projectNamespaceFor("Blend/Supply"));
-  // ...then the peek and the write reuse it; the resolver re-verifies it matches
-  // this request's authorized resolution and returns the same value, so the
-  // idempotency fingerprint and the write namespace can't diverge.
-  const reused = await resolver(service)({ ...req, writeNamespaceOverride: once, content: "x" });
+  // ...then the peek and the write reuse it as the explicit `namespace`. The
+  // resolver authorizes it STRUCTURALLY (isWritableCodingNamespace) without
+  // re-reading session context, so the idempotency fingerprint and the write
+  // namespace can't diverge (no race) and the value passes through unchanged.
+  const reused = await resolver(service)({ ...req, namespace: once, content: "x" });
   assert.equal(reused, once);
 });
 
-test("#1434 a forged writeNamespaceOverride cannot widen access (re-verified)", async () => {
-  // A caller setting an override that does NOT match this request's authorized
-  // resolution must be rejected — the override can't escalate to another
-  // namespace.
+test("#1434 a forged cross-principal namespace cannot widen access", async () => {
+  // A caller threading a namespace that is NOT one of this principal's
+  // authorized bases (nor a `<base>-project-…` overlay of one) must be rejected
+  // — the threaded namespace can't escalate to another principal's namespace.
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
   await assert.rejects(
     resolver(service)({
       sessionKey: "sess-forge",
       authenticatedPrincipal: "alice",
-      // no cwd/projectTag => authorized resolution is "default"
-      writeNamespaceOverride: "victim-secret",
+      namespace: "victim-secret",
+      content: "x",
+    }),
+    /not writable/,
+  );
+  // A forged project-overlay of ANOTHER principal's base is also rejected.
+  await assert.rejects(
+    resolver(service)({
+      sessionKey: "sess-forge2",
+      authenticatedPrincipal: "alice",
+      namespace: "bob-project-origin-abcd1234",
       content: "x",
     }),
     /not writable/,

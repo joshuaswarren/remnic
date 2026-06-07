@@ -1097,12 +1097,13 @@ export class EngramAccessHttpServer {
         cwd: body.cwd,
         projectTag: body.projectTag,
       };
-      // Resolve the write namespace once and reuse it for the idempotency peek
-      // and the write, so a concurrent session-context change can't make them
-      // diverge (#1434).
+      // Resolve the write namespace once and thread it as the explicit
+      // namespace for the idempotency peek and the write, so a concurrent
+      // session-context change can't make them diverge (#1434). The resolved
+      // coding-overlay namespace is re-authorized structurally by the service.
       const scopedRequest = {
         ...request,
-        writeNamespaceOverride: await this.service.resolveWriteNamespace(request),
+        namespace: await this.service.resolveWriteNamespace(request),
       };
       const idempotencyStatus = await this.service.peekMemoryStoreIdempotency(scopedRequest);
       if (idempotencyStatus === "miss" && scopedRequest.dryRun !== true) {
@@ -1135,11 +1136,11 @@ export class EngramAccessHttpServer {
         cwd: body.cwd,
         projectTag: body.projectTag,
       };
-      // Resolve the write namespace once and reuse it for the idempotency peek
-      // and the write (#1434).
+      // Resolve the write namespace once and thread it as the explicit
+      // namespace for the idempotency peek and the write (#1434).
       const scopedRequest = {
         ...request,
-        writeNamespaceOverride: await this.service.resolveWriteNamespace(request),
+        namespace: await this.service.resolveWriteNamespace(request),
       };
       const idempotencyStatus = await this.service.peekSuggestionSubmitIdempotency(scopedRequest);
       if (idempotencyStatus === "miss" && scopedRequest.dryRun !== true) {
