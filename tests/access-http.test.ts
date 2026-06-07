@@ -1678,6 +1678,71 @@ test("access HTTP server allows idempotent replay writes even after the write li
   }
 });
 
+test("access HTTP server enforces the write rate limit at the real miss even when the peek says replay (#1434)", async () => {
+  // Closes the namespace-divergence bypass: if the idempotency peek classifies a
+  // request as a replay (so the HTTP pre-check is skipped) but the actual write
+  // is a fresh miss, the authoritative enforceWriteQuota hook — invoked inside
+  // the service at commit time — still rate-limits it.
+  let quotaCalls = 0;
+  const server = new EngramAccessHttpServer({
+    service: {
+      ...createFakeService(),
+      // Peek always claims replay → HTTP skips its pre-write availability check.
+      peekMemoryStoreIdempotency: async () => "replay",
+      // ...but every store is a real miss that invokes the authoritative hook.
+      memoryStore: async (
+        _request: unknown,
+        hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+      ) => {
+        quotaCalls += 1;
+        await hooks?.enforceWriteQuota?.(); // throws 429 once the window is full
+        return {
+          schemaVersion: 1,
+          operation: "memory_store",
+          namespace: "global",
+          dryRun: false,
+          accepted: true,
+          queued: false,
+          status: "stored",
+          memoryId: "fact-new",
+          idempotencyReplay: false,
+        };
+      },
+    } as unknown as EngramAccessService,
+    host: "127.0.0.1",
+    port: 0,
+    authToken: "secret-token",
+    maxBodyBytes: 1024,
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+  const headers = {
+    Authorization: "Bearer secret-token",
+    "Content-Type": "application/json",
+  };
+  try {
+    for (let index = 0; index < 30; index += 1) {
+      const res = await fetch(`${base}/engram/v1/memories`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ content: `fresh ${index}`, category: "fact" }),
+      });
+      assert.equal(res.status, 201);
+    }
+    // 31st real miss: peek said replay (pre-check skipped), but the in-service
+    // hook enforces the now-full window.
+    const overflow = await fetch(`${base}/engram/v1/memories`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ content: "overflow", category: "fact" }),
+    });
+    assert.equal(overflow.status, 429);
+    assert.equal(quotaCalls, 31, "every store must consult the authoritative quota hook");
+  } finally {
+    await server.stop();
+  }
+});
+
 test("access HTTP server does not consume the write rate limit for dry-run writes", async () => {
   const server = new EngramAccessHttpServer({
     service: {

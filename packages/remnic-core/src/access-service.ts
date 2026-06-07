@@ -1543,6 +1543,16 @@ export class EngramAccessService {
     idempotencyKey?: string;
     requestFingerprint: unknown;
     skip?: boolean;
+    /**
+     * Invoked exactly once, immediately before an ACTUAL (non-replay, non-skip)
+     * write is committed — atomically with the idempotency miss determination.
+     * The HTTP surface uses this to enforce the write rate limit against the
+     * real write/miss (and the real resolved namespace), so a namespace-divergent
+     * idempotency peek can never let a fresh write skip the quota check (#1434
+     * Codex review). It is NOT called on dryRun (skip) or replay, preserving the
+     * replay-bypasses-a-full-window behavior.
+     */
+    beforeExecute?: () => void | Promise<void>;
     execute: () => Promise<T>;
   }): Promise<T> {
     if (options.skip === true) {
@@ -1550,6 +1560,7 @@ export class EngramAccessService {
     }
     const key = options.idempotencyKey?.trim();
     if (!key) {
+      if (options.beforeExecute) await options.beforeExecute();
       return options.execute();
     }
     return this.withIdempotencyLock(key, async () => {
@@ -1568,6 +1579,7 @@ export class EngramAccessService {
             idempotencyReplay: true,
           };
         }
+        if (options.beforeExecute) await options.beforeExecute();
         const response = await options.execute();
         await this.idempotency.put(key, requestHash, response);
         return response;
@@ -2821,7 +2833,10 @@ export class EngramAccessService {
   // per-tenant) do not block each other.
   private xrayQueue: Promise<void> = Promise.resolve();
 
-  async memoryStore(request: EngramAccessMemoryStoreRequest): Promise<EngramAccessWriteResponse> {
+  async memoryStore(
+    request: EngramAccessMemoryStoreRequest,
+    hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+  ): Promise<EngramAccessWriteResponse> {
     // A real (non-dryRun) store attaches coding context to the session exactly
     // as recall does (executeRecall → maybeAttachCodingContext), so a store made
     // with per-call cwd/projectTag seeds the session binding and a LATER bare
@@ -2886,6 +2901,7 @@ export class EngramAccessService {
         sourceReason: request.sourceReason,
       },
       skip: request.dryRun === true,
+      beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
   }
@@ -2914,7 +2930,10 @@ export class EngramAccessService {
     });
   }
 
-  async suggestionSubmit(request: EngramAccessSuggestionSubmitRequest): Promise<EngramAccessWriteResponse> {
+  async suggestionSubmit(
+    request: EngramAccessSuggestionSubmitRequest,
+    hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+  ): Promise<EngramAccessWriteResponse> {
     // Mirror recall's coding-context attach on a real submit so a per-call
     // cwd/projectTag seeds the session binding and a later bare recall on the
     // same session is scoped to the same project (Cursor review). dryRun stays
@@ -2982,6 +3001,7 @@ export class EngramAccessService {
         sourceReason: request.sourceReason,
       },
       skip: request.dryRun === true,
+      beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
   }
