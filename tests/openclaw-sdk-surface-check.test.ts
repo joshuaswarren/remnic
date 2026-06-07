@@ -177,6 +177,64 @@ test("OpenClaw SDK surface check resolves a package-local peer install", (t) => 
   }
 });
 
+test("OpenClaw SDK surface check ignores AgentHarness-internal events and non-API registrars (issue #1431)", () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-openclaw-harness-"));
+  try {
+    const packageRoot = path.join(tempRoot, "openclaw");
+    fs.mkdirSync(packageRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({ name: "openclaw", version: "0.0.0-test" }, null, 2),
+    );
+    // Authoritative plugin-author surface + harness-internal noise that must be
+    // excluded: AgentHarness events (session_before_compact, ...) are not in
+    // PluginHookName, and registerCommandGroups is a standalone helper, not an
+    // OpenClawPluginApi member.
+    fs.writeFileSync(
+      path.join(packageRoot, "plugin-sdk.d.ts"),
+      `
+export type OpenClawPluginApi = {
+  id: string;
+  registerMemoryPromptSection: (builder: unknown) => void;
+  registerTool: (tool: unknown) => void;
+};
+export type PluginHookName = "before_prompt_build" | "agent_end";
+export declare function registerCommandGroups(program: unknown): void;
+interface AgentHarnessOwnEvent {
+  type: "session_before_compact" | "after_provider_response" | "agent_message_chunk";
+}
+export interface PluginManifestContracts {
+  tools?: string[];
+}
+`,
+    );
+    const expectedPath = path.join(tempRoot, "expected.json");
+    fs.writeFileSync(
+      expectedPath,
+      JSON.stringify(
+        {
+          description: "test snapshot",
+          registrars: ["registerMemoryPromptSection", "registerTool"],
+          hooks: ["agent_end", "before_prompt_build"],
+          manifestContracts: ["tools"],
+        },
+        null,
+        2,
+      ),
+    );
+
+    const result = runCheck(["--package-root", packageRoot, "--expected", expectedPath]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /matches expected snapshot/);
+    assert.doesNotMatch(result.stderr, /session_before_compact/);
+    assert.doesNotMatch(result.stderr, /after_provider_response/);
+    assert.doesNotMatch(result.stderr, /registerCommandGroups/);
+  } finally {
+    fs.rmSync(tempRoot, { force: true, recursive: true });
+  }
+});
+
 const expectedRegistrars = [
   "registerCli",
   "registerCliBackend",

@@ -169,14 +169,49 @@ async function inspectOpenClawSurface(root) {
   const hooks = new Set();
   const manifestContracts = new Set();
 
+  // Prefer the authoritative plugin-author surface:
+  //  - plugin hooks from the `PLUGIN_HOOK_NAMES` array / `PluginHookName` union
+  //  - registrars from the `OpenClawPluginApi` type body
+  // Sourcing from these declarations excludes AgentHarness-internal events
+  // (e.g. session_before_compact, after_provider_response, agent_message_chunk)
+  // and non-plugin registrars (e.g. registerCommandGroups, registerCliMetadata)
+  // that merely appear as tokens elsewhere in the plugin-sdk type tree — those
+  // are not registerable via `api.on(...)` / `OpenClawPluginApi`, so reporting
+  // them as "drift" was a false positive (issue #1431).
+  let sawHookSource = false;
+  let sawRegistrarSource = false;
   for (const file of files) {
     const text = await readFile(file, "utf-8").catch(() => "");
-    for (const match of text.matchAll(/\b(register[A-Z][A-Za-z0-9]+)\b/g)) {
-      registrars.add(match[1]);
+    const hookNames = extractPluginHookNames(text);
+    if (hookNames.length > 0) {
+      sawHookSource = true;
+      for (const name of hookNames) hooks.add(name);
     }
-    for (const match of text.matchAll(/["'`]([a-z]+(?:[._-][a-z0-9]+)+)["'`]/g)) {
-      const value = match[1];
-      if (looksLikeHookName(value)) hooks.add(value);
+    const apiRegistrars = extractPluginApiRegistrars(text);
+    if (apiRegistrars.length > 0) {
+      sawRegistrarSource = true;
+      for (const name of apiRegistrars) registrars.add(name);
+    }
+  }
+
+  // Fallback for older OpenClaw layouts (or test fixtures) that do not expose
+  // the canonical `PLUGIN_HOOK_NAMES` / `OpenClawPluginApi` declarations: keep
+  // the historical token heuristic so the check still runs. Only applied to the
+  // dimension whose authoritative source was missing.
+  if (!sawHookSource || !sawRegistrarSource) {
+    for (const file of files) {
+      const text = await readFile(file, "utf-8").catch(() => "");
+      if (!sawRegistrarSource) {
+        for (const match of text.matchAll(/\b(register[A-Z][A-Za-z0-9]+)\b/g)) {
+          registrars.add(match[1]);
+        }
+      }
+      if (!sawHookSource) {
+        for (const match of text.matchAll(/["'`]([a-z]+(?:[._-][a-z0-9]+)+)["'`]/g)) {
+          const value = match[1];
+          if (looksLikeHookName(value)) hooks.add(value);
+        }
+      }
     }
   }
 
@@ -230,6 +265,58 @@ function extractPluginManifestContractsBlock(text) {
     }
   }
   return null;
+}
+
+function extractTypeBody(text, name) {
+  // Match a real declaration (not a re-export): `interface Name ... {` or
+  // `type Name ... = {`. Re-export forms like `type Name, Other` end at `;`
+  // before any `{`/`=` and are intentionally not matched.
+  const re = new RegExp(
+    `\\b(?:export\\s+)?(?:interface\\s+${name}\\b[^{};]*\\{|type\\s+${name}\\b[^=;{]*=\\s*\\{)`,
+  );
+  const match = re.exec(text);
+  if (!match) return null;
+  const openBraceIndex = text.indexOf("{", match.index);
+  if (openBraceIndex === -1) return null;
+  let depth = 0;
+  for (let index = openBraceIndex; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(openBraceIndex + 1, index);
+    }
+  }
+  return null;
+}
+
+function extractPluginHookNames(text) {
+  const names = new Set();
+  // `PLUGIN_HOOK_NAMES` readonly array literal (declaration may use `:` or `=`).
+  const arrayMatch = /\bPLUGIN_HOOK_NAMES\b[^[]*\[([^\]]*)\]/.exec(text);
+  if (arrayMatch) {
+    for (const m of arrayMatch[1].matchAll(/["'`]([a-z][a-z0-9_]*)["'`]/g)) {
+      names.add(m[1]);
+    }
+  }
+  // `PluginHookName` string-literal union type.
+  const unionMatch = /\b(?:export\s+)?type\s+PluginHookName\b[^=]*=\s*([^;]+);/.exec(text);
+  if (unionMatch) {
+    for (const m of unionMatch[1].matchAll(/["'`]([a-z][a-z0-9_]*)["'`]/g)) {
+      names.add(m[1]);
+    }
+  }
+  return [...names];
+}
+
+function extractPluginApiRegistrars(text) {
+  const body = extractTypeBody(text, "OpenClawPluginApi");
+  if (!body) return [];
+  const names = new Set();
+  for (const m of body.matchAll(/\b(register[A-Z][A-Za-z0-9]+)\b/g)) {
+    names.add(m[1]);
+  }
+  return [...names];
 }
 
 async function collectFiles(root) {
