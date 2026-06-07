@@ -7,7 +7,11 @@ import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-i
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
-import { projectTagProjectId } from "./coding/coding-namespace.js";
+import {
+  combineNamespaces,
+  projectTagProjectId,
+  resolveCodingNamespaceOverlay,
+} from "./coding/coding-namespace.js";
 import { WorkStorage } from "./work/storage.js";
 import {
   exportWorkBoardMarkdown,
@@ -91,6 +95,7 @@ import type {
   EntityFile,
   MemoryFile,
   MemoryActionOutcome,
+  CodingContext,
   MemoryActionType,
   MemoryLifecycleEvent,
   MemoryStatus,
@@ -1132,20 +1137,55 @@ export class EngramAccessService {
   }
 
   /**
+   * Resolve a coding context from `cwd`/`projectTag` WITHOUT persisting it to
+   * any session — the read-only half of `maybeAttachCodingContext`. Returns
+   * null when project scoping is off or nothing resolves. `projectTag` takes
+   * priority over `cwd` (matching `maybeAttachCodingContext`).
+   */
+  private async resolveCodingContextFromOptions(
+    options: CodingScopedWriteInput,
+  ): Promise<CodingContext | null> {
+    if (!this.orchestrator.config.codingMode?.projectScope) return null;
+    if (typeof options.projectTag === "string" && options.projectTag.trim().length > 0) {
+      const projectId = projectTagProjectId(options.projectTag);
+      return { projectId, branch: null, rootPath: projectId, defaultBranch: null };
+    }
+    if (typeof options.cwd === "string" && options.cwd.trim().length > 0) {
+      try {
+        const gitCtx = await resolveGitContext(options.cwd);
+        if (gitCtx) {
+          return {
+            projectId: gitCtx.projectId,
+            branch: gitCtx.branch,
+            rootPath: gitCtx.rootPath,
+            defaultBranch: gitCtx.defaultBranch,
+          };
+        }
+      } catch {
+        // resolveGitContext never throws, but stay defensive — not being in a
+        // repo is normal and must not break the write.
+      }
+    }
+    return null;
+  }
+
+  /**
    * Resolve the write namespace for explicit-write tools (memory_store /
-   * suggestion_submit), applying the same project-scope overlay the read path
-   * uses so writes are discoverable by project-scoped recall (#1434, rule 42).
+   * suggestion_submit), project-scoping the write the same way recall does so a
+   * memory stored with a client-injected `cwd`/`projectTag` is discoverable by
+   * project-scoped recall (#1434, rule 42).
    *
-   * Precedence mirrors recall/observe:
+   * Precedence:
    *  - An explicit `namespace` always wins (no coding overlay).
-   *  - Otherwise the session's coding context — attached here from
-   *    `cwd`/`projectTag`, or earlier by recall/observe on the same session —
-   *    overlays the principal-default base namespace.
+   *  - Otherwise the base namespace is `config.defaultNamespace` — exactly the
+   *    pre-#1434 behavior, so unqualified writes are NOT silently moved to a
+   *    principal self namespace (Codex review). The project overlay is then
+   *    applied on top when a coding context exists and projectScope is on.
    *
-   * `defaultNamespaceForPrincipal` + `applyCodingNamespaceOverlay` both collapse
-   * to the global default namespace when `namespacesEnabled` is false or
-   * `codingMode.projectScope` is off, so behavior is unchanged for
-   * non-coding-mode deployments (the common single-tenant MCP case).
+   * Read-only: this NEVER mutates session coding context, so the idempotency
+   * peeks and dryRun preflights that call it stay side-effect free (Codex
+   * review). It prefers the session's existing context (set by recall/observe),
+   * else resolves the per-call `cwd`/`projectTag` without persisting.
    */
   private async resolveCodingScopedWriteNamespace(
     request: CodingScopedWriteInput & {
@@ -1167,25 +1207,27 @@ export class EngramAccessService {
       request.sessionKey,
       request.authenticatedPrincipal,
     );
-    const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
-    // Authorize the BASE namespace BEFORE attaching coding context, so a
-    // rejected write never persists cwd/projectTag on the session (mirrors
-    // observe, which validates writability before attaching — Codex P2 on that
-    // path). The project overlay applied below is a principal-owned `project-*`
-    // sub-namespace derived from this authorized base (rule 42), so it needs no
-    // separate write policy — and re-checking the overlaid namespace would
-    // wrongly reject project writes, since canWriteNamespace denies unpolicied
-    // non-default namespaces.
+    // Preserve the pre-#1434 unqualified-write base. The project overlay below
+    // is a principal-owned `project-*` sub-namespace derived from this
+    // authorized base (rule 42), so it needs no separate write policy.
+    const base = this.resolveNamespace(undefined);
     if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not writable: ${base}`);
     }
-    if (request.sessionKey && (request.cwd || request.projectTag)) {
-      await this.maybeAttachCodingContext(request.sessionKey, {
-        cwd: request.cwd,
-        projectTag: request.projectTag,
-      });
-    }
-    return this.orchestrator.applyCodingNamespaceOverlay(request.sessionKey, base);
+    // Project scoping only applies when namespaces are enabled (else overlaying
+    // would create false isolation over a single storage dir) and projectScope
+    // is on. Mirror the orchestrator's read/write overlay using the session's
+    // existing context first, else a read-only resolution of cwd/projectTag.
+    if (!this.orchestrator.config.namespacesEnabled) return base;
+    const codingContext =
+      this.orchestrator.getCodingContextForSession(request.sessionKey) ??
+      (await this.resolveCodingContextFromOptions(request));
+    const overlay = resolveCodingNamespaceOverlay(
+      codingContext,
+      this.orchestrator.config.codingMode,
+      this.orchestrator.config.defaultNamespace,
+    );
+    return overlay ? combineNamespaces(base, overlay.namespace) : base;
   }
 
   private async objectiveStateStoreLocationForNamespace(namespace: string): Promise<{
