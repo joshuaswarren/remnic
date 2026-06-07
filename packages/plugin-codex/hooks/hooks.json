@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "./hooks/bin/remnic-codex-hook.sh session-start",
-            "commandWindows": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\hooks\\bin\\remnic-codex-hook.ps1 session-start",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\hooks\\bin\\remnic-codex-hook.ps1 session-start",
             "timeout": 45000
           }
         ]
@@ -20,7 +20,7 @@
           {
             "type": "command",
             "command": "./hooks/bin/remnic-codex-hook.sh post-tool-observe",
-            "commandWindows": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\hooks\\bin\\remnic-codex-hook.ps1 post-tool-observe",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\hooks\\bin\\remnic-codex-hook.ps1 post-tool-observe",
             "timeout": 10000
           }
         ]
@@ -33,7 +33,7 @@
           {
             "type": "command",
             "command": "./hooks/bin/remnic-codex-hook.sh user-prompt-recall",
-            "commandWindows": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\hooks\\bin\\remnic-codex-hook.ps1 user-prompt-recall",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\hooks\\bin\\remnic-codex-hook.ps1 user-prompt-recall",
             "timeout": 20000
           }
         ]
@@ -46,7 +46,7 @@
           {
             "type": "command",
             "command": "./hooks/bin/remnic-codex-hook.sh session-end",
-            "commandWindows": "pwsh -NoProfile -ExecutionPolicy Bypass -File .\\hooks\\bin\\remnic-codex-hook.ps1 session-end",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\hooks\\bin\\remnic-codex-hook.ps1 session-end",
             "timeout": 30000
           }
         ]

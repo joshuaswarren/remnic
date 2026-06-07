@@ -32,7 +32,7 @@ Codex is stateless by default. Every session starts from zero — it doesn't kno
 - **Node.js** in your PATH (`node --version`) — the bundled plugin hooks are a single cross-platform Node.js runner, so this is the only hard requirement on every platform.
 - **Platform extras for the *manual* hook below:**
   - **macOS / Linux:** a POSIX shell plus `curl` (and `python3` only if you use the Python manual example).
-  - **Windows 10/11:** **PowerShell** (`pwsh`, or Windows PowerShell 5.1). `Invoke-RestMethod` is built in, so `curl`/`python3` are *not* required. Use the PowerShell hook variant and `%USERPROFILE%` paths shown below.
+  - **Windows 10/11:** **Windows PowerShell 5.1** ships with the OS — nothing to install. PowerShell 7 (`pwsh`) is optional. `Invoke-RestMethod` is built in, so `curl`/`python3` are *not* required. Use the PowerShell hook variant and `%USERPROFILE%` paths shown below.
 
 > **Cross-platform note (issue #1440):** As of the cross-platform-hooks release, the bundled `@remnic/plugin-codex` hooks ship a unified Node.js runner with both `command` (POSIX `.sh`) and `commandWindows` (PowerShell `.ps1`) entries, so the **marketplace install and `remnic connectors install codex-cli` now work on Windows, macOS, and Linux** with no manual hook scripting. Prefer those paths; the manual setup further down is only for advanced/custom cases.
 
@@ -285,7 +285,7 @@ Add the hook to `~/.codex/hooks.json` (macOS/Linux) or `%USERPROFILE%\.codex\hoo
           {
             "type": "command",
             "command": "<full-path-to>/remnic-session-recall.sh",
-            "commandWindows": "pwsh -NoProfile -ExecutionPolicy Bypass -File <full-path-to>\\remnic-session-recall.ps1",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File <full-path-to>\\remnic-session-recall.ps1",
             "timeout": 15
           }
         ]
@@ -295,7 +295,7 @@ Add the hook to `~/.codex/hooks.json` (macOS/Linux) or `%USERPROFILE%\.codex\hoo
 }
 ```
 
-Replace `<full-path-to>` with the absolute path on each platform — e.g. `/Users/you/.codex/scripts/remnic-session-recall.sh` (macOS/Linux) and `C:\Users\you\.codex\scripts\remnic-session-recall.ps1` (Windows). On Windows PowerShell 5.1 substitute `powershell` for `pwsh`.
+Replace `<full-path-to>` with the absolute path on each platform — e.g. `/Users/you/.codex/scripts/remnic-session-recall.sh` (macOS/Linux) and `C:\Users\you\.codex\scripts\remnic-session-recall.ps1` (Windows). `powershell` is Windows PowerShell 5.1, which ships with Windows 10/11; if you've installed PowerShell 7 you can substitute `pwsh`.
 
 ### 5. Tell Codex how to use Remnic (optional)
 
@@ -358,7 +358,7 @@ After setup, start a new Codex session and check:
 **Hook not firing:**
 - Verify `~/.codex/hooks.json` (`%USERPROFILE%\.codex\hooks.json` on Windows) exists and uses the correct absolute path.
 - **macOS / Linux:** ensure the script is executable (`chmod +x`) and that `node` is on PATH (the bundled hooks are Node.js).
-- **Windows:** there is no `chmod` step. Make sure the `commandWindows` entry is present and that `pwsh` (or `powershell`) and `node` are on PATH. If scripts are blocked by policy, the `-ExecutionPolicy Bypass` flag in the example handles it; you do not need to change machine policy.
+- **Windows:** there is no `chmod` step. Make sure the `commandWindows` entry is present and that `powershell` (Windows PowerShell 5.1, ships with Windows; `pwsh` for PowerShell 7) and `node` are on PATH. If scripts are blocked by policy, the `-ExecutionPolicy Bypass` flag in the example handles it; you do not need to change machine policy.
 - Check that `REMNIC_AUTH_TOKEN` is set in your environment. The older `OPENCLAW_REMNIC_ACCESS_TOKEN` and `OPENCLAW_ENGRAM_ACCESS_TOKEN` names are still accepted during the compatibility window.
 
 **Slow session start:**

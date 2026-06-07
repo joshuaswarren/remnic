@@ -6,14 +6,15 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+// The Codex plugin's PostToolUse hook is now the unified Node.js runner
+// (issue #1440 — packages/plugin-codex/hooks/bin/remnic-codex-hook.cjs).
+// State-dir / cursor / lock hardening is covered by the runner's own
+// integration tests in remnic-codex-hook.test.cjs. Only the Claude Code
+// bash script is still asserted from here.
 const hookCases = [
   {
     name: "claude-code-package",
     scriptPath: "packages/plugin-claude-code/hooks/bin/post-tool-observe.sh",
-  },
-  {
-    name: "codex-package",
-    scriptPath: "packages/plugin-codex/hooks/bin/post-tool-observe.sh",
   },
 ];
 

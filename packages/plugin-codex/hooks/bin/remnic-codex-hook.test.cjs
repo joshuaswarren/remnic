@@ -331,3 +331,83 @@ test("unknown event fails open with continue", async () => {
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+// ── #1443 review fixes ──────────────────────────────────────────────────────
+
+test("hooks.json: every event has commandWindows and uses powershell (PS5.1 ships on Win10/11)", () => {
+  const cfg = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "hooks.json"), "utf8"),
+  );
+  for (const event of ["SessionStart", "PostToolUse", "UserPromptSubmit", "Stop"]) {
+    for (const matcher of cfg.hooks[event]) {
+      for (const hook of matcher.hooks) {
+        assert.ok(hook.commandWindows, `${event} must declare commandWindows`);
+        // Use `powershell` not `pwsh` so stock Windows 10/11 works without
+        // PowerShell 7 installed (#1443 review).
+        assert.match(
+          hook.commandWindows,
+          /^powershell\b/,
+          `${event}.commandWindows must invoke powershell (not pwsh) for stock Windows compatibility`,
+        );
+      }
+    }
+  }
+});
+
+test("runner source: ensureMigrated falls through ENOENT to the legacy engram CLI (#1443 review)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  // The naive `spawnSync(...); return;` loop never tried `engram` when only
+  // the legacy CLI was installed; the fixed loop inspects result.error.code.
+  assert.match(
+    src,
+    /ensureMigrated[\s\S]+?result\.error[\s\S]+?ENOENT[\s\S]+?continue/,
+    "ensureMigrated must continue past ENOENT to try the engram CLI",
+  );
+  // Daemon-start uses onPath() pre-flight so spawn's async ENOENT can't
+  // silently swallow the fallthrough.
+  assert.match(src, /onPath\(bin\)/);
+});
+
+test("post-tool-observe: worker payload travels via STDIN, not the environment (#1443 review)", () => {
+  // Windows caps the environment block at ~32 KB. Large PostToolUse payloads
+  // (big file edits, big command output) would E2BIG; the worker now reads
+  // stdin instead. We assert the source rather than running an E2BIG payload
+  // because reproducing the limit cross-platform is impractical.
+  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  assert.doesNotMatch(
+    src,
+    /REMNIC_HOOK_INPUT:\s*rawInput/,
+    "foreground hook must NOT propagate the payload via env (E2BIG on Windows)",
+  );
+  assert.match(
+    src,
+    /child\.stdin\.end\(rawInput\)/,
+    "foreground hook must write the payload to the worker's stdin",
+  );
+});
+
+test("post-tool worker reads its payload from STDIN end-to-end", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) =>
+    res.writeHead(200).end("{}"),
+  );
+  try {
+    const tpath = transcript(home, [
+      { role: "user", content: "stdin-payload-test" },
+    ]);
+    // Pass the payload via stdin (the canonical worker channel) without the
+    // REMNIC_HOOK_INPUT env shortcut.
+    await runHook(
+      "__observe-worker__",
+      JSON.stringify({ session_id: "sStdin", transcript_path: tpath }),
+      { port, home },
+    );
+    const observe = calls.find((c) => c.url === "/engram/v1/observe");
+    assert.ok(observe, "observe was called via stdin payload");
+    assert.equal(observe.body.messages.length, 1);
+    assert.equal(observe.body.messages[0].content, "stdin-payload-test");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

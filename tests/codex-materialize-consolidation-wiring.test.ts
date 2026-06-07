@@ -79,54 +79,56 @@ test("compounding engine.synthesizeWeekly invokes materializeAfterCausalConsolid
   );
 });
 
-test("session-end.sh resolves REMNIC_REPO_ROOT from its own filesystem location", () => {
+// The two regression guards below moved from the bash hook to the unified
+// Node.js runner introduced in issue #1440. The session-end event of
+// `remnic-codex-hook.cjs` is the new place where the materializer is invoked.
+const codexHookRunner = path.join(
+  repoRoot,
+  "packages/plugin-codex/hooks/bin/remnic-codex-hook.cjs",
+);
+
+test("unified Codex hook runner resolves REMNIC_REPO_ROOT from its own filesystem location", () => {
   // Regression (PR #392 review): the old hook only ran the materializer
   // when either $REMNIC_REPO_ROOT was set OR `remnic --print-root` returned
   // a path. Neither condition holds in most installs, so the materializer
-  // silently never ran. The fix resolves relative to `$BASH_SOURCE`.
-  const src = readFileSync(
-    path.join(repoRoot, "packages/plugin-codex/hooks/bin/session-end.sh"),
-    "utf-8",
-  );
+  // silently never ran. The fix resolves relative to the runner's own dir.
+  const src = readFileSync(codexHookRunner, "utf-8");
   assert.match(
     src,
-    /BASH_SOURCE\[0\]/u,
-    "session-end.sh must resolve root from its own filesystem location",
+    /__dirname/u,
+    "runner must resolve root from its own filesystem location (__dirname)",
   );
   // The old reliance on `remnic --print-root` must be gone.
   assert.doesNotMatch(
     src,
     /remnic --print-root/u,
-    "session-end.sh must not depend on the non-existent `remnic --print-root` flag",
+    "runner must not depend on the non-existent `remnic --print-root` flag",
   );
   // Dev fallback path must still verify the candidate root by checking
   // for the dev script before running it.
   assert.match(
     src,
     /scripts\/codex-materialize\.ts/u,
-    "session-end.sh must verify the candidate root contains scripts/codex-materialize.ts",
+    "runner must verify the candidate root contains scripts/codex-materialize.ts",
   );
 });
 
-test("session-end.sh prefers the packaged materialize.cjs binary for distributed installs", () => {
+test("unified Codex hook runner prefers the packaged materialize.cjs binary for distributed installs", () => {
   // Regression (PR #392 review thread PRRT_kwDORJXyws56TOVo): the old hook
   // only knew how to run `scripts/codex-materialize.ts` via tsx, which is
   // never shipped inside any published package payload. The fix ships a
   // packaged CJS wrapper at `packages/plugin-codex/bin/materialize.cjs` and
   // has the hook prefer it before falling back to the dev script.
-  const src = readFileSync(
-    path.join(repoRoot, "packages/plugin-codex/hooks/bin/session-end.sh"),
-    "utf-8",
-  );
+  const src = readFileSync(codexHookRunner, "utf-8");
   assert.match(
     src,
     /materialize\.cjs/u,
-    "session-end.sh must reference the packaged materialize.cjs binary",
+    "runner must reference the packaged materialize.cjs binary",
   );
   assert.match(
     src,
     /REMNIC_CODEX_MATERIALIZE_BIN/u,
-    "session-end.sh must honor a REMNIC_CODEX_MATERIALIZE_BIN env override",
+    "runner must honor a REMNIC_CODEX_MATERIALIZE_BIN env override",
   );
   // The packaged bin is preferred: its resolution block must appear before
   // the dev-script fallback in the file so distributed installs never hit

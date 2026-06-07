@@ -75,6 +75,9 @@ function emit(obj) {
 }
 
 function readStdin() {
+  // REMNIC_HOOK_INPUT is a test-only convenience shortcut; the foreground hook
+  // and the observe worker both receive the payload via the child stdin pipe
+  // so a large PostToolUse payload can't overflow the Windows env block.
   if (process.env.REMNIC_HOOK_INPUT !== undefined) return process.env.REMNIC_HOOK_INPUT;
   try {
     return fs.readFileSync(0, "utf8");
@@ -100,17 +103,50 @@ function ensureMigrated() {
       fs.existsSync(path.join(HOME, ".engram")) ||
       fs.existsSync(path.join(HOME, ".config", "engram", "config.json"));
     if (!hasEngram) return;
+    // Try `remnic` first, fall through to legacy `engram` when missing on PATH.
+    // spawnSync does NOT throw on ENOENT — it returns { error: { code: 'ENOENT' } }
+    // — so we must inspect `result.error?.code` to advance the loop (#1443 review).
+    // Timeout is 5 min so a large engram→remnic migration can complete; the
+    // original bash hook had no timeout.
     for (const bin of ["remnic", "engram"]) {
-      try {
-        spawnSync(bin, ["migrate"], { stdio: "ignore", timeout: 30000 });
-        return;
-      } catch {
-        /* try next */
-      }
+      const result = spawnSync(bin, ["migrate"], { stdio: "ignore", timeout: 300000 });
+      if (result.error && result.error.code === "ENOENT") continue;
+      return;
     }
   } catch {
     /* migration is best effort */
   }
+}
+
+// PATH lookup helper (cross-platform equivalent of bash `command -v`).
+// Returns true when an executable named `bin` is reachable via $PATH. Used
+// before async `spawn()` calls so the remnic → engram fallthrough actually
+// happens when only the legacy CLI is installed — `spawn` emits ENOENT
+// asynchronously via 'error', so a naive try/break can't see it (#1443 review).
+function onPath(bin) {
+  const PATH = process.env.PATH || process.env.Path || process.env.path || "";
+  const sep = process.platform === "win32" ? ";" : ":";
+  // Windows resolves names without an extension by appending PATHEXT entries.
+  const exts =
+    process.platform === "win32"
+      ? (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD")
+          .split(";")
+          .map((e) => e.trim())
+          .filter(Boolean)
+      : [""];
+  for (const dir of PATH.split(sep)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      try {
+        const candidate = path.join(dir, bin + ext);
+        const info = fs.statSync(candidate);
+        if (info.isFile()) return true;
+      } catch {
+        /* try next */
+      }
+    }
+  }
+  return false;
 }
 
 // ── token resolution (per-plugin token store, then env) ────────────────────
@@ -502,11 +538,14 @@ async function handleSessionStart(input, token, log) {
   // Health check — start daemon if not running.
   if (!(await httpHealthy(2000))) {
     log("daemon not responding, attempting start...");
+    // Try `remnic` first, fall through to legacy `engram` when only the older
+    // CLI is on PATH. spawn() emits ENOENT *asynchronously* via 'error', so we
+    // pre-check the binary with onPath() instead of relying on try/break
+    // (#1443 review — the bare try/break never reached `engram`).
     for (const bin of ["remnic", "engram"]) {
+      if (!onPath(bin)) continue;
       try {
         const child = spawn(bin, ["daemon", "start"], { detached: true, stdio: "ignore" });
-        // ENOENT surfaces async via 'error'; swallow it so a missing binary
-        // never crashes the hook.
         child.on("error", () => {});
         child.unref();
         break;
@@ -699,14 +738,22 @@ function handlePostToolObserve(rawInput, input, token, log) {
   emit({ continue: true });
   if (!token) return;
   // Spawn a detached copy to do the observe in the background (mirrors the
-  // original `( … ) & disown`), then exit so Codex isn't held open.
+  // original `( … ) & disown`). Pass the raw hook payload via the worker's
+  // STDIN, not the environment — Windows caps the environment block at ~32 KB,
+  // so large PostToolUse payloads (big file edits, command output) would fail
+  // with E2BIG/ENAMETOOLONG and the observation would silently drop (#1443
+  // review). Stdin has no comparable limit.
   try {
     const child = spawn(process.execPath, [__filename, OBSERVE_WORKER], {
       detached: true,
-      stdio: "ignore",
-      env: { ...process.env, REMNIC_HOOK_INPUT: rawInput, REMNIC_HOOK_TOKEN: token },
+      stdio: ["pipe", "ignore", "ignore"],
+      env: { ...process.env, REMNIC_HOOK_TOKEN: token },
     });
     child.on("error", (e) => log(`observe worker spawn error: ${e && e.message}`));
+    child.stdin.on("error", () => {
+      /* ignore EPIPE if the worker exits before we finish writing */
+    });
+    child.stdin.end(rawInput);
     child.unref();
   } catch (err) {
     log(`failed to spawn observe worker: ${err && err.message}`);
