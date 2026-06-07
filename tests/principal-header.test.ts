@@ -27,8 +27,6 @@ function createFakeService(capturedPrincipals: (string | undefined)[]): EngramAc
     entityList: async () => ({ namespace: "global", total: 0, count: 0, limit: 50, offset: 0, entities: [] }),
     entityGet: async () => ({ found: false, namespace: "global" }),
     reviewQueue: async () => ({ found: false }),
-    resolveWriteNamespace: async ({ namespace }: { namespace?: string } = {}) =>
-      namespace ?? "global",
     peekMemoryStoreIdempotency: async () => "miss",
     peekSuggestionSubmitIdempotency: async () => "miss",
     memoryStore: async (request: { authenticatedPrincipal?: string }) => {

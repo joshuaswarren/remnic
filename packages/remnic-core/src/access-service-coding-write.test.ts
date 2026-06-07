@@ -198,29 +198,79 @@ test("#1434 project write overlays onto the principal self base (recall symmetry
   );
 });
 
-test("#1434 HTTP resolves once + threads the result as explicit namespace (peek/write agree)", async () => {
+test("#1434 an explicit coding-overlay namespace string is NOT a writable target", async () => {
+  // Project scoping is requested via cwd/projectTag, never by naming the derived
+  // overlay namespace. A caller naming an overlay-shaped namespace directly is
+  // authorized strictly through canWriteNamespace and rejected, so the persist
+  // allow-list can never be bypassed by guessing an overlay name.
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
-  const req = {
-    sessionKey: "sess-http",
-    authenticatedPrincipal: "alice",
-    projectTag: "Blend/Supply",
-  };
-  // HTTP resolves the namespace once...
-  const once = await service.resolveWriteNamespace(req);
-  assert.equal(once, projectNamespaceFor("Blend/Supply"));
-  // ...then the peek and the write reuse it as the explicit `namespace`. The
-  // resolver authorizes it STRUCTURALLY (isWritableCodingNamespace) without
-  // re-reading session context, so the idempotency fingerprint and the write
-  // namespace can't diverge (no race) and the value passes through unchanged.
-  const reused = await resolver(service)({ ...req, namespace: once, content: "x" });
-  assert.equal(reused, once);
+  await assert.rejects(
+    resolver(service)({
+      sessionKey: "sess-explicit-overlay",
+      authenticatedPrincipal: "alice",
+      namespace: projectNamespaceFor("Blend/Supply"), // "default-project-…"
+      content: "x",
+    }),
+    /not writable/,
+  );
+});
+
+test("#1434 a prefix-colliding principal namespace cannot be written cross-tenant (Codex P1)", async () => {
+  // Policies for both `alice` and `alice-project-team`. An authenticated `alice`
+  // must NOT be able to write `alice-project-team-project-foo` (the OTHER
+  // principal's project-scoped namespace) by exploiting a shared `alice-project-`
+  // prefix. Strict canWriteNamespace authorization rejects it.
+  const orch = makeOrchestratorStub({
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+      {
+        name: "alice-project-team",
+        readPrincipals: ["teamuser"],
+        writePrincipals: ["teamuser"],
+      },
+    ],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(orch);
+  await assert.rejects(
+    resolver(service)({
+      sessionKey: "sess-collide",
+      authenticatedPrincipal: "alice",
+      namespace: "alice-project-team-project-foo",
+      content: "x",
+    }),
+    /not writable/,
+  );
+});
+
+test("#1434 a derived overlay base the principal cannot write is rejected (Codex P1)", async () => {
+  // The principal has a self policy but NO write access to the configured
+  // default namespace. An explicit `default-project-foo` must be rejected —
+  // overlay namespaces are never accepted as caller strings, and the base must
+  // pass canWriteNamespace.
+  const orch = makeOrchestratorStub({
+    defaultNamespace: "default",
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+      { name: "default", readPrincipals: ["admin"], writePrincipals: ["admin"] },
+    ],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(orch);
+  await assert.rejects(
+    resolver(service)({
+      sessionKey: "sess-base-noauth",
+      authenticatedPrincipal: "alice",
+      namespace: "default-project-foo",
+      content: "x",
+    }),
+    /not writable/,
+  );
 });
 
 test("#1434 a forged cross-principal namespace cannot widen access", async () => {
-  // A caller threading a namespace that is NOT one of this principal's
-  // authorized bases (nor a `<base>-project-…` overlay of one) must be rejected
-  // — the threaded namespace can't escalate to another principal's namespace.
+  // A caller naming a namespace that is not writable for this principal is
+  // rejected by canWriteNamespace — it can't escalate to another principal's
+  // namespace.
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);
   await assert.rejects(
@@ -228,16 +278,6 @@ test("#1434 a forged cross-principal namespace cannot widen access", async () =>
       sessionKey: "sess-forge",
       authenticatedPrincipal: "alice",
       namespace: "victim-secret",
-      content: "x",
-    }),
-    /not writable/,
-  );
-  // A forged project-overlay of ANOTHER principal's base is also rejected.
-  await assert.rejects(
-    resolver(service)({
-      sessionKey: "sess-forge2",
-      authenticatedPrincipal: "alice",
-      namespace: "bob-project-origin-abcd1234",
       content: "x",
     }),
     /not writable/,

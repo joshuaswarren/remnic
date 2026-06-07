@@ -1097,19 +1097,16 @@ export class EngramAccessHttpServer {
         cwd: body.cwd,
         projectTag: body.projectTag,
       };
-      // Resolve the write namespace once and thread it as the explicit
-      // namespace for the idempotency peek and the write, so a concurrent
-      // session-context change can't make them diverge (#1434). The resolved
-      // coding-overlay namespace is re-authorized structurally by the service.
-      const scopedRequest = {
-        ...request,
-        namespace: await this.service.resolveWriteNamespace(request),
-      };
-      const idempotencyStatus = await this.service.peekMemoryStoreIdempotency(scopedRequest);
-      if (idempotencyStatus === "miss" && scopedRequest.dryRun !== true) {
+      // The idempotency peek and the write each resolve their own coding-scoped
+      // namespace from `request` (#1434). The peek's namespace only gates write
+      // rate-limiting; `memoryStore` runs its own idempotency check, so a benign
+      // session-context change between the two never fails a write — there is no
+      // namespace to "pin", and nothing is threaded back as an explicit override.
+      const idempotencyStatus = await this.service.peekMemoryStoreIdempotency(request);
+      if (idempotencyStatus === "miss" && request.dryRun !== true) {
         this.ensureWriteRateLimitAvailable();
       }
-      const response = await this.service.memoryStore(scopedRequest);
+      const response = await this.service.memoryStore(request);
       if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
         this.recordWriteRateLimitHit();
       }
@@ -1136,17 +1133,14 @@ export class EngramAccessHttpServer {
         cwd: body.cwd,
         projectTag: body.projectTag,
       };
-      // Resolve the write namespace once and thread it as the explicit
-      // namespace for the idempotency peek and the write (#1434).
-      const scopedRequest = {
-        ...request,
-        namespace: await this.service.resolveWriteNamespace(request),
-      };
-      const idempotencyStatus = await this.service.peekSuggestionSubmitIdempotency(scopedRequest);
-      if (idempotencyStatus === "miss" && scopedRequest.dryRun !== true) {
+      // The peek and the write each resolve their own coding-scoped namespace
+      // from `request` (#1434); the peek only gates rate-limiting, so no
+      // namespace is threaded back as an explicit override.
+      const idempotencyStatus = await this.service.peekSuggestionSubmitIdempotency(request);
+      if (idempotencyStatus === "miss" && request.dryRun !== true) {
         this.ensureWriteRateLimitAvailable();
       }
-      const response = await this.service.suggestionSubmit(scopedRequest);
+      const response = await this.service.suggestionSubmit(request);
       if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
         this.recordWriteRateLimitHit();
       }
