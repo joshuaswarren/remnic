@@ -70,8 +70,9 @@ export async function runCodexMaterialize(
   }
 
   // Per-trigger gate: session-end runs must honor codexMaterializeOnSessionEnd.
-  // session-end.sh passes reason="session_end"; when the user has turned off the
-  // session-end trigger we short-circuit here without touching disk.
+  // The Codex Stop hook (remnic-codex-hook.cjs, session-end event) passes
+  // reason="session_end"; when the user has turned off the session-end trigger
+  // we short-circuit here without touching disk.
   if (options.reason === "session_end" && cfg.codexMaterializeOnSessionEnd === false) {
     log.debug(
       `[codex-materialize] skipped — session-end disabled via codexMaterializeOnSessionEnd=false`,

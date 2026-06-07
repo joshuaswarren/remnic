@@ -1,0 +1,333 @@
+"use strict";
+
+// Integration tests for the unified Codex hook runner (issue #1440).
+// Each test spawns the real remnic-codex-hook.cjs against a mock Remnic HTTP
+// server, with an isolated HOME/XDG_STATE_HOME, and asserts both the emitted
+// hook JSON and the cursor/observe side effects — including the regressions
+// fixed relative to the original PR (cursor retention on failed final flush).
+
+const assert = require("node:assert/strict");
+const test = require("node:test");
+const http = require("node:http");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
+
+const RUNNER = path.join(__dirname, "remnic-codex-hook.cjs");
+
+function startServer(handler) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      let parsed = null;
+      try {
+        parsed = body ? JSON.parse(body) : null;
+      } catch {
+        parsed = body;
+      }
+      calls.push({ method: req.method, url: req.url, body: parsed });
+      handler(req, res, parsed);
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({ server, port: server.address().port, calls });
+    });
+  });
+}
+
+function mkHome() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-codex-test-"));
+  return dir;
+}
+
+// Async spawn (NOT spawnSync) so the in-process mock HTTP server's event loop
+// stays free to answer the runner's requests while it runs.
+function runHook(event, input, { port, home, env = {} } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [RUNNER, event], {
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        XDG_STATE_HOME: path.join(home, "state"),
+        REMNIC_HOST: "127.0.0.1",
+        REMNIC_PORT: String(port),
+        REMNIC_CODEX_MATERIALIZE: "0",
+        // Default to an env token unless a test overrides it.
+        OPENCLAW_REMNIC_ACCESS_TOKEN: env.token === null ? "" : env.token || "test-token",
+        ...env.extra,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.stderr.on("data", (d) => (stderr += d));
+    child.on("close", () => {
+      let json = null;
+      try {
+        json = JSON.parse(stdout.trim().split("\n").filter(Boolean).pop());
+      } catch {
+        /* leave null */
+      }
+      resolve({ stdout, stderr, json });
+    });
+    child.stdin.end(typeof input === "string" ? input : JSON.stringify(input));
+  });
+}
+
+function transcript(home, messages) {
+  const file = path.join(home, "transcript.jsonl");
+  const lines = messages.map((m) => JSON.stringify({ type: m.role, message: { role: m.role, content: m.content } }));
+  fs.writeFileSync(file, lines.join("\n") + "\n");
+  return file;
+}
+
+function cursorPath(home, sessionId) {
+  return path.join(home, "state", "remnic", "hooks", `remnic-cursor-${sessionId}`);
+}
+
+test("session-start: healthy server returns recall context with codingContext cleared outside a repo", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res, body) => {
+    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/recall") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({ context: "remembered preferences", count: 3, mode: "auto" }),
+      );
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook("session-start", { session_id: "s1", cwd: home }, { port, home });
+    assert.equal(json.continue, true);
+    assert.match(json.hookSpecificOutput.additionalContext, /Remnic Memory Recall — 3 memories/);
+    assert.match(json.hookSpecificOutput.additionalContext, /remembered preferences/);
+    const recall = calls.find((c) => c.url === "/engram/v1/recall");
+    assert.ok(recall, "recall was called");
+    assert.equal(recall.body.mode, "auto");
+    assert.equal(recall.body.topK, 12);
+    // Outside a git repo, codingContext is explicitly null (clears stale routing).
+    assert.ok("codingContext" in recall.body);
+    assert.equal(recall.body.codingContext, null);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-start: falls back to minimal mode when full recall fails", async () => {
+  const home = mkHome();
+  let recallHits = 0;
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/recall") {
+      recallHits += 1;
+      if (recallHits === 1) return res.writeHead(500).end("boom");
+      return res.writeHead(200).end(JSON.stringify({ context: "fallback ctx", count: 1, mode: "minimal" }));
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook("session-start", { session_id: "s1", cwd: home }, { port, home });
+    assert.match(json.hookSpecificOutput.additionalContext, /minimal mode/);
+    const recalls = calls.filter((c) => c.url === "/engram/v1/recall");
+    assert.equal(recalls.length, 2);
+    assert.equal(recalls[1].body.mode, "minimal");
+    assert.equal(recalls[1].body.topK, 8);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-start: no token → guidance message, no recall call", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    res.writeHead(200).end("{}");
+  });
+  try {
+    const { json } = await runHook("session-start", { session_id: "s1", cwd: home }, { port, home, env: { token: null } });
+    assert.match(json.hookSpecificOutput.additionalContext, /no auth token/);
+    assert.equal(calls.filter((c) => c.url === "/engram/v1/recall").length, 0);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-start: dead daemon → distinct daemon-not-running message", async () => {
+  const home = mkHome();
+  // Use a port with no listener to simulate a dead daemon.
+  const dead = await startServer(() => {});
+  const port = dead.port;
+  dead.server.close();
+  await new Promise((r) => setTimeout(r, 50));
+  const { json } = await runHook("session-start", { session_id: "s1", cwd: home }, { port, home });
+  assert.match(json.hookSpecificOutput.additionalContext, /daemon not running/);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("user-prompt-recall: short prompt is skipped with bare continue", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const { json } = await runHook("user-prompt-recall", { session_id: "s1", prompt: "hi there" }, { port, home });
+    assert.deepEqual(json, { continue: true });
+    assert.equal(calls.length, 0);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("user-prompt-recall: no token → bare continue, no banner, no call", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const { json } = await runHook(
+      "user-prompt-recall",
+      { session_id: "s1", prompt: "this is a sufficiently long prompt" },
+      { port, home, env: { token: null } },
+    );
+    assert.deepEqual(json, { continue: true });
+    assert.equal(calls.length, 0);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("user-prompt-recall: long prompt injects <remnic-memory> context", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/recall") {
+      return res.writeHead(200).end(JSON.stringify({ context: "rel ctx", count: 2 }));
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook(
+      "user-prompt-recall",
+      { session_id: "s1", prompt: "please recall the deployment decisions we made" },
+      { port, home },
+    );
+    assert.match(json.hookSpecificOutput.additionalContext, /<remnic-memory count="2">/);
+    assert.equal(calls[0].body.mode, "minimal");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("observe worker: advances cursor only after a successful observe", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const tpath = transcript(home, [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "second" },
+    ]);
+    // Run the worker mode synchronously (foreground spawns this detached).
+    await runHook("__observe-worker__", "", {
+      port,
+      home,
+      env: { extra: { REMNIC_HOOK_INPUT: JSON.stringify({ session_id: "sObs", transcript_path: tpath }) } },
+    });
+    const observe = calls.find((c) => c.url === "/engram/v1/observe");
+    assert.ok(observe, "observe was called");
+    assert.equal(observe.body.messages.length, 2);
+    assert.equal(fs.readFileSync(cursorPath(home, "sObs"), "utf8").trim(), "2");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("observe worker: does NOT advance the cursor when observe fails", async () => {
+  const home = mkHome();
+  const { server, port } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/observe") return res.writeHead(500).end("boom");
+    res.writeHead(200).end("{}");
+  });
+  try {
+    const tpath = transcript(home, [{ role: "user", content: "only" }]);
+    await runHook("__observe-worker__", "", {
+      port,
+      home,
+      env: { extra: { REMNIC_HOOK_INPUT: JSON.stringify({ session_id: "sFail", transcript_path: tpath }) } },
+    });
+    assert.equal(fs.existsSync(cursorPath(home, "sFail")), false, "cursor must not be written on failure");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-end: retains the cursor when the final flush fails (no data loss)", async () => {
+  const home = mkHome();
+  const { server, port } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/observe") return res.writeHead(503).end("down");
+    res.writeHead(200).end("{}");
+  });
+  try {
+    // Seed a cursor at 0 with one pending message so a flush is attempted.
+    const tpath = transcript(home, [{ role: "user", content: "pending tail" }]);
+    fs.mkdirSync(path.join(home, "state", "remnic", "hooks"), { recursive: true });
+    fs.writeFileSync(cursorPath(home, "sEnd"), "0\n");
+    const { json } = await runHook("session-end", { session_id: "sEnd", transcript_path: tpath }, { port, home });
+    assert.equal(json.continue, true);
+    // Cursor must be RETAINED for retry — the regression this fixes.
+    assert.equal(fs.existsSync(cursorPath(home, "sEnd")), true, "cursor retained after failed flush");
+    assert.equal(fs.readFileSync(cursorPath(home, "sEnd"), "utf8").trim(), "0");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-end: removes the cursor after a successful final flush", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const tpath = transcript(home, [{ role: "user", content: "pending tail" }]);
+    fs.mkdirSync(path.join(home, "state", "remnic", "hooks"), { recursive: true });
+    fs.writeFileSync(cursorPath(home, "sEnd2"), "0\n");
+    await runHook("session-end", { session_id: "sEnd2", transcript_path: tpath }, { port, home });
+    assert.ok(calls.find((c) => c.url === "/engram/v1/observe"), "final flush observed");
+    assert.equal(fs.existsSync(cursorPath(home, "sEnd2")), false, "cursor cleared after successful flush");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("post-tool-observe: foreground emits continue immediately", async () => {
+  const home = mkHome();
+  const { server, port } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const tpath = transcript(home, [{ role: "user", content: "x" }]);
+    const { json } = await runHook("post-tool-observe", { session_id: "sPt", transcript_path: tpath }, { port, home });
+    assert.deepEqual(json, { continue: true });
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("unknown event fails open with continue", async () => {
+  const home = mkHome();
+  const { server, port } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const { json } = await runHook("bogus-event", {}, { port, home });
+    assert.deepEqual(json, { continue: true });
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

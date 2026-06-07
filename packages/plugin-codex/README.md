@@ -31,11 +31,11 @@ The package is **data + one small runtime materializer** (no runtime JS beyond t
 | File / dir | Purpose |
 |---|---|
 | `.codex-plugin/plugin.json` | Plugin manifest |
-| `hooks/hooks.json` + `hooks/bin/*.sh` | Codex session-lifecycle hooks (recall, observe, session-end) |
+| `hooks/hooks.json` + `hooks/bin/remnic-codex-hook.{cjs,sh,ps1}` | Codex session-lifecycle hooks (recall, observe, session-end). A single cross-platform Node.js runner (`.cjs`) with thin POSIX (`.sh`) and Windows PowerShell (`.ps1`) launchers; `hooks.json` wires each event with both `command` and `commandWindows` so hooks work on macOS, Linux, and Windows. |
 | `skills/` | `remnic-recall`, `remnic-remember`, `remnic-search`, `remnic-status`, `remnic-entities`, `remnic-memory-workflow` — invocable from Codex chats |
 | `memories_extensions/remnic/` | Codex phase-2 consolidation instructions — tells the Codex compactor sub-agent to treat Remnic's on-disk Markdown as an authoritative local memory source when it builds `MEMORY.md`. Local-only (no MCP, no network); runtime recall/observe still flow through the hooks above. |
 | `.mcp.json` | MCP server config pointing Codex at `http://localhost:4318/mcp` |
-| `bin/materialize.cjs` | Runtime entrypoint invoked exclusively by the Codex `Stop` hook (`hooks/bin/session-end.sh`) to refresh `~/.codex/memories` from the Remnic store at the end of a session. Not an installer, and not wired into any `remnic` CLI command. |
+| `bin/materialize.cjs` | Runtime entrypoint invoked exclusively by the Codex `Stop` hook (the `session-end` event of `hooks/bin/remnic-codex-hook.cjs`) to refresh `~/.codex/memories` from the Remnic store at the end of a session. Not an installer, and not wired into any `remnic` CLI command. |
 
 ## What you get at runtime
 
