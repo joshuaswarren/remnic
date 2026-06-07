@@ -233,12 +233,12 @@ test("observe worker: advances cursor only after a successful observe", async ()
       { role: "user", content: "first" },
       { role: "assistant", content: "second" },
     ]);
-    // Run the worker mode synchronously (foreground spawns this detached).
-    await runHook("__observe-worker__", "", {
-      port,
-      home,
-      env: { extra: { REMNIC_HOOK_INPUT: JSON.stringify({ session_id: "sObs", transcript_path: tpath }) } },
-    });
+    // Run the worker mode (foreground spawns this detached), payload via stdin.
+    await runHook(
+      "__observe-worker__",
+      JSON.stringify({ session_id: "sObs", transcript_path: tpath }),
+      { port, home },
+    );
     const observe = calls.find((c) => c.url === "/engram/v1/observe");
     assert.ok(observe, "observe was called");
     assert.equal(observe.body.messages.length, 2);
@@ -257,11 +257,11 @@ test("observe worker: does NOT advance the cursor when observe fails", async () 
   });
   try {
     const tpath = transcript(home, [{ role: "user", content: "only" }]);
-    await runHook("__observe-worker__", "", {
-      port,
-      home,
-      env: { extra: { REMNIC_HOOK_INPUT: JSON.stringify({ session_id: "sFail", transcript_path: tpath }) } },
-    });
+    await runHook(
+      "__observe-worker__",
+      JSON.stringify({ session_id: "sFail", transcript_path: tpath }),
+      { port, home },
+    );
     assert.equal(fs.existsSync(cursorPath(home, "sFail")), false, "cursor must not be written on failure");
   } finally {
     server.close();
@@ -354,18 +354,29 @@ test("hooks.json: every event has commandWindows and uses powershell (PS5.1 ship
   }
 });
 
-test("runner source: ensureMigrated falls through ENOENT to the legacy engram CLI (#1443 review)", () => {
+test("runner source: remnic→engram fallthrough is PATH-gated and Windows-shim aware (#1443 review)", () => {
   const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
-  // The naive `spawnSync(...); return;` loop never tried `engram` when only
-  // the legacy CLI was installed; the fixed loop inspects result.error.code.
+  // Both the migration and daemon-start loops pre-check PATH with onPath()
+  // (.cmd/.exe-aware) so the remnic→engram fallthrough happens, and launch
+  // through a shell on Windows so `.cmd` npm shims actually run.
+  const onPathHits = (src.match(/onPath\(bin\)/g) || []).length;
+  assert.ok(onPathHits >= 2, "both migration and daemon-start loops must PATH-gate with onPath()");
   assert.match(
     src,
-    /ensureMigrated[\s\S]+?result\.error[\s\S]+?ENOENT[\s\S]+?continue/,
-    "ensureMigrated must continue past ENOENT to try the engram CLI",
+    /shell:\s*process\.platform === "win32"/,
+    "CLI launches must use a shell on Windows so .cmd shims run",
   );
-  // Daemon-start uses onPath() pre-flight so spawn's async ENOENT can't
-  // silently swallow the fallthrough.
-  assert.match(src, /onPath\(bin\)/);
+});
+
+test("runner source: stdin is the single payload source — no env-var override (#1443 review)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  // An inherited REMNIC_HOOK_INPUT must NOT be able to override the piped
+  // stdin payload, so readStdin must not read it.
+  assert.doesNotMatch(
+    src,
+    /process\.env\.REMNIC_HOOK_INPUT/,
+    "readStdin must not consult REMNIC_HOOK_INPUT (env-leak override risk)",
+  );
 });
 
 test("post-tool-observe: worker payload travels via STDIN, not the environment (#1443 review)", () => {
@@ -453,8 +464,7 @@ test("post-tool worker reads its payload from STDIN end-to-end", async () => {
     const tpath = transcript(home, [
       { role: "user", content: "stdin-payload-test" },
     ]);
-    // Pass the payload via stdin (the canonical worker channel) without the
-    // REMNIC_HOOK_INPUT env shortcut.
+    // Pass the payload via stdin — the only channel the worker reads.
     await runHook(
       "__observe-worker__",
       JSON.stringify({ session_id: "sStdin", transcript_path: tpath }),

@@ -75,10 +75,12 @@ function emit(obj) {
 }
 
 function readStdin() {
-  // REMNIC_HOOK_INPUT is a test-only convenience shortcut; the foreground hook
-  // and the observe worker both receive the payload via the child stdin pipe
-  // so a large PostToolUse payload can't overflow the Windows env block.
-  if (process.env.REMNIC_HOOK_INPUT !== undefined) return process.env.REMNIC_HOOK_INPUT;
+  // Always read the real stdin. The foreground hook gets its payload from
+  // Codex on fd 0; the detached observe worker gets it from the pipe the
+  // foreground writes. We deliberately do NOT consult an env var here — an
+  // inherited REMNIC_HOOK_INPUT in the parent environment would otherwise
+  // override the piped payload and the worker could observe stale/empty input
+  // (#1443 review).
   try {
     return fs.readFileSync(0, "utf8");
   } catch {
@@ -104,13 +106,21 @@ function ensureMigrated() {
       fs.existsSync(path.join(HOME, ".config", "engram", "config.json"));
     if (!hasEngram) return;
     // Try `remnic` first, fall through to legacy `engram` when missing on PATH.
-    // spawnSync does NOT throw on ENOENT — it returns { error: { code: 'ENOENT' } }
-    // — so we must inspect `result.error?.code` to advance the loop (#1443 review).
-    // Timeout is 5 min so a large engram→remnic migration can complete; the
-    // original bash hook had no timeout.
+    // Pre-check PATH with onPath() (which is .cmd/.exe-aware on Windows) rather
+    // than relying on spawnSync ENOENT — under `shell: true` a missing command
+    // yields a non-zero shell exit, not ENOENT, so an exit-code check couldn't
+    // distinguish "missing" from "migration failed" (#1443 review).
+    // On Windows the CLIs are `.cmd` shims, which Node can only launch via a
+    // shell. Timeout is 5 min so a large migration can complete (the original
+    // bash hook had no timeout). Args are fixed literals — safe under a shell.
     for (const bin of ["remnic", "engram"]) {
-      const result = spawnSync(bin, ["migrate"], { stdio: "ignore", timeout: 300000 });
-      if (result.error && result.error.code === "ENOENT") continue;
+      if (!onPath(bin)) continue;
+      spawnSync(bin, ["migrate"], {
+        stdio: "ignore",
+        timeout: 300000,
+        shell: process.platform === "win32",
+        windowsHide: true,
+      });
       return;
     }
   } catch {
@@ -545,7 +555,14 @@ async function handleSessionStart(input, token, log) {
     for (const bin of ["remnic", "engram"]) {
       if (!onPath(bin)) continue;
       try {
-        const child = spawn(bin, ["daemon", "start"], { detached: true, stdio: "ignore" });
+        // Windows: `remnic`/`engram` are `.cmd` shims, which Node can only
+        // launch via a shell (#1443 review). Args are fixed literals — safe.
+        const child = spawn(bin, ["daemon", "start"], {
+          detached: true,
+          stdio: "ignore",
+          shell: process.platform === "win32",
+          windowsHide: true,
+        });
         child.on("error", () => {});
         child.unref();
         break;
