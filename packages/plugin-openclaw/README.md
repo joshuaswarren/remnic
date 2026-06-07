@@ -43,15 +43,15 @@ launchctl kickstart -k gui/501/ai.openclaw.gateway
 
 ## Compatibility Policy
 
-Remnic supports OpenClaw releases from at least the previous 60 days. For the
-June 6, 2026 compatibility sweep, that means releases back to April 7, 2026.
+Remnic supports OpenClaw releases from at least the previous 60 days. As of
+June 7, 2026, that means releases back to April 8, 2026.
 The package metadata keeps the installer compatibility floor at the single
 `>=2026.4.1` shape OpenClaw setup expects because that older floor is still
 more permissive than the active 60-day requirement. The peer and plugin-API
 compatibility ranges explicitly include reviewed prerelease hosts in that
 window. The adapter separately records `2026.6.6-alpha.1` as the latest
 reviewed OpenClaw source-tag target (plugin SDK surface verified against the
-newest npm-published build, `2026.6.5-beta.1`).
+newest npm-published build, `2026.6.5-beta.2`).
 
 When adding newer OpenClaw manifest surfaces, keep older-compatible metadata in
 place for hosts inside that 60-day window unless an upstream breaking change is
@@ -181,7 +181,8 @@ CI jobs that provision OpenClaw should use
 `-- --require --package-root <path>` so a missing SDK fails instead of skipping.
 
 Last compatibility sweep: June 6, 2026 (issues #1338, #1348, #1387, #1412,
-#1423, #1424). The latest reviewed npm build is `openclaw@2026.6.5-beta.1`; its
+#1423, #1424), with a June 7, 2026 follow-up adding `openclaw@2026.6.5-beta.2`.
+The latest reviewed npm build is `openclaw@2026.6.5-beta.2`; its
 plugin SDK surface is additive-only versus the recorded snapshot (no removals),
 so no Remnic adapter change was required — see `docs/plugins/openclaw.md` for
 the full sweep notes. Earlier sweeps: the SDK surface check passed against

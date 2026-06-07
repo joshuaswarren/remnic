@@ -95,13 +95,13 @@ plugin id.
 ## Compatibility Policy
 
 Remnic supports OpenClaw releases from at least the previous 60 days. As of
-June 6, 2026, that window starts on April 7, 2026. The OpenClaw installer
+June 7, 2026, that window starts on April 8, 2026. The OpenClaw installer
 floor remains the single supported `>=2026.4.1` shape because it is more
 permissive than the active 60-day floor, while the peer and plugin-API
 compatibility ranges explicitly include reviewed prerelease hosts in that
 window. The adapter records `2026.6.6-alpha.1` as the latest reviewed
 source-tag target, with its plugin SDK surface verified against the newest
-npm-published build (`2026.6.5-beta.1`).
+npm-published build (`2026.6.5-beta.2`).
 
 When OpenClaw adds a new manifest or setup surface, Remnic should add that new
 surface without dropping older metadata that still helps hosts inside the
@@ -324,7 +324,7 @@ page); the `-beta` versions are published to npm under the `beta` dist-tag.
   rest is auth-profile storage migration to SQLite, channel/UI fixes, and
   documentation; none of it changes the plugin SDK contract Remnic consumes.
 - Plugin SDK surface: verified with `npm run check:openclaw-sdk-surface`
-  against the newest npm-published build (`2026.6.5-beta.1`). The surface is
+  against the then-newest npm-published build (`2026.6.5-beta.1`). The surface is
   **additive only — nothing Remnic registers or depends on was removed or
   changed**. New optional surfaces appeared: registrars `registerCliMetadata`,
   `registerCommandGroups`, `registerToolEventRecipient`; and hooks including
@@ -352,6 +352,26 @@ page); the `-beta` versions are published to npm under the `beta` dist-tag.
   `openclaw.build.openclawVersion` and `openclaw.build.pluginSdkVersion` record
   `2026.6.6-alpha.1` as the reviewed target. `openclaw.install.minHostVersion`
   remains the more permissive `>=2026.4.1` floor for older supported hosts.
+
+### 2026.6.5-beta.2 Compatibility Update
+
+`2026.6.5-beta.2` was published to npm under the `beta` dist-tag after the
+June 6, 2026 sweep above and is now the newest npm-published OpenClaw build.
+Reviewed on June 7, 2026:
+
+- Relative to `2026.6.5-beta.1` this is a patch beta on the same `2026.6.5`
+  line; the plugin SDK surface Remnic consumes is unchanged and the
+  `check:openclaw-sdk-surface` gate stays green (additive-only).
+- Compatibility metadata: `peerDependencies.openclaw` and
+  `openclaw.compat.pluginApi` in both published OpenClaw packages
+  (`@remnic/plugin-openclaw` and the `openclaw-engram` shim) now explicitly
+  include `2026.6.5-beta.2`. The OpenClaw runtime hard-enforces the plugin's
+  declared API range, so the exact version must be enumerated for the adapter
+  to load on a `2026.6.5-beta.2` host. `openclaw.build.openclawVersion` and
+  `openclaw.build.pluginSdkVersion` remain `2026.6.6-alpha.1`.
+- The recalculated 60-day window as of June 7, 2026 starts on April 8, 2026;
+  `openclaw.install.minHostVersion` stays the more permissive `>=2026.4.1`
+  floor with no exception required.
 
 ## Reset Flush Contract
 
