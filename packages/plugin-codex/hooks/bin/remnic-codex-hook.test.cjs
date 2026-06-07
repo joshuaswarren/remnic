@@ -334,14 +334,26 @@ test("unknown event fails open with continue", async () => {
 
 // ── #1443 review fixes ──────────────────────────────────────────────────────
 
-test("hooks.json: every event has commandWindows and uses powershell (PS5.1 ships on Win10/11)", () => {
+test("hooks.json: every event resolves via ${PLUGIN_ROOT} and uses powershell (#1443 review)", () => {
   const cfg = JSON.parse(
     fs.readFileSync(path.join(__dirname, "..", "hooks.json"), "utf8"),
   );
   for (const event of ["SessionStart", "PostToolUse", "UserPromptSubmit", "Stop"]) {
     for (const matcher of cfg.hooks[event]) {
       for (const hook of matcher.hooks) {
+        // Codex runs plugin hooks from the session cwd and substitutes
+        // ${PLUGIN_ROOT} into the command (openai/codex discovery.rs), so the
+        // path must be PLUGIN_ROOT-relative, not cwd-relative `./hooks/...`.
+        assert.ok(
+          hook.command.startsWith("${PLUGIN_ROOT}/hooks/bin/"),
+          `${event}.command must resolve via \${PLUGIN_ROOT}, got: ${hook.command}`,
+        );
         assert.ok(hook.commandWindows, `${event} must declare commandWindows`);
+        assert.match(
+          hook.commandWindows,
+          /\$\{PLUGIN_ROOT\}\\hooks\\bin\\/,
+          `${event}.commandWindows must resolve via \${PLUGIN_ROOT}`,
+        );
         // Use `powershell` not `pwsh` so stock Windows 10/11 works without
         // PowerShell 7 installed (#1443 review).
         assert.match(

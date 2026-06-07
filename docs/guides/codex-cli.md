@@ -34,7 +34,7 @@ Codex is stateless by default. Every session starts from zero — it doesn't kno
   - **macOS / Linux:** a POSIX shell plus `curl` (and `python3` only if you use the Python manual example).
   - **Windows 10/11:** **Windows PowerShell 5.1** ships with the OS — nothing to install. PowerShell 7 (`pwsh`) is optional. `Invoke-RestMethod` is built in, so `curl`/`python3` are *not* required. Use the PowerShell hook variant and `%USERPROFILE%` paths shown below.
 
-> **Cross-platform note (issue #1440):** As of the cross-platform-hooks release, the bundled `@remnic/plugin-codex` hooks ship a unified Node.js runner with both `command` (POSIX `.sh`) and `commandWindows` (PowerShell `.ps1`) entries, so the **marketplace install and `remnic connectors install codex-cli` now work on Windows, macOS, and Linux** with no manual hook scripting. Prefer those paths; the manual setup further down is only for advanced/custom cases.
+> **Cross-platform note (issue #1440):** As of the cross-platform-hooks release, the bundled `@remnic/plugin-codex` hooks ship a unified Node.js runner with both `command` (POSIX `.sh`) and `commandWindows` (PowerShell `.ps1`) entries, so the **marketplace install and `remnic connectors install codex-cli` now work on Windows, macOS, and Linux** with no manual hook scripting. The bundled `hooks.json` resolves the runner via `${PLUGIN_ROOT}` (which Codex injects and substitutes for plugin hooks), so it works regardless of the session's working directory. Prefer those paths; the manual setup further down is only for advanced/custom cases.
 
 ## Quickest setup: `remnic connectors install codex-cli`
 

@@ -111,6 +111,16 @@ test("plugin-codex hooks ship a unified cross-platform Node.js runner (#1440)", 
           /remnic-codex-hook\.ps1/.test(hook.commandWindows),
           `${event}.commandWindows must call the unified runner .ps1`,
         );
+        // Codex substitutes ${PLUGIN_ROOT} and runs from the session cwd, so
+        // plugin-bundled hooks must be PLUGIN_ROOT-relative, not cwd-relative.
+        assert.ok(
+          hook.command.includes("${PLUGIN_ROOT}"),
+          `${event}.command must resolve via \${PLUGIN_ROOT} for marketplace installs`,
+        );
+        assert.ok(
+          hook.commandWindows.includes("${PLUGIN_ROOT}"),
+          `${event}.commandWindows must resolve via \${PLUGIN_ROOT}`,
+        );
       }
     }
   }
