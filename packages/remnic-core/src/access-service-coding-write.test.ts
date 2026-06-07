@@ -108,6 +108,27 @@ test("#1434 an existing session coding context scopes the write (recall-then-sto
   assert.equal(resolved, projectNamespaceFor("Blend/Supply"));
 });
 
+test("#1434 per-call projectTag overrides a stale session coding binding", async () => {
+  // Session is bound to project A, but this write explicitly identifies B —
+  // the per-call value must win so the memory lands in B's namespace.
+  const orch = makeOrchestratorStub();
+  orch.setCodingContextForSession("sess-reuse", {
+    projectId: projectTagProjectId("Project/A"),
+    branch: null,
+    rootPath: projectTagProjectId("Project/A"),
+    defaultBranch: null,
+  });
+  const service = new EngramAccessService(orch);
+  const resolved = await resolver(service)({
+    sessionKey: "sess-reuse",
+    authenticatedPrincipal: "alice",
+    projectTag: "Project/B",
+    content: "x",
+  });
+  assert.equal(resolved, projectNamespaceFor("Project/B"));
+  assert.notEqual(resolved, projectNamespaceFor("Project/A"));
+});
+
 test("#1434 explicit namespace wins and bypasses coding overlay", async () => {
   const orch = makeOrchestratorStub();
   const service = new EngramAccessService(orch);

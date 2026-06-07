@@ -1221,11 +1221,14 @@ export class EngramAccessService {
     // Project scoping only applies when namespaces are enabled (else overlaying
     // would create false isolation over a single storage dir) and projectScope
     // is on. Mirror the orchestrator's read/write overlay using the session's
-    // existing context first, else a read-only resolution of cwd/projectTag.
+    // per-call cwd/projectTag (the project explicitly identified for THIS
+    // write), else the session's existing context. Per-call wins so a client
+    // that reuses one sessionKey across projects (auto-injecting the current
+    // cwd) is not stored under a stale session binding (Codex review).
     if (!this.orchestrator.config.namespacesEnabled) return base;
     const codingContext =
-      this.orchestrator.getCodingContextForSession(request.sessionKey) ??
-      (await this.resolveCodingContextFromOptions(request));
+      (await this.resolveCodingContextFromOptions(request)) ??
+      this.orchestrator.getCodingContextForSession(request.sessionKey);
     const overlay = resolveCodingNamespaceOverlay(
       codingContext,
       this.orchestrator.config.codingMode,
