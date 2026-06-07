@@ -1097,11 +1097,18 @@ export class EngramAccessHttpServer {
         cwd: body.cwd,
         projectTag: body.projectTag,
       };
-      const idempotencyStatus = await this.service.peekMemoryStoreIdempotency(request);
-      if (idempotencyStatus === "miss" && request.dryRun !== true) {
+      // Resolve the write namespace once and reuse it for the idempotency peek
+      // and the write, so a concurrent session-context change can't make them
+      // diverge (#1434).
+      const scopedRequest = {
+        ...request,
+        writeNamespaceOverride: await this.service.resolveWriteNamespace(request),
+      };
+      const idempotencyStatus = await this.service.peekMemoryStoreIdempotency(scopedRequest);
+      if (idempotencyStatus === "miss" && scopedRequest.dryRun !== true) {
         this.ensureWriteRateLimitAvailable();
       }
-      const response = await this.service.memoryStore(request);
+      const response = await this.service.memoryStore(scopedRequest);
       if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
         this.recordWriteRateLimitHit();
       }
@@ -1128,11 +1135,17 @@ export class EngramAccessHttpServer {
         cwd: body.cwd,
         projectTag: body.projectTag,
       };
-      const idempotencyStatus = await this.service.peekSuggestionSubmitIdempotency(request);
-      if (idempotencyStatus === "miss" && request.dryRun !== true) {
+      // Resolve the write namespace once and reuse it for the idempotency peek
+      // and the write (#1434).
+      const scopedRequest = {
+        ...request,
+        writeNamespaceOverride: await this.service.resolveWriteNamespace(request),
+      };
+      const idempotencyStatus = await this.service.peekSuggestionSubmitIdempotency(scopedRequest);
+      if (idempotencyStatus === "miss" && scopedRequest.dryRun !== true) {
         this.ensureWriteRateLimitAvailable();
       }
-      const response = await this.service.suggestionSubmit(request);
+      const response = await this.service.suggestionSubmit(scopedRequest);
       if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
         this.recordWriteRateLimitHit();
       }

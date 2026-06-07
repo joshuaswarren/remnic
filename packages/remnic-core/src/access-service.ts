@@ -768,6 +768,15 @@ export interface EngramAccessWriteEnvelope {
 export interface CodingScopedWriteInput {
   cwd?: string;
   projectTag?: string;
+  /**
+   * Internal, server-set only: a write namespace already resolved AND
+   * authorized by `resolveWriteNamespace` for THIS request. Callers that both
+   * pre-peek idempotency and write (the HTTP surface) resolve once and reuse it,
+   * so a concurrent change to the session's coding context can't make the peek
+   * fingerprint and the write namespace diverge. Never populated from a client
+   * request body (not in any input schema).
+   */
+  writeNamespaceOverride?: string;
 }
 
 export interface EngramAccessMemoryStoreRequest
@@ -1184,8 +1193,8 @@ export class EngramAccessService {
    *
    * Read-only: this NEVER mutates session coding context, so the idempotency
    * peeks and dryRun preflights that call it stay side-effect free (Codex
-   * review). It prefers the session's existing context (set by recall/observe),
-   * else resolves the per-call `cwd`/`projectTag` without persisting.
+   * review). It prefers the per-call `cwd`/`projectTag` (the project explicitly
+   * identified for this write), else the session's existing context.
    */
   private async resolveCodingScopedWriteNamespace(
     request: CodingScopedWriteInput & {
@@ -1194,6 +1203,16 @@ export class EngramAccessService {
       authenticatedPrincipal?: string;
     },
   ): Promise<string> {
+    // Reuse a namespace already resolved+authorized for this request (HTTP
+    // resolves once via resolveWriteNamespace and threads it through the
+    // idempotency peek AND the write, so a concurrent session change can't make
+    // them diverge). Server-set only — never sourced from a client body.
+    if (
+      typeof request.writeNamespaceOverride === "string" &&
+      request.writeNamespaceOverride.length > 0
+    ) {
+      return request.writeNamespaceOverride;
+    }
     const hasExplicitNamespace =
       typeof request.namespace === "string" && request.namespace.trim().length > 0;
     if (hasExplicitNamespace) {
@@ -1235,6 +1254,23 @@ export class EngramAccessService {
       this.orchestrator.config.defaultNamespace,
     );
     return overlay ? combineNamespaces(base, overlay.namespace) : base;
+  }
+
+  /**
+   * Resolve the write namespace once for a memory_store / suggestion_submit
+   * request. Callers that both pre-peek idempotency and then write (the HTTP
+   * surface) should call this once and pass the result back as
+   * `writeNamespaceOverride` on both calls, so a concurrent change to the
+   * session's coding context cannot make the peek and the write diverge.
+   */
+  async resolveWriteNamespace(
+    request: CodingScopedWriteInput & {
+      namespace?: string;
+      sessionKey?: string;
+      authenticatedPrincipal?: string;
+    },
+  ): Promise<string> {
+    return this.resolveCodingScopedWriteNamespace(request);
   }
 
   private async objectiveStateStoreLocationForNamespace(namespace: string): Promise<{

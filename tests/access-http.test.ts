@@ -149,6 +149,8 @@ function createFakeService(): EngramAccessService {
       appliedActions: [],
       report: "# report",
     }),
+    resolveWriteNamespace: async ({ namespace }: { namespace?: string } = {}) =>
+      namespace ?? "global",
     peekMemoryStoreIdempotency: async () => "miss",
     peekSuggestionSubmitIdempotency: async () => "miss",
     memoryStore: async ({ dryRun, idempotencyKey }) => ({

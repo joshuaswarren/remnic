@@ -173,6 +173,28 @@ test("#1434 unqualified write with no principal policy stays on the default name
   assert.equal(resolved, "default");
 });
 
+test("#1434 writeNamespaceOverride is reused verbatim (HTTP resolve-once, no peek/write race)", async () => {
+  const orch = makeOrchestratorStub();
+  const service = new EngramAccessService(orch);
+  // resolveWriteNamespace resolves once...
+  const once = await service.resolveWriteNamespace({
+    sessionKey: "sess-http",
+    authenticatedPrincipal: "alice",
+    projectTag: "Blend/Supply",
+  });
+  assert.equal(once, projectNamespaceFor("Blend/Supply"));
+  // ...and reusing it via writeNamespaceOverride returns it verbatim even if the
+  // session context / cwd would now resolve differently.
+  const reused = await resolver(service)({
+    sessionKey: "sess-http",
+    authenticatedPrincipal: "alice",
+    projectTag: "Different/Project",
+    writeNamespaceOverride: once,
+    content: "x",
+  });
+  assert.equal(reused, once);
+});
+
 test("#1434 namespaces disabled: cwd/projectTag are a no-op (common single-tenant MCP case)", async () => {
   const orch = makeOrchestratorStub({ namespacesEnabled: false } as Partial<PluginConfig>);
   const service = new EngramAccessService(orch);
