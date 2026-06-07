@@ -106,6 +106,37 @@ test("#1434 no coding context resolves to the base namespace (no behavior change
   assert.equal(resolved, defaultNamespaceForPrincipal("alice", orch.config));
 });
 
+test("#1434 a write rejected by base-namespace auth does not attach coding context (cursor Medium)", async () => {
+  // A principal whose base namespace policy denies writes => resolution must
+  // throw BEFORE attaching cwd/projectTag, leaving no orphaned coding context on
+  // the session (mirrors observe's ordering).
+  const orch = makeOrchestratorStub({
+    namespacePolicies: [
+      { name: "bob", readPrincipals: ["bob"], writePrincipals: [] },
+    ],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(orch);
+
+  await assert.rejects(
+    (
+      service as unknown as {
+        resolveCodingScopedWriteNamespace: (req: unknown) => Promise<string>;
+      }
+    ).resolveCodingScopedWriteNamespace({
+      sessionKey: "sess-denied",
+      authenticatedPrincipal: "bob",
+      projectTag: "Blend/Supply",
+      content: "x",
+    }),
+    /not writable/,
+  );
+  assert.equal(
+    orch.getCodingContextForSession("sess-denied"),
+    null,
+    "rejected write must not leave coding context attached",
+  );
+});
+
 test("#1434 namespaces disabled: cwd/projectTag are a no-op (common single-tenant MCP case)", async () => {
   const orch = makeOrchestratorStub({ namespacesEnabled: false } as Partial<PluginConfig>);
   const service = new EngramAccessService(orch);

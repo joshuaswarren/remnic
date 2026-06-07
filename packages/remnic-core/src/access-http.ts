@@ -1094,6 +1094,8 @@ export class EngramAccessHttpServer {
         entityRef: body.entityRef,
         ttl: body.ttl,
         sourceReason: body.sourceReason,
+        cwd: body.cwd,
+        projectTag: body.projectTag,
       };
       const idempotencyStatus = await this.service.peekMemoryStoreIdempotency(request);
       if (idempotencyStatus === "miss" && request.dryRun !== true) {
@@ -1123,6 +1125,8 @@ export class EngramAccessHttpServer {
         entityRef: body.entityRef,
         ttl: body.ttl,
         sourceReason: body.sourceReason,
+        cwd: body.cwd,
+        projectTag: body.projectTag,
       };
       const idempotencyStatus = await this.service.peekSuggestionSubmitIdempotency(request);
       if (idempotencyStatus === "miss" && request.dryRun !== true) {

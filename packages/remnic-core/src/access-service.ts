@@ -1163,25 +1163,27 @@ export class EngramAccessService {
         request.authenticatedPrincipal,
       );
     }
-    if (request.sessionKey && (request.cwd || request.projectTag)) {
-      await this.maybeAttachCodingContext(request.sessionKey, {
-        cwd: request.cwd,
-        projectTag: request.projectTag,
-      });
-    }
     const principal = this.resolveRequestPrincipal(
       request.sessionKey,
       request.authenticatedPrincipal,
     );
     const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
-    // Authorize the BASE namespace, then apply the project overlay (mirrors
-    // observe's objective-state write path). The overlay is a principal-owned
-    // `project-*` sub-namespace derived from an authorized base (rule 42), so it
-    // needs no separate write policy — and re-checking it would wrongly reject
-    // project writes, since canWriteNamespace denies unpolicied non-default
-    // namespaces.
+    // Authorize the BASE namespace BEFORE attaching coding context, so a
+    // rejected write never persists cwd/projectTag on the session (mirrors
+    // observe, which validates writability before attaching — Codex P2 on that
+    // path). The project overlay applied below is a principal-owned `project-*`
+    // sub-namespace derived from this authorized base (rule 42), so it needs no
+    // separate write policy — and re-checking the overlaid namespace would
+    // wrongly reject project writes, since canWriteNamespace denies unpolicied
+    // non-default namespaces.
     if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not writable: ${base}`);
+    }
+    if (request.sessionKey && (request.cwd || request.projectTag)) {
+      await this.maybeAttachCodingContext(request.sessionKey, {
+        cwd: request.cwd,
+        projectTag: request.projectTag,
+      });
     }
     return this.orchestrator.applyCodingNamespaceOverlay(request.sessionKey, base);
   }
@@ -2879,11 +2881,7 @@ export class EngramAccessService {
   async peekSuggestionSubmitIdempotency(
     request: EngramAccessSuggestionSubmitRequest,
   ): Promise<EngramAccessIdempotencyStatus> {
-    const namespace = this.resolveWritableNamespace(
-      request.namespace,
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
+    const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
       throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);
