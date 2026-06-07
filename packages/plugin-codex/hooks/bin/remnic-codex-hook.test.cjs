@@ -386,6 +386,64 @@ test("post-tool-observe: worker payload travels via STDIN, not the environment (
   );
 });
 
+test("session-end: skips final flush and leaves a symlinked cursor untouched (state hardening)", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const stateDir = path.join(home, "state", "remnic", "hooks");
+    fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    const cursor = cursorPath(home, "sUnsafe");
+    const symTarget = path.join(home, "target.txt");
+    fs.writeFileSync(symTarget, "unchanged\n");
+    fs.symlinkSync(symTarget, cursor);
+    const tpath = transcript(home, [{ role: "user", content: "would-be-pending" }]);
+    await runHook("session-end", { session_id: "sUnsafe", transcript_path: tpath }, { port, home });
+    // Final flush MUST NOT happen via a symlinked cursor file.
+    assert.equal(calls.filter((c) => c.url === "/engram/v1/observe").length, 0);
+    // The symlink target must be left exactly as we created it.
+    assert.equal(fs.readFileSync(symTarget, "utf8"), "unchanged\n");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("observe worker: adopts an os.tmpdir() cursor file and cleans it up", async () => {
+  const home = mkHome();
+  const { server, port } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const sessionId = `mtmp-${process.pid}`;
+    // Place a tmp cursor at a value AHEAD of where the new cursor would be.
+    const tmpCursor = path.join(os.tmpdir(), `remnic-cursor-${sessionId}`);
+    fs.writeFileSync(tmpCursor, "5\n");
+    try {
+      // Transcript has 2 messages; without /tmp adoption the runner would
+      // observe both. With adoption (5 > 2 > 0), `slice(5)` is empty → no
+      // observe, and the cursor lands at the transcript length.
+      const tpath = transcript(home, [
+        { role: "user", content: "a" },
+        { role: "assistant", content: "b" },
+      ]);
+      await runHook(
+        "__observe-worker__",
+        JSON.stringify({ session_id: sessionId, transcript_path: tpath }),
+        { port, home },
+      );
+      // /tmp cursor must be cleaned up by the runner after adoption.
+      assert.equal(fs.existsSync(tmpCursor), false, "/tmp cursor must be removed after adoption");
+    } finally {
+      try {
+        fs.rmSync(tmpCursor, { force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("post-tool worker reads its payload from STDIN end-to-end", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer((req, res) =>
