@@ -183,6 +183,7 @@ const OPENCLAW_SUPPORT_FLOOR_RANGE = [
   "2026.6.5-alpha.1",
   "2026.6.5-alpha.2",
   "2026.6.5-beta.1",
+  "2026.6.5-beta.2",
   "2026.6.6-alpha.1",
 ].join(" || ");
 const OPENCLAW_MIN_HOST_VERSION_FLOOR = ">=2026.4.1";
@@ -603,6 +604,7 @@ test("OpenClaw support range accepts the stable floor and reviewed prerelease ho
     "2026.6.5-alpha.1",
     "2026.6.5-alpha.2",
     "2026.6.5-beta.1",
+    "2026.6.5-beta.2",
     "2026.6.6-alpha.1",
   ]) {
     assert.equal(
