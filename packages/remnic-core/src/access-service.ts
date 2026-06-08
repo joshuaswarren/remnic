@@ -1928,6 +1928,28 @@ export class EngramAccessService {
     }
   }
 
+  /**
+   * Seed the session's coding binding AFTER a committed, project-scoped explicit
+   * write (memory_store / suggestion_submit), mirroring the recall path's
+   * `maybeAttachCodingContext` so a later bare recall/write on the same session
+   * is scoped to the same project. Called only from the post-persist path, so it
+   * never fires on dryRun, replay/conflict, or quota-rejected requests. Skips
+   * when an explicit `namespace` was supplied — that write bypassed the coding
+   * overlay, so binding the session to a project it never wrote to would make
+   * later bare recalls miss (Codex review).
+   */
+  private async attachCodingContextAfterScopedWrite(
+    request: CodingScopedWriteInput & { namespace?: string; sessionKey?: string },
+  ): Promise<void> {
+    const hasExplicitNamespace =
+      typeof request.namespace === "string" && request.namespace.trim().length > 0;
+    if (hasExplicitNamespace) return;
+    await this.maybeAttachCodingContext(request.sessionKey, {
+      cwd: request.cwd,
+      projectTag: request.projectTag,
+    });
+  }
+
   async recall(request: EngramAccessRecallRequest): Promise<EngramAccessRecallResponse> {
     const query = request.query.trim();
     if (query.length === 0) {
@@ -2837,18 +2859,6 @@ export class EngramAccessService {
     request: EngramAccessMemoryStoreRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> },
   ): Promise<EngramAccessWriteResponse> {
-    // A real (non-dryRun) store attaches coding context to the session exactly
-    // as recall does (executeRecall → maybeAttachCodingContext), so a store made
-    // with per-call cwd/projectTag seeds the session binding and a LATER bare
-    // recall on the same session (no per-call context) is scoped to the same
-    // project and finds the memory (Cursor review). dryRun stays read-only — it
-    // previews the namespace via the read-only resolver without mutating state.
-    if (request.dryRun !== true) {
-      await this.maybeAttachCodingContext(request.sessionKey, {
-        cwd: request.cwd,
-        projectTag: request.projectTag,
-      });
-    }
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
@@ -2869,6 +2879,14 @@ export class EngramAccessService {
         };
       }
       const result = await persistExplicitCapture(this.orchestrator, candidate, "memory_store");
+      // Seed the session's coding binding ONLY after a real write commits, and
+      // only when the namespace came from project scoping (no explicit
+      // namespace). This mirrors recall's maybeAttachCodingContext so a LATER
+      // bare recall/write on the same session is scoped to the same project —
+      // but never binds the session on a dryRun, replay/conflict, quota
+      // rejection, or an explicit-namespace write (which bypasses the overlay),
+      // since those don't reach this point or aren't project-scoped (Codex review).
+      await this.attachCodingContextAfterScopedWrite(request);
       const response: EngramAccessWriteResponse = {
         schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
         operation: "memory_store",
@@ -2934,16 +2952,6 @@ export class EngramAccessService {
     request: EngramAccessSuggestionSubmitRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> },
   ): Promise<EngramAccessWriteResponse> {
-    // Mirror recall's coding-context attach on a real submit so a per-call
-    // cwd/projectTag seeds the session binding and a later bare recall on the
-    // same session is scoped to the same project (Cursor review). dryRun stays
-    // read-only (preview only).
-    if (request.dryRun !== true) {
-      await this.maybeAttachCodingContext(request.sessionKey, {
-        cwd: request.cwd,
-        projectTag: request.projectTag,
-      });
-    }
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
     if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
@@ -2969,6 +2977,10 @@ export class EngramAccessService {
         "suggestion_submit",
         new Error(request.sourceReason?.trim() || "submitted via engram suggestion_submit"),
       );
+      // Seed the session binding only after a real, project-scoped submit commits
+      // (mirrors memory_store / recall; skips dryRun, replay, quota-reject, and
+      // explicit-namespace writes — Codex review).
+      await this.attachCodingContextAfterScopedWrite(request);
       const response: EngramAccessWriteResponse = {
         schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
         operation: "suggestion_submit",

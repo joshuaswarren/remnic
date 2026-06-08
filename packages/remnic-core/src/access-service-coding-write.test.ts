@@ -314,11 +314,7 @@ test("#1434 namespaces disabled: cwd/projectTag are a no-op (common single-tenan
   assert.equal(resolved, "default");
 });
 
-test("#1434 a real memory_store attaches coding context so a later bare recall on the session is scoped (Cursor review)", async () => {
-  // A store with sessionKey + per-call projectTag must seed the session's
-  // coding binding (like recall's maybeAttachCodingContext), so a SUBSEQUENT
-  // bare recall on the same session — one that omits cwd/projectTag — is scoped
-  // to the same project and finds the memory.
+function makeAttachOrchestrator() {
   const contexts = new Map<string, CodingContext>();
   const getStorageCalls: Array<string | undefined> = [];
   const orch = {
@@ -347,17 +343,33 @@ test("#1434 a real memory_store attaches coding context so a later bare recall o
       };
     },
   } as unknown as Orchestrator;
-  const service = new EngramAccessService(orch);
+  return { orch, contexts, getStorageCalls };
+}
 
-  const res = await service.memoryStore({
-    sessionKey: "sess-attach",
+function storeRequest(
+  overrides: Record<string, unknown>,
+): Parameters<EngramAccessService["memoryStore"]>[0] {
+  return {
     authenticatedPrincipal: "alice",
-    projectTag: "Blend/Supply",
     content: "durable project memory",
     category: "fact",
     confidence: 0.9,
     tags: [],
-  } as unknown as Parameters<EngramAccessService["memoryStore"]>[0]);
+    ...overrides,
+  } as unknown as Parameters<EngramAccessService["memoryStore"]>[0];
+}
+
+test("#1434 a real memory_store attaches coding context so a later bare recall on the session is scoped (Cursor review)", async () => {
+  // A store with sessionKey + per-call projectTag must seed the session's
+  // coding binding (like recall's maybeAttachCodingContext), so a SUBSEQUENT
+  // bare recall on the same session — one that omits cwd/projectTag — is scoped
+  // to the same project and finds the memory.
+  const { orch, contexts, getStorageCalls } = makeAttachOrchestrator();
+  const service = new EngramAccessService(orch);
+
+  const res = await service.memoryStore(
+    storeRequest({ sessionKey: "sess-attach", projectTag: "Blend/Supply" }),
+  );
 
   assert.equal(res.status, "stored");
   assert.equal(res.namespace, projectNamespaceFor("Blend/Supply"));
@@ -378,6 +390,31 @@ test("#1434 a real memory_store attaches coding context so a later bare recall o
     content: "y",
   });
   assert.equal(bare, projectNamespaceFor("Blend/Supply"));
+});
+
+test("#1434 an explicit-namespace store does NOT bind the session to a project (Codex review)", async () => {
+  // An explicit `namespace` bypasses the coding overlay, so the write must not
+  // seed a project binding the session never wrote to — else later bare recalls
+  // would search a project namespace with no committed memory.
+  const { orch, contexts } = makeAttachOrchestrator();
+  const service = new EngramAccessService(orch);
+  const res = await service.memoryStore(
+    storeRequest({ sessionKey: "sess-explicit", namespace: "default", projectTag: "Blend/Supply" }),
+  );
+  assert.equal(res.status, "stored");
+  assert.equal(res.namespace, "default");
+  assert.equal(contexts.get("sess-explicit"), undefined, "explicit-namespace write must not bind the session");
+});
+
+test("#1434 a dryRun store does NOT bind the session to a project (Codex review)", async () => {
+  // A dryRun is a read-only preview; it must not mutate session coding context.
+  const { orch, contexts } = makeAttachOrchestrator();
+  const service = new EngramAccessService(orch);
+  const res = await service.memoryStore(
+    storeRequest({ sessionKey: "sess-dry", projectTag: "Blend/Supply", dryRun: true }),
+  );
+  assert.equal(res.status, "validated");
+  assert.equal(contexts.get("sess-dry"), undefined, "dryRun must not bind the session");
 });
 
 // ── Persist layer (#1434 P1/High): a pre-resolved project namespace must reach
