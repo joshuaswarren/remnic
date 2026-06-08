@@ -598,6 +598,18 @@ jobs:
           fi
           npm publish --access public --provenance
 
+      # Publish the GitHub release BEFORE the best-effort ClawHub publish below.
+      # ClawHub is a third-party host whose backend can fail transiently (e.g.
+      # the "Too many bytes read" search-digest-sync error); creating the release
+      # first guarantees a ClawHub-side failure can never leave a release stuck
+      # as a draft after npm has already published.
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_metadata.outputs.tag_name }}
+          name: ${{ steps.release_metadata.outputs.tag_name }}
+          generate_release_notes: true
+
       - name: Publish OpenClaw plugin to ClawHub
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
@@ -656,8 +668,8 @@ jobs:
               exit 0
             fi
             if grep -q "Too many bytes read in a single function execution" "${publish_log}" \
-              && grep -q "syncPackageCapabilitySearchDigests" "${publish_log}"; then
-              echo "::notice title=ClawHub publish skipped::ClawHub publish failed in its backend search-digest sync. npm and GitHub release publication will continue; retry the ClawHub publish after ClawHub fixes or clears the digest limit."
+              && grep -qE "syncPackage[A-Za-z]*SearchDigest" "${publish_log}"; then
+              echo "::notice title=ClawHub publish skipped::ClawHub publish failed in its backend search-digest sync. npm and GitHub release publication already completed; retry the ClawHub publish after ClawHub fixes or clears the digest limit."
               rm -f "${publish_log}"
               exit 0
             fi
@@ -666,10 +678,3 @@ jobs:
           fi
 
           clawhub package rescan "${CLAWHUB_PACKAGE_NAME}" --yes --json || true
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release_metadata.outputs.tag_name }}
-          name: ${{ steps.release_metadata.outputs.tag_name }}
-          generate_release_notes: true
