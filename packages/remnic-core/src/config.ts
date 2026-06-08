@@ -35,6 +35,7 @@ import { expandTildePath } from "./utils/path.js";
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
+import { isSafeRouteNamespace } from "./routing/engine.js";
 
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
@@ -2537,10 +2538,19 @@ export function parseConfig(raw: unknown): PluginConfig {
 
     // v3.0 namespaces (default off)
     namespacesEnabled: cfg.namespacesEnabled === true,
+    // Namespace identifiers become on-disk directory segments under
+    // <memoryDir>/namespaces, so they must be path-safe (no separators or "..").
+    // Reject unsafe values at the config boundary and fall back to the default
+    // rather than letting a traversal sequence reach a path expression
+    // (CodeQL js/path-injection). Stored value is the trimmed, validated form.
     defaultNamespace:
-      typeof cfg.defaultNamespace === "string" && cfg.defaultNamespace.length > 0 ? cfg.defaultNamespace : "default",
+      typeof cfg.defaultNamespace === "string" && isSafeRouteNamespace(cfg.defaultNamespace)
+        ? cfg.defaultNamespace.trim()
+        : "default",
     sharedNamespace:
-      typeof cfg.sharedNamespace === "string" && cfg.sharedNamespace.length > 0 ? cfg.sharedNamespace : "shared",
+      typeof cfg.sharedNamespace === "string" && isSafeRouteNamespace(cfg.sharedNamespace)
+        ? cfg.sharedNamespace.trim()
+        : "shared",
     principalFromSessionKeyMode:
       cfg.principalFromSessionKeyMode === "prefix"
         ? "prefix"

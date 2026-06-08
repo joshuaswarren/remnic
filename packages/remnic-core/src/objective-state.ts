@@ -86,6 +86,20 @@ function validateMetadata(raw: unknown): Record<string, string> | undefined {
   return validateStringRecord(raw, "metadata");
 }
 
+// Assert that a built path stays inside the expected base directory before it is
+// used in a filesystem write. snapshotId/recordedAt are already validated by
+// validateObjectiveStateSnapshot, so for valid data this is a defense-in-depth
+// barrier (and makes the containment provable to CodeQL js/path-injection).
+function assertWithinDir(baseDir: string, candidate: string): string {
+  const resolvedBase = path.resolve(baseDir);
+  const resolved = path.resolve(candidate);
+  const rel = path.relative(resolvedBase, resolved);
+  if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new Error("objective-state path escapes the snapshots directory");
+  }
+  return resolved;
+}
+
 export function resolveObjectiveStateStoreDir(memoryDir: string, overrideDir?: string): string {
   if (typeof overrideDir === "string" && overrideDir.trim().length > 0) {
     return overrideDir.trim();
@@ -163,8 +177,9 @@ export async function recordObjectiveStateSnapshot(options: {
   const rootDir = resolveObjectiveStateStoreDir(options.memoryDir, options.objectiveStateStoreDir);
   const validated = validateObjectiveStateSnapshot(options.snapshot);
   const day = recordStoreDay(validated.recordedAt);
-  const snapshotsDir = path.join(rootDir, "snapshots", day);
-  const filePath = path.join(snapshotsDir, `${validated.snapshotId}.json`);
+  const snapshotsRoot = path.join(rootDir, "snapshots");
+  const snapshotsDir = assertWithinDir(snapshotsRoot, path.join(snapshotsRoot, day));
+  const filePath = assertWithinDir(snapshotsDir, path.join(snapshotsDir, `${validated.snapshotId}.json`));
   await mkdir(snapshotsDir, { recursive: true });
   await writeFile(filePath, JSON.stringify(validated, null, 2), "utf8");
   return filePath;
