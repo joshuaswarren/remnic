@@ -68,9 +68,13 @@ function unavailableError(error: unknown): Error {
 }
 
 function errorDetail(error: unknown): string {
+  // Intentionally exclude error.stack: this string becomes the message of the
+  // Error thrown by unavailableError(), which can propagate to user-facing
+  // surfaces (e.g. HTTP error bodies) and would leak a stack trace
+  // (CodeQL js/stack-trace-exposure). The original error is preserved via the
+  // `cause` chain on unavailableError() and logged with its stack elsewhere.
   if (error instanceof Error) {
-    const stack = error.stack && error.stack !== error.message ? `\n${error.stack}` : "";
-    return `${error.message}${stack}`;
+    return error.message;
   }
   return String(error ?? "");
 }
