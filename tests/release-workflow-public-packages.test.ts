@@ -87,10 +87,10 @@ test("release workflow treats known ClawHub backend digest limits as nonfatal", 
     /Too many bytes read in a single function execution/,
     "release workflow must recognize ClawHub's Convex read-limit backend failure",
   );
-  assert.match(
-    workflow,
-    /syncPackageCapabilitySearchDigests/,
-    "release workflow must constrain the nonfatal skip to ClawHub search-digest failures",
+  assert.ok(
+    workflow.includes("syncPackage[A-Za-z]*SearchDigests?"),
+    "release workflow must constrain the nonfatal skip to ClawHub search-digest failures " +
+      "(matching both syncPackageSearchDigest and syncPackageCapabilitySearchDigests)",
   );
   assert.match(
     workflow,

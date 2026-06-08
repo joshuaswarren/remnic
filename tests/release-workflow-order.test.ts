@@ -30,7 +30,10 @@ test("release workflow pushes release commits before public publication", () => 
   assert.ok(stepIndex("Publish workspace packages to npm") < stepIndex("Publish root package to npm"));
   assert.ok(stepIndex("Ensure version tag on release commit") < stepIndex("Publish OpenClaw plugin to ClawHub"));
   assert.ok(pushMain < stepIndex("Publish OpenClaw plugin to ClawHub"));
-  assert.ok(stepIndex("Publish OpenClaw plugin to ClawHub") < stepIndex("Create GitHub release"));
+  // The GitHub release is published BEFORE the best-effort ClawHub publish so a
+  // ClawHub backend failure can never leave a release stuck as a draft after npm
+  // has already published (#1447).
+  assert.ok(stepIndex("Create GitHub release") < stepIndex("Publish OpenClaw plugin to ClawHub"));
 });
 
 test("release workflow tags the same commit pushed to main", () => {
