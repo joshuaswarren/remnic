@@ -1097,17 +1097,14 @@ export class EngramAccessHttpServer {
         cwd: body.cwd,
         projectTag: body.projectTag,
       };
-      // Rate-limit enforcement is AUTHORITATIVE inside memoryStore via
+      // Rate-limit enforcement is SOLELY authoritative inside memoryStore via
       // enforceWriteQuota: it runs atomically with the real idempotency-miss
-      // determination (and the real resolved namespace), so a namespace-divergent
-      // peek can never let a fresh write skip the quota check (#1434 Codex
-      // review). The peek below is only a fast early-fail; it cannot under-count
-      // because the authoritative check runs at commit time, and replays still
-      // bypass a full window (enforceWriteQuota is not called on replay).
-      const idempotencyStatus = await this.service.peekMemoryStoreIdempotency(request);
-      if (idempotencyStatus === "miss" && request.dryRun !== true) {
-        this.ensureWriteRateLimitAvailable();
-      }
+      // determination (and the real resolved namespace), and is never invoked
+      // for a replay. We deliberately do NOT pre-check here: the write namespace
+      // is resolved from mutable session/git context, so a stale peek could
+      // report "miss" for a request that is actually an idempotent replay in the
+      // now-scoped namespace and hard-reject a safe replay with 429 (#1434 Codex
+      // review). Letting the in-lock hook be the only hard gate avoids that.
       const response = await this.service.memoryStore(request, {
         enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(),
       });
@@ -1137,13 +1134,9 @@ export class EngramAccessHttpServer {
         cwd: body.cwd,
         projectTag: body.projectTag,
       };
-      // Authoritative quota enforcement runs atomically with the real miss
-      // inside suggestionSubmit (enforceWriteQuota); the peek is only a fast
-      // early-fail (#1434 Codex review).
-      const idempotencyStatus = await this.service.peekSuggestionSubmitIdempotency(request);
-      if (idempotencyStatus === "miss" && request.dryRun !== true) {
-        this.ensureWriteRateLimitAvailable();
-      }
+      // Quota enforcement is solely authoritative inside suggestionSubmit
+      // (enforceWriteQuota), atomic with the real miss and never on a replay; no
+      // HTTP pre-check, so a stale peek can't 429 a safe replay (#1434 Codex review).
       const response = await this.service.suggestionSubmit(request, {
         enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(),
       });
