@@ -15,7 +15,9 @@ paths-ignore:
   - tests/**
   - '**/tests/**'
   - evals/**
+  - '**/evals/**'
   - benchmarks/**
+  - '**/benchmarks/**'
   - docs/**
   - examples/**
   - '**/dist/**'
