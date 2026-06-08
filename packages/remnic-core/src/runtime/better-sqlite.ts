@@ -41,8 +41,19 @@ function requireBetterSqlite3Ctor(require: RuntimeRequire): BetterSqlite3Ctor {
   return ctor;
 }
 
+// Raw, unredacted message — used ONLY for internal classification (detecting a
+// native-binding mismatch). Never returned to a user-facing surface, because it
+// can contain absolute paths. Native-binding markers (better_sqlite3.node,
+// NODE_MODULE_VERSION, "was compiled against a different Node.js version") live
+// in error.message, so message text is sufficient and we never read .stack.
+function rawErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error ?? "");
+}
+
 export function isLikelyBetterSqlite3NativeBindingError(error: unknown): boolean {
-  const detail = errorDetail(error);
+  // Classify on the RAW message so redaction can't strip detection markers
+  // (e.g. the path containing "better_sqlite3.node").
+  const detail = rawErrorMessage(error);
   return (
     detail.includes("Could not locate the bindings file") ||
     detail.includes("better_sqlite3.node") ||
@@ -53,7 +64,7 @@ export function isLikelyBetterSqlite3NativeBindingError(error: unknown): boolean
 }
 
 function unavailableError(error: unknown): Error {
-  const detail = errorDetail(error);
+  const detail = displayErrorDetail(error);
   const nativeBindingHint = isLikelyBetterSqlite3NativeBindingError(error)
     ? " This usually means the better-sqlite3 native binding was not compiled for this Node.js/platform combination. " +
       "Run `node scripts/ensure-better-sqlite3.mjs` from the Remnic install directory, or run " +
@@ -67,28 +78,31 @@ function unavailableError(error: unknown): Error {
   );
 }
 
-function errorDetail(error: unknown): string {
-  // This string becomes the message of the Error thrown by unavailableError(),
-  // which propagates to user-facing surfaces (HTTP error bodies, MCP tool
-  // errors — see access-http.ts / access-mcp.ts, which return err.message).
-  // We must not leak server internals (CodeQL js/stack-trace-exposure):
-  //   - error.stack is excluded entirely.
-  //   - Node module-load errors embed absolute server paths directly in
-  //     error.message: a "Require stack:" block (MODULE_NOT_FOUND) and native
-  //     loader paths. We keep only the first line and redact filesystem paths.
-  // The full original error is still preserved via the `cause` chain on
-  // unavailableError() and logged with its stack elsewhere.
-  if (error instanceof Error) {
-    const firstLine = error.message.split("\n", 1)[0] ?? "";
-    return redactFilesystemPaths(firstLine);
-  }
-  return redactFilesystemPaths(String(error ?? ""));
+// Sanitized, user-facing error detail. This string becomes the message of the
+// Error thrown by unavailableError(), which propagates to user-facing surfaces
+// (HTTP error bodies, MCP tool errors — access-http.ts / access-mcp.ts return
+// err.message). We must not leak server internals (CodeQL js/stack-trace-exposure):
+//   - error.stack is never read.
+//   - The "Require stack:" block Node appends to MODULE_NOT_FOUND messages
+//     (a list of absolute paths) is stripped.
+//   - Any remaining absolute filesystem path is redacted.
+// The rest of the message is preserved, so useful diagnostics (e.g. the
+// NODE_MODULE_VERSION mismatch text) still reach the user. The full original
+// error remains on the `cause` chain and is logged with its stack elsewhere.
+export function displayErrorDetail(error: unknown): string {
+  const withoutRequireStack = rawErrorMessage(error).split(/\n\s*Require stack:/i)[0] ?? "";
+  return redactFilesystemPaths(withoutRequireStack).trim();
 }
 
 // Replace absolute filesystem paths (POSIX, UNC, or Windows drive form) with a
-// placeholder so loader error text cannot expose server directory layout.
-// Requires at least two path segments to avoid mangling innocuous tokens like
-// "and/or". The single bounded quantifier keeps this linear (no ReDoS).
+// placeholder so loader error text cannot expose server directory layout. Two
+// passes: quoted paths first (these may legitimately contain spaces, e.g.
+// '/Users/Jane Doe/...'), then unquoted no-space runs. Requiring ≥2 path
+// segments avoids mangling innocuous tokens like "and/or". Both patterns use a
+// single bounded character-class quantifier per segment, so matching is linear
+// (no ReDoS).
 function redactFilesystemPaths(text: string): string {
-  return text.replace(/(?:[A-Za-z]:)?(?:[/\\][^\s/\\'"]+){2,}/g, "<path>");
+  return text
+    .replace(/(['"`])(?:[A-Za-z]:)?[/\\][^'"`\n]*\1/g, "$1<path>$1")
+    .replace(/(?:[A-Za-z]:)?(?:[/\\][^\s/\\'"`\n]+){2,}/g, "<path>");
 }
