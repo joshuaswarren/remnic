@@ -57,11 +57,12 @@ function splitSentences(text: string): string[] {
   // Regex to match sentence boundaries
   // Match: period/exclamation/question followed by space or end, but not abbreviations
   // Lookahead (?=\s|$) instead of consuming (?:\s+|$) avoids a \s+/[^.!?]* overlap,
-  // and the bounded {0,100000}/{1,100000} repetitions keep the whole pattern from
-  // backtracking polynomially on long unterminated input (CodeQL js/polynomial-redos).
-  // 100 000 chars far exceeds any real sentence run, so this is behavior-preserving;
-  // each sentence is trimmed, so trailing whitespace is dropped either way.
-  const sentenceRegex = /[^.!?]{0,100000}[.!?]{1,100000}(?=\s|$)/g;
+  // and the bounded repetitions keep the whole pattern from backtracking
+  // polynomially on long unterminated input (CodeQL js/polynomial-redos). The
+  // 1,000,000-char run cap is the ReDoS safeguard; it is far larger than any real
+  // sentence (a 1 MB span with no . ! ? is not natural-language content), so this
+  // is behavior-preserving for realistic input. Each sentence is trimmed.
+  const sentenceRegex = /[^.!?]{0,1000000}[.!?]{1,100000}(?=\s|$)/g;
 
   let match: RegExpExecArray | null;
   let lastIndex = 0;

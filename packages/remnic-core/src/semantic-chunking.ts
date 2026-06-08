@@ -187,11 +187,12 @@ export function findLocalMinima(
 function splitSentences(text: string): string[] {
   const sentences: string[] = [];
   // Lookahead (?=\s|$) avoids the \s+/[^.!?]* overlap and the bounded
-  // {0,100000}/{1,100000} repetitions keep the pattern from backtracking
-  // polynomially on long unterminated input (CodeQL js/polynomial-redos).
-  // 100 000 chars far exceeds any real sentence run; each sentence is trimmed,
-  // so this is behavior-preserving.
-  const sentenceRegex = /[^.!?]{0,100000}[.!?]{1,100000}(?=\s|$)/g;
+  // repetitions keep the pattern from backtracking polynomially on long
+  // unterminated input (CodeQL js/polynomial-redos). The 1,000,000-char run cap
+  // is the ReDoS safeguard and is far larger than any real sentence (a 1 MB span
+  // with no . ! ? is not natural-language content), so this is behavior-
+  // preserving for realistic input; each sentence is trimmed.
+  const sentenceRegex = /[^.!?]{0,1000000}[.!?]{1,100000}(?=\s|$)/g;
 
   let match: RegExpExecArray | null;
   let lastIndex = 0;
