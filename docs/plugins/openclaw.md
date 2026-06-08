@@ -95,13 +95,18 @@ plugin id.
 ## Compatibility Policy
 
 Remnic supports OpenClaw releases from at least the previous 60 days. As of
-June 7, 2026, that window starts on April 8, 2026. The OpenClaw installer
-floor remains the single supported `>=2026.4.1` shape because it is more
-permissive than the active 60-day floor, while the peer and plugin-API
-compatibility ranges explicitly include reviewed prerelease hosts in that
-window. The adapter records `2026.6.6-alpha.1` as the latest reviewed
-source-tag target, with its plugin SDK surface verified against the newest
-npm-published build (`2026.6.5-beta.2`).
+June 7, 2026, that window starts on April 8, 2026. `openclaw.compat.pluginApi`
+and `openclaw.install.minHostVersion` use the single `>=2026.4.1` comparator the
+OpenClaw installer expects — never a `||` list. OpenClaw's installer
+(`clawhub.ts`) splits the range on whitespace and AND-evaluates every token (so
+a `||` fails entirely) and normalizes away the host prerelease suffix, so the
+single floor admits stable **and** prerelease hosts (including stable
+`2026.6.1`). Only `peerDependencies.openclaw` lists reviewed prereleases
+explicitly (`>=2026.4.1 || …`), because it is resolved by npm/node-semver, which
+supports `||` but drops prereleases from a bare `>=` range. The two fields are
+intentionally decoupled by resolver (issue #1450). The adapter records
+`2026.6.6-alpha.1` as the latest reviewed source-tag target, with its plugin SDK
+surface verified against the newest npm-published build (`2026.6.5-beta.2`).
 
 When OpenClaw adds a new manifest or setup surface, Remnic should add that new
 surface without dropping older metadata that still helps hosts inside the
@@ -241,10 +246,13 @@ converge on the latest upstream contract:
   `activation`, and the legacy `supports` compatibility block; do not restore
   unsupported top-level `securityDisclosure`.
 - Compatibility window: keep package ranges at or below the active 60-day
-  floor and explicitly list reviewed prerelease hosts in peer/plugin-API ranges
-  because default npm semver range checks exclude prereleases. Keep installer
-  `minHostVersion` as a single floor. On June 2, 2026 the active 60-day floor
-  is April 3, 2026, while Remnic intentionally keeps the more permissive
+  floor. List reviewed prerelease hosts **only** in `peerDependencies.openclaw`
+  (npm/node-semver excludes prereleases from a bare `>=` range). Keep both
+  `openclaw.compat.pluginApi` and installer `minHostVersion` as a single
+  `>=x.y.z` comparator with no `||` — OpenClaw's installer AND-evaluates
+  whitespace tokens and normalizes the host prerelease suffix, so the floor
+  already covers prereleases (issue #1450). On June 2, 2026 the active 60-day
+  floor is April 3, 2026, while Remnic intentionally keeps the more permissive
   OpenClaw `2026.4.1` installer floor.
 - Runtime behavior: Remnic core semantics remain in `@remnic/core`; the
   OpenClaw adapter only translates hooks, commands, memory-slot behavior, and

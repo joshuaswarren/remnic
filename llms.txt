@@ -36,10 +36,13 @@ OpenClaw adapter note:
   2026.6.5-beta.2), with package metadata floor >=2026.4.1. As of
   June 7, 2026 the active 60-day floor is April 8, 2026; keep the
   more-permissive 2026.4.1 floor unless an upstream breaking change makes it
-  impossible. Keep openclaw.install.minHostVersion as one installer floor, and
-  put explicit reviewed prerelease versions in
-  peerDependencies.openclaw and openclaw.compat.pluginApi because default npm
-  semver range checks exclude prereleases. Keep the manifest on current native
+  impossible. Keep openclaw.install.minHostVersion AND openclaw.compat.pluginApi
+  as a single >=x.y.z comparator (never a || list): OpenClaw's installer
+  AND-evaluates whitespace tokens and normalizes the host prerelease suffix, so
+  the floor already admits stable and prerelease hosts (issue #1450). Put
+  explicit reviewed prerelease versions ONLY in peerDependencies.openclaw,
+  which is resolved by npm/node-semver (supports ||, but excludes prereleases
+  from a bare >= range). Keep the manifest on current native
   fields: kind="memory", contracts.tools, commandAliases, activation,
   setup.requiresRuntime=false, setup.providers[].envVars for optional
   OPENAI_API_KEY, and providerAuthChoices. Also keep providerAuthEnvVars and

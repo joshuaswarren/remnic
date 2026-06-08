@@ -43,11 +43,18 @@ OpenClaw `2026.4.1`.
 - Do not raise `peerDependencies.openclaw`, `openclaw.compat.pluginApi`, or
   `openclaw.install.minHostVersion` above the active 60-day floor unless a
   documented upstream breaking change makes older hosts impossible to support.
-  Keep `openclaw.install.minHostVersion` as a single `>=x.y.z` floor for the
-  OpenClaw installer contract. Include reviewed prerelease OpenClaw versions
-  explicitly in `peerDependencies.openclaw` and `openclaw.compat.pluginApi`,
-  because default npm semver range checks do not admit prereleases from a
-  stable-only floor.
+- `openclaw.compat.pluginApi` and `openclaw.install.minHostVersion` MUST be a
+  single `>=x.y.z` comparator — never a `||` list (issue #1450). OpenClaw's
+  installer (`clawhub.ts`) splits the range on whitespace and AND-evaluates
+  every token, so a `||` fails the check entirely; it also normalizes away the
+  host prerelease suffix, so a single `>=2026.4.1` floor already admits stable
+  AND prerelease hosts. Do NOT enumerate prerelease versions in these two
+  fields.
+- `peerDependencies.openclaw` is the ONLY field that lists reviewed prereleases
+  explicitly (`>=x.y.z || <prerelease> || …`). It is resolved by npm/node-semver,
+  which supports `||` but excludes prereleases from a bare `>=` range — so the
+  explicit entries are required there and there only. These two fields are
+  intentionally decoupled by resolver; do not "align" them.
 - Preserve additive compatibility metadata for older hosts when adding newer
   OpenClaw manifest surfaces. For example, keep `supports` and
   `providerAuthEnvVars` while also adding newer `setup.providers[].envVars`.
