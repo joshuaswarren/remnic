@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -121,6 +122,25 @@ for (const relativePath of packagePaths) {
     await writeJson(absolutePath, packageJson);
   }
   changed.push(...await syncCompanionManifestVersion(relativePath));
+}
+
+// `JSON.stringify(..., 2)` expands every array onto multiple lines, which biome's
+// formatter rejects for the short arrays in the root package.json (`workspaces`,
+// `files`, `openclaw.extensions`, `pnpm.onlyBuiltDependencies`). Re-format the
+// root manifest so the committed release bump stays lint-clean; otherwise every
+// release would break the `quality` lint gate on main and all subsequent PRs.
+if (!dryRun) {
+  const biome = spawnSync(
+    process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+    ["exec", "biome", "format", "--write", "package.json"],
+    { cwd: repoRoot, stdio: "inherit" },
+  );
+  if (biome.status !== 0) {
+    console.warn(
+      "Warning: could not biome-format package.json after the version bump; " +
+        "the release commit may not be lint-clean.",
+    );
+  }
 }
 
 if (changed.length === 0) {
