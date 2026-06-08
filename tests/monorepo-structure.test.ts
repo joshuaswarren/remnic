@@ -10,12 +10,13 @@ const ROOT = path.resolve(__dirname, "..");
 const PACKAGES_DIR = path.join(ROOT, "packages");
 const require = createRequire(import.meta.url);
 const semver = require("semver") as {
-  satisfies(version: string, range: string): boolean;
+  satisfies(version: string, range: string, options?: { includePrerelease?: boolean }): boolean;
 };
 
 const OPENCLAW_MIN_HOST_VERSION_FLOOR = ">=2026.4.1";
 const OPENCLAW_SUPPORT_PROBE_VERSIONS = [
   "2026.4.1",
+  "2026.6.1",
   "2026.4.9-beta.1",
   "2026.5.30-beta.1",
   "2026.5.31-alpha.1",
@@ -204,12 +205,12 @@ test("published OpenClaw packages support the rolling 60-day OpenClaw window", (
 
     for (const version of OPENCLAW_SUPPORT_PROBE_VERSIONS) {
       assert.equal(
-        semver.satisfies(version, peerRange),
+        semver.satisfies(version, peerRange, { includePrerelease: true }),
         true,
         `${packageDir} peer range must accept OpenClaw ${version}`,
       );
       assert.equal(
-        semver.satisfies(version, pluginApiRange),
+        semver.satisfies(version, pluginApiRange, { includePrerelease: true }),
         true,
         `${packageDir} plugin API range must accept OpenClaw ${version}`,
       );

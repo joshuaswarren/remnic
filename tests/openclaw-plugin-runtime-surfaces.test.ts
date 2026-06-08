@@ -9,7 +9,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 const semver = require("semver") as {
-  satisfies(version: string, range: string): boolean;
+  satisfies(version: string, range: string, options?: { includePrerelease?: boolean }): boolean;
+  valid(version: unknown): string | null;
+  coerce(version: string): unknown;
+  compare(a: string, b: string): number;
 };
 const ROOT = path.resolve(__dirname, "..");
 const REQUIRED_RUNTIME_SURFACE_KEYS = [
@@ -53,139 +56,7 @@ const OPENCLAW_MANIFEST_PATHS = [
 ];
 // June 3, 2026 rolling 60-day policy floor: April 4, 2026. Keep the package
 // floor at >=2026.4.1 because it is more permissive and still inside policy.
-const OPENCLAW_SUPPORT_FLOOR_RANGE = [
-  ">=2026.4.1",
-  "2026.4.7-1",
-  "2026.4.9-beta.1",
-  "2026.4.11-beta.1",
-  "2026.4.12-beta.1",
-  "2026.4.14-beta.1",
-  "2026.4.15-beta.1",
-  "2026.4.15-beta.2",
-  "2026.4.19-beta.1",
-  "2026.4.19-beta.2",
-  "2026.4.20-beta.1",
-  "2026.4.20-beta.2",
-  "2026.4.22-beta.1",
-  "2026.4.23-beta.1",
-  "2026.4.23-beta.2",
-  "2026.4.23-beta.3",
-  "2026.4.23-beta.4",
-  "2026.4.23-beta.5",
-  "2026.4.23-beta.6",
-  "2026.4.24-beta.1",
-  "2026.4.24-beta.2",
-  "2026.4.24-beta.3",
-  "2026.4.24-beta.4",
-  "2026.4.24-beta.5",
-  "2026.4.24-beta.6",
-  "2026.4.25-beta.1",
-  "2026.4.25-beta.2",
-  "2026.4.25-beta.3",
-  "2026.4.25-beta.4",
-  "2026.4.25-beta.5",
-  "2026.4.25-beta.6",
-  "2026.4.25-beta.7",
-  "2026.4.25-beta.8",
-  "2026.4.25-beta.9",
-  "2026.4.25-beta.10",
-  "2026.4.25-beta.11",
-  "2026.4.26-beta.1",
-  "2026.4.27-beta.1",
-  "2026.4.29-beta.1",
-  "2026.4.29-beta.2",
-  "2026.4.29-beta.3",
-  "2026.4.29-beta.4",
-  "2026.4.30-beta.1",
-  "2026.5.2-beta.1",
-  "2026.5.2-beta.2",
-  "2026.5.2-beta.3",
-  "2026.5.3-1",
-  "2026.5.3-beta.1",
-  "2026.5.3-beta.2",
-  "2026.5.3-beta.3",
-  "2026.5.3-beta.4",
-  "2026.5.4-beta.1",
-  "2026.5.4-beta.2",
-  "2026.5.4-beta.3",
-  "2026.5.5-beta.1",
-  "2026.5.5-beta.2",
-  "2026.5.6-beta.1",
-  "2026.5.7-beta.1",
-  "2026.5.9-beta.1",
-  "2026.5.10-beta.1",
-  "2026.5.10-beta.2",
-  "2026.5.10-beta.3",
-  "2026.5.10-beta.4",
-  "2026.5.10-beta.5",
-  "2026.5.10-beta.6",
-  "2026.5.12-beta.1",
-  "2026.5.12-beta.2",
-  "2026.5.12-beta.3",
-  "2026.5.12-beta.4",
-  "2026.5.12-beta.5",
-  "2026.5.12-beta.6",
-  "2026.5.12-beta.7",
-  "2026.5.12-beta.8",
-  "2026.5.14-beta.1",
-  "2026.5.14-beta.2",
-  "2026.5.16-beta.1",
-  "2026.5.16-beta.2",
-  "2026.5.16-beta.3",
-  "2026.5.16-beta.4",
-  "2026.5.16-beta.5",
-  "2026.5.16-beta.6",
-  "2026.5.16-beta.7",
-  "2026.5.18-beta.1",
-  "2026.5.19-alpha.1",
-  "2026.5.19-beta.1",
-  "2026.5.19-beta.2",
-  "2026.5.20-beta.1",
-  "2026.5.20-beta.2",
-  "2026.5.21-alpha.1",
-  "2026.5.21-beta.1",
-  "2026.5.22-beta.1",
-  "2026.5.23-alpha.1",
-  "2026.5.24-alpha.1",
-  "2026.5.24-beta.1",
-  "2026.5.24-beta.2",
-  "2026.5.25-alpha.1",
-  "2026.5.25-alpha.2",
-  "2026.5.25-beta.1",
-  "2026.5.26-beta.1",
-  "2026.5.26-beta.2",
-  "2026.5.27-alpha.1",
-  "2026.5.27-beta.1",
-  "2026.5.28-alpha.1",
-  "2026.5.28-beta.1",
-  "2026.5.28-beta.2",
-  "2026.5.28-beta.3",
-  "2026.5.28-beta.4",
-  "2026.5.29-alpha.1",
-  "2026.5.30-beta.1",
-  "2026.5.30-beta.2",
-  "2026.5.31-alpha.1",
-  "2026.5.31-beta.1",
-  "2026.5.31-beta.2",
-  "2026.5.31-beta.3",
-  "2026.5.31-beta.4",
-  "2026.6.1-alpha.1",
-  "2026.6.1-alpha.2",
-  "2026.6.1-alpha.3",
-  "2026.6.1-beta.1",
-  "2026.6.1-beta.2",
-  "2026.6.1-beta.3",
-  "2026.6.2-alpha.1",
-  "2026.6.2-alpha.2",
-  "2026.6.2-beta.1",
-  "2026.6.3-alpha.1",
-  "2026.6.4-alpha.1",
-  "2026.6.5-alpha.1",
-  "2026.6.5-alpha.2",
-  "2026.6.5-beta.1",
-  "2026.6.5-beta.2",
-  "2026.6.6-alpha.1",
-].join(" || ");
+const OPENCLAW_SUPPORT_FLOOR_RANGE = ">=2026.4.1";
 const OPENCLAW_MIN_HOST_VERSION_FLOOR = ">=2026.4.1";
 const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
@@ -583,6 +454,7 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
 test("OpenClaw support range accepts the stable floor and reviewed prerelease hosts", () => {
   for (const version of [
     "2026.4.1",
+    "2026.6.1",
     "2026.4.9-beta.1",
     "2026.5.30-beta.1",
     "2026.5.31-alpha.1",
@@ -608,10 +480,99 @@ test("OpenClaw support range accepts the stable floor and reviewed prerelease ho
     "2026.6.6-alpha.1",
   ]) {
     assert.equal(
-      semver.satisfies(version, OPENCLAW_SUPPORT_FLOOR_RANGE),
+      semver.satisfies(version, OPENCLAW_SUPPORT_FLOOR_RANGE, { includePrerelease: true }),
       true,
       `${version} must satisfy the default semver support range`,
     );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Regression for issue #1450: compat.pluginApi must pass OpenClaw's OWN
+// installer checker, not just node-semver. OpenClaw (clawhub.ts) splits the
+// range on whitespace and requires EVERY token to pass — so a `||`-joined OR
+// list fails the moment it hits the first `||` token. It also strips the host
+// prerelease suffix when the comparator target is a plain version, so a single
+// `>=2026.4.1` floor accepts both stable and prerelease hosts.
+// ---------------------------------------------------------------------------
+
+// Minimal faithful port of OpenClaw's satisfiesSemverRange / satisfiesComparator.
+function openclawReleaseBase(version: string): string {
+  // Mirrors OPENCLAW_RELEASE_SUFFIX_PATTERN + numeric-correction: strip a
+  // trailing `-<digits>` or `-(alpha|beta|rc).<n>` to the base X.Y.Z.
+  const match = /^[vV]?(\d{4}\.\d+\.\d+)(?:-\d+|-(?:alpha|beta|rc)\.\d+)?$/.exec(version.trim());
+  return match ? match[1] : version.trim();
+}
+function openclawSatisfiesComparator(version: string, token: string): boolean {
+  const trimmed = token.trim();
+  if (!trimmed) return true;
+  const match = /^(>=|<=|>|<|=)?\s*(.+)$/.exec(trimmed);
+  if (!match) return false;
+  const operator = match[1] ?? "=";
+  const target = match[2].trim();
+  const targetIsPrerelease = target.includes("-");
+  // When the target is a plain version, OpenClaw normalizes away the host's
+  // prerelease suffix before comparing.
+  const comparable = targetIsPrerelease ? version : openclawReleaseBase(version);
+  const cv = semver.valid(comparable) ?? semver.valid(semver.coerce(comparable) ?? "");
+  const tv = semver.valid(target) ?? semver.valid(semver.coerce(target) ?? "");
+  if (!cv || !tv) return false; // unparseable token (e.g. "||") -> false
+  const cmp = semver.compare(cv, tv);
+  switch (operator) {
+    case ">=":
+      return cmp >= 0;
+    case "<=":
+      return cmp <= 0;
+    case ">":
+      return cmp > 0;
+    case "<":
+      return cmp < 0;
+    default:
+      return cmp === 0;
+  }
+}
+function openclawSatisfiesRange(version: string, range: string): boolean {
+  const tokens = range.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+  return tokens.every((token) => openclawSatisfiesComparator(version, token));
+}
+
+test("the OpenClaw installer checker rejects a ||-joined range but accepts a >= floor (#1450)", () => {
+  // Demonstrate the bug: a `||`-joined OR list fails OpenClaw's every()-based
+  // checker as soon as it hits the first `||` token.
+  const oldOrList = ">=2026.4.1 || 2026.6.1-beta.1 || 2026.6.6-alpha.1";
+  assert.equal(
+    openclawSatisfiesRange("2026.6.1", oldOrList),
+    false,
+    "regression: a ||-joined range must NOT pass OpenClaw's installer checker",
+  );
+  // The shipped floor accepts the stable host the bug reporter ran...
+  assert.equal(openclawSatisfiesRange("2026.6.1", ">=2026.4.1"), true, "stable 2026.6.1 must pass");
+  // ...prerelease hosts (suffix is stripped against the plain target)...
+  assert.equal(openclawSatisfiesRange("2026.6.5-beta.2", ">=2026.4.1"), true, "prerelease host must pass");
+  assert.equal(openclawSatisfiesRange("2026.5.3-1", ">=2026.4.1"), true, "numeric-correction host must pass");
+  assert.equal(openclawSatisfiesRange("2026.4.1", ">=2026.4.1"), true, "floor host must pass");
+  // ...and still rejects anything below the floor.
+  assert.equal(openclawSatisfiesRange("2026.3.0", ">=2026.4.1"), false, "below-floor host must be rejected");
+});
+
+test("shipped compat.pluginApi is a single comparator (no ||) and passes the OpenClaw checker (#1450)", () => {
+  for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, expectation.packageJsonPath), "utf-8"));
+    const range = pkg.openclaw?.compat?.pluginApi;
+    assert.equal(typeof range, "string", `${expectation.packageJsonPath} compat.pluginApi must be a string`);
+    assert.ok(
+      !range.includes("||"),
+      `${expectation.packageJsonPath} compat.pluginApi must not use || (OpenClaw treats it as AND): ${range}`,
+    );
+    for (const host of ["2026.6.1", "2026.6.5-beta.2", "2026.4.1", "2026.5.3-1"]) {
+      assert.equal(
+        openclawSatisfiesRange(host, range),
+        true,
+        `${expectation.packageJsonPath} compat.pluginApi must accept OpenClaw ${host}`,
+      );
+    }
+    assert.equal(pkg.peerDependencies?.openclaw, range, "peerDependencies.openclaw must match compat.pluginApi");
   }
 });
 
