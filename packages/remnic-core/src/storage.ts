@@ -1905,10 +1905,12 @@ export function parseEntityFile(
         break;
       case "connected to": {
         // Format: [[target-entity]] — relationship label
-        // (\S.*) forces the capture to start at a non-space so \s* and the
-        // capture no longer overlap (CodeQL js/polynomial-redos). Equivalent to
-        // (.+) here since \s* already consumes leading whitespace; label is trimmed.
-        const relMatch = bullet.match(/^\[\[([^\]]+)\]\]\s*[—–-]\s*(\S.*)$/);
+        // Drop the \s* after the dash and let (.+) capture the rest (trimmed
+        // below). This removes the \s*/(.+) overlap that backtracks polynomially
+        // (CodeQL js/polynomial-redos) while staying exactly equivalent to the
+        // original /…\s*[—–-]\s*(.+)$/ — including whitespace-only labels, which
+        // still match and trim to "" (unlike a \S-anchored capture).
+        const relMatch = bullet.match(/^\[\[([^\]]+)\]\]\s*[—–-](.+)$/);
         if (relMatch) {
           relationships.push({ target: relMatch[1].trim(), label: relMatch[2].trim() });
         }
@@ -1916,9 +1918,11 @@ export function parseEntityFile(
       }
       case "activity": {
         // Format: YYYY-MM-DD: note
-        // (\S.*) avoids the \s* / (.+) overlap (CodeQL js/polynomial-redos);
-        // equivalent to (.+) since \s* consumes leading whitespace and note is trimmed.
-        const actMatch = bullet.match(/^(\d{4}-\d{2}-\d{2}):\s*(\S.*)$/);
+        // Drop the \s* after the colon and let (.+) capture the rest (trimmed
+        // below): removes the \s*/(.+) overlap (CodeQL js/polynomial-redos) and
+        // stays exactly equivalent to the original, including whitespace-only
+        // notes which still match and trim to "".
+        const actMatch = bullet.match(/^(\d{4}-\d{2}-\d{2}):(.+)$/);
         if (actMatch) {
           activity.push({ date: actMatch[1], note: actMatch[2].trim() });
         }
