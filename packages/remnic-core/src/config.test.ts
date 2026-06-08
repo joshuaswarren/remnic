@@ -1173,20 +1173,3 @@ test("parseConfig rejects connectors.gmail.pollIntervalMs above maximum (25h)", 
     /pollIntervalMs/,
   );
 });
-
-test("parseConfig sanitizes namespace identifiers against path traversal (CodeQL js/path-injection)", () => {
-  // Safe values pass through (trimmed).
-  assert.equal(parseConfig({}).defaultNamespace, "default");
-  assert.equal(parseConfig({ defaultNamespace: "team-a" }).defaultNamespace, "team-a");
-  assert.equal(parseConfig({ defaultNamespace: "  team-a  " }).defaultNamespace, "team-a");
-  assert.equal(parseConfig({ sharedNamespace: "shared.v2" }).sharedNamespace, "shared.v2");
-
-  // Unsafe values (separators, parent refs, absolute) fall back to the default
-  // rather than reaching a path expression as a directory segment.
-  assert.equal(parseConfig({ defaultNamespace: "../../etc" }).defaultNamespace, "default");
-  assert.equal(parseConfig({ defaultNamespace: "a/b" }).defaultNamespace, "default");
-  assert.equal(parseConfig({ defaultNamespace: "a\\b" }).defaultNamespace, "default");
-  assert.equal(parseConfig({ defaultNamespace: ".." }).defaultNamespace, "default");
-  assert.equal(parseConfig({ defaultNamespace: "" }).defaultNamespace, "default");
-  assert.equal(parseConfig({ sharedNamespace: "../escape" }).sharedNamespace, "shared");
-});

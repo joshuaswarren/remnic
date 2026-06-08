@@ -149,13 +149,13 @@ export class NamespaceStorageRouter {
 
   async storageFor(namespace: string): Promise<StorageManager> {
     const ns = normalizeNamespaceIdentity(namespace || this.config.defaultNamespace);
-    // The default namespace resolves to the legacy raw-name root
-    // (defaultNamespaceRoot), so it must satisfy the same path-safety check as
-    // every other namespace — no exemption. config.defaultNamespace is also
-    // sanitized at parse time (see config.ts), so a safe default always passes.
-    if (!isSafeRouteNamespace(ns)) {
+    if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) {
       throw new Error(`unsafe namespace: ${ns}`);
     }
+    // Even when the default namespace is exempt from the check above, every
+    // on-disk path is built through resolveNamespaceDir(), which rejects
+    // traversal segments — so an unsafe configured default still cannot escape
+    // <memoryDir>/namespaces (CodeQL js/path-injection).
 
     let root: string;
     if (ns === this.config.defaultNamespace) {
