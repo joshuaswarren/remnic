@@ -192,10 +192,15 @@ test("published OpenClaw packages support the rolling 60-day OpenClaw window", (
     const pluginApiRange = pkg.openclaw?.compat?.pluginApi;
 
     assert.equal(typeof peerRange, "string", `${packageDir} must declare an OpenClaw peer range`);
-    assert.equal(
-      pluginApiRange,
-      peerRange,
-      `${packageDir} must keep openclaw.compat.pluginApi aligned with peerDependencies.openclaw`,
+    assert.equal(typeof pluginApiRange, "string", `${packageDir} must declare an openclaw.compat.pluginApi range`);
+    // compat.pluginApi is read by OpenClaw's installer, which treats whitespace
+    // tokens as AND — so it must be a single comparator, never a "||" list
+    // (issue #1450). peerDependencies.openclaw is resolved by npm/node-semver,
+    // which DOES support "||" and needs the explicit prerelease entries, so the
+    // two are intentionally NOT aligned.
+    assert.ok(
+      !pluginApiRange.includes("||"),
+      `${packageDir} openclaw.compat.pluginApi must not use "||" (OpenClaw treats it as AND): ${pluginApiRange}`,
     );
     assert.equal(
       pkg.openclaw?.install?.minHostVersion,
@@ -204,11 +209,15 @@ test("published OpenClaw packages support the rolling 60-day OpenClaw window", (
     );
 
     for (const version of OPENCLAW_SUPPORT_PROBE_VERSIONS) {
+      // peer is resolved by node-semver; the "||" list matches stable (via the
+      // leading >= term) and reviewed prereleases (exact entries).
       assert.equal(
-        semver.satisfies(version, peerRange, { includePrerelease: true }),
+        semver.satisfies(version, peerRange),
         true,
         `${packageDir} peer range must accept OpenClaw ${version}`,
       );
+      // compat.pluginApi is OpenClaw's floor; node-semver needs includePrerelease
+      // to mirror OpenClaw's prerelease-suffix normalization.
       assert.equal(
         semver.satisfies(version, pluginApiRange, { includePrerelease: true }),
         true,

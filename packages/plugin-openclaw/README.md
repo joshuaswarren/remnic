@@ -47,16 +47,27 @@ Remnic supports OpenClaw releases from at least the previous 60 days. As of
 June 7, 2026, that means releases back to April 8, 2026.
 The package metadata keeps the installer compatibility floor at the single
 `>=2026.4.1` shape OpenClaw setup expects because that older floor is still
-more permissive than the active 60-day requirement. `openclaw.compat.pluginApi`
-and `peerDependencies.openclaw` use that same `>=2026.4.1` comparator (not an
-explicit `||`-joined version list): OpenClaw's installer checker treats a range
-as AND-of-whitespace-tokens and normalizes away the host prerelease suffix, so a
-single `>=2026.4.1` floor accepts every stable **and** prerelease host from that
-point forward — including stable releases like `2026.6.1`. A `||`-joined list
-silently fails that checker and is intentionally avoided (issue #1450). The
-adapter separately records `2026.6.6-alpha.1` as the latest reviewed OpenClaw
-source-tag target (plugin SDK surface verified against the newest npm-published
-build, `2026.6.5-beta.2`).
+more permissive than the active 60-day requirement.
+
+`openclaw.compat.pluginApi` and `peerDependencies.openclaw` are evaluated by
+**different resolvers**, so they are intentionally not identical (issue #1450):
+
+- **`openclaw.compat.pluginApi` → `>=2026.4.1`.** OpenClaw's installer checker
+  (`clawhub.ts`) splits the range on whitespace and AND-evaluates every token,
+  and it normalizes away the host's prerelease suffix when the target is a plain
+  version. So a single `>=2026.4.1` comparator accepts every stable **and**
+  prerelease host from that point forward (including stable `2026.6.1`). A
+  `||`-joined OR list silently fails that checker — OpenClaw reads the `||` as a
+  literal token — and is the bug behind #1450, so it must stay a single
+  comparator.
+- **`peerDependencies.openclaw` → explicit `>=2026.4.1 || …prerelease hosts…`.**
+  This field is resolved by npm/node-semver, which *does* support `||` but
+  excludes prereleases from a bare `>=` range. The explicit list keeps reviewed
+  prerelease hosts installable under strict peer-dependency resolution.
+
+The adapter separately records `2026.6.6-alpha.1` as the latest reviewed
+OpenClaw source-tag target (plugin SDK surface verified against the newest
+npm-published build, `2026.6.5-beta.2`).
 
 When adding newer OpenClaw manifest surfaces, keep older-compatible metadata in
 place for hosts inside that 60-day window unless an upstream breaking change is

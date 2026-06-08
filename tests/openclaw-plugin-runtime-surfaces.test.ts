@@ -432,6 +432,10 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
       ["./dist/index.js"],
       "OpenClaw 2026.5.12+ package discovery should have an explicit built runtime entrypoint",
     );
+    // compat.pluginApi is read by OpenClaw's installer (clawhub.ts), which
+    // splits on whitespace + AND-evaluates and normalizes away the host
+    // prerelease suffix, so a single ">=2026.4.1" floor is correct there
+    // (issue #1450). It must NOT use "||" — OpenClaw treats that as AND.
     assert.deepEqual(openclaw.compat, {
       pluginApi: OPENCLAW_SUPPORT_FLOOR_RANGE,
     });
@@ -444,10 +448,20 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
       defaultChoice: "clawhub",
       minHostVersion: OPENCLAW_MIN_HOST_VERSION_FLOOR,
     });
-    assert.equal(
-      packageJson.peerDependencies?.openclaw,
-      OPENCLAW_SUPPORT_FLOOR_RANGE,
-    );
+    // peerDependencies.openclaw is resolved by npm/node-semver (NOT OpenClaw's
+    // installer), where ">=2026.4.1" would drop prerelease hosts. It therefore
+    // keeps the explicit prerelease-inclusive "||" list and is intentionally
+    // decoupled from compat.pluginApi (issue #1450 review).
+    const peerRange = packageJson.peerDependencies?.openclaw;
+    assert.equal(typeof peerRange, "string", "peerDependencies.openclaw must be a string");
+    assert.ok(peerRange.includes(">=2026.4.1"), "peer range must keep the >=2026.4.1 floor");
+    for (const host of ["2026.4.1", "2026.6.1", "2026.6.5-beta.2", "2026.5.31-beta.4"]) {
+      assert.equal(
+        semver.satisfies(host, peerRange),
+        true,
+        `peerDependencies.openclaw must accept OpenClaw ${host} under node-semver`,
+      );
+    }
   });
 }
 
@@ -572,7 +586,15 @@ test("shipped compat.pluginApi is a single comparator (no ||) and passes the Ope
         `${expectation.packageJsonPath} compat.pluginApi must accept OpenClaw ${host}`,
       );
     }
-    assert.equal(pkg.peerDependencies?.openclaw, range, "peerDependencies.openclaw must match compat.pluginApi");
+    // peer is intentionally decoupled (npm/node-semver vs OpenClaw's checker):
+    // it keeps the prerelease-inclusive list and must NOT equal compat.pluginApi.
+    const peer = pkg.peerDependencies?.openclaw;
+    assert.notEqual(peer, range, "peerDependencies.openclaw is intentionally decoupled from compat.pluginApi");
+    assert.equal(
+      semver.satisfies("2026.6.5-beta.2", peer),
+      true,
+      "peerDependencies.openclaw must still accept prerelease hosts under node-semver",
+    );
   }
 });
 
