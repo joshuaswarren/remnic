@@ -1,7 +1,10 @@
 name: CodeQL
 
 on:
+  push:
+    branches: [main]
   pull_request:
+    branches: [main]
     types: [opened, synchronize, reopened]
   schedule:
     - cron: '22 8 * * 1'
@@ -14,7 +17,7 @@ permissions:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,9 +26,8 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: javascript-typescript
-
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Analyze
         uses: github/codeql-action/analyze@v3
