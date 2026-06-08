@@ -7,11 +7,15 @@ import test from "node:test";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SCRIPT = path.join(ROOT, "scripts", "validate-config-contract.ts");
-const TSX = path.join(ROOT, "node_modules", ".bin", "tsx");
+// Resolve tsx's real JS CLI entry rather than the node_modules/.bin/tsx shim:
+// under pnpm on CI the shim is a POSIX shell script, and `node <shell-shim>`
+// throws "SyntaxError: missing ) after argument list". Running node against the
+// .mjs entry works regardless of how the bin shim was materialized.
+const tsxCli = path.join(ROOT, "node_modules", "tsx", "dist", "cli.mjs");
 
 test("config contract validator scans PluginConfig wrapper contextual types", () => {
   withConfigFixture((fixtureRoot) => {
-    const result = spawnSync(process.execPath, [TSX, SCRIPT], {
+    const result = spawnSync(process.execPath, [tsxCli, SCRIPT], {
       cwd: fixtureRoot,
       encoding: "utf-8",
       env: process.env,

@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+// The Codex plugin's PostToolUse hook moved to a unified Node.js runner
+// (issue #1440 — packages/plugin-codex/hooks/bin/remnic-codex-hook.cjs).
+// State/cursor/lock hardening is exercised end-to-end by
+// `packages/plugin-codex/hooks/bin/remnic-codex-hook.test.cjs`.
 const hookFiles = [
   "packages/plugin-claude-code/hooks/bin/post-tool-observe.sh",
-  "packages/plugin-codex/hooks/bin/post-tool-observe.sh",
 ];
 
 for (const hookFile of hookFiles) {

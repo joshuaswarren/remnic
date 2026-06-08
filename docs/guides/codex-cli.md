@@ -29,7 +29,12 @@ Codex is stateless by default. Every session starts from zero — it doesn't kno
 - Codex CLI v0.114.0+ (`codex --version`)
 - Remnic HTTP server running and reachable (see [API docs](../api.md#mcp-over-http))
 - A bearer token for authentication
-- `python3` and `curl` available in your PATH
+- **Node.js** in your PATH (`node --version`) — the bundled plugin hooks are a single cross-platform Node.js runner, so this is the only hard requirement on every platform.
+- **Platform extras for the *manual* hook below:**
+  - **macOS / Linux:** a POSIX shell plus `curl` (and `python3` only if you use the Python manual example).
+  - **Windows 10/11:** **Windows PowerShell 5.1** ships with the OS — nothing to install. PowerShell 7 (`pwsh`) is optional. `Invoke-RestMethod` is built in, so `curl`/`python3` are *not* required. Use the PowerShell hook variant and `%USERPROFILE%` paths shown below.
+
+> **Cross-platform note (issue #1440):** As of the cross-platform-hooks release, the bundled `@remnic/plugin-codex` hooks ship a unified Node.js runner with both `command` (POSIX `.sh`) and `commandWindows` (PowerShell `.ps1`) entries, so the **marketplace install and `remnic connectors install codex-cli` now work on Windows, macOS, and Linux** with no manual hook scripting. The bundled `hooks.json` resolves the runner via `${PLUGIN_ROOT}` (which Codex injects and substitutes for plugin hooks), so it works regardless of the session's working directory. Prefer those paths; the manual setup further down is only for advanced/custom cases.
 
 ## Quickest setup: `remnic connectors install codex-cli`
 
@@ -144,6 +149,10 @@ You should see `remnic` in the URL-based servers section with `Bearer token` aut
 
 The hook automatically recalls relevant Remnic memories at the start of every Codex session, injecting them as context before your first message.
 
+> Most users should skip this section and use the bundled plugin (marketplace or `remnic connectors install codex-cli`), which ships a maintained cross-platform hook. The manual script below is for custom setups. Pick the variant for your OS.
+
+#### macOS / Linux (bash)
+
 Create the hook script at `~/.codex/scripts/remnic-session-recall.sh`:
 
 ```bash
@@ -219,7 +228,53 @@ Make it executable:
 chmod +x ~/.codex/scripts/remnic-session-recall.sh
 ```
 
-Configure the hook in `~/.codex/hooks.json`:
+#### Windows (PowerShell)
+
+Windows has no `bash`, `curl`, `python3`, or `chmod` by default — and there is no `chmod` step (PowerShell scripts are run by the interpreter, not by an executable bit). Create the hook at `%USERPROFILE%\.codex\scripts\remnic-session-recall.ps1` instead. It uses the built-in `Invoke-RestMethod`, so no extra tools are needed:
+
+```powershell
+#requires -Version 5.1
+# Codex SessionStart hook: recall Remnic context at session start.
+$ErrorActionPreference = 'Stop'
+
+$remnicHost = if ($env:REMNIC_HOST) { $env:REMNIC_HOST } else { '127.0.0.1' }
+$remnicPort = if ($env:REMNIC_PORT) { $env:REMNIC_PORT } else { '4318' }
+$token = $env:REMNIC_AUTH_TOKEN
+if (-not $token) { $token = $env:OPENCLAW_REMNIC_ACCESS_TOKEN }
+if (-not $token) { $token = $env:OPENCLAW_ENGRAM_ACCESS_TOKEN }
+$url = "http://${remnicHost}:${remnicPort}/engram/v1/recall"
+
+# Read the hook payload from stdin.
+$raw = [Console]::In.ReadToEnd()
+$cwd = ''
+try { $cwd = (ConvertFrom-Json $raw).cwd } catch {}
+$project = if ($cwd) { Split-Path -Leaf $cwd } else { 'unknown' }
+
+function Emit($context) {
+  @{ continue = $true; hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = $context } } |
+    ConvertTo-Json -Compress -Depth 5
+}
+
+if (-not $token) { Emit '[Remnic: no token set — skipping memory recall]'; exit 0 }
+
+$query = "Starting a new coding session in project: $project. Recall relevant memories, preferences, decisions, and context about this project and the user."
+$body = @{ query = $query; topK = 12 } | ConvertTo-Json -Compress
+try {
+  $resp = Invoke-RestMethod -Method Post -Uri $url -TimeoutSec 15 `
+    -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' -Body $body
+  if ($resp.context) {
+    Emit ("[Remnic Memory Recall — $($resp.count) memories]`n`n" + $resp.context)
+  } else {
+    Emit '[Remnic: no relevant memories found for this session]'
+  }
+} catch {
+  Emit '[Remnic: server unreachable — continuing without memory recall]'
+}
+```
+
+#### Configure the hook
+
+Add the hook to `~/.codex/hooks.json` (macOS/Linux) or `%USERPROFILE%\.codex\hooks.json` (Windows). Provide **both** `command` (POSIX) and `commandWindows` (PowerShell) so the same config works everywhere — Codex picks the right one per platform:
 
 ```json
 {
@@ -230,6 +285,7 @@ Configure the hook in `~/.codex/hooks.json`:
           {
             "type": "command",
             "command": "<full-path-to>/remnic-session-recall.sh",
+            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File <full-path-to>\\remnic-session-recall.ps1",
             "timeout": 15
           }
         ]
@@ -239,7 +295,7 @@ Configure the hook in `~/.codex/hooks.json`:
 }
 ```
 
-Replace `<full-path-to>` with the absolute path (e.g., `/Users/you/.codex/scripts/remnic-session-recall.sh`).
+Replace `<full-path-to>` with the absolute path on each platform — e.g. `/Users/you/.codex/scripts/remnic-session-recall.sh` (macOS/Linux) and `C:\Users\you\.codex\scripts\remnic-session-recall.ps1` (Windows). `powershell` is Windows PowerShell 5.1, which ships with Windows 10/11; if you've installed PowerShell 7 you can substitute `pwsh`.
 
 ### 5. Tell Codex how to use Remnic (optional)
 
@@ -300,9 +356,10 @@ After setup, start a new Codex session and check:
 - You have `namespacesEnabled: true` in your Remnic config. Set `server.principal` in `remnic.config.json` so it matches a `writePrincipals` entry for your target namespace.
 
 **Hook not firing:**
-- Verify `~/.codex/hooks.json` exists and uses the correct absolute path.
-- Ensure the script is executable (`chmod +x`).
-- Check that `REMNIC_AUTH_TOKEN` is set in your shell environment. The older `OPENCLAW_REMNIC_ACCESS_TOKEN` and `OPENCLAW_ENGRAM_ACCESS_TOKEN` names are still accepted during the compatibility window.
+- Verify `~/.codex/hooks.json` (`%USERPROFILE%\.codex\hooks.json` on Windows) exists and uses the correct absolute path.
+- **macOS / Linux:** ensure the script is executable (`chmod +x`) and that `node` is on PATH (the bundled hooks are Node.js).
+- **Windows:** there is no `chmod` step. Make sure the `commandWindows` entry is present and that `powershell` (Windows PowerShell 5.1, ships with Windows; `pwsh` for PowerShell 7) and `node` are on PATH. If scripts are blocked by policy, the `-ExecutionPolicy Bypass` flag in the example handles it; you do not need to change machine policy.
+- Check that `REMNIC_AUTH_TOKEN` is set in your environment. The older `OPENCLAW_REMNIC_ACCESS_TOKEN` and `OPENCLAW_ENGRAM_ACCESS_TOKEN` names are still accepted during the compatibility window.
 
 **Slow session start:**
 - The hook has a 15-second timeout. If the Remnic server is slow to respond, increase the `timeout` value in `hooks.json` or reduce `topK` in the recall query.
@@ -323,7 +380,7 @@ rename), and idempotent no-ops happen whenever the content hash is unchanged.
 Triggers (all configurable):
 
 - After semantic or causal consolidation completes (`codexMaterializeOnConsolidation`)
-- At Codex session end via the `session-end.sh` hook (`codexMaterializeOnSessionEnd`)
+- At Codex session end via the bundled Stop hook (`codexMaterializeOnSessionEnd`)
 - Manually: `tsx scripts/codex-materialize.ts --reason manual`
 
 See [plugins/codex.md — Native memory materialization](../plugins/codex.md#native-memory-materialization)

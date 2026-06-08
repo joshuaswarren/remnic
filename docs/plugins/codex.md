@@ -164,7 +164,7 @@ zero MCP calls.
 | Trigger | Config flag | Notes |
 |---|---|---|
 | Semantic / causal consolidation complete | `codexMaterializeOnConsolidation` (default `true`) | Runs immediately after a consolidation pass finishes. |
-| Codex `Stop` / session-end hook | `codexMaterializeOnSessionEnd` (default `true`) | `session-end.sh` shells out to `scripts/codex-materialize.ts`. |
+| Codex `Stop` / session-end hook | `codexMaterializeOnSessionEnd` (default `true`) | The `session-end` event of the unified hook runner (`hooks/bin/remnic-codex-hook.cjs`) invokes the packaged `bin/materialize.cjs` (dev fallback: `scripts/codex-materialize.ts`). |
 | Manual | — | `tsx scripts/codex-materialize.ts --reason manual` |
 
 ### Configuration

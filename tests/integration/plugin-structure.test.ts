@@ -85,13 +85,51 @@ test("plugin-codex has Stop hook (unique to Codex)", () => {
   assert.ok(hooks.Stop, "Stop hook required (Codex-specific)");
 });
 
-test("plugin-codex hooks use node not python3", () => {
+test("plugin-codex hooks ship a unified cross-platform Node.js runner (#1440)", () => {
   const binDir = path.join(PACKAGES, "plugin-codex", "hooks", "bin");
-  const scripts = fs.readdirSync(binDir).filter((f) => f.endsWith(".sh"));
-  for (const script of scripts) {
-    const content = fs.readFileSync(path.join(binDir, script), "utf-8");
-    assert.ok(!content.includes("python3"), `${script} must not use python3 (use node -e)`);
+  // Cross-platform launchers + the single source-of-truth runner must all exist.
+  for (const required of ["remnic-codex-hook.cjs", "remnic-codex-hook.sh", "remnic-codex-hook.ps1"]) {
+    assert.ok(
+      fs.existsSync(path.join(binDir, required)),
+      `${required} must ship in hooks/bin so hooks work on every platform`,
+    );
   }
+  // Every hook event must carry both `command` (POSIX) and `commandWindows`
+  // (PowerShell) so Codex can pick the right one per OS.
+  const hooksFile = path.join(PACKAGES, "plugin-codex", "hooks", "hooks.json");
+  const { hooks } = JSON.parse(fs.readFileSync(hooksFile, "utf-8"));
+  for (const event of ["SessionStart", "PostToolUse", "UserPromptSubmit", "Stop"]) {
+    for (const matcher of hooks[event]) {
+      for (const hook of matcher.hooks) {
+        assert.ok(hook.command, `${event}.command must be set (POSIX)`);
+        assert.ok(hook.commandWindows, `${event}.commandWindows must be set (Windows support, #1440)`);
+        assert.ok(
+          /remnic-codex-hook\.sh/.test(hook.command),
+          `${event}.command must call the unified runner shim`,
+        );
+        assert.ok(
+          /remnic-codex-hook\.ps1/.test(hook.commandWindows),
+          `${event}.commandWindows must call the unified runner .ps1`,
+        );
+        // Codex substitutes ${PLUGIN_ROOT} and runs from the session cwd, so
+        // plugin-bundled hooks must be PLUGIN_ROOT-relative, not cwd-relative.
+        assert.ok(
+          hook.command.includes("${PLUGIN_ROOT}"),
+          `${event}.command must resolve via \${PLUGIN_ROOT} for marketplace installs`,
+        );
+        assert.ok(
+          hook.commandWindows.includes("${PLUGIN_ROOT}"),
+          `${event}.commandWindows must resolve via \${PLUGIN_ROOT}`,
+        );
+      }
+    }
+  }
+});
+
+test("plugin-codex unified runner uses node, not python3", () => {
+  const runner = path.join(PACKAGES, "plugin-codex", "hooks", "bin", "remnic-codex-hook.cjs");
+  const content = fs.readFileSync(runner, "utf-8");
+  assert.ok(!content.includes("python3"), "runner must not invoke python3");
 });
 
 // ---------------------------------------------------------------------------
@@ -201,12 +239,12 @@ test("Claude Code hooks prefer ~/.remnic/tokens.json with Engram fallback", () =
   assert.ok(content.includes("X-Engram-Client-Id"), "Must send client ID header");
 });
 
-test("Codex hooks prefer ~/.remnic/tokens.json with Engram fallback", () => {
-  const sessionStart = path.join(PACKAGES, "plugin-codex", "hooks", "bin", "session-start.sh");
-  const content = fs.readFileSync(sessionStart, "utf-8");
+test("Codex unified runner prefers ~/.remnic/tokens.json with Engram fallback (#1440)", () => {
+  const runner = path.join(PACKAGES, "plugin-codex", "hooks", "bin", "remnic-codex-hook.cjs");
+  const content = fs.readFileSync(runner, "utf-8");
   assert.ok(content.includes("tokens.json"), "Must read from token file");
   assert.ok(content.includes(".remnic"), "Must prefer Remnic token path");
   assert.ok(content.includes(".engram"), "Must preserve Engram token fallback");
   assert.ok(content.includes("codex-cli"), "Must look for codex-cli token key");
-  assert.ok(content.includes("codex"), "Must preserve legacy codex token fallback");
+  assert.ok(content.includes("\"codex\""), "Must preserve legacy codex token fallback");
 });

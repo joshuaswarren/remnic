@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.613",
+  "version": "9.3.614",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3165,7 +3165,9 @@
       "taskModelChain": {
         "type": "object",
         "description": "Optional task-specific gateway model chain for Remnic's background LLM work (extraction, fact/profile/identity consolidation, summarization, causal consolidation). When set, this chain is resolved through gateway providers instead of gatewayAgentId or agents.defaults.model. Only applies when modelSource is 'gateway'.",
-        "required": ["primary"],
+        "required": [
+          "primary"
+        ],
         "additionalProperties": false,
         "properties": {
           "primary": {

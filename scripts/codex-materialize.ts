@@ -2,9 +2,11 @@
 /**
  * codex-materialize.ts — thin CLI entrypoint for Codex memory materialization.
  *
- * Intended caller: `packages/plugin-codex/hooks/bin/session-end.sh` (via tsx)
- * and operators debugging materialization. Keeps the hook edit minimal — the
- * shell hook just shells out to this script with a namespace.
+ * Intended caller: the unified Codex hook runner
+ * `packages/plugin-codex/hooks/bin/remnic-codex-hook.cjs` (session-end event,
+ * dev fallback via tsx) and operators debugging materialization. The hook
+ * prefers the packaged `bin/materialize.cjs`; this script is the source-tree
+ * fallback.
  *
  * Usage:
  *   tsx scripts/codex-materialize.ts [--namespace <name>] [--codex-home <path>] \

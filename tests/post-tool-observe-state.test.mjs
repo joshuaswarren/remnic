@@ -6,14 +6,15 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+// The Codex plugin's PostToolUse hook is now the unified Node.js runner
+// (issue #1440 — packages/plugin-codex/hooks/bin/remnic-codex-hook.cjs).
+// State-dir / cursor / lock hardening is covered by the runner's own
+// integration tests in remnic-codex-hook.test.cjs. Only the Claude Code
+// bash script is still asserted from here.
 const hookCases = [
   {
     name: "claude-code-package",
     scriptPath: "packages/plugin-claude-code/hooks/bin/post-tool-observe.sh",
-  },
-  {
-    name: "codex-package",
-    scriptPath: "packages/plugin-codex/hooks/bin/post-tool-observe.sh",
   },
 ];
 
@@ -61,23 +62,11 @@ function runHook(hookCase, fixture, sessionId) {
 
 }
 
-function runCodexSessionEnd(fixture, sessionId) {
-  return spawnSync("bash", ["packages/plugin-codex/hooks/bin/session-end.sh"], {
-    cwd: process.cwd(),
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      HOME: fixture.home,
-      XDG_STATE_HOME: fixture.stateHome,
-      OPENCLAW_REMNIC_ACCESS_TOKEN: "test-token",
-      REMNIC_CODEX_MATERIALIZE: "0",
-    },
-    input: JSON.stringify({
-      session_id: sessionId,
-      transcript_path: fixture.transcript,
-    }),
-  });
-}
+// `runCodexSessionEnd` lived here when the Codex plugin shipped a bash
+// session-end.sh. The unified Node.js runner now owns that surface (#1440),
+// and its symlinked-cursor + /tmp-migration regressions are exercised by
+// `packages/plugin-codex/hooks/bin/remnic-codex-hook.test.cjs`. Nothing here
+// needs to spawn a Codex hook anymore.
 
 for (const hookCase of hookCases) {
   test(`${hookCase.name} writes cursor state inside a private state directory`, async () => {
@@ -254,70 +243,6 @@ for (const hookCase of hookCases) {
   });
 }
 
-test("codex package session-end skips final flush when cursor is unsafe", async () => {
-  const fixture = await makeFixture();
-  const sessionId = `codex-end-symlink-${process.pid}`;
-  const stateDir = path.join(fixture.stateHome, "remnic", "hooks");
-  const cursorPath = path.join(stateDir, `remnic-cursor-${sessionId}`);
-  const symlinkTarget = path.join(fixture.root, "target.txt");
-  const logPath = path.join(fixture.home, ".remnic", "logs", "remnic-codex-session-end.log");
-
-  try {
-    await mkdir(stateDir, { recursive: true, mode: 0o700 });
-    await writeFile(symlinkTarget, "unchanged\n", "utf8");
-    await symlink(symlinkTarget, cursorPath);
-    await writeFile(
-      fixture.transcript,
-      `${JSON.stringify({ type: "user", message: { role: "user", content: "hello" } })}\n`,
-      "utf8",
-    );
-
-    const result = runCodexSessionEnd(fixture, sessionId);
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, '{"continue":true}\n');
-
-    await waitFor(async () => {
-      if (!existsSync(logPath)) return false;
-      return (await readFile(logPath, "utf8")).includes("final flush skipped");
-    }, "unsafe cursor did not skip final flush");
-
-    const logContent = await readFile(logPath, "utf8");
-    assert.match(logContent, /unsafe cursor file/);
-    assert.doesNotMatch(logContent, /final flush for /);
-    assert.equal(await readFile(symlinkTarget, "utf8"), "unchanged\n");
-  } finally {
-    await removeFixture(fixture);
-  }
-});
-
-test("codex package session-end migrates tmp cursor before final flush", async () => {
-  const fixture = await makeFixture();
-  const sessionId = `codex-end-tmp-${process.pid}`;
-  const remnicTmpCursorPath = `/tmp/remnic-cursor-${sessionId}`;
-  const engramTmpCursorPath = `/tmp/engram-cursor-${sessionId}`;
-  const logPath = path.join(fixture.home, ".remnic", "logs", "remnic-codex-session-end.log");
-
-  try {
-    await writeFile(remnicTmpCursorPath, "1\n", "utf8");
-    await writeFile(engramTmpCursorPath, "2\n", "utf8");
-    await writeFile(
-      fixture.transcript,
-      `${JSON.stringify({ type: "user", message: { role: "user", content: "hello" } })}\n${JSON.stringify({ type: "assistant", message: { role: "assistant", content: "world" } })}\n`,
-      "utf8",
-    );
-
-    const result = runCodexSessionEnd(fixture, sessionId);
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout, '{"continue":true}\n');
-
-    assert.equal(existsSync(remnicTmpCursorPath), false);
-    assert.equal(existsSync(engramTmpCursorPath), false);
-    if (existsSync(logPath)) {
-      assert.doesNotMatch(await readFile(logPath, "utf8"), /final flush for /);
-    }
-  } finally {
-    await removeFixture(fixture);
-    await rm(remnicTmpCursorPath, { force: true });
-    await rm(engramTmpCursorPath, { force: true });
-  }
-});
+// Codex-specific session-end tests (unsafe-cursor skip, /tmp-cursor migration)
+// were ported to the unified Node.js runner's own suite in
+// `packages/plugin-codex/hooks/bin/remnic-codex-hook.test.cjs` (issue #1440).

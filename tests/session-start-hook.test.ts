@@ -2,9 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
+// The Codex plugin's hooks moved to a single cross-platform Node.js runner
+// (issue #1440) — `packages/plugin-codex/hooks/bin/remnic-codex-hook.cjs`.
+// Behavior is exercised end-to-end in
+// `packages/plugin-codex/hooks/bin/remnic-codex-hook.test.cjs`. The bash
+// scripts below remain authoritative for the Claude Code plugin.
 const hookFiles = [
   "packages/plugin-claude-code/hooks/bin/session-start.sh",
-  "packages/plugin-codex/hooks/bin/session-start.sh",
 ];
 
 for (const hookFile of hookFiles) {
