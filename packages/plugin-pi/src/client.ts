@@ -138,7 +138,17 @@ export class RemnicClient {
     options: RequestOptions = {},
   ): Promise<T> {
     const controller = new AbortController();
-    const timeoutMs = options.timeoutMs ?? this.config.requestTimeoutMs;
+    // A per-request override is honored only when it is a finite positive number;
+    // 0, negative, NaN, or non-finite values would make setTimeout abort
+    // immediately (or behave erratically), so fall back to the general budget.
+    // In practice the override is always sourced from the validated
+    // `startupRequestTimeoutMs` config, but this keeps the client robust to any
+    // future caller (Copilot review).
+    const override = options.timeoutMs;
+    const timeoutMs =
+      typeof override === "number" && Number.isFinite(override) && override > 0
+        ? override
+        : this.config.requestTimeoutMs;
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(`${this.config.remnicDaemonUrl}${pathname}`, {

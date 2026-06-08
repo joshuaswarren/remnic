@@ -40,6 +40,26 @@ test("RemnicClient allows startup callers to use a shorter timeout", async (t) =
   );
 });
 
+test("RemnicClient ignores a non-positive timeout override and uses the general budget", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })));
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient({ ...baseConfig(), requestTimeoutMs: 7 });
+
+  // A 0/negative/NaN override would make setTimeout abort immediately; the client
+  // must reject it and fall back to requestTimeoutMs (reported as 7ms here).
+  await assert.rejects(
+    () => client.health({ timeoutMs: 0 }),
+    /Remnic request timed out after 7ms/,
+  );
+});
+
 function baseConfig(): RemnicPiConfig {
   return {
     remnicDaemonUrl: "http://127.0.0.1:4318",

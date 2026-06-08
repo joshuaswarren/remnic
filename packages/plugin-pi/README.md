@@ -81,7 +81,8 @@ Supported config keys:
 | `compactionEnabled` | `true` | Enable LCM flush and checkpoint coordination |
 | `mcpToolsEnabled` | `true` | Register Remnic MCP tools as Pi tools |
 | `statusEnabled` | `true` | Set Pi UI status from daemon health |
-| `requestTimeoutMs` | `60000` | HTTP/MCP request timeout |
+| `requestTimeoutMs` | `60000` | HTTP/MCP request timeout for recall/observe/compaction/commands |
+| `startupRequestTimeoutMs` | `1000` | Shorter timeout for startup-sensitive probes (MCP `tools/list` registration and the `session_start` health/status check) so a slow or offline daemon can't stall Pi boot |
 
 Boolean-like strings such as `"false"`, `"0"`, `"no"`, and `"off"` are treated as false.
 
@@ -99,7 +100,8 @@ Example:
   "compactionEnabled": true,
   "mcpToolsEnabled": true,
   "statusEnabled": true,
-  "requestTimeoutMs": 60000
+  "requestTimeoutMs": 60000,
+  "startupRequestTimeoutMs": 1000
 }
 ```
 
