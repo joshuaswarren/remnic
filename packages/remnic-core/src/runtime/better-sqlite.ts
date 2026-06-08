@@ -68,13 +68,27 @@ function unavailableError(error: unknown): Error {
 }
 
 function errorDetail(error: unknown): string {
-  // Intentionally exclude error.stack: this string becomes the message of the
-  // Error thrown by unavailableError(), which can propagate to user-facing
-  // surfaces (e.g. HTTP error bodies) and would leak a stack trace
-  // (CodeQL js/stack-trace-exposure). The original error is preserved via the
-  // `cause` chain on unavailableError() and logged with its stack elsewhere.
+  // This string becomes the message of the Error thrown by unavailableError(),
+  // which propagates to user-facing surfaces (HTTP error bodies, MCP tool
+  // errors — see access-http.ts / access-mcp.ts, which return err.message).
+  // We must not leak server internals (CodeQL js/stack-trace-exposure):
+  //   - error.stack is excluded entirely.
+  //   - Node module-load errors embed absolute server paths directly in
+  //     error.message: a "Require stack:" block (MODULE_NOT_FOUND) and native
+  //     loader paths. We keep only the first line and redact filesystem paths.
+  // The full original error is still preserved via the `cause` chain on
+  // unavailableError() and logged with its stack elsewhere.
   if (error instanceof Error) {
-    return error.message;
+    const firstLine = error.message.split("\n", 1)[0] ?? "";
+    return redactFilesystemPaths(firstLine);
   }
-  return String(error ?? "");
+  return redactFilesystemPaths(String(error ?? ""));
+}
+
+// Replace absolute filesystem paths (POSIX, UNC, or Windows drive form) with a
+// placeholder so loader error text cannot expose server directory layout.
+// Requires at least two path segments to avoid mangling innocuous tokens like
+// "and/or". The single bounded quantifier keeps this linear (no ReDoS).
+function redactFilesystemPaths(text: string): string {
+  return text.replace(/(?:[A-Za-z]:)?(?:[/\\][^\s/\\'"]+){2,}/g, "<path>");
 }
