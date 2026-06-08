@@ -10,7 +10,10 @@
  */
 
 export function stripCodeFences(text: string): string {
-  return text.replace(/```(?:json)?\s*([\s\S]*?)```/gi, (_m, inner) => String(inner).trim());
+  // Drop the leading \s* before the lazy body: it overlapped the body and caused
+  // polynomial backtracking on unterminated fences (CodeQL js/polynomial-redos).
+  // inner is trimmed, so captured content is identical.
+  return text.replace(/```(?:json)?([\s\S]*?)```/gi, (_m, inner) => String(inner).trim());
 }
 
 export function extractJsonCandidates(text: string): string[] {

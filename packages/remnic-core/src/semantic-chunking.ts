@@ -186,7 +186,10 @@ export function findLocalMinima(
  */
 function splitSentences(text: string): string[] {
   const sentences: string[] = [];
-  const sentenceRegex = /[^.!?]*[.!?]+(?:\s+|$)/g;
+  // Lookahead (?=\s|$) instead of consuming (?:\s+|$) to avoid polynomial
+  // backtracking between [^.!?]* and \s+ (CodeQL js/polynomial-redos).
+  // Behavior-identical here since each sentence is trimmed.
+  const sentenceRegex = /[^.!?]*[.!?]+(?=\s|$)/g;
 
   let match: RegExpExecArray | null;
   let lastIndex = 0;

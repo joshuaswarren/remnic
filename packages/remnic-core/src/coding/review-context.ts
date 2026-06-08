@@ -142,7 +142,13 @@ export function parseTouchedFiles(diff: string | null | undefined): string[] {
     // everything after the first whitespace in a quoted path.
     const headerPrefix = line.match(/^(?:---|\+\+\+)[ \t]+/);
     if (headerPrefix) {
-      const tail = line.slice(headerPrefix[0].length).replace(/[ \t]+$/, "");
+      // Linear trailing space/tab trim instead of /[ \t]+$/, whose anchored
+      // quantifier backtracks polynomially on a long diff line (CodeQL
+      // js/polynomial-redos).
+      const sliced = line.slice(headerPrefix[0].length);
+      let tailEnd = sliced.length;
+      while (tailEnd > 0 && (sliced[tailEnd - 1] === " " || sliced[tailEnd - 1] === "\t")) tailEnd--;
+      const tail = sliced.slice(0, tailEnd);
       const raw = extractSingleDiffPathToken(tail);
       if (raw) {
         const stripped = stripDiffPathPrefix(raw);

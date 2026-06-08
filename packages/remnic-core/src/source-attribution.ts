@@ -71,7 +71,22 @@ export interface ParsedCitation {
  * the text. Kept as a getter factory so callers do not share regex state.
  */
 function defaultCitationMatcher(): RegExp {
-  return /\[Source:\s*([^\]\n]+?)\]/gi;
+  // \s* before the lazy body overlapped it (\s ⊂ [^\]\n]) and backtracked
+  // polynomially on hostile memory text (CodeQL js/polynomial-redos). Greedy
+  // [^\]\n]+ is linear and unambiguous — it stops at the first ] either way, so
+  // match[0] is unchanged; callers trim the captured fields.
+  return /\[Source:([^\]\n]+)\]/gi;
+}
+
+// Linear trailing-whitespace trim. Replaces text.replace(/\s+$/u, ""), whose
+// anchored quantifier backtracks polynomially on long inputs (CodeQL
+// js/polynomial-redos). Matches the exact \s (with u flag) semantics one char
+// at a time, so the trailing-content preservation logic in attachCitation is
+// unaffected.
+function trimTrailingWhitespace(text: string): string {
+  let end = text.length;
+  while (end > 0 && /\s/u.test(text[end - 1]!)) end--;
+  return text.slice(0, end);
 }
 
 /**
@@ -444,7 +459,7 @@ export function attachCitation(
 ): string {
   if (typeof text !== "string") return text as unknown as string;
   if (hasCitationForTemplate(text, template)) return text;
-  const trimmedEnd = text.replace(/\s+$/u, "");
+  const trimmedEnd = trimTrailingWhitespace(text);
   if (trimmedEnd.length === 0) return text;
   const citation = formatCitation(ctx, template);
   // Preserve any trailing newline that callers rely on for markdown rendering.

@@ -289,7 +289,10 @@ export function parseOperatorAwareConsolidationResponse(
   if (trimmed.length === 0) return fallback;
 
   // Strip a fenced code block if present.
-  const fenced = /^```(?:json)?\s*([\s\S]*?)```\s*$/u.exec(trimmed);
+  // Dropped the \s* groups around the lazy body (they overlapped it and
+  // backtracked polynomially — CodeQL js/polynomial-redos). Input is already
+  // trimmed and fenced[1] is trimmed below, so matches are identical.
+  const fenced = /^```(?:json)?([\s\S]*?)```$/u.exec(trimmed);
   const payload = fenced ? fenced[1].trim() : trimmed;
 
   // Find a balanced brace-delimited JSON object that has an `operator`

@@ -262,7 +262,10 @@ export function parsePeerProfileReasonerResponse(
 ): PeerProfileReasonerProposal[] {
   if (typeof raw !== "string" || raw.trim() === "") return [];
   const trimmed = raw.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)```\s*$/u.exec(trimmed);
+  // Dropped the \s* groups around the lazy body (they overlapped it and
+  // backtracked polynomially — CodeQL js/polynomial-redos). Input is already
+  // trimmed and fenced[1] is trimmed below, so matches are identical.
+  const fenced = /^```(?:json)?([\s\S]*?)```$/u.exec(trimmed);
   const payload = fenced ? fenced[1].trim() : trimmed;
   let parsed: unknown;
   try {

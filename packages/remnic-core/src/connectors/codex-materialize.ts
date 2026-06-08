@@ -550,7 +550,12 @@ export function renderMemorySummary(ctx: SummaryRenderContext): string {
     lines.push("");
   }
 
-  const full = lines.join("\n").replace(/\n+$/u, "\n");
+  // Collapse trailing newlines to one without the anchored /\n+$/ quantifier,
+  // which backtracks polynomially (CodeQL js/polynomial-redos).
+  const joined = lines.join("\n");
+  let joinedEnd = joined.length;
+  while (joinedEnd > 0 && joined[joinedEnd - 1] === "\n") joinedEnd--;
+  const full = joinedEnd === joined.length ? joined : `${joined.slice(0, joinedEnd)}\n`;
   return truncateToTokenBudget(full, ctx.maxTokens);
 }
 

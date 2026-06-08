@@ -943,7 +943,11 @@ export function formatCompressionGuidelinesForRecall(
 ): string | null {
   if (typeof raw !== "string" || raw.trim().length === 0) return null;
   const sectionMatch = raw.match(
-    /## Suggested Guidelines\s*\n([\s\S]*?)(?:\n##\s+|\s*$)/i,
+    // End the section at `\n## ` or end-of-string. Plain $ (not \s*$): the
+    // \s* branch overlapped the lazy body and backtracked polynomially
+    // (CodeQL js/polynomial-redos). Captured lines are trimmed/filtered below,
+    // so trailing whitespace handling is unchanged.
+    /## Suggested Guidelines\s*\n([\s\S]*?)(?:\n##\s+|$)/i,
   );
   if (!sectionMatch) return null;
 

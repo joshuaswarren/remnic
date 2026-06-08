@@ -1905,7 +1905,10 @@ export function parseEntityFile(
         break;
       case "connected to": {
         // Format: [[target-entity]] — relationship label
-        const relMatch = bullet.match(/^\[\[([^\]]+)\]\]\s*[—–-]\s*(.+)$/);
+        // (\S.*) forces the capture to start at a non-space so \s* and the
+        // capture no longer overlap (CodeQL js/polynomial-redos). Equivalent to
+        // (.+) here since \s* already consumes leading whitespace; label is trimmed.
+        const relMatch = bullet.match(/^\[\[([^\]]+)\]\]\s*[—–-]\s*(\S.*)$/);
         if (relMatch) {
           relationships.push({ target: relMatch[1].trim(), label: relMatch[2].trim() });
         }
@@ -1913,7 +1916,9 @@ export function parseEntityFile(
       }
       case "activity": {
         // Format: YYYY-MM-DD: note
-        const actMatch = bullet.match(/^(\d{4}-\d{2}-\d{2}):\s*(.+)$/);
+        // (\S.*) avoids the \s* / (.+) overlap (CodeQL js/polynomial-redos);
+        // equivalent to (.+) since \s* consumes leading whitespace and note is trimmed.
+        const actMatch = bullet.match(/^(\d{4}-\d{2}-\d{2}):\s*(\S.*)$/);
         if (actMatch) {
           activity.push({ date: actMatch[1], note: actMatch[2].trim() });
         }

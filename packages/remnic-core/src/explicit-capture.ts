@@ -40,8 +40,12 @@ export type ValidExplicitCapture = {
 export type ExplicitCaptureSource = "memory_store" | "memory_capture" | "suggestion_submit" | "inline";
 type ExplicitCaptureValidationMode = "legacy_tool" | "strict_explicit";
 
-const INLINE_NOTE_RE = /<memory_note>\s*([\s\S]*?)\s*<\/memory_note>/gi;
-const INLINE_NOTE_MARKUP_RE = /<memory_note>\s*[\s\S]*?\s*<\/memory_note>/i;
+// The outer \s* groups around the lazy body caused polynomial backtracking on
+// unterminated <memory_note> markup in hostile turn text (CodeQL
+// js/polynomial-redos). Dropped: the body already absorbs surrounding
+// whitespace and captured content is trimmed downstream, so matches are identical.
+const INLINE_NOTE_RE = /<memory_note>([\s\S]*?)<\/memory_note>/gi;
+const INLINE_NOTE_MARKUP_RE = /<memory_note>[\s\S]*?<\/memory_note>/i;
 const INLINE_ALLOWED_CATEGORIES = new Set<MemoryCategory>([
   "fact",
   "preference",

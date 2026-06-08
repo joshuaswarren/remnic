@@ -1431,3 +1431,24 @@ test("hasCitationForTemplate: multi-separator template detects citation when int
     "multi-colon citation where intermediate value contains the separator should be detected",
   );
 });
+
+test("citation matcher resists polynomial ReDoS on hostile unterminated input (CodeQL js/polynomial-redos)", () => {
+  // A "[Source:" with a long run of whitespace and no closing "]" is the
+  // backtracking trigger for the old /\[Source:\s*([^\]\n]+?)\]/ pattern.
+  const hostile = `prefix [Source:${" ".repeat(100000)}no closing bracket`;
+  const start = process.hrtime.bigint();
+  const detected = hasCitation(hostile);
+  const parsed = parseAllCitations(hostile);
+  const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+
+  // No complete citation token (no closing "]"), so nothing should be detected.
+  assert.equal(detected, false);
+  assert.deepEqual(parsed, []);
+  // Linear scan: completes near-instantly. Generous bound guards against the
+  // quadratic blowup the old regex exhibited (seconds-to-minutes on this input).
+  assert.ok(elapsedMs < 1000, `citation scan took ${elapsedMs.toFixed(1)}ms (expected < 1000ms)`);
+
+  // A well-formed citation with surrounding whitespace is still parsed correctly.
+  const valid = parseAllCitations("body [Source:  doc-1 , 2026-06-08 ]");
+  assert.equal(valid.length, 1);
+});

@@ -37,7 +37,10 @@ export function normalizeSupersessionKey(raw: string): string {
     .trim()
     .toLowerCase()
     .replace(/[\s\-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    // The previous line already collapsed runs to single hyphens, so ^-|-$ is
+    // equivalent to ^-+|-+$ here and drops the anchored quantifier flagged by
+    // CodeQL js/polynomial-redos.
+    .replace(/^-|-$/g, "");
 }
 
 /**

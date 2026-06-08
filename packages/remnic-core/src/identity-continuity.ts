@@ -200,7 +200,9 @@ function splitLoopMarkdown(raw: string | null): { header: string; sections: Mark
   let current: MarkdownSection | null = null;
 
   for (const line of lines) {
-    const sectionMatch = line.match(/^##\s+(.+?)\s*$/);
+    // (.*)$ with a trailing trim instead of (.+?)\s*$ (lazy body + \s* overlap
+    // backtracks; CodeQL js/polynomial-redos). title is trimmed below, so equivalent.
+    const sectionMatch = line.match(/^##\s+(.*)$/);
     if (sectionMatch) {
       if (current) sections.push({ title: current.title, body: current.body.trimEnd() });
       current = { title: sectionMatch[1].trim(), body: "" };
