@@ -235,7 +235,7 @@ function commandHandler(handler: (args: string, ctx: any) => Promise<void>): (ar
 async function registerMcpTools(pi: PiApi, client: RemnicClient, config: RemnicPiConfig): Promise<void> {
   let tools: McpTool[] = [];
   try {
-    tools = await client.mcpListTools();
+    tools = await client.mcpListTools({ timeoutMs: config.startupRequestTimeoutMs });
   } catch {
     return;
   }
@@ -498,7 +498,7 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
 
 async function setStatus(ctx: any, client: RemnicClient, config: RemnicPiConfig): Promise<void> {
   try {
-    await client.health();
+    await client.health({ timeoutMs: config.startupRequestTimeoutMs });
     ctx.ui?.setStatus?.("remnic", `Remnic ${config.namespace ? `(${config.namespace})` : "ready"}`);
   } catch {
     ctx.ui?.setStatus?.("remnic", "Remnic offline");

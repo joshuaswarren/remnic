@@ -178,6 +178,81 @@ test("default Pi extension creates isolated state for each host invocation", asy
   assert.equal(recallBodies.length, 2);
 });
 
+test("MCP tool registration uses the startup timeout instead of the general request timeout", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })));
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const registeredTools: Record<string, unknown>[] = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      statusEnabled: false,
+      mcpToolsEnabled: true,
+      requestTimeoutMs: 60000,
+      startupRequestTimeoutMs: 2,
+    },
+  });
+
+  await extension({
+    on: () => undefined,
+    registerCommand: () => undefined,
+    registerTool: (tool: Record<string, unknown>) => {
+      registeredTools.push(tool);
+    },
+    appendEntry: () => undefined,
+  });
+
+  assert.deepEqual(registeredTools, []);
+});
+
+test("session_start status probe uses the startup timeout", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })));
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      requestTimeoutMs: 60000,
+      startupRequestTimeoutMs: 2,
+    },
+  });
+  await extension(pi as any);
+
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: {
+      setStatus: (key: string, value: string) => statuses.push([key, value]),
+    },
+    sessionManager: { getSessionId: () => "startup-timeout-test", getEntries: () => [] },
+  });
+
+  assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
+});
+
 test("observeMessages only records dedupe hashes after a successful observe", async () => {
   const observedHashes = new Set<string>();
   const ctx = {
@@ -887,6 +962,7 @@ function baseConfig(): RemnicPiConfig {
     mcpToolsEnabled: true,
     statusEnabled: true,
     requestTimeoutMs: 60000,
+    startupRequestTimeoutMs: 1000,
   };
 }
 

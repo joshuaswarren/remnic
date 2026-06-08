@@ -22,6 +22,24 @@ test("RemnicClient reports request timeouts with actionable context", async (t) 
   );
 });
 
+test("RemnicClient allows startup callers to use a shorter timeout", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })));
+    });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient({ ...baseConfig(), requestTimeoutMs: 60000 });
+
+  await assert.rejects(
+    () => client.health({ timeoutMs: 2 }),
+    /Remnic request timed out after 2ms/,
+  );
+});
+
 function baseConfig(): RemnicPiConfig {
   return {
     remnicDaemonUrl: "http://127.0.0.1:4318",
@@ -35,6 +53,7 @@ function baseConfig(): RemnicPiConfig {
     mcpToolsEnabled: true,
     statusEnabled: true,
     requestTimeoutMs: 60000,
+    startupRequestTimeoutMs: 1000,
   };
 }
 

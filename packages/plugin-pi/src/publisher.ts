@@ -105,6 +105,7 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
         mcpToolsEnabled: true,
         statusEnabled: true,
         requestTimeoutMs: 60000,
+        startupRequestTimeoutMs: 1000,
         ...priorConfig,
         remnicDaemonUrl: resolveDaemonUrl(ctx),
       };

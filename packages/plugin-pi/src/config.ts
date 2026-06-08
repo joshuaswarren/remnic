@@ -19,6 +19,7 @@ export interface RemnicPiConfig {
   mcpToolsEnabled: boolean;
   statusEnabled: boolean;
   requestTimeoutMs: number;
+  startupRequestTimeoutMs: number;
 }
 
 export interface LoadConfigOptions {
@@ -38,6 +39,7 @@ const DEFAULT_CONFIG: RemnicPiConfig = {
   mcpToolsEnabled: true,
   statusEnabled: true,
   requestTimeoutMs: 60000,
+  startupRequestTimeoutMs: 1000,
 };
 
 function defaultConfigPath(env: NodeJS.ProcessEnv): string {
@@ -173,5 +175,11 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     mcpToolsEnabled: coerceBoolean(fileConfig.mcpToolsEnabled, DEFAULT_CONFIG.mcpToolsEnabled, "mcpToolsEnabled"),
     statusEnabled: coerceBoolean(fileConfig.statusEnabled, DEFAULT_CONFIG.statusEnabled, "statusEnabled"),
     requestTimeoutMs: coercePositiveInt(fileConfig.requestTimeoutMs, DEFAULT_CONFIG.requestTimeoutMs, 60_000, "requestTimeoutMs"),
+    startupRequestTimeoutMs: coercePositiveInt(
+      fileConfig.startupRequestTimeoutMs,
+      DEFAULT_CONFIG.startupRequestTimeoutMs,
+      60_000,
+      "startupRequestTimeoutMs",
+    ),
   };
 }

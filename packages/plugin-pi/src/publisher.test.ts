@@ -246,6 +246,7 @@ test("Pi publisher preserves user-managed extension settings on reinstall", asyn
         mcpToolsEnabled: false,
         statusEnabled: false,
         requestTimeoutMs: 1234,
+        startupRequestTimeoutMs: 2345,
       },
       null,
       2
@@ -294,6 +295,7 @@ test("Pi publisher preserves user-managed extension settings on reinstall", asyn
   assert.equal(publishedConfig.mcpToolsEnabled, false);
   assert.equal(publishedConfig.statusEnabled, false);
   assert.equal(publishedConfig.requestTimeoutMs, 1234);
+  assert.equal(publishedConfig.startupRequestTimeoutMs, 2345);
 });
 
 test("Pi publisher preserves existing namespace when reinstall omits namespace", async (t) => {

@@ -105,6 +105,7 @@ test("loadConfig defaults request timeout high enough for warmed-up recall", () 
     const config = loadConfig({ configPath, env: {} });
 
     assert.equal(config.requestTimeoutMs, 60000);
+    assert.equal(config.startupRequestTimeoutMs, 1000);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -125,6 +126,7 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
         mcpToolsEnabled: "0",
         recallTopK: "50",
         requestTimeoutMs: "10",
+        startupRequestTimeoutMs: "20",
       }),
     );
 
@@ -138,6 +140,7 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
     assert.equal(config.mcpToolsEnabled, false);
     assert.equal(config.recallTopK, 50);
     assert.equal(config.requestTimeoutMs, 10);
+    assert.equal(config.startupRequestTimeoutMs, 20);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -264,6 +267,12 @@ test("loadConfig fails closed on invalid numeric values", () => {
     assert.throws(
       () => loadConfig({ configPath, env: {} }),
       /Invalid numeric value for Remnic Pi config field requestTimeoutMs/,
+    );
+
+    fs.writeFileSync(configPath, JSON.stringify({ startupRequestTimeoutMs: "slow" }));
+    assert.throws(
+      () => loadConfig({ configPath, env: {} }),
+      /Invalid numeric value for Remnic Pi config field startupRequestTimeoutMs/,
     );
 
     fs.writeFileSync(configPath, JSON.stringify({ recallTopK: true }));

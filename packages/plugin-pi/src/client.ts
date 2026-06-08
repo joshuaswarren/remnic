@@ -43,8 +43,8 @@ export class RemnicClient {
 
   constructor(private readonly config: RemnicPiConfig) {}
 
-  async health(): Promise<Record<string, unknown>> {
-    return this.request("GET", "/engram/v1/health");
+  async health(options: RequestOptions = {}): Promise<Record<string, unknown>> {
+    return this.request("GET", "/engram/v1/health", undefined, options);
   }
 
   async recall(query: string, sessionKey: string, cwd: string): Promise<RecallResponse> {
@@ -118,8 +118,8 @@ export class RemnicClient {
     });
   }
 
-  async mcpListTools(): Promise<McpTool[]> {
-    const result = await this.mcpRequest("tools/list", {});
+  async mcpListTools(options: RequestOptions = {}): Promise<McpTool[]> {
+    const result = await this.mcpRequest("tools/list", {}, options);
     const tools = (result as { tools?: unknown }).tools;
     return Array.isArray(tools) ? tools.filter(isMcpTool) : [];
   }
@@ -131,9 +131,15 @@ export class RemnicClient {
     });
   }
 
-  private async request<T = Record<string, unknown>>(method: string, pathname: string, body?: unknown): Promise<T> {
+  private async request<T = Record<string, unknown>>(
+    method: string,
+    pathname: string,
+    body?: unknown,
+    options: RequestOptions = {},
+  ): Promise<T> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.config.requestTimeoutMs);
+    const timeoutMs = options.timeoutMs ?? this.config.requestTimeoutMs;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(`${this.config.remnicDaemonUrl}${pathname}`, {
         method,
@@ -165,7 +171,7 @@ export class RemnicClient {
       return payload as T;
     } catch (err) {
       if (isAbortError(err)) {
-        throw new Error(`Remnic request timed out after ${this.config.requestTimeoutMs}ms`);
+        throw new Error(`Remnic request timed out after ${timeoutMs}ms`);
       }
       throw err;
     } finally {
@@ -173,19 +179,27 @@ export class RemnicClient {
     }
   }
 
-  private async mcpRequest(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async mcpRequest(
+    method: string,
+    params: Record<string, unknown>,
+    options: RequestOptions = {},
+  ): Promise<Record<string, unknown>> {
     this.requestId += 1;
     const payload = await this.request<Record<string, unknown>>("POST", "/mcp", {
       jsonrpc: "2.0",
       id: this.requestId,
       method,
       params,
-    });
+    }, options);
     if (payload.error) {
       throw new Error(JSON.stringify(payload.error));
     }
     return (payload.result && typeof payload.result === "object" ? payload.result : payload) as Record<string, unknown>;
   }
+}
+
+interface RequestOptions {
+  timeoutMs?: number;
 }
 
 function isMcpTool(value: unknown): value is McpTool {
