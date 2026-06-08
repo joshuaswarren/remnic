@@ -50,42 +50,47 @@ function estimateTokens(text: string): number {
  * Handles common abbreviations and edge cases.
  */
 function splitSentences(text: string): string[] {
-  // Split on sentence-ending punctuation followed by whitespace or end of string
-  // Preserve the punctuation with the sentence
+  // Split on sentence-ending punctuation (. ! ?) that is followed by whitespace
+  // or end of string; the punctuation stays with the sentence.
+  //
+  // Implemented as a single linear scan rather than a regex. Every regex form of
+  // this split is either polynomial (CodeQL js/polynomial-redos) or — once
+  // bounded/anchored to satisfy CodeQL — mishandles long runs or non-boundary
+  // punctuation (a global match silently drops a skipped prefix; a sticky match
+  // stops at the first interior `.` that is not a real boundary, e.g. "v1.2.3"
+  // or "example.com", emitting the whole document as one chunk). A character
+  // scan is O(n), allocation-free, drops nothing, and treats interior
+  // punctuation correctly. Normal prose splits identically to the previous
+  // /[^.!?]*[.!?]+(?:\s+|$)/g form.
   const sentences: string[] = [];
-
-  // Regex to match sentence boundaries
-  // Match: period/exclamation/question followed by space or end, but not abbreviations
-  // Sticky (y) + bounded repetition makes this fully linear AND lossless:
-  //  - bounded {0,1000000}/{1,100000} stops the polynomial backtracking CodeQL
-  //    flags (js/polynomial-redos);
-  //  - the sticky flag matches only at lastIndex, so the engine never skips
-  //    ahead past a non-matching prefix. A run longer than the cap simply fails
-  //    to match at lastIndex and falls through to the "remaining" handler below,
-  //    so no characters are ever dropped (vs. the global flag, which would start
-  //    the match late and discard the skipped prefix).
-  // Lookahead (?=\s|$) avoids consuming trailing whitespace. Normal prose splits
-  // identically to the previous /[^.!?]*[.!?]+(?:\s+|$)/g form.
-  const sentenceRegex = /[^.!?]{0,1000000}[.!?]{1,100000}(?=\s|$)/y;
-
-  let match: RegExpExecArray | null;
-  let lastIndex = 0;
-
-  while ((match = sentenceRegex.exec(text)) !== null) {
-    sentences.push(match[0].trim());
-    lastIndex = sentenceRegex.lastIndex;
-  }
-
-  // Handle remaining text without sentence-ending punctuation
-  if (lastIndex < text.length) {
-    const remaining = text.slice(lastIndex).trim();
-    if (remaining) {
-      sentences.push(remaining);
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== "." && ch !== "!" && ch !== "?") continue;
+    // Consume a run of terminators (e.g. "?!", "...").
+    let end = i;
+    while (end + 1 < text.length) {
+      const n = text[end + 1];
+      if (n !== "." && n !== "!" && n !== "?") break;
+      end++;
     }
+    const after = text[end + 1];
+    // A real boundary only if the terminator run ends the string or is followed
+    // by whitespace. Interior punctuation (no following whitespace) is left in
+    // place and the scan continues.
+    if (after === undefined || /\s/.test(after)) {
+      const sentence = text.slice(start, end + 1).trim();
+      if (sentence.length > 0) sentences.push(sentence);
+      start = end + 1;
+    }
+    i = end;
   }
-
-  // Filter out empty sentences
-  return sentences.filter((s) => s.length > 0);
+  // Trailing text without a closing terminator.
+  if (start < text.length) {
+    const remaining = text.slice(start).trim();
+    if (remaining.length > 0) sentences.push(remaining);
+  }
+  return sentences;
 }
 
 /**

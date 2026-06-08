@@ -185,31 +185,38 @@ export function findLocalMinima(
  * Preserves punctuation with the preceding sentence.
  */
 function splitSentences(text: string): string[] {
+  // Linear character scan instead of a regex. Every regex form of this split is
+  // either polynomial (CodeQL js/polynomial-redos) or — once bounded/anchored to
+  // satisfy CodeQL — mishandles long runs or interior punctuation (a global
+  // match drops a skipped prefix; a sticky match stops at the first non-boundary
+  // `.`, e.g. "v1.2.3" / "example.com", returning the whole document as one
+  // sentence and bypassing chunking). The scan is O(n), drops nothing, and
+  // handles interior punctuation correctly; normal prose splits identically to
+  // the previous /[^.!?]*[.!?]+(?:\s+|$)/g form.
   const sentences: string[] = [];
-  // Sticky (y) + bounded repetition: bounded {0,1000000}/{1,100000} stops the
-  // polynomial backtracking CodeQL flags (js/polynomial-redos), and the sticky
-  // flag matches only at lastIndex so the engine never skips a non-matching
-  // prefix — a run longer than the cap falls through to the "remaining" handler
-  // below instead of being dropped. Normal prose splits identically to the
-  // previous global form; each sentence is trimmed.
-  const sentenceRegex = /[^.!?]{0,1000000}[.!?]{1,100000}(?=\s|$)/y;
-
-  let match: RegExpExecArray | null;
-  let lastIndex = 0;
-
-  while ((match = sentenceRegex.exec(text)) !== null) {
-    sentences.push(match[0].trim());
-    lastIndex = sentenceRegex.lastIndex;
-  }
-
-  if (lastIndex < text.length) {
-    const remaining = text.slice(lastIndex).trim();
-    if (remaining) {
-      sentences.push(remaining);
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== "." && ch !== "!" && ch !== "?") continue;
+    let end = i;
+    while (end + 1 < text.length) {
+      const n = text[end + 1];
+      if (n !== "." && n !== "!" && n !== "?") break;
+      end++;
     }
+    const after = text[end + 1];
+    if (after === undefined || /\s/.test(after)) {
+      const sentence = text.slice(start, end + 1).trim();
+      if (sentence.length > 0) sentences.push(sentence);
+      start = end + 1;
+    }
+    i = end;
   }
-
-  return sentences.filter((s) => s.length > 0);
+  if (start < text.length) {
+    const remaining = text.slice(start).trim();
+    if (remaining.length > 0) sentences.push(remaining);
+  }
+  return sentences;
 }
 
 // ---------------------------------------------------------------------------
