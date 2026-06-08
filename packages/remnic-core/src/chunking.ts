@@ -56,13 +56,17 @@ function splitSentences(text: string): string[] {
 
   // Regex to match sentence boundaries
   // Match: period/exclamation/question followed by space or end, but not abbreviations
-  // Lookahead (?=\s|$) instead of consuming (?:\s+|$) avoids a \s+/[^.!?]* overlap,
-  // and the bounded repetitions keep the whole pattern from backtracking
-  // polynomially on long unterminated input (CodeQL js/polynomial-redos). The
-  // 1,000,000-char run cap is the ReDoS safeguard; it is far larger than any real
-  // sentence (a 1 MB span with no . ! ? is not natural-language content), so this
-  // is behavior-preserving for realistic input. Each sentence is trimmed.
-  const sentenceRegex = /[^.!?]{0,1000000}[.!?]{1,100000}(?=\s|$)/g;
+  // Sticky (y) + bounded repetition makes this fully linear AND lossless:
+  //  - bounded {0,1000000}/{1,100000} stops the polynomial backtracking CodeQL
+  //    flags (js/polynomial-redos);
+  //  - the sticky flag matches only at lastIndex, so the engine never skips
+  //    ahead past a non-matching prefix. A run longer than the cap simply fails
+  //    to match at lastIndex and falls through to the "remaining" handler below,
+  //    so no characters are ever dropped (vs. the global flag, which would start
+  //    the match late and discard the skipped prefix).
+  // Lookahead (?=\s|$) avoids consuming trailing whitespace. Normal prose splits
+  // identically to the previous /[^.!?]*[.!?]+(?:\s+|$)/g form.
+  const sentenceRegex = /[^.!?]{0,1000000}[.!?]{1,100000}(?=\s|$)/y;
 
   let match: RegExpExecArray | null;
   let lastIndex = 0;
