@@ -83,26 +83,16 @@ function unavailableError(error: unknown): Error {
 // (HTTP error bodies, MCP tool errors — access-http.ts / access-mcp.ts return
 // err.message). We must not leak server internals (CodeQL js/stack-trace-exposure):
 //   - error.stack is never read.
-//   - The "Require stack:" block Node appends to MODULE_NOT_FOUND messages
-//     (a list of absolute paths) is stripped.
-//   - Any remaining absolute filesystem path is redacted.
-// The rest of the message is preserved, so useful diagnostics (e.g. the
-// NODE_MODULE_VERSION mismatch text) still reach the user. The full original
-// error remains on the `cause` chain and is logged with its stack elsewhere.
+// We deliberately surface only the error's class name and Node error code —
+// never the raw message. Node module-load failures embed absolute server paths
+// directly in error.message (the "Require stack:" block, and unquoted native
+// loader paths that may even contain spaces), which no regex can redact
+// reliably. The error code (MODULE_NOT_FOUND, ERR_DLOPEN_FAILED, …) is a stable,
+// path-free identifier that, together with the native-binding hint, is enough
+// for a user to act on. The full original error stays on the `cause` chain and
+// is logged with its stack elsewhere.
 export function displayErrorDetail(error: unknown): string {
-  const withoutRequireStack = rawErrorMessage(error).split(/\n\s*Require stack:/i)[0] ?? "";
-  return redactFilesystemPaths(withoutRequireStack).trim();
-}
-
-// Replace absolute filesystem paths (POSIX, UNC, or Windows drive form) with a
-// placeholder so loader error text cannot expose server directory layout. Two
-// passes: quoted paths first (these may legitimately contain spaces, e.g.
-// '/Users/Jane Doe/...'), then unquoted no-space runs. Requiring ≥2 path
-// segments avoids mangling innocuous tokens like "and/or". Both patterns use a
-// single bounded character-class quantifier per segment, so matching is linear
-// (no ReDoS).
-function redactFilesystemPaths(text: string): string {
-  return text
-    .replace(/(['"`])(?:[A-Za-z]:)?[/\\][^'"`\n]*\1/g, "$1<path>$1")
-    .replace(/(?:[A-Za-z]:)?(?:[/\\][^\s/\\'"`\n]+){2,}/g, "<path>");
+  if (!(error instanceof Error)) return "";
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === "string" && code.length > 0 ? `${error.name} (${code})` : error.name;
 }
