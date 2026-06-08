@@ -71,11 +71,11 @@ export interface ParsedCitation {
  * the text. Kept as a getter factory so callers do not share regex state.
  */
 function defaultCitationMatcher(): RegExp {
-  // \s* before the lazy body overlapped it (\s ⊂ [^\]\n]) and backtracked
-  // polynomially on hostile memory text (CodeQL js/polynomial-redos). Greedy
-  // [^\]\n]+ is linear and unambiguous — it stops at the first ] either way, so
-  // match[0] is unchanged; callers trim the captured fields.
-  return /\[Source:([^\]\n]+)\]/gi;
+  // Bounded repetition {1,1024} instead of + so the match cannot backtrack
+  // polynomially over hostile memory text (CodeQL js/polynomial-redos). A real
+  // citation is far shorter than 1024 chars, so this is behavior-preserving for
+  // any genuine [Source: …] block; only pathological/oversized input is excluded.
+  return /\[Source:([^\]\n]{1,1024})\]/gi;
 }
 
 // Linear trailing-whitespace trim. Replaces text.replace(/\s+$/u, ""), whose
