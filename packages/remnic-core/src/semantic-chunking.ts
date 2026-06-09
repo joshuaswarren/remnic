@@ -205,6 +205,9 @@ function splitSentences(text: string): string[] {
       end++;
     }
     const after = text[end + 1];
+    // A real boundary only if the terminator run ends the string or is followed
+    // by whitespace. Interior punctuation (no following whitespace) is left in
+    // place and the scan continues.
     if (after === undefined || /\s/.test(after)) {
       const sentence = text.slice(start, end + 1).trim();
       if (sentence.length > 0) sentences.push(sentence);
