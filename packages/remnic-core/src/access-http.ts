@@ -984,17 +984,21 @@ export class EngramAccessHttpServer {
           ...(disclosure !== undefined ? { disclosure } : {}),
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message.startsWith("recallXray:")) {
+        // Only surface the message for the deliberately-prefixed recallXray
+        // input-validation errors, and only when it is a real Error.message —
+        // never String(err) of an arbitrary throw, which CodeQL flags as
+        // stack-trace exposure (js/stack-trace-exposure). Validation errors are
+        // always thrown as Error instances (see access-service.ts), so this is
+        // behavior-preserving; anything else is a server-side fault and is
+        // rethrown so the outer `handle()` catch returns 500 + logs it.
+        if (err instanceof Error && err.message.startsWith("recallXray:")) {
           this.respondJson(res, 400, {
             error: "invalid_request",
             code: "invalid_request",
-            message,
+            message: err.message,
           });
           return;
         }
-        // Anything else is a server-side fault; rethrow so the
-        // outer `handle()` catch returns 500 + logs the error.
         throw err;
       }
       this.respondJson(res, 200, payload);
@@ -1558,12 +1562,15 @@ export class EngramAccessHttpServer {
         );
         this.respondJson(res, 200, snapshot);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message.startsWith("graphSnapshot:")) {
+        // As with recallXray above: surface only the deliberately-prefixed
+        // graphSnapshot validation Error.message, never String(err) of an
+        // arbitrary throw (CodeQL js/stack-trace-exposure). Validation errors are
+        // always Error instances; anything else is rethrown as a 500.
+        if (err instanceof Error && err.message.startsWith("graphSnapshot:")) {
           this.respondJson(res, 400, {
             error: "invalid_request",
             code: "invalid_request",
-            message,
+            message: err.message,
           });
           return;
         }
