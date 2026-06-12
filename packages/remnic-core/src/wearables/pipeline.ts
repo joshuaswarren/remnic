@@ -440,7 +440,11 @@ export async function syncWearableSource(
           summary.memoriesCreated += generated.created;
           summary.memoriesSkipped += generated.skipped;
           summary.warnings.push(...generated.warnings);
-          passClean = generated.warnings.length === 0;
+          // Degraded-but-complete passes (e.g. judge unavailable) still
+          // record completion — only an aborted extraction should force
+          // the day to re-run on the next sync (Cursor review on PR
+          // #1462).
+          passClean = generated.completed;
           if (config.digestEnabled) {
             const wrote = await writeDailyDigestMemory(
               connector.id,

@@ -580,6 +580,57 @@ test("page-capped days carry a visible partial marker and keep warning", async (
   }
 });
 
+test("a judge outage does not re-run the memory pass forever", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "The vendor contract was renewed for another year today." },
+          { speaker: "Speaker 2", text: "Renewal confirmed, the paperwork went through this afternoon." },
+        ]),
+      ],
+    };
+    const { deps, memoryWrites } = makeDeps(memoryDir);
+    assert.ok(deps.memoryGen);
+    let extractCalls = 0;
+    const baseExtract = deps.memoryGen.extract;
+    deps.memoryGen.extract = async (turns) => {
+      extractCalls += 1;
+      return baseExtract(turns);
+    };
+    deps.memoryGen.judgeFacts = async () => {
+      throw new Error("judge backend down");
+    };
+
+    const first = await syncWearableSource(
+      fakeConnector(byDate),
+      settings({ memoryMode: "smart" }),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.ok(first.warnings.some((warning) => warning.includes("judge unavailable")));
+    assert.equal(first.memoriesCreated, 1, "degraded pass still writes");
+    const callsAfterFirst = extractCalls;
+
+    // Unchanged day, judge still down: the degraded-but-complete pass
+    // must have recorded completion — no re-extraction.
+    const second = await syncWearableSource(
+      fakeConnector(byDate),
+      settings({ memoryMode: "smart" }),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(extractCalls, callsAfterFirst, "no repeat extraction for an unchanged day");
+    assert.equal(second.memoriesCreated, 0);
+    assert.equal(memoryWrites.length, 1);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("smart mode: another device's stored day transcript corroborates borderline facts", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {

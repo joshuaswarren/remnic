@@ -470,6 +470,67 @@ test("smart mode: a judge failure degrades with a warning instead of aborting", 
   assert.ok(result.warnings.some((warning) => warning.includes("judge unavailable")));
 });
 
+test("smart mode: dropped facts never consume day-cap slots", async () => {
+  const { writer, writes } = makeWriter();
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "smart", maxMemoriesPerDay: 1 }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        // Highest trust but judge-rejected — must not occupy the only slot.
+        { category: "fact", content: "A high-confidence fact the judge rejects as not durable.", confidence: 0.99, tags: [] },
+        { category: "fact", content: "The vendor contract renews every October first as agreed.", confidence: 0.95, tags: [] },
+      ]),
+      writer,
+      judgeFacts: judgeReturning(["reject", "accept"]),
+    },
+  );
+  assert.equal(result.created, 1, "the surviving fact gets the slot");
+  assert.equal(writes[0].content, "The vendor contract renews every October first as agreed.");
+  assert.equal(result.skippedByReason["judge-rejected"], 1);
+  assert.equal(result.skippedByReason["over-day-cap"], undefined, "no slot wasted on the drop");
+});
+
+test("a judge failure leaves the pass completed; extraction failure does not", async () => {
+  const { writer } = makeWriter();
+  const judgeDown = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "fact", content: "The vendor contract renews every October first.", confidence: 0.95, tags: [] },
+      ]),
+      writer,
+      judgeFacts: async () => {
+        throw new Error("judge backend down");
+      },
+    },
+  );
+  assert.equal(judgeDown.completed, true, "degraded pass is still complete");
+  assert.ok(judgeDown.warnings.length > 0);
+
+  const extractDown = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    {
+      extract: async () => {
+        throw new Error("engine outage");
+      },
+      writer,
+    },
+  );
+  assert.equal(extractDown.completed, false, "aborted extraction must retry");
+});
+
 test("smart native import: judge gates writes; rejected ids stay tracked", async () => {
   const { writer, writes } = makeWriter();
   const result = await importNativeMemories(

@@ -109,6 +109,15 @@ export interface WearableMemoryGenResult {
   skippedByReason: Record<string, number>;
   /** Non-fatal problems (e.g. the extraction engine erroring). */
   warnings: string[];
+  /**
+   * True when every conversation was extracted (the pass may still
+   * carry degraded-mode warnings, e.g. judge unavailable). False only
+   * when extraction itself aborted mid-day — the signal callers use to
+   * re-run the pass on the next sync. A degraded-but-complete pass
+   * must NOT re-run forever: its facts are already written and dedup
+   * would suppress improvements anyway.
+   */
+  completed: boolean;
 }
 
 export const WEARABLE_SOURCE_PREFIX = "wearable";
@@ -273,6 +282,7 @@ export async function generateWearableMemories(
     skipped: 0,
     skippedByReason: {},
     warnings: [],
+    completed: true,
   };
   if (settings.memoryMode === "off") return result;
 
@@ -300,6 +310,7 @@ export async function generateWearableMemories(
       result.warnings.push(
         `extraction failed for ${sourceId}/${date} (conversation ${conversation.id}): ${describeErrorForOperator(err)} — the memory pass for this day retries on the next sync`,
       );
+      result.completed = false;
       break;
     }
     for (const fact of extraction.facts) {
@@ -362,42 +373,35 @@ export async function generateWearableMemories(
     trustById = await scoreCandidates(novel, settings, deps, result);
   }
 
-  // Day cap: keep the strongest candidates — by trust in smart mode,
-  // by importance otherwise. Stable ordering with a content tiebreak.
-  const strength = (index: number, candidate: GatedCandidate): number =>
-    settings.memoryMode === "smart"
-      ? trustById.get(index)?.trust ?? 0
-      : candidate.importance.score;
-  const indexed = novel.map((candidate, index) => ({ candidate, index }));
-  indexed.sort((a, b) => {
-    const sa = strength(a.index, a.candidate);
-    const sb = strength(b.index, b.candidate);
-    if (sa > sb) return -1;
-    if (sa < sb) return 1;
-    if (a.candidate.fact.content < b.candidate.fact.content) return -1;
-    if (a.candidate.fact.content > b.candidate.fact.content) return 1;
-    return 0;
-  });
-  const cap = settings.maxMemoriesPerDay;
-  const kept = cap > 0 ? indexed.slice(0, cap) : indexed;
-  if (indexed.length > kept.length) {
-    skip("over-day-cap", indexed.length - kept.length);
+  // Smart decisions run BEFORE the day cap so dropped facts (judge
+  // rejections, below-trust) never consume cap slots that surviving
+  // candidates ranked past position N should get (Cursor review on PR
+  // #1462).
+  interface Writable {
+    candidate: GatedCandidate;
+    index: number;
+    status: MemoryStatus;
+    trustAttributes: Record<string, string>;
   }
-
   const modeStatus = memoryStatusForMode(settings.memoryMode);
-  for (const { candidate, index } of kept) {
-    let status: MemoryStatus = modeStatus;
-    let trustAttributes: Record<string, string> = {};
-    if (settings.memoryMode === "smart") {
-      const scored = trustById.get(index);
-      if (!scored) continue;
-      const decision = decideSmart(scored.trust, scored.verdict, settings);
-      if (decision.outcome === "drop") {
-        skip(decision.reason);
-        continue;
-      }
-      status = decision.outcome === "active" ? "active" : "pending_review";
-      trustAttributes = {
+  const writable: Writable[] = [];
+  novel.forEach((candidate, index) => {
+    if (settings.memoryMode !== "smart") {
+      writable.push({ candidate, index, status: modeStatus, trustAttributes: {} });
+      return;
+    }
+    const scored = trustById.get(index);
+    if (!scored) return;
+    const decision = decideSmart(scored.trust, scored.verdict, settings);
+    if (decision.outcome === "drop") {
+      skip(decision.reason);
+      return;
+    }
+    writable.push({
+      candidate,
+      index,
+      status: decision.outcome === "active" ? "active" : "pending_review",
+      trustAttributes: {
         trustScore: scored.trust.toFixed(3),
         trustDecision: decision.reason,
         ...(scored.verdict !== undefined ? { judgeVerdict: scored.verdict } : {}),
@@ -407,8 +411,32 @@ export async function generateWearableMemories(
         ...(scored.evidence.supportingMemoryId !== undefined
           ? { supportingMemoryId: scored.evidence.supportingMemoryId }
           : {}),
-      };
-    }
+      },
+    });
+  });
+
+  // Day cap over the SURVIVORS: strongest by trust in smart mode, by
+  // importance otherwise. Stable ordering with a content tiebreak.
+  const strength = (entry: Writable): number =>
+    settings.memoryMode === "smart"
+      ? trustById.get(entry.index)?.trust ?? 0
+      : entry.candidate.importance.score;
+  writable.sort((a, b) => {
+    const sa = strength(a);
+    const sb = strength(b);
+    if (sa > sb) return -1;
+    if (sa < sb) return 1;
+    if (a.candidate.fact.content < b.candidate.fact.content) return -1;
+    if (a.candidate.fact.content > b.candidate.fact.content) return 1;
+    return 0;
+  });
+  const cap = settings.maxMemoriesPerDay;
+  const kept = cap > 0 ? writable.slice(0, cap) : writable;
+  if (writable.length > kept.length) {
+    skip("over-day-cap", writable.length - kept.length);
+  }
+
+  for (const { candidate, index, status, trustAttributes } of kept) {
     const tags = [
       ...new Set([
         ...(candidate.fact.tags ?? []),
