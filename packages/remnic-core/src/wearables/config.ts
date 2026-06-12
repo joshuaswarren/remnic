@@ -190,18 +190,18 @@ function parseSourceSettings(
   // must not silently remove the cap (Codex P2 on PR #1458).
   if (
     raw.maxMemoriesPerDay !== undefined &&
-    (maxPerDayRaw === undefined || !Number.isInteger(maxPerDayRaw) || maxPerDayRaw < 0)
+    (maxPerDayRaw === undefined ||
+      !Number.isInteger(maxPerDayRaw) ||
+      maxPerDayRaw < 0 ||
+      maxPerDayRaw > MAX_MEMORIES_PER_DAY_CEILING)
   ) {
     throw new Error(
-      `${keyPath}.maxMemoriesPerDay must be an integer >= 0 (0 disables the cap); got ${JSON.stringify(raw.maxMemoriesPerDay)}`,
+      `${keyPath}.maxMemoriesPerDay must be an integer between 0 and ${MAX_MEMORIES_PER_DAY_CEILING} (0 disables the cap); got ${JSON.stringify(raw.maxMemoriesPerDay)}`,
     );
   }
   // 0 is the documented "disable the cap" value — honored here AND in
   // the schema minimum (CLAUDE.md rule 45).
-  const maxMemoriesPerDay =
-    maxPerDayRaw !== undefined
-      ? Math.min(MAX_MEMORIES_PER_DAY_CEILING, maxPerDayRaw)
-      : defaults.maxMemoriesPerDay;
+  const maxMemoriesPerDay = maxPerDayRaw ?? defaults.maxMemoriesPerDay;
 
   const rawCleanup =
     raw.cleanup === undefined ? {} : requireObject(raw.cleanup, `${keyPath}.cleanup`);

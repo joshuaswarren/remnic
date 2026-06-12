@@ -252,9 +252,21 @@ export async function generateWearableMemories(
     }
   }
 
+  // Drop candidates that already exist in storage BEFORE applying the
+  // day cap so duplicates never consume cap slots that novel,
+  // lower-scoring candidates should get (Codex P2 on PR #1458).
+  const novel: GatedCandidate[] = [];
+  for (const candidate of candidates) {
+    if (await deps.writer.hasFactContentHash(candidate.fact.content)) {
+      skip("duplicate-existing");
+      continue;
+    }
+    novel.push(candidate);
+  }
+
   // Day cap: keep the most important candidates. Stable ordering —
   // score desc, then content asc so equal scores compare 0-consistent.
-  candidates.sort((a, b) => {
+  novel.sort((a, b) => {
     if (a.importance.score > b.importance.score) return -1;
     if (a.importance.score < b.importance.score) return 1;
     if (a.fact.content < b.fact.content) return -1;
@@ -262,17 +274,13 @@ export async function generateWearableMemories(
     return 0;
   });
   const cap = settings.maxMemoriesPerDay;
-  const kept = cap > 0 ? candidates.slice(0, cap) : candidates;
-  if (candidates.length > kept.length) {
-    skip("over-day-cap", candidates.length - kept.length);
+  const kept = cap > 0 ? novel.slice(0, cap) : novel;
+  if (novel.length > kept.length) {
+    skip("over-day-cap", novel.length - kept.length);
   }
 
   const status = memoryStatusForMode(settings.memoryMode);
   for (const candidate of kept) {
-    if (await deps.writer.hasFactContentHash(candidate.fact.content)) {
-      skip("duplicate-existing");
-      continue;
-    }
     const tags = [
       ...new Set([
         ...(candidate.fact.tags ?? []),

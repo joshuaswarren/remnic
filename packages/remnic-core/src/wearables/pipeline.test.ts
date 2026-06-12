@@ -159,6 +159,55 @@ test("resolveSyncDates validates input and builds lookback windows", () => {
   assert.throws(() => resolveSyncDates({ days: 9000 }, "UTC", NOW), /invalid days/);
 });
 
+test("sync windows walk back by local calendar days across DST transitions", () => {
+  // 2026-03-09T07:30Z is 00:30 PDT on Mar 9, just after spring-forward
+  // (Mar 8). Fixed 24h subtraction would land on Mar 7 and skip Mar 8.
+  const springForward = new Date("2026-03-09T07:30:00.000Z");
+  assert.deepEqual(
+    resolveSyncDates({ days: 3 }, "America/Los_Angeles", springForward),
+    ["2026-03-07", "2026-03-08", "2026-03-09"],
+  );
+});
+
+test("a fact-write failure warns and retries instead of aborting the sync", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "A durable fact about the new vendor agreement emerged." },
+          { speaker: "Speaker 2", text: "The vendor agreement now covers support through next year." },
+        ]),
+      ],
+    };
+    const { deps, memoryWrites } = makeDeps(memoryDir);
+    assert.ok(deps.memoryGen);
+    const healthyWrite = deps.memoryGen.writer.writeMemory;
+    deps.memoryGen.writer.writeMemory = async () => {
+      throw new Error("storage write exploded");
+    };
+    const first = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.equal(first.transcriptsWritten.length, 1, "transcript still stored");
+    assert.ok(
+      first.warnings.some((warning) => warning.includes("memory pass failed")),
+      `expected memory-pass warning, got: ${first.warnings.join(" | ")}`,
+    );
+    const state1 = await loadSyncState(memoryDir);
+    assert.equal(
+      state1.sources.testsource.memoryDayHashes?.["2026-06-11"],
+      undefined,
+      "no completion record for a failed pass",
+    );
+
+    deps.memoryGen.writer.writeMemory = healthyWrite;
+    const second = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.equal(second.memoriesCreated, 1, "retried on the next sync");
+    assert.equal(memoryWrites.length, 1);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("end-to-end sync: cleans, redacts, corrects, stores, extracts, reindexes, records state", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {

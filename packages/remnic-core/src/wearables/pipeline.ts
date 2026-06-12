@@ -137,13 +137,23 @@ export function resolveSyncDates(
     }
     days = options.days;
   }
+  // Walk back by CALENDAR days from today's local date — subtracting
+  // fixed 24h intervals from the wall clock can skip a local day
+  // around DST transitions (Codex P2 on PR #1458).
   const dates: string[] = [];
-  for (let offset = days - 1; offset >= 0; offset--) {
-    const past = new Date(now.getTime() - offset * 24 * 60 * 60 * 1000);
-    dates.push(dateInTimezone(past, timezone));
+  let cursor = dateInTimezone(now, timezone);
+  for (let count = 0; count < days; count++) {
+    dates.unshift(cursor);
+    cursor = previousIsoDate(cursor);
   }
-  // De-dup in case a DST transition collapses two offsets onto one day.
-  return [...new Set(dates)];
+  return dates;
+}
+
+/** Previous calendar date in pure date arithmetic (no DST exposure). */
+function previousIsoDate(date: string): string {
+  const parsed = new Date(`${date}T00:00:00Z`);
+  parsed.setUTCDate(parsed.getUTCDate() - 1);
+  return parsed.toISOString().slice(0, 10);
 }
 
 async function fetchAllConversationsForDate(
@@ -386,35 +396,46 @@ export async function syncWearableSource(
           `${connector.id}: memoryMode is '${settings.memoryMode}' but no extraction engine is available in this context — transcripts synced, memories skipped`,
         );
       } else {
-        const generated = await generateWearableMemories(
-          connector.id,
-          date,
-          cleaned.conversations,
-          settings,
-          registry,
-          deps.memoryGen,
-        );
-        summary.memoriesCreated += generated.created;
-        summary.memoriesSkipped += generated.skipped;
-        summary.warnings.push(...generated.warnings);
-        if (config.digestEnabled) {
-          const wrote = await writeDailyDigestMemory(
+        // The whole memory pass (extraction, fact writes, digest) is
+        // warn-and-retry rather than abort: the transcript is already
+        // stored, and aborting here would leave any stale completion
+        // record from an earlier clean run in place to mask the
+        // failure (Kilo review on PR #1458 for the digest case; fact
+        // writes share the same failure class). A clean pass records
+        // completion; anything else clears it so the next sync
+        // re-runs the day.
+        let passClean = false;
+        try {
+          const generated = await generateWearableMemories(
             connector.id,
             date,
             cleaned.conversations,
             settings,
             registry,
-            deps.memoryGen.writer,
+            deps.memoryGen,
           );
-          if (wrote) summary.memoriesCreated += 1;
+          summary.memoriesCreated += generated.created;
+          summary.memoriesSkipped += generated.skipped;
+          summary.warnings.push(...generated.warnings);
+          passClean = generated.warnings.length === 0;
+          if (config.digestEnabled) {
+            const wrote = await writeDailyDigestMemory(
+              connector.id,
+              date,
+              cleaned.conversations,
+              settings,
+              registry,
+              deps.memoryGen.writer,
+            );
+            if (wrote) summary.memoriesCreated += 1;
+          }
+        } catch (err) {
+          passClean = false;
+          summary.warnings.push(
+            `${connector.id}: memory pass failed for ${date}: ${describeErrorForOperator(err)} — retries on the next sync`,
+          );
         }
-        // Record completion only for a warning-free pass so partial
-        // extraction (engine failure mid-day) retries next sync. A
-        // failed pass also clears any earlier completion record for
-        // the day — a recreated transcript with an unchanged body hash
-        // must not let a stale record mask the failure (Cursor review
-        // on PR #1458, round 3).
-        if (generated.warnings.length === 0) {
+        if (passClean) {
           memoryDayHashes[date] = bodyHash;
         } else {
           failedMemoryDays.push(date);

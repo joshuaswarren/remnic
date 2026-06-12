@@ -66,10 +66,16 @@ test("maxMemoriesPerDay honors the documented 0-disables value and bounds", () =
     sources: { limitless: { maxMemoriesPerDay: 0 } },
   });
   assert.equal(parsed.sources.limitless.maxMemoriesPerDay, 0);
-  const huge = parseWearablesConfig({
-    sources: { limitless: { maxMemoriesPerDay: 99999 } },
-  });
-  assert.equal(huge.sources.limitless.maxMemoriesPerDay, 500);
+  // Over-ceiling values reject instead of silently clamping to 500.
+  assert.throws(
+    () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: 99999 } } }),
+    /maxMemoriesPerDay must be an integer between 0 and 500/,
+  );
+  assert.equal(
+    parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: 500 } } })
+      .sources.limitless.maxMemoriesPerDay,
+    500,
+  );
   assert.throws(
     () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: "lots" } } }),
     /maxMemoriesPerDay/,
