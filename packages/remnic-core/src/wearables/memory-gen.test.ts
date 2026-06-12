@@ -628,6 +628,110 @@ test("smart mode: duplicates without stronger evidence stay skipped, not promote
   assert.equal(writes.length, 0);
 });
 
+test("smart mode: a fresh judge-reject retires an earlier pending_review write", async () => {
+  const stale = "The launch moved to September twelfth after the vendor call.";
+  const { writer, writes } = makeWriter([stale]);
+  let demotedWith: Record<string, string> | undefined;
+  writer.findWearableMemoryByContent = async (content) =>
+    content.trim() === stale ? { id: "mem-old", status: "pending_review" } : null;
+  writer.promoteWearableMemory = async () => {
+    throw new Error("reject verdicts must never promote");
+  };
+  writer.demoteWearableMemory = async (_id, attrs) => {
+    demotedWith = attrs;
+    return true;
+  };
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "fact", content: stale, confidence: 0.9, tags: [] },
+      ]),
+      writer,
+      judgeFacts: judgeReturning(["reject"]),
+    },
+  );
+  assert.equal(result.demoted, 1, "judge-reject retires the pending row");
+  assert.equal(result.promoted, 0);
+  assert.equal(writes.length, 0);
+  assert.equal(
+    result.skippedByReason["duplicate-existing"],
+    undefined,
+    "demotion is an action, not a skip",
+  );
+  assert.ok(demotedWith);
+  assert.equal(demotedWith.trustDecision, "demoted-by-rejection");
+  assert.equal(demotedWith.judgeVerdict, "reject");
+});
+
+test("smart mode: judge-reject never touches an active row", async () => {
+  const approved = "The launch moved to September twelfth after the vendor call.";
+  const { writer, writes } = makeWriter([approved]);
+  let demoteCalls = 0;
+  writer.findWearableMemoryByContent = async () => ({ id: "mem-old", status: "active" });
+  writer.promoteWearableMemory = async () => true;
+  writer.demoteWearableMemory = async () => {
+    demoteCalls += 1;
+    return true;
+  };
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "fact", content: approved, confidence: 0.9, tags: [] },
+      ]),
+      writer,
+      judgeFacts: judgeReturning(["reject"]),
+    },
+  );
+  assert.equal(result.demoted, 0);
+  assert.equal(demoteCalls, 0, "operator-approved rows are not overturned by a re-verdict");
+  assert.equal(result.skippedByReason["duplicate-existing"], 1);
+  assert.equal(writes.length, 0);
+});
+
+test("smart mode: below-trust re-score without a reject verdict does not demote", async () => {
+  const borderline = "The launch moved to September twelfth after the vendor call.";
+  const { writer, writes } = makeWriter([borderline]);
+  let demoteCalls = 0;
+  writer.findWearableMemoryByContent = async () => ({ id: "mem-old", status: "pending_review" });
+  writer.promoteWearableMemory = async () => true;
+  writer.demoteWearableMemory = async () => {
+    demoteCalls += 1;
+    return true;
+  };
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    // 0.62 * 0.5 = 0.31 < reviewTrust 0.45 -> drop band, verdict undefined.
+    settings({ memoryMode: "smart", sourceTrust: 0.5 }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "fact", content: borderline, confidence: 0.62, tags: [] },
+      ]),
+      writer,
+    },
+  );
+  assert.equal(result.demoted, 0);
+  assert.equal(
+    demoteCalls,
+    0,
+    "a score-based drop is weaker evidence than an explicit reject — leave the row",
+  );
+  assert.equal(result.skippedByReason["duplicate-existing"], 1);
+  assert.equal(writes.length, 0);
+});
+
 test("native memories always import as pending_review and respect prior imports", async () => {
   const { writer, writes } = makeWriter(["Provider fact already in Remnic."]);
   const result = await importNativeMemories(

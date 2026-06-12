@@ -116,6 +116,25 @@ and contradiction scans retire facts that stop being true. Wearable
 memories enter the same lifecycle as everything else — smart mode just
 decides how they arrive.
 
+**Late-arriving evidence re-scores earlier decisions.** When another
+source writes a transcript for a day, sibling sources re-run their
+memory pass for that day, and duplicates of earlier writes are
+re-scored with today's evidence:
+
+- A `pending_review` row whose re-score now clears `autoApproveTrust`
+  is **promoted** to active in place (`trustDecision:
+  promoted-by-corroboration`) — the second device corroborating is
+  exactly the signal the review queue was waiting for.
+- A `pending_review` row that now draws an explicit judge **reject** is
+  **demoted** to `rejected` (`trustDecision: demoted-by-rejection`) and
+  leaves the review queue.
+- **Active rows are never auto-demoted.** An operator approval or a
+  memory's accrued recall signals must not be overturned by one later
+  LLM verdict; contradiction scans and temporal supersession own
+  active-row retirement. A score-based drop (below `reviewTrust`
+  without a reject verdict) also leaves existing rows alone — absence
+  of corroboration is weaker evidence than an explicit rejection.
+
 If no judge is available in a context (no LLM configured), smart mode
 degrades gracefully to confidence × prior + corroboration and says so
 in the sync warnings.

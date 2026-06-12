@@ -300,6 +300,7 @@ export async function syncWearableSource(
     transcriptsWritten: [],
     memoriesCreated: 0,
     memoriesPromoted: 0,
+    memoriesDemoted: 0,
     memoriesSkipped: 0,
     nativeMemoriesImported: 0,
     warnings: [],
@@ -450,6 +451,7 @@ export async function syncWearableSource(
           );
           summary.memoriesCreated += generated.created;
           summary.memoriesPromoted += generated.promoted;
+          summary.memoriesDemoted += generated.demoted;
           summary.memoriesSkipped += generated.skipped;
           summary.warnings.push(...generated.warnings);
           // Degraded-but-complete passes (e.g. judge unavailable) still
@@ -550,6 +552,7 @@ export async function syncWearableSource(
     summary.transcriptsWritten.length > 0 ||
     summary.memoriesCreated > 0 ||
     summary.memoriesPromoted > 0 ||
+    summary.memoriesDemoted > 0 ||
     summary.nativeMemoriesImported > 0;
   if (wroteAnything && deps.afterWrites) {
     try {

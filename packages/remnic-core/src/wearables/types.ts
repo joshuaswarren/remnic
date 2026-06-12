@@ -271,6 +271,8 @@ export interface WearableSyncSummary {
   memoriesCreated: number;
   /** Earlier borderline writes promoted to active by new evidence. */
   memoriesPromoted: number;
+  /** Earlier pending writes retired by a fresh judge-reject verdict. */
+  memoriesDemoted: number;
   memoriesSkipped: number;
   nativeMemoriesImported: number;
   /** Non-fatal warnings surfaced to the operator. */

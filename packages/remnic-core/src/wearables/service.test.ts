@@ -91,6 +91,16 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
       match.frontmatter.status = "active";
       return true;
     },
+    async demoteWearableMemory(id: string, attrs: Record<string, string>) {
+      const match = storage.memories.find((memory) => memory.frontmatter.id === id);
+      if (!match || match.frontmatter.status !== "pending_review") return false;
+      match.frontmatter.status = "rejected";
+      match.frontmatter.structuredAttributes = {
+        ...(match.frontmatter.structuredAttributes ?? {}),
+        ...attrs,
+      };
+      return true;
+    },
   };
   return storage;
 }

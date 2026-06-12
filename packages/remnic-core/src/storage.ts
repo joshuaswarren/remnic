@@ -2671,6 +2671,31 @@ export class StorageManager {
     });
   }
 
+  /**
+   * Demote a pending_review wearable memory to rejected when a re-pass
+   * produced an explicit judge-reject verdict, merging the evidence.
+   * Returns false when the memory is missing or no longer
+   * pending_review — active rows are NEVER auto-demoted (operator
+   * approvals and accrued recall signals win; contradiction scans and
+   * supersession own active-row retirement).
+   */
+  async demoteWearableMemory(
+    id: string,
+    attributeUpdates: Record<string, string>,
+  ): Promise<boolean> {
+    const memories = await this.readAllMemories();
+    const memory = memories.find((entry) => entry.frontmatter.id === id);
+    if (!memory) return false;
+    if (memory.frontmatter.status !== "pending_review") return false;
+    return this.writeMemoryFrontmatter(memory, {
+      status: "rejected",
+      structuredAttributes: {
+        ...(memory.frontmatter.structuredAttributes ?? {}),
+        ...attributeUpdates,
+      },
+    });
+  }
+
   private get factsDir(): string {
     return path.join(this.baseDir, "facts");
   }

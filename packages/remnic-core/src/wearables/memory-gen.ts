@@ -101,6 +101,15 @@ export interface WearableMemoryWriter {
     attributeUpdates: Record<string, string>,
     confidence?: number,
   ): Promise<boolean>;
+  /**
+   * Demote a pending_review wearable memory to rejected on an explicit
+   * judge-reject re-verdict. Returns false when missing or no longer
+   * pending. Active rows are never auto-demoted.
+   */
+  demoteWearableMemory?(
+    id: string,
+    attributeUpdates: Record<string, string>,
+  ): Promise<boolean>;
 }
 
 export interface WearableMemoryGenDeps {
@@ -124,6 +133,8 @@ export interface WearableMemoryGenResult {
   created: number;
   /** Earlier borderline writes promoted to active by new evidence. */
   promoted: number;
+  /** Earlier pending writes retired by a fresh judge-reject verdict. */
+  demoted: number;
   skipped: number;
   skippedByReason: Record<string, number>;
   /** Non-fatal problems (e.g. the extraction engine erroring). */
@@ -299,6 +310,7 @@ export async function generateWearableMemories(
   const result: WearableMemoryGenResult = {
     created: 0,
     promoted: 0,
+    demoted: 0,
     skipped: 0,
     skippedByReason: {},
     warnings: [],
@@ -407,7 +419,38 @@ export async function generateWearableMemories(
       const decision = scored
         ? decideSmart(scored.trust, scored.verdict, settings)
         : undefined;
-      if (!scored || !decision || decision.outcome !== "active") {
+      if (!scored || !decision) {
+        skip("duplicate-existing");
+        continue;
+      }
+      // A fresh judge-REJECT retires the stored row — but only a
+      // pending_review one. Active rows are never auto-demoted: an
+      // operator approval or accrued recall signals must not be
+      // overturned by one later LLM verdict; contradiction scans and
+      // supersession own active-row retirement (Cursor review on PR
+      // #1462, round 7).
+      if (scored.verdict === "reject") {
+        if (deps.writer.demoteWearableMemory !== undefined) {
+          const existingForDemote = await deps.writer.findWearableMemoryByContent!(
+            candidate.fact.content,
+          );
+          if (
+            existingForDemote &&
+            existingForDemote.status === "pending_review" &&
+            (await deps.writer.demoteWearableMemory(existingForDemote.id, {
+              trustScore: scored.trust.toFixed(3),
+              trustDecision: "demoted-by-rejection",
+              judgeVerdict: "reject",
+            }))
+          ) {
+            result.demoted += 1;
+            continue;
+          }
+        }
+        skip("duplicate-existing");
+        continue;
+      }
+      if (decision.outcome !== "active") {
         skip("duplicate-existing");
         continue;
       }

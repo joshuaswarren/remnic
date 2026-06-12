@@ -125,6 +125,12 @@ function renderSyncSummary(summary: WearableSyncSummary): string {
     `  transcripts written:    ${summary.transcriptsWritten.length > 0 ? summary.transcriptsWritten.join(", ") : "(none — unchanged)"}`,
     `  memories created:       ${summary.memoriesCreated} (skipped ${summary.memoriesSkipped})`,
   ];
+  if (summary.memoriesPromoted > 0) {
+    lines.push(`  memories promoted:      ${summary.memoriesPromoted}`);
+  }
+  if (summary.memoriesDemoted > 0) {
+    lines.push(`  memories demoted:       ${summary.memoriesDemoted}`);
+  }
   if (summary.nativeMemoriesImported > 0) {
     lines.push(`  native memories queued: ${summary.nativeMemoriesImported}`);
   }

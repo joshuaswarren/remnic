@@ -130,6 +130,47 @@ test("promoteWearableMemory flips status, merges evidence, and updates confidenc
   }
 });
 
+test("demoteWearableMemory rejects only pending rows and merges evidence", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    const id = await storage.writeMemory("fact", "Vendor call moved the launch again.", {
+      confidence: 0.5,
+      source: "wearable:limitless",
+      status: "pending_review",
+      structuredAttributes: { wearableSource: "limitless", trustScore: "0.500" },
+    });
+    const demoted = await storage.demoteWearableMemory(id, {
+      trustScore: "0.310",
+      trustDecision: "demoted-by-rejection",
+      judgeVerdict: "reject",
+    });
+    assert.equal(demoted, true);
+    const memory = (await storage.readAllMemories()).find(
+      (entry) => entry.frontmatter.id === id,
+    );
+    assert.ok(memory);
+    assert.equal(memory.frontmatter.status, "rejected");
+    assert.equal(memory.frontmatter.structuredAttributes?.trustDecision, "demoted-by-rejection");
+    assert.equal(memory.frontmatter.structuredAttributes?.wearableSource, "limitless");
+
+    // Rejected rows are terminal for the wearable pipeline: no
+    // re-demote, no promote (operator surfaces own them from here).
+    assert.equal(await storage.demoteWearableMemory(id, {}), false);
+    assert.equal(await storage.promoteWearableMemory(id, {}, 0.9), false);
+    assert.equal(await storage.demoteWearableMemory("missing-id", {}), false);
+
+    // Active rows are never auto-demoted.
+    const activeId = await storage.writeMemory("fact", "Approved active row.", {
+      confidence: 0.9,
+      source: "wearable:limitless",
+      status: "active",
+    });
+    assert.equal(await storage.demoteWearableMemory(activeId, {}), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("non-transcript files in the wearables tree are ignored by listing", async () => {
   const { storage, dir } = makeStorage();
   try {

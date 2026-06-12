@@ -81,6 +81,10 @@ export interface WearableStorageIo {
     attributeUpdates: Record<string, string>,
     confidence?: number,
   ): Promise<boolean>;
+  demoteWearableMemory(
+    id: string,
+    attributeUpdates: Record<string, string>,
+  ): Promise<boolean>;
 }
 
 export interface WearableSearchBackend {
@@ -156,6 +160,7 @@ export function createWearableMemoryWriter(
         | { id: string; status: import("../types.js").MemoryStatus | undefined }
         | null,
     promoteWearableMemory: storage.promoteWearableMemory.bind(storage),
+    demoteWearableMemory: storage.demoteWearableMemory.bind(storage),
     hasFactContentHash: async (content: string) => {
       if (await storage.hasFactContentHash(content)) return true;
       // Compare with the "[Attributes: ...]" enrichment suffix removed
