@@ -21,6 +21,7 @@ const expectedPublishDirs = [
   "packages/connector-weclone",
   "packages/connector-replit",
   "packages/connector-limitless",
+  "packages/connector-bee",
   "packages/hermes-provider",
   "packages/belief-ledger",
   "packages/remnic-server",

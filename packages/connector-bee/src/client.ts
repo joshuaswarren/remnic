@@ -110,7 +110,7 @@ export class BeeClient {
       typeof options.token === "string" && options.token.trim().length > 0
         ? options.token.trim()
         : undefined;
-    this.baseUrl = (options.baseUrl ?? BEE_DEFAULT_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = stripTrailingSlashes(options.baseUrl ?? BEE_DEFAULT_BASE_URL);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.sleep =
@@ -295,6 +295,13 @@ function readNextCursor(payload: unknown): string | null {
   if (typeof cursor === "string" && cursor.length > 0) return cursor;
   if (typeof cursor === "number") return String(cursor);
   return null;
+}
+
+/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
+  return value.slice(0, end);
 }
 
 function backoffMs(attempt: number): number {
