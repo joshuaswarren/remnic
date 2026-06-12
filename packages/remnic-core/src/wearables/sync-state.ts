@@ -17,6 +17,15 @@ export interface WearableSourceSyncState {
   lastDateSynced: string;
   /** Body hashes of the last-written day files, keyed by date. */
   dayHashes: Record<string, string>;
+  /**
+   * Body hashes of days whose memory-extraction pass completed without
+   * warnings, keyed by date. A day whose entry is missing or stale
+   * re-extracts on the next sync even when its transcript is unchanged
+   * — this is how a memory pass that failed mid-run (transcript stored,
+   * memories incomplete) self-heals. Absent on records written before
+   * this field existed.
+   */
+  memoryDayHashes?: Record<string, string>;
   /** Native-memory ids already imported (bounded, newest kept). */
   importedNativeMemoryIds: string[];
 }
@@ -101,6 +110,8 @@ export function updateSourceSyncState(
     syncedAt: string;
     days: string[];
     dayHashes: Record<string, string>;
+    /** Days whose memory pass completed cleanly this run. */
+    memoryDayHashes?: Record<string, string>;
     importedNativeMemoryIds?: string[];
   },
 ): WearableSyncStateFile {
@@ -116,6 +127,17 @@ export function updateSourceSyncState(
     const oldest = hashKeys.shift();
     if (oldest === undefined) break;
     delete mergedHashes[oldest];
+  }
+
+  const mergedMemoryHashes: Record<string, string> = {
+    ...(previous?.memoryDayHashes ?? {}),
+    ...(update.memoryDayHashes ?? {}),
+  };
+  const memoryHashKeys = Object.keys(mergedMemoryHashes).sort();
+  while (memoryHashKeys.length > MAX_TRACKED_DAY_HASHES) {
+    const oldest = memoryHashKeys.shift();
+    if (oldest === undefined) break;
+    delete mergedMemoryHashes[oldest];
   }
 
   const mergedNativeIds = [
@@ -144,6 +166,7 @@ export function updateSourceSyncState(
         lastSyncAt: update.syncedAt,
         lastDateSynced,
         dayHashes: mergedHashes,
+        memoryDayHashes: mergedMemoryHashes,
         importedNativeMemoryIds: boundedNativeIds,
       },
     },

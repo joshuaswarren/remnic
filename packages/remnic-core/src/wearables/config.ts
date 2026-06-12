@@ -180,16 +180,22 @@ function parseSourceSettings(
       : defaults.minConfidence;
 
   const maxPerDayRaw = coerceNumber(raw.maxMemoriesPerDay);
-  if (raw.maxMemoriesPerDay !== undefined && maxPerDayRaw === undefined) {
+  // Reject non-integers instead of flooring them: 0.5 would floor to 0,
+  // and 0 is the documented "disable the cap" value — a fractional typo
+  // must not silently remove the cap (Codex P2 on PR #1458).
+  if (
+    raw.maxMemoriesPerDay !== undefined &&
+    (maxPerDayRaw === undefined || !Number.isInteger(maxPerDayRaw) || maxPerDayRaw < 0)
+  ) {
     throw new Error(
-      `${keyPath}.maxMemoriesPerDay must be an integer >= 0 (0 disables the cap)`,
+      `${keyPath}.maxMemoriesPerDay must be an integer >= 0 (0 disables the cap); got ${JSON.stringify(raw.maxMemoriesPerDay)}`,
     );
   }
   // 0 is the documented "disable the cap" value — honored here AND in
   // the schema minimum (CLAUDE.md rule 45).
   const maxMemoriesPerDay =
     maxPerDayRaw !== undefined
-      ? Math.min(MAX_MEMORIES_PER_DAY_CEILING, Math.max(0, Math.floor(maxPerDayRaw)))
+      ? Math.min(MAX_MEMORIES_PER_DAY_CEILING, maxPerDayRaw)
       : defaults.maxMemoriesPerDay;
 
   const rawCleanup =

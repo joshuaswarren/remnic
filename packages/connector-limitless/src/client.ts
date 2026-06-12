@@ -86,7 +86,7 @@ export class LimitlessClient {
       );
     }
     this.apiKey = options.apiKey.trim();
-    this.baseUrl = (options.baseUrl ?? LIMITLESS_DEFAULT_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = stripTrailingSlashes(options.baseUrl ?? LIMITLESS_DEFAULT_BASE_URL);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.sleep =
@@ -223,6 +223,13 @@ export class LimitlessClient {
       ? lastError
       : new LimitlessApiError("Limitless API request failed");
   }
+}
+
+/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
+  return value.slice(0, end);
 }
 
 function backoffMs(attempt: number): number {

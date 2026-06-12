@@ -20,6 +20,7 @@ const expectedPublishDirs = [
   "packages/import-supermemory",
   "packages/connector-weclone",
   "packages/connector-replit",
+  "packages/connector-limitless",
   "packages/hermes-provider",
   "packages/belief-ledger",
   "packages/remnic-server",

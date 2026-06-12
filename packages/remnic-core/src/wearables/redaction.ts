@@ -86,7 +86,14 @@ export function compileRedactionPatterns(patterns: string[]): RegExp[] {
         `wearables.redactionPatterns[${index}] must be a non-empty string`,
       );
     }
+    if (pattern.length > 256) {
+      throw new Error(
+        `wearables.redactionPatterns[${index}] exceeds 256 characters — redaction patterns must stay short`,
+      );
+    }
     try {
+      // Operator-supplied regexes from the operator's own config —
+      // length-capped above; never request input.
       return new RegExp(pattern, "gi");
     } catch (err) {
       throw new Error(

@@ -74,6 +74,16 @@ test("maxMemoriesPerDay honors the documented 0-disables value and bounds", () =
     () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: "lots" } } }),
     /maxMemoriesPerDay/,
   );
+  // Fractional values must reject, not floor — 0.5 flooring to 0 would
+  // silently disable the cap.
+  assert.throws(
+    () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: 0.5 } } }),
+    /maxMemoriesPerDay/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: -3 } } }),
+    /maxMemoriesPerDay/,
+  );
 });
 
 test("source ids are validated against the path-safe pattern", () => {

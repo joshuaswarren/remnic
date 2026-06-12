@@ -6,7 +6,7 @@
  */
 
 export * from "./types.js";
-export { WearablesInputError } from "./errors.js";
+export { describeErrorForOperator, WearablesInputError } from "./errors.js";
 export {
   defaultWearableCleanupSettings,
   defaultWearableSourceSettings,

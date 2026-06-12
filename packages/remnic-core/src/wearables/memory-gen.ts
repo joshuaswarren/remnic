@@ -28,6 +28,7 @@
  */
 
 import { scoreImportance } from "../importance.js";
+import { describeErrorForOperator } from "./errors.js";
 import type {
   BufferTurn,
   ExtractedFact,
@@ -212,9 +213,7 @@ export async function generateWearableMemories(
       // conversation. Candidates gathered before the failure still
       // persist below.
       result.warnings.push(
-        `extraction failed for ${sourceId}/${date} (conversation ${conversation.id}): ${
-          err instanceof Error ? err.message : String(err)
-        } — fix the extraction engine configuration and re-run sync with forceMemories`,
+        `extraction failed for ${sourceId}/${date} (conversation ${conversation.id}): ${describeErrorForOperator(err)} — the memory pass for this day retries on the next sync`,
       );
       break;
     }

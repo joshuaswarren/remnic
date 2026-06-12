@@ -30,6 +30,9 @@ export interface CorrectionApplication {
   applied: number;
 }
 
+/** Hard cap on rule pattern length (bounds hostile/pathological regexes). */
+const MAX_PATTERN_LENGTH = 256;
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -47,6 +50,11 @@ export function compileCorrectionRule(
   if (typeof rule.match !== "string" || rule.match.length === 0) {
     throw new Error(`${label}: match must be a non-empty string`);
   }
+  if (rule.match.length > MAX_PATTERN_LENGTH) {
+    throw new Error(
+      `${label}: match exceeds ${MAX_PATTERN_LENGTH} characters — correction patterns must stay short`,
+    );
+  }
   if (typeof rule.replace !== "string") {
     throw new Error(`${label}: replace must be a string`);
   }
@@ -54,6 +62,11 @@ export function compileCorrectionRule(
   let pattern: RegExp;
   if (rule.regex === true) {
     try {
+      // Operator-supplied regexes are the documented feature here
+      // (rules live in the operator's own config / state file, never in
+      // request input); the length cap above bounds pathological
+      // patterns. CodeQL js/regex-injection is dismissed by design for
+      // this site.
       pattern = new RegExp(rule.match, flags);
     } catch (err) {
       throw new Error(

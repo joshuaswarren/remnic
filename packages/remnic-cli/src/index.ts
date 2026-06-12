@@ -11409,27 +11409,42 @@ Other:
           : rest;
       let wearablesOrchestrator: Orchestrator | undefined;
       try {
-        const configPath = resolveConfigPath();
-        const raw = fs.existsSync(configPath)
-          ? JSON.parse(fs.readFileSync(configPath, "utf8"))
-          : {};
-        const remnicCfg =
-          raw !== null && typeof raw === "object"
-            ? ((raw as Record<string, unknown>).remnic ??
-              (raw as Record<string, unknown>).engram ??
-              raw)
+        // Config/bootstrap failures get a constant message: parseConfig
+        // error strings can embed config values, including API keys
+        // (CodeQL js/clear-text-logging), so they must never reach
+        // console output.
+        let wearablesService: ReturnType<Orchestrator["getWearablesService"]>;
+        try {
+          const configPath = resolveConfigPath();
+          const raw = fs.existsSync(configPath)
+            ? JSON.parse(fs.readFileSync(configPath, "utf8"))
             : {};
-        const config = parseConfig(remnicCfg);
-        wearablesOrchestrator = new Orchestrator(config);
-        await wearablesOrchestrator.initialize();
-        await wearablesOrchestrator.deferredReady;
-        const code = await runWearablesCliCommand(
-          wearablesOrchestrator.getWearablesService(),
-          wearablesArgs,
-          { stdout: process.stdout, stderr: process.stderr },
-        );
+          const remnicCfg =
+            raw !== null && typeof raw === "object"
+              ? ((raw as Record<string, unknown>).remnic ??
+                (raw as Record<string, unknown>).engram ??
+                raw)
+              : {};
+          const config = parseConfig(remnicCfg);
+          wearablesOrchestrator = new Orchestrator(config);
+          await wearablesOrchestrator.initialize();
+          await wearablesOrchestrator.deferredReady;
+          wearablesService = wearablesOrchestrator.getWearablesService();
+        } catch {
+          console.error(
+            "wearables: failed to load the Remnic config or start the memory engine — run `remnic doctor` and check the config file for errors",
+          );
+          process.exitCode = 1;
+          break;
+        }
+        const code = await runWearablesCliCommand(wearablesService, wearablesArgs, {
+          stdout: process.stdout,
+          stderr: process.stderr,
+        });
         if (code !== 0) process.exitCode = code;
       } catch (err) {
+        // Runner errors are our own constructed messages (connector API
+        // errors, IO failures) — no config taint.
         console.error(err instanceof Error ? err.message : String(err));
         process.exitCode = 1;
       } finally {

@@ -16,7 +16,7 @@
  */
 
 import { cleanConversation } from "./cleanup.js";
-import { WearablesInputError } from "./errors.js";
+import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import {
   applyCorrections,
   compileCorrectionRules,
@@ -152,7 +152,7 @@ async function fetchAllConversationsForDate(
   timezone: string,
   signal: AbortSignal | undefined,
   warnings: string[],
-): Promise<WearableConversation[]> {
+): Promise<{ conversations: WearableConversation[]; partial: boolean }> {
   const conversations: WearableConversation[] = [];
   let cursor: string | null | undefined = undefined;
   for (let page = 0; page < MAX_PAGES_PER_DAY; page++) {
@@ -163,13 +163,30 @@ async function fetchAllConversationsForDate(
       signal,
     });
     conversations.push(...result.conversations);
-    if (!result.nextCursor) return conversations;
+    if (!result.nextCursor) return { conversations, partial: false };
     cursor = result.nextCursor;
   }
   warnings.push(
-    `${connector.id}: stopped paginating ${date} after ${MAX_PAGES_PER_DAY} pages — day may be partially synced`,
+    `${connector.id}: stopped paginating ${date} after ${MAX_PAGES_PER_DAY} pages — day may be partially synced (every sync refetches and re-warns until the provider day fits the cap)`,
   );
-  return conversations;
+  return { conversations, partial: true };
+}
+
+/** Visible marker appended to day files whose fetch hit the page cap. */
+const PARTIAL_DAY_MARKER =
+  "\n*Note: pagination safety cap reached during sync — this day may be incomplete.*\n";
+
+/**
+ * Explicit replacement body for a day whose provider data exists but
+ * whose every segment was elided or dropped (all off-the-record, all
+ * ASR garbage). Written so previously-stored content for the day stops
+ * being searchable instead of lingering as a stale transcript.
+ */
+function emptyDayBody(sourceId: string, date: string): string {
+  return (
+    `# ${sourceId} transcript — ${date}\n\n` +
+    "_No storable conversation content for this day (all segments were elided or dropped)._\n"
+  );
 }
 
 interface CleanedDay {
@@ -265,10 +282,11 @@ export async function syncWearableSource(
   let syncState = await loadSyncState(deps.memoryDir);
   const previousState = syncState.sources[connector.id];
   const dayHashes: Record<string, string> = {};
+  const memoryDayHashes: Record<string, string> = {};
   const importedNativeIds: string[] = [];
 
   for (const date of dates) {
-    const rawConversations = await fetchAllConversationsForDate(
+    const fetched = await fetchAllConversationsForDate(
       connector,
       date,
       timezone,
@@ -276,7 +294,7 @@ export async function syncWearableSource(
       summary.warnings,
     );
     const cleaned = cleanDay(
-      rawConversations,
+      fetched.conversations,
       connector.id,
       settings,
       config,
@@ -289,15 +307,36 @@ export async function syncWearableSource(
     summary.redactions += cleaned.redactions;
     summary.correctionsApplied += cleaned.correctionsApplied;
 
-    if (cleaned.conversations.length === 0) continue;
+    if (fetched.conversations.length === 0) {
+      // No provider data at all. A transient provider hiccup can
+      // legitimately produce an empty result, so an existing stored
+      // transcript is never auto-deleted here — surface it instead.
+      const existing = await deps.readDayContentHash(connector.id, date);
+      if (existing !== null) {
+        summary.warnings.push(
+          `${connector.id}: provider returned no conversations for ${date} but a stored transcript exists — leaving it in place; delete the day file manually if the recordings were intentionally removed upstream`,
+        );
+      }
+      continue;
+    }
 
-    const body = composeDayTranscriptBody(
-      connector.id,
-      date,
-      timezone,
-      cleaned.conversations,
-      registry,
-    );
+    // Provider data exists but cleanup/off-the-record elided all of it:
+    // replace any stored transcript with an explicit empty-day file so
+    // elided content stops being stored and searchable (Codex P2 on PR
+    // #1458).
+    const allElided = cleaned.conversations.length === 0;
+    let body = allElided
+      ? emptyDayBody(connector.id, date)
+      : composeDayTranscriptBody(
+          connector.id,
+          date,
+          timezone,
+          cleaned.conversations,
+          registry,
+        );
+    if (fetched.partial && !allElided) {
+      body += PARTIAL_DAY_MARKER;
+    }
     const bodyHash = hashTranscriptBody(body);
     // The on-disk file is the authority for the skip decision — a hash
     // remembered in sync state must never suppress recreating a day
@@ -305,8 +344,11 @@ export async function syncWearableSource(
     // state's dayHashes remain as bookkeeping only.
     const existingHash = await deps.readDayContentHash(connector.id, date);
     const changed = existingHash !== bodyHash;
+    // An all-elided day only writes a replacement over an existing
+    // file; it never creates an empty-day file from nothing.
+    const shouldWrite = changed && (!allElided || existingHash !== null);
 
-    if (changed) {
+    if (shouldWrite) {
       const meta = composeDayTranscriptMeta(
         connector.id,
         date,
@@ -325,7 +367,19 @@ export async function syncWearableSource(
     }
     dayHashes[date] = bodyHash;
 
-    if (settings.memoryMode !== "off" && (changed || options.forceMemories === true)) {
+    if (allElided) continue;
+
+    // The memory pass runs when the day changed, when forced, or when
+    // the last pass for this exact content didn't complete cleanly —
+    // a sync that stored the transcript but failed mid-memory-write
+    // self-heals on the next run instead of being frozen out by the
+    // unchanged-day skip (Cursor review on PR #1458).
+    const memoryPassComplete =
+      previousState?.memoryDayHashes?.[date] === bodyHash;
+    if (
+      settings.memoryMode !== "off" &&
+      (changed || options.forceMemories === true || !memoryPassComplete)
+    ) {
       if (!deps.memoryGen) {
         summary.warnings.push(
           `${connector.id}: memoryMode is '${settings.memoryMode}' but no extraction engine is available in this context — transcripts synced, memories skipped`,
@@ -353,7 +407,15 @@ export async function syncWearableSource(
           );
           if (wrote) summary.memoriesCreated += 1;
         }
+        // Record completion only for a warning-free pass so partial
+        // extraction (engine failure mid-day) retries next sync.
+        if (generated.warnings.length === 0) {
+          memoryDayHashes[date] = bodyHash;
+        }
       }
+    } else if (settings.memoryMode !== "off" && memoryPassComplete) {
+      // Carry the completion record forward for unchanged days.
+      memoryDayHashes[date] = bodyHash;
     }
   }
 
@@ -400,9 +462,7 @@ export async function syncWearableSource(
       await deps.afterTranscriptsWritten();
     } catch (err) {
       summary.warnings.push(
-        `search reindex failed (transcripts are stored and will index on the next update): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `search reindex failed (transcripts are stored and will index on the next update): ${describeErrorForOperator(err)}`,
       );
     }
   }
@@ -413,6 +473,7 @@ export async function syncWearableSource(
     syncedAt: now.toISOString(),
     days: dates,
     dayHashes,
+    memoryDayHashes,
     importedNativeMemoryIds: importedNativeIds,
   });
   await saveSyncState(deps.memoryDir, syncState);

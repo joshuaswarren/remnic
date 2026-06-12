@@ -337,6 +337,155 @@ test("native memories import once and are tracked across syncs", async () => {
   }
 });
 
+test("a failed memory pass retries on the next sync even when the day is unchanged", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "An important decision about the vendor contract was made." },
+          { speaker: "Speaker 2", text: "Yes, the vendor contract terms were finalized this afternoon." },
+        ]),
+      ],
+    };
+    const { deps, memoryWrites } = makeDeps(memoryDir);
+    const healthyExtract = deps.memoryGen?.extract;
+    assert.ok(deps.memoryGen && healthyExtract);
+
+    // First sync: transcript stores, but the extraction engine fails.
+    deps.memoryGen.extract = async () => {
+      throw new Error("provider outage");
+    };
+    const first = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.equal(first.transcriptsWritten.length, 1);
+    assert.equal(first.memoriesCreated, 0);
+    assert.ok(first.warnings.some((warning) => warning.includes("extraction failed")));
+
+    // Second sync: day unchanged, engine healthy — the memory pass must
+    // re-run instead of being frozen out by the unchanged-day skip.
+    deps.memoryGen.extract = healthyExtract;
+    const second = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.equal(second.transcriptsWritten.length, 0, "transcript unchanged");
+    assert.equal(second.memoriesCreated, 1, "memory pass retried");
+    assert.equal(memoryWrites.length, 1);
+
+    // Third sync: completion recorded — no further re-extraction.
+    const third = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.equal(third.memoriesCreated, 0);
+    assert.equal(memoryWrites.length, 1);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an all-elided day replaces an existing transcript but never creates one from nothing", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const { deps, written } = makeDeps(memoryDir);
+    const normalDay = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "Recorded thoughts about the quarterly planning session." },
+          { speaker: "Speaker 2", text: "The planning session covered hiring and the budget." },
+        ]),
+      ],
+    };
+    await syncWearableSource(fakeConnector(normalDay), settings(), config(), { days: 1 }, deps);
+    assert.equal(written.length, 1);
+
+    // Same day re-fetched, but the provider's data was re-processed
+    // into pure ASR garbage — cleanup drops every segment, so the
+    // stored transcript must be replaced with an explicit empty-day
+    // file rather than lingering with stale content.
+    const garbageDay = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "zzzzzzzzzzzz" },
+          { speaker: "Speaker 2", text: "############" },
+        ]),
+      ],
+    };
+    const second = await syncWearableSource(fakeConnector(garbageDay), settings(), config(), { days: 1 }, deps);
+    assert.equal(second.transcriptsWritten.length, 1, "replacement written");
+    const replaced = written[written.length - 1].serialized;
+    assert.match(replaced, /No storable conversation content/);
+    assert.ok(!replaced.includes("quarterly planning"), "old content gone");
+
+    // The same all-garbage day with no stored file writes nothing.
+    const { deps: freshDeps, written: freshWritten } = makeDeps(
+      mkdtempSync(path.join(tmpdir(), "remnic-pipeline-fresh-")),
+    );
+    await syncWearableSource(fakeConnector(garbageDay), settings(), config(), { days: 1 }, freshDeps);
+    assert.equal(freshWritten.length, 0);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("zero provider conversations never clobber an existing transcript", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const { deps, written } = makeDeps(memoryDir);
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "A transcript that must survive provider hiccups intact." },
+          { speaker: "Speaker 2", text: "Provider outages should never erase stored history." },
+        ]),
+      ],
+    };
+    await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.equal(written.length, 1);
+
+    // Provider hiccup: empty result for a day we have on disk.
+    const summary = await syncWearableSource(fakeConnector({}), settings(), config(), { days: 1 }, deps);
+    assert.equal(summary.transcriptsWritten.length, 0);
+    assert.equal(written.length, 1, "stored transcript untouched");
+    assert.ok(
+      summary.warnings.some((warning) => warning.includes("leaving it in place")),
+      `expected stale-transcript warning, got: ${summary.warnings.join(" | ")}`,
+    );
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("page-capped days carry a visible partial marker and keep warning", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const conversation = makeConversation("c1", "2026-06-11", [
+      { speaker: "user", isWearer: true, text: "First chunk of a very long recorded day of conversations." },
+      { speaker: "Speaker 2", text: "Indeed, the recordings just keep going on and on today." },
+    ]);
+    // A connector that always reports another page (pathological).
+    const endlessConnector = {
+      id: "testsource",
+      displayName: "Test Source",
+      async verifyAuth() {
+        return { ok: true };
+      },
+      async fetchConversations(opts: { cursor?: string | null }) {
+        return {
+          conversations: opts.cursor ? [] : [conversation],
+          nextCursor: "more",
+        };
+      },
+    };
+    const { deps, written } = makeDeps(memoryDir);
+    const first = await syncWearableSource(endlessConnector, settings(), config(), { days: 1 }, deps);
+    assert.ok(first.warnings.some((warning) => warning.includes("stopped paginating")));
+    assert.equal(written.length, 1);
+    assert.match(written[0].serialized, /pagination safety cap reached/);
+
+    // Identical second sync: file unchanged (no rewrite), warning persists.
+    const second = await syncWearableSource(endlessConnector, settings(), config(), { days: 1 }, deps);
+    assert.equal(second.transcriptsWritten.length, 0);
+    assert.ok(second.warnings.some((warning) => warning.includes("stopped paginating")));
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("a transcript write failure prevents the sync watermark from advancing", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {
