@@ -1700,7 +1700,7 @@ export class Orchestrator {
   >();
   private qmdMaintenanceTimer: NodeJS.Timeout | null = null;
   private wearablesServiceInstance: WearablesService | null = null;
-  private wearablesAutoSyncHandle: { stop(): void } | null = null;
+  private wearablesAutoSyncHandle: { stop(): Promise<void> } | null = null;
   private qmdMaintenancePending = false;
   private qmdMaintenanceInFlight = false;
   private lastQmdEmbedAtMs = 0;
@@ -1783,7 +1783,9 @@ export class Orchestrator {
   async destroy(): Promise<void> {
     this.abortDeferredInit();
     if (this.wearablesAutoSyncHandle) {
-      this.wearablesAutoSyncHandle.stop();
+      // Aborts in-flight provider fetches and waits for the tick to
+      // settle, so nothing is writing or reindexing past destroy().
+      await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
     if (this.qmdMaintenanceTimer) {

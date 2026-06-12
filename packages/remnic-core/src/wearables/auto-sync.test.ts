@@ -139,7 +139,43 @@ test("overlapping ticks are skipped, not stacked", async () => {
 test("stop() prevents any further ticks", async () => {
   const { calls, deps } = makeDeps();
   const handle = startWearablesAutoSync(SETTINGS, deps);
-  handle.stop();
+  await handle.stop();
   await handle.tick();
   assert.equal(calls.length, 0);
+});
+
+test("stop() aborts the in-flight sync and awaits its settlement", async () => {
+  const warnings: string[] = [];
+  let sawSignal: AbortSignal | undefined;
+  let syncSettled = false;
+  const handle = startWearablesAutoSync(SETTINGS, {
+    sync: async (options) => {
+      sawSignal = options.signal;
+      // Hang until the shutdown abort arrives, like a slow provider.
+      await new Promise<void>((_resolve, reject) => {
+        options.signal!.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
+      }).finally(() => {
+        syncSettled = true;
+      });
+    },
+    log: {
+      info: () => {},
+      warn: (message: string) => {
+        warnings.push(message);
+      },
+    },
+    now: () => new Date("2026-06-12T10:00:00.000Z"),
+  });
+  const inFlight = handle.tick();
+  assert.ok(sawSignal instanceof AbortSignal, "sync receives the abort signal");
+  await handle.stop();
+  assert.equal(syncSettled, true, "stop() resolves only after the tick settled");
+  assert.equal(
+    warnings.length,
+    0,
+    "an abort raised by shutdown is intentional, never warned",
+  );
+  await inFlight;
 });
