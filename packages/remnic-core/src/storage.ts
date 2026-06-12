@@ -1172,10 +1172,21 @@ export class ContentHashIndex {
  * Remove the "[Attributes: ...]" suffix `writeMemory` appends to the
  * stored body when structuredAttributes are present, yielding the raw
  * fact text for content comparison. Inverse companion of
- * `normalizeAttributePairs` enrichment.
+ * `normalizeAttributePairs` enrichment. String operations, not regex —
+ * CodeQL js/polynomial-redos on a suffix-anchored pattern over
+ * library-supplied content.
  */
 export function stripAttributesSuffix(content: string): string {
-  return content.replace(/\n\[Attributes: [^\]]*\]\s*$/, "").trim();
+  const trimmed = content.trimEnd();
+  if (!trimmed.endsWith("]")) return content.trim();
+  const marker = "\n[Attributes: ";
+  const markerIndex = trimmed.lastIndexOf(marker);
+  if (markerIndex === -1) return content.trim();
+  // The block must be the FINAL line and contain no "]" before the
+  // closing bracket (mirrors the shape normalizeAttributePairs emits).
+  const inner = trimmed.slice(markerIndex + marker.length, -1);
+  if (inner.includes("]") || inner.includes("\n")) return content.trim();
+  return trimmed.slice(0, markerIndex).trim();
 }
 
 export function normalizeAttributePairs(pairs: Record<string, string>): string {
