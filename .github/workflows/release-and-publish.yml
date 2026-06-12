@@ -543,6 +543,13 @@ jobs:
           # plugins) must ship so end users can install only what they need
           # — see the à-la-carte invariant in CLAUDE.md / AGENTS.md.
           mapfile -t PUBLISH_ORDER < "${RUNNER_TEMP}/remnic-publish-order.txt"
+          # New packages that npm rejects with E404 on their FIRST publish
+          # (trusted publishing not yet provisioned for the name) must not
+          # strand every package after them in topological order — that
+          # left @remnic/cli and friends lagging whole release trains.
+          # They are collected, surfaced loudly, and skipped; everything
+          # else still publishes. Any other publish failure remains fatal.
+          UNPROVISIONED=()
           for pkg_dir in "${PUBLISH_ORDER[@]}"; do
             pkg_json="$pkg_dir/package.json"
             if [ ! -f "$pkg_json" ]; then
@@ -574,14 +581,28 @@ jobs:
               publish_status=$?
               cat "$publish_log"
               if [ "$pkg_exists" != "true" ] && grep -q "npm error code E404" "$publish_log"; then
-                echo "::error::${pkg_name}@${pkg_version} is not provisioned for first-time npm publish from this automation. Set up trusted publishing for this package, then rerun the release workflow."
+                echo "::warning::${pkg_name}@${pkg_version} is not provisioned for first-time npm publish from this automation. Set up trusted publishing for this package name, then rerun the release workflow (already-published packages are skipped automatically). Continuing with the remaining packages."
+                UNPROVISIONED+=("${pkg_name}@${pkg_version}")
                 rm -f "$publish_log"
-                exit $publish_status
+                continue
               fi
               rm -f "$publish_log"
               exit $publish_status
             fi
           done
+          if [ "${#UNPROVISIONED[@]}" -gt 0 ]; then
+            {
+              echo "## Unprovisioned first-time packages (not published)"
+              echo ""
+              echo "Provision npm trusted publishing for each name, then rerun this workflow:"
+              echo ""
+              for entry in "${UNPROVISIONED[@]}"; do
+                echo "- \\`$entry\\`"
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::${#UNPROVISIONED[@]} package(s) require one-time trusted-publishing provisioning (see step summary). All other packages were published."
+            exit 1
+          fi
 
       - name: Publish root package to npm
         run: |
