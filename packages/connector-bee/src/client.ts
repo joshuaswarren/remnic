@@ -210,12 +210,12 @@ export class BeeClient {
             : "Bee rejected the token (401/403) — re-run `bee login` and update BEE_API_TOKEN",
         };
       }
-      const message = err instanceof Error ? err.message : String(err);
+      const detail = describeNetworkError(err);
       return {
         ok: false,
         detail: this.usingLocalProxy
-          ? `could not reach the local bee proxy at ${this.baseUrl} — start it with \`bee proxy\` (${message})`
-          : message,
+          ? `could not reach the local bee proxy at ${this.baseUrl} — start it with \`bee proxy\` (${detail})`
+          : detail,
       };
     }
   }
@@ -246,9 +246,8 @@ export class BeeClient {
           continue;
         }
         throw new BeeApiError(
-          `Bee API request failed after ${MAX_RETRIES + 1} attempts: ${
-            err instanceof Error ? err.message : String(err)
-          }` + (this.usingLocalProxy ? " — is `bee proxy` running?" : ""),
+          `Bee API request failed after ${MAX_RETRIES + 1} attempts: ${describeNetworkError(err)}` +
+            (this.usingLocalProxy ? " — is `bee proxy` running?" : ""),
         );
       }
 
@@ -295,6 +294,17 @@ function readNextCursor(payload: unknown): string | null {
   if (typeof cursor === "string" && cursor.length > 0) return cursor;
   if (typeof cursor === "number") return String(cursor);
   return null;
+}
+
+/**
+ * Network/timeout failures wrap Node error text that can carry loader
+ * paths or stack fragments; sync errors reach MCP clients verbatim, so
+ * only the error name + code survive.
+ */
+function describeNetworkError(err: unknown): string {
+  if (!(err instanceof Error)) return "unexpected non-Error failure";
+  const code = (err as NodeJS.ErrnoException).code;
+  return typeof code === "string" && code.length > 0 ? `${err.name} (${code})` : err.name;
 }
 
 /** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
