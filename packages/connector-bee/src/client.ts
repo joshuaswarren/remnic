@@ -152,7 +152,18 @@ export class BeeClient {
     id: number,
     signal?: AbortSignal,
   ): Promise<BeeConversationDetail | null> {
-    const payload = await this.requestJson(`/v1/conversations/${id}`, signal);
+    let payload: unknown;
+    try {
+      payload = await this.requestJson(`/v1/conversations/${id}`, signal);
+    } catch (err) {
+      // A conversation can be deleted between the list and the detail
+      // fetch — a 404 skips that conversation instead of aborting the
+      // whole day sync. Other failures (auth, 5xx after retries) still
+      // throw so transient outages retry the sync rather than silently
+      // dropping data.
+      if (err instanceof BeeApiError && err.status === 404) return null;
+      throw err;
+    }
     // Current API returns the detail at the top level; the legacy shape
     // wrapped it as {conversation: {...}}. Accept both.
     const detail =

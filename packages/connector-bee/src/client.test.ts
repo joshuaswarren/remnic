@@ -103,6 +103,19 @@ test("getConversation accepts both bare and wrapped detail shapes", async () => 
   }
 });
 
+test("a 404 detail fetch returns null instead of aborting the day", async () => {
+  const { client } = makeClient([jsonResponse({ error: "not found" }, 404)]);
+  assert.equal(await client.getConversation(404404), null);
+  // Non-404 failures still throw (after retries for 5xx).
+  const { client: failing } = makeClient([
+    jsonResponse({}, 500),
+    jsonResponse({}, 502),
+    jsonResponse({}, 503),
+    jsonResponse({}, 504),
+  ]);
+  await assert.rejects(failing.getConversation(1), /responded 504/);
+});
+
 test("listFacts requests confirmed facts and validates the envelope", async () => {
   const { client, calls } = makeClient([
     jsonResponse({ facts: [{ id: 1, text: "User likes tea." }], next_cursor: null }),
