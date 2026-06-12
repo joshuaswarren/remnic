@@ -281,7 +281,10 @@ test("an extraction failure aborts with one warning instead of hammering the eng
   );
   assert.equal(calls, 1);
   assert.equal(result.warnings.length, 1);
-  assert.match(result.warnings[0], /provider exploded/);
+  // Foreign error text is reduced to the error class (project-standard
+  // displayErrorDetail semantics) — the message itself never surfaces.
+  assert.match(result.warnings[0], /extraction failed for limitless\/2026-06-10/);
+  assert.ok(!result.warnings[0].includes("provider exploded"));
   assert.equal(writes.length, 0);
 });
 

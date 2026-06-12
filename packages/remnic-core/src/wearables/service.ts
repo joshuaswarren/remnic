@@ -323,13 +323,9 @@ export class WearablesService {
       timezone: this.timezone(),
     });
     try {
-      const result = await connector.verifyAuth();
-      // Connector-supplied detail strings can carry raw Node error text
-      // (network failures, loader errors) — scrub them like sync
-      // warnings before they reach CLI/MCP/HTTP output.
-      return result.detail !== undefined
-        ? { ok: result.ok, detail: describeErrorForOperator(new Error(result.detail)) }
-        : result;
+      // Connector detail strings are authored guidance (plus
+      // name+errno network summaries) — safe to pass through verbatim.
+      return await connector.verifyAuth();
     } catch (err) {
       return {
         ok: false,
