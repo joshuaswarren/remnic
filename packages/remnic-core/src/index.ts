@@ -1039,6 +1039,13 @@ export {
 } from "./cli.js";
 
 // ---------------------------------------------------------------------------
+// Wearable transcript subsystem (Limitless / Bee / Omi connectors).
+// Connector packages import the registry + types from here.
+// ---------------------------------------------------------------------------
+
+export * from "./wearables/index.js";
+
+// ---------------------------------------------------------------------------
 // Shared importer base (issue #568)
 // ---------------------------------------------------------------------------
 

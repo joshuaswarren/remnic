@@ -872,6 +872,11 @@ export interface PluginConfig {
   dreamsPhases: DreamsPhasesConfig;
   procedural: ProceduralConfig;
   /**
+   * Wearable transcript ingestion (Limitless / Bee / Omi connectors).
+   * Disabled by default; see docs/wearables.md.
+   */
+  wearables: import("./wearables/types.js").WearablesConfig;
+  /**
    * At-rest encryption configuration (issue #690 PR 3/4).
    *
    * When `secureStoreEnabled` is true, `StorageManager` reads and

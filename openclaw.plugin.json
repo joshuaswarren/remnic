@@ -775,6 +775,190 @@
           }
         }
       },
+      "wearables": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Wearable transcript ingestion (Limitless / Bee / Omi). Connector packages install a la carte: @remnic/connector-limitless, @remnic/connector-bee, @remnic/connector-omi. See docs/wearables.md.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master gate for the wearables subsystem."
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone used to bucket transcripts into days. Defaults to the host timezone."
+          },
+          "redactionEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Redact SSN / payment-card patterns from transcripts before storage and extraction."
+          },
+          "redactionPatterns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Additional user-supplied redaction regexes (validated at config load)."
+          },
+          "offTheRecordEnabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Honor a spoken 'off the record' marker by eliding segments until 'back on the record'."
+          },
+          "digestEnabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Write one compact daily-digest memory per synced source/day."
+          },
+          "corrections": {
+            "type": "array",
+            "default": [],
+            "description": "User-specific transcript correction rules applied on every sync (merged with CLI-managed rules).",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "match",
+                "replace"
+              ],
+              "properties": {
+                "match": {
+                  "type": "string",
+                  "description": "Text (or regex when regex=true) to match."
+                },
+                "replace": {
+                  "type": "string",
+                  "description": "Replacement text."
+                },
+                "regex": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Treat match as a regular expression."
+                },
+                "caseInsensitive": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Case-insensitive matching."
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Restrict the rule to specific source ids."
+                }
+              }
+            }
+          },
+          "sources": {
+            "type": "object",
+            "default": {},
+            "description": "Per-source settings keyed by connector id (limitless, bee, omi, or a custom connector id).",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Enable syncing from this wearable source."
+                },
+                "apiKey": {
+                  "type": "string",
+                  "description": "Provider API credential. Prefer the per-connector environment variable (e.g. ${LIMITLESS_API_KEY}); a config value takes precedence when both are set."
+                },
+                "baseUrl": {
+                  "type": "string",
+                  "description": "Override the provider base URL (self-hosted / local-proxy setups, e.g. the Bee local proxy)."
+                },
+                "appId": {
+                  "type": "string",
+                  "description": "Omi only: integration app id (the {app_id} path component of the Omi Integrations API)."
+                },
+                "userId": {
+                  "type": "string",
+                  "description": "Omi only: target user id supplied as the uid query parameter."
+                },
+                "memoryMode": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "review",
+                    "auto"
+                  ],
+                  "default": "review",
+                  "description": "Memory creation trust gate: off = transcripts only; review = extracted candidates land as pending_review (default); auto = gated candidates are written active."
+                },
+                "minConfidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.6,
+                  "description": "Drop extracted facts below this confidence."
+                },
+                "minImportance": {
+                  "type": "string",
+                  "enum": [
+                    "trivial",
+                    "low",
+                    "normal",
+                    "high",
+                    "critical"
+                  ],
+                  "default": "low",
+                  "description": "Drop extracted facts scored below this importance level."
+                },
+                "maxMemoriesPerDay": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 500,
+                  "default": 20,
+                  "description": "Cap on memories created per source per day. Set to 0 to disable the cap."
+                },
+                "importNativeMemories": {
+                  "type": "string",
+                  "enum": [
+                    "off",
+                    "review"
+                  ],
+                  "default": "off",
+                  "description": "Import provider-extracted memories (Bee facts / Omi memories) into the review queue."
+                },
+                "cleanup": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "default": {},
+                  "properties": {
+                    "mergeSameSpeaker": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Merge consecutive same-speaker segments."
+                    },
+                    "stripFillers": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Strip standalone filler tokens (um, uh, ...)."
+                    },
+                    "collapseRepeats": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Collapse immediately repeated phrases (ASR stutter)."
+                    },
+                    "dropLowQuality": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Drop segments that look like ASR garbage."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "secureStoreEnabled": {
         "type": "boolean",
         "default": false,

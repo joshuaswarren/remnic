@@ -96,6 +96,9 @@ packages/remnic-core/src/
 │ ── Binary lifecycle ────────────────────────────────────
 ├── binary-lifecycle/           # Mirror/redirect/clean pipeline for binary files
 │
+│ ── Wearables ───────────────────────────────────────────
+├── wearables/                  # Wearable transcript ingestion: connector registry, cleanup, redaction, corrections, speaker registry, day store, trust-gated memory gen
+│
 │ ── Access surfaces ─────────────────────────────────────
 ├── cli.ts                      # CLI commands
 ├── access-mcp.ts               # MCP server surface
@@ -145,6 +148,7 @@ packages/remnic-core/src/
 12. **MECE taxonomy** — deterministic categorization via mutually exclusive, collectively exhaustive directory
 13. **Enrichment pipeline** — importance-tiered external enrichment with provider registry and audit trail
 14. **Binary lifecycle** — three-stage mirror/redirect/clean pipeline for binary files in memory directory
+15. **Wearable connectors** — à-la-carte `@remnic/connector-limitless|bee|omi` packages feed the shared `src/wearables/` pipeline (pull → cleanup → redaction → corrections → speaker labels → day store → trust-gated memory gen). Day transcripts live at `<memoryDir>/wearables/<source>/<date>.md` — QMD-searchable but outside the memory scan roots. Memory creation defaults to `memoryMode: "review"` (pending_review). See docs/wearables.md
 
 ### Integration Points
 

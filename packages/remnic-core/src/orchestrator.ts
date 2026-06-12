@@ -262,6 +262,7 @@ import {
 } from "./native-knowledge.js";
 import { normalizeReplaySessionKey, type ReplayTurn } from "./replay/types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
+import { WearablesService } from "./wearables/service.js";
 import {
   type AgentPersonaModelConfig,
   confidenceTier,
@@ -1694,6 +1695,7 @@ export class Orchestrator {
     (observation: ConsolidationObservation) => Promise<void> | void
   >();
   private qmdMaintenanceTimer: NodeJS.Timeout | null = null;
+  private wearablesServiceInstance: WearablesService | null = null;
   private qmdMaintenancePending = false;
   private qmdMaintenanceInFlight = false;
   private lastQmdEmbedAtMs = 0;
@@ -10763,6 +10765,46 @@ export class Orchestrator {
    */
   bulkImportWriteNamespace(): string {
     return this.config.defaultNamespace;
+  }
+
+  /**
+   * Lazily-constructed wearables service (Limitless / Bee / Omi
+   * transcript ingestion). All wearables surfaces — CLI, MCP tools,
+   * HTTP routes — share this one instance so sync state, search, and
+   * memory writes stay consistent. Writes are pinned to the same
+   * deterministic namespace bulk-import uses.
+   */
+  getWearablesService(): WearablesService {
+    if (!this.wearablesServiceInstance) {
+      this.wearablesServiceInstance = new WearablesService({
+        config: this.config.wearables,
+        getStorage: async () =>
+          await this.getStorageForNamespace(this.bulkImportWriteNamespace()),
+        extract: (turns) => this.extraction.extract(turns),
+        searchBackend: {
+          search: async (query, maxResults) => {
+            if (!this.qmd.isAvailable()) return null;
+            try {
+              const results = await this.qmd.search(query, undefined, maxResults);
+              return results.map((result) => ({
+                path: result.path,
+                score: result.score,
+                preview: result.snippet,
+              }));
+            } catch {
+              // Backend hiccup → tell the service "unavailable" so it
+              // runs its bounded scan fallback instead of returning a
+              // silent empty result (CLAUDE.md rule 34).
+              return null;
+            }
+          },
+        },
+        reindexSearch: async () => {
+          await this.qmd.update();
+        },
+      });
+    }
+    return this.wearablesServiceInstance;
   }
 
   /**

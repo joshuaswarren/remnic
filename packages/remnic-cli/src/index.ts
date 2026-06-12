@@ -8,6 +8,7 @@
  *   status            Show server/daemon status
  *   query <text>      Query memories
  *   xray <query>      Recall with X-ray capture; renders tier + filters + scores
+ *   wearables <cmd>   Wearable transcript sources (Limitless / Bee / Omi)
  *   doctor            Run diagnostics
  *   config            Show current config
  *   daemon start      Start background server
@@ -160,6 +161,8 @@ import {
   // capsule fork — issue #676 PR 4/6
   forkCapsule,
   readForkLineage,
+  // wearable transcript sources (Limitless / Bee / Omi)
+  runWearablesCliCommand,
 } from "@remnic/core";
 import {
   AUTH_TAG_LENGTH,
@@ -378,6 +381,7 @@ type CommandName =
   | "import-lossless-claw"
   | "action-confidence"
   | "xray"
+  | "wearables"
   | "capsule"
   | "offline";
 
@@ -11393,6 +11397,58 @@ Other:
       break;
     }
 
+    case "wearables": {
+      // Wearable transcript sources (Limitless / Bee / Omi). All parsing,
+      // validation, and rendering live in @remnic/core's shared runner so
+      // this CLI and the OpenClaw host CLI never fork. Connector packages
+      // are optional à-la-carte installs loaded inside core via
+      // computed-specifier dynamic imports.
+      const wearablesArgs =
+        rest.length === 0 || rest[0] === "--help" || rest[0] === "-h"
+          ? ["help"]
+          : rest;
+      let wearablesOrchestrator: Orchestrator | undefined;
+      try {
+        const configPath = resolveConfigPath();
+        const raw = fs.existsSync(configPath)
+          ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+          : {};
+        const remnicCfg =
+          raw !== null && typeof raw === "object"
+            ? ((raw as Record<string, unknown>).remnic ??
+              (raw as Record<string, unknown>).engram ??
+              raw)
+            : {};
+        const config = parseConfig(remnicCfg);
+        wearablesOrchestrator = new Orchestrator(config);
+        await wearablesOrchestrator.initialize();
+        await wearablesOrchestrator.deferredReady;
+        const code = await runWearablesCliCommand(
+          wearablesOrchestrator.getWearablesService(),
+          wearablesArgs,
+          { stdout: process.stdout, stderr: process.stderr },
+        );
+        if (code !== 0) process.exitCode = code;
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exitCode = 1;
+      } finally {
+        if (wearablesOrchestrator) {
+          const maybeShutdown = (
+            wearablesOrchestrator as unknown as { shutdown?: () => Promise<void> }
+          ).shutdown;
+          if (typeof maybeShutdown === "function") {
+            try {
+              await maybeShutdown.call(wearablesOrchestrator);
+            } catch {
+              // Best effort — shutdown errors must not mask command results.
+            }
+          }
+        }
+      }
+      break;
+    }
+
     case "import": {
       // Infrastructure-only in slice 1 (#568). The optional adapter packages
       // (@remnic/import-chatgpt/claude/gemini/mem0/supermemory) land in
@@ -11623,6 +11679,11 @@ Usage:
     Run a recall with X-ray capture and print the unified snapshot
     (tier + audit + MMR + filters). Part of #570. Defaults to text
     output on stdout.
+  remnic wearables <status|check|sync|transcript|search|memories|speakers|corrections>
+    Wearable transcript sources (Limitless / Bee / Omi): pull + clean +
+    store day transcripts, trust-gated memory creation, speaker labels,
+    and per-user corrections. Run "remnic wearables help" for details.
+    Connectors install à la carte: npm install @remnic/connector-limitless
 
   remnic doctor                Run diagnostics
   remnic config                Show current config

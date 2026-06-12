@@ -385,6 +385,47 @@ hint. Every run supports `--dry-run` for a zero-write preview.
 See [docs/importers.md](docs/importers.md) for per-source details, input
 formats, provenance metadata, and the full privacy breakdown.
 
+## Wear your memory
+
+Remnic also ingests AI-wearable recordings. Three optional connector
+packages pull your conversations, clean and speaker-label the
+transcripts, apply your personal corrections, store searchable
+per-day transcript files, and — under strict per-source trust gates —
+create memories:
+
+```bash
+# Limitless Pendant
+npm install -g @remnic/connector-limitless
+export LIMITLESS_API_KEY=...
+
+# Bee bracelet (via the local `bee proxy`, or direct with a token)
+npm install -g @remnic/connector-bee
+
+# Omi necklace (integration app: appId + uid + sk_ key)
+npm install -g @remnic/connector-omi
+export OMI_API_KEY=...
+
+# Then (after enabling sources in config):
+remnic wearables sync --days 7
+remnic wearables transcript --date 2026-06-10
+remnic wearables search "that solar quote"
+remnic wearables memories --source limitless --date 2026-06-10
+```
+
+Memory creation defaults to **review mode**: extraction candidates from
+wearable transcripts land in the review queue (`pending_review`) and
+never enter active recall until approved — a mis-transcription should
+cost you a click, not a corrupted memory. Tune per source with
+`memoryMode`, `minConfidence`, `minImportance`, and
+`maxMemoriesPerDay`. MCP tools (`engram.transcript_day`,
+`engram.transcript_search`, `engram.transcript_memories`,
+`engram.wearables_sync`, `engram.wearables_status`) and HTTP routes
+expose the same surface to agents.
+
+See [docs/wearables.md](docs/wearables.md) for the full pipeline,
+configuration reference, speaker labeling, corrections, redaction, and
+per-provider setup.
+
 ## Troubleshooting: hooks aren't firing
 
 **Symptom:** Remnic appears installed but no memories are created. The gateway log shows no `[remnic]` lines after conversations.

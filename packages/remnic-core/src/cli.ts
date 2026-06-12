@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { Orchestrator } from "./orchestrator.js";
 import { ThreadingManager } from "./threading.js";
+import { runWearablesCliCommand } from "./wearables/cli.js";
 import type {
   BehaviorSignalEvent,
   ContinuityIncidentRecord,
@@ -5016,6 +5017,192 @@ export function registerCli(
             process.exitCode = 1;
           }
         });
+
+      // Wearable transcript sources (Limitless / Bee / Omi). Every
+      // subcommand forwards to the shared runner in wearables/cli.ts so
+      // this host CLI and the standalone `remnic` CLI never fork
+      // behavior or formatting.
+      {
+        const wearablesCmd = cmd
+          .command("wearables")
+          .description(
+            "Wearable transcript sources (Limitless / Bee / Omi): sync, transcripts, search, speakers, corrections",
+          );
+        const forwardWearables = async (argv: string[]): Promise<void> => {
+          const code = await runWearablesCliCommand(
+            orchestrator.getWearablesService(),
+            argv,
+            { stdout: process.stdout, stderr: process.stderr },
+          );
+          if (code !== 0) process.exitCode = code;
+        };
+        const stringOpt = (options: Record<string, unknown>, key: string, flag: string): string[] =>
+          typeof options[key] === "string" && (options[key] as string).length > 0
+            ? [flag, options[key] as string]
+            : [];
+
+        wearablesCmd
+          .command("status")
+          .description("Show configured sources, connector availability, and last sync")
+          .option("--json", "JSON output")
+          .action(async (...args: unknown[]) => {
+            const options = (args[0] ?? {}) as Record<string, unknown>;
+            await forwardWearables(["status", ...(options.json === true ? ["--json"] : [])]);
+          });
+
+        wearablesCmd
+          .command("check <source>")
+          .description("Verify credentials/connectivity for a source")
+          .action(async (...args: unknown[]) => {
+            await forwardWearables(["check", String(args[0] ?? "")]);
+          });
+
+        wearablesCmd
+          .command("sync")
+          .description("Pull, clean, and store wearable transcripts (and trust-gated memories)")
+          .option("--source <id>", "Only this source (default: all enabled)")
+          .option("--date <date>", "Sync exactly this day (YYYY-MM-DD)")
+          .option("--days <n>", "Lookback window in days ending today (default 2)")
+          .option("--force-memories", "Re-run memory extraction for unchanged days")
+          .option("--json", "JSON output")
+          .action(async (...args: unknown[]) => {
+            const options = (args[0] ?? {}) as Record<string, unknown>;
+            await forwardWearables([
+              "sync",
+              ...stringOpt(options, "source", "--source"),
+              ...stringOpt(options, "date", "--date"),
+              ...stringOpt(options, "days", "--days"),
+              ...(options.forceMemories === true ? ["--force-memories"] : []),
+              ...(options.json === true ? ["--json"] : []),
+            ]);
+          });
+
+        wearablesCmd
+          .command("transcript")
+          .description("Print the stored transcript(s) for a day")
+          .requiredOption("--date <date>", "Day to read (YYYY-MM-DD)")
+          .option("--source <id>", "Scope to one source")
+          .action(async (...args: unknown[]) => {
+            const options = (args[0] ?? {}) as Record<string, unknown>;
+            await forwardWearables([
+              "transcript",
+              ...stringOpt(options, "date", "--date"),
+              ...stringOpt(options, "source", "--source"),
+            ]);
+          });
+
+        wearablesCmd
+          .command("search <query>")
+          .description("Search stored wearable transcripts")
+          .option("--source <id>", "Source id filter")
+          .option("--from <date>", "Inclusive start date (YYYY-MM-DD)")
+          .option("--to <date>", "Inclusive end date (YYYY-MM-DD)")
+          .option("--limit <n>", "Maximum results (default 10)")
+          .option("--json", "JSON output")
+          .action(async (...args: unknown[]) => {
+            const query = typeof args[0] === "string" ? args[0] : "";
+            const options = (args[1] ?? {}) as Record<string, unknown>;
+            await forwardWearables([
+              "search",
+              query,
+              ...stringOpt(options, "source", "--source"),
+              ...stringOpt(options, "from", "--from"),
+              ...stringOpt(options, "to", "--to"),
+              ...stringOpt(options, "limit", "--limit"),
+              ...(options.json === true ? ["--json"] : []),
+            ]);
+          });
+
+        wearablesCmd
+          .command("memories")
+          .description("List memories created from wearable transcripts")
+          .option("--source <id>", "Source id filter")
+          .option("--date <date>", "Transcript day filter (YYYY-MM-DD)")
+          .option("--limit <n>", "Maximum results (default 50)")
+          .option("--json", "JSON output")
+          .action(async (...args: unknown[]) => {
+            const options = (args[0] ?? {}) as Record<string, unknown>;
+            await forwardWearables([
+              "memories",
+              ...stringOpt(options, "source", "--source"),
+              ...stringOpt(options, "date", "--date"),
+              ...stringOpt(options, "limit", "--limit"),
+              ...(options.json === true ? ["--json"] : []),
+            ]);
+          });
+
+        const speakersCmd = wearablesCmd
+          .command("speakers")
+          .description("Manage the speaker registry");
+        speakersCmd
+          .command("list")
+          .description("Show stored speaker mappings")
+          .action(async () => forwardWearables(["speakers", "list"]));
+        speakersCmd
+          .command("self <name>")
+          .description("Set the wearer's display name")
+          .action(async (...args: unknown[]) =>
+            forwardWearables(["speakers", "self", String(args[0] ?? "")]),
+          );
+        speakersCmd
+          .command("set <source> <speakerKey> <name>")
+          .description("Map a provider speaker label to a display name")
+          .option("--self", "Mark this speaker as the wearer")
+          .action(async (...args: unknown[]) => {
+            const options = (args[3] ?? {}) as Record<string, unknown>;
+            await forwardWearables([
+              "speakers",
+              "set",
+              String(args[0] ?? ""),
+              String(args[1] ?? ""),
+              String(args[2] ?? ""),
+              ...(options.self === true ? ["--self"] : []),
+            ]);
+          });
+        speakersCmd
+          .command("remove <source> <speakerKey>")
+          .description("Remove a speaker mapping")
+          .action(async (...args: unknown[]) =>
+            forwardWearables([
+              "speakers",
+              "remove",
+              String(args[0] ?? ""),
+              String(args[1] ?? ""),
+            ]),
+          );
+
+        const correctionsCmd = wearablesCmd
+          .command("corrections")
+          .description("Manage user-specific transcript correction rules");
+        correctionsCmd
+          .command("list")
+          .description("Show correction rules from config and state")
+          .action(async () => forwardWearables(["corrections", "list"]));
+        correctionsCmd
+          .command("add <match> <replace>")
+          .description("Add a correction rule (quote multi-word values)")
+          .option("--regex", "Treat <match> as a regular expression")
+          .option("--case-sensitive", "Match case-sensitively")
+          .option("--source <id>", "Restrict the rule to one source")
+          .action(async (...args: unknown[]) => {
+            const options = (args[2] ?? {}) as Record<string, unknown>;
+            await forwardWearables([
+              "corrections",
+              "add",
+              String(args[0] ?? ""),
+              String(args[1] ?? ""),
+              ...(options.regex === true ? ["--regex"] : []),
+              ...(options.caseSensitive === true ? ["--case-sensitive"] : []),
+              ...stringOpt(options, "source", "--source"),
+            ]);
+          });
+        correctionsCmd
+          .command("remove <index>")
+          .description("Remove a state correction rule by index")
+          .action(async (...args: unknown[]) =>
+            forwardWearables(["corrections", "remove", String(args[0] ?? "")]),
+          );
+      }
 
       cmd
         .command("benchmark-status")

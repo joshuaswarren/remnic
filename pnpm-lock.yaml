@@ -148,6 +148,21 @@ importers:
         specifier: ^7.1.12
         version: 7.3.2(@types/node@25.5.2)(tsx@4.21.0)(yaml@2.8.3)
 
+  packages/connector-limitless:
+    devDependencies:
+      '@remnic/core':
+        specifier: workspace:*
+        version: link:../remnic-core
+      tsup:
+        specifier: ^8.0.0
+        version: 8.5.1(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)(yaml@2.8.3)
+      tsx:
+        specifier: ^4.0.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/connector-replit:
     devDependencies:
       tsup:
@@ -375,6 +390,9 @@ importers:
       '@remnic/bench':
         specifier: workspace:*
         version: link:../bench
+      '@remnic/connector-limitless':
+        specifier: workspace:*
+        version: link:../connector-limitless
       '@remnic/export-weclone':
         specifier: workspace:*
         version: link:../export-weclone

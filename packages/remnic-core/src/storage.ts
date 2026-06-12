@@ -8,6 +8,7 @@ import { getCachedEntities, invalidateCachedEntities, setCachedEntities } from "
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { createVersion as createPageVersion, type VersioningConfig, type VersionTrigger } from "./page-versioning.js";
+import { isValidTranscriptDate, WEARABLES_DIR_NAME } from "./wearables/day-store.js";
 import {
   SecureStoreLockedError,
   MAGIC_HEADER_SIZE,
@@ -2488,6 +2489,111 @@ export class StorageManager {
 
   private getArtifactWriteVersion(): number {
     return this.readSharedVersion("artifact-write", StorageManager.artifactWriteVersionByDir);
+  }
+
+  // -------------------------------------------------------------------------
+  // Wearable day transcripts
+  //
+  // Stored under `<baseDir>/wearables/<source>/<YYYY-MM-DD>.md` — outside
+  // the memory scan roots (never surfaces as a memory) but inside the QMD
+  // collection root (full-text searchable). IO lives here so transcripts
+  // inherit the same encrypted-at-rest + atomic-write semantics as
+  // memories.
+  // -------------------------------------------------------------------------
+
+  private get wearablesDir(): string {
+    return path.join(this.baseDir, WEARABLES_DIR_NAME);
+  }
+
+  /**
+   * Resolve the on-disk path for a source/day transcript. Throws on
+   * malformed inputs — source ids and dates reach this from CLI/MCP/HTTP
+   * surfaces and must never become path traversal.
+   */
+  wearableTranscriptPath(sourceId: string, date: string): string {
+    if (typeof sourceId !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(sourceId)) {
+      throw new Error(
+        `invalid wearable source id '${String(sourceId)}' — expected lowercase letters, digits, and dashes`,
+      );
+    }
+    if (!isValidTranscriptDate(date)) {
+      throw new Error(
+        `invalid wearable transcript date '${String(date)}' — expected YYYY-MM-DD`,
+      );
+    }
+    return path.join(this.wearablesDir, sourceId, `${date}.md`);
+  }
+
+  async writeWearableDayTranscript(
+    sourceId: string,
+    date: string,
+    serialized: string,
+  ): Promise<void> {
+    const targetPath = this.wearableTranscriptPath(sourceId, date);
+    // writeMaybeEncryptedFile handles mkdir + atomic temp→rename.
+    await writeMaybeEncryptedFile(targetPath, serialized, this.resolveWriteKey(), {}, this.baseDir);
+  }
+
+  /** Read a stored day transcript; null when the day has no file. */
+  async readWearableDayTranscript(
+    sourceId: string,
+    date: string,
+  ): Promise<string | null> {
+    const targetPath = this.wearableTranscriptPath(sourceId, date);
+    try {
+      return await readMaybeEncryptedFile(targetPath, this._secureStoreKey, this.baseDir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+  }
+
+  /**
+   * List stored transcript days, newest first, optionally scoped to one
+   * source. Non-transcript files in the tree are ignored.
+   */
+  async listWearableTranscriptDays(
+    sourceId?: string,
+  ): Promise<Array<{ source: string; date: string }>> {
+    const days: Array<{ source: string; date: string }> = [];
+    let sources: string[];
+    if (sourceId !== undefined) {
+      sources = [sourceId];
+    } else {
+      try {
+        const entries = await readdir(this.wearablesDir, { withFileTypes: true });
+        sources = entries
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => entry.name);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw err;
+      }
+    }
+    for (const source of sources) {
+      if (!/^[a-z][a-z0-9-]{0,63}$/.test(source)) continue;
+      let entries: string[];
+      try {
+        entries = await readdir(path.join(this.wearablesDir, source));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw err;
+      }
+      for (const entry of entries) {
+        if (!entry.endsWith(".md")) continue;
+        const date = entry.slice(0, -3);
+        if (!isValidTranscriptDate(date)) continue;
+        days.push({ source, date });
+      }
+    }
+    days.sort((a, b) => {
+      if (a.date > b.date) return -1;
+      if (a.date < b.date) return 1;
+      if (a.source < b.source) return -1;
+      if (a.source > b.source) return 1;
+      return 0;
+    });
+    return days;
   }
 
   private get factsDir(): string {

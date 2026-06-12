@@ -204,6 +204,36 @@ function parseMcpRequest<N extends SchemaName>(
   );
 }
 
+/**
+ * Strict optional-string MCP argument: absent/null/"" → undefined,
+ * non-string → loud error (CLAUDE.md rule 51 — no silent coercion).
+ */
+function optionalNonEmptyString(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") {
+    throw new Error(`${label} expects a string; got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+/**
+ * Strict optional positive-integer MCP argument. Accepts JSON numbers
+ * and numeric strings (loosely-typed MCP clients send both); rejects
+ * everything else including booleans, which `Number()` would silently
+ * coerce.
+ */
+function optionalPositiveInteger(value: unknown, label: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "number" && typeof value !== "string") {
+    throw new Error(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
+  }
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+    throw new Error(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
+  }
+  return parsed;
+}
+
 function getObjectProperties(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -449,6 +479,124 @@ export class EngramMcpServer {
             },
           },
           required: ["query"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.wearables_status",
+        description:
+          "Status of wearable transcript sources (Limitless / Bee / Omi): configured sources, connector availability, last sync, stored transcript days.",
+        inputSchema: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.wearables_sync",
+        description:
+          "Pull, clean, and store wearable transcripts for one source or all enabled sources; optionally creates trust-gated memories per the source's memoryMode.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            source: {
+              type: "string",
+              description: "Source id (e.g. limitless, bee, omi). Omit to sync every enabled source.",
+            },
+            date: {
+              type: "string",
+              description: "Sync exactly this day (YYYY-MM-DD). Overrides days.",
+            },
+            days: {
+              type: "integer",
+              minimum: 1,
+              maximum: 90,
+              description: "Lookback window in days ending today (default 2).",
+            },
+            forceMemories: {
+              type: "boolean",
+              description: "Re-run memory extraction even for unchanged days.",
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.transcript_day",
+        description:
+          "Return the full stored wearable transcript(s) for a day, across all sources or one source, with cross-source overlap hints.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            date: {
+              type: "string",
+              description: "Day to read (YYYY-MM-DD). Required.",
+            },
+            source: {
+              type: "string",
+              description: "Optional source id to scope to (e.g. limitless).",
+            },
+          },
+          required: ["date"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.transcript_search",
+        description:
+          "Search stored wearable transcripts. Results carry source + date so callers can pull the full day via engram.transcript_day.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: {
+              type: "string",
+              description: "Search query. Required; non-empty.",
+            },
+            source: {
+              type: "string",
+              description: "Optional source id filter.",
+            },
+            from: {
+              type: "string",
+              description: "Optional inclusive start date (YYYY-MM-DD).",
+            },
+            to: {
+              type: "string",
+              description: "Optional inclusive end date (YYYY-MM-DD).",
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 50,
+              description: "Maximum results (default 10).",
+            },
+          },
+          required: ["query"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "engram.transcript_memories",
+        description:
+          "List memories created from wearable transcripts, filterable by source and/or day. Includes pending_review candidates awaiting approval.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            source: {
+              type: "string",
+              description: "Optional source id filter (e.g. limitless).",
+            },
+            date: {
+              type: "string",
+              description: "Optional transcript day filter (YYYY-MM-DD).",
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 200,
+              description: "Maximum results (default 50).",
+            },
+          },
           additionalProperties: false,
         },
       },
@@ -2348,6 +2496,56 @@ export class EngramMcpServer {
             : {}),
         });
       }
+      case "engram.wearables_status":
+        return this.service.wearablesStatus();
+      case "engram.wearables_sync": {
+        const source = optionalNonEmptyString(args.source, "engram.wearables_sync: source");
+        const date = optionalNonEmptyString(args.date, "engram.wearables_sync: date");
+        const days = optionalPositiveInteger(args.days, "engram.wearables_sync: days");
+        let forceMemories: boolean | undefined;
+        if (args.forceMemories !== undefined && args.forceMemories !== null) {
+          if (typeof args.forceMemories !== "boolean") {
+            throw new Error(
+              `engram.wearables_sync: forceMemories expects a boolean; got ${JSON.stringify(args.forceMemories)}`,
+            );
+          }
+          forceMemories = args.forceMemories;
+        }
+        // Date/days/source validation beyond shape lives in the shared
+        // WearablesService so CLI/HTTP/MCP reject identically.
+        return this.service.wearablesSync({ source, date, days, forceMemories });
+      }
+      case "engram.transcript_day": {
+        const date = typeof args.date === "string" ? args.date : "";
+        if (date.trim().length === 0) {
+          throw new Error(
+            "engram.transcript_day: date is required and must be YYYY-MM-DD",
+          );
+        }
+        const source = optionalNonEmptyString(args.source, "engram.transcript_day: source");
+        return this.service.wearablesTranscriptDay({ date, source });
+      }
+      case "engram.transcript_search": {
+        const query = typeof args.query === "string" ? args.query : "";
+        if (query.trim().length === 0) {
+          throw new Error(
+            "engram.transcript_search: query is required and must be non-empty",
+          );
+        }
+        return this.service.wearablesTranscriptSearch({
+          query,
+          source: optionalNonEmptyString(args.source, "engram.transcript_search: source"),
+          from: optionalNonEmptyString(args.from, "engram.transcript_search: from"),
+          to: optionalNonEmptyString(args.to, "engram.transcript_search: to"),
+          limit: optionalPositiveInteger(args.limit, "engram.transcript_search: limit"),
+        });
+      }
+      case "engram.transcript_memories":
+        return this.service.wearablesTranscriptMemories({
+          source: optionalNonEmptyString(args.source, "engram.transcript_memories: source"),
+          date: optionalNonEmptyString(args.date, "engram.transcript_memories: date"),
+          limit: optionalPositiveInteger(args.limit, "engram.transcript_memories: limit"),
+        });
       case "engram.action_confidence": {
         const body: ActionConfidenceRequest = parseMcpRequest("actionConfidence", args);
         return this.service.actionConfidence(body);

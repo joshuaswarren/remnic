@@ -39,6 +39,7 @@ import {
 import { runProcedureMining } from "./procedural/procedure-miner.js";
 import type { PatternReinforcementResult } from "./maintenance/pattern-reinforcement.js";
 import type { LiveConnectorsRunSummary } from "./live-connectors-runner.js";
+import type { WearablesService } from "./wearables/service.js";
 import {
   computeProcedureStats,
   type ProcedureStatsReport,
@@ -6153,5 +6154,69 @@ export class EngramAccessService {
       itemsProcessed: result.itemsProcessed,
       notes: result.notes,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wearables (Limitless / Bee / Omi transcript ingestion)
+  //
+  // Thin delegations to the orchestrator-owned WearablesService — the
+  // same instance behind the CLI, so HTTP/MCP callers observe identical
+  // behavior and validation (renderer-sharing rule).
+  // ---------------------------------------------------------------------------
+
+  async wearablesStatus(): Promise<
+    Awaited<ReturnType<WearablesService["status"]>>
+  > {
+    return this.orchestrator.getWearablesService().status();
+  }
+
+  async wearablesSync(request: {
+    source?: string;
+    date?: string;
+    days?: number;
+    forceMemories?: boolean;
+  }): Promise<Awaited<ReturnType<WearablesService["sync"]>>> {
+    return this.orchestrator.getWearablesService().sync({
+      source: request.source,
+      date: request.date,
+      days: request.days,
+      forceMemories: request.forceMemories,
+    });
+  }
+
+  async wearablesTranscriptDay(request: {
+    date: string;
+    source?: string;
+  }): Promise<Awaited<ReturnType<WearablesService["dayTranscript"]>>> {
+    return this.orchestrator
+      .getWearablesService()
+      .dayTranscript(request.date, request.source);
+  }
+
+  async wearablesTranscriptSearch(request: {
+    query: string;
+    source?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+  }): Promise<Awaited<ReturnType<WearablesService["searchTranscripts"]>>> {
+    return this.orchestrator.getWearablesService().searchTranscripts(request.query, {
+      source: request.source,
+      from: request.from,
+      to: request.to,
+      limit: request.limit,
+    });
+  }
+
+  async wearablesTranscriptMemories(request: {
+    source?: string;
+    date?: string;
+    limit?: number;
+  }): Promise<Awaited<ReturnType<WearablesService["transcriptMemories"]>>> {
+    return this.orchestrator.getWearablesService().transcriptMemories({
+      source: request.source,
+      date: request.date,
+      limit: request.limit,
+    });
   }
 }

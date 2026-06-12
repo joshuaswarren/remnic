@@ -8,6 +8,7 @@ import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { WearablesInputError } from "./wearables/errors.js";
 import { EngramMcpServer } from "./access-mcp.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
 import {
@@ -1002,6 +1003,128 @@ export class EngramAccessHttpServer {
         throw err;
       }
       this.respondJson(res, 200, payload);
+      return;
+    }
+
+    // -- Wearables (Limitless / Bee / Omi transcript ingestion). All
+    //    behavior + validation lives in WearablesService; these routes
+    //    translate transport shape only. Service validation errors map
+    //    to 400 via respondWearablesError; backend faults bubble to the
+    //    global 500 handler.
+    if (
+      req.method === "GET" &&
+      (pathname === "/engram/v1/wearables/status" || pathname === "/remnic/v1/wearables/status")
+    ) {
+      this.respondJson(res, 200, await this.service.wearablesStatus());
+      return;
+    }
+
+    if (
+      req.method === "POST" &&
+      (pathname === "/engram/v1/wearables/sync" || pathname === "/remnic/v1/wearables/sync")
+    ) {
+      const body = (await this.readJsonBody(req)) as Record<string, unknown>;
+      const source = optionalQueryString(body.source, "source");
+      const date = optionalQueryString(body.date, "date");
+      let days: number | undefined;
+      if (body.days !== undefined && body.days !== null) {
+        if (
+          typeof body.days !== "number" ||
+          !Number.isInteger(body.days) ||
+          body.days < 1
+        ) {
+          throw new EngramAccessInputError(
+            `days must be a positive integer (got ${JSON.stringify(body.days)})`,
+          );
+        }
+        days = body.days;
+      }
+      if (body.forceMemories !== undefined && typeof body.forceMemories !== "boolean") {
+        throw new EngramAccessInputError(
+          `forceMemories must be a boolean (got ${JSON.stringify(body.forceMemories)})`,
+        );
+      }
+      try {
+        const summaries = await this.service.wearablesSync({
+          source,
+          date,
+          days,
+          forceMemories: body.forceMemories === true,
+        });
+        this.respondJson(res, 200, { summaries });
+      } catch (err) {
+        if (this.respondWearablesError(res, err)) return;
+        throw err;
+      }
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
+      (pathname === "/engram/v1/wearables/transcript" || pathname === "/remnic/v1/wearables/transcript")
+    ) {
+      const date = parsed.searchParams.get("date");
+      if (!date || date.trim().length === 0) {
+        throw new EngramAccessInputError(
+          "date query parameter is required (YYYY-MM-DD)",
+        );
+      }
+      const sourceParam = parsed.searchParams.get("source");
+      try {
+        const transcripts = await this.service.wearablesTranscriptDay({
+          date,
+          source: sourceParam && sourceParam.length > 0 ? sourceParam : undefined,
+        });
+        this.respondJson(res, 200, { transcripts });
+      } catch (err) {
+        if (this.respondWearablesError(res, err)) return;
+        throw err;
+      }
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
+      (pathname === "/engram/v1/wearables/transcripts/search" ||
+        pathname === "/remnic/v1/wearables/transcripts/search")
+    ) {
+      const queryParam = parsed.searchParams.get("q");
+      if (!queryParam || queryParam.trim().length === 0) {
+        throw new EngramAccessInputError(
+          "q query parameter is required and must be non-empty",
+        );
+      }
+      try {
+        const results = await this.service.wearablesTranscriptSearch({
+          query: queryParam,
+          source: nonEmptyQueryParam(parsed.searchParams.get("source")),
+          from: nonEmptyQueryParam(parsed.searchParams.get("from")),
+          to: nonEmptyQueryParam(parsed.searchParams.get("to")),
+          limit: positiveIntQueryParam(parsed.searchParams.get("limit"), "limit"),
+        });
+        this.respondJson(res, 200, { results });
+      } catch (err) {
+        if (this.respondWearablesError(res, err)) return;
+        throw err;
+      }
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
+      (pathname === "/engram/v1/wearables/memories" || pathname === "/remnic/v1/wearables/memories")
+    ) {
+      try {
+        const memories = await this.service.wearablesTranscriptMemories({
+          source: nonEmptyQueryParam(parsed.searchParams.get("source")),
+          date: nonEmptyQueryParam(parsed.searchParams.get("date")),
+          limit: positiveIntQueryParam(parsed.searchParams.get("limit"), "limit"),
+        });
+        this.respondJson(res, 200, { memories });
+      } catch (err) {
+        if (this.respondWearablesError(res, err)) return;
+        throw err;
+      }
       return;
     }
 
@@ -2372,4 +2495,48 @@ export class EngramAccessHttpServer {
   private shouldCountWriteRateLimit(response: { dryRun?: boolean; idempotencyReplay?: boolean }): boolean {
     return response.dryRun !== true && response.idempotencyReplay !== true;
   }
+
+  /**
+   * Map wearables validation errors (WearablesInputError — invalid
+   * params, unknown/disabled sources, missing connector packages) to a
+   * 400 response. Returns false for everything else so backend faults
+   * keep flowing to the global 500 handler.
+   */
+  private respondWearablesError(res: ServerResponse, err: unknown): boolean {
+    if (err instanceof WearablesInputError) {
+      this.respondJson(res, 400, {
+        error: "invalid_request",
+        code: "invalid_request",
+        message: err.message,
+      });
+      return true;
+    }
+    return false;
+  }
+}
+
+/** Optional string field from a JSON body: absent/null/"" → undefined. */
+function optionalQueryString(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string") {
+    throw new EngramAccessInputError(
+      `${label} must be a string (got ${JSON.stringify(value)})`,
+    );
+  }
+  return value;
+}
+
+/** Optional non-empty query param: null/"" → undefined. */
+function nonEmptyQueryParam(value: string | null): string | undefined {
+  return value !== null && value.length > 0 ? value : undefined;
+}
+
+/** Optional positive-integer query param; rejects invalid values. */
+function positiveIntQueryParam(value: string | null, label: string): number | undefined {
+  if (value === null || value.length === 0) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+    throw new EngramAccessInputError(`${label} expects a positive integer`);
+  }
+  return parsed;
 }

@@ -35,6 +35,7 @@ import { expandTildePath } from "./utils/path.js";
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
+import { parseWearablesConfig } from "./wearables/config.js";
 
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
@@ -1142,6 +1143,11 @@ export function parseConfig(raw: unknown): PluginConfig {
     recallMaxProcedures,
   };
 
+  // Wearable transcript ingestion (Limitless / Bee / Omi). Parsing is
+  // delegated to the wearables module; it follows the same loud-reject
+  // conventions as the `procedural` block above.
+  const wearables = parseWearablesConfig(cfg.wearables);
+
   // Coding-agent project/branch scoping (issue #569)
   const rawCodingMode =
     cfg.codingMode && typeof cfg.codingMode === "object" && !Array.isArray(cfg.codingMode)
@@ -2018,6 +2024,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     dreaming,
     dreamsPhases,
     procedural,
+    wearables,
     // At-rest encryption (issue #690 PR 3/4)
     // coerceBool handles CLI string inputs: `--config secureStoreEnabled=true`
     // arrives as the string "true" which `=== true` would reject (CLAUDE.md #36).

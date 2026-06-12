@@ -1,7 +1,7 @@
 {
   "name": "@remnic/cli",
   "version": "9.3.624",
-  "description": "CLI for Remnic memory — init, query, doctor, daemon management",
+  "description": "CLI for Remnic memory \u2014 init, query, doctor, daemon management",
   "type": "module",
   "main": "dist/index.js",
   "exports": {
@@ -47,7 +47,8 @@
     "@remnic/import-gemini": "^9.3.624",
     "@remnic/import-lossless-claw": "^9.3.624",
     "@remnic/import-mem0": "^9.3.624",
-    "@remnic/import-supermemory": "^9.3.624"
+    "@remnic/import-supermemory": "^9.3.624",
+    "@remnic/connector-limitless": "^9.3.624"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": {
@@ -76,6 +77,9 @@
     },
     "@remnic/import-supermemory": {
       "optional": true
+    },
+    "@remnic/connector-limitless": {
+      "optional": true
     }
   },
   "devDependencies": {
@@ -89,7 +93,8 @@
     "@remnic/import-mem0": "workspace:*",
     "@remnic/import-supermemory": "workspace:*",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@remnic/connector-limitless": "workspace:*"
   },
   "license": "MIT",
   "repository": {
