@@ -581,6 +581,42 @@ test("looping pagination cursors stop with a partial marker and keep warning", a
   }
 });
 
+test("looping providers that re-serve rows never duplicate conversations", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const conversation = makeConversation("c1", "2026-06-11", [
+      { speaker: "user", isWearer: true, text: "A conversation the provider keeps re-serving on every page." },
+      { speaker: "Speaker 2", text: "The looping pagination should still store this exactly once." },
+    ]);
+    // Pathological: every page returns the SAME row and loops the cursor.
+    const reServingConnector = {
+      id: "testsource",
+      displayName: "Test Source",
+      async verifyAuth() {
+        return { ok: true };
+      },
+      async fetchConversations() {
+        return { conversations: [conversation], nextCursor: "loop" };
+      },
+    };
+    const { deps, written } = makeDeps(memoryDir);
+    const summary = await syncWearableSource(
+      reServingConnector,
+      settings(),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(summary.conversations, 1, "re-served rows collapse by conversation id");
+    assert.ok(summary.warnings.some((warning) => warning.includes("repeated cursor")));
+    assert.equal(written.length, 1);
+    const occurrences = written[0].serialized.split("conversation c1").length - 1;
+    assert.equal(occurrences, 1, "day file stores the conversation exactly once");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("long provider days paginate fully — no page-count truncation", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {

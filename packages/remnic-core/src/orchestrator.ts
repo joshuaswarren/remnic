@@ -3000,7 +3000,10 @@ export class Orchestrator {
           `wearables auto-sync started: every ${this.config.wearables.autoSyncIntervalMinutes}m over ${this.config.wearables.autoSyncDays}d (deep ${this.config.wearables.autoSyncDeepDays}d daily)`,
         );
       } catch (err) {
-        log.warn(`wearables auto-sync failed to start (non-fatal): ${err}`);
+        const { displayErrorDetail } = await import("./runtime/better-sqlite.js");
+        log.warn(
+          `wearables auto-sync failed to start (non-fatal): ${displayErrorDetail(err)}`,
+        );
       }
     }
 

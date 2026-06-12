@@ -813,6 +813,32 @@
             "default": true,
             "description": "Write one compact daily-digest memory per synced source/day."
           },
+          "autoSyncEnabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Periodically refresh transcripts in-process on long-lived hosts. Every tick re-syncs a rolling window ending today (existing day files included)."
+          },
+          "autoSyncIntervalMinutes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1440,
+            "default": 15,
+            "description": "Minutes between auto-sync ticks."
+          },
+          "autoSyncDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 90,
+            "default": 2,
+            "description": "Rolling window (days ending today) refreshed on each auto-sync tick."
+          },
+          "autoSyncDeepDays": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 90,
+            "default": 7,
+            "description": "Once-per-local-day deep refresh window (days) for late uploads and provider re-processing. 0 disables; otherwise must be >= autoSyncDays."
+          },
           "corrections": {
             "type": "array",
             "default": [],
@@ -936,9 +962,8 @@
                 "maxMemoriesPerDay": {
                   "type": "integer",
                   "minimum": 0,
-                  "maximum": 500,
-                  "default": 50,
-                  "description": "Cap on memories created per source per day. Set to 0 to disable the cap."
+                  "default": 0,
+                  "description": "Cap on memories created per source per day. 0 (the default) disables the cap."
                 },
                 "importNativeMemories": {
                   "type": "string",

@@ -189,9 +189,16 @@ async function fetchAllConversationsForDate(
   signal: AbortSignal | undefined,
   warnings: string[],
 ): Promise<{ conversations: WearableConversation[]; partial: boolean }> {
-  const conversations: WearableConversation[] = [];
+  // Keyed by conversation id: a looping or overlapping provider can
+  // re-serve rows it already returned, and appending blindly would
+  // store the same conversation twice in the day file (Cursor review
+  // on PR #1464). Map keeps first-seen order; a re-served id replaces
+  // its entry in place, so the provider's LATEST version of a
+  // conversation wins — exactly what the current-day refresh wants.
+  const byId = new Map<string, WearableConversation>();
   let cursor: string | null | undefined = undefined;
   const seenCursors = new Set<string>();
+  const collect = () => [...byId.values()];
   for (let page = 0; page < PAGE_SAFETY_CEILING; page++) {
     const result = await connector.fetchConversations({
       date,
@@ -199,15 +206,17 @@ async function fetchAllConversationsForDate(
       cursor,
       signal,
     });
-    conversations.push(...result.conversations);
-    if (!result.nextCursor) return { conversations, partial: false };
+    for (const conversation of result.conversations) {
+      byId.set(conversation.id, conversation);
+    }
+    if (!result.nextCursor) return { conversations: collect(), partial: false };
     // A repeated cursor means the provider's pagination is looping —
     // following it again would refetch the same page forever.
     if (seenCursors.has(result.nextCursor)) {
       warnings.push(
         `${connector.id}: provider pagination repeated cursor on ${date} — stopped to avoid an infinite loop; day may be partially synced (every sync refetches and re-warns while the provider misbehaves)`,
       );
-      return { conversations, partial: true };
+      return { conversations: collect(), partial: true };
     }
     seenCursors.add(result.nextCursor);
     cursor = result.nextCursor;
@@ -215,7 +224,7 @@ async function fetchAllConversationsForDate(
   warnings.push(
     `${connector.id}: stopped paginating ${date} after the ${PAGE_SAFETY_CEILING}-page safety ceiling — day may be partially synced (every sync refetches and re-warns while this persists)`,
   );
-  return { conversations, partial: true };
+  return { conversations: collect(), partial: true };
 }
 
 /** Visible marker appended to day files whose fetch hit the page cap. */
