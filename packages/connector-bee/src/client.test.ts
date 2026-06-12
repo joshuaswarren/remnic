@@ -179,5 +179,5 @@ test("verifyAuth reports proxy reachability problems distinctly", async () => {
   ]);
   const result = await client.verifyAuth();
   assert.equal(result.ok, false);
-  assert.match(result.detail ?? "", /start it with `bee proxy`/);
+  assert.match(result.detail ?? "", /is `bee proxy` running\?/);
 });

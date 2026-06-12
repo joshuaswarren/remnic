@@ -211,16 +211,12 @@ export class BeeClient {
         };
       }
       // BeeApiError messages are our own constructed strings (status
-      // codes + endpoint role) — keep them actionable; only foreign
-      // network/timeout errors are reduced to name + code.
-      const detail =
-        err instanceof BeeApiError ? err.message : describeNetworkError(err);
+      // codes + endpoint role; network failures already carry the
+      // `bee proxy` hint from requestJson) — keep them actionable.
+      // Only foreign errors are reduced to name + code.
       return {
         ok: false,
-        detail:
-          this.usingLocalProxy && !(err instanceof BeeApiError)
-            ? `could not reach the local bee proxy at ${this.baseUrl} — start it with \`bee proxy\` (${detail})`
-            : detail,
+        detail: err instanceof BeeApiError ? err.message : describeNetworkError(err),
       };
     }
   }
