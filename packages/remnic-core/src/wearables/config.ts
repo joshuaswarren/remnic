@@ -171,13 +171,18 @@ function parseSourceSettings(
   const defaults = defaultWearableSourceSettings();
 
   const minConfidenceRaw = coerceNumber(raw.minConfidence);
-  if (raw.minConfidence !== undefined && minConfidenceRaw === undefined) {
-    throw new Error(`${keyPath}.minConfidence must be a number between 0 and 1`);
+  // Out-of-range values reject loudly instead of clamping — silently
+  // turning minConfidence 7 into 1 would change the memory gate in a
+  // way the operator never asked for (Codex P2 on PR #1458, round 3).
+  if (
+    raw.minConfidence !== undefined &&
+    (minConfidenceRaw === undefined || minConfidenceRaw < 0 || minConfidenceRaw > 1)
+  ) {
+    throw new Error(
+      `${keyPath}.minConfidence must be a number between 0 and 1 (got ${JSON.stringify(raw.minConfidence)})`,
+    );
   }
-  const minConfidence =
-    minConfidenceRaw !== undefined
-      ? Math.min(1, Math.max(0, minConfidenceRaw))
-      : defaults.minConfidence;
+  const minConfidence = minConfidenceRaw ?? defaults.minConfidence;
 
   const maxPerDayRaw = coerceNumber(raw.maxMemoriesPerDay);
   // Reject non-integers instead of flooring them: 0.5 would floor to 0,

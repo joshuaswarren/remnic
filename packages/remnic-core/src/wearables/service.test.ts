@@ -312,6 +312,25 @@ test("transcriptMemories filters by wearable source and day", async () => {
   }
 });
 
+test("malformed source ids reject as input errors before storage reads", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
+  try {
+    const service = makeService(makeStorage(dir));
+    await assert.rejects(service.dayTranscript("2026-06-10", "../x"), /invalid source id/);
+    await assert.rejects(service.listDays("Bad Source"), /invalid source id/);
+    await assert.rejects(
+      service.searchTranscripts("solar", { source: "../escape" }),
+      /invalid source id/,
+    );
+    await assert.rejects(
+      service.transcriptMemories({ source: " " }),
+      /invalid source id/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("sync validates source selection before touching connectors", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
   try {

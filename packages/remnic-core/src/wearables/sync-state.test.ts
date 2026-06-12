@@ -83,6 +83,36 @@ test("native memory ids are deduplicated and bounded", () => {
   assert.ok(ids.includes("id-5999"));
 });
 
+test("clearMemoryDays removes stale completion records", () => {
+  let state = updateSourceSyncState(emptySyncState(), "limitless", {
+    syncedAt: "2026-06-11T01:00:00.000Z",
+    days: ["2026-06-10"],
+    dayHashes: { "2026-06-10": "h1" },
+    memoryDayHashes: { "2026-06-10": "h1" },
+  });
+  assert.equal(state.sources.limitless.memoryDayHashes?.["2026-06-10"], "h1");
+
+  // A later run where the day's memory pass failed must clear the
+  // earlier completion record even though the body hash is unchanged.
+  state = updateSourceSyncState(state, "limitless", {
+    syncedAt: "2026-06-12T01:00:00.000Z",
+    days: ["2026-06-10"],
+    dayHashes: { "2026-06-10": "h1" },
+    clearMemoryDays: ["2026-06-10"],
+  });
+  assert.equal(state.sources.limitless.memoryDayHashes?.["2026-06-10"], undefined);
+
+  // A clear for a day that completed in the same run is a no-op.
+  state = updateSourceSyncState(state, "limitless", {
+    syncedAt: "2026-06-13T01:00:00.000Z",
+    days: ["2026-06-10"],
+    dayHashes: { "2026-06-10": "h1" },
+    memoryDayHashes: { "2026-06-10": "h1" },
+    clearMemoryDays: ["2026-06-10"],
+  });
+  assert.equal(state.sources.limitless.memoryDayHashes?.["2026-06-10"], "h1");
+});
+
 test("day hashes are bounded to the most recent dates", () => {
   const hashes: Record<string, string> = {};
   for (let index = 0; index < 900; index++) {

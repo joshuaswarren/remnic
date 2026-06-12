@@ -112,6 +112,13 @@ export function updateSourceSyncState(
     dayHashes: Record<string, string>;
     /** Days whose memory pass completed cleanly this run. */
     memoryDayHashes?: Record<string, string>;
+    /**
+     * Days whose memory pass ran this sync but did NOT complete
+     * cleanly. Their previous completion records are removed so a
+     * stale hash from an earlier clean pass can never mask the
+     * failure on the next sync.
+     */
+    clearMemoryDays?: string[];
     importedNativeMemoryIds?: string[];
   },
 ): WearableSyncStateFile {
@@ -133,6 +140,11 @@ export function updateSourceSyncState(
     ...(previous?.memoryDayHashes ?? {}),
     ...(update.memoryDayHashes ?? {}),
   };
+  for (const day of update.clearMemoryDays ?? []) {
+    if (!(day in (update.memoryDayHashes ?? {}))) {
+      delete mergedMemoryHashes[day];
+    }
+  }
   const memoryHashKeys = Object.keys(mergedMemoryHashes).sort();
   while (memoryHashKeys.length > MAX_TRACKED_DAY_HASHES) {
     const oldest = memoryHashKeys.shift();

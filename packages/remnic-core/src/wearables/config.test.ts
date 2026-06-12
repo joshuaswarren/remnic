@@ -121,13 +121,17 @@ test("correction rules and redaction patterns are compiled at parse time", () =>
   assert.equal(parsed.redactionPatterns.length, 1);
 });
 
-test("minConfidence clamps into [0,1]", () => {
-  assert.equal(
-    parseWearablesConfig({ sources: { bee: { minConfidence: 7 } } }).sources.bee.minConfidence,
-    1,
+test("minConfidence rejects out-of-range values instead of clamping", () => {
+  assert.throws(
+    () => parseWearablesConfig({ sources: { bee: { minConfidence: 7 } } }),
+    /minConfidence must be a number between 0 and 1/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ sources: { bee: { minConfidence: -1 } } }),
+    /minConfidence/,
   );
   assert.equal(
-    parseWearablesConfig({ sources: { bee: { minConfidence: -1 } } }).sources.bee.minConfidence,
-    0,
+    parseWearablesConfig({ sources: { bee: { minConfidence: 0.85 } } }).sources.bee.minConfidence,
+    0.85,
   );
 });

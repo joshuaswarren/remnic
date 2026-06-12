@@ -121,6 +121,17 @@ export interface WearableDayTranscriptView {
   overlapsWith: string[];
 }
 
+/** Mirrors the storage-layer guard so surface inputs fail as 400s. */
+const SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+
+function assertValidSourceId(source: string): void {
+  if (!SOURCE_ID_PATTERN.test(source)) {
+    throw new WearablesInputError(
+      `invalid source id '${source}' — expected lowercase letters, digits, and dashes`,
+    );
+  }
+}
+
 const TRANSCRIPT_SEARCH_DEFAULT_LIMIT = 10;
 const TRANSCRIPT_SEARCH_MAX_LIMIT = 50;
 const MEMORY_LIST_DEFAULT_LIMIT = 50;
@@ -304,6 +315,7 @@ export class WearablesService {
     if (!isValidTranscriptDate(date)) {
       throw new WearablesInputError(`invalid date '${date}' — expected YYYY-MM-DD`);
     }
+    if (sourceId !== undefined) assertValidSourceId(sourceId);
     const storage = await this.deps.getStorage();
     const targets =
       sourceId !== undefined
@@ -336,6 +348,7 @@ export class WearablesService {
   async listDays(
     sourceId?: string,
   ): Promise<Array<{ source: string; date: string }>> {
+    if (sourceId !== undefined) assertValidSourceId(sourceId);
     const storage = await this.deps.getStorage();
     return storage.listWearableTranscriptDays(sourceId);
   }
@@ -359,6 +372,7 @@ export class WearablesService {
     if (trimmed.length === 0) {
       throw new WearablesInputError("transcript search requires a non-empty query");
     }
+    if (options.source !== undefined) assertValidSourceId(options.source);
     for (const [name, value] of [
       ["from", options.from],
       ["to", options.to],
@@ -452,6 +466,7 @@ export class WearablesService {
     if (options.date !== undefined && !isValidTranscriptDate(options.date)) {
       throw new WearablesInputError(`invalid date '${options.date}' — expected YYYY-MM-DD`);
     }
+    if (options.source !== undefined) assertValidSourceId(options.source);
     const limit = clampLimit(
       options.limit,
       MEMORY_LIST_DEFAULT_LIMIT,

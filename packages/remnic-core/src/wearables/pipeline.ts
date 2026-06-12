@@ -283,6 +283,7 @@ export async function syncWearableSource(
   const previousState = syncState.sources[connector.id];
   const dayHashes: Record<string, string> = {};
   const memoryDayHashes: Record<string, string> = {};
+  const failedMemoryDays: string[] = [];
   const importedNativeIds: string[] = [];
 
   for (const date of dates) {
@@ -408,9 +409,15 @@ export async function syncWearableSource(
           if (wrote) summary.memoriesCreated += 1;
         }
         // Record completion only for a warning-free pass so partial
-        // extraction (engine failure mid-day) retries next sync.
+        // extraction (engine failure mid-day) retries next sync. A
+        // failed pass also clears any earlier completion record for
+        // the day — a recreated transcript with an unchanged body hash
+        // must not let a stale record mask the failure (Cursor review
+        // on PR #1458, round 3).
         if (generated.warnings.length === 0) {
           memoryDayHashes[date] = bodyHash;
+        } else {
+          failedMemoryDays.push(date);
         }
       }
     } else if (settings.memoryMode !== "off" && memoryPassComplete) {
@@ -474,6 +481,7 @@ export async function syncWearableSource(
     days: dates,
     dayHashes,
     memoryDayHashes,
+    clearMemoryDays: failedMemoryDays,
     importedNativeMemoryIds: importedNativeIds,
   });
   await saveSyncState(deps.memoryDir, syncState);

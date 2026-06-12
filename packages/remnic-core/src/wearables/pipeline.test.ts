@@ -378,6 +378,47 @@ test("a failed memory pass retries on the next sync even when the day is unchang
   }
 });
 
+test("a stale completion record cannot mask a failed pass on a recreated day file", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "Decisions about the annual offsite were finalized today." },
+          { speaker: "Speaker 2", text: "The offsite plan is locked for the first week of October." },
+        ]),
+      ],
+    };
+    const { deps, memoryWrites } = makeDeps(memoryDir);
+    const healthyExtract = deps.memoryGen?.extract;
+    assert.ok(deps.memoryGen && healthyExtract);
+
+    // Sync 1: clean pass — completion recorded for body hash H.
+    await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.equal(memoryWrites.length, 1);
+
+    // Sync 2: the day file was deleted (changed=true on recreate) and
+    // the engine fails — the old completion record for the SAME body
+    // hash must be cleared, not carried forward.
+    const readBackup = deps.readDayContentHash;
+    deps.readDayContentHash = async () => null;
+    deps.memoryGen.extract = async () => {
+      throw new Error("engine outage");
+    };
+    const second = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.ok(second.warnings.some((warning) => warning.includes("extraction failed")));
+    deps.readDayContentHash = readBackup;
+
+    // Sync 3: unchanged file, healthy engine — extraction must re-run.
+    deps.memoryGen.extract = healthyExtract;
+    const third = await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.equal(third.transcriptsWritten.length, 0, "file unchanged");
+    assert.equal(third.memoriesCreated, 1, "failed pass retried despite stale record");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("an all-elided day replaces an existing transcript but never creates one from nothing", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {
