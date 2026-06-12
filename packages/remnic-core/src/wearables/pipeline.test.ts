@@ -250,6 +250,40 @@ test("unchanged days skip rewrite, reindex, and re-extraction; forceMemories re-
   }
 });
 
+test("a deleted day file is recreated even when sync state remembers its hash", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "A conversation worth keeping on disk for sure." },
+          { speaker: "Speaker 2", text: "Agreed, this transcript should survive resyncs." },
+        ]),
+      ],
+    };
+    const { deps, written } = makeDeps(memoryDir);
+    const filesRef = deps as unknown as { readDayContentHash: WearableSyncDeps["readDayContentHash"] };
+    await syncWearableSource(fakeConnector(byDate), settings(), config(), { days: 1 }, deps);
+    assert.equal(written.length, 1);
+
+    // Simulate the day file being deleted while sync state still
+    // remembers its hash — the file is authoritative, so the next sync
+    // must rewrite it (Cursor review on PR #1458).
+    filesRef.readDayContentHash = async () => null;
+    const summary = await syncWearableSource(
+      fakeConnector(byDate),
+      settings(),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.deepEqual(summary.transcriptsWritten, ["2026-06-11"]);
+    assert.equal(written.length, 2);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("memoryMode wanting extraction without an engine warns instead of failing", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {

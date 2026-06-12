@@ -216,6 +216,35 @@ test("searchTranscripts prefers the indexed backend and filters hits to transcri
   }
 });
 
+test("zero in-scope indexed hits fall back to the bounded scan", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
+  try {
+    const storage = makeStorage(dir);
+    storeDay(storage, "limitless", "2026-06-10", ["The solar quote came in under budget."]);
+    const service = new WearablesService({
+      config: { ...defaultWearablesConfig(), enabled: true },
+      getStorage: async () => storage,
+      extract: null,
+      searchBackend: {
+        async search() {
+          // The index returned hits, but they're all ordinary memory
+          // files — transcripts were crowded out of the top results.
+          return [
+            { path: "/memory/facts/2026/06/10/fact-1.md", score: 0.9, preview: "solar memory" },
+            { path: "/memory/facts/2026/06/10/fact-2.md", score: 0.8, preview: "solar memory 2" },
+          ];
+        },
+      },
+    });
+    const results = await service.searchTranscripts("solar");
+    assert.equal(results.length, 1);
+    assert.equal(results[0].backend, "scan");
+    assert.equal(results[0].source, "limitless");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("transcriptMemories filters by wearable source and day", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
   try {

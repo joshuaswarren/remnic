@@ -299,9 +299,11 @@ export async function syncWearableSource(
       registry,
     );
     const bodyHash = hashTranscriptBody(body);
-    const existingHash =
-      previousState?.dayHashes[date] ??
-      (await deps.readDayContentHash(connector.id, date));
+    // The on-disk file is the authority for the skip decision — a hash
+    // remembered in sync state must never suppress recreating a day
+    // file that was deleted or lost (Cursor review on PR #1458). The
+    // state's dayHashes remain as bookkeeping only.
+    const existingHash = await deps.readDayContentHash(connector.id, date);
     const changed = existingHash !== bodyHash;
 
     if (changed) {

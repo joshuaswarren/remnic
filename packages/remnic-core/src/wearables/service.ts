@@ -400,7 +400,15 @@ export class WearablesService {
           });
           if (results.length >= limit) break;
         }
-        return results;
+        // The index spans the whole memory dir, so ordinary memory
+        // files can crowd transcripts out of the top hits entirely.
+        // Zero in-scope hits therefore doesn't mean "no transcript
+        // matches" — fall through to the bounded scan in that case
+        // (Codex P2 on PR #1458). Partial result sets stay indexed-only
+        // so the two backends never interleave in one response.
+        if (results.length > 0) {
+          return results;
+        }
       }
     }
 
