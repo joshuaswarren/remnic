@@ -90,6 +90,46 @@ test("transcript files never surface from readAllMemories", async () => {
   }
 });
 
+test("promoteWearableMemory flips status, merges evidence, and updates confidence", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    const id = await storage.writeMemory("fact", "Launch moved to September twelfth.", {
+      confidence: 0.6,
+      source: "wearable:limitless",
+      status: "pending_review",
+      structuredAttributes: { wearableSource: "limitless", trustScore: "0.600" },
+    });
+    const promoted = await storage.promoteWearableMemory(
+      id,
+      { trustScore: "0.750", trustDecision: "promoted-by-corroboration" },
+      0.75,
+    );
+    assert.equal(promoted, true);
+    const memory = (await storage.readAllMemories()).find(
+      (entry) => entry.frontmatter.id === id,
+    );
+    assert.ok(memory);
+    assert.equal(memory.frontmatter.status, "active");
+    assert.equal(memory.frontmatter.confidence, 0.75);
+    assert.equal(memory.frontmatter.structuredAttributes?.trustScore, "0.750");
+    assert.equal(
+      memory.frontmatter.structuredAttributes?.trustDecision,
+      "promoted-by-corroboration",
+    );
+
+    // Already-active rows are not re-promoted (operator decisions win).
+    assert.equal(await storage.promoteWearableMemory(id, {}, 0.9), false);
+    assert.equal(await storage.promoteWearableMemory("missing-id", {}), false);
+
+    const found = await storage.findWearableMemoryByContent(
+      "Launch moved to September twelfth.",
+    );
+    assert.equal(found?.id, id);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("non-transcript files in the wearables tree are ignored by listing", async () => {
   const { storage, dir } = makeStorage();
   try {

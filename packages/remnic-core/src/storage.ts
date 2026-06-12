@@ -1168,6 +1168,16 @@ export class ContentHashIndex {
  *   normalizeAttributePairs({ foo: "bar", BAZ: "qux" })
  *   // → "baz: qux; foo: bar"
  */
+/**
+ * Remove the "[Attributes: ...]" suffix `writeMemory` appends to the
+ * stored body when structuredAttributes are present, yielding the raw
+ * fact text for content comparison. Inverse companion of
+ * `normalizeAttributePairs` enrichment.
+ */
+export function stripAttributesSuffix(content: string): string {
+  return content.replace(/\n\[Attributes: [^\]]*\]\s*$/, "").trim();
+}
+
 export function normalizeAttributePairs(pairs: Record<string, string>): string {
   return Object.entries(pairs)
     .map(([k, v]) => [k.trim().toLowerCase(), v.trim()] as [string, string])
@@ -2597,20 +2607,22 @@ export class StorageManager {
   }
 
   /**
-   * Locate a wearable-sourced memory by exact (trimmed) content.
-   * Used by the smart trust pipeline to find an earlier borderline
-   * write when the same fact re-extracts with stronger evidence.
+   * Locate a wearable-sourced memory by exact (trimmed) content,
+   * ignoring the "[Attributes: ...]" suffix writeMemory appends for
+   * structuredAttributes — callers pass the raw fact text. Used by the
+   * smart trust pipeline to find an earlier borderline write when the
+   * same fact re-extracts with stronger evidence.
    */
   async findWearableMemoryByContent(
     content: string,
   ): Promise<{ id: string; status: MemoryStatus | undefined } | null> {
-    const needle = content.trim();
+    const needle = stripAttributesSuffix(content);
     const memories = await this.readAllMemories();
     for (const memory of memories) {
       if (
         typeof memory.frontmatter.source === "string" &&
         memory.frontmatter.source.startsWith("wearable:") &&
-        memory.content.trim() === needle
+        stripAttributesSuffix(memory.content) === needle
       ) {
         return { id: memory.frontmatter.id, status: memory.frontmatter.status };
       }
@@ -2627,6 +2639,7 @@ export class StorageManager {
   async promoteWearableMemory(
     id: string,
     attributeUpdates: Record<string, string>,
+    confidence?: number,
   ): Promise<boolean> {
     const memories = await this.readAllMemories();
     const memory = memories.find((entry) => entry.frontmatter.id === id);
@@ -2634,6 +2647,12 @@ export class StorageManager {
     if (memory.frontmatter.status !== "pending_review") return false;
     return this.writeMemoryFrontmatter(memory, {
       status: "active",
+      // Keep frontmatter confidence in step with the re-scored trust —
+      // new smart writes persist trust as confidence, and a promoted
+      // row must not keep its stale borderline value.
+      ...(typeof confidence === "number" && Number.isFinite(confidence)
+        ? { confidence: Math.min(1, Math.max(0, confidence)) }
+        : {}),
       structuredAttributes: {
         ...(memory.frontmatter.structuredAttributes ?? {}),
         ...attributeUpdates,

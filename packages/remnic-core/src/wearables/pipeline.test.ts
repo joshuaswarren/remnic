@@ -123,7 +123,7 @@ function makeDeps(memoryDir: string): {
       files.set(`${sourceId}/${date}`, serialized);
       written.push({ source: sourceId, date, serialized });
     },
-    async afterTranscriptsWritten() {
+    async afterWrites() {
       reindexes.count += 1;
     },
     memoryGen: {
@@ -812,6 +812,73 @@ test("a second device's day write invalidates the first device's memory-pass com
       "A's completion cleared by B's new same-day evidence",
     );
     assert.ok(state.sources.sourceb.memoryDayHashes?.[day], "B's own pass recorded");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a promotion-only re-pass still fires the reindex hook", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const day = "2026-06-11";
+    const byDate = {
+      [day]: [
+        makeConversation("c1", day, [
+          { speaker: "user", isWearer: true, text: "We are moving the launch to September twelfth after the vendor call today." },
+          { speaker: "Speaker 2", text: "The vendor confirmed the September launch date on the call." },
+        ]),
+      ],
+    };
+    const { deps, reindexes, memoryWrites } = makeDeps(memoryDir);
+    assert.ok(deps.memoryGen);
+    const borderline = "The launch moved to September twelfth after the vendor call.";
+    deps.memoryGen.extract = async () => ({
+      facts: [{ category: "fact", content: borderline, confidence: 0.75, tags: [] }],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    });
+
+    // Sync 1: borderline fact lands in review. Reindex fires (a memory
+    // was created).
+    await syncWearableSource(fakeConnector(byDate), settings({ memoryMode: "smart" }), config(), { days: 1 }, deps);
+    assert.equal(memoryWrites[0].options.status, "pending_review");
+    const reindexesAfterFirst = reindexes.count;
+
+    // Another source's same-day transcript arrives, then sync 1's
+    // source re-passes: unchanged transcript, duplicate fact — but now
+    // corroborated, so it PROMOTES. The reindex hook must still fire.
+    const written: string[] = [];
+    deps.memoryGen.writer.findWearableMemoryByContent = async (content) =>
+      content.trim() === borderline ? { id: "mem-1", status: "pending_review" } : null;
+    deps.memoryGen.writer.promoteWearableMemory = async (id) => {
+      written.push(id);
+      return true;
+    };
+    deps.memoryGen.writer.hasFactContentHash = async (content) =>
+      content.trim() === borderline;
+    deps.readOtherSourceDayBodies = async () =>
+      new Map([["bee", "They said the launch moves to September twelfth right after that vendor call wrapped."]]);
+    // Clear the completion record the way a sibling-source write would.
+    const { loadSyncState: load, saveSyncState: save } = await import("./sync-state.js");
+    const state = await load(memoryDir);
+    delete state.sources.testsource.memoryDayHashes?.[day];
+    await save(memoryDir, state);
+
+    const second = await syncWearableSource(
+      fakeConnector(byDate),
+      settings({ memoryMode: "smart" }),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(second.transcriptsWritten.length, 0, "no transcript write");
+    assert.equal(second.memoriesPromoted, 1, "promotion happened");
+    assert.deepEqual(written, ["mem-1"]);
+    assert.ok(
+      reindexes.count > reindexesAfterFirst,
+      "reindex fired for the promotion-only run",
+    );
   } finally {
     rmSync(memoryDir, { recursive: true, force: true });
   }

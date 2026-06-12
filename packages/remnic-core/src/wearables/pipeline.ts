@@ -81,8 +81,14 @@ export interface WearableSyncDeps {
     date: string,
     serialized: string,
   ): Promise<void>;
-  /** Optional hook fired once after any day files changed (reindex). */
-  afterTranscriptsWritten?(): Promise<void>;
+  /**
+   * Optional hook fired once after the sync wrote ANYTHING the search
+   * index should see: day transcripts, created memories, in-place
+   * promotions, or native imports. (A cross-source invalidation can
+   * promote memories on a run with zero transcript writes — the index
+   * must still refresh.)
+   */
+  afterWrites?(): Promise<void>;
   /**
    * Memory-generation dependencies, or null when no extraction engine
    * is available in this context (transcripts still sync; memory
@@ -540,12 +546,17 @@ export async function syncWearableSource(
     }
   }
 
-  if (summary.transcriptsWritten.length > 0 && deps.afterTranscriptsWritten) {
+  const wroteAnything =
+    summary.transcriptsWritten.length > 0 ||
+    summary.memoriesCreated > 0 ||
+    summary.memoriesPromoted > 0 ||
+    summary.nativeMemoriesImported > 0;
+  if (wroteAnything && deps.afterWrites) {
     try {
-      await deps.afterTranscriptsWritten();
+      await deps.afterWrites();
     } catch (err) {
       summary.warnings.push(
-        `search reindex failed (transcripts are stored and will index on the next update): ${describeErrorForOperator(err)}`,
+        `search reindex failed (writes are stored and will index on the next update): ${describeErrorForOperator(err)}`,
       );
     }
   }

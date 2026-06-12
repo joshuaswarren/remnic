@@ -13,6 +13,7 @@ import {
 } from "./corrections.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { isValidTranscriptDate, parseDayTranscript } from "./day-store.js";
+import { stripAttributesSuffix } from "../storage.js";
 import type { WearableMemoryGenDeps } from "./memory-gen.js";
 import { WEARABLE_SOURCE_PREFIX, wearableSourceLabel } from "./memory-gen.js";
 import {
@@ -78,6 +79,7 @@ export interface WearableStorageIo {
   promoteWearableMemory(
     id: string,
     attributeUpdates: Record<string, string>,
+    confidence?: number,
   ): Promise<boolean>;
 }
 
@@ -156,13 +158,17 @@ export function createWearableMemoryWriter(
     promoteWearableMemory: storage.promoteWearableMemory.bind(storage),
     hasFactContentHash: async (content: string) => {
       if (await storage.hasFactContentHash(content)) return true;
-      const needle = content.trim();
+      // Compare with the "[Attributes: ...]" enrichment suffix removed
+      // on BOTH sides — stored wearable bodies carry it, callers pass
+      // raw fact text. Without the strip, digest/candidate dedup never
+      // matched attribute-bearing memories.
+      const needle = stripAttributesSuffix(content);
       const memories = await storage.readAllMemories();
       return memories.some(
         (memory) =>
           typeof memory.frontmatter.source === "string" &&
           memory.frontmatter.source.startsWith(`${WEARABLE_SOURCE_PREFIX}:`) &&
-          memory.content.trim() === needle,
+          stripAttributesSuffix(memory.content) === needle,
       );
     },
   };
@@ -314,7 +320,7 @@ export class WearablesService {
           },
           writeDayTranscript: (source, date, serialized) =>
             storage.writeWearableDayTranscript(source, date, serialized),
-          afterTranscriptsWritten: this.deps.reindexSearch,
+          afterWrites: this.deps.reindexSearch,
           memoryGen,
           // Cross-device corroboration evidence (smart mode): other
           // sources' stored transcripts for the same day...

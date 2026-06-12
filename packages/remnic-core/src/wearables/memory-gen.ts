@@ -99,6 +99,7 @@ export interface WearableMemoryWriter {
   promoteWearableMemory?(
     id: string,
     attributeUpdates: Record<string, string>,
+    confidence?: number,
   ): Promise<boolean>;
 }
 
@@ -417,17 +418,21 @@ export async function generateWearableMemories(
         skip("duplicate-existing");
         continue;
       }
-      const promoted = await deps.writer.promoteWearableMemory!(existing.id, {
-        trustScore: scored.trust.toFixed(3),
-        trustDecision: "promoted-by-corroboration",
-        ...(scored.verdict !== undefined ? { judgeVerdict: scored.verdict } : {}),
-        ...(scored.evidence.corroboratedBySources.length > 0
-          ? { corroboratedBySources: scored.evidence.corroboratedBySources.join(",") }
-          : {}),
-        ...(scored.evidence.supportingMemoryId !== undefined
-          ? { supportingMemoryId: scored.evidence.supportingMemoryId }
-          : {}),
-      });
+      const promoted = await deps.writer.promoteWearableMemory!(
+        existing.id,
+        {
+          trustScore: scored.trust.toFixed(3),
+          trustDecision: "promoted-by-corroboration",
+          ...(scored.verdict !== undefined ? { judgeVerdict: scored.verdict } : {}),
+          ...(scored.evidence.corroboratedBySources.length > 0
+            ? { corroboratedBySources: scored.evidence.corroboratedBySources.join(",") }
+            : {}),
+          ...(scored.evidence.supportingMemoryId !== undefined
+            ? { supportingMemoryId: scored.evidence.supportingMemoryId }
+            : {}),
+        },
+        scored.trust,
+      );
       if (promoted) {
         result.promoted += 1;
       } else {
