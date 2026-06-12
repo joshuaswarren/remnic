@@ -159,7 +159,7 @@
       "bufferSurpriseTriggerEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Issue #563 (D-MEM). When true, the smart buffer flushes immediately on turns whose embedding-based surprise score exceeds bufferSurpriseThreshold, in addition to the existing turn-count / signal / time triggers. Additive only — never suppresses existing flushes. Off by default."
+        "description": "Issue #563 (D-MEM). When true, the smart buffer flushes immediately on turns whose embedding-based surprise score exceeds bufferSurpriseThreshold, in addition to the existing turn-count / signal / time triggers. Additive only \u2014 never suppresses existing flushes. Off by default."
       },
       "bufferSurpriseThreshold": {
         "type": "number",
@@ -184,7 +184,7 @@
         "type": "number",
         "default": 2000,
         "minimum": 1,
-        "description": "Hard timeout (ms) for the surprise probe. If the probe does not resolve within this window the buffer treats it as failed and falls through to the existing triggers — a slow or hung embedder cannot stall the turn-append path."
+        "description": "Hard timeout (ms) for the surprise probe. If the probe does not resolve within this window the buffer treats it as failed and falls through to the existing triggers \u2014 a slow or hung embedder cannot stall the turn-append path."
       },
       "consolidateEveryN": {
         "type": "number",
@@ -512,7 +512,7 @@
           "narrativeModel": {
             "type": "string",
             "default": "",
-            "description": "Model used to write dream-journal narratives. Under modelSource=plugin this must be an OpenAI model id used with the direct OpenAI key. Under modelSource=gateway it accepts a provider-qualified id (e.g. zai/glm-4.7-flash) routed through gateway providers — no direct OpenAI key required; leave empty to fall back to taskModelChain / the gateway default chain."
+            "description": "Model used to write dream-journal narratives. Under modelSource=plugin this must be an OpenAI model id used with the direct OpenAI key. Under modelSource=gateway it accepts a provider-qualified id (e.g. zai/glm-4.7-flash) routed through gateway providers \u2014 no direct OpenAI key required; leave empty to fall back to taskModelChain / the gateway default chain."
           },
           "narrativePromptStyle": {
             "type": "string",
@@ -709,7 +709,7 @@
           "branchScope": {
             "type": "boolean",
             "default": false,
-            "description": "When true, memory also overlays the current branch (project:<id>/branch:<name>). Opt-in — most development wants cross-branch recall. Wired in PR 3 of #569."
+            "description": "When true, memory also overlays the current branch (project:<id>/branch:<name>). Opt-in \u2014 most development wants cross-branch recall. Wired in PR 3 of #569."
           },
           "globalFallback": {
             "type": "boolean",
@@ -805,12 +805,12 @@
           },
           "offTheRecordEnabled": {
             "type": "boolean",
-            "default": false,
+            "default": true,
             "description": "Honor a spoken 'off the record' marker by eliding segments until 'back on the record'."
           },
           "digestEnabled": {
             "type": "boolean",
-            "default": false,
+            "default": true,
             "description": "Write one compact daily-digest memory per synced source/day."
           },
           "corrections": {
@@ -887,10 +887,32 @@
                   "enum": [
                     "off",
                     "review",
-                    "auto"
+                    "auto",
+                    "smart"
                   ],
-                  "default": "review",
-                  "description": "Memory creation trust gate: off = transcripts only; review = extracted candidates land as pending_review (default); auto = gated candidates are written active."
+                  "default": "smart",
+                  "description": "Memory creation trust gate: smart (default) = LLM-judge + per-source trust prior + cross-device corroboration decide active/review/drop automatically; off = transcripts only; review = every candidate lands pending_review; auto = deterministic gates only, survivors active."
+                },
+                "sourceTrust": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.8,
+                  "description": "Trust prior for this source's transcription quality (0..1). Multiplies extraction confidence in smart mode \u2014 lower it for a device that mis-transcribes often."
+                },
+                "autoApproveTrust": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.7,
+                  "description": "Smart mode: trust score at/above which facts are written active."
+                },
+                "reviewTrust": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.45,
+                  "description": "Smart mode: trust score at/above which borderline facts are queued for review instead of dropped. Must be below autoApproveTrust."
                 },
                 "minConfidence": {
                   "type": "number",
@@ -915,17 +937,18 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 500,
-                  "default": 20,
+                  "default": 50,
                   "description": "Cap on memories created per source per day. Set to 0 to disable the cap."
                 },
                 "importNativeMemories": {
                   "type": "string",
                   "enum": [
                     "off",
-                    "review"
+                    "review",
+                    "smart"
                   ],
-                  "default": "off",
-                  "description": "Import provider-extracted memories (Bee facts / Omi memories) into the review queue."
+                  "default": "smart",
+                  "description": "Import provider-extracted memories (Bee facts / Omi memories): smart (default) routes them through the same judge + trust pipeline with a reduced prior; review always queues; off skips."
                 },
                 "cleanup": {
                   "type": "object",
@@ -1279,7 +1302,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable Drive imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
+                "description": "Master gate. Default off \u2014 set to true to enable Drive imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
               },
               "clientId": {
                 "type": "string",
@@ -1322,7 +1345,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable Notion imports. The connector additionally requires a token and at least one databaseId to be populated before it will run."
+                "description": "Master gate. Default off \u2014 set to true to enable Notion imports. The connector additionally requires a token and at least one databaseId to be populated before it will run."
               },
               "token": {
                 "type": "string",
@@ -1355,7 +1378,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable Gmail imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
+                "description": "Master gate. Default off \u2014 set to true to enable Gmail imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
               },
               "clientId": {
                 "type": "string",
@@ -1400,7 +1423,7 @@
               "enabled": {
                 "type": "boolean",
                 "default": false,
-                "description": "Master gate. Default off — set to true to enable GitHub imports. The connector additionally requires token, userLogin, and at least one repo to be populated before it will run."
+                "description": "Master gate. Default off \u2014 set to true to enable GitHub imports. The connector additionally requires token, userLogin, and at least one repo to be populated before it will run."
               },
               "token": {
                 "type": "string",
@@ -2102,7 +2125,7 @@
       "recallPlannerModel": {
         "type": "string",
         "default": "gpt-5.5",
-        "description": "Model for LLM-based recall planning (recallPlannerLlmEnabled). A 'provider/model' string resolved through the gateway providers/chain — any configured provider works (OpenAI, Anthropic, Ollama, Codex, gateway personas). Tried first, with taskModelChain / gateway defaults as fallback."
+        "description": "Model for LLM-based recall planning (recallPlannerLlmEnabled). A 'provider/model' string resolved through the gateway providers/chain \u2014 any configured provider works (OpenAI, Anthropic, Ollama, Codex, gateway personas). Tried first, with taskModelChain / gateway defaults as fallback."
       },
       "recallPlannerTimeoutMs": {
         "type": "number",
@@ -2127,7 +2150,7 @@
       "recallPlannerShadowMode": {
         "type": "boolean",
         "default": false,
-        "description": "Run recall planner in shadow mode — evaluate but do not apply results."
+        "description": "Run recall planner in shadow mode \u2014 evaluate but do not apply results."
       },
       "recallPlannerTelemetryEnabled": {
         "type": "boolean",
@@ -2203,7 +2226,7 @@
       "boxTopicShiftThreshold": {
         "type": "number",
         "default": 0.35,
-        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0–1)."
+        "description": "Jaccard overlap threshold below which a topic shift seals the current box (0\u20131)."
       },
       "boxTimeGapMs": {
         "type": "number",
@@ -2228,7 +2251,7 @@
       "traceWeaverOverlapThreshold": {
         "type": "number",
         "default": 0.4,
-        "description": "Minimum Jaccard topic overlap to assign the same traceId (0–1)."
+        "description": "Minimum Jaccard topic overlap to assign the same traceId (0\u20131)."
       },
       "boxRecallDays": {
         "type": "number",
@@ -3058,7 +3081,7 @@
       "recallGraphEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, recall builds a retrieval graph from memory frontmatter and runs Personalized PageRank, merging the result with QMD via MMR (issue #559 PR 4). Default false — ships off pending the retrieval-graph bench in PR 5."
+        "description": "When true, recall builds a retrieval graph from memory frontmatter and runs Personalized PageRank, merging the result with QMD via MMR (issue #559 PR 4). Default false \u2014 ships off pending the retrieval-graph bench in PR 5."
       },
       "recallGraphDamping": {
         "type": "number",
@@ -3086,7 +3109,7 @@
         "minimum": 0,
         "maximum": 1,
         "default": 0.55,
-        "description": "Minimum query↔memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
+        "description": "Minimum query\u2194memory token-overlap ratio for direct-answer eligibility. Set to 0 to disable the gate."
       },
       "recallDirectAnswerImportanceFloor": {
         "type": "number",
@@ -3142,7 +3165,7 @@
       "recallAuditAnomalyDetectionEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true, access surfaces (MCP, HTTP) run the anomaly detector over a tail of the audit trail after each recall and surface flags via logs/metrics. Ships disabled — enable explicitly."
+        "description": "When true, access surfaces (MCP, HTTP) run the anomaly detector over a tail of the audit trail after each recall and surface flags via logs/metrics. Ships disabled \u2014 enable explicitly."
       },
       "recallAuditAnomalyWindowMs": {
         "type": "number",
@@ -3959,7 +3982,7 @@
       "peerProfileReasonerModel": {
         "type": "string",
         "default": "auto",
-        "description": "Model identifier used by the peer profile reasoner. 'auto' inherits the gateway's primary chain (recommended). Logged for telemetry only — actual dispatch routes through the same FallbackLlmClient used by semantic consolidation."
+        "description": "Model identifier used by the peer profile reasoner. 'auto' inherits the gateway's primary chain (recommended). Logged for telemetry only \u2014 actual dispatch routes through the same FallbackLlmClient used by semantic consolidation."
       },
       "peerProfileReasonerMinInteractions": {
         "type": "number",
@@ -4339,7 +4362,7 @@
       "semanticDedupEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Issue #373 — enable write-time semantic similarity guard that skips near-duplicate facts by comparing embeddings to existing memories. Fails open when the embedding backend is unavailable."
+        "description": "Issue #373 \u2014 enable write-time semantic similarity guard that skips near-duplicate facts by comparing embeddings to existing memories. Fails open when the embedding backend is unavailable."
       },
       "semanticDedupThreshold": {
         "type": "number",
@@ -4391,7 +4414,7 @@
       "lifecyclePolicyEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Enable the lifecycle policy engine (hot↔cold tier migration, value scoring, decay). Default true since #686 PR 3/6 — flipping enables the year-2 retention story by default. Set to false to opt out."
+        "description": "Enable the lifecycle policy engine (hot\u2194cold tier migration, value scoring, decay). Default true since #686 PR 3/6 \u2014 flipping enables the year-2 retention story by default. Set to false to opt out."
       },
       "lifecycleFilterStaleEnabled": {
         "type": "boolean",
@@ -5782,7 +5805,7 @@
     "localLlmDisableThinking": {
       "label": "Disable Local LLM Thinking Mode",
       "advanced": true,
-      "help": "Suppress chain-of-thought reasoning on the main local LLM. Default on — extraction / consolidation are structured-output tasks where thinking is pure latency tax and a common cause of 60s timeouts on Qwen 3.5 / Gemma 4 / DeepSeek. The suppression field (chat_template_kwargs) is only sent when the backend is known to support it (LM Studio, vLLM); strict OpenAI-compat backends fail open. Turn off if you want thinking on narrative tasks. Fast-tier client always disables thinking regardless."
+      "help": "Suppress chain-of-thought reasoning on the main local LLM. Default on \u2014 extraction / consolidation are structured-output tasks where thinking is pure latency tax and a common cause of 60s timeouts on Qwen 3.5 / Gemma 4 / DeepSeek. The suppression field (chat_template_kwargs) is only sent when the backend is known to support it (LM Studio, vLLM); strict OpenAI-compat backends fail open. Turn off if you want thinking on narrative tasks. Fast-tier client always disables thinking regardless."
     },
     "evalHarnessEnabled": {
       "label": "Evaluation Harness",

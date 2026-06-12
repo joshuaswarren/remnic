@@ -143,14 +143,34 @@ export interface WearableSourceSettings {
   userId?: string;
   /**
    * Memory creation mode (trust gate):
+   *  - "smart":  DEFAULT. Fully automated trust pipeline: the
+   *              extraction judge (LLM-as-judge) plus a per-source
+   *              trust prior, cross-device corroboration, and
+   *              existing-memory support combine into a trust score.
+   *              High-trust facts are written active; borderline facts
+   *              go to the review queue; low-trust/judge-rejected
+   *              facts are dropped. See wearables/trust.ts.
    *  - "off":    transcripts only; never create memories.
-   *  - "review": extract candidate memories but write every one with
-   *              status "pending_review" so nothing enters active
-   *              recall without operator approval. Default.
-   *  - "auto":   extracted memories that pass the quality gates are
-   *              written active, like live-conversation extraction.
+   *  - "review": every extracted candidate is written
+   *              "pending_review" — nothing enters active recall
+   *              without operator approval.
+   *  - "auto":   deterministic gates only; survivors written active
+   *              (no judge, no trust scoring).
    */
   memoryMode: WearableMemoryMode;
+  /**
+   * Trust prior for this source's transcription quality (0..1).
+   * Multiplies extraction confidence in smart mode — lower it for a
+   * device that mis-transcribes often. Default 0.8.
+   */
+  sourceTrust: number;
+  /** Smart mode: trust at/above which facts are written active. */
+  autoApproveTrust: number;
+  /**
+   * Smart mode: trust at/above which borderline facts are queued for
+   * review instead of dropped. Must be below autoApproveTrust.
+   */
+  reviewTrust: number;
   /** Drop extracted facts below this confidence (0–1). */
   minConfidence: number;
   /** Drop extracted facts scored below this importance level. */
@@ -161,14 +181,19 @@ export interface WearableSourceSettings {
   maxMemoriesPerDay: number;
   /**
    * Import provider-extracted memories (Bee facts / Omi memories).
-   * "review" lands them in the review queue; "off" (default) skips.
+   *  - "smart": DEFAULT. Same trust pipeline as transcript facts
+   *    (judge + trust prior + corroboration) with a slightly reduced
+   *    prior — provider extraction quality is outside Remnic's
+   *    control.
+   *  - "review": always pending_review.
+   *  - "off": skip.
    */
-  importNativeMemories: "off" | "review";
+  importNativeMemories: "off" | "review" | "smart";
   /** Transcript cleanup toggles. */
   cleanup: WearableCleanupSettings;
 }
 
-export type WearableMemoryMode = "off" | "review" | "auto";
+export type WearableMemoryMode = "off" | "review" | "auto" | "smart";
 
 export interface WearableCleanupSettings {
   /** Merge consecutive segments from the same speaker. */

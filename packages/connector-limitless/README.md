@@ -30,7 +30,7 @@ Remnic discovers it at runtime. No further registration is needed.
     "sources": {
       "limitless": {
         "enabled": true,
-        "memoryMode": "review"   // off | review | auto — review is the default
+        "memoryMode": "smart"    // smart (default) | off | review | auto
       }
     }
   }
@@ -62,11 +62,15 @@ automatic retry honoring the API's `retryAfter`.
 
 ## Trust gating (worth reading)
 
-Limitless transcription quality varies; the default `memoryMode:
-"review"` means **no memory enters active recall without your
-approval** — extraction candidates land in the review queue. Tighten or
-loosen per source with `minConfidence`, `minImportance`,
-`maxMemoriesPerDay`, or `memoryMode: "auto"`.
+Limitless transcription quality varies, so memory creation is
+trust-gated. The default `memoryMode: "smart"` is fully automated:
+Remnic's LLM extraction judge plus a per-source trust prior
+(`sourceTrust`) and corroboration (agreement with another wearable's
+same-day transcript, or with an existing memory) combine into a trust
+score — high-trust facts are written active, borderline facts go to the
+review queue, low-trust facts are dropped. Tune with `sourceTrust`,
+`autoApproveTrust`, `reviewTrust`, and `maxMemoriesPerDay`, or switch
+to `"review"` (everything queued), `"auto"`, or `"off"`.
 
 Full documentation: [docs/wearables.md](https://github.com/joshuaswarren/remnic/blob/main/docs/wearables.md).
 

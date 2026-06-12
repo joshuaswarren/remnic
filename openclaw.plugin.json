@@ -805,12 +805,12 @@
           },
           "offTheRecordEnabled": {
             "type": "boolean",
-            "default": false,
+            "default": true,
             "description": "Honor a spoken 'off the record' marker by eliding segments until 'back on the record'."
           },
           "digestEnabled": {
             "type": "boolean",
-            "default": false,
+            "default": true,
             "description": "Write one compact daily-digest memory per synced source/day."
           },
           "corrections": {
@@ -887,10 +887,32 @@
                   "enum": [
                     "off",
                     "review",
-                    "auto"
+                    "auto",
+                    "smart"
                   ],
-                  "default": "review",
-                  "description": "Memory creation trust gate: off = transcripts only; review = extracted candidates land as pending_review (default); auto = gated candidates are written active."
+                  "default": "smart",
+                  "description": "Memory creation trust gate: smart (default) = LLM-judge + per-source trust prior + cross-device corroboration decide active/review/drop automatically; off = transcripts only; review = every candidate lands pending_review; auto = deterministic gates only, survivors active."
+                },
+                "sourceTrust": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.8,
+                  "description": "Trust prior for this source's transcription quality (0..1). Multiplies extraction confidence in smart mode — lower it for a device that mis-transcribes often."
+                },
+                "autoApproveTrust": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.7,
+                  "description": "Smart mode: trust score at/above which facts are written active."
+                },
+                "reviewTrust": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "default": 0.45,
+                  "description": "Smart mode: trust score at/above which borderline facts are queued for review instead of dropped. Must be below autoApproveTrust."
                 },
                 "minConfidence": {
                   "type": "number",
@@ -915,17 +937,18 @@
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 500,
-                  "default": 20,
+                  "default": 50,
                   "description": "Cap on memories created per source per day. Set to 0 to disable the cap."
                 },
                 "importNativeMemories": {
                   "type": "string",
                   "enum": [
                     "off",
-                    "review"
+                    "review",
+                    "smart"
                   ],
-                  "default": "off",
-                  "description": "Import provider-extracted memories (Bee facts / Omi memories) into the review queue."
+                  "default": "smart",
+                  "description": "Import provider-extracted memories (Bee facts / Omi memories): smart (default) routes them through the same judge + trust pipeline with a reduced prior; review always queues; off skips."
                 },
                 "cleanup": {
                   "type": "object",

@@ -25,23 +25,52 @@ test("boolean-ish strings coerce; garbage booleans throw", () => {
   assert.throws(() => parseWearablesConfig({ enabled: "fales" }), /wearables.enabled/);
 });
 
-test("source settings default to the least-privileged memory mode", () => {
+test("source settings default to the fully-automated smart pipeline", () => {
   const parsed = parseWearablesConfig({
     enabled: true,
     sources: { limitless: { enabled: true } },
   });
   const source = parsed.sources.limitless;
-  assert.equal(source.memoryMode, "review");
+  assert.equal(source.memoryMode, "smart");
+  assert.equal(source.sourceTrust, 0.8);
+  assert.equal(source.autoApproveTrust, 0.7);
+  assert.equal(source.reviewTrust, 0.45);
   assert.equal(source.minConfidence, 0.6);
   assert.equal(source.minImportance, "low");
-  assert.equal(source.maxMemoriesPerDay, 20);
-  assert.equal(source.importNativeMemories, "off");
+  assert.equal(source.maxMemoriesPerDay, 50);
+  assert.equal(source.importNativeMemories, "smart");
   assert.deepEqual(source.cleanup, {
     mergeSameSpeaker: true,
     stripFillers: true,
     collapseRepeats: true,
     dropLowQuality: true,
   });
+});
+
+test("top-level defaults are full-featured: digest and off-the-record on", () => {
+  const parsed = parseWearablesConfig({});
+  assert.equal(parsed.digestEnabled, true);
+  assert.equal(parsed.offTheRecordEnabled, true);
+  assert.equal(parsed.redactionEnabled, true);
+});
+
+test("trust knobs validate range and ordering", () => {
+  assert.throws(
+    () => parseWearablesConfig({ sources: { bee: { sourceTrust: 1.5 } } }),
+    /sourceTrust must be a number between 0 and 1/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ sources: { bee: { autoApproveTrust: -1 } } }),
+    /autoApproveTrust/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ sources: { bee: { reviewTrust: 0.9, autoApproveTrust: 0.7 } } }),
+    /reviewTrust .* must be below autoApproveTrust/,
+  );
+  const parsed = parseWearablesConfig({
+    sources: { bee: { sourceTrust: 0.5, autoApproveTrust: 0.8, reviewTrust: 0.3 } },
+  });
+  assert.equal(parsed.sources.bee.sourceTrust, 0.5);
 });
 
 test("invalid enum values list the valid options", () => {

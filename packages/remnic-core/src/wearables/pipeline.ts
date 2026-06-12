@@ -36,6 +36,7 @@ import {
   writeDailyDigestMemory,
   type WearableMemoryGenDeps,
 } from "./memory-gen.js";
+import { tokenizeDayBody, type CorroborationContext } from "./trust.js";
 import { applyOffTheRecord, compileRedactionPatterns, redactText } from "./redaction.js";
 import { loadSpeakerRegistry } from "./speakers.js";
 import {
@@ -88,6 +89,16 @@ export interface WearableSyncDeps {
    * creation is skipped with a warning when the mode wanted it).
    */
   memoryGen: WearableMemoryGenDeps | null;
+  /**
+   * Same-day transcript bodies from OTHER sources, for cross-device
+   * corroboration in smart mode. Absent disables the boost.
+   */
+  readOtherSourceDayBodies?(
+    date: string,
+    excludeSource: string,
+  ): Promise<Map<string, string>>;
+  /** Existing active memories for support-boost corroboration. */
+  listActiveMemories?(): Promise<Array<{ id: string; content: string }>>;
   /** Clock injection for tests. */
   now?: () => Date;
 }
@@ -294,6 +305,8 @@ export async function syncWearableSource(
   const dayHashes: Record<string, string> = {};
   const memoryDayHashes: Record<string, string> = {};
   const failedMemoryDays: string[] = [];
+  // Existing-memory list is loaded at most once per sync run.
+  const runMemoryCache: { memories?: Array<{ id: string; content: string }> } = {};
   const importedNativeIds: string[] = [];
 
   for (const date of dates) {
@@ -380,6 +393,9 @@ export async function syncWearableSource(
 
     if (allElided) continue;
 
+    const needsSmartContext =
+      settings.memoryMode === "smart" || settings.importNativeMemories === "smart";
+
     // The memory pass runs when the day changed, when forced, or when
     // the last pass for this exact content didn't complete cleanly —
     // a sync that stored the transcript but failed mid-memory-write
@@ -406,13 +422,20 @@ export async function syncWearableSource(
         // re-runs the day.
         let passClean = false;
         try {
+          const corroboration = needsSmartContext
+            ? await buildCorroborationContext(connector.id, date, deps, runMemoryCache)
+            : undefined;
+          const dayMemoryGen: WearableMemoryGenDeps = {
+            ...deps.memoryGen,
+            ...(corroboration !== undefined ? { corroboration } : {}),
+          };
           const generated = await generateWearableMemories(
             connector.id,
             date,
             cleaned.conversations,
             settings,
             registry,
-            deps.memoryGen,
+            dayMemoryGen,
           );
           summary.memoriesCreated += generated.created;
           summary.memoriesSkipped += generated.skipped;
@@ -448,7 +471,7 @@ export async function syncWearableSource(
   }
 
   if (
-    settings.importNativeMemories === "review" &&
+    settings.importNativeMemories !== "off" &&
     typeof connector.fetchNativeMemories === "function"
   ) {
     if (!deps.memoryGen) {
@@ -459,6 +482,21 @@ export async function syncWearableSource(
       const alreadyImported = new Set(
         previousState?.importedNativeMemoryIds ?? [],
       );
+      const nativeCorroboration =
+        settings.importNativeMemories === "smart"
+          ? await buildCorroborationContext(
+              connector.id,
+              dates[dates.length - 1] ?? dateInTimezone(now, timezone),
+              deps,
+              runMemoryCache,
+            )
+          : undefined;
+      const nativeMemoryGen: WearableMemoryGenDeps = {
+        ...deps.memoryGen,
+        ...(nativeCorroboration !== undefined
+          ? { corroboration: nativeCorroboration }
+          : {}),
+      };
       let cursor: string | null | undefined = undefined;
       for (let page = 0; page < MAX_NATIVE_PAGES; page++) {
         const result = await connector.fetchNativeMemories({
@@ -469,8 +507,10 @@ export async function syncWearableSource(
           connector.id,
           result.memories,
           alreadyImported,
-          deps.memoryGen.writer,
+          settings,
+          nativeMemoryGen,
         );
+        summary.warnings.push(...imported.warnings);
         summary.nativeMemoriesImported += imported.imported;
         importedNativeIds.push(...imported.importedIds);
         for (const id of imported.importedIds) alreadyImported.add(id);
@@ -508,6 +548,31 @@ export async function syncWearableSource(
   await saveSyncState(deps.memoryDir, syncState);
 
   return summary;
+}
+
+/**
+ * Assemble smart-mode corroboration evidence: other sources' same-day
+ * transcript tokens + existing active memories (cached per run).
+ */
+async function buildCorroborationContext(
+  sourceId: string,
+  date: string,
+  deps: WearableSyncDeps,
+  runMemoryCache: { memories?: Array<{ id: string; content: string }> },
+): Promise<CorroborationContext> {
+  const otherSourceDayTokens = new Map<string, Set<string>>();
+  if (deps.readOtherSourceDayBodies) {
+    const bodies = await deps.readOtherSourceDayBodies(date, sourceId);
+    for (const [otherSource, body] of bodies) {
+      otherSourceDayTokens.set(otherSource, tokenizeDayBody(body));
+    }
+  }
+  if (runMemoryCache.memories === undefined) {
+    runMemoryCache.memories = deps.listActiveMemories
+      ? await deps.listActiveMemories()
+      : [];
+  }
+  return { otherSourceDayTokens, existingMemories: runMemoryCache.memories };
 }
 
 export function defaultTimezone(): string {

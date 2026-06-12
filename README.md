@@ -412,15 +412,19 @@ remnic wearables search "that solar quote"
 remnic wearables memories --source limitless --date 2026-06-10
 ```
 
-Memory creation defaults to **review mode**: extraction candidates from
-wearable transcripts land in the review queue (`pending_review`) and
-never enter active recall until approved — a mis-transcription should
-cost you a click, not a corrupted memory. Tune per source with
-`memoryMode`, `minConfidence`, `minImportance`, and
-`maxMemoriesPerDay`. MCP tools (`engram.transcript_day`,
-`engram.transcript_search`, `engram.transcript_memories`,
-`engram.wearables_sync`, `engram.wearables_status`) and HTTP routes
-expose the same surface to agents.
+Memory creation defaults to **smart mode** — a fully automated trust
+pipeline: every candidate runs through Remnic's LLM extraction judge,
+gets a per-source transcription-quality prior, and earns corroboration
+boosts when a second wearable recorded the same content or an existing
+memory supports it. High-trust facts are written active, borderline
+facts go to the review queue, ASR garbage is dropped — and the trust
+evidence (score, judge verdict, corroborating sources) persists on
+every memory. Tune per source with `sourceTrust`, `autoApproveTrust`,
+`reviewTrust`, and `maxMemoriesPerDay`, or pick `review`/`auto`/`off`.
+MCP tools (`remnic.transcript_day`, `remnic.transcript_search`,
+`remnic.transcript_memories`, `remnic.wearables_sync`,
+`remnic.wearables_status` — `engram.*` aliases included) and HTTP
+routes expose the same surface to agents.
 
 See [docs/wearables.md](docs/wearables.md) for the full pipeline,
 configuration reference, speaker labeling, corrections, redaction, and

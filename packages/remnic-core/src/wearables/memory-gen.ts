@@ -28,7 +28,16 @@
  */
 
 import { scoreImportance } from "../importance.js";
+import type { JudgeBatchResult, JudgeCandidate } from "../extraction-judge.js";
+import { getVerdictKind } from "../extraction-judge.js";
 import { describeErrorForOperator } from "./errors.js";
+import {
+  computeTrustScore,
+  decideSmart,
+  findCorroboration,
+  type CorroborationContext,
+  type TrustEvidence,
+} from "./trust.js";
 import type {
   BufferTurn,
   ExtractedFact,
@@ -54,7 +63,7 @@ import type {
 export function memoryStatusForMode(
   mode: WearableMemoryMode,
 ): Extract<MemoryStatus, "active" | "pending_review"> {
-  return mode === "auto" ? "active" : "pending_review";
+  return mode === "auto" || mode === "smart" ? "active" : "pending_review";
 }
 
 /** Narrow writer interface satisfied by `StorageManager`. */
@@ -80,6 +89,18 @@ export interface WearableMemoryWriter {
 export interface WearableMemoryGenDeps {
   extract(turns: BufferTurn[]): Promise<ExtractionResult>;
   writer: WearableMemoryWriter;
+  /**
+   * LLM-as-judge batch evaluation (the existing extraction judge).
+   * Absent when no judge is wired (degraded smart mode: trust scoring
+   * runs on confidence x sourceTrust + corroboration alone).
+   */
+  judgeFacts?(candidates: JudgeCandidate[]): Promise<JudgeBatchResult>;
+  /**
+   * Corroboration evidence for smart mode: other sources' same-day
+   * transcript tokens + existing active memories. Absent disables
+   * corroboration boosts.
+   */
+  corroboration?: CorroborationContext;
 }
 
 export interface WearableMemoryGenResult {
@@ -171,6 +192,70 @@ interface GatedCandidate {
   conversation: WearableConversation;
 }
 
+interface ScoredCandidate {
+  trust: number;
+  verdict?: "accept" | "reject" | "defer";
+  evidence: TrustEvidence;
+}
+
+/**
+ * Smart-mode scoring: one judge batch call for the whole day, then
+ * per-fact trust = confidence x sourceTrust + judge/corroboration
+ * boosts. A judge failure degrades gracefully (warned once; scoring
+ * continues on confidence + corroboration alone).
+ */
+async function scoreCandidates(
+  novel: GatedCandidate[],
+  settings: WearableSourceSettings,
+  deps: WearableMemoryGenDeps,
+  result: WearableMemoryGenResult,
+): Promise<Map<number, ScoredCandidate>> {
+  const scored = new Map<number, ScoredCandidate>();
+  if (novel.length === 0) return scored;
+
+  let verdicts: Map<number, "accept" | "reject" | "defer"> | undefined;
+  if (deps.judgeFacts) {
+    const judgeCandidates: JudgeCandidate[] = novel.map((candidate) => ({
+      text: candidate.fact.content,
+      category: candidate.fact.category,
+      confidence:
+        typeof candidate.fact.confidence === "number"
+          ? candidate.fact.confidence
+          : 0.7,
+      tags: candidate.fact.tags ?? [],
+      importanceLevel: candidate.importance.level,
+    }));
+    try {
+      const judgeResult = await deps.judgeFacts(judgeCandidates);
+      verdicts = new Map();
+      for (const [index, verdict] of judgeResult.verdicts) {
+        verdicts.set(index, getVerdictKind(verdict));
+      }
+    } catch (err) {
+      result.warnings.push(
+        `extraction judge unavailable for this pass: ${describeErrorForOperator(err)} — trust scoring continued without judge verdicts`,
+      );
+    }
+  }
+
+  const corroboration: CorroborationContext = deps.corroboration ?? {
+    otherSourceDayTokens: new Map(),
+    existingMemories: [],
+  };
+  novel.forEach((candidate, index) => {
+    const evidence = findCorroboration(candidate.fact.content, corroboration);
+    const verdict = verdicts?.get(index);
+    const trust = computeTrustScore({
+      extractionConfidence: candidate.fact.confidence,
+      sourceTrust: settings.sourceTrust,
+      judgeVerdict: verdict,
+      evidence,
+    });
+    scored.set(index, { trust, ...(verdict !== undefined ? { verdict } : {}), evidence });
+  });
+  return scored;
+}
+
 /**
  * Run extraction + gates over a day's conversations and persist the
  * survivors. Returns counts for the sync summary.
@@ -227,7 +312,11 @@ export async function generateWearableMemories(
         skip("unsupported-category");
         continue;
       }
+      // In smart mode the trust bands subsume the hard confidence
+      // floor — a borderline fact belongs in the review band, not on
+      // the floor. The pre-filter applies to review/auto modes only.
       if (
+        settings.memoryMode !== "smart" &&
         typeof fact.confidence === "number" &&
         fact.confidence < settings.minConfidence
       ) {
@@ -264,23 +353,62 @@ export async function generateWearableMemories(
     novel.push(candidate);
   }
 
-  // Day cap: keep the most important candidates. Stable ordering —
-  // score desc, then content asc so equal scores compare 0-consistent.
-  novel.sort((a, b) => {
-    if (a.importance.score > b.importance.score) return -1;
-    if (a.importance.score < b.importance.score) return 1;
-    if (a.fact.content < b.fact.content) return -1;
-    if (a.fact.content > b.fact.content) return 1;
+  // Smart mode: judge + trust scoring decide active/review/drop per
+  // fact. The judge runs ONE batch call for the whole day; trust
+  // combines extraction confidence x sourceTrust with corroboration
+  // boosts (cross-device agreement, existing-memory support).
+  let trustById = new Map<number, ScoredCandidate>();
+  if (settings.memoryMode === "smart") {
+    trustById = await scoreCandidates(novel, settings, deps, result);
+  }
+
+  // Day cap: keep the strongest candidates — by trust in smart mode,
+  // by importance otherwise. Stable ordering with a content tiebreak.
+  const strength = (index: number, candidate: GatedCandidate): number =>
+    settings.memoryMode === "smart"
+      ? trustById.get(index)?.trust ?? 0
+      : candidate.importance.score;
+  const indexed = novel.map((candidate, index) => ({ candidate, index }));
+  indexed.sort((a, b) => {
+    const sa = strength(a.index, a.candidate);
+    const sb = strength(b.index, b.candidate);
+    if (sa > sb) return -1;
+    if (sa < sb) return 1;
+    if (a.candidate.fact.content < b.candidate.fact.content) return -1;
+    if (a.candidate.fact.content > b.candidate.fact.content) return 1;
     return 0;
   });
   const cap = settings.maxMemoriesPerDay;
-  const kept = cap > 0 ? novel.slice(0, cap) : novel;
-  if (novel.length > kept.length) {
-    skip("over-day-cap", novel.length - kept.length);
+  const kept = cap > 0 ? indexed.slice(0, cap) : indexed;
+  if (indexed.length > kept.length) {
+    skip("over-day-cap", indexed.length - kept.length);
   }
 
-  const status = memoryStatusForMode(settings.memoryMode);
-  for (const candidate of kept) {
+  const modeStatus = memoryStatusForMode(settings.memoryMode);
+  for (const { candidate, index } of kept) {
+    let status: MemoryStatus = modeStatus;
+    let trustAttributes: Record<string, string> = {};
+    if (settings.memoryMode === "smart") {
+      const scored = trustById.get(index);
+      if (!scored) continue;
+      const decision = decideSmart(scored.trust, scored.verdict, settings);
+      if (decision.outcome === "drop") {
+        skip(decision.reason);
+        continue;
+      }
+      status = decision.outcome === "active" ? "active" : "pending_review";
+      trustAttributes = {
+        trustScore: scored.trust.toFixed(3),
+        trustDecision: decision.reason,
+        ...(scored.verdict !== undefined ? { judgeVerdict: scored.verdict } : {}),
+        ...(scored.evidence.corroboratedBySources.length > 0
+          ? { corroboratedBySources: scored.evidence.corroboratedBySources.join(",") }
+          : {}),
+        ...(scored.evidence.supportingMemoryId !== undefined
+          ? { supportingMemoryId: scored.evidence.supportingMemoryId }
+          : {}),
+      };
+    }
     const tags = [
       ...new Set([
         ...(candidate.fact.tags ?? []),
@@ -290,7 +418,10 @@ export async function generateWearableMemories(
       ]),
     ];
     await deps.writer.writeMemory(candidate.fact.category, candidate.fact.content, {
-      confidence: candidate.fact.confidence,
+      confidence:
+        settings.memoryMode === "smart"
+          ? trustById.get(index)?.trust
+          : candidate.fact.confidence,
       tags,
       source: wearableSourceLabel(sourceId),
       importance: candidate.importance,
@@ -300,6 +431,7 @@ export async function generateWearableMemories(
         wearableSource: sourceId,
         wearableDate: date,
         wearableConversationId: candidate.conversation.id,
+        ...trustAttributes,
       },
       contentHashSource: candidate.fact.content,
       status,
@@ -365,15 +497,26 @@ export async function writeDailyDigestMemory(
  * review queue. Always `pending_review` regardless of memoryMode — the
  * provider's extraction quality is outside Remnic's control.
  */
+/** Native-source trust prior reduction (provider extraction quality). */
+const NATIVE_TRUST_FACTOR = 0.9;
+
 export async function importNativeMemories(
   sourceId: string,
   memories: WearableNativeMemory[],
   alreadyImportedIds: ReadonlySet<string>,
-  writer: WearableMemoryWriter,
-): Promise<{ imported: number; importedIds: string[] }> {
+  settings: WearableSourceSettings,
+  deps: WearableMemoryGenDeps,
+): Promise<{ imported: number; importedIds: string[]; warnings: string[] }> {
   let imported = 0;
   const importedIds: string[] = [];
+  const warnings: string[] = [];
   const seenContent = new Set<string>();
+  const smart = settings.importNativeMemories === "smart";
+
+  // Smart path: one judge batch over the novel items, like transcript
+  // facts, with a reduced source prior — provider extraction quality is
+  // outside Remnic's control.
+  const novel: WearableNativeMemory[] = [];
   for (const memory of memories) {
     const content = memory.content?.trim();
     if (!content) continue;
@@ -381,13 +524,75 @@ export async function importNativeMemories(
     // Intra-run + cross-run dedup: the storage hash index only learns a
     // fact after its write lands, so same-content items within one page
     // batch need the local set.
-    if (seenContent.has(content) || (await writer.hasFactContentHash(content))) {
+    if (seenContent.has(content) || (await deps.writer.hasFactContentHash(content))) {
       importedIds.push(memory.id);
       continue;
     }
     seenContent.add(content);
-    await writer.writeMemory("fact", content, {
-      confidence: 0.6,
+    novel.push({ ...memory, content });
+  }
+
+  let verdicts: Map<number, "accept" | "reject" | "defer"> | undefined;
+  if (smart && deps.judgeFacts && novel.length > 0) {
+    try {
+      const judgeResult = await deps.judgeFacts(
+        novel.map((memory) => ({
+          text: memory.content,
+          category: "fact",
+          confidence: 0.7,
+          tags: memory.tags ?? [],
+        })),
+      );
+      verdicts = new Map();
+      for (const [index, verdict] of judgeResult.verdicts) {
+        verdicts.set(index, getVerdictKind(verdict));
+      }
+    } catch (err) {
+      warnings.push(
+        `extraction judge unavailable for native import: ${describeErrorForOperator(err)} — trust scoring continued without judge verdicts`,
+      );
+    }
+  }
+  const corroboration: CorroborationContext = deps.corroboration ?? {
+    otherSourceDayTokens: new Map(),
+    existingMemories: [],
+  };
+
+  for (const [index, memory] of novel.entries()) {
+    const content = memory.content;
+    let status: MemoryStatus = "pending_review";
+    let trustAttributes: Record<string, string> = {};
+    let confidence = 0.6;
+    if (smart) {
+      const evidence = findCorroboration(content, corroboration);
+      const verdict = verdicts?.get(index);
+      const trust = computeTrustScore({
+        extractionConfidence: undefined,
+        sourceTrust: settings.sourceTrust * NATIVE_TRUST_FACTOR,
+        judgeVerdict: verdict,
+        evidence,
+      });
+      const decision = decideSmart(trust, verdict, settings);
+      if (decision.outcome === "drop") {
+        importedIds.push(memory.id);
+        continue;
+      }
+      status = decision.outcome === "active" ? "active" : "pending_review";
+      confidence = trust;
+      trustAttributes = {
+        trustScore: trust.toFixed(3),
+        trustDecision: decision.reason,
+        ...(verdict !== undefined ? { judgeVerdict: verdict } : {}),
+        ...(evidence.corroboratedBySources.length > 0
+          ? { corroboratedBySources: evidence.corroboratedBySources.join(",") }
+          : {}),
+        ...(evidence.supportingMemoryId !== undefined
+          ? { supportingMemoryId: evidence.supportingMemoryId }
+          : {}),
+      };
+    }
+    await deps.writer.writeMemory("fact", content, {
+      confidence,
       tags: [
         ...new Set([
           ...(memory.tags ?? []),
@@ -402,12 +607,13 @@ export async function importNativeMemories(
       structuredAttributes: {
         wearableSource: sourceId,
         wearableNativeId: memory.id,
+        ...trustAttributes,
       },
       contentHashSource: content,
-      status: "pending_review",
+      status,
     });
     imported += 1;
     importedIds.push(memory.id);
   }
-  return { imported, importedIds };
+  return { imported, importedIds, warnings };
 }

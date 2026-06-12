@@ -63,22 +63,74 @@ pull → off-the-record elision → cleanup → redaction → corrections
 ## Trust-gated memory creation
 
 Wearable ASR is noisy — a mis-transcription must not become a "fact"
-about your life. Memory creation is gated per source:
+about your life. But forcing a human to review every memory defeats the
+point of an always-on recorder. The default mode automates the judgment
+the way production memory systems do:
 
 | `memoryMode` | Behavior |
 |---|---|
+| `smart` (default) | Fully automated trust pipeline (below). High-trust facts are written active; borderline facts go to the review queue; low-trust facts are dropped. |
 | `off` | Transcripts only. Never creates memories. |
-| `review` (default) | Extracted candidates are written with status `pending_review` — nothing enters active recall until you approve it via the existing review-queue surfaces. |
-| `auto` | Candidates that pass every gate are written active, like live-session extraction. |
+| `review` | Every extracted candidate is written `pending_review` — nothing enters active recall until approved. For operators who want a human in the loop. |
+| `auto` | Deterministic gates only; survivors written active (no judge, no trust scoring). |
 
-Deterministic gates apply in `review` and `auto` modes:
+### How smart mode decides
 
-- `minConfidence` (default 0.6) — drop low-confidence extractions.
+Each extracted candidate gets a **trust score** assembled from signals
+that state-of-the-art memory systems use for noisy ingest:
+
+1. **LLM-as-judge** — every candidate runs through Remnic's existing
+   extraction judge (`judgeFactDurability`, the same LLM gate the live
+   conversation pipeline uses, including its verdict cache and defer
+   counters). `reject` drops the fact outright; `defer` routes it to
+   the review queue; `accept` boosts trust (+0.15).
+2. **Provenance prior** — extraction confidence is multiplied by the
+   source's `sourceTrust` (0..1, default 0.8). A device that
+   mis-transcribes often gets a lower prior, so its facts need more
+   independent support to auto-approve (provenance-weighted fusion).
+3. **Cross-device corroboration** — if another wearable's transcript
+   for the *same day* covers the same content (token-coverage
+   similarity via the shared recall tokenizer; no extra LLM cost), the
+   fact gets +0.15 and records which sources agreed. Two microphones
+   mishearing identically is far less likely than one.
+4. **Existing-memory support** — a fact consistent with an existing
+   active memory gets +0.10 and records the supporting memory id
+   (self-consistency with the corpus you already trust).
+
+The score maps to a three-way decision:
+
+```
+trust >= autoApproveTrust (0.7)  -> written ACTIVE
+trust >= reviewTrust      (0.45) -> written pending_review
+below                            -> dropped
+```
+
+Every written memory persists its evidence — `trustScore`,
+`trustDecision`, `judgeVerdict`, `corroboratedBySources`,
+`supportingMemoryId` — in `structuredAttributes`, and the trust score
+becomes the memory's `confidence`. From there Remnic's standing trust
+machinery keeps calibrating: memory-worth outcome counters
+(`mw_success`/`mw_fail`) learn from retrieval outcomes, pattern
+reinforcement promotes repeatedly-observed facts, temporal supersession
+and contradiction scans retire facts that stop being true. Wearable
+memories enter the same lifecycle as everything else — smart mode just
+decides how they arrive.
+
+If no judge is available in a context (no LLM configured), smart mode
+degrades gracefully to confidence × prior + corroboration and says so
+in the sync warnings.
+
+Deterministic gates still apply in every creating mode:
+
 - `minImportance` (default `low`) — drop trivia via the local
   importance scorer.
-- Content-hash dedup against existing memories and within the run.
-- `maxMemoriesPerDay` (default 20, `0` disables) — keeps the most
-  important candidates.
+- Content-hash dedup against existing memories and within the run
+  (applied before the day cap so duplicates never consume cap slots).
+- `maxMemoriesPerDay` (default 50, `0` disables) — keeps the
+  highest-trust candidates in smart mode, highest-importance otherwise.
+- `minConfidence` (default 0.6) applies in `review`/`auto` modes; in
+  smart mode the trust bands subsume it so borderline facts can reach
+  the review queue instead of vanishing.
 
 Every created memory carries provenance: `source: wearable:<id>`,
 tags (`wearable`, `wearable:<id>`, `wearable-day:<date>`), and
@@ -87,15 +139,17 @@ structured attributes (`wearableSource`, `wearableDate`,
 start. If a bad memory does slip through, the transcript day it came
 from is one query away.
 
-**Provider-native memories** (Bee facts, Omi memories) can optionally
-be imported with `importNativeMemories: "review"` — they always land in
-the review queue regardless of `memoryMode`, because the provider's
-extraction quality is outside Remnic's control.
+**Provider-native memories** (Bee facts, Omi memories) import through
+the same trust pipeline by default (`importNativeMemories: "smart"`)
+with a reduced prior (`sourceTrust × 0.9`) — provider extraction
+quality is outside Remnic's control, so their facts need a bit more
+support to auto-approve. `"review"` queues everything; `"off"` skips.
 
-**Daily digest** (`wearables.digestEnabled`) writes one deterministic
-episode memory per synced day ("3 recorded conversations: ...") so
-day-level recall has an anchor. Digests follow the source's
-`memoryMode` status gate and are skipped entirely when it is `off`.
+**Daily digest** (`wearables.digestEnabled`, on by default) writes one
+deterministic episode memory per synced day ("3 recorded
+conversations: ...") so day-level recall has an anchor. Digests follow
+the source's `memoryMode` status gate and are skipped entirely when it
+is `off`.
 
 ## Configuration
 
@@ -106,8 +160,8 @@ day-level recall has an anchor. Digests follow the source's
     "timezone": "America/Chicago",          // default: host timezone
     "redactionEnabled": true,                // default true
     "redactionPatterns": ["internal-codename-\\w+"],
-    "offTheRecordEnabled": false,
-    "digestEnabled": false,
+    "offTheRecordEnabled": true,          // default true
+    "digestEnabled": true,                 // default true
     "corrections": [
       { "match": "remnick", "replace": "Remnic" },
       { "match": "acme corp", "replace": "ACME Corp", "sources": ["limitless"] }
@@ -115,21 +169,21 @@ day-level recall has an anchor. Digests follow the source's
     "sources": {
       "limitless": {
         "enabled": true,
-        "memoryMode": "review",              // off | review | auto
-        "minConfidence": 0.6,
+        "memoryMode": "smart",               // smart (default) | off | review | auto
+        "sourceTrust": 0.8,                  // transcription-quality prior (0..1)
+        "autoApproveTrust": 0.7,             // trust >= this -> written active
+        "reviewTrust": 0.45,                 // trust >= this -> review queue
         "minImportance": "low",              // trivial|low|normal|high|critical
-        "maxMemoriesPerDay": 20               // 0 disables the cap
+        "maxMemoriesPerDay": 50               // 0 disables the cap
       },
       "bee": {
         "enabled": true,
-        "baseUrl": "http://127.0.0.1:8787",  // bee proxy (default)
-        "importNativeMemories": "review"
+        "baseUrl": "http://127.0.0.1:8787"   // bee proxy (default)
       },
       "omi": {
         "enabled": true,
         "appId": "your-omi-app-id",
-        "userId": "your-omi-uid",
-        "importNativeMemories": "review"
+        "userId": "your-omi-uid"
       }
     }
   }
@@ -218,7 +272,8 @@ on the next QMD update after a sync (the sync triggers one).
 - Provider API keys are never logged and never appear in error
   messages.
 - `wearables.enabled` defaults to `false`; every source additionally
-  defaults to `enabled: false` and `memoryMode: "review"`.
+  defaults to `enabled: false`. Once enabled, memory creation runs the
+  fully-automated smart trust pipeline by default.
 
 ## Per-source notes
 
@@ -264,8 +319,10 @@ on the next QMD update after a sync (the sync triggers one).
 - **Connectors are dumb, the pipeline is shared.** Every provider gets
   identical cleanup, redaction, corrections, gating, and storage —
   fixing a pipeline bug fixes all three sources.
-- **Review-first memory creation.** ASR errors should cost you a
-  review-queue click, not a corrupted memory.
+- **Automated trust, human-priced exceptions.** The smart pipeline
+  auto-approves what the judge, the source prior, and corroboration
+  agree on; only genuinely borderline facts cost a review-queue click,
+  and ASR garbage costs nothing at all.
 - **Transcripts ≠ memories.** Day files are a verbatim-ish record you
   can search and re-read; memories are the distilled, gated layer on
   top. Each memory points back at its transcript day.

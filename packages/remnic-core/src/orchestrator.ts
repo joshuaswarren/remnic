@@ -10781,6 +10781,22 @@ export class Orchestrator {
         getStorage: async () =>
           await this.getStorageForNamespace(this.bulkImportWriteNamespace()),
         extract: (turns) => this.extraction.extract(turns),
+        // Smart memoryMode runs candidates through the SAME extraction
+        // judge (cache + defer counters included) the live extraction
+        // pipeline uses, so wearable facts get identical LLM-as-judge
+        // durability gating.
+        judgeFacts: (candidates) =>
+          judgeFactDurability(
+            candidates,
+            this.config,
+            this.localLlm,
+            new FallbackLlmClient(
+              this.config.gatewayConfig,
+              fallbackLlmRuntimeContextFromConfig(this.config),
+            ),
+            this.judgeVerdictCache,
+            this.judgeDeferCounts,
+          ),
         searchBackend: {
           search: async (query, maxResults) => {
             if (!this.qmd.isAvailable()) return null;

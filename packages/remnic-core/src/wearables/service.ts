@@ -87,6 +87,12 @@ export interface WearablesServiceDeps {
   getStorage(): Promise<WearableStorageIo>;
   /** Extraction hook; null when no engine is available. */
   extract: WearableMemoryGenDeps["extract"] | null;
+  /**
+   * LLM-as-judge hook for smart memoryMode (the orchestrator wires the
+   * existing extraction judge here). Absent degrades smart mode to
+   * confidence x sourceTrust + corroboration scoring.
+   */
+  judgeFacts?: WearableMemoryGenDeps["judgeFacts"];
   /** Search backend (QMD); null disables indexed search. */
   searchBackend: WearableSearchBackend | null;
   /** Fired after transcript writes so the search index refreshes. */
@@ -263,6 +269,9 @@ export class WearablesService {
       ? {
           extract: this.deps.extract,
           writer: createWearableMemoryWriter(storage),
+          ...(this.deps.judgeFacts !== undefined
+            ? { judgeFacts: this.deps.judgeFacts }
+            : {}),
         }
       : null;
 
@@ -295,6 +304,31 @@ export class WearablesService {
             storage.writeWearableDayTranscript(source, date, serialized),
           afterTranscriptsWritten: this.deps.reindexSearch,
           memoryGen,
+          // Cross-device corroboration evidence (smart mode): other
+          // sources' stored transcripts for the same day...
+          readOtherSourceDayBodies: async (date, excludeSource) => {
+            const bodies = new Map<string, string>();
+            const days = await storage.listWearableTranscriptDays();
+            for (const entry of days) {
+              if (entry.date !== date || entry.source === excludeSource) continue;
+              if (bodies.size >= 4) break;
+              const raw = await storage.readWearableDayTranscript(entry.source, entry.date);
+              if (raw === null) continue;
+              bodies.set(entry.source, parseDayTranscript(raw)?.body ?? raw);
+            }
+            return bodies;
+          },
+          // ...and existing active memories for the support boost.
+          listActiveMemories: async () => {
+            const memories = await storage.readAllMemories();
+            const active: Array<{ id: string; content: string }> = [];
+            for (const memory of memories) {
+              const status = memory.frontmatter.status;
+              if (status !== undefined && status !== "active") continue;
+              active.push({ id: memory.frontmatter.id, content: memory.content });
+            }
+            return active;
+          },
         },
       );
       summaries.push(summary);

@@ -22,7 +22,7 @@ import type {
 
 export const KNOWN_WEARABLE_SOURCE_IDS = ["limitless", "bee", "omi"] as const;
 
-const MEMORY_MODES: WearableMemoryMode[] = ["off", "review", "auto"];
+const MEMORY_MODES: WearableMemoryMode[] = ["off", "review", "auto", "smart"];
 const IMPORTANCE_LEVELS: ImportanceLevel[] = [
   "trivial",
   "low",
@@ -30,12 +30,15 @@ const IMPORTANCE_LEVELS: ImportanceLevel[] = [
   "high",
   "critical",
 ];
-const NATIVE_IMPORT_MODES = ["off", "review"] as const;
+const NATIVE_IMPORT_MODES = ["off", "review", "smart"] as const;
 
 const DEFAULT_MIN_CONFIDENCE = 0.6;
 const DEFAULT_MIN_IMPORTANCE: ImportanceLevel = "low";
-const DEFAULT_MAX_MEMORIES_PER_DAY = 20;
+const DEFAULT_MAX_MEMORIES_PER_DAY = 50;
 const MAX_MEMORIES_PER_DAY_CEILING = 500;
+const DEFAULT_SOURCE_TRUST = 0.8;
+const DEFAULT_AUTO_APPROVE_TRUST = 0.7;
+const DEFAULT_REVIEW_TRUST = 0.45;
 
 export function defaultWearableCleanupSettings(): WearableCleanupSettings {
   return {
@@ -49,11 +52,14 @@ export function defaultWearableCleanupSettings(): WearableCleanupSettings {
 export function defaultWearableSourceSettings(): WearableSourceSettings {
   return {
     enabled: false,
-    memoryMode: "review",
+    memoryMode: "smart",
+    sourceTrust: DEFAULT_SOURCE_TRUST,
+    autoApproveTrust: DEFAULT_AUTO_APPROVE_TRUST,
+    reviewTrust: DEFAULT_REVIEW_TRUST,
     minConfidence: DEFAULT_MIN_CONFIDENCE,
     minImportance: DEFAULT_MIN_IMPORTANCE,
     maxMemoriesPerDay: DEFAULT_MAX_MEMORIES_PER_DAY,
-    importNativeMemories: "off",
+    importNativeMemories: "smart",
     cleanup: defaultWearableCleanupSettings(),
   };
 }
@@ -63,8 +69,8 @@ export function defaultWearablesConfig(): WearablesConfig {
     enabled: false,
     redactionEnabled: true,
     redactionPatterns: [],
-    offTheRecordEnabled: false,
-    digestEnabled: false,
+    offTheRecordEnabled: true,
+    digestEnabled: true,
     corrections: [],
     sources: {},
   };
@@ -203,6 +209,29 @@ function parseSourceSettings(
   // the schema minimum (CLAUDE.md rule 45).
   const maxMemoriesPerDay = maxPerDayRaw ?? defaults.maxMemoriesPerDay;
 
+  const parseUnitInterval = (value: unknown, name: string, fallback: number): number => {
+    if (value === undefined) return fallback;
+    const coerced = coerceNumber(value);
+    if (coerced === undefined || coerced < 0 || coerced > 1) {
+      throw new Error(
+        `${keyPath}.${name} must be a number between 0 and 1 (got ${JSON.stringify(value)})`,
+      );
+    }
+    return coerced;
+  };
+  const sourceTrust = parseUnitInterval(raw.sourceTrust, "sourceTrust", defaults.sourceTrust);
+  const autoApproveTrust = parseUnitInterval(
+    raw.autoApproveTrust,
+    "autoApproveTrust",
+    defaults.autoApproveTrust,
+  );
+  const reviewTrust = parseUnitInterval(raw.reviewTrust, "reviewTrust", defaults.reviewTrust);
+  if (reviewTrust >= autoApproveTrust) {
+    throw new Error(
+      `${keyPath}.reviewTrust (${reviewTrust}) must be below autoApproveTrust (${autoApproveTrust})`,
+    );
+  }
+
   const rawCleanup =
     raw.cleanup === undefined ? {} : requireObject(raw.cleanup, `${keyPath}.cleanup`);
   const cleanup: WearableCleanupSettings = {
@@ -240,6 +269,9 @@ function parseSourceSettings(
       MEMORY_MODES,
       defaults.memoryMode,
     ),
+    sourceTrust,
+    autoApproveTrust,
+    reviewTrust,
     minConfidence,
     minImportance: parseEnum(
       raw.minImportance,

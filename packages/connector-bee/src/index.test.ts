@@ -15,6 +15,9 @@ function settings(overrides: Partial<WearableSourceSettings> = {}): WearableSour
   return {
     enabled: true,
     memoryMode: "review",
+    sourceTrust: 0.8,
+    autoApproveTrust: 0.7,
+    reviewTrust: 0.45,
     minConfidence: 0.6,
     minImportance: "low",
     maxMemoriesPerDay: 20,

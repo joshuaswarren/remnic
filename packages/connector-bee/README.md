@@ -38,8 +38,8 @@ Remnic discovers it at runtime. No further registration is needed.
     "sources": {
       "bee": {
         "enabled": true,
-        "memoryMode": "review",
-        "importNativeMemories": "review"   // optional: queue Bee facts for review
+        "memoryMode": "smart",             // smart (default) | off | review | auto
+        "importNativeMemories": "smart"    // Bee facts through the same trust pipeline
       }
     }
   }
@@ -78,8 +78,10 @@ remnic wearables speakers set bee 1 "Jane Doe"
   stay bounded.
 - Conversations still in the `CAPTURING` state are skipped until they
   settle; the next sync picks them up.
-- Default `memoryMode: "review"`: nothing enters active recall without
-  approval. Bee-native facts (when imported) are always review-queued.
+- Default `memoryMode: "smart"`: the LLM judge + per-source trust prior
+  + cross-device corroboration write high-trust facts active, queue
+  borderline ones, and drop the rest. Bee-native facts run through the
+  same pipeline with a reduced prior.
 
 Full documentation: [docs/wearables.md](https://github.com/joshuaswarren/remnic/blob/main/docs/wearables.md).
 

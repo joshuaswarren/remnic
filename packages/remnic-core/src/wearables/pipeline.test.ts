@@ -34,6 +34,10 @@ function config(overrides: Partial<WearablesConfig> = {}): WearablesConfig {
     ...defaultWearablesConfig(),
     enabled: true,
     timezone: "UTC",
+    // Pinned off so per-stage tests stay focused; defaults are covered
+    // in config.test.ts and the dedicated digest test below.
+    digestEnabled: false,
+    offTheRecordEnabled: false,
     ...overrides,
   };
 }
@@ -571,6 +575,60 @@ test("page-capped days carry a visible partial marker and keep warning", async (
     const second = await syncWearableSource(endlessConnector, settings(), config(), { days: 1 }, deps);
     assert.equal(second.transcriptsWritten.length, 0);
     assert.ok(second.warnings.some((warning) => warning.includes("stopped paginating")));
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("smart mode: another device's stored day transcript corroborates borderline facts", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "We are moving the launch to September twelfth after the vendor call." },
+          { speaker: "Speaker 2", text: "September twelfth works for everyone on the vendor side too." },
+        ]),
+      ],
+    };
+    const { deps, memoryWrites } = makeDeps(memoryDir);
+    assert.ok(deps.memoryGen);
+    // Borderline extraction: 0.75 * 0.8 = 0.6 — review band unless corroborated.
+    deps.memoryGen.extract = async () => ({
+      facts: [
+        {
+          category: "fact",
+          content: "The launch moved to September twelfth after the vendor call.",
+          confidence: 0.75,
+          tags: [],
+        },
+      ],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+    });
+    // A second device already stored a transcript covering the same day.
+    deps.readOtherSourceDayBodies = async (date, excludeSource) => {
+      assert.equal(date, "2026-06-11");
+      assert.equal(excludeSource, "testsource");
+      return new Map([
+        ["bee", "They said the launch moves to September twelfth right after that vendor call wrapped."],
+      ]);
+    };
+    deps.listActiveMemories = async () => [];
+
+    const summary = await syncWearableSource(
+      fakeConnector(byDate),
+      settings({ memoryMode: "smart" }),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(summary.memoriesCreated, 1);
+    assert.equal(memoryWrites[0].options.status, "active", "corroboration lifts review -> active");
+    const attrs = memoryWrites[0].options.structuredAttributes as Record<string, string>;
+    assert.equal(attrs.corroboratedBySources, "bee");
+    assert.equal(attrs.trustDecision, "auto-approved");
   } finally {
     rmSync(memoryDir, { recursive: true, force: true });
   }
