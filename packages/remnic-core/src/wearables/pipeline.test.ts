@@ -544,14 +544,15 @@ test("zero provider conversations never clobber an existing transcript", async (
   }
 });
 
-test("page-capped days carry a visible partial marker and keep warning", async () => {
+test("looping pagination cursors stop with a partial marker and keep warning", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {
     const conversation = makeConversation("c1", "2026-06-11", [
       { speaker: "user", isWearer: true, text: "First chunk of a very long recorded day of conversations." },
       { speaker: "Speaker 2", text: "Indeed, the recordings just keep going on and on today." },
     ]);
-    // A connector that always reports another page (pathological).
+    // A connector whose cursor loops forever (pathological) — cycle
+    // detection must stop it; no page-count cap truncates real data.
     const endlessConnector = {
       id: "testsource",
       displayName: "Test Source",
@@ -567,14 +568,60 @@ test("page-capped days carry a visible partial marker and keep warning", async (
     };
     const { deps, written } = makeDeps(memoryDir);
     const first = await syncWearableSource(endlessConnector, settings(), config(), { days: 1 }, deps);
-    assert.ok(first.warnings.some((warning) => warning.includes("stopped paginating")));
+    assert.ok(first.warnings.some((warning) => warning.includes("repeated cursor")));
     assert.equal(written.length, 1);
     assert.match(written[0].serialized, /pagination safety cap reached/);
 
     // Identical second sync: file unchanged (no rewrite), warning persists.
     const second = await syncWearableSource(endlessConnector, settings(), config(), { days: 1 }, deps);
     assert.equal(second.transcriptsWritten.length, 0);
-    assert.ok(second.warnings.some((warning) => warning.includes("stopped paginating")));
+    assert.ok(second.warnings.some((warning) => warning.includes("repeated cursor")));
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("long provider days paginate fully — no page-count truncation", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    // 60 pages (beyond the old 50-page cap), each with one conversation.
+    const PAGES = 60;
+    const longDayConnector = {
+      id: "testsource",
+      displayName: "Test Source",
+      async verifyAuth() {
+        return { ok: true };
+      },
+      async fetchConversations(opts: { cursor?: string | null }) {
+        const page = opts.cursor ? Number(opts.cursor) : 0;
+        return {
+          conversations: [
+            makeConversation(`c${page + 1}`, "2026-06-11", [
+              { speaker: "user", isWearer: true, text: `Recorded conversation segment number ${page + 1} from the long day.` },
+              { speaker: "Speaker 2", text: "Acknowledged, that part of the day was captured as well." },
+            ]),
+          ],
+          nextCursor: page + 1 < PAGES ? String(page + 1) : null,
+        };
+      },
+    };
+    const { deps } = makeDeps(memoryDir);
+    const summary = await syncWearableSource(
+      longDayConnector,
+      settings(),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(summary.conversations, PAGES, "every page's conversation synced");
+    assert.equal(
+      summary.warnings.filter(
+        (warning) =>
+          warning.includes("stopped paginating") || warning.includes("repeated cursor"),
+      ).length,
+      0,
+      "a real long day is never truncated or warned",
+    );
   } finally {
     rmSync(memoryDir, { recursive: true, force: true });
   }

@@ -52,10 +52,13 @@ import type {
   WearablesConfig,
 } from "./types.js";
 
-/** Safety cap on pages fetched per day window. */
-const MAX_PAGES_PER_DAY = 50;
-/** Safety cap on native-memory pages per sync. */
-const MAX_NATIVE_PAGES = 20;
+/**
+ * Pathological-provider backstop on pagination loops. Day fetches are
+ * intentionally UNLIMITED for real data — a full day must never be
+ * truncated — so runaway protection comes from cursor-cycle detection
+ * plus this far-out-of-band ceiling, not from a content-sized cap.
+ */
+const PAGE_SAFETY_CEILING = 10_000;
 /** Default lookback window (today + yesterday) for unscoped syncs. */
 const DEFAULT_SYNC_DAYS = 2;
 const MAX_SYNC_DAYS = 90;
@@ -188,7 +191,8 @@ async function fetchAllConversationsForDate(
 ): Promise<{ conversations: WearableConversation[]; partial: boolean }> {
   const conversations: WearableConversation[] = [];
   let cursor: string | null | undefined = undefined;
-  for (let page = 0; page < MAX_PAGES_PER_DAY; page++) {
+  const seenCursors = new Set<string>();
+  for (let page = 0; page < PAGE_SAFETY_CEILING; page++) {
     const result = await connector.fetchConversations({
       date,
       timezone,
@@ -197,10 +201,19 @@ async function fetchAllConversationsForDate(
     });
     conversations.push(...result.conversations);
     if (!result.nextCursor) return { conversations, partial: false };
+    // A repeated cursor means the provider's pagination is looping —
+    // following it again would refetch the same page forever.
+    if (seenCursors.has(result.nextCursor)) {
+      warnings.push(
+        `${connector.id}: provider pagination repeated cursor on ${date} — stopped to avoid an infinite loop; day may be partially synced (every sync refetches and re-warns while the provider misbehaves)`,
+      );
+      return { conversations, partial: true };
+    }
+    seenCursors.add(result.nextCursor);
     cursor = result.nextCursor;
   }
   warnings.push(
-    `${connector.id}: stopped paginating ${date} after ${MAX_PAGES_PER_DAY} pages — day may be partially synced (every sync refetches and re-warns until the provider day fits the cap)`,
+    `${connector.id}: stopped paginating ${date} after the ${PAGE_SAFETY_CEILING}-page safety ceiling — day may be partially synced (every sync refetches and re-warns while this persists)`,
   );
   return { conversations, partial: true };
 }
@@ -521,7 +534,8 @@ export async function syncWearableSource(
           : {}),
       };
       let cursor: string | null | undefined = undefined;
-      for (let page = 0; page < MAX_NATIVE_PAGES; page++) {
+      const seenNativeCursors = new Set<string>();
+      for (let page = 0; page < PAGE_SAFETY_CEILING; page++) {
         const result = await connector.fetchNativeMemories({
           cursor,
           signal: options.signal,
@@ -538,10 +552,17 @@ export async function syncWearableSource(
         importedNativeIds.push(...imported.importedIds);
         for (const id of imported.importedIds) alreadyImported.add(id);
         if (!result.nextCursor) break;
-        cursor = result.nextCursor;
-        if (page === MAX_NATIVE_PAGES - 1) {
+        if (seenNativeCursors.has(result.nextCursor)) {
           summary.warnings.push(
-            `${connector.id}: stopped native-memory import after ${MAX_NATIVE_PAGES} pages — remaining items import on the next sync`,
+            `${connector.id}: provider pagination repeated cursor during native-memory import — stopped to avoid an infinite loop; remaining items import on the next sync`,
+          );
+          break;
+        }
+        seenNativeCursors.add(result.nextCursor);
+        cursor = result.nextCursor;
+        if (page === PAGE_SAFETY_CEILING - 1) {
+          summary.warnings.push(
+            `${connector.id}: stopped native-memory import at the ${PAGE_SAFETY_CEILING}-page safety ceiling — remaining items import on the next sync`,
           );
         }
       }

@@ -37,7 +37,7 @@ test("source settings default to the fully-automated smart pipeline", () => {
   assert.equal(source.reviewTrust, 0.45);
   assert.equal(source.minConfidence, 0.6);
   assert.equal(source.minImportance, "low");
-  assert.equal(source.maxMemoriesPerDay, 50);
+  assert.equal(source.maxMemoriesPerDay, 0, "uncapped by default");
   assert.equal(source.importNativeMemories, "smart");
   assert.deepEqual(source.cleanup, {
     mergeSameSpeaker: true,
@@ -95,15 +95,15 @@ test("maxMemoriesPerDay honors the documented 0-disables value and bounds", () =
     sources: { limitless: { maxMemoriesPerDay: 0 } },
   });
   assert.equal(parsed.sources.limitless.maxMemoriesPerDay, 0);
-  // Over-ceiling values reject instead of silently clamping to 500.
-  assert.throws(
-    () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: 99999 } } }),
-    /maxMemoriesPerDay must be an integer between 0 and 500/,
-  );
+  // No ceiling: any non-negative integer cap is the operator's call.
   assert.equal(
-    parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: 500 } } })
+    parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: 99999 } } })
       .sources.limitless.maxMemoriesPerDay,
-    500,
+    99999,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: -1 } } }),
+    /maxMemoriesPerDay must be a non-negative integer/,
   );
   assert.throws(
     () => parseWearablesConfig({ sources: { limitless: { maxMemoriesPerDay: "lots" } } }),
@@ -168,5 +168,55 @@ test("minConfidence rejects out-of-range values instead of clamping", () => {
   assert.equal(
     parseWearablesConfig({ sources: { bee: { minConfidence: 0.85 } } }).sources.bee.minConfidence,
     0.85,
+  );
+});
+
+test("auto-sync defaults to enabled with sane window settings", () => {
+  const parsed = parseWearablesConfig({});
+  assert.equal(parsed.autoSyncEnabled, true);
+  assert.equal(parsed.autoSyncIntervalMinutes, 15);
+  assert.equal(parsed.autoSyncDays, 2);
+  assert.equal(parsed.autoSyncDeepDays, 7);
+});
+
+test("auto-sync knobs parse, coerce, and loud-reject invalid values", () => {
+  const parsed = parseWearablesConfig({
+    autoSyncEnabled: "false",
+    autoSyncIntervalMinutes: "30",
+    autoSyncDays: 3,
+    autoSyncDeepDays: 14,
+  });
+  assert.equal(parsed.autoSyncEnabled, false, "boolean-ish strings coerce");
+  assert.equal(parsed.autoSyncIntervalMinutes, 30, "numeric strings coerce");
+  assert.equal(parsed.autoSyncDays, 3);
+  assert.equal(parsed.autoSyncDeepDays, 14);
+
+  assert.throws(
+    () => parseWearablesConfig({ autoSyncIntervalMinutes: 0 }),
+    /autoSyncIntervalMinutes must be an integer between 1 and 1440/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ autoSyncIntervalMinutes: 2.5 }),
+    /autoSyncIntervalMinutes/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ autoSyncDays: 0 }),
+    /autoSyncDays must be an integer between 1 and 90/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ autoSyncDeepDays: 91 }),
+    /autoSyncDeepDays must be an integer between 0 and 90/,
+  );
+});
+
+test("a deep window narrower than the tick window is rejected, 0 disables", () => {
+  assert.throws(
+    () => parseWearablesConfig({ autoSyncDays: 5, autoSyncDeepDays: 3 }),
+    /autoSyncDeepDays must be 0 \(disabled\) or >= wearables.autoSyncDays/,
+  );
+  assert.equal(parseWearablesConfig({ autoSyncDeepDays: 0 }).autoSyncDeepDays, 0);
+  assert.equal(
+    parseWearablesConfig({ autoSyncDays: 5, autoSyncDeepDays: 5 }).autoSyncDeepDays,
+    5,
   );
 });

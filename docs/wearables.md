@@ -145,8 +145,10 @@ Deterministic gates still apply in every creating mode:
   importance scorer.
 - Content-hash dedup against existing memories and within the run
   (applied before the day cap so duplicates never consume cap slots).
-- `maxMemoriesPerDay` (default 50, `0` disables) — keeps the
-  highest-trust candidates in smart mode, highest-importance otherwise.
+- `maxMemoriesPerDay` (default `0` — uncapped) — optional ceiling for
+  operators who want one; when set, keeps the highest-trust candidates
+  in smart mode, highest-importance otherwise. The smart trust pipeline
+  is the quality gate, so busy days don't silently drop real memories.
 - `minConfidence` (default 0.6) applies in `review`/`auto` modes; in
   smart mode the trust bands subsume it so borderline facts can reach
   the review queue instead of vanishing.
@@ -181,6 +183,10 @@ is `off`.
     "redactionPatterns": ["internal-codename-\\w+"],
     "offTheRecordEnabled": true,          // default true
     "digestEnabled": true,                 // default true
+    "autoSyncEnabled": true,               // default true (long-lived hosts)
+    "autoSyncIntervalMinutes": 15,         // tick cadence
+    "autoSyncDays": 2,                     // window per tick (today + yesterday)
+    "autoSyncDeepDays": 7,                 // daily deep pass; 0 disables
     "corrections": [
       { "match": "remnick", "replace": "Remnic" },
       { "match": "acme corp", "replace": "ACME Corp", "sources": ["limitless"] }
@@ -193,7 +199,7 @@ is `off`.
         "autoApproveTrust": 0.7,             // trust >= this -> written active
         "reviewTrust": 0.45,                 // trust >= this -> review queue
         "minImportance": "low",              // trivial|low|normal|high|critical
-        "maxMemoriesPerDay": 50               // 0 disables the cap
+        "maxMemoriesPerDay": 0                // 0 (default) = uncapped
       },
       "bee": {
         "enabled": true,
@@ -243,9 +249,22 @@ remnic wearables corrections add "remnick" "Remnic"
 remnic wearables corrections list
 ```
 
-For continuous syncing, run `remnic wearables sync` from cron or a
-heartbeat task; the sync is incremental and idempotent (re-running is
-cheap — unchanged days are skipped by content hash).
+Continuous syncing is built in: long-lived hosts (the gateway, the
+HTTP daemon) start an in-process **auto-sync** scheduler by default
+(`wearables.autoSyncEnabled`, on). Every `autoSyncIntervalMinutes`
+(default 15) it re-syncs the last `autoSyncDays` (default 2) for all
+enabled sources — existing day files included, so today's transcript
+keeps growing while the wearable records. Once per local day the
+window deepens to `autoSyncDeepDays` (default 7) to pick up late
+uploads and provider re-processing (phones syncing hours later,
+re-diarized transcripts). Syncs are incremental and idempotent —
+unchanged days are skipped by content hash, so a quiet tick is
+read-only. Day fetches are never page-capped: a long recorded day
+paginates to completion (runaway providers are stopped by
+cursor-cycle detection, not by truncating real data).
+
+The manual CLI stays useful for one-shot contexts, instant refreshes
+(`remnic wearables sync`), and deep backfills (`--days 90`).
 
 ## MCP tools
 

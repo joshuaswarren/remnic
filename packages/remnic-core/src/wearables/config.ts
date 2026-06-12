@@ -34,8 +34,16 @@ const NATIVE_IMPORT_MODES = ["off", "review", "smart"] as const;
 
 const DEFAULT_MIN_CONFIDENCE = 0.6;
 const DEFAULT_MIN_IMPORTANCE: ImportanceLevel = "low";
-const DEFAULT_MAX_MEMORIES_PER_DAY = 50;
-const MAX_MEMORIES_PER_DAY_CEILING = 500;
+// Uncapped by default — wearables capture full days and the smart trust
+// pipeline is the quality gate; a count cap would drop real memories on
+// busy days. Operators who want a ceiling set any positive integer.
+const DEFAULT_MAX_MEMORIES_PER_DAY = 0;
+const DEFAULT_AUTO_SYNC_ENABLED = true;
+const DEFAULT_AUTO_SYNC_INTERVAL_MINUTES = 15;
+const MAX_AUTO_SYNC_INTERVAL_MINUTES = 1440;
+const DEFAULT_AUTO_SYNC_DAYS = 2;
+const DEFAULT_AUTO_SYNC_DEEP_DAYS = 7;
+const MAX_AUTO_SYNC_WINDOW_DAYS = 90;
 const DEFAULT_SOURCE_TRUST = 0.8;
 const DEFAULT_AUTO_APPROVE_TRUST = 0.7;
 const DEFAULT_REVIEW_TRUST = 0.45;
@@ -71,6 +79,10 @@ export function defaultWearablesConfig(): WearablesConfig {
     redactionPatterns: [],
     offTheRecordEnabled: true,
     digestEnabled: true,
+    autoSyncEnabled: DEFAULT_AUTO_SYNC_ENABLED,
+    autoSyncIntervalMinutes: DEFAULT_AUTO_SYNC_INTERVAL_MINUTES,
+    autoSyncDays: DEFAULT_AUTO_SYNC_DAYS,
+    autoSyncDeepDays: DEFAULT_AUTO_SYNC_DEEP_DAYS,
     corrections: [],
     sources: {},
   };
@@ -198,11 +210,10 @@ function parseSourceSettings(
     raw.maxMemoriesPerDay !== undefined &&
     (maxPerDayRaw === undefined ||
       !Number.isInteger(maxPerDayRaw) ||
-      maxPerDayRaw < 0 ||
-      maxPerDayRaw > MAX_MEMORIES_PER_DAY_CEILING)
+      maxPerDayRaw < 0)
   ) {
     throw new Error(
-      `${keyPath}.maxMemoriesPerDay must be an integer between 0 and ${MAX_MEMORIES_PER_DAY_CEILING} (0 disables the cap); got ${JSON.stringify(raw.maxMemoriesPerDay)}`,
+      `${keyPath}.maxMemoriesPerDay must be a non-negative integer (0, the default, disables the cap); got ${JSON.stringify(raw.maxMemoriesPerDay)}`,
     );
   }
   // 0 is the documented "disable the cap" value — honored here AND in
@@ -323,6 +334,57 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
     compileRedactionPatterns(redactionPatterns);
   }
 
+  const parseBoundedInt = (
+    value: unknown,
+    name: string,
+    fallback: number,
+    min: number,
+    max: number,
+  ): number => {
+    if (value === undefined) return fallback;
+    const coerced = coerceNumber(value);
+    if (
+      coerced === undefined ||
+      !Number.isInteger(coerced) ||
+      coerced < min ||
+      coerced > max
+    ) {
+      throw new Error(
+        `${name} must be an integer between ${min} and ${max}; got ${JSON.stringify(value)}`,
+      );
+    }
+    return coerced;
+  };
+  const autoSyncIntervalMinutes = parseBoundedInt(
+    raw.autoSyncIntervalMinutes,
+    "wearables.autoSyncIntervalMinutes",
+    defaults.autoSyncIntervalMinutes,
+    1,
+    MAX_AUTO_SYNC_INTERVAL_MINUTES,
+  );
+  const autoSyncDays = parseBoundedInt(
+    raw.autoSyncDays,
+    "wearables.autoSyncDays",
+    defaults.autoSyncDays,
+    1,
+    MAX_AUTO_SYNC_WINDOW_DAYS,
+  );
+  const autoSyncDeepDays = parseBoundedInt(
+    raw.autoSyncDeepDays,
+    "wearables.autoSyncDeepDays",
+    defaults.autoSyncDeepDays,
+    0,
+    MAX_AUTO_SYNC_WINDOW_DAYS,
+  );
+  // A deep window narrower than the every-tick window would make the
+  // "deep" pass fetch LESS than a normal tick — reject the confusion
+  // instead of silently honoring it (0 disables the deep pass).
+  if (autoSyncDeepDays !== 0 && autoSyncDeepDays < autoSyncDays) {
+    throw new Error(
+      `wearables.autoSyncDeepDays must be 0 (disabled) or >= wearables.autoSyncDays (${autoSyncDays}); got ${autoSyncDeepDays}`,
+    );
+  }
+
   const sources: Record<string, WearableSourceSettings> = {};
   if (raw.sources !== undefined) {
     const rawSources = requireObject(raw.sources, "wearables.sources");
@@ -358,6 +420,14 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
       "wearables.digestEnabled",
       defaults.digestEnabled,
     ),
+    autoSyncEnabled: parseBool(
+      raw.autoSyncEnabled,
+      "wearables.autoSyncEnabled",
+      defaults.autoSyncEnabled,
+    ),
+    autoSyncIntervalMinutes,
+    autoSyncDays,
+    autoSyncDeepDays,
     corrections: parseCorrectionRules(raw.corrections, "wearables.corrections"),
     sources,
   };

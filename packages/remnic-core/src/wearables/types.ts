@@ -176,7 +176,9 @@ export interface WearableSourceSettings {
   /** Drop extracted facts scored below this importance level. */
   minImportance: ImportanceLevel;
   /**
-   * Cap on memories created per source per day. 0 disables the cap.
+   * Cap on memories created per source per day. 0 (the default)
+   * disables the cap — the smart trust pipeline is the quality gate,
+   * and a count cap would drop real memories on busy days.
    */
   maxMemoriesPerDay: number;
   /**
@@ -250,6 +252,23 @@ export interface WearablesConfig {
    * Default false.
    */
   digestEnabled: boolean;
+  /**
+   * Periodically refresh transcripts in-process (long-lived hosts).
+   * Every tick re-syncs `autoSyncDays` ending today — existing day
+   * files included, so the current day keeps growing while the
+   * wearable records. Default true.
+   */
+  autoSyncEnabled: boolean;
+  /** Minutes between auto-sync ticks (1-1440). Default 15. */
+  autoSyncIntervalMinutes: number;
+  /** Rolling window (days ending today) per tick (1-90). Default 2. */
+  autoSyncDays: number;
+  /**
+   * Once-per-local-day deep pass window (days, 0-90) picking up late
+   * uploads and provider re-processing. 0 disables; otherwise must be
+   * >= autoSyncDays. Default 7.
+   */
+  autoSyncDeepDays: number;
   /** Correction rules from config (merged with CLI-managed rules). */
   corrections: WearableCorrectionRule[];
   /** Per-source settings, keyed by connector id. */
