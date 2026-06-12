@@ -150,6 +150,18 @@ test("retries 429 honoring Retry-After and 5xx with backoff", async () => {
   assert.deepEqual(sleeps, [3_000, 2_000]);
 });
 
+test("verifyAuth reduces foreign network failures to name + code", async () => {
+  const pathy = new Error("connect ETIMEDOUT /home/someone/.cache/loader/path.js");
+  (pathy as NodeJS.ErrnoException).code = "ETIMEDOUT";
+  const { client } = makeClient([pathy, pathy, pathy, pathy]);
+  const result = await client.verifyAuth();
+  assert.equal(result.ok, false);
+  // The exhausted-retry OmiApiError message carries the scrubbed code…
+  assert.match(result.detail ?? "", /ETIMEDOUT|Error/);
+  // …and never the raw path.
+  assert.ok(!(result.detail ?? "").includes("/home/someone"));
+});
+
 test("verifyAuth maps the authorization chain to actionable detail", async () => {
   {
     const { client } = makeClient([

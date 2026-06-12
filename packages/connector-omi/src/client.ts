@@ -243,9 +243,14 @@ export class OmiClient {
           detail: [err.detail, hint].filter(Boolean).join(" — ") || err.message,
         };
       }
+      // OmiApiError messages are our own constructed strings (already
+      // scrubbed — network text is reduced to name + code inside
+      // requestJson); foreign errors reduce to name + errno code so raw
+      // Node text (paths, loader stacks) never reaches operator
+      // surfaces.
       return {
         ok: false,
-        detail: err instanceof Error ? err.message : String(err),
+        detail: err instanceof OmiApiError ? err.message : describeNetworkError(err),
       };
     }
   }
