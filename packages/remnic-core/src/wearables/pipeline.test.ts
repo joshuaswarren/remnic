@@ -685,6 +685,104 @@ test("smart mode: another device's stored day transcript corroborates borderline
   }
 });
 
+test("smart native import never uses day-scoped cross-source corroboration", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const { deps, memoryWrites } = makeDeps(memoryDir);
+    assert.ok(deps.memoryGen);
+    let dayBodiesRequested = 0;
+    deps.readOtherSourceDayBodies = async () => {
+      dayBodiesRequested += 1;
+      return new Map([["bee", "the launch moves to september twelfth after that vendor call"]]);
+    };
+    deps.listActiveMemories = async () => [
+      { id: "fact-9", content: "User volunteers at the food bank every month with the team." },
+    ];
+    const summary = await syncWearableSource(
+      fakeConnector({}, [
+        // No day attached — must not be scored against any day's tokens,
+        // but corpus support still applies: 0.7*(0.8*0.9)+0.10 = 0.604 -> review.
+        { id: "nat-1", content: "User volunteers at the food bank every month with the team." },
+      ]),
+      settings({ memoryMode: "smart", importNativeMemories: "smart" }),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(dayBodiesRequested, 0, "native import must not read day bodies");
+    assert.equal(summary.nativeMemoriesImported, 1);
+    const attrs = memoryWrites[0].options.structuredAttributes as Record<string, string>;
+    assert.equal(attrs.corroboratedBySources, undefined, "no cross-source evidence without a day");
+    assert.equal(attrs.supportingMemoryId, "fact-9", "corpus support still applies");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("facts written earlier in a multi-day backfill support later days in the same run", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const byDate = {
+      "2026-06-10": [
+        makeConversation("c1", "2026-06-10", [
+          { speaker: "user", isWearer: true, text: "The launch moved to September twelfth after the vendor call." },
+          { speaker: "Speaker 2", text: "September twelfth confirmed with the vendor on the call." },
+        ]),
+      ],
+      "2026-06-11": [
+        makeConversation("c2", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "Reminder that the launch moved to September twelfth after the vendor call." },
+          { speaker: "Speaker 2", text: "Yes, the September date is locked in now." },
+        ]),
+      ],
+    };
+    const { deps, memoryWrites } = makeDeps(memoryDir);
+    assert.ok(deps.memoryGen);
+    // Borderline confidence so day 2 only crosses the auto threshold
+    // with the +0.10 corpus-support boost from day 1's write.
+    let call = 0;
+    deps.memoryGen.extract = async () => {
+      call += 1;
+      return {
+        facts: [
+          {
+            category: "fact",
+            content:
+              call === 1
+                ? "The launch moved to September twelfth after the vendor call."
+                : "Launch moved to September twelfth after the vendor call.",
+            confidence: 0.75,
+            tags: [],
+          },
+        ],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      };
+    };
+    // listActiveMemories reflects what this run has written so far —
+    // mirroring storage, whose readAllMemories cache invalidates on
+    // every write.
+    deps.listActiveMemories = async () =>
+      memoryWrites.map((write, index) => ({ id: `mem-${index + 1}`, content: write.content }));
+
+    const summary = await syncWearableSource(
+      fakeConnector(byDate),
+      settings({ memoryMode: "smart" }),
+      config(),
+      { days: 2 },
+      deps,
+    );
+    assert.equal(summary.memoriesCreated, 2);
+    assert.equal(memoryWrites[0].options.status, "pending_review", "day 1 borderline stays in review");
+    assert.equal(memoryWrites[1].options.status, "active", "day 2 lifted by day 1's write");
+    const attrs = memoryWrites[1].options.structuredAttributes as Record<string, string>;
+    assert.equal(attrs.supportingMemoryId, "mem-1");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("a transcript write failure prevents the sync watermark from advancing", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {

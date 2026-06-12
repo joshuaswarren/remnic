@@ -305,8 +305,6 @@ export async function syncWearableSource(
   const dayHashes: Record<string, string> = {};
   const memoryDayHashes: Record<string, string> = {};
   const failedMemoryDays: string[] = [];
-  // Existing-memory list is loaded at most once per sync run.
-  const runMemoryCache: { memories?: Array<{ id: string; content: string }> } = {};
   const importedNativeIds: string[] = [];
 
   for (const date of dates) {
@@ -423,7 +421,7 @@ export async function syncWearableSource(
         let passClean = false;
         try {
           const corroboration = needsSmartContext
-            ? await buildCorroborationContext(connector.id, date, deps, runMemoryCache)
+            ? await buildCorroborationContext(connector.id, date, deps)
             : undefined;
           const dayMemoryGen: WearableMemoryGenDeps = {
             ...deps.memoryGen,
@@ -486,14 +484,19 @@ export async function syncWearableSource(
       const alreadyImported = new Set(
         previousState?.importedNativeMemoryIds ?? [],
       );
+      // Native memories carry no day, so same-day cross-device
+      // corroboration does not apply to them — scoring a provider fact
+      // against an arbitrary day's tokens would be wrong-day evidence
+      // (Cursor review on PR #1462). They keep only the day-independent
+      // existing-memory support boost.
       const nativeCorroboration =
         settings.importNativeMemories === "smart"
-          ? await buildCorroborationContext(
-              connector.id,
-              dates[dates.length - 1] ?? dateInTimezone(now, timezone),
-              deps,
-              runMemoryCache,
-            )
+          ? {
+              otherSourceDayTokens: new Map<string, Set<string>>(),
+              existingMemories: deps.listActiveMemories
+                ? await deps.listActiveMemories()
+                : [],
+            }
           : undefined;
       const nativeMemoryGen: WearableMemoryGenDeps = {
         ...deps.memoryGen,
@@ -556,13 +559,17 @@ export async function syncWearableSource(
 
 /**
  * Assemble smart-mode corroboration evidence: other sources' same-day
- * transcript tokens + existing active memories (cached per run).
+ * transcript tokens + existing active memories. The memory list loads
+ * fresh per day (not per run) so facts written on earlier days of a
+ * multi-day backfill are visible as support evidence on later days —
+ * the underlying readAllMemories is cached in storage and invalidated
+ * by writes, so the per-day refresh is cheap (Cursor review on PR
+ * #1462).
  */
 async function buildCorroborationContext(
   sourceId: string,
   date: string,
   deps: WearableSyncDeps,
-  runMemoryCache: { memories?: Array<{ id: string; content: string }> },
 ): Promise<CorroborationContext> {
   const otherSourceDayTokens = new Map<string, Set<string>>();
   if (deps.readOtherSourceDayBodies) {
@@ -571,12 +578,10 @@ async function buildCorroborationContext(
       otherSourceDayTokens.set(otherSource, tokenizeDayBody(body));
     }
   }
-  if (runMemoryCache.memories === undefined) {
-    runMemoryCache.memories = deps.listActiveMemories
-      ? await deps.listActiveMemories()
-      : [];
-  }
-  return { otherSourceDayTokens, existingMemories: runMemoryCache.memories };
+  const existingMemories = deps.listActiveMemories
+    ? await deps.listActiveMemories()
+    : [];
+  return { otherSourceDayTokens, existingMemories };
 }
 
 export function defaultTimezone(): string {
