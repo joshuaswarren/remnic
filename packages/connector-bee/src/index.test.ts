@@ -146,6 +146,43 @@ test("pagination stops when an entire page predates the requested day", async ()
   }
 });
 
+test("the proxy path never attaches an environment token", async () => {
+  const previousRemnic = process.env.REMNIC_BEE_API_TOKEN;
+  const previousProvider = process.env.BEE_API_TOKEN;
+  process.env.BEE_API_TOKEN = "direct-mode-token";
+  const original = globalThis.fetch;
+  const headersSeen: Array<Record<string, string>> = [];
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    headersSeen.push(
+      Object.fromEntries(Object.entries((init?.headers ?? {}) as Record<string, string>)),
+    );
+    return new Response(JSON.stringify({ conversations: [], next_cursor: null }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+  try {
+    // Default base URL (the local proxy): token must be omitted.
+    const proxyConnector = createBeeConnector({ settings: settings({ apiKey: undefined }), timezone: "UTC" });
+    await proxyConnector.fetchConversations({ date: "2026-06-10", timezone: "UTC" });
+    assert.equal(headersSeen[0].Authorization, undefined);
+
+    // Direct base URL: the env token applies.
+    const directConnector = createBeeConnector({
+      settings: settings({ apiKey: undefined, baseUrl: "https://bee.example.test" }),
+      timezone: "UTC",
+    });
+    await directConnector.fetchConversations({ date: "2026-06-10", timezone: "UTC" });
+    assert.equal(headersSeen[1].Authorization, "Bearer direct-mode-token");
+  } finally {
+    globalThis.fetch = original;
+    if (previousProvider !== undefined) process.env.BEE_API_TOKEN = previousProvider;
+    else delete process.env.BEE_API_TOKEN;
+    if (previousRemnic !== undefined) process.env.REMNIC_BEE_API_TOKEN = previousRemnic;
+    else delete process.env.REMNIC_BEE_API_TOKEN;
+  }
+});
+
 test("fetchNativeMemories maps Bee facts", async () => {
   const stub = stubFetch({
     "/v1/facts": {

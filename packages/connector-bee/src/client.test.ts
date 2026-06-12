@@ -152,6 +152,24 @@ test("verifyAuth maps 401 to actionable guidance and never leaks the token", asy
   assert.ok(!(result.detail ?? "").includes("synthetic-token"));
 });
 
+test("isLocalProxyUrl compares hostnames exactly, not by prefix", async () => {
+  const { isLocalProxyUrl } = await import("./client.js");
+  assert.equal(isLocalProxyUrl("http://127.0.0.1:8787"), true);
+  assert.equal(isLocalProxyUrl("http://localhost:8787"), true);
+  assert.equal(isLocalProxyUrl("http://[::1]:8787"), true);
+  assert.equal(isLocalProxyUrl("http://127.0.0.1.evil.example"), false);
+  assert.equal(isLocalProxyUrl("https://bee.example.test"), false);
+  assert.equal(isLocalProxyUrl("not a url"), false);
+});
+
+test("verifyAuth keeps actionable Bee API status detail for non-auth errors", async () => {
+  const { client } = makeClient([jsonResponse({}, 500), jsonResponse({}, 502), jsonResponse({}, 503), jsonResponse({}, 504)]);
+  const result = await client.verifyAuth();
+  assert.equal(result.ok, false);
+  assert.match(result.detail ?? "", /Bee API responded 504/);
+  assert.ok(!(result.detail ?? "").includes("bee proxy ("), "API errors are not proxy-reachability guidance");
+});
+
 test("verifyAuth reports proxy reachability problems distinctly", async () => {
   const { client } = makeClient([
     new Error("ECONNREFUSED"),

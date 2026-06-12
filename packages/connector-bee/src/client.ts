@@ -118,7 +118,7 @@ export class BeeClient {
   }
 
   get usingLocalProxy(): boolean {
-    return this.baseUrl.startsWith("http://127.0.0.1") || this.baseUrl.startsWith("http://localhost");
+    return isLocalProxyUrl(this.baseUrl);
   }
 
   async listConversations(params: {
@@ -210,12 +210,17 @@ export class BeeClient {
             : "Bee rejected the token (401/403) — re-run `bee login` and update BEE_API_TOKEN",
         };
       }
-      const detail = describeNetworkError(err);
+      // BeeApiError messages are our own constructed strings (status
+      // codes + endpoint role) — keep them actionable; only foreign
+      // network/timeout errors are reduced to name + code.
+      const detail =
+        err instanceof BeeApiError ? err.message : describeNetworkError(err);
       return {
         ok: false,
-        detail: this.usingLocalProxy
-          ? `could not reach the local bee proxy at ${this.baseUrl} — start it with \`bee proxy\` (${detail})`
-          : detail,
+        detail:
+          this.usingLocalProxy && !(err instanceof BeeApiError)
+            ? `could not reach the local bee proxy at ${this.baseUrl} — start it with \`bee proxy\` (${detail})`
+            : detail,
       };
     }
   }
@@ -294,6 +299,25 @@ function readNextCursor(payload: unknown): string | null {
   if (typeof cursor === "string" && cursor.length > 0) return cursor;
   if (typeof cursor === "number") return String(cursor);
   return null;
+}
+
+/**
+ * True when the URL points at the local `bee proxy`. Hostname is
+ * compared exactly after parsing — a prefix match would also treat
+ * hosts like 127.0.0.1.evil.example as local.
+ */
+export function isLocalProxyUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "[::1]" ||
+      parsed.hostname === "::1"
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**

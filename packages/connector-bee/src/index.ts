@@ -27,7 +27,7 @@ import {
   type WearableSourceConnector,
 } from "@remnic/core";
 
-import { BeeClient, type BeeConversationListItem } from "./client.js";
+import { BeeClient, isLocalProxyUrl, BEE_DEFAULT_BASE_URL, type BeeConversationListItem } from "./client.js";
 import { BEE_SOURCE_ID, conversationToWearable, factToNativeMemory } from "./normalize.js";
 
 export {
@@ -35,6 +35,7 @@ export {
   BeeClient,
   BEE_DEFAULT_BASE_URL,
   BEE_DIRECT_BASE_URL,
+  isLocalProxyUrl,
 } from "./client.js";
 export type {
   BeeClientOptions,
@@ -74,10 +75,15 @@ export function createBeeConnector(
   let client: BeeClient | null = null;
   const getClient = (): BeeClient => {
     if (!client) {
-      client = new BeeClient({
-        token: resolveBeeToken(options.settings.apiKey),
-        baseUrl: options.settings.baseUrl,
-      });
+      const baseUrl = options.settings.baseUrl ?? BEE_DEFAULT_BASE_URL;
+      // The local proxy is unauthenticated by design — never attach a
+      // Bearer header there, even when a direct-mode token sits in the
+      // environment (it would 401 proxy requests for users who keep
+      // BEE_API_TOKEN exported for occasional direct use).
+      const token = isLocalProxyUrl(baseUrl)
+        ? undefined
+        : resolveBeeToken(options.settings.apiKey);
+      client = new BeeClient({ token, baseUrl });
     }
     return client;
   };
