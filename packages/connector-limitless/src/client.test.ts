@@ -134,6 +134,19 @@ test("non-retryable 4xx fails immediately without the API key in the message", a
   assert.equal(calls.length, 1);
 });
 
+test("exhausted network retries surface the error code, never raw Node text", async () => {
+  const pathy = new Error("connect ECONNREFUSED /home/someone/.cache/loader/path.js");
+  (pathy as NodeJS.ErrnoException).code = "ECONNREFUSED";
+  const { client } = makeClient([pathy, pathy, pathy, pathy]);
+  await assert.rejects(
+    client.listLifelogs({ date: "2026-06-10", timezone: "UTC" }),
+    (err: unknown) =>
+      err instanceof LimitlessApiError &&
+      err.message.includes("ECONNREFUSED") &&
+      !err.message.includes("/home/someone"),
+  );
+});
+
 test("malformed response shape is rejected loudly", async () => {
   const { client } = makeClient([jsonResponse({ data: {} })]);
   await assert.rejects(

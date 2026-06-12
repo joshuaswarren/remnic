@@ -121,6 +121,35 @@ export interface WearableDayTranscriptView {
   overlapsWith: string[];
 }
 
+/**
+ * Build the memory writer used by wearable syncs. The storage fact
+ * hash index only covers category "fact", so dedup for the other
+ * categories wearables write (moment digests, decisions, preferences,
+ * commitments) additionally scans existing wearable-tagged memories for
+ * an exact content match — without this, a forced or retried day
+ * re-writes identical digests and candidates (Codex P2 on PR #1458).
+ * The scan is bounded to wearable-sourced memories and sits on the
+ * cached readAllMemories() path.
+ */
+export function createWearableMemoryWriter(
+  storage: WearableStorageIo,
+): WearableMemoryGenDeps["writer"] {
+  return {
+    writeMemory: storage.writeMemory.bind(storage),
+    hasFactContentHash: async (content: string) => {
+      if (await storage.hasFactContentHash(content)) return true;
+      const needle = content.trim();
+      const memories = await storage.readAllMemories();
+      return memories.some(
+        (memory) =>
+          typeof memory.frontmatter.source === "string" &&
+          memory.frontmatter.source.startsWith(`${WEARABLE_SOURCE_PREFIX}:`) &&
+          memory.content.trim() === needle,
+      );
+    },
+  };
+}
+
 /** Mirrors the storage-layer guard so surface inputs fail as 400s. */
 const SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
 
@@ -233,10 +262,7 @@ export class WearablesService {
     const memoryGen: WearableMemoryGenDeps | null = this.deps.extract
       ? {
           extract: this.deps.extract,
-          writer: {
-            writeMemory: storage.writeMemory.bind(storage),
-            hasFactContentHash: storage.hasFactContentHash.bind(storage),
-          },
+          writer: createWearableMemoryWriter(storage),
         }
       : null;
 

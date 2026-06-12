@@ -11,6 +11,7 @@ import {
 } from "./day-store.js";
 import { emptySpeakerRegistry } from "./speakers.js";
 import {
+  createWearableMemoryWriter,
   locateTranscriptPath,
   WearablesService,
   type WearableStorageIo,
@@ -307,6 +308,36 @@ test("transcriptMemories filters by wearable source and day", async () => {
     assert.deepEqual(byDay.map((memory) => memory.id), ["fact-1"]);
 
     await assert.rejects(service.transcriptMemories({ date: "junk" }), /invalid date/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the wearable memory writer dedups non-fact categories by content scan", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
+  try {
+    const storage = makeStorage(dir);
+    storage.memories.push({
+      path: "facts/digest.md",
+      frontmatter: {
+        id: "moment-1",
+        source: "wearable:limitless",
+        created: "2026-06-10T16:00:00.000Z",
+        tags: ["wearable", "daily-digest"],
+        structuredAttributes: { wearableSource: "limitless", wearableDate: "2026-06-10" },
+      },
+      content: "Wearable day digest — limitless, 2026-06-10: 2 recorded conversations.",
+    });
+    const writer = createWearableMemoryWriter(storage);
+    // The fact hash index (always false in this fake) misses moments —
+    // the wearable-scoped content scan must catch the duplicate.
+    assert.equal(
+      await writer.hasFactContentHash(
+        "Wearable day digest — limitless, 2026-06-10: 2 recorded conversations.",
+      ),
+      true,
+    );
+    assert.equal(await writer.hasFactContentHash("Novel digest content."), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

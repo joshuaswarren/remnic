@@ -188,9 +188,7 @@ export class LimitlessClient {
           continue;
         }
         throw new LimitlessApiError(
-          `Limitless API request failed after ${MAX_RETRIES + 1} attempts: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `Limitless API request failed after ${MAX_RETRIES + 1} attempts: ${describeNetworkError(err)}`,
         );
       }
 
@@ -223,6 +221,17 @@ export class LimitlessClient {
       ? lastError
       : new LimitlessApiError("Limitless API request failed");
   }
+}
+
+/**
+ * Network/timeout failures wrap Node error text that can carry loader
+ * paths or stack fragments; sync errors reach MCP clients verbatim, so
+ * only the error name + code survive (Cursor review on PR #1458).
+ */
+function describeNetworkError(err: unknown): string {
+  if (!(err instanceof Error)) return "unexpected non-Error failure";
+  const code = (err as NodeJS.ErrnoException).code;
+  return typeof code === "string" && code.length > 0 ? `${err.name} (${code})` : err.name;
 }
 
 /** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
