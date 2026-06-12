@@ -48,7 +48,8 @@
     "@remnic/import-lossless-claw": "^9.3.625",
     "@remnic/import-mem0": "^9.3.625",
     "@remnic/import-supermemory": "^9.3.625",
-    "@remnic/connector-limitless": "^9.3.625"
+    "@remnic/connector-limitless": "^9.3.625",
+    "@remnic/connector-bee": "^9.3.625"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": {
@@ -80,6 +81,9 @@
     },
     "@remnic/connector-limitless": {
       "optional": true
+    },
+    "@remnic/connector-bee": {
+      "optional": true
     }
   },
   "devDependencies": {
@@ -94,7 +98,8 @@
     "@remnic/import-supermemory": "workspace:*",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "@remnic/connector-limitless": "workspace:*"
+    "@remnic/connector-limitless": "workspace:*",
+    "@remnic/connector-bee": "workspace:*"
   },
   "license": "MIT",
   "repository": {
