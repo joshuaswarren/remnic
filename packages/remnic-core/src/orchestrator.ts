@@ -2529,12 +2529,15 @@ export class Orchestrator {
    * follow-ups ride the same routing as every other fast-tier LLM feature.
    */
   get briefingChainFollowupGenerator(): BriefingFollowupGenerator | undefined {
+    // Plugin mode gates on `localLlmEnabled` alone: `LocalLlmClient.chatCompletion`
+    // returns null when the master switch is off, so `localLlmFastEnabled` by
+    // itself cannot serve requests (Cursor review on PR #1463).
     const chainAvailable =
       this.config.modelSource === "gateway"
         ? this._fastGatewayLlm?.isAvailable(
             this.config.fastGatewayAgentId || this.config.gatewayAgentId || undefined,
           ) === true
-        : this.config.localLlmEnabled || this.config.localLlmFastEnabled;
+        : this.config.localLlmEnabled;
     if (!chainAvailable) return undefined;
     return buildChainFollowupGenerator(this.fastLlmForRerank);
   }
