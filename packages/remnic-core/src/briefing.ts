@@ -19,6 +19,7 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { log } from "./logger.js";
+import { extractJsonCandidates } from "./json-extract.js";
 import { normalizeEntityName, StorageManager } from "./storage.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import type {
@@ -865,7 +866,8 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
   if (maxFollowups === 0 || options.allowLlm === false) {
     followupsUnavailableReason = "LLM follow-ups disabled by configuration";
   } else if (!options.openaiApiKey && !options.followupGenerator) {
-    followupsUnavailableReason = "OPENAI_API_KEY not configured";
+    followupsUnavailableReason =
+      'no LLM configured for follow-ups (set OPENAI_API_KEY, enable a local LLM, or use modelSource "gateway")';
   } else {
     try {
       const generator = options.followupGenerator ?? buildOpenAiFollowupGenerator({
@@ -1197,6 +1199,70 @@ function buildOpenAiFollowupGenerator(cfg: {
 
     const text = typeof response.output_text === "string" ? response.output_text : "";
     return parseFollowupResponse(text, maxFollowups);
+  };
+}
+
+/**
+ * Minimal chat-completion surface shared by `FallbackLlmClient` (gateway
+ * model chain) and `LocalLlmClient` (Ollama / OpenAI-compatible local
+ * endpoints). Matches `Orchestrator.fastLlmForRerank` so briefing
+ * follow-ups can ride the same routing as other fast-tier operations.
+ */
+export interface BriefingChainLlmClient {
+  chatCompletion(
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+    options?: {
+      temperature?: number;
+      maxTokens?: number;
+      timeoutMs?: number;
+      operation?: string;
+      priority?: "background" | "recall-critical";
+    },
+  ): Promise<{ content: string } | null>;
+}
+
+/**
+ * Build a follow-up generator backed by the configured LLM chain
+ * (gateway model source or local LLM) instead of a direct OpenAI key.
+ *
+ * Local models frequently wrap JSON in code fences or prose, so the
+ * response is run through `extractJsonCandidates` and the first candidate
+ * that parses into a valid `{ followups: [...] }` shape wins. Throws when
+ * the chain returns nothing or no candidate parses — `buildBriefing`
+ * catches and surfaces the message via `followupsUnavailableReason`.
+ */
+export function buildChainFollowupGenerator(
+  client: BriefingChainLlmClient,
+): BriefingFollowupGenerator {
+  return async ({ sections, windowLabel, maxFollowups }) => {
+    const prompt = buildFollowupPrompt(sections, windowLabel, maxFollowups);
+    const response = await client.chatCompletion(
+      [
+        { role: "system", content: FOLLOWUP_INSTRUCTIONS },
+        { role: "user", content: prompt },
+      ],
+      {
+        temperature: 0.2,
+        maxTokens: 512,
+        operation: "briefing-followups",
+        priority: "background",
+      },
+    );
+    if (!response?.content) {
+      throw new Error("LLM chain returned no response");
+    }
+    const candidates = extractJsonCandidates(response.content);
+    let lastError: unknown;
+    for (const candidate of candidates) {
+      try {
+        return parseFollowupResponse(candidate, maxFollowups);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw new Error(
+      `LLM chain response contained no valid followups JSON: ${stringifyError(lastError ?? "no JSON candidates found")}`,
+    );
   };
 }
 

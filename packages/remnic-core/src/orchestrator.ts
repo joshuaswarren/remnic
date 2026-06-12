@@ -1,4 +1,8 @@
 import { log } from "./logger.js";
+import {
+  buildChainFollowupGenerator,
+  type BriefingFollowupGenerator,
+} from "./briefing.js";
 import path from "node:path";
 import os from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -2514,6 +2518,25 @@ export class Orchestrator {
           forceDisableThinking: true,
         }),
     };
+  }
+
+  /**
+   * Build a briefing follow-up generator backed by the configured LLM chain
+   * (gateway model source or local LLM). Returns `undefined` when no chain
+   * is available so `buildBriefing` can surface a clear unavailable reason
+   * instead of failing at call time. Used by the access service and CLI as
+   * the fallback when no direct `openaiApiKey` is configured, so briefing
+   * follow-ups ride the same routing as every other fast-tier LLM feature.
+   */
+  get briefingChainFollowupGenerator(): BriefingFollowupGenerator | undefined {
+    const chainAvailable =
+      this.config.modelSource === "gateway"
+        ? this._fastGatewayLlm?.isAvailable(
+            this.config.fastGatewayAgentId || this.config.gatewayAgentId || undefined,
+          ) === true
+        : this.config.localLlmEnabled || this.config.localLlmFastEnabled;
+    if (!chainAvailable) return undefined;
+    return buildChainFollowupGenerator(this.fastLlmForRerank);
   }
 
   async initialize(): Promise<void> {

@@ -1814,6 +1814,13 @@ export class EngramAccessService {
       openaiApiKey: config.openaiApiKey,
       openaiBaseUrl: config.openaiBaseUrl,
       model: config.model,
+      // Without a direct OpenAI key, route follow-ups through the configured
+      // LLM chain (gateway model source or local LLM) — same fallback every
+      // other LLM feature uses. A configured key keeps its precedence so
+      // existing deployments are unchanged.
+      followupGenerator: config.openaiApiKey
+        ? undefined
+        : this.orchestrator.briefingChainFollowupGenerator,
     });
 
     return {

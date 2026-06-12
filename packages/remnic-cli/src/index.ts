@@ -4933,6 +4933,12 @@ async function cmdBriefing(rest: string[]): Promise<void> {
     openaiApiKey: config.openaiApiKey,
     openaiBaseUrl: config.openaiBaseUrl,
     model: config.model,
+    // Without a direct OpenAI key, route follow-ups through the configured
+    // LLM chain (gateway model source or local LLM) — mirrors the access
+    // service so CLI and server briefings behave identically.
+    followupGenerator: config.openaiApiKey
+      ? undefined
+      : orchestrator.briefingChainFollowupGenerator,
   });
 
   const payload = format === "json" ? JSON.stringify(result.json, null, 2) : result.markdown;

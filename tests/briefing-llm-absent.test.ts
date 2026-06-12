@@ -16,7 +16,7 @@ async function makeTempStorage(): Promise<{ dir: string; storage: StorageManager
   return { dir, storage };
 }
 
-test("buildBriefing omits follow-ups cleanly when OPENAI_API_KEY is not set", async () => {
+test("buildBriefing omits follow-ups cleanly when no LLM is configured", async () => {
   const { dir, storage } = await makeTempStorage();
   try {
     const result = await buildBriefing({
@@ -29,9 +29,12 @@ test("buildBriefing omits follow-ups cleanly when OPENAI_API_KEY is not set", as
     });
 
     assert.equal(result.sections.suggestedFollowups.length, 0);
-    assert.equal(result.followupsUnavailableReason, "OPENAI_API_KEY not configured");
+    assert.equal(
+      result.followupsUnavailableReason,
+      'no LLM configured for follow-ups (set OPENAI_API_KEY, enable a local LLM, or use modelSource "gateway")',
+    );
     assert.match(result.markdown, /## Suggested follow-ups/);
-    assert.match(result.markdown, /_Unavailable: OPENAI_API_KEY not configured_/);
+    assert.match(result.markdown, /_Unavailable: no LLM configured for follow-ups/);
     // Other sections still render.
     assert.match(result.markdown, /## Active threads/);
     assert.match(result.markdown, /## Recent entities/);

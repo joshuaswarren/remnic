@@ -507,6 +507,8 @@ export {
   briefingFilename,
   FileCalendarSource,
   BRIEFING_FORMAT_ALLOWED,
+  buildChainFollowupGenerator,
+  type BriefingChainLlmClient,
   type BuildBriefingOptions,
   type BriefingFollowupGenerator,
   type ParsedBriefingWindow,
