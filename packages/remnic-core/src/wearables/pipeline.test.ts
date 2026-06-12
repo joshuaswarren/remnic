@@ -783,6 +783,40 @@ test("facts written earlier in a multi-day backfill support later days in the sa
   }
 });
 
+test("a second device's day write invalidates the first device's memory-pass completion", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const day = "2026-06-11";
+    const conversationFor = (source: string) =>
+      makeConversation(`${source}-c1`, day, [
+        { speaker: "user", isWearer: true, text: "We are moving the launch to September twelfth after the vendor call today." },
+        { speaker: "Speaker 2", text: "The vendor confirmed the September launch date on the call." },
+      ]);
+    const { deps } = makeDeps(memoryDir);
+
+    // Device A syncs first and completes its memory pass for the day.
+    const connectorA = { ...fakeConnector({ [day]: [conversationFor("a")] }), id: "sourcea" };
+    await syncWearableSource(connectorA, settings({ memoryMode: "smart" }), config(), { days: 1 }, deps);
+    let state = await loadSyncState(memoryDir);
+    assert.ok(state.sources.sourcea.memoryDayHashes?.[day], "A's pass recorded");
+
+    // Device B then writes a transcript for the same day: A's
+    // completion record for that day must be invalidated so A's next
+    // sync re-scores with B's evidence available.
+    const connectorB = { ...fakeConnector({ [day]: [conversationFor("b")] }), id: "sourceb" };
+    await syncWearableSource(connectorB, settings({ memoryMode: "smart" }), config(), { days: 1 }, deps);
+    state = await loadSyncState(memoryDir);
+    assert.equal(
+      state.sources.sourcea.memoryDayHashes?.[day],
+      undefined,
+      "A's completion cleared by B's new same-day evidence",
+    );
+    assert.ok(state.sources.sourceb.memoryDayHashes?.[day], "B's own pass recorded");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("a transcript write failure prevents the sync watermark from advancing", async () => {
   const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
   try {

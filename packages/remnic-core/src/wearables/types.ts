@@ -269,6 +269,8 @@ export interface WearableSyncSummary {
   /** Day files written (skipped-unchanged days are not listed). */
   transcriptsWritten: string[];
   memoriesCreated: number;
+  /** Earlier borderline writes promoted to active by new evidence. */
+  memoriesPromoted: number;
   memoriesSkipped: number;
   nativeMemoriesImported: number;
   /** Non-fatal warnings surfaced to the operator. */

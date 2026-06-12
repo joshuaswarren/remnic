@@ -84,6 +84,22 @@ export interface WearableMemoryWriter {
     },
   ): Promise<string>;
   hasFactContentHash(content: string): Promise<boolean>;
+  /**
+   * Locate an earlier wearable write of the same content (any status).
+   * Optional: enables in-place promotion when re-scoring with stronger
+   * evidence.
+   */
+  findWearableMemoryByContent?(
+    content: string,
+  ): Promise<{ id: string; status: MemoryStatus | undefined } | null>;
+  /**
+   * Promote a pending_review wearable memory to active, merging trust
+   * evidence. Returns false when missing or no longer pending.
+   */
+  promoteWearableMemory?(
+    id: string,
+    attributeUpdates: Record<string, string>,
+  ): Promise<boolean>;
 }
 
 export interface WearableMemoryGenDeps {
@@ -105,6 +121,8 @@ export interface WearableMemoryGenDeps {
 
 export interface WearableMemoryGenResult {
   created: number;
+  /** Earlier borderline writes promoted to active by new evidence. */
+  promoted: number;
   skipped: number;
   skippedByReason: Record<string, number>;
   /** Non-fatal problems (e.g. the extraction engine erroring). */
@@ -279,6 +297,7 @@ export async function generateWearableMemories(
 ): Promise<WearableMemoryGenResult> {
   const result: WearableMemoryGenResult = {
     created: 0,
+    promoted: 0,
     skipped: 0,
     skippedByReason: {},
     warnings: [],
@@ -354,14 +373,67 @@ export async function generateWearableMemories(
 
   // Drop candidates that already exist in storage BEFORE applying the
   // day cap so duplicates never consume cap slots that novel,
-  // lower-scoring candidates should get (Codex P2 on PR #1458).
+  // lower-scoring candidates should get (Codex P2 on PR #1458). In
+  // smart mode a duplicate of a PENDING_REVIEW write is kept aside as
+  // a promotion candidate — corroboration that arrives after the
+  // original borderline write (another device syncing the same day)
+  // must be able to promote it in place (Cursor review on PR #1462).
   const novel: GatedCandidate[] = [];
+  const promotable: GatedCandidate[] = [];
   for (const candidate of candidates) {
     if (await deps.writer.hasFactContentHash(candidate.fact.content)) {
-      skip("duplicate-existing");
+      if (
+        settings.memoryMode === "smart" &&
+        deps.writer.findWearableMemoryByContent !== undefined &&
+        deps.writer.promoteWearableMemory !== undefined
+      ) {
+        promotable.push(candidate);
+      } else {
+        skip("duplicate-existing");
+      }
       continue;
     }
     novel.push(candidate);
+  }
+
+  // Re-score promotion candidates with TODAY'S evidence; promote the
+  // ones that now clear the auto threshold. Never consumes day-cap
+  // slots (no new memory is written).
+  if (promotable.length > 0) {
+    const promoteScores = await scoreCandidates(promotable, settings, deps, result);
+    for (const [index, candidate] of promotable.entries()) {
+      const scored = promoteScores.get(index);
+      const decision = scored
+        ? decideSmart(scored.trust, scored.verdict, settings)
+        : undefined;
+      if (!scored || !decision || decision.outcome !== "active") {
+        skip("duplicate-existing");
+        continue;
+      }
+      const existing = await deps.writer.findWearableMemoryByContent!(
+        candidate.fact.content,
+      );
+      if (!existing || existing.status !== "pending_review") {
+        skip("duplicate-existing");
+        continue;
+      }
+      const promoted = await deps.writer.promoteWearableMemory!(existing.id, {
+        trustScore: scored.trust.toFixed(3),
+        trustDecision: "promoted-by-corroboration",
+        ...(scored.verdict !== undefined ? { judgeVerdict: scored.verdict } : {}),
+        ...(scored.evidence.corroboratedBySources.length > 0
+          ? { corroboratedBySources: scored.evidence.corroboratedBySources.join(",") }
+          : {}),
+        ...(scored.evidence.supportingMemoryId !== undefined
+          ? { supportingMemoryId: scored.evidence.supportingMemoryId }
+          : {}),
+      });
+      if (promoted) {
+        result.promoted += 1;
+      } else {
+        skip("duplicate-existing");
+      }
+    }
   }
 
   // Smart mode: judge + trust scoring decide active/review/drop per
@@ -602,7 +674,11 @@ export async function importNativeMemories(
       });
       const decision = decideSmart(trust, verdict, settings);
       if (decision.outcome === "drop") {
-        importedIds.push(memory.id);
+        // Deliberately NOT recorded in importedIds: a dropped native
+        // fact re-fetches and re-scores on later syncs, so corpus or
+        // corroboration support that arrives later can still admit it.
+        // The judge verdict cache keeps repeated rejections cheap
+        // (Cursor review on PR #1462).
         continue;
       }
       status = decision.outcome === "active" ? "active" : "pending_review";

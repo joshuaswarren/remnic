@@ -531,7 +531,7 @@ test("a judge failure leaves the pass completed; extraction failure does not", a
   assert.equal(extractDown.completed, false, "aborted extraction must retry");
 });
 
-test("smart native import: judge gates writes; rejected ids stay tracked", async () => {
+test("smart native import: judge gates writes; dropped ids re-score on later syncs", async () => {
   const { writer, writes } = makeWriter();
   const result = await importNativeMemories(
     "omi",
@@ -553,7 +553,79 @@ test("smart native import: judge gates writes; rejected ids stay tracked", async
   assert.equal(writes[0].options.status, "pending_review");
   const attrs = writes[0].options.structuredAttributes as Record<string, string>;
   assert.equal(attrs.judgeVerdict, "accept");
-  assert.ok(result.importedIds.includes("n2"), "rejected ids tracked so they are not refetched");
+  // Dropped facts are deliberately NOT tracked: later corpus or
+  // corroboration support must be able to admit them on a re-fetch
+  // (the judge verdict cache keeps repeated rejections cheap).
+  assert.ok(!result.importedIds.includes("n2"), "dropped ids re-fetch and re-score later");
+  assert.ok(result.importedIds.includes("n1"));
+});
+
+test("smart mode: new evidence promotes an earlier pending_review write in place", async () => {
+  const borderline = "The launch moved to September twelfth after the vendor call.";
+  const { writer, writes } = makeWriter([borderline]);
+  let promotedWith: Record<string, string> | undefined;
+  writer.findWearableMemoryByContent = async (content) =>
+    content.trim() === borderline ? { id: "mem-old", status: "pending_review" } : null;
+  writer.promoteWearableMemory = async (_id, attrs) => {
+    promotedWith = attrs;
+    return true;
+  };
+  const { tokenizeDayBody } = await import("./trust.js");
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    {
+      // 0.75*0.8 = 0.6 (review band) + 0.15 cross-source = 0.75 -> active.
+      extract: extractionReturning([
+        { category: "fact", content: borderline, confidence: 0.75, tags: [] },
+      ]),
+      writer,
+      corroboration: {
+        otherSourceDayTokens: new Map([
+          ["bee", tokenizeDayBody("They said the launch moves to September twelfth right after that vendor call wrapped.")],
+        ]),
+        existingMemories: [],
+      },
+    },
+  );
+  assert.equal(result.promoted, 1, "existing borderline write promoted");
+  assert.equal(result.created, 0);
+  assert.equal(writes.length, 0, "no duplicate write");
+  assert.ok(promotedWith);
+  assert.equal(promotedWith.trustDecision, "promoted-by-corroboration");
+  assert.equal(promotedWith.corroboratedBySources, "bee");
+});
+
+test("smart mode: duplicates without stronger evidence stay skipped, not promoted", async () => {
+  const borderline = "The launch moved to September twelfth after the vendor call.";
+  const { writer, writes } = makeWriter([borderline]);
+  let promoteCalls = 0;
+  writer.findWearableMemoryByContent = async () => ({ id: "mem-old", status: "pending_review" });
+  writer.promoteWearableMemory = async () => {
+    promoteCalls += 1;
+    return true;
+  };
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "smart" }),
+    REGISTRY,
+    {
+      // 0.75*0.8 = 0.6 — still review band without corroboration.
+      extract: extractionReturning([
+        { category: "fact", content: borderline, confidence: 0.75, tags: [] },
+      ]),
+      writer,
+    },
+  );
+  assert.equal(result.promoted, 0);
+  assert.equal(promoteCalls, 0, "no promotion without crossing the auto threshold");
+  assert.equal(result.skippedByReason["duplicate-existing"], 1);
+  assert.equal(writes.length, 0);
 });
 
 test("native memories always import as pending_review and respect prior imports", async () => {

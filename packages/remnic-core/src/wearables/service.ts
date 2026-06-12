@@ -72,6 +72,13 @@ export interface WearableStorageIo {
   >;
   writeMemory: WearableMemoryGenDeps["writer"]["writeMemory"];
   hasFactContentHash(content: string): Promise<boolean>;
+  findWearableMemoryByContent(
+    content: string,
+  ): Promise<{ id: string; status: string | undefined } | null>;
+  promoteWearableMemory(
+    id: string,
+    attributeUpdates: Record<string, string>,
+  ): Promise<boolean>;
 }
 
 export interface WearableSearchBackend {
@@ -142,6 +149,11 @@ export function createWearableMemoryWriter(
 ): WearableMemoryGenDeps["writer"] {
   return {
     writeMemory: storage.writeMemory.bind(storage),
+    findWearableMemoryByContent: async (content: string) =>
+      (await storage.findWearableMemoryByContent(content)) as
+        | { id: string; status: import("../types.js").MemoryStatus | undefined }
+        | null,
+    promoteWearableMemory: storage.promoteWearableMemory.bind(storage),
     hasFactContentHash: async (content: string) => {
       if (await storage.hasFactContentHash(content)) return true;
       const needle = content.trim();

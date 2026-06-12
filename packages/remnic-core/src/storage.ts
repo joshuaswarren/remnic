@@ -2596,6 +2596,51 @@ export class StorageManager {
     return days;
   }
 
+  /**
+   * Locate a wearable-sourced memory by exact (trimmed) content.
+   * Used by the smart trust pipeline to find an earlier borderline
+   * write when the same fact re-extracts with stronger evidence.
+   */
+  async findWearableMemoryByContent(
+    content: string,
+  ): Promise<{ id: string; status: MemoryStatus | undefined } | null> {
+    const needle = content.trim();
+    const memories = await this.readAllMemories();
+    for (const memory of memories) {
+      if (
+        typeof memory.frontmatter.source === "string" &&
+        memory.frontmatter.source.startsWith("wearable:") &&
+        memory.content.trim() === needle
+      ) {
+        return { id: memory.frontmatter.id, status: memory.frontmatter.status };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Promote a pending_review wearable memory to active in place,
+   * merging updated trust evidence into structuredAttributes. Returns
+   * false when the memory is missing or no longer pending_review (a
+   * concurrent review decision wins).
+   */
+  async promoteWearableMemory(
+    id: string,
+    attributeUpdates: Record<string, string>,
+  ): Promise<boolean> {
+    const memories = await this.readAllMemories();
+    const memory = memories.find((entry) => entry.frontmatter.id === id);
+    if (!memory) return false;
+    if (memory.frontmatter.status !== "pending_review") return false;
+    return this.writeMemoryFrontmatter(memory, {
+      status: "active",
+      structuredAttributes: {
+        ...(memory.frontmatter.structuredAttributes ?? {}),
+        ...attributeUpdates,
+      },
+    });
+  }
+
   private get factsDir(): string {
     return path.join(this.baseDir, "facts");
   }

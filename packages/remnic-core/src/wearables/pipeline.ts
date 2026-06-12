@@ -293,6 +293,7 @@ export async function syncWearableSource(
     correctionsApplied: 0,
     transcriptsWritten: [],
     memoriesCreated: 0,
+    memoriesPromoted: 0,
     memoriesSkipped: 0,
     nativeMemoriesImported: 0,
     warnings: [],
@@ -442,6 +443,7 @@ export async function syncWearableSource(
             dayMemoryGen,
           );
           summary.memoriesCreated += generated.created;
+          summary.memoriesPromoted += generated.promoted;
           summary.memoriesSkipped += generated.skipped;
           summary.warnings.push(...generated.warnings);
           // Degraded-but-complete passes (e.g. judge unavailable) still
@@ -558,6 +560,32 @@ export async function syncWearableSource(
     clearMemoryDays: failedMemoryDays,
     importedNativeMemoryIds: importedNativeIds,
   });
+  // New same-day evidence invalidates OTHER sources' memory-pass
+  // completion for the days this source just (re)wrote: their next
+  // sync re-scores with this transcript available, and the promotion
+  // path upgrades earlier borderline writes in place (Cursor review on
+  // PR #1462).
+  if (summary.transcriptsWritten.length > 0) {
+    const cleared: typeof syncState.sources = {};
+    for (const [otherId, otherState] of Object.entries(syncState.sources)) {
+      if (otherId === connector.id || otherState.memoryDayHashes === undefined) {
+        cleared[otherId] = otherState;
+        continue;
+      }
+      const memoryDays = { ...otherState.memoryDayHashes };
+      let touched = false;
+      for (const date of summary.transcriptsWritten) {
+        if (date in memoryDays) {
+          delete memoryDays[date];
+          touched = true;
+        }
+      }
+      cleared[otherId] = touched
+        ? { ...otherState, memoryDayHashes: memoryDays }
+        : otherState;
+    }
+    syncState = { version: 1, sources: cleared };
+  }
   await saveSyncState(deps.memoryDir, syncState);
 
   return summary;

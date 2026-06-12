@@ -74,6 +74,23 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
     async hasFactContentHash() {
       return false;
     },
+    async findWearableMemoryByContent(content: string) {
+      const needle = content.trim();
+      const match = storage.memories.find(
+        (memory) =>
+          memory.frontmatter.source.startsWith("wearable:") &&
+          memory.content.trim() === needle,
+      );
+      return match
+        ? { id: match.frontmatter.id, status: match.frontmatter.status }
+        : null;
+    },
+    async promoteWearableMemory(id: string) {
+      const match = storage.memories.find((memory) => memory.frontmatter.id === id);
+      if (!match || match.frontmatter.status !== "pending_review") return false;
+      match.frontmatter.status = "active";
+      return true;
+    },
   };
   return storage;
 }
