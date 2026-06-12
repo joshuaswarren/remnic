@@ -61,7 +61,7 @@ export async function loadSpeakerRegistry(
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `wearables speakers file is not valid JSON (${filePath}): ${
+      `wearables speakers file is not valid JSON (state/wearables/speakers.json): ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
@@ -74,7 +74,7 @@ export async function loadSpeakerRegistry(
     (parsed as SpeakerRegistry).speakers === null
   ) {
     throw new Error(
-      `wearables speakers file has an unexpected shape (${filePath}); expected {"version":1,"selfName":"...","speakers":{}}`,
+      'wearables speakers file has an unexpected shape (state/wearables/speakers.json); expected {"version":1,"selfName":"...","speakers":{}}',
     );
   }
   const registry = parsed as SpeakerRegistry;

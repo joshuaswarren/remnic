@@ -326,6 +326,8 @@ test("malformed source ids reject as input errors before storage reads", async (
       service.transcriptMemories({ source: " " }),
       /invalid source id/,
     );
+    await assert.rejects(service.sync({ source: "../escape" }), /invalid source id/);
+    await assert.rejects(service.checkAuth("../escape"), /invalid source id/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -163,7 +163,7 @@ export async function loadCorrectionsFile(
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `wearables corrections file is not valid JSON (${filePath}): ${
+      `wearables corrections file is not valid JSON (state/wearables/corrections.json): ${
         err instanceof Error ? err.message : String(err)
       }`,
     );
@@ -175,7 +175,7 @@ export async function loadCorrectionsFile(
     !Array.isArray((parsed as CorrectionsFileShape).rules)
   ) {
     throw new Error(
-      `wearables corrections file has an unexpected shape (${filePath}); expected {"version":1,"rules":[...]}`,
+      'wearables corrections file has an unexpected shape (state/wearables/corrections.json); expected {"version":1,"rules":[...]}',
     );
   }
   const rules = (parsed as CorrectionsFileShape).rules;

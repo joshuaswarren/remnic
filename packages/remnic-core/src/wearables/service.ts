@@ -11,7 +11,7 @@ import {
   saveCorrectionsFile,
   compileCorrectionRule,
 } from "./corrections.js";
-import { WearablesInputError } from "./errors.js";
+import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { isValidTranscriptDate, parseDayTranscript } from "./day-store.js";
 import type { WearableMemoryGenDeps } from "./memory-gen.js";
 import { WEARABLE_SOURCE_PREFIX, wearableSourceLabel } from "./memory-gen.js";
@@ -206,6 +206,7 @@ export class WearablesService {
 
     let targets: Array<[string, WearableSourceSettings]>;
     if (options.source !== undefined) {
+      assertValidSourceId(options.source);
       const settings = this.deps.config.sources[options.source];
       if (!settings) {
         throw new WearablesInputError(
@@ -279,6 +280,7 @@ export class WearablesService {
   async checkAuth(sourceId: string): Promise<{ ok: boolean; detail?: string }> {
     this.assertEnabled();
     await ensureBuiltInWearableConnectors();
+    assertValidSourceId(sourceId);
     const settings = this.deps.config.sources[sourceId];
     if (!settings) {
       throw new WearablesInputError(`unknown wearable source '${sourceId}'`);
@@ -295,11 +297,17 @@ export class WearablesService {
       timezone: this.timezone(),
     });
     try {
-      return await connector.verifyAuth();
+      const result = await connector.verifyAuth();
+      // Connector-supplied detail strings can carry raw Node error text
+      // (network failures, loader errors) — scrub them like sync
+      // warnings before they reach CLI/MCP/HTTP output.
+      return result.detail !== undefined
+        ? { ok: result.ok, detail: describeErrorForOperator(new Error(result.detail)) }
+        : result;
     } catch (err) {
       return {
         ok: false,
-        detail: err instanceof Error ? err.message : String(err),
+        detail: describeErrorForOperator(err),
       };
     }
   }
