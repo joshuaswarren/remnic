@@ -666,7 +666,7 @@ test("smart mode: another device's stored day transcript corroborates borderline
         ["bee", "They said the launch moves to September twelfth right after that vendor call wrapped."],
       ]);
     };
-    deps.listActiveMemories = async () => [];
+    deps.listSupportMemories = async () => [];
 
     const summary = await syncWearableSource(
       fakeConnector(byDate),
@@ -695,7 +695,7 @@ test("smart native import never uses day-scoped cross-source corroboration", asy
       dayBodiesRequested += 1;
       return new Map([["bee", "the launch moves to september twelfth after that vendor call"]]);
     };
-    deps.listActiveMemories = async () => [
+    deps.listSupportMemories = async () => [
       { id: "fact-9", content: "User volunteers at the food bank every month with the team." },
     ];
     const summary = await syncWearableSource(
@@ -760,10 +760,10 @@ test("facts written earlier in a multi-day backfill support later days in the sa
         questions: [],
       };
     };
-    // listActiveMemories reflects what this run has written so far —
+    // listSupportMemories reflects what this run has written so far —
     // mirroring storage, whose readAllMemories cache invalidates on
     // every write.
-    deps.listActiveMemories = async () =>
+    deps.listSupportMemories = async () =>
       memoryWrites.map((write, index) => ({ id: `mem-${index + 1}`, content: write.content }));
 
     const summary = await syncWearableSource(

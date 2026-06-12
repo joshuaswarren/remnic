@@ -318,16 +318,23 @@ export class WearablesService {
             }
             return bodies;
           },
-          // ...and existing active memories for the support boost.
-          listActiveMemories: async () => {
+          // ...and existing memories for the support boost. Explicit
+          // status allow-list: active rows AND pending_review rows —
+          // a borderline fact observed again on a later day is
+          // repetition signal and the support boost is how it earns
+          // promotion. Rejected/quarantined/superseded/archived/
+          // forgotten rows never count (CLAUDE.md rule 53).
+          listSupportMemories: async () => {
             const memories = await storage.readAllMemories();
-            const active: Array<{ id: string; content: string }> = [];
+            const support: Array<{ id: string; content: string }> = [];
             for (const memory of memories) {
               const status = memory.frontmatter.status;
-              if (status !== undefined && status !== "active") continue;
-              active.push({ id: memory.frontmatter.id, content: memory.content });
+              if (status !== undefined && status !== "active" && status !== "pending_review") {
+                continue;
+              }
+              support.push({ id: memory.frontmatter.id, content: memory.content });
             }
-            return active;
+            return support;
           },
         },
       );

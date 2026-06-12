@@ -313,6 +313,126 @@ test("transcriptMemories filters by wearable source and day", async () => {
   }
 });
 
+test("support corpus includes pending_review rows and excludes terminal statuses", async () => {
+  const { registerWearableConnector, clearWearableConnectors } = await import("./registry.js");
+  const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
+  const borderlineFact =
+    "The launch moved to September twelfth after the vendor call.";
+  const makeRow = (id: string, status: string | undefined, content: string) => ({
+    path: `facts/${id}.md`,
+    frontmatter: {
+      id,
+      source: "wearable:limitless",
+      created: "2026-06-09T16:00:00.000Z",
+      tags: ["wearable"],
+      ...(status !== undefined ? { status } : {}),
+      structuredAttributes: { wearableSource: "limitless" },
+    },
+    content,
+  });
+  const runSmartSync = async (
+    rows: ReturnType<typeof makeRow>[],
+  ): Promise<Record<string, unknown>> => {
+    const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-service-mem-")));
+    storage.memories.push(...rows);
+    const writes: Array<{ options: Record<string, unknown> }> = [];
+    storage.writeMemory = (async (
+      _category: string,
+      _content: string,
+      options: Record<string, unknown>,
+    ) => {
+      writes.push({ options });
+      return `mem-${writes.length}`;
+    }) as WearableStorageIo["writeMemory"];
+    try {
+      registerWearableConnector({
+        id: "testsource",
+        displayName: "Test Source",
+        factory: () => ({
+          id: "testsource",
+          displayName: "Test Source",
+          verifyAuth: async () => ({ ok: true }),
+          fetchConversations: async () => ({
+            conversations: [
+              {
+                id: "c1",
+                source: "testsource",
+                startIso: "2026-06-10T15:00:00.000Z",
+                endIso: "2026-06-10T15:30:00.000Z",
+                segments: [
+                  { speakerKey: "user", isWearer: true, text: "We are moving the launch to September twelfth after that vendor call wrapped up." },
+                  { speakerKey: "guest", speakerName: "guest", text: "Confirmed, the vendor is aligned on the September date for the launch." },
+                ],
+              },
+            ],
+            nextCursor: null,
+          }),
+        }),
+      });
+      const service = new WearablesService({
+        config: {
+          ...defaultWearablesConfig(),
+          enabled: true,
+          digestEnabled: false,
+          sources: {
+            testsource: { ...defaultWearableSourceSettings(), enabled: true, memoryMode: "smart" },
+          },
+        },
+        getStorage: async () => storage,
+        // Borderline: 0.75 * 0.8 = 0.6 — active only with +0.10 support.
+        extract: async () => ({
+          facts: [{ category: "fact", content: borderlineFact, confidence: 0.75, tags: [] }],
+          profileUpdates: [],
+          entities: [],
+          questions: [],
+        }),
+        searchBackend: null,
+      });
+      await service.sync({ date: "2026-06-10" });
+      assert.equal(writes.length, 1);
+      return writes[0].options;
+    } finally {
+      clearWearableConnectors();
+    }
+  };
+
+  try {
+    // A pending_review row with matching content IS support evidence.
+    // (Similar wording, not identical — identical content would be
+    // consumed by the duplicate-existing dedup before scoring.)
+    const supported = await runSmartSync([
+      makeRow(
+        "pending-1",
+        "pending_review",
+        "The launch moved to September twelfth after the vendor call, noted earlier.",
+      ),
+    ]);
+    assert.equal(supported.status, "active");
+    assert.equal(
+      (supported.structuredAttributes as Record<string, string>).supportingMemoryId,
+      "pending-1",
+    );
+
+    // Terminal statuses with the same content are NOT support evidence.
+    const similar =
+      "The launch moved to September twelfth after the vendor call, noted earlier.";
+    const unsupported = await runSmartSync([
+      makeRow("rejected-1", "rejected", similar),
+      makeRow("quarantined-1", "quarantined", similar),
+      makeRow("superseded-1", "superseded", similar),
+      makeRow("archived-1", "archived", similar),
+      makeRow("forgotten-1", "forgotten", similar),
+    ]);
+    assert.equal(unsupported.status, "pending_review");
+    assert.equal(
+      (unsupported.structuredAttributes as Record<string, string>).supportingMemoryId,
+      undefined,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the wearable memory writer dedups non-fact categories by content scan", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
   try {

@@ -97,8 +97,14 @@ export interface WearableSyncDeps {
     date: string,
     excludeSource: string,
   ): Promise<Map<string, string>>;
-  /** Existing active memories for support-boost corroboration. */
-  listActiveMemories?(): Promise<Array<{ id: string; content: string }>>;
+  /**
+   * Existing memories usable as support evidence: status "active" or
+   * "pending_review" (explicit allow-list — a borderline fact observed
+   * again on a later day is repetition signal, and the +0.10 boost is
+   * how it earns promotion). Rejected/quarantined/superseded/archived/
+   * forgotten rows are never support evidence.
+   */
+  listSupportMemories?(): Promise<Array<{ id: string; content: string }>>;
   /** Clock injection for tests. */
   now?: () => Date;
 }
@@ -493,8 +499,8 @@ export async function syncWearableSource(
         settings.importNativeMemories === "smart"
           ? {
               otherSourceDayTokens: new Map<string, Set<string>>(),
-              existingMemories: deps.listActiveMemories
-                ? await deps.listActiveMemories()
+              existingMemories: deps.listSupportMemories
+                ? await deps.listSupportMemories()
                 : [],
             }
           : undefined;
@@ -578,8 +584,8 @@ async function buildCorroborationContext(
       otherSourceDayTokens.set(otherSource, tokenizeDayBody(body));
     }
   }
-  const existingMemories = deps.listActiveMemories
-    ? await deps.listActiveMemories()
+  const existingMemories = deps.listSupportMemories
+    ? await deps.listSupportMemories()
     : [];
   return { otherSourceDayTokens, existingMemories };
 }
