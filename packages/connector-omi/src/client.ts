@@ -129,7 +129,7 @@ export class OmiClient {
     this.apiKey = options.apiKey.trim();
     this.appId = options.appId.trim();
     this.userId = options.userId.trim();
-    this.baseUrl = (options.baseUrl ?? OMI_DEFAULT_BASE_URL).replace(/\/+$/, "");
+    this.baseUrl = stripTrailingSlashes(options.baseUrl ?? OMI_DEFAULT_BASE_URL);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.sleep =
@@ -307,6 +307,13 @@ export class OmiClient {
     }
     throw lastError instanceof Error ? lastError : new OmiApiError("Omi API request failed");
   }
+}
+
+/** Loop instead of `/\/+$/` — CodeQL js/polynomial-redos on user-set URLs. */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
+  return value.slice(0, end);
 }
 
 async function readDetail(response: Response): Promise<string | undefined> {
