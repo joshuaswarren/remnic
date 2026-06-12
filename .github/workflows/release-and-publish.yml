@@ -597,7 +597,7 @@ jobs:
               echo "Provision npm trusted publishing for each name, then rerun this workflow:"
               echo ""
               for entry in "${UNPROVISIONED[@]}"; do
-                echo "- \\`$entry\\`"
+                echo "- \`$entry\`"
               done
             } >> "$GITHUB_STEP_SUMMARY"
             echo "::error::${#UNPROVISIONED[@]} package(s) require one-time trusted-publishing provisioning (see step summary). All other packages were published."
