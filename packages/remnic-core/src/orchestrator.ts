@@ -2981,6 +2981,12 @@ export class Orchestrator {
     ) {
       try {
         const { startWearablesAutoSync } = await import("./wearables/auto-sync.js");
+        // Re-check after the await: destroy() may have aborted while
+        // the import was in flight, having found no handle to stop —
+        // starting now would leave a live interval on a destroyed
+        // orchestrator (Cursor review on PR #1464). Handle creation
+        // below is synchronous, so no further window exists.
+        if (signal.aborted) return;
         this.wearablesAutoSyncHandle = startWearablesAutoSync(
           {
             intervalMinutes: this.config.wearables.autoSyncIntervalMinutes,
