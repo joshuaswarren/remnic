@@ -345,7 +345,12 @@ test("support corpus includes pending_review rows and excludes terminal statuses
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
   const borderlineFact =
     "The launch moved to September twelfth after the vendor call.";
-  const makeRow = (id: string, status: string | undefined, content: string) => ({
+  const makeRow = (
+    id: string,
+    status: string | undefined,
+    content: string,
+    archivedAt?: string,
+  ) => ({
     path: `facts/${id}.md`,
     frontmatter: {
       id,
@@ -353,6 +358,7 @@ test("support corpus includes pending_review rows and excludes terminal statuses
       created: "2026-06-09T16:00:00.000Z",
       tags: ["wearable"],
       ...(status !== undefined ? { status } : {}),
+      ...(archivedAt !== undefined ? { archivedAt } : {}),
       structuredAttributes: { wearableSource: "limitless" },
     },
     content,
@@ -449,10 +455,29 @@ test("support corpus includes pending_review rows and excludes terminal statuses
       makeRow("superseded-1", "superseded", similar),
       makeRow("archived-1", "archived", similar),
       makeRow("forgotten-1", "forgotten", similar),
+      // Archived via archivedAt with NO explicit status — the
+      // canonical inferMemoryStatus must resolve this to archived.
+      makeRow("archived-implicit-1", undefined, similar, "2026-06-09T00:00:00.000Z"),
     ]);
     assert.equal(unsupported.status, "pending_review");
     assert.equal(
       (unsupported.structuredAttributes as Record<string, string>).supportingMemoryId,
+      undefined,
+    );
+
+    // Content matching ONLY through the "[Attributes: ...]" enrichment
+    // suffix is not corroboration — the suffix is stripped before
+    // token matching, so attribute metadata never grants the boost.
+    const suffixOnly = await runSmartSync([
+      makeRow(
+        "pending-2",
+        "pending_review",
+        "Unrelated note about quarterly budget planning.\n[Attributes: context: launch moved to September twelfth after the vendor call]",
+      ),
+    ]);
+    assert.equal(suffixOnly.status, "pending_review");
+    assert.equal(
+      (suffixOnly.structuredAttributes as Record<string, string>).supportingMemoryId,
       undefined,
     );
   } finally {

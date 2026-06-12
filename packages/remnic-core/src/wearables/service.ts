@@ -12,8 +12,10 @@ import {
   compileCorrectionRule,
 } from "./corrections.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
+import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { isValidTranscriptDate, parseDayTranscript } from "./day-store.js";
 import { stripAttributesSuffix } from "../storage.js";
+import type { MemoryFrontmatter } from "../types.js";
 import type { WearableMemoryGenDeps } from "./memory-gen.js";
 import { WEARABLE_SOURCE_PREFIX, wearableSourceLabel } from "./memory-gen.js";
 import {
@@ -66,6 +68,8 @@ export interface WearableStorageIo {
         created: string;
         tags: string[];
         status?: string;
+        /** Archival timestamp — rows with this set are not support. */
+        archivedAt?: string;
         structuredAttributes?: Record<string, string>;
       };
       content: string;
@@ -341,21 +345,34 @@ export class WearablesService {
             }
             return bodies;
           },
-          // ...and existing memories for the support boost. Explicit
-          // status allow-list: active rows AND pending_review rows —
-          // a borderline fact observed again on a later day is
-          // repetition signal and the support boost is how it earns
-          // promotion. Rejected/quarantined/superseded/archived/
-          // forgotten rows never count (CLAUDE.md rule 53).
+          // ...and existing memories for the support boost. Status
+          // resolves through the canonical inferMemoryStatus so rows
+          // archived via `archivedAt` (or an archive/ path) without an
+          // explicit status never count. Explicit allow-list: active
+          // rows AND pending_review rows — a borderline fact observed
+          // again on a later day is repetition signal and the support
+          // boost is how it earns promotion. Rejected/quarantined/
+          // superseded/archived/forgotten rows never count (CLAUDE.md
+          // rule 53). Bodies feed token matching with the
+          // "[Attributes: ...]" enrichment suffix stripped — attribute
+          // metadata must never grant corroboration.
           listSupportMemories: async () => {
             const memories = await storage.readAllMemories();
             const support: Array<{ id: string; content: string }> = [];
             for (const memory of memories) {
-              const status = memory.frontmatter.status;
-              if (status !== undefined && status !== "active" && status !== "pending_review") {
+              // WearableStorageIo narrows MemoryFrontmatter for
+              // testability; production hands us the real thing.
+              const status = inferMemoryStatus(
+                memory.frontmatter as MemoryFrontmatter,
+                memory.path,
+              );
+              if (status !== "active" && status !== "pending_review") {
                 continue;
               }
-              support.push({ id: memory.frontmatter.id, content: memory.content });
+              support.push({
+                id: memory.frontmatter.id,
+                content: stripAttributesSuffix(memory.content),
+              });
             }
             return support;
           },
