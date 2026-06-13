@@ -3923,6 +3923,21 @@ interface QueryRenderableResult {
   content?: string;
   preview?: string;
   context?: string;
+  id?: string;
+  memoryId?: string;
+  path?: string;
+  file?: string;
+  source?: string;
+  score?: number;
+}
+
+function queryResultText(memory: QueryRenderableResult): string {
+  return (
+    memory.content?.trim()
+    || memory.preview?.trim()
+    || memory.context?.trim()
+    || "(no preview available)"
+  );
 }
 
 export function renderQueryTextLines(result: {
@@ -3933,12 +3948,43 @@ export function renderQueryTextLines(result: {
   if (results.length === 0) return ["No results."];
 
   return results.map((memory) => {
-    const text =
-      memory.content?.trim()
-      || memory.preview?.trim()
-      || memory.context?.trim()
-      || "(no preview available)";
-    return `- ${text}`;
+    return `- ${queryResultText(memory)}`;
+  });
+}
+
+export interface QueryExplainFallbackResultSummary {
+  index: number;
+  text: string;
+  id?: string;
+  source?: string;
+  score?: number;
+}
+
+function firstNonEmptyString(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return undefined;
+}
+
+export function summarizeQueryExplainFallbackResults(result: {
+  results?: QueryRenderableResult[];
+}): QueryExplainFallbackResultSummary[] {
+  const results = Array.isArray(result.results) ? result.results : [];
+  return results.map((memory, index) => {
+    const summary: QueryExplainFallbackResultSummary = {
+      index: index + 1,
+      text: queryResultText(memory),
+    };
+    const id = firstNonEmptyString(memory.id, memory.memoryId);
+    if (id) summary.id = id;
+    const source = firstNonEmptyString(memory.source, memory.path, memory.file);
+    if (source) summary.source = source;
+    if (typeof memory.score === "number" && Number.isFinite(memory.score)) {
+      summary.score = memory.score;
+    }
+    return summary;
   });
 }
 
@@ -4014,6 +4060,7 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
         query: queryText,
         totalDurationMs,
         resultsCount,
+        results: summarizeQueryExplainFallbackResults(recallResult),
         note: "Install @remnic/bench for a full tier-level explain breakdown.",
       };
       if (json) {
@@ -4022,6 +4069,10 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
         console.log(`Query: ${minimalExplain.query}`);
         console.log(`Total duration: ${minimalExplain.totalDurationMs}ms`);
         console.log(`Results: ${minimalExplain.resultsCount}`);
+        for (const result of minimalExplain.results) {
+          const suffix = result.source ? ` (${result.source})` : "";
+          console.log(`  ${result.index}. ${result.text}${suffix}`);
+        }
         console.log(`Note: ${minimalExplain.note}`);
       }
       return;
