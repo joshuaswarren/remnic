@@ -31,10 +31,10 @@ OpenClaw adapter note:
   `initGateTimeoutMs` as the per-hook timeout on SDKs that support hook
   options. The same config bounds Remnic's internal cold-start init gate for
   recall and day summaries. Default: 30000ms; accepted range: 1000-120000ms.
-  Current OpenClaw compatibility target: reviewed source tag
-  2026.6.6-alpha.1 (plugin SDK surface verified against npm build
-  2026.6.5-beta.2), with package metadata floor >=2026.4.1. As of
-  June 7, 2026 the active 60-day floor is April 8, 2026; keep the
+  Current OpenClaw compatibility target: reviewed npm build 2026.6.6, with
+  2026.6.6-beta.2 retained in the explicit prerelease peer range and package
+  metadata floor >=2026.4.1. As of June 13, 2026 the active 60-day floor is
+  April 14, 2026; keep the
   more-permissive 2026.4.1 floor unless an upstream breaking change makes it
   impossible. Keep openclaw.install.minHostVersion AND openclaw.compat.pluginApi
   as a single >=x.y.z comparator (never a || list): OpenClaw's installer
