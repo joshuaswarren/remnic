@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngramAccessInputError, EngramAccessService } from "./access-service.js";
+import { namespaceCollectionName } from "./namespaces/search.js";
 import type { StorageManager } from "./storage.js";
 import type { PluginConfig } from "./types.js";
 
@@ -25,6 +26,8 @@ function makeConfig(): PluginConfig {
     daySum: { enabled: false },
     searchBackend: "orama",
     qmd: { enabled: false },
+    qmdCollection: "test-memory",
+    qmdMaxResults: 10,
     nativeKnowledge: { enabled: false },
     recall: { budget: {} },
     consolidation: { enabled: false },
@@ -50,13 +53,34 @@ function makeService(): {
   (service as unknown as {
     orchestrator: {
       config: PluginConfig;
+      qmd: {
+        search(query: string, collection?: string, maxResults?: number): Promise<unknown[]>;
+        searchGlobal(query: string, maxResults?: number): Promise<unknown[]>;
+      };
       getStorage(namespace: string): Promise<StorageManager>;
+      searchAcrossNamespaces(params: {
+        query: string;
+        namespaces?: string[];
+        maxResults?: number;
+        mode?: string;
+      }): Promise<unknown[]>;
     };
   }).orchestrator = {
     config: makeConfig(),
+    qmd: {
+      async search() {
+        throw new Error("qmd.search should not run in namespace mode");
+      },
+      async searchGlobal() {
+        throw new Error("qmd.searchGlobal should not run in namespace mode");
+      },
+    },
     async getStorage(namespace: string): Promise<StorageManager> {
       getStorageCalls.push(namespace);
       return storage;
+    },
+    async searchAcrossNamespaces() {
+      return [];
     },
   };
 
@@ -124,6 +148,294 @@ test("memoryBrowse resolves namespace storage for read principals", async () => 
   assert.equal(result.namespace, "team");
   assert.equal(result.count, 0);
   assert.deepEqual(getStorageCalls, ["team"]);
+});
+
+test("memorySearch without an explicit namespace uses readable recall namespaces", async () => {
+  const { service } = makeService();
+  let searchParams: unknown;
+  (service as unknown as {
+    orchestrator: {
+      searchAcrossNamespaces(params: unknown): Promise<Array<{ path: string; score: number; snippet: string }>>;
+    };
+  }).orchestrator.searchAcrossNamespaces = async (params) => {
+    searchParams = params;
+    return [{ path: "default/facts/a.md", score: 0.7, snippet: "matched" }];
+  };
+
+  const result = await service.memorySearch({
+    query: "deployment notes",
+    maxResults: 3,
+    principal: "reader",
+  });
+
+  assert.deepEqual(searchParams, {
+    query: "deployment notes",
+    namespaces: ["default", "shared"],
+    maxResults: 3,
+    mode: "search",
+  });
+  assert.equal(result.count, 1);
+});
+
+test("memorySearch with an explicit namespace searches only that readable namespace", async () => {
+  const { service } = makeService();
+  let searchParams: unknown;
+  (service as unknown as {
+    orchestrator: {
+      searchAcrossNamespaces(params: unknown): Promise<unknown[]>;
+    };
+  }).orchestrator.searchAcrossNamespaces = async (params) => {
+    searchParams = params;
+    return [];
+  };
+
+  await service.memorySearch({
+    query: "release note",
+    namespace: "team",
+    maxResults: 2,
+    principal: "reader",
+  });
+
+  assert.deepEqual(searchParams, {
+    query: "release note",
+    namespaces: ["team"],
+    maxResults: 2,
+    mode: "search",
+  });
+});
+
+test("memorySearch rejects unreadable namespaces before collection routing", async () => {
+  const { service } = makeService();
+  let searchCalls = 0;
+  (service as unknown as {
+    orchestrator: {
+      searchAcrossNamespaces(params: unknown): Promise<unknown[]>;
+    };
+  }).orchestrator.searchAcrossNamespaces = async () => {
+    searchCalls += 1;
+    return [];
+  };
+
+  await assert.rejects(
+    () =>
+      service.memorySearch({
+        query: "release note",
+        namespace: "team",
+        collection: namespaceCollectionName("test-memory", "team", {
+          defaultNamespace: "default",
+          useLegacyDefaultCollection: false,
+        }),
+        principal: "stranger",
+      }),
+    /namespace is not readable: team/,
+  );
+  assert.equal(searchCalls, 0);
+});
+
+test("memorySearch rejects empty collection names", async () => {
+  const { service } = makeService();
+  let searchCalls = 0;
+  (service as unknown as {
+    orchestrator: {
+      searchAcrossNamespaces(params: unknown): Promise<unknown[]>;
+    };
+  }).orchestrator.searchAcrossNamespaces = async () => {
+    searchCalls += 1;
+    return [];
+  };
+
+  await assert.rejects(
+    () =>
+      service.memorySearch({
+        query: "deployment notes",
+        collection: "   ",
+        principal: "reader",
+      }),
+    /collection must be a non-empty string/,
+  );
+  assert.equal(searchCalls, 0);
+});
+
+test("memorySearch treats global collection as ACL-scoped when namespaces are enabled", async () => {
+  const { service } = makeService();
+  let globalSearchCalls = 0;
+  let searchParams: unknown;
+  (service as unknown as {
+    orchestrator: {
+      qmd: {
+        searchGlobal(query: string, maxResults?: number): Promise<unknown[]>;
+      };
+      searchAcrossNamespaces(params: unknown): Promise<unknown[]>;
+    };
+  }).orchestrator.qmd.searchGlobal = async () => {
+    globalSearchCalls += 1;
+    return [];
+  };
+  (service as unknown as {
+    orchestrator: {
+      searchAcrossNamespaces(params: unknown): Promise<unknown[]>;
+    };
+  }).orchestrator.searchAcrossNamespaces = async (params) => {
+    searchParams = params;
+    return [];
+  };
+
+  await service.memorySearch({
+    query: "runbook",
+    collection: "global",
+    principal: "reader",
+  });
+
+  assert.equal(globalSearchCalls, 0);
+  assert.deepEqual(searchParams, {
+    query: "runbook",
+    namespaces: ["default", "shared"],
+    maxResults: undefined,
+    mode: "search",
+  });
+});
+
+test("memorySearch accepts a namespace-scoped collection for the requested namespace", async () => {
+  const { service } = makeService();
+  let searchParams: unknown;
+  (service as unknown as {
+    orchestrator: {
+      searchAcrossNamespaces(params: unknown): Promise<unknown[]>;
+    };
+  }).orchestrator.searchAcrossNamespaces = async (params) => {
+    searchParams = params;
+    return [];
+  };
+
+  await service.memorySearch({
+    query: "release note",
+    namespace: "team",
+    collection: namespaceCollectionName("test-memory", "team", {
+      defaultNamespace: "default",
+      useLegacyDefaultCollection: false,
+    }),
+    principal: "reader",
+  });
+
+  assert.deepEqual(searchParams, {
+    query: "release note",
+    namespaces: ["team"],
+    maxResults: undefined,
+    mode: "search",
+  });
+});
+
+test("memorySearch accepts a readable namespace-scoped collection without duplicate namespace", async () => {
+  const { service } = makeService();
+  let searchParams: unknown;
+  (service as unknown as {
+    orchestrator: {
+      searchAcrossNamespaces(params: unknown): Promise<unknown[]>;
+    };
+  }).orchestrator.searchAcrossNamespaces = async (params) => {
+    searchParams = params;
+    return [];
+  };
+
+  await service.memorySearch({
+    query: "release note",
+    collection: namespaceCollectionName("test-memory", "team", {
+      defaultNamespace: "default",
+      useLegacyDefaultCollection: false,
+    }),
+    principal: "reader",
+  });
+
+  assert.deepEqual(searchParams, {
+    query: "release note",
+    namespaces: ["team"],
+    maxResults: undefined,
+    mode: "search",
+  });
+});
+
+test("memorySearch rejects arbitrary custom collections when namespaces are enabled", async () => {
+  const { service } = makeService();
+  let qmdSearchCalls = 0;
+  (service as unknown as {
+    orchestrator: {
+      qmd: {
+        search(query: string, collection?: string, maxResults?: number): Promise<unknown[]>;
+      };
+    };
+  }).orchestrator.qmd.search = async () => {
+    qmdSearchCalls += 1;
+    return [];
+  };
+
+  await assert.rejects(
+    () =>
+      service.memorySearch({
+        query: "deployment notes",
+        collection: "custom-collection",
+        principal: "reader",
+      }),
+    /collection is not namespace-scoped for the requested principal/,
+  );
+  assert.equal(qmdSearchCalls, 0);
+});
+
+test("memorySearch honors custom collections when namespaces are disabled", async () => {
+  const { service } = makeService();
+  (service as unknown as { orchestrator: { config: PluginConfig } }).orchestrator.config = {
+    ...makeConfig(),
+    namespacesEnabled: false,
+  };
+  let qmdSearchArgs: unknown[] | undefined;
+  (service as unknown as {
+    orchestrator: {
+      qmd: {
+        search(query: string, collection?: string, maxResults?: number): Promise<unknown[]>;
+      };
+    };
+  }).orchestrator.qmd.search = async (...args) => {
+    qmdSearchArgs = args;
+    return [{ path: "facts/a.md", score: 0.5, snippet: "matched" }];
+  };
+
+  const result = await service.memorySearch({
+    query: "deployment notes",
+    collection: "custom-collection",
+    maxResults: 4,
+  });
+
+  assert.deepEqual(qmdSearchArgs, ["deployment notes", "custom-collection", 4]);
+  assert.equal(result.count, 1);
+});
+
+test("memorySearch rejects unsupported namespaces when namespaces are disabled", async () => {
+  const { service } = makeService();
+  (service as unknown as { orchestrator: { config: PluginConfig } }).orchestrator.config = {
+    ...makeConfig(),
+    namespacesEnabled: false,
+  };
+  let qmdSearchCalls = 0;
+  (service as unknown as {
+    orchestrator: {
+      qmd: {
+        search(query: string, collection?: string, maxResults?: number): Promise<unknown[]>;
+      };
+    };
+  }).orchestrator.qmd.search = async () => {
+    qmdSearchCalls += 1;
+    return [];
+  };
+
+  await assert.rejects(
+    () =>
+      service.memorySearch({
+        query: "deployment notes",
+        namespace: "team",
+        collection: "custom-collection",
+      }),
+    /unsupported namespace: team/,
+  );
+  assert.equal(qmdSearchCalls, 0);
 });
 
 test("offlineSyncFiles reports invalid requested paths as input errors", async () => {

@@ -1433,7 +1433,7 @@ export class EngramMcpServer {
             query: { type: "string" },
             namespace: { type: "string" },
             maxResults: { type: "number" },
-            collection: { type: "string", description: "QMD collection (omit for memory, 'global' for all)" },
+            collection: { type: "string", description: "QMD collection. With namespaces enabled, omitted, base, and 'global' searches stay scoped to readable namespaces; namespace-derived collections require matching namespace access." },
           },
           required: ["query"],
           additionalProperties: false,

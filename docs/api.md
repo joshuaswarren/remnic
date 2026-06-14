@@ -384,6 +384,9 @@ Search memories by semantic similarity.
 - `limit` (number, optional, default: 10) — Max results to return.
 - `category` (string, optional) — Filter by memory category.
 - `namespace` (string, optional) — Filter by namespace.
+- `collection` (string, optional) — QMD collection override for direct MCP/access calls.
+
+When namespaces are enabled, unqualified searches use the authenticated principal's readable recall namespaces. Passing `collection: "global"` remains ACL-scoped to those readable namespaces; it does not bypass namespace isolation. Namespace-derived collection names are accepted only when they match a readable requested namespace. Arbitrary custom collections are rejected in namespace mode because Remnic cannot prove they are namespace-safe. Deployments without namespaces may still search a named custom QMD collection directly.
 
 **Returns:** Array of matching memories with scores, paths, and content snippets.
 

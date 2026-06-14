@@ -54,6 +54,7 @@ import {
 } from "./memory-lifecycle-ledger-utils.js";
 import { getMemoryProjectionPath } from "./memory-projection-store.js";
 import { canReadNamespace, canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
+import { namespaceCollectionName } from "./namespaces/search.js";
 import type { LastRecallSnapshot } from "./recall-state.js";
 import type {
   GraphRecallSnapshot,
@@ -1320,6 +1321,75 @@ export class EngramAccessService {
       throw new EngramAccessInputError(`namespace is not readable: ${resolved}`);
     }
     return resolved;
+  }
+
+  private resolveReadableNamespacesForSearch(namespace: string | undefined, principal?: string): string[] {
+    const requested = namespace?.trim();
+    if (requested) {
+      return [this.resolveReadableNamespace(requested, principal)];
+    }
+
+    if (!this.orchestrator.config.namespacesEnabled) {
+      return [this.resolveNamespace(undefined)];
+    }
+
+    if (!principal) {
+      throw new EngramAccessInputError(
+        "authentication required: namespaces are enabled and no principal was supplied",
+      );
+    }
+
+    return recallNamespacesForPrincipal(principal, this.orchestrator.config)
+      .filter((ns) => canReadNamespace(principal, ns, this.orchestrator.config));
+  }
+
+  private resolveAllReadableConfiguredNamespaces(principal: string): string[] {
+    const config = this.orchestrator.config;
+    const candidates = [
+      config.defaultNamespace,
+      config.sharedNamespace,
+      ...config.namespacePolicies.map((policy) => policy.name),
+    ];
+    return [...new Set(candidates)]
+      .filter((namespace) => canReadNamespace(principal, namespace, config));
+  }
+
+  private resolveMemorySearchNamespacesForCollection(
+    collection: string | undefined,
+    namespaces: string[],
+    collectionPrincipal?: string,
+  ): string[] {
+    if (!this.orchestrator.config.namespacesEnabled) {
+      return namespaces;
+    }
+
+    const baseCollection = this.orchestrator.config.qmdCollection;
+    if (!collection || collection === "global" || collection === baseCollection) {
+      return namespaces;
+    }
+
+    const candidates = collectionPrincipal
+      ? this.resolveAllReadableConfiguredNamespaces(collectionPrincipal)
+      : namespaces;
+    const matchedNamespaces = candidates.filter((namespace) => {
+      const canonical = namespaceCollectionName(baseCollection, namespace, {
+        defaultNamespace: this.orchestrator.config.defaultNamespace,
+        useLegacyDefaultCollection: false,
+      });
+      const legacyDefault = namespaceCollectionName(baseCollection, namespace, {
+        defaultNamespace: this.orchestrator.config.defaultNamespace,
+        useLegacyDefaultCollection: true,
+      });
+      return collection === canonical || collection === legacyDefault;
+    });
+
+    if (matchedNamespaces.length > 0) {
+      return matchedNamespaces;
+    }
+
+    throw new EngramAccessInputError(
+      "collection is not namespace-scoped for the requested principal",
+    );
   }
 
   private async buildRecallDebug(
@@ -4864,18 +4934,34 @@ export class EngramAccessService {
     collection?: string;
     principal?: string;
   }): Promise<{ query: string; results: Array<{ path: string; score: number; snippet: string }>; count: number }> {
-    const { query, namespace, maxResults, collection, principal } = request;
-    const resolvedNs = this.resolveReadableNamespace(namespace, principal);
-    const namespaceFilter = resolvedNs !== this.orchestrator.config.defaultNamespace ? resolvedNs : undefined;
+    const { query, namespace, maxResults, principal } = request;
+    const collection = request.collection?.trim();
+    if (request.collection !== undefined && !collection) {
+      throw new EngramAccessInputError("collection must be a non-empty string");
+    }
 
-    const results = collection === "global" && !namespaceFilter
-      ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
-      : await this.orchestrator.searchAcrossNamespaces({
-          query,
-          namespaces: namespaceFilter ? [namespaceFilter] : undefined,
-          maxResults,
-          mode: "search",
-        });
+    let results: Array<{ path: string; score: number; snippet?: string }>;
+    if (!this.orchestrator.config.namespacesEnabled) {
+      this.resolveReadableNamespace(namespace, principal);
+      results = collection === "global"
+        ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
+        : await this.orchestrator.qmd.search(query, collection, maxResults);
+    } else {
+      const readableNamespaces = this.resolveReadableNamespacesForSearch(namespace, principal);
+      const namespaces = this.resolveMemorySearchNamespacesForCollection(
+        collection,
+        readableNamespaces,
+        namespace?.trim() ? undefined : principal,
+      );
+      results = namespaces.length === 0
+        ? []
+        : await this.orchestrator.searchAcrossNamespaces({
+            query,
+            namespaces,
+            maxResults,
+            mode: "search",
+          });
+    }
 
     return {
       query,
