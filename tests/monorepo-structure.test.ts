@@ -40,6 +40,8 @@ const OPENCLAW_SUPPORT_PROBE_VERSIONS = [
   "2026.6.5-beta.1",
   "2026.6.5-beta.2",
   "2026.6.6-alpha.1",
+  "2026.6.6-beta.2",
+  "2026.6.6",
 ];
 
 // Expected packages after the monorepo migration

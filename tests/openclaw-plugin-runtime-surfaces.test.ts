@@ -62,7 +62,7 @@ const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/plugin-openclaw/package.json",
     name: "@remnic/plugin-openclaw",
-    buildVersion: "2026.6.6-alpha.1",
+    buildVersion: "2026.6.6",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@remnic/plugin-openclaw",
@@ -71,7 +71,7 @@ const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/shim-openclaw-engram/package.json",
     name: "@joshuaswarren/openclaw-engram",
-    buildVersion: "2026.6.6-alpha.1",
+    buildVersion: "2026.6.6",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@joshuaswarren/openclaw-engram",
@@ -455,7 +455,14 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
     const peerRange = packageJson.peerDependencies?.openclaw;
     assert.equal(typeof peerRange, "string", "peerDependencies.openclaw must be a string");
     assert.ok(peerRange.includes(">=2026.4.1"), "peer range must keep the >=2026.4.1 floor");
-    for (const host of ["2026.4.1", "2026.6.1", "2026.6.5-beta.2", "2026.5.31-beta.4"]) {
+    for (const host of [
+      "2026.4.1",
+      "2026.6.1",
+      "2026.6.5-beta.2",
+      "2026.5.31-beta.4",
+      "2026.6.6-beta.2",
+      "2026.6.6",
+    ]) {
       assert.equal(
         semver.satisfies(host, peerRange),
         true,
@@ -492,6 +499,8 @@ test("OpenClaw support range accepts the stable floor and reviewed prerelease ho
     "2026.6.5-beta.1",
     "2026.6.5-beta.2",
     "2026.6.6-alpha.1",
+    "2026.6.6-beta.2",
+    "2026.6.6",
   ]) {
     assert.equal(
       semver.satisfies(version, OPENCLAW_SUPPORT_FLOOR_RANGE, { includePrerelease: true }),
