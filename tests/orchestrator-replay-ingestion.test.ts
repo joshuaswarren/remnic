@@ -90,7 +90,7 @@ test("queueBufferedExtraction settles task callbacks on dedupe skip", () => {
 
   assert.match(
     source,
-    /if \(\s*!options\.skipDedupeCheck\s*&&\s*!this\.shouldQueueExtraction\(turnsToExtract,\s*\{\s*bufferKey\s*\}\)\s*\) \{[\s\S]*options\.onTaskSettled\?\.\(\);[\s\S]*return;/m,
+    /if \(\s*!options\.skipDedupeCheck\s*&&\s*!this\.shouldQueueExtraction\(turnsToExtract,\s*\{\s*bufferKey\s*\}\)\s*\) \{[\s\S]*options\.onTaskSettled\?\.\(undefined,\s*\{[\s\S]*reason:\s*"dedupe"[\s\S]*\}\);[\s\S]*return;/m,
     "dedupe skip path should settle any task callback to avoid hanging replay promises",
   );
 });

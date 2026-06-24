@@ -200,7 +200,12 @@ test("extraction skips mechanical action telemetry without durable memory cues",
   const result = await engine.extract(turns);
 
   assert.equal(fallbackCalls, 0);
-  assert.deepEqual(result, { facts: [], profileUpdates: [], entities: [], questions: [] });
+  assert.deepEqual(result, {
+    facts: [],
+    profileUpdates: [],
+    entities: [],
+    questions: [],
+  });
 });
 
 test("extraction keeps action transcripts with durable memory cues", async () => {

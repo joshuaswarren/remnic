@@ -21,6 +21,8 @@ export interface ImportTurn {
   participantId?: string;
   participantName?: string;
   replyToId?: string;
+  turnFingerprint?: string;
+  persistProcessedFingerprint?: boolean;
   parts?: import("../message-parts/index.js").LcmMessagePartInput[];
   rawContent?: unknown;
   sourceFormat?: import("../message-parts/index.js").MessagePartSourceFormat;

@@ -43,6 +43,7 @@ import path from "node:path";
 import os from "node:os";
 import { createOpikExporter } from "./opik-exporter.js";
 import { readEnvVar, resolveHomeDir } from "@remnic/core/runtime/env";
+import { displayErrorDetail } from "@remnic/core/runtime/better-sqlite";
 import { migrateFromEngram } from "./migrate/from-engram.js";
 import {
   createOpenClawUserMessageCleaner,
@@ -68,6 +69,7 @@ import {
   buildSessionCommandDescriptors,
 } from "../packages/plugin-openclaw/src/session-command-descriptors.js";
 import { validateSlotSelection } from "../packages/plugin-openclaw/src/slot-validator.js";
+import { processOpenClawFlushPlanFile } from "./openclaw-flush-plan-lifecycle.js";
 import {
   REMNIC_OPENCLAW_PLUGIN_ID,
   resolveRemnicOpenClawPluginEntry,
@@ -586,6 +588,7 @@ type ServiceKeys = {
   ACCESS_SERVICE: string;
   ACCESS_HTTP_SERVER: string;
   ACCESS_HTTP_AUTH_STATE: string;
+  FLUSH_PLAN_PROCESSING_CHAINS: string;
   /**
    * Guards service.start() against duplicate invocation when multiple api instances
    * each register the service (all registries get registerService, but initialize
@@ -613,6 +616,7 @@ function buildServiceKeys(serviceId: string): ServiceKeys {
     ACCESS_SERVICE: `__openclawEngramAccessService${suffix}`,
     ACCESS_HTTP_SERVER: `__openclawEngramAccessHttpServer${suffix}`,
     ACCESS_HTTP_AUTH_STATE: `__openclawEngramAccessHttpAuthState${suffix}`,
+    FLUSH_PLAN_PROCESSING_CHAINS: `__openclawEngramFlushPlanProcessingChains${suffix}`,
     SERVICE_STARTED: `__openclawEngramServiceStarted${suffix}`,
     INIT_PROMISE: `__openclawEngramInitPromise${suffix}`,
     ORCHESTRATOR: `__openclawEngramOrchestrator${suffix}`,
@@ -1314,10 +1318,10 @@ const pluginDefinition = {
         }));
       void migrationPromise;
     }
-
     // Workaround: Load config from file since gateway may not pass it.
     // Pass serviceId so shim installs prefer their own entry (#403).
     const fileConfig = loadPluginConfigFromFile(serviceId);
+    const openclawFlushPlanProcessingEnabled = resolveOpenClawFlushPlanProcessingEnabledFromConfig(fileConfig, api.pluginConfig);
     const cfg = parseConfig({
       ...fileConfig, // File-backed fallback for runtimes that omit pluginConfig
       ...api.pluginConfig, // Runtime/plugin-supplied config must win
@@ -1552,6 +1556,141 @@ const pluginDefinition = {
       return path.isAbsolute(cfg.heartbeat.journalPath)
         ? cfg.heartbeat.journalPath
         : path.join(workspaceRoot, cfg.heartbeat.journalPath);
+    }
+
+    const existingFlushPlanProcessingChains = (globalThis as any)[
+      keys.FLUSH_PLAN_PROCESSING_CHAINS
+    ];
+    const flushPlanProcessingChains =
+      existingFlushPlanProcessingChains instanceof Map
+        ? (existingFlushPlanProcessingChains as Map<string, Promise<void>>)
+        : new Map<string, Promise<void>>();
+    (globalThis as any)[keys.FLUSH_PLAN_PROCESSING_CHAINS] =
+      flushPlanProcessingChains;
+
+    function resolveFlushPlanDeadlineMs(options: {
+      deadlineMs?: number;
+      timeoutMs?: number;
+    }): number | undefined {
+      if (
+        typeof options.deadlineMs === "number" &&
+        Number.isFinite(options.deadlineMs)
+      ) {
+        return options.deadlineMs;
+      }
+      if (
+        typeof options.timeoutMs === "number" &&
+        Number.isFinite(options.timeoutMs) &&
+        options.timeoutMs >= 0
+      ) {
+        return Date.now() + Math.floor(options.timeoutMs);
+      }
+      return undefined;
+    }
+
+    function waitForOpenClawFlushPlanTask(
+      task: Promise<void>,
+      reason: string,
+      deadlineMs?: number,
+    ): Promise<void> {
+      if (typeof deadlineMs !== "number") {
+        return task;
+      }
+      const remainingMs = Math.max(0, deadlineMs - Date.now());
+      if (remainingMs === 0) {
+        log.warn(
+          `OpenClaw flush-plan processing timed out before queue wait for ${reason}`,
+        );
+        return Promise.resolve();
+      }
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([
+        task,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(() => {
+            log.warn(
+              `OpenClaw flush-plan processing timed out while waiting for ${reason}; current drain remains fenced until it settles`,
+            );
+            resolve();
+          }, remainingMs);
+        }),
+      ]).finally(() => {
+        if (timeout) clearTimeout(timeout);
+      });
+    }
+
+    async function runOpenClawFlushPlanProcessing(
+      reason: string,
+      workspaceRoot: string,
+      deadlineMs?: number,
+    ): Promise<void> {
+      if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+        log.warn(
+          `OpenClaw flush-plan processing timed out before starting for ${reason}`,
+        );
+        return;
+      }
+      try {
+        const result = await processOpenClawFlushPlanFile({
+          enabled: openclawFlushPlanProcessingEnabled,
+          workspaceDir: workspaceRoot,
+          serviceId,
+          ingestor: orchestrator,
+          logger: {
+            debug: (message) => log.debug(message),
+            info: (message) => log.info(message),
+            warn: (message) => log.warn(message),
+          },
+          reason,
+          deadlineMs,
+          maxTurnChars: cfg.extractionMaxTurnChars,
+        });
+        if (
+          result.status === "processed" ||
+          result.status === "processed_preserved_tail" ||
+          result.status === "processed_marker_recovered" ||
+          result.status === "processed_marker_recovered_tail" ||
+          result.status === "processed_cleanup_deferred"
+        ) {
+          log.info(
+            `OpenClaw flush-plan ${result.status}: ${result.bytesProcessed ?? 0} bytes` +
+              (result.preservedBytes ? ` (${result.preservedBytes} bytes preserved)` : ""),
+          );
+        } else if (result.status === "skipped") {
+          log.warn(
+            `OpenClaw flush-plan processing skipped: ${result.reason ?? "unknown reason"}`,
+          );
+        }
+      } catch (error) {
+        const detail = displayErrorDetail(error) || "unknown error";
+        log.warn(`OpenClaw flush-plan processing failed: ${detail}`);
+      }
+    }
+
+    async function queueOpenClawFlushPlanProcessing(
+      reason: string,
+      runtimeWorkspaceDir?: string,
+      options: { deadlineMs?: number; timeoutMs?: number } = {},
+    ): Promise<void> {
+      if (passiveMode || !openclawFlushPlanProcessingEnabled) {
+        return Promise.resolve();
+      }
+      const workspaceRoot = resolveWorkspaceRoot(runtimeWorkspaceDir);
+      const chainKey = await resolveFlushPlanProcessingChainKey(workspaceRoot);
+      const deadlineMs = resolveFlushPlanDeadlineMs(options);
+      const previousTask =
+        flushPlanProcessingChains.get(chainKey);
+      const task = (previousTask ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(() => runOpenClawFlushPlanProcessing(reason, workspaceRoot, deadlineMs));
+      const fencedTask = task.catch(() => undefined);
+      flushPlanProcessingChains.set(chainKey, fencedTask);
+      void fencedTask.finally(() => {
+        if (flushPlanProcessingChains.get(chainKey) === fencedTask) {
+          flushPlanProcessingChains.delete(chainKey);
+        }
+      });
+      return waitForOpenClawFlushPlanTask(task, reason, deadlineMs);
     }
 
     function queueDreamSurfaceSync(runtimeWorkspaceDir?: string): Promise<void> {
@@ -4358,6 +4497,11 @@ const pluginDefinition = {
           (event?.sessionKey as string) ??
           "default";
         const sessionIdentity = resolveSessionIdentity(sessionKey, event, ctx);
+        const workspaceDir =
+          (ctx?.workspaceDir as string) ||
+          (event?.workspaceDir as string) ||
+          orchestrator.config.workspaceDir ||
+          defaultWorkspaceDir();
 
         try {
           clearCodexCompatCaches(sessionKey, sessionIdentity.providerThreadId, {
@@ -4403,6 +4547,9 @@ const pluginDefinition = {
               log.debug(`LCM after_compaction error: ${lcmErr}`);
             }
           }
+          await queueOpenClawFlushPlanProcessing("after_compaction", workspaceDir, {
+            timeoutMs: cfg.beforeResetTimeoutMs,
+          });
 
           if (!orchestrator.config.compactionResetEnabled) {
             log.debug(
@@ -4414,14 +4561,6 @@ const pluginDefinition = {
           log.info(
             `compaction completed for ${sessionKey}, triggering session reset`,
           );
-
-          // Use ctx.workspaceDir (per-agent) if available, fall back to event
-          // (new SDK may provide it on the event when ctx is empty), then config.
-          const workspaceDir =
-            (ctx?.workspaceDir as string) ||
-            (event?.workspaceDir as string) ||
-            orchestrator.config.workspaceDir ||
-            defaultWorkspaceDir();
 
           // Reset the session first — only write the signal file if reset succeeds.
           // This prevents the next recall() from injecting recovery content when
@@ -4495,6 +4634,7 @@ const pluginDefinition = {
           const flushEnabled =
             cfg.flushOnResetEnabled &&
             typeof (orchestrator as any).flushSession === "function";
+          const beforeResetDeadlineMs = Date.now() + cfg.beforeResetTimeoutMs;
           const flushAbort = new AbortController();
           let flushTimedOut = false;
           let flushFailed = false;
@@ -4522,13 +4662,17 @@ const pluginDefinition = {
             : Promise.resolve();
           const boundedFlush = flushEnabled
             ? Promise.race([
-              flushPromise,
-              new Promise<void>((resolve) => {
+                flushPromise,
+                new Promise<void>((resolve) => {
+                  const remainingMs = Math.max(
+                    0,
+                    beforeResetDeadlineMs - Date.now(),
+                  );
                   timeoutId = setTimeout(() => {
                     flushTimedOut = true;
                     flushAbort.abort();
                     resolve();
-                  }, cfg.beforeResetTimeoutMs);
+                  }, remainingMs);
                 }),
               ])
             : flushPromise;
@@ -4536,6 +4680,11 @@ const pluginDefinition = {
           if (timeoutId) {
             clearTimeout(timeoutId);
           }
+          await queueOpenClawFlushPlanProcessing(
+            "before_reset",
+            (ctx?.workspaceDir as string) || (event?.workspaceDir as string),
+            { deadlineMs: beforeResetDeadlineMs },
+          );
           if (flushTimedOut) {
             log.warn(
               `before_reset flush timed out after ${cfg.beforeResetTimeoutMs}ms`,
@@ -4570,7 +4719,7 @@ const pluginDefinition = {
         async (
           event: import("openclaw/plugin-sdk").PluginHookSessionEvent &
             Record<string, unknown>,
-          _ctx: import("openclaw/plugin-sdk").PluginHookAgentContext &
+          ctx: import("openclaw/plugin-sdk").PluginHookAgentContext &
             Record<string, unknown>,
         ) => {
           const sessionKey = event.sessionKey ?? "default";
@@ -4580,6 +4729,12 @@ const pluginDefinition = {
           } catch (err) {
             log.debug(`session_start file hygiene failed: ${err}`);
           }
+          void queueOpenClawFlushPlanProcessing(
+            "session_start",
+            (ctx?.workspaceDir as string | undefined) ??
+              (event.workspaceDir as string | undefined),
+            { timeoutMs: cfg.beforeResetTimeoutMs },
+          );
         },
       );
 
@@ -4626,6 +4781,11 @@ const pluginDefinition = {
           if (orchestrator.config.compactionResetEnabled) {
             orchestrator.clearRecallWorkspaceOverride(sessionKey);
           }
+          await queueOpenClawFlushPlanProcessing(
+            "session_end",
+            (ctx?.workspaceDir as string) || (event?.workspaceDir as string),
+            { timeoutMs: cfg.beforeResetTimeoutMs },
+          );
         },
       );
 
@@ -5384,6 +5544,11 @@ const pluginDefinition = {
             log.info(
               `gateway_start fired — Remnic memory plugin is active (id=${pluginDefinition.id}, memoryDir=${cfg.memoryDir})`,
             );
+            void queueOpenClawFlushPlanProcessing(
+              "gateway_start",
+              getOpenClawRuntimeWorkspaceDir(api),
+              { timeoutMs: cfg.beforeResetTimeoutMs },
+            );
           } catch (err) {
             // Unsubscribe Opik exporter if it was subscribed before the failure so
             // a retry from another registry doesn't accumulate multiple subscribers.
@@ -5611,6 +5776,11 @@ const pluginDefinition = {
           delete (globalThis as any)[keys.ACCESS_HTTP_SERVER];
           delete (globalThis as any)[keys.ACCESS_HTTP_AUTH_STATE];
           delete (globalThis as any)[keys.ACCESS_SERVICE];
+          // Fire-and-forget flush-plan drains may outlive service stop/reload.
+          // Keep their fences visible to the next registration until they settle.
+          if (flushPlanProcessingChains.size === 0) {
+            delete (globalThis as any)[keys.FLUSH_PLAN_PROCESSING_CHAINS];
+          }
         }
 
         // Clear per-api hook tracking so hooks can be re-bound to fresh api objects.
@@ -5647,6 +5817,67 @@ export default tryDefinePluginEntry(pluginDefinition);
 // ============================================================================
 // Helpers
 // ============================================================================
+
+const OPENCLAW_BOOLEAN_ACCEPTED_VALUES = "true/false/1/0/yes/no/on/off";
+
+function coerceOpenClawBooleanLike(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
+  return undefined;
+}
+
+function resolveOpenClawFlushPlanProcessingEnabled(configValue: unknown): boolean {
+  if (configValue === undefined || configValue === null) return true;
+  const coerced = coerceOpenClawBooleanLike(configValue);
+  if (coerced === undefined) {
+    throw new Error(
+      `openclawFlushPlanProcessingEnabled must be a boolean-like value (${OPENCLAW_BOOLEAN_ACCEPTED_VALUES}); got ${JSON.stringify(configValue)}`,
+    );
+  }
+  return coerced;
+}
+
+function resolveOpenClawFlushPlanProcessingEnabledFromConfig(
+  fileConfig: Record<string, unknown> | undefined,
+  runtimeConfig: unknown,
+): boolean {
+  const runtimeRecord =
+    runtimeConfig && typeof runtimeConfig === "object"
+      ? (runtimeConfig as Record<string, unknown>)
+      : undefined;
+  const hasRuntimeValue =
+    runtimeRecord !== undefined &&
+    Object.prototype.hasOwnProperty.call(
+      runtimeRecord,
+      "openclawFlushPlanProcessingEnabled",
+    );
+  const hasFileValue =
+    fileConfig !== undefined &&
+    Object.prototype.hasOwnProperty.call(
+      fileConfig,
+      "openclawFlushPlanProcessingEnabled",
+    );
+  const runtimeValue = hasRuntimeValue
+    ? resolveOpenClawFlushPlanProcessingEnabled(
+        runtimeRecord.openclawFlushPlanProcessingEnabled,
+      )
+    : undefined;
+  const fileValue = hasFileValue
+    ? resolveOpenClawFlushPlanProcessingEnabled(
+        fileConfig.openclawFlushPlanProcessingEnabled,
+      )
+    : undefined;
+
+  // OpenClaw may merge schema defaults into runtime pluginConfig. Treat this
+  // adapter-owned switch as enabled by default, but make any explicit opt-out
+  // from either config source sticky so a runtime default `true` cannot mask a
+  // persisted file-level `false`.
+  if (runtimeValue === false || fileValue === false) return false;
+  return fileValue ?? runtimeValue ?? true;
+}
 
 function extractLastTurn(
   messages: Array<Record<string, unknown>>,
@@ -5862,4 +6093,13 @@ function normalizeThreadId(value: unknown): string | undefined {
 
 function truncateMetadataValue(value: string, maxChars: number): string {
   return value.length <= maxChars ? value : value.slice(0, maxChars);
+}
+
+async function resolveFlushPlanProcessingChainKey(workspaceRoot: string): Promise<string> {
+  const lexicalRoot = path.resolve(workspaceRoot);
+  try {
+    return path.resolve(await realPathLater(lexicalRoot));
+  } catch {
+    return lexicalRoot;
+  }
 }

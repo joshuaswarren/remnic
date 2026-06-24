@@ -376,6 +376,42 @@ import type {
   EntityTimelineEntry,
 } from "./types.js";
 
+export interface BulkImportBatchIngestResult {
+  attemptedTurnCount: number;
+  extractionCount: number;
+  persistedCount: number;
+  durableOutputCount: number;
+  skippedCount: number;
+  failedCount: number;
+  postPersistMetadataFailureCount: number;
+  processedTurnCount: number;
+}
+
+export class BulkImportBatchPartialFailureError extends Error {
+  readonly partialResult: BulkImportBatchIngestResult;
+
+  readonly originalError: unknown;
+
+  constructor(
+    message: string,
+    partialResult: BulkImportBatchIngestResult,
+    originalError: unknown,
+  ) {
+    super(message);
+    this.name = "BulkImportBatchPartialFailureError";
+    this.partialResult = partialResult;
+    this.originalError = originalError;
+  }
+}
+
+interface ExtractionRunResult {
+  status: "completed" | "skipped";
+  reason?: string;
+  persistedCount: number;
+  durableOutputCount: number;
+  postPersistMetadataFailed?: boolean;
+}
+
 export function dedupeEntitySynthesisEvidenceEntries(
   entries: EntityTimelineEntry[],
 ): EntityTimelineEntry[] {
@@ -1032,7 +1068,10 @@ function sortSourceValidAtSlicesChronologically(
     .map((slice) => slice.turns);
 }
 
-function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][] {
+function splitTurnsBySourceValidAt(
+  turns: readonly BufferTurn[],
+  options: { includeContext?: boolean } = {},
+): BufferTurn[][] {
   if (turns.length === 0) return [];
   if (!turns.some((turn) => sourceValidAtMs(turn) !== null)) {
     return [[...turns]];
@@ -1051,13 +1090,12 @@ function splitTurnsBySourceValidAt(turns: readonly BufferTurn[]): BufferTurn[][]
       end += 1;
     }
 
+    const contextTurns =
+      options.includeContext === false
+        ? []
+        : sourceValidAtContextTurns(turns, start, end, targetValidAtMs);
     slices.push([
-      ...sourceValidAtContextTurns(
-        turns,
-        start,
-        end,
-        targetValidAtMs,
-      ),
+      ...contextTurns,
       ...turns.slice(start, end).map(asExtractionTargetTurn),
     ]);
     start = end;
@@ -11415,9 +11453,22 @@ export class Orchestrator {
     turns: ImportTurn[],
     options: {
       deadlineMs?: number;
+      failOnExtractionFailure?: boolean;
+      includeSourceValidAtContext?: boolean;
     } = {},
-  ): Promise<void> {
-    if (!Array.isArray(turns) || turns.length === 0) return;
+  ): Promise<BulkImportBatchIngestResult> {
+    if (!Array.isArray(turns) || turns.length === 0) {
+      return {
+        attemptedTurnCount: 0,
+        extractionCount: 0,
+        persistedCount: 0,
+        durableOutputCount: 0,
+        skippedCount: 0,
+        failedCount: 0,
+        postPersistMetadataFailureCount: 0,
+        processedTurnCount: 0,
+      };
+    }
 
     // Per-batch unique sessionKey keeps threading honest without matching
     // typical prefix/map routing rules.  Combined with writeNamespaceOverride
@@ -11426,9 +11477,33 @@ export class Orchestrator {
     // security-context insecure-randomness use even though this value never
     // leaves the process; the bytes just need to be collision-resistant
     // across concurrent bulk-import batches.
-    const sessionKey =
-      `bulk-import:batch:${Date.now().toString(36)}-` +
-      randomBytes(6).toString("hex");
+    const shouldUseStableBatchKey = turns.some(
+      (turn) =>
+        turn.persistProcessedFingerprint === true ||
+        (typeof turn.turnFingerprint === "string" &&
+          turn.turnFingerprint.length > 0),
+    );
+    const stableBatchFingerprint = shouldUseStableBatchKey
+      ? createHash("sha256")
+        .update(
+          turns
+            .map((turn) =>
+              [
+                turn.role,
+                typeof turn.turnFingerprint === "string" &&
+                turn.turnFingerprint.length > 0
+                  ? turn.turnFingerprint
+                  : turn.content.replace(/\s+/g, " ").trim(),
+              ].join(":"),
+            )
+            .join("\n"),
+        )
+        .digest("hex")
+        .slice(0, 32)
+      : undefined;
+    const sessionKey = stableBatchFingerprint
+      ? `bulk-import:batch:${stableBatchFingerprint}`
+      : `bulk-import:batch:${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
 
     const sessionTurns: BufferTurn[] = [];
     for (const turn of turns) {
@@ -11443,9 +11518,22 @@ export class Orchestrator {
         rawContent: turn.rawContent,
         sourceFormat: turn.sourceFormat,
         importProvenance: turn.importProvenance,
+        turnFingerprint: turn.turnFingerprint,
+        persistProcessedFingerprint: turn.persistProcessedFingerprint === true,
       });
     }
-    if (sessionTurns.length === 0) return;
+    if (sessionTurns.length === 0) {
+      return {
+        attemptedTurnCount: 0,
+        extractionCount: 0,
+        persistedCount: 0,
+        durableOutputCount: 0,
+        skippedCount: 0,
+        failedCount: 0,
+        postPersistMetadataFailureCount: 0,
+        processedTurnCount: 0,
+      };
+    }
 
     if (this.lcmEngine?.enabled) {
       await this.lcmEngine.observeMessages(
@@ -11460,29 +11548,79 @@ export class Orchestrator {
       );
     }
 
-    const importTasks = splitTurnsBySourceValidAt(sessionTurns).map(
-      (sessionSlice) =>
-        new Promise<void>((resolve, reject) => {
-          void this.queueBufferedExtraction(sessionSlice, "trigger_mode", {
-            skipDedupeCheck: true,
-            clearBufferAfterExtraction: false,
-            skipCharThreshold: true,
-            skipUserTurnThreshold: true,
-            bufferKey: sessionKey,
-            extractionDeadlineMs: options.deadlineMs,
-            writeNamespaceOverride: this.bulkImportWriteNamespace(),
-            onTaskSettled: (err) => (err ? reject(err) : resolve()),
-          }).catch(reject);
-        }),
-    );
-    const settled = await Promise.allSettled(importTasks);
-    const firstRejected = settled.find(
-      (result): result is PromiseRejectedResult =>
-        result.status === "rejected",
-    );
-    if (firstRejected) {
-      throw firstRejected.reason;
+    const sessionSlices = splitTurnsBySourceValidAt(sessionTurns, {
+      includeContext: options.includeSourceValidAtContext !== false,
+    });
+    const results: ExtractionRunResult[] = [];
+    let processedTurnCount = 0;
+    let firstRejected: unknown;
+    for (const sessionSlice of sessionSlices) {
+      try {
+        const result = await new Promise<ExtractionRunResult>(
+          (resolve, reject) => {
+            void this.queueBufferedExtraction(sessionSlice, "trigger_mode", {
+              skipDedupeCheck: true,
+              clearBufferAfterExtraction: false,
+              skipCharThreshold: true,
+              skipUserTurnThreshold: true,
+              bufferKey: sessionKey,
+              extractionDeadlineMs: options.deadlineMs,
+              failOnExtractionFailure: options.failOnExtractionFailure === true,
+              writeNamespaceOverride: this.bulkImportWriteNamespace(),
+              onTaskSettled: (err, result) =>
+                err
+                  ? reject(err)
+                  : resolve(
+                      result ?? {
+                        status: "skipped",
+                        reason: "missing_extraction_result",
+                        persistedCount: 0,
+                        durableOutputCount: 0,
+                      },
+                    ),
+            }).catch(reject);
+          },
+        );
+        results.push(result);
+        processedTurnCount += sessionSlice.filter(
+          (turn) => turn.extractionContextOnly !== true,
+        ).length;
+      } catch (err) {
+        firstRejected = err;
+        break;
+      }
     }
+    const rejectedCount = firstRejected ? 1 : 0;
+    const ingestResult: BulkImportBatchIngestResult = {
+      attemptedTurnCount: sessionTurns.length,
+      extractionCount: results.length,
+      persistedCount: results.reduce(
+        (sum, result) => sum + result.persistedCount,
+        0,
+      ),
+      durableOutputCount: results.reduce(
+        (sum, result) => sum + result.durableOutputCount,
+        0,
+      ),
+      skippedCount: results.filter((result) => result.status === "skipped").length,
+      failedCount: rejectedCount,
+      postPersistMetadataFailureCount: results.filter(
+        (result) => result.postPersistMetadataFailed === true,
+      ).length,
+      processedTurnCount:
+        rejectedCount === 0 ? sessionTurns.length : processedTurnCount,
+    };
+    if (firstRejected) {
+      if (processedTurnCount > 0) {
+        throw new BulkImportBatchPartialFailureError(
+          "bulk import failed after partial processing",
+          ingestResult,
+          firstRejected,
+        );
+      }
+      throw firstRejected;
+    }
+    return ingestResult;
   }
 
   async observeSessionHeartbeat(
@@ -11564,7 +11702,11 @@ export class Orchestrator {
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       extractionDeadlineMs?: number;
-      onTaskSettled?: (error?: unknown) => void;
+      failOnExtractionFailure?: boolean;
+      onTaskSettled?: (
+        error?: unknown,
+        result?: ExtractionRunResult,
+      ) => void;
       bufferKey?: string;
       abortSignal?: AbortSignal;
       /**
@@ -11583,26 +11725,77 @@ export class Orchestrator {
       !this.shouldQueueExtraction(turnsToExtract, { bufferKey })
     ) {
       log.debug(`extraction dedupe skip: preserving buffer (${reason})`);
-      options.onTaskSettled?.();
+      options.onTaskSettled?.(undefined, {
+        status: "skipped",
+        reason: "dedupe",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      });
       return;
     }
 
+    const extractionDeadlineMs =
+      typeof options.extractionDeadlineMs === "number" &&
+      Number.isFinite(options.extractionDeadlineMs)
+        ? options.extractionDeadlineMs
+        : undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const clearQueueWaitTimer = (): void => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = undefined;
+      }
+    };
+    const settleTask = (
+      error?: unknown,
+      result?: ExtractionRunResult,
+    ): boolean => {
+      if (settled) return false;
+      settled = true;
+      clearQueueWaitTimer();
+      options.onTaskSettled?.(error, result);
+      return true;
+    };
+
+    if (typeof extractionDeadlineMs === "number") {
+      const remainingMs = extractionDeadlineMs - Date.now();
+      if (remainingMs <= 0) {
+        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
+        return;
+      }
+      timeout = setTimeout(() => {
+        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
+      }, remainingMs);
+    }
+
     this.extractionQueue.push(async () => {
+      if (settled) return;
+      if (
+        typeof extractionDeadlineMs === "number" &&
+        extractionDeadlineMs <= Date.now()
+      ) {
+        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
+        return;
+      }
+      clearQueueWaitTimer();
       try {
-        await this.runExtraction(turnsToExtract, {
+        const result = await this.runExtraction(turnsToExtract, {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
           skipCharThreshold: options.skipCharThreshold ?? false,
           skipUserTurnThreshold: options.skipUserTurnThreshold ?? false,
-          deadlineMs: options.extractionDeadlineMs,
+          deadlineMs: extractionDeadlineMs,
           bufferKey,
           abortSignal: options.abortSignal,
+          failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
         });
-        options.onTaskSettled?.();
+        settleTask(undefined, result);
       } catch (err) {
-        options.onTaskSettled?.(err);
-        throw err;
+        if (settleTask(err)) {
+          throw err;
+        }
       }
     });
 
@@ -11744,6 +11937,7 @@ export class Orchestrator {
       deadlineMs?: number;
       bufferKey?: string;
       abortSignal?: AbortSignal;
+      failOnExtractionFailure?: boolean;
       /**
        * Explicit namespace override for the write path (#460).  When set,
        * extraction writes go to this namespace instead of the one derived
@@ -11753,7 +11947,7 @@ export class Orchestrator {
        */
       writeNamespaceOverride?: string;
     } = {},
-  ): Promise<void> {
+  ): Promise<ExtractionRunResult> {
     log.debug(`running extraction on ${turns.length} turns`);
     const clearBufferAfterExtraction =
       options.clearBufferAfterExtraction ?? true;
@@ -11787,7 +11981,12 @@ export class Orchestrator {
     if (sessionKey.includes(":cron:")) {
       log.debug(`skipping extraction for cron session: ${sessionKey}`);
       await clearBuffer();
-      return;
+      return {
+        status: "skipped",
+        reason: "cron_session",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
     }
 
     const normalizedTurns = turns
@@ -11807,7 +12006,12 @@ export class Orchestrator {
     if (targetTurns.length === 0) {
       log.debug("skipping extraction: no non-context turns after normalization");
       await clearBuffer();
-      return;
+      return {
+        status: "skipped",
+        reason: "empty_normalized_turns",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
     }
     const sourceValidAt = latestSourceValidAtFromTurns(targetTurns);
     throwIfDeadlineExceeded("before_extract");
@@ -11827,7 +12031,12 @@ export class Orchestrator {
         `skipping extraction: below threshold (totalChars=${totalChars}, userTurns=${userTurns.length})`,
       );
       await clearBuffer();
-      return;
+      return {
+        status: "skipped",
+        reason: "below_threshold",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
     }
 
     const principal = resolvePrincipal(sessionKey, this.config);
@@ -11866,7 +12075,12 @@ export class Orchestrator {
         `runExtraction: skipping already-processed extraction fingerprint for ${bufferKey}`,
       );
       await clearBuffer();
-      return;
+      return {
+        status: "skipped",
+        reason: "processed_fingerprint",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
     }
 
     // Pass existing entity names so the LLM can reuse them instead of inventing variants
@@ -11882,19 +12096,59 @@ export class Orchestrator {
     throwIfDeadlineExceeded("before_persist");
     throwIfAborted("before_persist");
 
-    // Defensive: validate extraction result before processing
+    // Defensive: validate extraction result before processing. Explicit
+    // fail-closed callers, such as flush-plan import, must not observe
+    // malformed extractor output as a successful skip.
     if (!result) {
       log.warn("runExtraction: extraction returned null/undefined");
+      if (options.failOnExtractionFailure) {
+        throw new Error("extraction failed: invalid_extraction_result");
+      }
       await clearBuffer();
-      return;
+      return {
+        status: "skipped",
+        reason: "invalid_extraction_result",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
     }
-    if (!Array.isArray(result.facts)) {
+    const invalidExtractionResultFields = [
+      ["facts", result.facts],
+      ["entities", result.entities],
+      ["questions", result.questions],
+      ["profileUpdates", result.profileUpdates],
+    ]
+      .filter(([, value]) => !Array.isArray(value))
+      .map(([field]) => field);
+    if (invalidExtractionResultFields.length > 0) {
       log.warn(
-        "runExtraction: extraction returned invalid facts (not an array)",
-        { factsType: typeof result.facts, resultKeys: Object.keys(result) },
+        "runExtraction: extraction returned invalid collection fields",
+        {
+          invalidFields: invalidExtractionResultFields,
+          resultKeys:
+            typeof result === "object" && result !== null
+              ? Object.keys(result)
+              : [],
+        },
       );
+      if (options.failOnExtractionFailure) {
+        throw new Error("extraction failed: invalid_extraction_result");
+      }
       await clearBuffer();
-      return;
+      return {
+        status: "skipped",
+        reason: "invalid_extraction_result",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
+    }
+    const extractionFailure =
+      typeof result.extractionFailure === "string" &&
+      result.extractionFailure.trim().length > 0
+        ? result.extractionFailure
+        : undefined;
+    if (options.failOnExtractionFailure && extractionFailure) {
+      throw new Error(`extraction failed: ${extractionFailure}`);
     }
     if (
       result.facts.length === 0 &&
@@ -11905,8 +12159,34 @@ export class Orchestrator {
       log.debug(
         "runExtraction: extraction produced no durable outputs; skipping persistence",
       );
+      if (extractionFailure) {
+        log.warn(
+          "runExtraction: extraction reported failure with no durable outputs; not marking fingerprint processed",
+          { extractionFailure },
+        );
+      }
+      if (
+        extractionFingerprint &&
+        shouldPersistProcessedFingerprint &&
+        !extractionFailure
+      ) {
+        meta ??= await storage.loadMeta();
+        await this.recordProcessedExtractionFingerprint(
+          storage,
+          extractionFingerprint,
+          meta,
+        );
+        meta.extractionCount += 1;
+        meta.lastExtractionAt = new Date().toISOString();
+        await storage.saveMeta(meta);
+      }
       await clearBuffer();
-      return;
+      return {
+        status: "skipped",
+        reason: "empty_extraction_result",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
     }
 
     let threadIdForExtraction: string | null = null;
@@ -11929,6 +12209,7 @@ export class Orchestrator {
       threadIdForExtraction,
       { sessionKey, principal, validAt: sourceValidAt },
     );
+    let postPersistMetadataFailed = false;
     meta ??= await storage.loadMeta();
     if (extractionFingerprint && shouldPersistProcessedFingerprint) {
       try {
@@ -11942,6 +12223,7 @@ export class Orchestrator {
           "runExtraction: failed to persist processed extraction fingerprint; continuing with buffer clear",
           error,
         );
+        postPersistMetadataFailed = true;
       }
     }
     // Persist extraction counters and processed fingerprints before running
@@ -11957,12 +12239,21 @@ export class Orchestrator {
     meta.totalEntities += Array.isArray(result?.entities)
       ? result.entities.length
       : 0;
-    let postPersistMetaError: unknown;
     try {
       await storage.saveMeta(meta);
     } catch (error) {
-      postPersistMetaError = error;
+      log.warn(
+        "runExtraction: failed to save extraction metadata after durable persistence; continuing with buffer clear",
+        error,
+      );
+      postPersistMetadataFailed = true;
     }
+
+    const durableOutputCount =
+      result.facts.length +
+      result.entities.length +
+      result.questions.length +
+      result.profileUpdates.length;
 
     // Buffer retention for defer verdicts (issue #562, PR 2). When the judge
     // deferred at least one candidate, retain the tail of the current turn
@@ -12050,27 +12341,55 @@ export class Orchestrator {
     // Thread title update for the already-established thread context.
     if (this.config.threadingEnabled && threadIdForExtraction) {
       const conversationContent = turns.map((t) => t.content).join(" ");
-      await this.threading.updateThreadTitle(
-        threadIdForExtraction,
-        conversationContent,
-      );
+      try {
+        await this.threading.updateThreadTitle(
+          threadIdForExtraction,
+          conversationContent,
+        );
+      } catch (err) {
+        log.warn(
+          "[threading] updateThreadTitle failed after persistence (non-fatal)",
+          err,
+        );
+      }
     }
 
     // Check if consolidation is needed (debounced + non-zero gated).
-    const nonZeroExtraction =
-      result.facts.length > 0 ||
-      result.entities.length > 0 ||
-      result.questions.length > 0 ||
-      result.profileUpdates.length > 0;
-    if (nonZeroExtraction) this.nonZeroExtractionsSinceConsolidation += 1;
-    this.maybeScheduleConsolidation(nonZeroExtraction);
-
-    this.requestQmdMaintenance();
-    await this.runTierMigrationCycle(storage, "extraction");
-
-    if (postPersistMetaError) {
-      throw postPersistMetaError;
+    const nonZeroExtraction = durableOutputCount > 0;
+    try {
+      if (nonZeroExtraction) this.nonZeroExtractionsSinceConsolidation += 1;
+      this.maybeScheduleConsolidation(nonZeroExtraction);
+    } catch (err) {
+      log.warn(
+        "runExtraction: consolidation scheduling failed after persistence (non-fatal)",
+        err,
+      );
     }
+
+    try {
+      this.requestQmdMaintenance();
+    } catch (err) {
+      log.warn(
+        "runExtraction: QMD maintenance scheduling failed after persistence (non-fatal)",
+        err,
+      );
+    }
+
+    try {
+      await this.runTierMigrationCycle(storage, "extraction");
+    } catch (err) {
+      log.warn(
+        "runExtraction: tier migration failed after persistence (non-fatal)",
+        err,
+      );
+    }
+
+    return {
+      status: "completed",
+      persistedCount: persistedIds.length,
+      durableOutputCount,
+      postPersistMetadataFailed,
+    };
   }
 
   private async recordProcessedExtractionFingerprint(

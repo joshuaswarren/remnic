@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Orchestrator } from "./orchestrator.js";
+import {
+  BulkImportBatchPartialFailureError,
+  Orchestrator,
+} from "./orchestrator.js";
 import { parseConfig } from "./config.js";
 import type { BufferTurn } from "./types.js";
+import type { ImportTurn } from "./bulk-import/types.js";
 
 function makeTurn(sessionKey: string, content: string): BufferTurn {
   return {
@@ -132,6 +136,304 @@ test("flushSession waits for queued extraction task completion", async () => {
   await flushPromise;
 
   assert.equal(flushSettled, true);
+});
+
+test("ingestBulkImportBatch rejects when the extraction deadline expires in the queue", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueue = [];
+  orchestrator.queueProcessing = true;
+  let runExtractionCalls = 0;
+  orchestrator.runExtraction = async () => {
+    runExtractionCalls += 1;
+  };
+
+  const turns: ImportTurn[] = [
+    {
+      role: "user",
+      timestamp: "2026-06-24T12:00:00.000Z",
+      content: "Remember this queued bulk import.",
+    },
+  ];
+  const startedAt = Date.now();
+  const outcome = await Promise.race([
+    orchestrator
+      .ingestBulkImportBatch(turns, {
+        deadlineMs: Date.now() + 25,
+        failOnExtractionFailure: true,
+      })
+      .then(
+        () => new Error("bulk import unexpectedly resolved"),
+        (error: unknown) => error,
+      ),
+    new Promise<Error>((resolve) =>
+      setTimeout(() => resolve(new Error("bulk import did not time out")), 300),
+    ),
+  ]);
+
+  assert.ok(outcome instanceof Error);
+  assert.match(outcome.message, /deadline exceeded \(queue_wait\)/);
+  assert.ok(
+    Date.now() - startedAt < 250,
+    "bulk import should not wait behind the extraction queue past its deadline",
+  );
+  assert.equal(runExtractionCalls, 0);
+
+  const queuedTask = orchestrator.extractionQueue.shift();
+  assert.ok(queuedTask);
+  await queuedTask();
+  assert.equal(
+    runExtractionCalls,
+    0,
+    "the expired bulk-import task should be a no-op when the queue later drains",
+  );
+});
+
+test("ingestBulkImportBatch does not report queue wait timeout after extraction starts", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueue = [];
+  orchestrator.queueProcessing = false;
+  let runExtractionCalls = 0;
+  orchestrator.runExtraction = async () => {
+    runExtractionCalls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return {
+      status: "completed",
+      persistedCount: 1,
+      durableOutputCount: 1,
+    };
+  };
+
+  const result = await orchestrator.ingestBulkImportBatch(
+    [
+      {
+        role: "user",
+        timestamp: "2026-06-24T12:00:00.000Z",
+        content: "Remember this active bulk import.",
+      },
+    ],
+    {
+      deadlineMs: Date.now() + 25,
+      failOnExtractionFailure: true,
+    },
+  );
+
+  assert.equal(runExtractionCalls, 1);
+  assert.equal(result.extractionCount, 1);
+  assert.equal(result.persistedCount, 1);
+  assert.equal(result.failedCount, 0);
+});
+
+test("ingestBulkImportBatch reports post-persist metadata failures separately", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueue = [];
+  orchestrator.queueProcessing = false;
+  orchestrator.runExtraction = async () => ({
+    status: "completed",
+    persistedCount: 1,
+    durableOutputCount: 1,
+    postPersistMetadataFailed: true,
+  });
+
+  const result = await orchestrator.ingestBulkImportBatch(
+    [
+      {
+        role: "user",
+        timestamp: "2026-06-24T12:00:00.000Z",
+        content: "Remember this import, but fail the replay metadata marker.",
+        turnFingerprint: "flush-plan-fp-1",
+        persistProcessedFingerprint: true,
+      },
+    ],
+    {
+      failOnExtractionFailure: true,
+    },
+  );
+
+  assert.equal(result.extractionCount, 1);
+  assert.equal(result.persistedCount, 1);
+  assert.equal(result.failedCount, 0);
+  assert.equal(result.postPersistMetadataFailureCount, 1);
+});
+
+test("ingestBulkImportBatch can disable source-valid-at replay context", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueue = [];
+  orchestrator.queueProcessing = false;
+  const capturedSlices: BufferTurn[][] = [];
+  orchestrator.runExtraction = async (turns: BufferTurn[]) => {
+    capturedSlices.push(turns);
+    return {
+      status: "completed",
+      persistedCount: 1,
+      durableOutputCount: 1,
+    };
+  };
+
+  await orchestrator.ingestBulkImportBatch(
+    [
+      {
+        role: "user",
+        timestamp: "2026-06-24T12:00:00.000Z",
+        content: "Remember the first chunk.",
+      },
+      {
+        role: "user",
+        timestamp: "2026-06-24T12:00:00.001Z",
+        content: "Remember the second chunk.",
+      },
+      {
+        role: "user",
+        timestamp: "2026-06-24T12:00:00.002Z",
+        content: "Remember the third chunk.",
+      },
+    ],
+    {
+      includeSourceValidAtContext: false,
+    },
+  );
+
+  assert.equal(capturedSlices.length, 3);
+  assert.deepEqual(
+    capturedSlices.map((slice) =>
+      slice.map((turn) => ({
+        content: turn.content,
+        contextOnly: turn.extractionContextOnly === true,
+      })),
+    ),
+    [
+      [{ content: "Remember the first chunk.", contextOnly: false }],
+      [{ content: "Remember the second chunk.", contextOnly: false }],
+      [{ content: "Remember the third chunk.", contextOnly: false }],
+    ],
+  );
+});
+
+test("ingestBulkImportBatch preserves partial metadata failure before a later slice rejects", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueue = [];
+  orchestrator.queueProcessing = false;
+  let runExtractionCalls = 0;
+  orchestrator.runExtraction = async () => {
+    runExtractionCalls += 1;
+    if (runExtractionCalls <= 2) {
+      return {
+        status: "completed",
+        persistedCount: 1,
+        durableOutputCount: 1,
+        postPersistMetadataFailed: runExtractionCalls === 1,
+      };
+    }
+    throw new Error("backend unavailable");
+  };
+
+  const error = await orchestrator
+    .ingestBulkImportBatch(
+      [
+        {
+          role: "user",
+          timestamp: "2026-06-24T12:00:00.000Z",
+          content: "Remember the first chunk.",
+          turnFingerprint: "flush-plan-fp-1",
+          persistProcessedFingerprint: true,
+        },
+        {
+          role: "user",
+          timestamp: "2026-06-24T12:00:00.001Z",
+          content: "Remember the second chunk.",
+          turnFingerprint: "flush-plan-fp-2",
+          persistProcessedFingerprint: true,
+        },
+        {
+          role: "user",
+          timestamp: "2026-06-24T12:00:00.002Z",
+          content: "Remember the third chunk.",
+          turnFingerprint: "flush-plan-fp-3",
+          persistProcessedFingerprint: true,
+        },
+      ],
+      {
+        failOnExtractionFailure: true,
+      },
+    )
+    .then(
+      () => undefined,
+      (rejection: unknown) => rejection,
+    );
+
+  assert.ok(error instanceof BulkImportBatchPartialFailureError);
+  assert.equal(error.partialResult.attemptedTurnCount, 3);
+  assert.equal(error.partialResult.extractionCount, 2);
+  assert.equal(error.partialResult.persistedCount, 2);
+  assert.equal(error.partialResult.failedCount, 1);
+  assert.equal(error.partialResult.postPersistMetadataFailureCount, 1);
+  assert.equal(error.partialResult.processedTurnCount, 2);
+  assert.equal(runExtractionCalls, 3);
+});
+
+test("ingestBulkImportBatch stops after the first failed source-valid-at slice", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
+  orchestrator.extractionQueue = [];
+  orchestrator.queueProcessing = false;
+  let runExtractionCalls = 0;
+  orchestrator.runExtraction = async () => {
+    runExtractionCalls += 1;
+    if (runExtractionCalls === 1) {
+      return {
+        status: "completed",
+        persistedCount: 1,
+        durableOutputCount: 1,
+      };
+    }
+    throw new Error("backend unavailable");
+  };
+
+  const error = await orchestrator
+    .ingestBulkImportBatch(
+      [
+        {
+          role: "user",
+          timestamp: "2026-06-24T12:00:00.000Z",
+          content: "Remember the first chunk.",
+          turnFingerprint: "flush-plan-fp-1",
+          persistProcessedFingerprint: true,
+        },
+        {
+          role: "user",
+          timestamp: "2026-06-24T12:00:00.001Z",
+          content: "Remember the second chunk.",
+          turnFingerprint: "flush-plan-fp-2",
+          persistProcessedFingerprint: true,
+        },
+        {
+          role: "user",
+          timestamp: "2026-06-24T12:00:00.002Z",
+          content: "Remember the third chunk.",
+          turnFingerprint: "flush-plan-fp-3",
+          persistProcessedFingerprint: true,
+        },
+      ],
+      {
+        failOnExtractionFailure: true,
+      },
+    )
+    .then(
+      () => undefined,
+      (rejection: unknown) => rejection,
+    );
+
+  assert.ok(error instanceof BulkImportBatchPartialFailureError);
+  assert.equal(error.partialResult.attemptedTurnCount, 3);
+  assert.equal(error.partialResult.extractionCount, 1);
+  assert.equal(error.partialResult.persistedCount, 1);
+  assert.equal(error.partialResult.failedCount, 1);
+  assert.equal(error.partialResult.processedTurnCount, 1);
+  assert.equal(runExtractionCalls, 2);
 });
 
 test("processTurn preserves the original sessionKey on buffered turns", async () => {
@@ -394,6 +696,298 @@ test("runExtraction skips batches whose persisted fingerprint already exists in 
 
   assert.equal(extractCalls, 0);
   assert.equal(clearCalls, 1);
+});
+
+test("runExtraction fails closed on invalid extraction results when required", async () => {
+  const cases: Array<[string, unknown]> = [
+    ["null", null],
+    [
+      "malformed collections",
+      {
+        facts: "not an array",
+        entities: [],
+        questions: [],
+        profileUpdates: [],
+      },
+    ],
+  ];
+
+  for (const [label, extractionResult] of cases) {
+    const config = parseConfig({});
+    config.extractionMinChars = 0;
+    config.extractionMinUserTurns = 1;
+
+    let clearCalls = 0;
+    let persistCalls = 0;
+    const orchestrator = Object.create(Orchestrator.prototype) as any;
+    orchestrator.config = config;
+    orchestrator.buffer = {
+      clearAfterExtraction: async () => {
+        clearCalls += 1;
+      },
+    };
+    orchestrator.storageRouter = {
+      storageFor: async () => ({
+        listEntityNames: async () => [],
+        loadMeta: async () => ({
+          extractionCount: 0,
+          lastExtractionAt: null,
+          lastConsolidationAt: null,
+          totalMemories: 0,
+          totalEntities: 0,
+          processedExtractionFingerprints: [],
+        }),
+        saveMeta: async () => undefined,
+      }),
+    };
+    orchestrator.extraction = {
+      extract: async () => extractionResult,
+    };
+    orchestrator.persistExtraction = async () => {
+      persistCalls += 1;
+      return ["fact-1"];
+    };
+
+    await assert.rejects(
+      orchestrator.runExtraction([makeTurn("session-invalid", "remember bad output")], {
+        bufferKey: `bulk-import:batch:${label}`,
+        failOnExtractionFailure: true,
+      }),
+      /extraction failed: invalid_extraction_result/,
+    );
+
+    assert.equal(clearCalls, 0);
+    assert.equal(persistCalls, 0);
+  }
+});
+
+test("runExtraction persists processed fingerprints for empty extraction results", async () => {
+  const config = parseConfig({});
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+
+  let clearCalls = 0;
+  let persistCalls = 0;
+  let saveMetaCalls = 0;
+  let savedMeta:
+    | {
+        extractionCount: number;
+        lastExtractionAt: string | null;
+        totalMemories: number;
+        totalEntities: number;
+        processedExtractionFingerprints: Array<{
+          fingerprint: string;
+          observedAt: string;
+        }>;
+      }
+    | undefined;
+
+  const meta = {
+    extractionCount: 0,
+    lastExtractionAt: null,
+    lastConsolidationAt: null,
+    totalMemories: 0,
+    totalEntities: 0,
+    processedExtractionFingerprints: [] as Array<{
+      fingerprint: string;
+      observedAt: string;
+    }>,
+  };
+
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = {
+    clearAfterExtraction: async () => {
+      clearCalls += 1;
+    },
+  };
+  orchestrator.storageRouter = {
+    storageFor: async () => ({
+      listEntityNames: async () => [],
+      loadMeta: async () => meta,
+      saveMeta: async (nextMeta: typeof meta) => {
+        saveMetaCalls += 1;
+        savedMeta = structuredClone(nextMeta);
+      },
+    }),
+  };
+  orchestrator.extraction = {
+    extract: async () => ({
+      facts: [],
+      entities: [],
+      questions: [],
+      profileUpdates: [],
+    }),
+  };
+  orchestrator.persistExtraction = async () => {
+    persistCalls += 1;
+    return [];
+  };
+
+  const turns = [
+    {
+      ...makeTurn("session-empty", "transient note not worth remembering"),
+      logicalSessionKey: "logical-thread:empty",
+      turnFingerprint: "fp-empty",
+      persistProcessedFingerprint: true,
+    },
+  ];
+  const result = await orchestrator.runExtraction(turns, {
+    bufferKey: "logical-thread:empty",
+    failOnExtractionFailure: true,
+  });
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "empty_extraction_result");
+  assert.equal(persistCalls, 0);
+  assert.equal(saveMetaCalls, 1);
+  assert.equal(clearCalls, 1);
+  assert.equal(savedMeta?.extractionCount, 1);
+  assert.equal(savedMeta?.totalMemories, 0);
+  assert.equal(savedMeta?.totalEntities, 0);
+  assert.equal(savedMeta?.processedExtractionFingerprints.length, 1);
+  assert.equal(
+    savedMeta?.processedExtractionFingerprints[0]?.fingerprint,
+    orchestrator.buildExtractionFingerprint(turns, "logical-thread:empty"),
+  );
+});
+
+test("runExtraction does not persist processed fingerprints for failed empty extraction results", async () => {
+  const config = parseConfig({});
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+
+  let clearCalls = 0;
+  let persistCalls = 0;
+  let saveMetaCalls = 0;
+
+  const meta = {
+    extractionCount: 0,
+    lastExtractionAt: null,
+    lastConsolidationAt: null,
+    totalMemories: 0,
+    totalEntities: 0,
+    processedExtractionFingerprints: [] as Array<{
+      fingerprint: string;
+      observedAt: string;
+    }>,
+  };
+
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = {
+    clearAfterExtraction: async () => {
+      clearCalls += 1;
+    },
+  };
+  orchestrator.storageRouter = {
+    storageFor: async () => ({
+      listEntityNames: async () => [],
+      loadMeta: async () => meta,
+      saveMeta: async () => {
+        saveMetaCalls += 1;
+      },
+    }),
+  };
+  orchestrator.extraction = {
+    extract: async () => ({
+      facts: [],
+      entities: [],
+      questions: [],
+      profileUpdates: [],
+      extractionFailure: "gateway_unavailable",
+    }),
+  };
+  orchestrator.persistExtraction = async () => {
+    persistCalls += 1;
+    return [];
+  };
+
+  const turns = [
+    {
+      ...makeTurn("session-empty-failed", "remember failed gateway output"),
+      logicalSessionKey: "logical-thread:empty-failed",
+      turnFingerprint: "fp-empty-failed",
+      persistProcessedFingerprint: true,
+    },
+  ];
+  const result = await orchestrator.runExtraction(turns, {
+    bufferKey: "logical-thread:empty-failed",
+  });
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "empty_extraction_result");
+  assert.equal(persistCalls, 0);
+  assert.equal(saveMetaCalls, 0);
+  assert.equal(clearCalls, 1);
+  assert.deepEqual(meta.processedExtractionFingerprints, []);
+});
+
+test("runExtraction preserves empty-result buffers when fingerprint persistence fails", async () => {
+  const config = parseConfig({});
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+
+  let clearCalls = 0;
+  let saveMetaCalls = 0;
+  const meta = {
+    extractionCount: 0,
+    lastExtractionAt: null,
+    lastConsolidationAt: null,
+    totalMemories: 0,
+    totalEntities: 0,
+    processedExtractionFingerprints: [] as Array<{
+      fingerprint: string;
+      observedAt: string;
+    }>,
+  };
+
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = {
+    clearAfterExtraction: async () => {
+      clearCalls += 1;
+    },
+  };
+  orchestrator.storageRouter = {
+    storageFor: async () => ({
+      listEntityNames: async () => [],
+      loadMeta: async () => meta,
+      saveMeta: async () => {
+        saveMetaCalls += 1;
+        throw new Error("meta save failed");
+      },
+    }),
+  };
+  orchestrator.extraction = {
+    extract: async () => ({
+      facts: [],
+      entities: [],
+      questions: [],
+      profileUpdates: [],
+    }),
+  };
+
+  await assert.rejects(
+    orchestrator.runExtraction(
+      [
+        {
+          ...makeTurn("session-empty-fail", "transient note not worth remembering"),
+          logicalSessionKey: "logical-thread:empty-fail",
+          turnFingerprint: "fp-empty-fail",
+          persistProcessedFingerprint: true,
+        },
+      ],
+      {
+        bufferKey: "logical-thread:empty-fail",
+        failOnExtractionFailure: true,
+      },
+    ),
+    /meta save failed/,
+  );
+
+  assert.equal(saveMetaCalls, 1);
+  assert.equal(clearCalls, 0);
 });
 
 test("runExtraction preserves deduped buffers when the caller aborts before clearing", async () => {
@@ -734,7 +1328,7 @@ test("runExtraction loads meta before updating extraction counters when fingerpr
   assert.equal(savedMeta?.processedExtractionFingerprints.length, 0);
 });
 
-test("runExtraction saves the processed fingerprint before late threading failures", async () => {
+test("runExtraction completes after late threading failures and saves the processed fingerprint", async () => {
   const config = parseConfig({});
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
@@ -807,26 +1401,29 @@ test("runExtraction saves the processed fingerprint before late threading failur
       throw new Error("thread title failed");
     },
   };
+  orchestrator.maybeScheduleConsolidation = () => undefined;
   orchestrator.requestQmdMaintenance = () => undefined;
   orchestrator.runTierMigrationCycle = async () => undefined;
+  orchestrator.nonZeroExtractionsSinceConsolidation = 0;
 
-  await assert.rejects(
-    orchestrator.runExtraction(
-      [
-        {
-          ...makeTurn("session-f", "remember eta"),
-          logicalSessionKey: "logical-thread:thread-15",
-          turnFingerprint: "fp-thread-15",
-          persistProcessedFingerprint: true,
-        },
-      ],
+  const result = await orchestrator.runExtraction(
+    [
       {
-        bufferKey: "logical-thread:thread-15",
+        ...makeTurn("session-f", "remember eta"),
+        logicalSessionKey: "logical-thread:thread-15",
+        turnFingerprint: "fp-thread-15",
+        persistProcessedFingerprint: true,
       },
-    ),
-    /thread title failed/,
+    ],
+    {
+      bufferKey: "logical-thread:thread-15",
+    },
   );
 
+  assert.equal(result.status, "completed");
+  assert.equal(result.persistedCount, 1);
+  assert.equal(result.durableOutputCount, 1);
+  assert.equal(result.postPersistMetadataFailed, false);
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);
   assert.equal(savedMeta?.processedExtractionFingerprints.length, 1);
@@ -846,7 +1443,7 @@ test("runExtraction saves the processed fingerprint before late threading failur
   );
 });
 
-test("runExtraction clears the buffer even when the post-persist meta save fails", async () => {
+test("runExtraction completes and clears the buffer when the post-persist meta save fails", async () => {
   const config = parseConfig({});
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
@@ -902,23 +1499,23 @@ test("runExtraction clears the buffer even when the post-persist meta save fails
   orchestrator.requestQmdMaintenance = () => undefined;
   orchestrator.runTierMigrationCycle = async () => undefined;
 
-  await assert.rejects(
-    orchestrator.runExtraction(
-      [
-        {
-          ...makeTurn("session-g", "remember theta"),
-          logicalSessionKey: "logical-thread:thread-16",
-          turnFingerprint: "fp-thread-16",
-          persistProcessedFingerprint: true,
-        },
-      ],
+  const result = await orchestrator.runExtraction(
+    [
       {
-        bufferKey: "logical-thread:thread-16",
+        ...makeTurn("session-g", "remember theta"),
+        logicalSessionKey: "logical-thread:thread-16",
+        turnFingerprint: "fp-thread-16",
+        persistProcessedFingerprint: true,
       },
-    ),
-    /meta save failed/,
+    ],
+    {
+      bufferKey: "logical-thread:thread-16",
+    },
   );
 
+  assert.equal(result.status, "completed");
+  assert.equal(result.persistedCount, 1);
+  assert.equal(result.postPersistMetadataFailed, true);
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);
 });
@@ -1004,26 +1601,27 @@ test("runExtraction still runs follow-on extraction helpers when the post-persis
   };
   orchestrator.runTierMigrationCycle = async () => {
     tierCalls += 1;
+    throw new Error("tier migration failed");
   };
   orchestrator.nonZeroExtractionsSinceConsolidation = 0;
 
-  await assert.rejects(
-    orchestrator.runExtraction(
-      [
-        {
-          ...makeTurn("session-h", "remember iota"),
-          logicalSessionKey: "logical-thread:thread-17",
-          turnFingerprint: "fp-thread-17",
-          persistProcessedFingerprint: true,
-        },
-      ],
+  const result = await orchestrator.runExtraction(
+    [
       {
-        bufferKey: "logical-thread:thread-17",
+        ...makeTurn("session-h", "remember iota"),
+        logicalSessionKey: "logical-thread:thread-17",
+        turnFingerprint: "fp-thread-17",
+        persistProcessedFingerprint: true,
       },
-    ),
-    /meta save failed/,
+    ],
+    {
+      bufferKey: "logical-thread:thread-17",
+    },
   );
 
+  assert.equal(result.status, "completed");
+  assert.equal(result.persistedCount, 1);
+  assert.equal(result.postPersistMetadataFailed, true);
   assert.equal(clearCalls, 1);
   assert.equal(boxCalls, 1);
   assert.equal(appendCalls, 1);

@@ -232,7 +232,12 @@ function main() {
     "providerApiKeyResolver",
     "runtimeAuthForModelResolver",
   ]);
-  const expectedSchemaExtra = new Set(["dreams"]);
+  const expectedSchemaExtra = new Set([
+    "dreams",
+    // Adapter-owned OpenClaw runtime gate. It is exposed in the plugin manifest
+    // UI but intentionally parsed in src/index.ts instead of core PluginConfig.
+    "openclawFlushPlanProcessingEnabled",
+  ]);
   const expectedParseMissing = new Set<string>(["providerApiKeyResolver", "runtimeAuthForModelResolver"]);
 
   const failures: Failure[] = [];

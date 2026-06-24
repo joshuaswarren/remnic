@@ -186,7 +186,7 @@ export interface ImporterWriteTarget {
   ingestBulkImportBatch(
     turns: ImportTurn[],
     options?: { deadlineMs?: number },
-  ): Promise<void>;
+  ): Promise<unknown>;
   bulkImportWriteNamespace?(): string;
 }
 

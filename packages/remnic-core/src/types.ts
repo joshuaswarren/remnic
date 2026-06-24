@@ -2594,6 +2594,7 @@ export interface ExtractionResult {
   questions: ExtractedQuestion[];
   identityReflection?: string;
   relationships?: ExtractedRelationship[];
+  extractionFailure?: string;
 }
 
 export interface EntityMention {

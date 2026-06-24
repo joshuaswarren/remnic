@@ -1093,6 +1093,11 @@
         "default": true,
         "description": "Use OpenClaw's canonical chat-channel envelope prefixes when the SDK exposes plugin-sdk/chat-channel-ids, while keeping the legacy OpenClaw-only cleaner on older hosts."
       },
+      "openclawFlushPlanProcessingEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Process OpenClaw's append-only Remnic flush-plan file through Remnic extraction and clear processed content. Disable this if a future OpenClaw release owns flush-plan consumption and cleanup natively."
+      },
       "sessionTogglesEnabled": {
         "type": "boolean",
         "default": true,
@@ -5248,6 +5253,11 @@
       "label": "Clean Channel Envelopes",
       "advanced": true,
       "help": "Use OpenClaw's canonical channel envelope prefixes when available."
+    },
+    "openclawFlushPlanProcessingEnabled": {
+      "label": "Process Flush Plans",
+      "advanced": true,
+      "help": "Have Remnic ingest and clear OpenClaw's append-only flush-plan file. Disable when OpenClaw owns this lifecycle natively."
     },
     "qmdCollection": {
       "label": "QMD Collection",

@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
@@ -30,6 +30,8 @@ const KEYED_BASE_NAMES = [
   "__openclawEngramOrchestrator",
   "__openclawEngramAccessService",
   "__openclawEngramAccessHttpServer",
+  "__openclawEngramAccessHttpAuthState",
+  "__openclawEngramFlushPlanProcessingChains",
   "__openclawEngramServiceStarted",
   "__openclawEngramInitPromise",
 ];
@@ -54,6 +56,16 @@ function cleanGlobalThis() {
   for (const key of GLOBAL_KEYS) {
     delete (globalThis as any)[key];
   }
+}
+
+async function waitForFlushPlanProcessingQueueToEmpty(): Promise<void> {
+  const key = `__openclawEngramFlushPlanProcessingChains::${SERVICE_ID}`;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const chains = (globalThis as any)[key];
+    if (!(chains instanceof Map) || chains.size === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail("flush-plan processing queue did not settle");
 }
 
 async function stopGlobalThisRuntime() {
@@ -2507,12 +2519,6 @@ test("before_prompt_build tracks Codex compaction baselines per principal-scoped
         includeInRecallByDefault: false,
       },
     ],
-    codexCompat: {
-      enabled: true,
-      threadIdBufferKeying: true,
-      compactionFlushMode: "heuristic",
-      fingerprintDedup: true,
-    },
   };
   plugin.register(api as any);
 
@@ -4599,5 +4605,932 @@ test("non-runtime registration modes register zero handlers", async () => {
       0,
       `expected zero handlers in ${registrationMode} mode, got: ${[...api.handlers.keys()].join(", ")}`,
     );
+  }
+});
+
+test("session_start processes flush-plan files by default", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-default-"));
+  try {
+    const api = buildHandlerCapturingApi("flush-plan-default-enabled-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+    };
+    plugin.register(api as any);
+
+    const sessionStart = api.handlers.get("session_start");
+    assert.ok(sessionStart, "session_start handler should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+    let ingestCalls = 0;
+    orchestrator.ingestBulkImportBatch = async () => {
+      ingestCalls += 1;
+      return undefined;
+    };
+
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, "- Default processing should import this.\n", "utf8");
+
+    await sessionStart({ sessionKey: "flush-plan-default-enabled" }, { workspaceDir });
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if (ingestCalls > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.equal(ingestCalls, 1);
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(await readFile(flushPlanPath, "utf8"), "");
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("session_start respects the adapter-owned flush-plan processing opt-out", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-disabled-"));
+  try {
+    const api = buildHandlerCapturingApi("flush-plan-disabled-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: false,
+    };
+    plugin.register(api as any);
+
+    const sessionStart = api.handlers.get("session_start");
+    assert.ok(sessionStart, "session_start handler should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+    let ingestCalls = 0;
+    orchestrator.ingestBulkImportBatch = async () => {
+      ingestCalls += 1;
+      return undefined;
+    };
+
+    const content = "- Disabled processing should leave this pending.\n";
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, content, "utf8");
+
+    await sessionStart({ sessionKey: "flush-plan-disabled" }, { workspaceDir });
+
+    assert.equal(ingestCalls, 0);
+    assert.equal(await readFile(flushPlanPath, "utf8"), content);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("session_start keeps file-backed flush-plan opt-out when runtime carries schema default", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-file-disabled-"));
+  const configPath = path.join(workspaceDir, "openclaw.json");
+  await writeFile(
+    configPath,
+    JSON.stringify(
+      {
+        plugins: {
+          entries: {
+            [SERVICE_ID]: {
+              config: {
+                openclawFlushPlanProcessingEnabled: false,
+              },
+            },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  const previousConfigPaths = [
+    process.env.OPENCLAW_CONFIG_PATH,
+    process.env.OPENCLAW_ENGRAM_CONFIG_PATH,
+  ] as const;
+  process.env.OPENCLAW_CONFIG_PATH = configPath;
+  delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+  try {
+    const { default: plugin } = await import("../src/index.js");
+    const api = buildHandlerCapturingApi("flush-plan-file-disabled-runtime-default-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+    };
+    plugin.register(api as any);
+
+    const sessionStart = api.handlers.get("session_start");
+    assert.ok(sessionStart, "session_start handler should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+    let ingestCalls = 0;
+    orchestrator.ingestBulkImportBatch = async () => {
+      ingestCalls += 1;
+      return undefined;
+    };
+
+    const content = "- File-backed disabled processing should leave this pending.\n";
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, content, "utf8");
+
+    await sessionStart({ sessionKey: "flush-plan-file-disabled" }, { workspaceDir });
+
+    assert.equal(ingestCalls, 0);
+    assert.equal(await readFile(flushPlanPath, "utf8"), content);
+  } finally {
+    if (previousConfigPaths[0] === undefined) {
+      delete process.env.OPENCLAW_CONFIG_PATH;
+    } else {
+      process.env.OPENCLAW_CONFIG_PATH = previousConfigPaths[0];
+    }
+    if (previousConfigPaths[1] === undefined) {
+      delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    } else {
+      process.env.OPENCLAW_ENGRAM_CONFIG_PATH = previousConfigPaths[1];
+    }
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("gateway_start does not process flush-plan files in passive slot mode", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-passive-"));
+  try {
+    const api = buildHandlerCapturingApi("flush-plan-passive-gateway-start-test");
+    api.config = {
+      plugins: {
+        slots: {
+          memory: "other-memory-plugin",
+        },
+      },
+    };
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      slotBehavior: {
+        onSlotMismatch: "silent",
+      },
+    };
+    plugin.register(api as any);
+
+    assert.equal(
+      api.handlers.size,
+      0,
+      "passive slot mode should not register active lifecycle hooks",
+    );
+    assert.ok(api._registeredServiceStart, "service start should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    let ingestCalls = 0;
+    orchestrator.ingestBulkImportBatch = async () => {
+      ingestCalls += 1;
+      return undefined;
+    };
+
+    const content = "- Passive mode should not let Remnic consume this plan.\n";
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, content, "utf8");
+
+    await api._registeredServiceStart?.();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.equal(ingestCalls, 0);
+    assert.equal(await readFile(flushPlanPath, "utf8"), content);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("register rejects malformed OpenClaw flush-plan processing opt-outs", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  for (const bad of ["fales", "maybe", 2, "2", "enabled"]) {
+    const api = buildHandlerCapturingApi(`flush-plan-malformed-${String(bad)}`);
+    api.pluginConfig = {
+      qmdEnabled: false,
+      openclawFlushPlanProcessingEnabled: bad,
+    };
+    assert.throws(
+      () => plugin.register(api as any),
+      /openclawFlushPlanProcessingEnabled must be a boolean-like value/,
+      `openclawFlushPlanProcessingEnabled=${JSON.stringify(bad)} should throw`,
+    );
+  }
+});
+
+test("session_end fences flush-plan processing after an earlier drain times out", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-queue-"));
+  try {
+    const api = buildHandlerCapturingApi("flush-plan-queue-timeout-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      beforeResetTimeoutMs: 25,
+    };
+    plugin.register(api as any);
+
+    const sessionStart = api.handlers.get("session_start");
+    const sessionEnd = api.handlers.get("session_end");
+    assert.ok(sessionStart, "session_start handler should be registered");
+    assert.ok(sessionEnd, "session_end handler should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+    orchestrator.buffer.findBufferKeysForSession = async () => [];
+    orchestrator.buffer.getTurns = () => [];
+    orchestrator.flushSession = async () => undefined;
+
+    let ingestCalls = 0;
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    let releaseFirstIngest!: () => void;
+    const firstIngestReleased = new Promise<void>((resolve) => {
+      releaseFirstIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async () => {
+      ingestCalls += 1;
+      if (ingestCalls === 1) {
+        markIngestStarted();
+        await firstIngestReleased;
+        return undefined;
+      }
+      return undefined;
+    };
+
+    const firstContent = "- First drain will stay in progress.\n";
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, firstContent, "utf8");
+
+    await sessionStart({ sessionKey: "queued-flush" }, { workspaceDir });
+    const firstDrainStarted = await Promise.race([
+      ingestStarted.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+    assert.equal(firstDrainStarted, true);
+    assert.equal(ingestCalls, 1);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+
+    const startedAt = Date.now();
+    const outcome = await Promise.race([
+      sessionEnd({ sessionKey: "queued-flush" }, { workspaceDir }).then(
+        () => "resolved",
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed_out"), 300)),
+    ]);
+
+    assert.equal(outcome, "resolved");
+    assert.ok(
+      Date.now() - startedAt < 250,
+      "session_end should not wait indefinitely behind the previous flush-plan drain",
+    );
+    assert.equal(
+      ingestCalls,
+      1,
+      "session_end must not overlap a flush-plan drain that is still mutating files",
+    );
+    assert.equal(
+      await readFile(flushPlanPath, "utf8"),
+      firstContent,
+      "the timed-out wait should leave the original in-flight drain responsible for cleanup",
+    );
+
+    releaseFirstIngest();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(
+      await readFile(flushPlanPath, "utf8"),
+      "",
+      "the original fenced drain should clear the flush-plan snapshot after it settles",
+    );
+
+    await waitForFlushPlanProcessingQueueToEmpty();
+    await writeFile(flushPlanPath, "- Later retry after fence clears.\n", "utf8");
+    await sessionEnd({ sessionKey: "queued-flush" }, { workspaceDir });
+    assert.equal(
+      ingestCalls,
+      2,
+      "a later session_end should retry after the in-flight drain has settled",
+    );
+    assert.equal(
+      await readFile(flushPlanPath, "utf8"),
+      "",
+      "the later retry should clear the new flush-plan snapshot",
+    );
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("queued flush-plan processing keeps the caller deadline after waiting behind a drain", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-queued-deadline-"));
+  try {
+    const api = buildHandlerCapturingApi("flush-plan-queued-deadline-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      beforeResetTimeoutMs: 25,
+    };
+    plugin.register(api as any);
+
+    const sessionStart = api.handlers.get("session_start");
+    const sessionEnd = api.handlers.get("session_end");
+    assert.ok(sessionStart, "session_start handler should be registered");
+    assert.ok(sessionEnd, "session_end handler should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+    orchestrator.buffer.findBufferKeysForSession = async () => [];
+    orchestrator.buffer.getTurns = () => [];
+    orchestrator.flushSession = async () => undefined;
+
+    let ingestCalls = 0;
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    let releaseFirstIngest!: () => void;
+    const firstIngestReleased = new Promise<void>((resolve) => {
+      releaseFirstIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async () => {
+      ingestCalls += 1;
+      if (ingestCalls === 1) {
+        markIngestStarted();
+        await firstIngestReleased;
+      }
+      return undefined;
+    };
+
+    const firstContent = "- First drain will stay in progress.\n";
+    const tailContent = "- Queued caller deadline should preserve this tail.\n";
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, firstContent, "utf8");
+
+    await sessionStart({ sessionKey: "queued-deadline-flush" }, { workspaceDir });
+    const firstDrainStarted = await Promise.race([
+      ingestStarted.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+    assert.equal(firstDrainStarted, true);
+
+    await sessionEnd({ sessionKey: "queued-deadline-flush" }, { workspaceDir });
+    assert.equal(
+      ingestCalls,
+      1,
+      "queued session_end must not overlap the active flush-plan drain",
+    );
+
+    await writeFile(flushPlanPath, firstContent + tailContent, "utf8");
+    releaseFirstIngest();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if ((await readFile(flushPlanPath, "utf8")) === tailContent) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    assert.equal(
+      await readFile(flushPlanPath, "utf8"),
+      tailContent,
+      "the timed-out queued drain should leave appended content for a later lifecycle",
+    );
+    await waitForFlushPlanProcessingQueueToEmpty();
+    assert.equal(
+      ingestCalls,
+      1,
+      "the timed-out queued drain must not import after the caller deadline expires",
+    );
+    assert.equal(await readFile(flushPlanPath, "utf8"), tailContent);
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("flush-plan processing queue is shared across registry closures", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-shared-queue-"));
+  try {
+    const apiA = buildHandlerCapturingApi("flush-plan-shared-queue-a");
+    const apiB = buildHandlerCapturingApi("flush-plan-shared-queue-b");
+    for (const api of [apiA, apiB]) {
+      api.pluginConfig = {
+        qmdEnabled: false,
+        modelSource: "gateway",
+        transcriptEnabled: false,
+        hourlySummariesEnabled: false,
+        workspaceDir,
+        openclawFlushPlanProcessingEnabled: true,
+        beforeResetTimeoutMs: 25,
+      };
+      plugin.register(api as any);
+    }
+
+    const sessionStartA = apiA.handlers.get("session_start");
+    const sessionEndB = apiB.handlers.get("session_end");
+    assert.ok(sessionStartA, "first registry should have a session_start handler");
+    assert.ok(sessionEndB, "second registry should have a session_end handler");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+    orchestrator.buffer.findBufferKeysForSession = async () => [];
+    orchestrator.buffer.getTurns = () => [];
+    orchestrator.flushSession = async () => undefined;
+
+    let ingestCalls = 0;
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    let releaseFirstIngest!: () => void;
+    const firstIngestReleased = new Promise<void>((resolve) => {
+      releaseFirstIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async () => {
+      ingestCalls += 1;
+      if (ingestCalls === 1) {
+        markIngestStarted();
+        await firstIngestReleased;
+        return undefined;
+      }
+      return undefined;
+    };
+
+    const firstContent = "- First registry drain stays in progress.\n";
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, firstContent, "utf8");
+
+    await sessionStartA({ sessionKey: "shared-queue" }, { workspaceDir });
+    const firstDrainStarted = await Promise.race([
+      ingestStarted.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+    assert.equal(firstDrainStarted, true);
+    assert.equal(ingestCalls, 1);
+
+    await sessionEndB({ sessionKey: "shared-queue" }, { workspaceDir });
+    assert.equal(
+      ingestCalls,
+      1,
+      "second registry must wait on the shared queue instead of recovering the pending marker concurrently",
+    );
+
+    releaseFirstIngest();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(await readFile(flushPlanPath, "utf8"), "");
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("flush-plan processing queue canonicalizes symlinked workspace paths", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-realpath-queue-"));
+  const linkRoot = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-realpath-link-"));
+  const workspaceLink = path.join(linkRoot, "workspace");
+  try {
+    await symlink(workspaceDir, workspaceLink, "dir");
+    const api = buildHandlerCapturingApi("flush-plan-realpath-queue");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      beforeResetTimeoutMs: 25,
+    };
+    plugin.register(api as any);
+
+    const sessionStart = api.handlers.get("session_start");
+    const sessionEnd = api.handlers.get("session_end");
+    assert.ok(sessionStart, "registry should have a session_start handler");
+    assert.ok(sessionEnd, "registry should have a session_end handler");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+    orchestrator.buffer.findBufferKeysForSession = async () => [];
+    orchestrator.buffer.getTurns = () => [];
+    orchestrator.flushSession = async () => undefined;
+
+    let ingestCalls = 0;
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    let releaseFirstIngest!: () => void;
+    const firstIngestReleased = new Promise<void>((resolve) => {
+      releaseFirstIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async () => {
+      ingestCalls += 1;
+      if (ingestCalls === 1) {
+        markIngestStarted();
+        await firstIngestReleased;
+      }
+      return undefined;
+    };
+
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, "- First drain through symlink workspace.\n", "utf8");
+
+    await sessionStart({ sessionKey: "realpath-queue" }, { workspaceDir: workspaceLink });
+    const firstDrainStarted = await Promise.race([
+      ingestStarted.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+    assert.equal(firstDrainStarted, true);
+    assert.equal(ingestCalls, 1);
+
+    await sessionEnd({ sessionKey: "realpath-queue" }, { workspaceDir });
+    assert.equal(
+      ingestCalls,
+      1,
+      "real and symlink workspace paths must share one flush-plan queue fence",
+    );
+
+    releaseFirstIngest();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(await readFile(flushPlanPath, "utf8"), "");
+  } finally {
+    await rm(linkRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("flush-plan processing queue survives service stop while a drain is in flight", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-reload-queue-"));
+  let releaseFirstIngest: (() => void) | undefined;
+  let apiA: HandlerCapturingApi | undefined;
+  try {
+    apiA = buildHandlerCapturingApi("flush-plan-reload-queue-a");
+    apiA.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      beforeResetTimeoutMs: 25,
+    };
+    plugin.register(apiA as any);
+
+    const sessionStartA = apiA.handlers.get("session_start");
+    assert.ok(sessionStartA, "first registry should have a session_start handler");
+    assert.ok(apiA._registeredServiceStart, "first registry should have service start");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.maybeRunFileHygiene = async () => undefined;
+    orchestrator.buffer.findBufferKeysForSession = async () => [];
+    orchestrator.buffer.getTurns = () => [];
+    orchestrator.flushSession = async () => undefined;
+
+    let ingestCalls = 0;
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    const firstIngestReleased = new Promise<void>((resolve) => {
+      releaseFirstIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async () => {
+      ingestCalls += 1;
+      if (ingestCalls === 1) {
+        markIngestStarted();
+        await firstIngestReleased;
+        return undefined;
+      }
+      return undefined;
+    };
+
+    await apiA._registeredServiceStart?.();
+
+    const firstContent = "- First registry drain survives reload.\n";
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, firstContent, "utf8");
+
+    await sessionStartA({ sessionKey: "reload-queue" }, { workspaceDir });
+    const firstDrainStarted = await Promise.race([
+      ingestStarted.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 300)),
+    ]);
+    assert.equal(firstDrainStarted, true);
+    assert.equal(ingestCalls, 1);
+
+    await apiA._registeredServiceStop?.();
+
+    const apiB = buildHandlerCapturingApi("flush-plan-reload-queue-b");
+    apiB.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      beforeResetTimeoutMs: 25,
+    };
+    plugin.register(apiB as any);
+    const sessionEndB = apiB.handlers.get("session_end");
+    assert.ok(sessionEndB, "second registry should have a session_end handler");
+
+    await sessionEndB({ sessionKey: "reload-queue" }, { workspaceDir });
+    assert.equal(
+      ingestCalls,
+      1,
+      "fresh registry must preserve the in-flight flush-plan fence across stop/reload",
+    );
+    assert.equal(
+      await readFile(flushPlanPath, "utf8"),
+      firstContent,
+      "timed-out reload wait should leave the original drain responsible for cleanup",
+    );
+
+    releaseFirstIngest?.();
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      if ((await readFile(flushPlanPath, "utf8")) === "") break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(await readFile(flushPlanPath, "utf8"), "");
+  } finally {
+    releaseFirstIngest?.();
+    await apiA?._registeredServiceStop?.();
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("before_reset awaits flush-plan processing while deadline budget remains", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-before-reset-"));
+  try {
+    const api = buildHandlerCapturingApi("flush-plan-before-reset-await-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      flushOnResetEnabled: false,
+      beforeResetTimeoutMs: 500,
+    };
+    plugin.register(api as any);
+
+    const beforeReset = api.handlers.get("before_reset");
+    assert.ok(beforeReset, "before_reset handler should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.buffer.findBufferKeysForSession = async () => [];
+    orchestrator.buffer.getTurns = () => [];
+
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    let releaseIngest!: () => void;
+    const ingestReleased = new Promise<void>((resolve) => {
+      releaseIngest = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async () => {
+      markIngestStarted();
+      await ingestReleased;
+      return undefined;
+    };
+
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(flushPlanPath, "- Reset should wait for this plan.\n", "utf8");
+
+    let settled = false;
+    const beforeResetPromise = beforeReset(
+      { sessionKey: "before-reset-flush-plan" },
+      { workspaceDir },
+    ).then(() => {
+      settled = true;
+    });
+    await ingestStarted;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      settled,
+      false,
+      "before_reset should not return while flush-plan ingestion is still running",
+    );
+
+    releaseIngest();
+    await beforeResetPromise;
+    assert.equal(
+      await readFile(flushPlanPath, "utf8"),
+      "",
+      "before_reset should clear the flush-plan snapshot after awaited ingestion",
+    );
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("before_reset reuses the remaining reset deadline for flush-plan processing", async () => {
+  const { default: plugin } = await import("../src/index.js");
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flush-before-reset-deadline-"));
+  try {
+    const api = buildHandlerCapturingApi("flush-plan-before-reset-fresh-timeout-test");
+    api.pluginConfig = {
+      qmdEnabled: false,
+      modelSource: "gateway",
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      workspaceDir,
+      openclawFlushPlanProcessingEnabled: true,
+      flushOnResetEnabled: true,
+      beforeResetTimeoutMs: 60,
+    };
+    plugin.register(api as any);
+
+    const beforeReset = api.handlers.get("before_reset");
+    assert.ok(beforeReset, "before_reset handler should be registered");
+
+    const orchestrator = (globalThis as any).__openclawEngramOrchestrator;
+    assert.ok(orchestrator, "orchestrator should exist on globalThis after register");
+    orchestrator.buffer.findBufferKeysForSession = async () => [];
+    orchestrator.buffer.getTurns = () => [];
+    let flushCalls = 0;
+    orchestrator.flushSession = async (
+      _sessionKey: string,
+      options?: { abortSignal?: AbortSignal },
+    ) => {
+      flushCalls += 1;
+      await new Promise<void>((resolve) => {
+        options?.abortSignal?.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+      });
+    };
+
+    let markIngestStarted!: () => void;
+    const ingestStarted = new Promise<void>((resolve) => {
+      markIngestStarted = resolve;
+    });
+    orchestrator.ingestBulkImportBatch = async () => {
+      markIngestStarted();
+      return undefined;
+    };
+
+    const flushPlanPath = path.join(
+      workspaceDir,
+      "state",
+      "plugins",
+      SERVICE_ID,
+      "flush-plan.md",
+    );
+    await mkdir(path.dirname(flushPlanPath), { recursive: true });
+    await writeFile(
+      flushPlanPath,
+      "- Reset should not spend a second full timeout on this plan.\n",
+      "utf8",
+    );
+
+    const startedAt = Date.now();
+    await beforeReset(
+      { sessionKey: "before-reset-deadline-flush-plan" },
+      { workspaceDir },
+    );
+    const elapsedMs = Date.now() - startedAt;
+    const didStartIngest = await Promise.race([
+      ingestStarted.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150)),
+    ]);
+
+    assert.equal(
+      didStartIngest,
+      false,
+      "before_reset should not start flush-plan ingestion after the reset deadline is spent",
+    );
+    assert.equal(flushCalls, 1);
+    assert.ok(
+      elapsedMs < 180,
+      `before_reset should not wait for a second full timeout; elapsed ${elapsedMs}ms`,
+    );
+    assert.equal(
+      await readFile(flushPlanPath, "utf8"),
+      "- Reset should not spend a second full timeout on this plan.\n",
+      "before_reset should leave the flush-plan file for a later lifecycle when the reset deadline is spent",
+    );
+  } finally {
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });

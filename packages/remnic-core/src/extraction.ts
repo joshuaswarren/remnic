@@ -996,7 +996,12 @@ export class ExtractionEngine {
       looksLikeMechanicalTelemetryTranscript(conversation)
     ) {
       log.debug("extraction skipped — mechanical action/state telemetry without durable-memory cues");
-      return { facts: [], profileUpdates: [], entities: [], questions: [] };
+      return {
+        facts: [],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+      };
     }
 
     // Use the last turn's timestamp for temporal anchoring (more accurate than wall-clock)
@@ -1037,13 +1042,25 @@ export class ExtractionEngine {
         // Local failed, fall back if allowed
         if (!this.config.localLlmFallback) {
           log.warn("extraction: local LLM failed and fallback disabled");
-          return { facts: [], profileUpdates: [], entities: [], questions: [] };
+          return {
+            facts: [],
+            profileUpdates: [],
+            entities: [],
+            questions: [],
+            extractionFailure: "local_llm_unavailable",
+          };
         }
         log.info("extraction: local LLM unavailable, falling back to gateway default AI");
       } catch (err) {
         if (!this.config.localLlmFallback) {
           log.warn("extraction: local LLM error and fallback disabled:", err);
-          return { facts: [], profileUpdates: [], entities: [], questions: [] };
+          return {
+            facts: [],
+            profileUpdates: [],
+            entities: [],
+            questions: [],
+            extractionFailure: "local_llm_error",
+          };
         }
         log.info("extraction: local LLM error, falling back to gateway default AI:", err);
       } finally {
@@ -1171,14 +1188,26 @@ export class ExtractionEngine {
         durationMs: fallbackDurationMs, error: "fallback returned no parsed output",
       });
       log.warn("extraction fallback returned no parsed output");
-      return { facts: [], profileUpdates: [], entities: [], questions: [] };
+      return {
+        facts: [],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+        extractionFailure: "fallback_no_parsed_output",
+      };
     } catch (err) {
       this.emit({
         kind: "llm_error", traceId: fallbackTraceId, model: "fallback", operation: "extraction",
         durationMs: Date.now() - fallbackStartTime, error: String(err),
       });
       log.error("extraction fallback failed", err);
-      return { facts: [], profileUpdates: [], entities: [], questions: [] };
+      return {
+        facts: [],
+        profileUpdates: [],
+        entities: [],
+        questions: [],
+        extractionFailure: "fallback_failed",
+      };
     } finally {
       try { this.profiler.endSpan("gateway-fallback", extractionTraceId); } catch { /* span may already be closed */ }
     }
