@@ -119,28 +119,38 @@ export function buildChatGptMemoryInspectorResult(
   const allowUnverifiedPreview = input.allowUnverifiedPreview === true;
   const matchXrayResult = buildXrayResultMatcher(xray, recall.results);
   const matchedXrayResults = recall.results.map(matchXrayResult);
+  const hasBlockedSameId = buildBlockedSameIdMatcher(xray);
 
   const memories = recall.results.slice(0, 8).map((summary) => {
     const xrayResult = matchXrayResult(summary);
     const provenance = xrayResult?.provenance;
-    const unverified = !xrayUnavailable && provenance === undefined;
-    const blocked = provenance?.safety === "blocked";
+    const blockedByAmbiguousSameId = !xrayUnavailable
+      && provenance === undefined
+      && hasBlockedSameId(summary.id);
+    const blocked = provenance?.safety === "blocked" || blockedByAmbiguousSameId;
+    const unverified = !xrayUnavailable && provenance === undefined && !blockedByAmbiguousSameId;
     const preview = xrayUnavailable
       ? allowUnverifiedPreview
         ? summary.preview
         : "Preview withheld: X-ray provenance was unavailable for this recall."
-      : unverified
-        ? allowUnverifiedPreview
-          ? summary.preview
-          : "Preview withheld: X-ray provenance was missing for this memory."
       : blocked
         ? "Preview withheld: this memory is blocked in the current context."
-        : summary.preview;
-    const fallbackSafety = xrayUnavailable || unverified
-      ? allowUnverifiedPreview ? "requires-review" : "blocked"
-      : undefined;
+        : unverified
+          ? allowUnverifiedPreview
+            ? summary.preview
+            : "Preview withheld: X-ray provenance was missing for this memory."
+          : summary.preview;
+    const fallbackSafety = blockedByAmbiguousSameId
+      ? "blocked"
+      : xrayUnavailable || unverified
+        ? allowUnverifiedPreview
+          ? "requires-review"
+          : "blocked"
+        : undefined;
     const fallbackSafetyReason = xrayUnavailable
       ? "X-ray provenance was unavailable for this recall."
+      : blockedByAmbiguousSameId
+        ? "An unmatched X-ray row with this memory id was blocked."
       : "X-ray provenance was missing for this memory.";
     return {
       id: summary.id,
@@ -156,28 +166,41 @@ export function buildChatGptMemoryInspectorResult(
       confidence: provenance?.confidence,
       stale: provenance?.stale,
       corrected: provenance?.corrected,
-      safeToUse: provenance?.safeToUse ?? (xrayUnavailable || unverified ? false : undefined),
+      safeToUse: provenance?.safeToUse
+        ?? (xrayUnavailable || unverified || blockedByAmbiguousSameId ? false : undefined),
       safety: provenance?.safety ?? fallbackSafety,
       safetyReasons: provenance?.safetyReasons
-        ?? (xrayUnavailable || unverified ? [fallbackSafetyReason] : []),
+        ?? (
+          xrayUnavailable || unverified || blockedByAmbiguousSameId
+            ? [fallbackSafetyReason]
+            : []
+        ),
       userContextScopes: provenance?.userContextScopes ?? [],
     };
   });
   const blockedCount = matchedXrayResults
     .filter((result) => result?.provenance?.safety === "blocked")
     .length;
+  const ambiguousBlockedCount = recall.results
+    .filter((summary, index) =>
+      matchedXrayResults[index]?.provenance === undefined && hasBlockedSameId(summary.id)
+    )
+    .length;
   const missingProvenanceCount = xrayUnavailable
     ? 0
     : matchedXrayResults
-      .filter((result) => result?.provenance === undefined)
+      .filter((result, index) =>
+        result?.provenance === undefined && !hasBlockedSameId(recall.results[index]?.id ?? "")
+      )
     .length;
+  const totalBlockedCount = blockedCount + ambiguousBlockedCount;
   const safeRecallPreview = xrayUnavailable
     ? allowUnverifiedPreview
       ? `Unverified recall preview: X-ray provenance was unavailable, so memory safety could not be verified.\n\n${truncate(recall.context, 1_500)}`
       : "Recall preview withheld: X-ray provenance was unavailable, so memory safety could not be verified."
-    : blockedCount > 0 || missingProvenanceCount > 0
-      ? blockedCount > 0 || !allowUnverifiedPreview
-        ? formatUnsafeRecallPreview(blockedCount, missingProvenanceCount)
+    : totalBlockedCount > 0 || missingProvenanceCount > 0
+      ? totalBlockedCount > 0 || !allowUnverifiedPreview
+        ? formatUnsafeRecallPreview(totalBlockedCount, missingProvenanceCount)
         : `Unverified recall preview: ${missingProvenanceCount} retrieved ${memoryNoun(missingProvenanceCount)} ${isAre(missingProvenanceCount)} missing X-ray provenance.\n\n${truncate(recall.context, 1_500)}`
       : truncate(recall.context, 1_500);
 
@@ -423,6 +446,18 @@ function buildXrayResultMatcher(
       ? xrayById.get(summary.id)
       : undefined;
   };
+}
+
+function buildBlockedSameIdMatcher(
+  xray: RecallXraySnapshot | null,
+): (memoryId: string) => boolean {
+  const blockedIds = new Set<string>();
+  for (const result of xray?.results ?? []) {
+    if (result.provenance?.safety === "blocked") {
+      blockedIds.add(result.memoryId);
+    }
+  }
+  return (memoryId) => blockedIds.has(memoryId);
 }
 
 function missingProvenance(result: RecallXrayResult): RetrievedMemoryProvenance {

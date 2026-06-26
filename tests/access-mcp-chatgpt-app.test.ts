@@ -618,6 +618,121 @@ test("ChatGPT Apps inspector matches X-ray provenance by path before duplicate i
   assert.equal(result.memories[1]?.preview, "safe work detail");
 });
 
+test("ChatGPT Apps inspector redacts ambiguous same-id memories when any unmatched X-ray row is blocked", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "blocked private detail\nsafe work detail",
+    count: 2,
+    memoryIds: ["mem-shared", "mem-shared"],
+    results: [
+      {
+        id: "mem-shared",
+        path: "private/stale-mem-shared.md",
+        category: "preference",
+        status: "active",
+        tags: [],
+        preview: "blocked private detail",
+      },
+      {
+        id: "mem-shared",
+        path: "work/mem-shared.md",
+        category: "preference",
+        status: "active",
+        tags: [],
+        preview: "safe work detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const result = buildChatGptMemoryInspectorResult(
+    { query: "show preferences", namespace: "work", allowUnverifiedPreview: true },
+    recall,
+    {
+      schemaVersion: "1",
+      query: "show preferences",
+      snapshotId: "snap-ambiguous-blocked-same-id",
+      capturedAt: 1_779_000_000_000,
+      tierExplain: null,
+      results: [
+        {
+          memoryId: "mem-shared",
+          path: "private/mem-shared.md",
+          servedBy: "hybrid",
+          scoreDecomposition: { final: 0.9 },
+          admittedBy: ["test"],
+          provenance: {
+            source: "conversation",
+            scope: "namespace:private",
+            userContextScopes: ["work"],
+            retrievalReason: "test",
+            confidence: 0.9,
+            stale: false,
+            corrected: false,
+            correctionState: "none",
+            safeToUse: false,
+            safety: "blocked",
+            safetyReasons: ["blocked in current context"],
+          },
+        },
+        {
+          memoryId: "mem-shared",
+          path: "work/mem-shared.md",
+          servedBy: "hybrid",
+          scoreDecomposition: { final: 0.8 },
+          admittedBy: ["test"],
+          provenance: {
+            source: "conversation",
+            scope: "namespace:work",
+            userContextScopes: ["work"],
+            retrievalReason: "test",
+            confidence: 0.8,
+            stale: false,
+            corrected: false,
+            correctionState: "none",
+            safeToUse: true,
+            safety: "safe",
+            safetyReasons: [],
+          },
+        },
+      ],
+      filters: [],
+      budget: { chars: 4096, used: 100 },
+      namespace: "work",
+    },
+    {
+      schemaVersion: 1,
+      decision: "ask",
+      confidence: 0.5,
+      risk: "medium",
+      contextReadiness: "partial",
+      attentionPolicy: "interruption_budgeting",
+      principle: "A good agent should spend the user's attention carefully.",
+      reasons: [],
+      blockers: [],
+      factors: [],
+      retrievedMemoryCount: 2,
+      usableMemoryCount: 1,
+      staleMemoryCount: 0,
+      correctedMemoryCount: 0,
+      scopeMismatchCount: 1,
+      safeToAct: false,
+    },
+  );
+
+  assert.match(result.safeRecallPreview, /1 retrieved memory is blocked/);
+  assert.doesNotMatch(result.safeRecallPreview, /blocked private detail/);
+  assert.equal(
+    result.memories[0]?.preview,
+    "Preview withheld: this memory is blocked in the current context.",
+  );
+  assert.equal(result.memories[0]?.safety, "blocked");
+  assert.match(result.memories[0]?.safetyReasons[0] ?? "", /unmatched X-ray row/);
+  assert.equal(result.memories[1]?.preview, "safe work detail");
+});
+
 test("ChatGPT Apps inspector falls back to unique memory id when X-ray path is stale", () => {
   const recall: EngramAccessRecallResponse = {
     query: "show preferences",
