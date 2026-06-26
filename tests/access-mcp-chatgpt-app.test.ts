@@ -9,6 +9,7 @@ import {
   REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
   type RemnicChatGptMemoryInspectorResult,
 } from "../src/mcp-memory-inspector-app.js";
+import type { RecallXrayResult } from "../src/recall-xray.js";
 import { EngramMcpServer } from "../src/access-mcp.js";
 import type {
   EngramAccessRecallResponse,
@@ -38,6 +39,7 @@ function fakeService(capture: Capture): EngramAccessService {
             path: "preferences/2026-05-01/update-style.md",
             category: "preference",
             status: "active",
+            tags: [],
             preview: "Prefers concise, implementation-focused updates.",
           },
         ],
@@ -61,6 +63,7 @@ function fakeService(capture: Capture): EngramAccessService {
             path: "preferences/2026-05-01/update-style.md",
             category: "preference",
             status: "active",
+            tags: [],
             preview: "Prefers concise, implementation-focused updates.",
           },
         ],
@@ -165,11 +168,17 @@ test("ChatGPT Apps inspector advertises app-compatible tool metadata and aliases
   ) as {
     title?: string;
     annotations?: Record<string, unknown>;
+    inputSchema?: { properties?: Record<string, unknown> };
     outputSchema?: { properties?: Record<string, unknown> };
     _meta?: Record<string, unknown>;
   };
   assert.equal(descriptor.title, "Show Remnic Memory Inspector");
   assert.deepEqual(descriptor.outputSchema?.properties?.sessionKey, { type: "string" });
+  assert.deepEqual(descriptor.inputSchema?.properties?.allowUnverifiedPreview, {
+    type: "boolean",
+    description:
+      "If true, the inspector may show recalled preview text when X-ray provenance is missing or unavailable. Explicitly blocked memories remain redacted.",
+  });
   assert.deepEqual(descriptor.annotations, {
     readOnlyHint: true,
     destructiveHint: false,
@@ -346,9 +355,10 @@ test("ChatGPT Apps inspector withholds preview when blocked memory is beyond vis
     path: `memories/mem-${index + 1}.md`,
     category: "preference",
     status: "active",
+    tags: [],
     preview: index === 8 ? "blocked private detail" : `safe preview ${index + 1}`,
   }));
-  const xrayResults = recallResults.map((memory, index) => ({
+  const xrayResults: RecallXrayResult[] = recallResults.map((memory, index) => ({
     memoryId: memory.id,
     path: memory.path,
     servedBy: "hybrid" as const,
@@ -431,6 +441,7 @@ test("ChatGPT Apps inspector redacts blocked visible memory card previews", () =
         path: "memories/mem-blocked.md",
         category: "preference",
         status: "active",
+        tags: [],
         preview: "blocked private detail",
       },
     ],
@@ -511,6 +522,7 @@ test("ChatGPT Apps inspector matches X-ray provenance by path before duplicate i
         path: "private/mem-shared.md",
         category: "preference",
         status: "active",
+        tags: [],
         preview: "blocked private detail",
       },
       {
@@ -518,6 +530,7 @@ test("ChatGPT Apps inspector matches X-ray provenance by path before duplicate i
         path: "work/mem-shared.md",
         category: "preference",
         status: "active",
+        tags: [],
         preview: "safe work detail",
       },
     ],
@@ -605,6 +618,88 @@ test("ChatGPT Apps inspector matches X-ray provenance by path before duplicate i
   assert.equal(result.memories[1]?.preview, "safe work detail");
 });
 
+test("ChatGPT Apps inspector falls back to unique memory id when X-ray path is stale", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "safe work detail",
+    count: 1,
+    memoryIds: ["mem-safe"],
+    results: [
+      {
+        id: "mem-safe",
+        path: "legacy/work/mem-safe.md",
+        category: "preference",
+        status: "active",
+        tags: [],
+        preview: "safe work detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const result = buildChatGptMemoryInspectorResult(
+    { query: "show preferences", namespace: "work" },
+    recall,
+    {
+      schemaVersion: "1",
+      query: "show preferences",
+      snapshotId: "snap-stale-path-unique-id",
+      capturedAt: 1_779_000_000_000,
+      tierExplain: null,
+      results: [
+        {
+          memoryId: "mem-safe",
+          path: "work/mem-safe.md",
+          servedBy: "hybrid",
+          scoreDecomposition: { final: 0.8 },
+          admittedBy: ["test"],
+          provenance: {
+            source: "conversation",
+            scope: "namespace:work",
+            userContextScopes: ["work"],
+            retrievalReason: "test",
+            confidence: 0.8,
+            stale: false,
+            corrected: false,
+            correctionState: "none",
+            safeToUse: true,
+            safety: "safe",
+            safetyReasons: [],
+          },
+        },
+      ],
+      filters: [],
+      budget: { chars: 4096, used: 100 },
+      namespace: "work",
+    },
+    {
+      schemaVersion: 1,
+      decision: "draft",
+      confidence: 0.8,
+      risk: "medium",
+      contextReadiness: "sufficient",
+      attentionPolicy: "interruption_budgeting",
+      principle: "A good agent should spend the user's attention carefully.",
+      reasons: [],
+      blockers: [],
+      factors: [],
+      retrievedMemoryCount: 1,
+      usableMemoryCount: 1,
+      staleMemoryCount: 0,
+      correctedMemoryCount: 0,
+      scopeMismatchCount: 0,
+      safeToAct: false,
+    },
+  );
+
+  assert.equal(result.safeRecallPreview, "safe work detail");
+  assert.equal(result.memories[0]?.preview, "safe work detail");
+  assert.equal(result.memories[0]?.source, "conversation");
+  assert.equal(result.memories[0]?.safety, "safe");
+});
+
 test("ChatGPT Apps inspector pluralizes blocked memory preview messages", () => {
   const recall: EngramAccessRecallResponse = {
     query: "show preferences",
@@ -618,6 +713,7 @@ test("ChatGPT Apps inspector pluralizes blocked memory preview messages", () => 
         path: "memories/mem-blocked-1.md",
         category: "preference",
         status: "active",
+        tags: [],
         preview: "blocked first detail",
       },
       {
@@ -625,6 +721,7 @@ test("ChatGPT Apps inspector pluralizes blocked memory preview messages", () => 
         path: "memories/mem-blocked-2.md",
         category: "preference",
         status: "active",
+        tags: [],
         preview: "blocked second detail",
       },
     ],
@@ -632,7 +729,7 @@ test("ChatGPT Apps inspector pluralizes blocked memory preview messages", () => 
     sourcesUsed: ["memories"],
     disclosure: "chunk",
   };
-  const blockedXrayResults = recall.results.map((summary) => ({
+  const blockedXrayResults: RecallXrayResult[] = recall.results.map((summary) => ({
     memoryId: summary.id,
     path: summary.path ?? "",
     servedBy: "hybrid" as const,
@@ -703,6 +800,7 @@ test("ChatGPT Apps inspector withholds previews when X-ray provenance is unavail
         path: "memories/mem-unverified.md",
         category: "preference",
         status: "active",
+        tags: [],
         preview: "unverified memory detail",
       },
     ],
@@ -766,6 +864,7 @@ test("ChatGPT Apps inspector treats missing per-memory provenance as unsafe", ()
         path: "memories/mem-unverified.md",
         category: "preference",
         status: "active",
+        tags: [],
         preview: "unverified memory detail",
       },
     ],
@@ -834,6 +933,86 @@ test("ChatGPT Apps inspector treats missing per-memory provenance as unsafe", ()
   assert.doesNotMatch(result.memories[0]?.preview ?? "", /unverified memory detail/);
 });
 
+test("ChatGPT Apps inspector can show unverified previews when explicitly requested", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "unverified memory detail",
+    count: 1,
+    memoryIds: ["mem-unverified"],
+    results: [
+      {
+        id: "mem-unverified",
+        path: "memories/mem-unverified.md",
+        category: "preference",
+        status: "active",
+        tags: [],
+        preview: "unverified memory detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const xray = {
+    schemaVersion: "1" as const,
+    query: "show preferences",
+    snapshotId: "snap-missing-provenance-allowed",
+    capturedAt: 1_779_000_000_000,
+    tierExplain: null,
+    results: [
+      {
+        memoryId: "mem-unverified",
+        path: "memories/mem-unverified.md",
+        servedBy: "hybrid" as const,
+        scoreDecomposition: { final: 0.9 },
+        admittedBy: ["test"],
+      },
+    ],
+    filters: [],
+    budget: { chars: 4096, used: 100 },
+    namespace: "work",
+  };
+  const actionRequest = buildChatGptMemoryInspectorActionRequest(
+    { query: "show preferences", namespace: "work", allowUnverifiedPreview: true },
+    recall,
+    xray,
+  );
+  const result = buildChatGptMemoryInspectorResult(
+    { query: "show preferences", namespace: "work", allowUnverifiedPreview: true },
+    recall,
+    xray,
+    {
+      schemaVersion: 1,
+      decision: "refuse",
+      confidence: 0.2,
+      risk: "medium",
+      contextReadiness: "partial",
+      attentionPolicy: "interruption_budgeting",
+      principle: "A good agent should spend the user's attention carefully.",
+      reasons: [],
+      blockers: ["missing xray provenance"],
+      factors: [],
+      retrievedMemoryCount: 1,
+      usableMemoryCount: 0,
+      staleMemoryCount: 0,
+      correctedMemoryCount: 0,
+      scopeMismatchCount: 0,
+      safeToAct: false,
+    },
+  );
+
+  assert.equal(actionRequest.contextReadiness, "partial");
+  assert.equal(actionRequest.retrievedMemories?.[0]?.safeToUse, false);
+  assert.equal(actionRequest.retrievedMemories?.[0]?.safety, "blocked");
+  assert.match(result.safeRecallPreview, /Unverified recall preview/);
+  assert.match(result.safeRecallPreview, /unverified memory detail/);
+  assert.equal(result.memories[0]?.preview, "unverified memory detail");
+  assert.equal(result.memories[0]?.safeToUse, false);
+  assert.equal(result.memories[0]?.safety, "requires-review");
+  assert.match(result.memories[0]?.safetyReasons[0] ?? "", /provenance was missing/);
+});
+
 test("ChatGPT Apps inspector rejects malformed currentContextScopes before service dispatch", async () => {
   const capture: Capture = { recalls: [], xrays: [], actionRequests: [] };
   const server = new EngramMcpServer(fakeService(capture));
@@ -850,6 +1029,25 @@ test("ChatGPT Apps inspector rejects malformed currentContextScopes before servi
     },
   });
   assert.match(resultText(response), /currentContextScopes must be an array of strings/);
+  assert.deepEqual(capture, { recalls: [], xrays: [], actionRequests: [] });
+});
+
+test("ChatGPT Apps inspector rejects malformed allowUnverifiedPreview before service dispatch", async () => {
+  const capture: Capture = { recalls: [], xrays: [], actionRequests: [] };
+  const server = new EngramMcpServer(fakeService(capture));
+  const response = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
+      arguments: {
+        query: "q",
+        allowUnverifiedPreview: "true",
+      },
+    },
+  });
+  assert.match(resultText(response), /allowUnverifiedPreview must be a boolean/);
   assert.deepEqual(capture, { recalls: [], xrays: [], actionRequests: [] });
 });
 

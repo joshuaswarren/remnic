@@ -18,6 +18,7 @@ export interface RemnicChatGptMemoryInspectorInput {
   sessionKey?: string;
   namespace?: string;
   currentContextScopes?: string[];
+  allowUnverifiedPreview?: boolean;
 }
 
 export interface RemnicChatGptMemoryCard {
@@ -115,7 +116,8 @@ export function buildChatGptMemoryInspectorResult(
   actionConfidence: ActionConfidenceResult,
 ): RemnicChatGptMemoryInspectorResult {
   const xrayUnavailable = xray === null;
-  const matchXrayResult = buildXrayResultMatcher(xray);
+  const allowUnverifiedPreview = input.allowUnverifiedPreview === true;
+  const matchXrayResult = buildXrayResultMatcher(xray, recall.results);
   const matchedXrayResults = recall.results.map(matchXrayResult);
 
   const memories = recall.results.slice(0, 8).map((summary) => {
@@ -124,12 +126,22 @@ export function buildChatGptMemoryInspectorResult(
     const unverified = !xrayUnavailable && provenance === undefined;
     const blocked = provenance?.safety === "blocked";
     const preview = xrayUnavailable
-      ? "Preview withheld: X-ray provenance was unavailable for this recall."
+      ? allowUnverifiedPreview
+        ? summary.preview
+        : "Preview withheld: X-ray provenance was unavailable for this recall."
       : unverified
-        ? "Preview withheld: X-ray provenance was missing for this memory."
+        ? allowUnverifiedPreview
+          ? summary.preview
+          : "Preview withheld: X-ray provenance was missing for this memory."
       : blocked
         ? "Preview withheld: this memory is blocked in the current context."
         : summary.preview;
+    const fallbackSafety = xrayUnavailable || unverified
+      ? allowUnverifiedPreview ? "requires-review" : "blocked"
+      : undefined;
+    const fallbackSafetyReason = xrayUnavailable
+      ? "X-ray provenance was unavailable for this recall."
+      : "X-ray provenance was missing for this memory.";
     return {
       id: summary.id,
       path: summary.path,
@@ -144,10 +156,10 @@ export function buildChatGptMemoryInspectorResult(
       confidence: provenance?.confidence,
       stale: provenance?.stale,
       corrected: provenance?.corrected,
-      safeToUse: provenance?.safeToUse ?? (unverified ? false : undefined),
-      safety: provenance?.safety ?? (unverified ? "blocked" : undefined),
+      safeToUse: provenance?.safeToUse ?? (xrayUnavailable || unverified ? false : undefined),
+      safety: provenance?.safety ?? fallbackSafety,
       safetyReasons: provenance?.safetyReasons
-        ?? (unverified ? ["X-ray provenance was missing for this memory."] : []),
+        ?? (xrayUnavailable || unverified ? [fallbackSafetyReason] : []),
       userContextScopes: provenance?.userContextScopes ?? [],
     };
   });
@@ -160,9 +172,13 @@ export function buildChatGptMemoryInspectorResult(
       .filter((result) => result?.provenance === undefined)
     .length;
   const safeRecallPreview = xrayUnavailable
-    ? "Recall preview withheld: X-ray provenance was unavailable, so memory safety could not be verified."
+    ? allowUnverifiedPreview
+      ? `Unverified recall preview: X-ray provenance was unavailable, so memory safety could not be verified.\n\n${truncate(recall.context, 1_500)}`
+      : "Recall preview withheld: X-ray provenance was unavailable, so memory safety could not be verified."
     : blockedCount > 0 || missingProvenanceCount > 0
-      ? formatUnsafeRecallPreview(blockedCount, missingProvenanceCount)
+      ? blockedCount > 0 || !allowUnverifiedPreview
+        ? formatUnsafeRecallPreview(blockedCount, missingProvenanceCount)
+        : `Unverified recall preview: ${missingProvenanceCount} retrieved ${memoryNoun(missingProvenanceCount)} ${isAre(missingProvenanceCount)} missing X-ray provenance.\n\n${truncate(recall.context, 1_500)}`
       : truncate(recall.context, 1_500);
 
   const primaryMemoryId = memories[0]?.id ?? "<memory-id>";
@@ -372,7 +388,7 @@ function buildRecallProvenances(
   if (xray === null) {
     return recall.results.map(missingRecallProvenance);
   }
-  const matchXrayResult = buildXrayResultMatcher(xray);
+  const matchXrayResult = buildXrayResultMatcher(xray, recall.results);
   return recall.results.map((summary) => {
     const result = matchXrayResult(summary);
     if (result === undefined) {
@@ -384,18 +400,28 @@ function buildRecallProvenances(
 
 function buildXrayResultMatcher(
   xray: RecallXraySnapshot | null,
+  recallResults: EngramAccessRecallResponse["results"],
 ): (summary: EngramAccessRecallResponse["results"][number]) => RecallXrayResult | undefined {
   const xrayById = new Map<string, RecallXrayResult>();
+  const xrayIdCounts = new Map<string, number>();
+  const recallIdCounts = new Map<string, number>();
   const xrayByPath = new Map<string, RecallXrayResult>();
+  for (const summary of recallResults) {
+    recallIdCounts.set(summary.id, (recallIdCounts.get(summary.id) ?? 0) + 1);
+  }
   for (const result of xray?.results ?? []) {
     xrayById.set(result.memoryId, result);
+    xrayIdCounts.set(result.memoryId, (xrayIdCounts.get(result.memoryId) ?? 0) + 1);
     xrayByPath.set(result.path, result);
   }
   return (summary) => {
     if (summary.path) {
-      return xrayByPath.get(summary.path);
+      const pathMatch = xrayByPath.get(summary.path);
+      if (pathMatch) return pathMatch;
     }
-    return xrayById.get(summary.id);
+    return xrayIdCounts.get(summary.id) === 1 && recallIdCounts.get(summary.id) === 1
+      ? xrayById.get(summary.id)
+      : undefined;
   };
 }
 

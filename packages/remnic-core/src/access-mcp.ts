@@ -715,6 +715,11 @@ export class EngramMcpServer {
               description:
                 "Optional current user-context scopes, such as repo, work, personal, client, or private.",
             },
+            allowUnverifiedPreview: {
+              type: "boolean",
+              description:
+                "If true, the inspector may show recalled preview text when X-ray provenance is missing or unavailable. Explicitly blocked memories remain redacted.",
+            },
           },
           required: ["query"],
           additionalProperties: false,
@@ -2607,6 +2612,17 @@ export class EngramMcpServer {
         }
         if (currentContextScopes !== undefined) {
           input.currentContextScopes = currentContextScopes;
+        }
+        if (
+          args.allowUnverifiedPreview !== undefined &&
+          args.allowUnverifiedPreview !== null
+        ) {
+          if (typeof args.allowUnverifiedPreview !== "boolean") {
+            throw new EngramAccessInputError(
+              "allowUnverifiedPreview must be a boolean",
+            );
+          }
+          input.allowUnverifiedPreview = args.allowUnverifiedPreview;
         }
         const recallSessionKey = resolveChatGptInspectorRecallSessionKey(
           input.sessionKey,

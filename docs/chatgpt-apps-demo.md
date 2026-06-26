@@ -18,6 +18,12 @@ provenance, evaluates action confidence, and renders the result in a widget.
 Correction, forget, and scoping controls send follow-up prompts only; persistent
 changes still require a separate Remnic tool call and user confirmation.
 
+By default, the inspector withholds preview text when Recall X-ray provenance is
+missing or unavailable. For local audit workflows, pass
+`allowUnverifiedPreview: true` to show those unverified previews with a
+requires-review warning. Memories that X-ray explicitly marks blocked remain
+redacted either way.
+
 ## Why This Shape
 
 OpenAI's Apps SDK quickstart says ChatGPT apps use an MCP server to expose
@@ -60,7 +66,8 @@ Then call:
     "name": "remnic.chatgpt_memory_inspector",
     "arguments": {
       "query": "What preferences matter for this answer?",
-      "currentContextScopes": ["work", "repo"]
+      "currentContextScopes": ["work", "repo"],
+      "allowUnverifiedPreview": true
     }
   }
 }
