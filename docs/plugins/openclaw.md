@@ -95,7 +95,7 @@ plugin id.
 ## Compatibility Policy
 
 Remnic supports OpenClaw releases from at least the previous 60 days. As of
-June 7, 2026, that window starts on April 8, 2026. `openclaw.compat.pluginApi`
+June 26, 2026, that window starts on April 27, 2026. `openclaw.compat.pluginApi`
 and `openclaw.install.minHostVersion` use the single `>=2026.4.1` comparator the
 OpenClaw installer expects — never a `||` list. OpenClaw's installer
 (`clawhub.ts`) splits the range on whitespace and AND-evaluates every token (so
@@ -105,9 +105,10 @@ single floor admits stable **and** prerelease hosts (including stable
 explicitly (`>=2026.4.1 || …`), because it is resolved by npm/node-semver, which
 supports `||` but drops prereleases from a bare `>=` range. The two fields are
 intentionally decoupled by resolver (issue #1450). The adapter records
-`2026.6.6` as the latest reviewed npm-published target, with
-`2026.6.6-beta.2` kept in the reviewed prerelease peer range for strict npm
-peer-dependency resolution.
+`2026.6.11-beta.1` as the latest reviewed npm-published target. Stable hosts
+through `2026.6.10` are admitted by the floor; newly reviewed prereleases
+through `2026.6.11-beta.1` are kept in the reviewed prerelease peer range for
+strict npm peer-dependency resolution.
 
 When OpenClaw adds a new manifest or setup surface, Remnic should add that new
 surface without dropping older metadata that still helps hosts inside the
@@ -378,6 +379,29 @@ sweep above. Reviewed on June 13, 2026:
   `openclaw.build.openclawVersion` and `openclaw.build.pluginSdkVersion` now
   record `2026.6.6`.
 - The recalculated 60-day window as of June 13, 2026 starts on April 14, 2026;
+  `openclaw.install.minHostVersion` stays the more permissive `>=2026.4.1`
+  floor with no exception required.
+
+### 2026.6.5-beta.3-2026.6.11-beta.1 Compatibility Update
+
+`openclaw@2026.6.5-beta.3`, `2026.6.5-beta.5`, `2026.6.5-beta.6`,
+`2026.6.7-beta.1`, `2026.6.8-beta.1`, `2026.6.8-beta.2`,
+`2026.6.9-beta.1`, `2026.6.10-beta.1`, `2026.6.10-beta.2`, and
+`2026.6.11-beta.1` are published prerelease hosts after the last reviewed
+range. `openclaw@2026.6.8`, `2026.6.9`, and `2026.6.10` are stable hosts and
+already satisfy the `>=2026.4.1` npm peer floor. Reviewed on June 26, 2026:
+
+- The OpenClaw npm registry and upstream tags show `2026.6.11-beta.1` as the
+  latest published prerelease, with `2026.6.10` as the latest stable release.
+- Compatibility metadata: `peerDependencies.openclaw` in both published
+  OpenClaw packages (`@remnic/plugin-openclaw` and the `openclaw-engram` shim)
+  now explicitly includes the newly reviewed prereleases above. The OpenClaw
+  installer metadata remains `openclaw.compat.pluginApi: ">=2026.4.1"` and
+  `openclaw.install.minHostVersion: ">=2026.4.1"` because those fields are
+  parsed by OpenClaw's whitespace-AND checker, not node-semver.
+- `openclaw.build.openclawVersion` and `openclaw.build.pluginSdkVersion` now
+  record `2026.6.11-beta.1`.
+- The recalculated 60-day window as of June 26, 2026 starts on April 27, 2026;
   `openclaw.install.minHostVersion` stays the more permissive `>=2026.4.1`
   floor with no exception required.
 

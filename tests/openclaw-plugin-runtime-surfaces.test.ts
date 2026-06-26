@@ -54,15 +54,15 @@ const OPENCLAW_MANIFEST_PATHS = [
   "packages/plugin-openclaw/openclaw.plugin.json",
   "packages/shim-openclaw-engram/openclaw.plugin.json",
 ];
-// June 3, 2026 rolling 60-day policy floor: April 4, 2026. Keep the package
-// floor at >=2026.4.1 because it is more permissive and still inside policy.
+// June 26, 2026 rolling 60-day policy floor: April 27, 2026. Keep the package
+// floor at >=2026.4.1 because it is more permissive than the required window.
 const OPENCLAW_SUPPORT_FLOOR_RANGE = ">=2026.4.1";
 const OPENCLAW_MIN_HOST_VERSION_FLOOR = ">=2026.4.1";
 const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/plugin-openclaw/package.json",
     name: "@remnic/plugin-openclaw",
-    buildVersion: "2026.6.6",
+    buildVersion: "2026.6.11-beta.1",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@remnic/plugin-openclaw",
@@ -71,7 +71,7 @@ const OPENCLAW_PACKAGE_EXPECTATIONS = [
   {
     packageJsonPath: "packages/shim-openclaw-engram/package.json",
     name: "@joshuaswarren/openclaw-engram",
-    buildVersion: "2026.6.6",
+    buildVersion: "2026.6.11-beta.1",
     install: {
       clawhubSpec: "clawhub:@remnic/plugin-openclaw",
       npmSpec: "@joshuaswarren/openclaw-engram",
@@ -459,9 +459,19 @@ for (const expectation of OPENCLAW_PACKAGE_EXPECTATIONS) {
       "2026.4.1",
       "2026.6.1",
       "2026.6.5-beta.2",
+      "2026.6.5-beta.3",
+      "2026.6.5-beta.5",
+      "2026.6.5-beta.6",
       "2026.5.31-beta.4",
       "2026.6.6-beta.2",
       "2026.6.6",
+      "2026.6.7-beta.1",
+      "2026.6.8-beta.1",
+      "2026.6.8-beta.2",
+      "2026.6.9-beta.1",
+      "2026.6.10-beta.1",
+      "2026.6.10-beta.2",
+      "2026.6.11-beta.1",
     ]) {
       assert.equal(
         semver.satisfies(host, peerRange),
@@ -498,9 +508,19 @@ test("OpenClaw support range accepts the stable floor and reviewed prerelease ho
     "2026.6.5-alpha.2",
     "2026.6.5-beta.1",
     "2026.6.5-beta.2",
+    "2026.6.5-beta.3",
+    "2026.6.5-beta.5",
+    "2026.6.5-beta.6",
     "2026.6.6-alpha.1",
     "2026.6.6-beta.2",
     "2026.6.6",
+    "2026.6.7-beta.1",
+    "2026.6.8-beta.1",
+    "2026.6.8-beta.2",
+    "2026.6.9-beta.1",
+    "2026.6.10-beta.1",
+    "2026.6.10-beta.2",
+    "2026.6.11-beta.1",
   ]) {
     assert.equal(
       semver.satisfies(version, OPENCLAW_SUPPORT_FLOOR_RANGE, { includePrerelease: true }),
@@ -588,7 +608,7 @@ test("shipped compat.pluginApi is a single comparator (no ||) and passes the Ope
       !range.includes("||"),
       `${expectation.packageJsonPath} compat.pluginApi must not use || (OpenClaw treats it as AND): ${range}`,
     );
-    for (const host of ["2026.6.1", "2026.6.5-beta.2", "2026.4.1", "2026.5.3-1"]) {
+    for (const host of ["2026.6.1", "2026.6.5-beta.2", "2026.6.11-beta.1", "2026.4.1", "2026.5.3-1"]) {
       assert.equal(
         openclawSatisfiesRange(host, range),
         true,
@@ -600,7 +620,7 @@ test("shipped compat.pluginApi is a single comparator (no ||) and passes the Ope
     const peer = pkg.peerDependencies?.openclaw;
     assert.notEqual(peer, range, "peerDependencies.openclaw is intentionally decoupled from compat.pluginApi");
     assert.equal(
-      semver.satisfies("2026.6.5-beta.2", peer),
+      semver.satisfies("2026.6.11-beta.1", peer),
       true,
       "peerDependencies.openclaw must still accept prerelease hosts under node-semver",
     );

@@ -44,7 +44,7 @@ launchctl kickstart -k gui/501/ai.openclaw.gateway
 ## Compatibility Policy
 
 Remnic supports OpenClaw releases from at least the previous 60 days. As of
-June 13, 2026, that means releases back to April 14, 2026.
+June 26, 2026, that means releases back to April 27, 2026.
 The package metadata keeps the installer compatibility floor at the single
 `>=2026.4.1` shape OpenClaw setup expects because that older floor is still
 more permissive than the active 60-day requirement.
@@ -65,9 +65,11 @@ more permissive than the active 60-day requirement.
   excludes prereleases from a bare `>=` range. The explicit list keeps reviewed
   prerelease hosts installable under strict peer-dependency resolution.
 
-The adapter separately records `2026.6.6` as the latest reviewed OpenClaw
-npm-published target, with `2026.6.6-beta.2` kept in the reviewed prerelease
-peer range for strict npm peer-dependency resolution.
+The adapter separately records `2026.6.11-beta.1` as the latest reviewed
+OpenClaw npm-published target. Stable hosts through `2026.6.10` are covered by
+the `>=2026.4.1` floor, while newly reviewed prereleases through
+`2026.6.11-beta.1` stay explicit in the peer range for strict npm
+peer-dependency resolution.
 
 When adding newer OpenClaw manifest surfaces, keep older-compatible metadata in
 place for hosts inside that 60-day window unless an upstream breaking change is
@@ -196,11 +198,11 @@ CI jobs that provision OpenClaw should use
 `npm run check:openclaw-sdk-surface:required` or pass
 `-- --require --package-root <path>` so a missing SDK fails instead of skipping.
 
-Last compatibility sweep: June 13, 2026, adding `openclaw@2026.6.6-beta.2` and
-`openclaw@2026.6.6` to the reviewed peer range. The latest reviewed npm build
-is `openclaw@2026.6.6`; its plugin SDK surface remains additive-only versus the
-recorded snapshot (no removals), so no Remnic adapter runtime change was
-required — see `docs/plugins/openclaw.md` for the full sweep notes. Earlier
+Last compatibility sweep: June 26, 2026, adding newly published prerelease
+hosts through `openclaw@2026.6.11-beta.1` to the reviewed peer range. The
+latest reviewed stable npm build is `openclaw@2026.6.10`; the latest reviewed
+prerelease is `openclaw@2026.6.11-beta.1`. No Remnic adapter runtime change
+was required — see `docs/plugins/openclaw.md` for the full sweep notes. Earlier
 sweeps: the SDK surface check passed against
 `openclaw@2026.5.3`, `openclaw@2026.5.3-1`, `openclaw@2026.5.4-beta.1`,
 `openclaw@2026.5.4-beta.2`, `openclaw@2026.5.4-beta.3`,
