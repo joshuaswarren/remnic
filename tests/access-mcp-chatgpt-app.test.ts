@@ -1128,6 +1128,96 @@ test("ChatGPT Apps inspector can show unverified previews when explicitly reques
   assert.match(result.memories[0]?.safetyReasons[0] ?? "", /provenance was missing/);
 });
 
+test("ChatGPT Apps inspector keeps path-matched missing-provenance rows unverified", () => {
+  const recall: EngramAccessRecallResponse = {
+    query: "show preferences",
+    namespace: "work",
+    context: "unverified work detail",
+    count: 1,
+    memoryIds: ["mem-shared"],
+    results: [
+      {
+        id: "mem-shared",
+        path: "work/mem-shared.md",
+        category: "preference",
+        status: "active",
+        tags: [],
+        preview: "unverified work detail",
+      },
+    ],
+    fallbackUsed: false,
+    sourcesUsed: ["memories"],
+    disclosure: "chunk",
+  };
+  const result = buildChatGptMemoryInspectorResult(
+    { query: "show preferences", namespace: "work", allowUnverifiedPreview: true },
+    recall,
+    {
+      schemaVersion: "1",
+      query: "show preferences",
+      snapshotId: "snap-path-matched-missing-provenance",
+      capturedAt: 1_779_000_000_000,
+      tierExplain: null,
+      results: [
+        {
+          memoryId: "mem-shared",
+          path: "work/mem-shared.md",
+          servedBy: "hybrid",
+          scoreDecomposition: { final: 0.8 },
+          admittedBy: ["test"],
+        },
+        {
+          memoryId: "mem-shared",
+          path: "private/mem-shared.md",
+          servedBy: "hybrid",
+          scoreDecomposition: { final: 0.9 },
+          admittedBy: ["test"],
+          provenance: {
+            source: "conversation",
+            scope: "namespace:private",
+            userContextScopes: ["work"],
+            retrievalReason: "test",
+            confidence: 0.9,
+            stale: false,
+            corrected: false,
+            correctionState: "none",
+            safeToUse: false,
+            safety: "blocked",
+            safetyReasons: ["blocked in current context"],
+          },
+        },
+      ],
+      filters: [],
+      budget: { chars: 4096, used: 100 },
+      namespace: "work",
+    },
+    {
+      schemaVersion: 1,
+      decision: "refuse",
+      confidence: 0.2,
+      risk: "medium",
+      contextReadiness: "partial",
+      attentionPolicy: "interruption_budgeting",
+      principle: "A good agent should spend the user's attention carefully.",
+      reasons: [],
+      blockers: ["missing xray provenance"],
+      factors: [],
+      retrievedMemoryCount: 1,
+      usableMemoryCount: 0,
+      staleMemoryCount: 0,
+      correctedMemoryCount: 0,
+      scopeMismatchCount: 0,
+      safeToAct: false,
+    },
+  );
+
+  assert.match(result.safeRecallPreview, /Unverified recall preview/);
+  assert.match(result.safeRecallPreview, /unverified work detail/);
+  assert.equal(result.memories[0]?.preview, "unverified work detail");
+  assert.equal(result.memories[0]?.safety, "requires-review");
+  assert.match(result.memories[0]?.safetyReasons[0] ?? "", /provenance was missing/);
+});
+
 test("ChatGPT Apps inspector rejects malformed currentContextScopes before service dispatch", async () => {
   const capture: Capture = { recalls: [], xrays: [], actionRequests: [] };
   const server = new EngramMcpServer(fakeService(capture));

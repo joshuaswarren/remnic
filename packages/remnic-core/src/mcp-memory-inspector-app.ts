@@ -125,7 +125,7 @@ export function buildChatGptMemoryInspectorResult(
     const xrayResult = matchXrayResult(summary);
     const provenance = xrayResult?.provenance;
     const blockedByAmbiguousSameId = !xrayUnavailable
-      && provenance === undefined
+      && xrayResult === undefined
       && hasBlockedSameId(summary.id);
     const blocked = provenance?.safety === "blocked" || blockedByAmbiguousSameId;
     const unverified = !xrayUnavailable && provenance === undefined && !blockedByAmbiguousSameId;
@@ -183,14 +183,15 @@ export function buildChatGptMemoryInspectorResult(
     .length;
   const ambiguousBlockedCount = recall.results
     .filter((summary, index) =>
-      matchedXrayResults[index]?.provenance === undefined && hasBlockedSameId(summary.id)
+      matchedXrayResults[index] === undefined && hasBlockedSameId(summary.id)
     )
     .length;
   const missingProvenanceCount = xrayUnavailable
     ? 0
     : matchedXrayResults
       .filter((result, index) =>
-        result?.provenance === undefined && !hasBlockedSameId(recall.results[index]?.id ?? "")
+        result?.provenance === undefined
+        && !(result === undefined && hasBlockedSameId(recall.results[index]?.id ?? ""))
       )
     .length;
   const totalBlockedCount = blockedCount + ambiguousBlockedCount;
