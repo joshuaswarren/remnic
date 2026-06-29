@@ -616,15 +616,19 @@ export class NamespaceCatalog {
     // from rejection). Reading inside the chain guarantees each touch sees the
     // most recent appended state, including any concurrent read/write/register.
     await this.queueCritical(async () => {
-      // Cross-process serialization (round 4, codex P2): a CLI `rebuild --apply`
-      // holds the rebuild lock across its final `loadCompacted()` → atomic
-      // `rename`. An append that lands inside that window is clobbered by the
-      // rename. `queueCritical` only serializes THIS process, so before reading
-      // and appending we wait (bounded) for any holder's lock to clear, then
-      // read the freshly-rewritten log. Degrades gracefully — a stale lock is
-      // ignored and a timeout proceeds best-effort so a touch NEVER blocks
-      // forever or crashes the primary memory op.
-      await this.waitForRebuildLockClear();
+      // Cross-process serialization (round 4 + round 6, codex P2): a CLI
+      // `rebuild --apply` holds the rebuild lock across its final
+      // `loadCompacted()` → atomic `rename`. An append that lands inside that
+      // window is clobbered by the rename. `queueCritical` only serializes THIS
+      // process, so before reading and appending we wait (bounded) for any
+      // holder's lock to clear, then read the freshly-rewritten log. If the wait
+      // TIMES OUT while ANOTHER process still holds an active lock, we DROP the
+      // append: proceeding would re-introduce the lost-append race (the rebuild
+      // can rename over our append between its final load and rename). The
+      // catalog is rebuildable best-effort metadata, so skipping one touch is
+      // acceptable; it NEVER blocks forever or crashes the primary memory op.
+      const safeToAppend = await this.waitForRebuildLockClear();
+      if (!safeToAppend) return;
 
       const records = await this.loadCompacted();
       const existing = records.get(ns);
@@ -882,19 +886,22 @@ export class NamespaceCatalog {
       for (const [ns, fresh] of latest) {
         const current = rebuilt.get(ns);
         if (!current) {
-          // A namespace absent from the rebuilt set was NOT discovered on disk
-          // (its root is empty/deleted) and is NOT configured. Re-adding it
-          // unconditionally would make rebuild unable to ever PURGE deleted
-          // dynamic namespaces from the log (round 4, codex P2). Only resurrect
-          // it when a CONCURRENT touch changed it after our initial snapshot
-          // (i.e. it is new since scan start, or its bytes differ from the
-          // `existing` snapshot). A record unchanged since the snapshot is a
-          // stale leftover for a removed root and is intentionally dropped.
-          const prior = existing.get(ns);
-          const concurrentlyTouched = !prior || serializeRecord(prior) !== serializeRecord(fresh);
-          if (concurrentlyTouched) rebuilt.set(ns, fresh);
+          // AUTHORITATIVE PURGE (round 6, cursor Medium — NATqU): the disk scan
+          // is the single source of truth for which namespaces EXIST. A namespace
+          // absent from `rebuilt` was NOT discovered on disk (its root is
+          // empty/deleted) and is NOT configured, so the rebuild is purging it.
+          // We must NOT resurrect it from the log — not even when a CONCURRENT
+          // best-effort `markRead`/`markWrite` touched it after our snapshot. A
+          // touch on a dynamic namespace whose on-disk root was removed only
+          // bumps a timestamp; re-inserting that row (with its stale `storageDir`)
+          // would defeat the purge the rebuild is meant to perform. Losing a touch
+          // timestamp for a deleted root is acceptable (the catalog is rebuildable
+          // best-effort metadata); resurrecting a purged record is not. Drop it.
           continue;
         }
+        // SURVIVING namespace (still present in the authoritative disk scan):
+        // fold in any newer touch fields that landed cross-process after our
+        // initial snapshot so a concurrent gateway markWrite is not lost.
         rebuilt.set(ns, mergeNewerTouchFields(current, fresh));
       }
     }
@@ -997,37 +1004,49 @@ export class NamespaceCatalog {
 
   /**
    * Wait (bounded, best-effort) for a held rebuild lock to clear before a touch
-   * appends (round 4, codex P2). This makes catalog WRITERS respect the rebuild
-   * lock — without it the lock only serialized rebuilds against each other while
-   * a gateway `markWrite` could append into the rebuild's snapshot→rename window
-   * and be lost. We poll up to `REBUILD_LOCK_MAX_WAIT_MS`, breaking a stale lock
-   * (crashed rebuild) so a touch is never blocked indefinitely. ALL failures are
-   * swallowed: a touch must degrade gracefully and never crash the primary op.
+   * appends (round 4 + round 6, codex P2). This makes catalog WRITERS respect the
+   * rebuild lock — without it the lock only serialized rebuilds against each other
+   * while a gateway `markWrite` could append into the rebuild's snapshot→rename
+   * window and be lost. We poll up to `REBUILD_LOCK_MAX_WAIT_MS`, breaking a stale
+   * lock (crashed rebuild) so a touch is never blocked indefinitely. ALL failures
+   * are swallowed: a touch must degrade gracefully and never crash the primary op.
    *
-   * IMPORTANT: a lock held by OUR OWN process is skipped. An in-process rebuild
-   * already serializes against touches via `queueCritical`; waiting on our own
-   * lock here would deadlock (the rebuild holds the file lock then queues behind
-   * the very touch that is now waiting for it). Only a DIFFERENT process's lock
-   * (e.g. a separate CLI rebuild vs. the gateway) needs the wait.
+   * RETURNS `true` when it is SAFE for the caller to read/append (no lock, the
+   * lock was stale and broken, or the lock is held by our own process), and
+   * `false` when the wait TIMED OUT while ANOTHER process still holds an active
+   * (non-stale) lock. On `false` the caller MUST NOT append: a different process's
+   * `rebuild --apply` can still be mid-flight between its final `loadCompacted()`
+   * and its atomic `rename()`, so an append now would be clobbered by that rename
+   * — the lost-append race this lock exists to prevent (round 6, codex P2). The
+   * catalog is rebuildable best-effort metadata, so dropping the touch is the
+   * correct trade-off vs. resurrecting/overwriting under the rebuild's rename.
+   *
+   * IMPORTANT: a lock held by OUR OWN process returns `true` (safe). An in-process
+   * rebuild already serializes against touches via `queueCritical`; waiting on our
+   * own lock here would deadlock (the rebuild holds the file lock then queues
+   * behind the very touch that is now waiting for it). Only a DIFFERENT process's
+   * lock (e.g. a separate CLI rebuild vs. the gateway) forces the wait/drop.
    */
-  private async waitForRebuildLockClear(): Promise<void> {
+  private async waitForRebuildLockClear(): Promise<boolean> {
     const deadline = Date.now() + REBUILD_LOCK_MAX_WAIT_MS;
     for (;;) {
       let info;
       try {
         info = await stat(this.rebuildLockPath);
       } catch {
-        // No lock file (or stat failed) — nothing to wait on.
-        return;
+        // No lock file (or stat failed) — nothing to wait on; safe to append.
+        return true;
       }
       // A stale lock (crashed holder) must not block touches — break it.
       if (Date.now() - info.mtimeMs > REBUILD_LOCK_STALE_MS) {
         await unlink(this.rebuildLockPath).catch(() => undefined);
-        return;
+        return true;
       }
       // Skip a lock held by our own process to avoid an in-process deadlock.
-      if (await this.rebuildLockHeldBySelf()) return;
-      if (Date.now() >= deadline) return;
+      if (await this.rebuildLockHeldBySelf()) return true;
+      // Timed out while ANOTHER process's lock is still active: the caller must
+      // DROP the append rather than race the in-progress rebuild's rename.
+      if (Date.now() >= deadline) return false;
       await new Promise((r) => setTimeout(r, REBUILD_LOCK_POLL_MS));
     }
   }

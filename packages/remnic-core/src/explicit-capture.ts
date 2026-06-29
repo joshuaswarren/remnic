@@ -437,8 +437,13 @@ export async function persistExplicitCapture(
   });
   // Record the catalog write touch (issue #1499, round 5 codex P2). Explicit
   // captures bypass the extraction write path, so without this their namespace
-  // never updates `lastWriteAt`. Best-effort and failure-tolerant.
-  if (resolvedNamespace) orchestrator.recordCatalogWrite(resolvedNamespace, storage.dir);
+  // never updates `lastWriteAt`. An undefined namespace means the DEFAULT root
+  // (round 6, codex P2), which recordCatalogWrite resolves. The method is an
+  // optional best-effort hook — guard so Orchestrator-like callers without it
+  // don't break (rule #33). Best-effort and failure-tolerant.
+  if (typeof orchestrator.recordCatalogWrite === "function") {
+    orchestrator.recordCatalogWrite(resolvedNamespace, storage.dir);
+  }
 
   const created = new Date().toISOString();
   const event: MemoryLifecycleEvent = {
@@ -535,10 +540,13 @@ export async function queueExplicitCaptureForReview(
     entityRef: sanitizeReviewMetadata(input.entityRef),
     source: source === "inline" ? "explicit-inline-review" : "explicit-review",
   });
-  // Record the catalog write touch (issue #1499, round 5 codex P2): a queued
-  // review capture still writes memory to the namespace's root, so its
-  // `lastWriteAt` must reflect the write. Best-effort and failure-tolerant.
-  if (queueNamespace) orchestrator.recordCatalogWrite(queueNamespace, storage.dir);
+  // Record the catalog write touch (issue #1499, round 5/6 codex P2): a queued
+  // review capture still writes memory to the namespace's root (the DEFAULT root
+  // when undefined), so its `lastWriteAt` must reflect the write. Guarded
+  // optional hook (rule #33). Best-effort and failure-tolerant.
+  if (typeof orchestrator.recordCatalogWrite === "function") {
+    orchestrator.recordCatalogWrite(queueNamespace, storage.dir);
+  }
   const created = await storage.getMemoryById(id);
   if (created) {
     await storage.writeMemoryFrontmatter(created, {

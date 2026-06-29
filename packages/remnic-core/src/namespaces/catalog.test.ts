@@ -1151,3 +1151,184 @@ test("rebuild releases its lock cleanly and still breaks a stale foreign lock", 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 6 (cursor Medium — NATqU): the disk scan is AUTHORITATIVE for which
+// namespaces exist. A concurrent best-effort markRead/markWrite on a dynamic
+// namespace whose on-disk root was REMOVED must NOT resurrect its stale record
+// during the rebuild's final cross-process re-merge — that would defeat the
+// purge. To deterministically reproduce a cross-process touch landing AFTER the
+// rebuild's purge snapshot but BEFORE its final re-merge read, we wrap the
+// instance's internal `loadCompacted` so the stale log record is appended only
+// before the SECOND read. Under the pre-fix re-merge this row (absent from the
+// snapshot, so "concurrently touched") was resurrected; the scan-authoritative
+// fix drops it. Runtime monkey-patch via a typed handle keeps `tsc` clean.
+type LoadCompactedHandle = {
+  loadCompacted: () => Promise<Map<string, unknown>>;
+};
+
+function injectConcurrentReadOnSecondLoad(
+  catalog: NamespaceCatalog,
+  logPath: string,
+  injectLine: string,
+): void {
+  const handle = catalog as unknown as LoadCompactedHandle;
+  const original = handle.loadCompacted.bind(catalog);
+  let calls = 0;
+  handle.loadCompacted = async () => {
+    calls += 1;
+    // The rebuild reads twice: (1) the purge snapshot, (2) the cross-process
+    // re-merge. Inject the concurrent append only before the SECOND read so the
+    // re-merge sees a record the snapshot did not (prior !== fresh).
+    if (calls === 2) {
+      const prev = await readFile(logPath, "utf8").catch(() => "");
+      await writeFile(logPath, prev + injectLine + "\n", "utf8");
+    }
+    return original();
+  };
+}
+
+test("rebuild --apply does NOT resurrect a removed-root namespace touched concurrently mid-rebuild", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-purged";
+    const token = namespaceIdentityToken(ns);
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(path.join(memoryDir, "namespaces"), { recursive: true });
+    const logPath = path.join(stateDir, "namespaces.jsonl");
+
+    // The stale record's on-disk root does NOT exist (its dir was never created),
+    // so the rebuild's disk scan will not find it — it must be purged.
+    const stale = JSON.stringify({
+      namespace: ns,
+      identityToken: token,
+      kind: "project",
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+      storageDir: path.join(memoryDir, "namespaces", token),
+      discoveredBy: "write",
+      lastWriteAt: new Date().toISOString(),
+    });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    injectConcurrentReadOnSecondLoad(catalog, logPath, stale);
+    const result = await catalog.rebuildFromDisk();
+    assert.ok(
+      !result.records.some((r) => r.namespace === ns),
+      "a concurrent touch must not resurrect a namespace whose on-disk root was removed",
+    );
+
+    // Persisted: a fresh reader must not see the resurrected record either.
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    assert.equal(
+      await reader.getNamespaceRecord(ns),
+      null,
+      "purged removed-root namespace must not reappear after a concurrent mid-rebuild touch",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 6 (cursor Medium — NATqU): a surviving namespace (still present on
+// disk) MUST still have its concurrent touch fields folded in by the re-merge —
+// the scan-authoritative fix only suppresses RESURRECTION of removed roots, it
+// must not regress the legitimate cross-process touch preservation.
+test("rebuild --apply still folds a concurrent touch for a SURVIVING namespace", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-survivor";
+    const token = namespaceIdentityToken(ns);
+    const tokenDir = path.join(memoryDir, "namespaces", token);
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const logPath = path.join(stateDir, "namespaces.jsonl");
+
+    // A concurrent write touch for the SURVIVING (on-disk) namespace, injected
+    // between the snapshot and re-merge reads. Its lastWriteAt must be preserved.
+    const writeAt = new Date().toISOString();
+    const concurrent = JSON.stringify({
+      namespace: ns,
+      identityToken: token,
+      kind: "project",
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+      storageDir: tokenDir,
+      discoveredBy: "write",
+      lastWriteAt: writeAt,
+    });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    injectConcurrentReadOnSecondLoad(catalog, logPath, concurrent);
+    await catalog.rebuildFromDisk();
+
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    const record = await reader.getNamespaceRecord(ns);
+    assert.ok(record, "surviving namespace must remain in the catalog");
+    assert.equal(
+      record?.lastWriteAt,
+      writeAt,
+      "a concurrent touch for a surviving namespace must be folded into the rebuild",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 6 (codex P2 — NAUf7): a touch that TIMES OUT waiting for another
+// process's active rebuild lock must DROP the append rather than read/append into
+// the rebuild's snapshot→rename window (the lost-append race). We hold a non-stale
+// FOREIGN lock for the whole touch so the bounded wait expires, then assert the
+// touch did NOT create/append a record (degrades gracefully, never hangs/crashes).
+test("a touch drops its append when the rebuild-lock wait times out", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-locktimeout";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+    // A FOREIGN (different PID), non-stale lock held for the entire touch. Keep
+    // its mtime fresh so the bounded wait never breaks it as stale and instead
+    // hits the deadline — forcing the drop.
+    await writeFile(lockPath, `999999 ${new Date().toISOString()}\n`, "utf8");
+    const heartbeat = setInterval(() => {
+      const now = new Date();
+      utimes(lockPath, now, now).catch(() => undefined);
+    }, 1_000);
+    heartbeat.unref?.();
+
+    try {
+      const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+      const started = Date.now();
+      await catalog.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
+      const waited = Date.now() - started;
+
+      // The touch must have hit the bounded deadline (it could not clear the
+      // foreign lock) but must not block far beyond it.
+      assert.ok(waited >= 4_000, "touch should wait up to the lock deadline before dropping");
+      assert.ok(waited < 12_000, "touch must never block indefinitely on a held lock");
+
+      // CRITICAL: the append was DROPPED — no record was written for the
+      // namespace while the foreign rebuild lock was held.
+      const record = await catalog.getNamespaceRecord(ns);
+      assert.equal(
+        record,
+        null,
+        "a touch that times out on a held rebuild lock must NOT append (no overwrite race)",
+      );
+      // The log file must not have been created/appended by the dropped touch.
+      let logExists = true;
+      try {
+        await stat(path.join(stateDir, "namespaces.jsonl"));
+      } catch {
+        logExists = false;
+      }
+      assert.equal(logExists, false, "no namespaces.jsonl append should occur on a dropped touch");
+    } finally {
+      clearInterval(heartbeat);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

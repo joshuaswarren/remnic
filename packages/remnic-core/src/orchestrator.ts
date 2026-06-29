@@ -18302,9 +18302,16 @@ export class Orchestrator {
    * namespaces never record `lastWriteAt`, so the catalog under-reports write
    * recency (round 5, codex P2). Fire-and-forget and failure-tolerant — a
    * catalog error must never affect the explicit write (gotcha #13, rule #40).
+   *
+   * An undefined/empty `namespace` means the write targeted the DEFAULT namespace
+   * (`getStorage(undefined)` routes there), so we record it under the configured
+   * default rather than skipping it (round 6, codex P2 — default `memory_store`
+   * and inline-note writes were missing from `writtenSince`/maintenance).
    */
-  recordCatalogWrite(namespace: string, storageDir?: string): void {
-    this.markCatalogWrite(namespace, storageDir);
+  recordCatalogWrite(namespace?: string, storageDir?: string): void {
+    const ns = namespace && namespace.trim().length > 0 ? namespace : this.config.defaultNamespace;
+    if (!ns) return;
+    this.markCatalogWrite(ns, storageDir);
   }
 
   /** Record a namespace read in the catalog. Best-effort, failure-tolerant. */
