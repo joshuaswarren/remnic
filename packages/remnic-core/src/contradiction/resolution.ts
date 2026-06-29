@@ -29,6 +29,16 @@ export interface ExecuteResolutionOptions {
   mergedCategory?: MemoryCategory;
   /** Resolve storage for the pair namespace, or the default namespace for legacy unscoped pairs. */
   storageForNamespace?: (namespace: string | undefined) => StorageManager | Promise<StorageManager>;
+  /**
+   * Best-effort hook invoked after a NEW merged memory is durably written (issue
+   * #1499 sweep). The merge verb persists a brand-new memory directly to the
+   * pair's (possibly DYNAMIC) namespace storage, bypassing the extraction write
+   * path that records catalog writes — so without this the namespace's
+   * `lastWriteAt` stays stale and QMD maintenance can miss the write. Callers wire
+   * this to `Orchestrator.recordCatalogWrite(namespace, storageDir)`. Must be
+   * failure-tolerant: it is fire-and-forget and must never affect resolution.
+   */
+  onMergedMemoryWritten?: (namespace: string | undefined, storageDir: string) => void;
 }
 
 const VALID_VERBS: ResolutionVerb[] = ["keep-a", "keep-b", "merge", "both-valid", "needs-more-context"];
@@ -186,6 +196,16 @@ export async function executeResolution(
         }
         return rolledBackA && rolledBackB;
       };
+      // Catalog write touch (issue #1499 sweep): a NEW merged memory was durably
+      // written to the pair's (possibly dynamic) namespace storage. Notify the
+      // caller so it can record the write in the catalog — otherwise a dynamic
+      // namespace whose only durable mutation is a contradiction merge stays
+      // invisible to QMD maintenance / `writtenSince`. Only fire when a fresh
+      // memory was created (an existing merged-id reuse is not a new write).
+      // Best-effort: the callback is failure-tolerant on the caller side.
+      if (replacement.created && options.onMergedMemoryWritten) {
+        options.onMergedMemoryWritten(pair.namespace, resolutionStorage.dir);
+      }
       message = `Both memories superseded by merged ${replacement.mergedId}`;
       break;
     }

@@ -2489,3 +2489,69 @@ test("readPair returns null for non-object JSON", async () => {
     await cleanup();
   }
 });
+
+// ── issue #1499 sweep: a contradiction merge that CREATES a new merged memory
+// writes durable data to the pair's (possibly dynamic) namespace storage,
+// bypassing the extraction write path. executeResolution must invoke
+// onMergedMemoryWritten(namespace, storageDir) so the caller records the catalog
+// write — otherwise a dynamic namespace whose only durable mutation is a merge
+// stays invisible to QMD maintenance / writtenSince.
+test("executeResolution merge fires onMergedMemoryWritten with the pair namespace when a new memory is created", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ namespace: "project-origin-dynamic" }));
+    const storage = makeResolutionStorage();
+    (storage as { dir?: string }).dir = "/memory/namespaces/project-origin-dynamic-token";
+
+    const touches: Array<{ namespace?: string; storageDir: string }> = [];
+
+    const result = await executeResolution(dir, storage, written.pairId, "merge", {
+      mergedContent: "merged canonical fact for dynamic namespace",
+      storageForNamespace: () => storage,
+      onMergedMemoryWritten: (namespace, storageDir) => {
+        touches.push({ namespace, storageDir });
+      },
+    });
+
+    assert.deepEqual(result.affectedIds, ["mem-a-001", "mem-b-002"]);
+    assert.equal(touches.length, 1, "exactly one catalog write touch for a created merge memory");
+    assert.equal(
+      touches[0]!.namespace,
+      "project-origin-dynamic",
+      "the catalog touch carries the pair's (dynamic) namespace",
+    );
+    assert.equal(
+      touches[0]!.storageDir,
+      "/memory/namespaces/project-origin-dynamic-token",
+      "the catalog touch carries the resolved namespace storage dir",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+// Negative: reusing an EXISTING merged memory id is not a new durable write, so the
+// catalog touch must NOT fire (avoids spurious lastWriteAt refreshes / double-count).
+test("executeResolution merge does not fire onMergedMemoryWritten when reusing an existing merged id", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ namespace: "project-origin-dynamic" }));
+    const storage = makeResolutionStorage();
+    (storage as { dir?: string }).dir = "/memory/namespaces/project-origin-dynamic-token";
+
+    let touchCount = 0;
+
+    const result = await executeResolution(dir, storage, written.pairId, "merge", {
+      mergedMemoryId: "mem-merged-003", // pre-existing — no new write
+      storageForNamespace: () => storage,
+      onMergedMemoryWritten: () => {
+        touchCount += 1;
+      },
+    });
+
+    assert.deepEqual(result.affectedIds, ["mem-a-001", "mem-b-002"]);
+    assert.equal(touchCount, 0, "reusing an existing merged memory must not record a catalog write touch");
+  } finally {
+    await cleanup();
+  }
+});

@@ -2949,8 +2949,15 @@ export class Orchestrator {
         const available = await this.qmd.probe();
         if (available) {
           log.info(`Search backend: available ${this.qmd.debugStatus()}`);
+          // Ensure collections at startup for the catalog-union namespace set, not
+          // just the configured set (issue #1499 sweep, same class as NHZEV): a
+          // dynamic namespace that exists only in the persisted catalog must have
+          // its QMD collection checked/ensured on boot so recall against it works
+          // after a restart. `registerConfiguredNamespaces()` already seeded the
+          // catalog above, so `maintenanceNamespaces()` is readable here; it falls
+          // back to the configured set on any catalog read failure.
           const namespaces = this.config.namespacesEnabled
-            ? this.configuredNamespaces()
+            ? await this.maintenanceNamespaces()
             : [this.config.defaultNamespace];
           const states = await Promise.all(
             namespaces.map(async (namespace) => {
@@ -3073,8 +3080,12 @@ export class Orchestrator {
       try {
         log.info("QMD startup sync: updating index to match current disk state");
         if (this.config.namespacesEnabled) {
+          // Cover cataloged dynamic namespaces at startup too (NHZEV, codex P2):
+          // a dynamic namespace written before a daemon restart must be synced on
+          // boot, not only by the debounced runQmdMaintenance() path. Same union +
+          // catalog-read-failure fallback as runQmdMaintenance.
           await this.namespaceSearchRouter.updateNamespaces(
-            this.configuredNamespaces(),
+            await this.maintenanceNamespaces(),
             { signal },
           );
         } else {
@@ -3352,9 +3363,16 @@ export class Orchestrator {
       this.namespaceSearchRouter.clearCache();
     }
 
-    // Ensure collections — namespace-aware when enabled
+    // Ensure collections — namespace-aware when enabled.
+    // Use the catalog-union namespace set (issue #1499 sweep, same class as
+    // NHZEV): this is the QMD startup-recovery sync that ensures collections AND
+    // runs `updateNamespaces(...)` below over the SAME `namespaces` set. A dynamic
+    // namespace that exists only in the persisted catalog must be ensured and
+    // re-synced here too, otherwise after a backend-was-unavailable-at-boot
+    // recovery its collection stays stale. Falls back to the configured set on any
+    // catalog read failure.
     const namespaces = this.config.namespacesEnabled
-      ? this.configuredNamespaces()
+      ? await this.maintenanceNamespaces()
       : [this.config.defaultNamespace];
 
     const states = await Promise.all(
@@ -4098,6 +4116,17 @@ export class Orchestrator {
             derivedFrom: derivedFromEntries.length > 0 ? derivedFromEntries : undefined,
             derivedVia: operator,
           },
+        );
+
+        // Catalog write touch (issue #1499 sweep): semantic consolidation writes a
+        // new canonical memory directly to `targetStorage`, bypassing the
+        // extraction write path. Record the write so the namespace's `lastWriteAt`
+        // reflects this durable mutation. Best-effort and failure-tolerant; the
+        // namespace is decoded from the storage dir since this path has no routed
+        // namespace name.
+        this.markCatalogWrite(
+          this.namespaceFromStorageDir(targetStorage.dir),
+          targetStorage.dir,
         );
 
         result.memoriesConsolidated++;
@@ -14665,6 +14694,12 @@ export class Orchestrator {
       }
     }
 
+    // Tracks whether THIS extraction persisted any durable, non-fact output to the
+    // BASE namespace's storage (entity / relationship / profile / question). The
+    // per-fact `markCatalogWrite` only fires inside the fact write loop, so a
+    // fact-less extraction that still persists durable data must record exactly one
+    // base-namespace catalog touch after all writes complete (NHZEZ, codex P2).
+    let durableNonFactWritten = false;
     for (const entity of entities) {
       try {
         const name = (entity as any)?.name;
@@ -14689,7 +14724,10 @@ export class Orchestrator {
             ? (entity as any).structuredSections
             : undefined,
         });
-        if (id) trackPersistedId(storage, id);
+        if (id) {
+          trackPersistedId(storage, id);
+          durableNonFactWritten = true;
+        }
       } catch (err) {
         log.warn(`persistExtraction: entity write failed: ${err}`);
       }
@@ -14712,6 +14750,7 @@ export class Orchestrator {
             target: rel.source,
             label: `${rel.label} (reverse)`,
           });
+          durableNonFactWritten = true;
         } catch (err) {
           log.debug(`relationship persist failed: ${err}`);
         }
@@ -14740,12 +14779,37 @@ export class Orchestrator {
 
     if (profileUpdates.length > 0) {
       await storage.appendToProfile(profileUpdates);
+      durableNonFactWritten = true;
     }
 
     // Persist questions
     for (const q of questions) {
       const id = await storage.writeQuestion(q.question, q.context, q.priority);
-      if (id) trackPersistedId(storage, id);
+      if (id) {
+        trackPersistedId(storage, id);
+        durableNonFactWritten = true;
+      }
+    }
+
+    // Catalog touch for durable NON-FACT outputs (NHZEZ, codex P2). The per-fact
+    // `markCatalogWrite` above only fires inside the fact write loop, so an
+    // extraction that persists ONLY entities, relationships, profile updates, or
+    // questions (no facts) would record durable data to the BASE namespace's
+    // storage without ever touching the catalog — leaving that namespace's
+    // `lastWriteAt` stale so `listNamespaces({writtenSince})` / write-recency QMD
+    // maintenance miss the write. Entities/relationships/profile/questions are all
+    // written to the BASE `storage` (not the per-fact routed `targetStorage`), so
+    // we record ONE base-namespace touch here, after all non-fact writes complete.
+    // Use the KNOWN base namespace name, not a dir-decoded guess (NCQI0). One touch
+    // per namespace per extraction — `markWrite` is idempotent, so if the fact path
+    // already touched the base namespace this only refreshes `lastWriteAt`.
+    // Best-effort and failure-tolerant (markCatalogWrite swallows errors).
+    if (durableNonFactWritten) {
+      const baseTouchNamespace =
+        baseNamespace && baseNamespace.length > 0
+          ? baseNamespace
+          : this.namespaceFromStorageDir(storage.dir);
+      this.markCatalogWrite(baseTouchNamespace, storage.dir);
     }
 
     // Persist identity reflection
@@ -15115,6 +15179,18 @@ export class Orchestrator {
           ? (entity as any).structuredSections
           : undefined,
       });
+    }
+
+    // Catalog write touch (issue #1499 sweep): consolidation persists durable
+    // profile/entity updates directly to the default-namespace `this.storage`,
+    // bypassing the extraction write path. Record one write touch so the default
+    // namespace's `lastWriteAt` reflects this mutation. The default namespace is
+    // always configured/cataloged; this only refreshes its recency. Best-effort.
+    if (result.profileUpdates.length > 0 || result.entityUpdates.length > 0) {
+      this.markCatalogWrite(
+        this.namespaceFromStorageDir(this.storage.dir),
+        this.storage.dir,
+      );
     }
 
     // Merge fragmented entity files
@@ -16169,6 +16245,15 @@ export class Orchestrator {
 
       await this.storage.writeSummary(summary);
 
+      // Catalog write touch (issue #1499 sweep): summarization writes a durable
+      // summary memory directly to the default-namespace `this.storage`, bypassing
+      // the extraction write path. Record the write so the namespace's
+      // `lastWriteAt` reflects this mutation. Best-effort and failure-tolerant.
+      this.markCatalogWrite(
+        this.namespaceFromStorageDir(this.storage.dir),
+        this.storage.dir,
+      );
+
       // Archive source memories
       const archived = await this.storage.archiveMemories(
         batch.map((m) => m.frontmatter.id),
@@ -16209,8 +16294,12 @@ export class Orchestrator {
   private static readonly IDENTITY_CONSOLIDATE_THRESHOLD = 8_000;
 
   private async autoConsolidateIdentity(): Promise<void> {
+    // Fan out over the catalog-union namespace set (issue #1499 sweep): a dynamic
+    // namespace that accumulated IDENTITY.md reflections must also be eligible for
+    // auto-consolidation, otherwise its identity file grows unbounded and is never
+    // consolidated. Falls back to the configured set on any catalog read failure.
     const namespaces = this.config.namespacesEnabled
-      ? this.configuredNamespaces()
+      ? await this.maintenanceNamespaces()
       : [this.config.defaultNamespace];
 
     for (const namespace of namespaces) {

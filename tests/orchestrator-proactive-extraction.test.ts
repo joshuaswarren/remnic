@@ -191,3 +191,129 @@ test("persistExtraction records the catalog write under the real namespace, not 
     "the write touch must not be misattributed to the dir-decoded namespace",
   );
 });
+
+// ── NHZEZ (codex P2): an extraction that persists ONLY entities/relationships (no
+// facts) still writes durable data to the base namespace, so the catalog must get a
+// write touch — otherwise that namespace's lastWriteAt stays stale and
+// writtenSince/QMD maintenance miss the write. The per-fact markCatalogWrite never
+// runs for a fact-less extraction; the new base-namespace touch covers it.
+test("persistExtraction touches the catalog for an entity-only (fact-less) extraction (NHZEZ)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nhzez-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    namespacesEnabled: true,
+    namespaceCatalogEnabled: true,
+  });
+
+  const orchestrator = new Orchestrator(config) as any;
+  const ns = "project-origin-entityonly";
+  const storage = await orchestrator.storageRouter.storageFor(ns);
+  await storage.ensureDirectories();
+
+  const result: ExtractionResult = {
+    facts: [], // NO facts — only an entity
+    entities: [
+      { name: "Acme Corp", type: "company", facts: ["Founded 2020."] },
+    ],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  };
+
+  const ids = await orchestrator.persistExtraction(result, storage, null, undefined, ns);
+  assert.ok(ids.length >= 0, "entity-only extraction completes");
+  await new Promise((r) => setTimeout(r, 50));
+
+  const record = await orchestrator.namespaceCatalog.getNamespaceRecord(ns);
+  assert.ok(record, "the base namespace is catalogued for an entity-only extraction");
+  assert.ok(
+    record.lastWriteAt,
+    "an entity-only extraction must record a catalog write touch (lastWriteAt)",
+  );
+});
+
+// ── NHZEZ sweep (codex P2): the durable-non-fact catalog touch must also cover an
+// extraction that persists ONLY profile updates (no facts, no entities). Profile
+// updates are written via storage.appendToProfile() to the base namespace, after
+// the entity/relationship loop, so the consolidated post-write touch must include
+// them or a profile-only extraction leaves lastWriteAt stale.
+test("persistExtraction touches the catalog for a profile-only (fact-less) extraction (NHZEZ sweep)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nhzez-profile-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    namespacesEnabled: true,
+    namespaceCatalogEnabled: true,
+  });
+
+  const orchestrator = new Orchestrator(config) as any;
+  const ns = "project-origin-profileonly";
+  const storage = await orchestrator.storageRouter.storageFor(ns);
+  await storage.ensureDirectories();
+
+  const result: ExtractionResult = {
+    facts: [],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: ["Prefers async-first design."], // ONLY a profile update
+  };
+
+  await orchestrator.persistExtraction(result, storage, null, undefined, ns);
+  await new Promise((r) => setTimeout(r, 50));
+
+  const record = await orchestrator.namespaceCatalog.getNamespaceRecord(ns);
+  assert.ok(record, "the base namespace is catalogued for a profile-only extraction");
+  assert.ok(
+    record.lastWriteAt,
+    "a profile-only extraction must record a catalog write touch (lastWriteAt)",
+  );
+});
+
+// ── NHZEZ sweep (codex P2): the durable-non-fact catalog touch must also cover an
+// extraction that persists ONLY questions (no facts, entities, or profile updates).
+// Questions are written via storage.writeQuestion() to the base namespace.
+test("persistExtraction touches the catalog for a question-only (fact-less) extraction (NHZEZ sweep)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nhzez-question-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    namespacesEnabled: true,
+    namespaceCatalogEnabled: true,
+  });
+
+  const orchestrator = new Orchestrator(config) as any;
+  const ns = "project-origin-questiononly";
+  const storage = await orchestrator.storageRouter.storageFor(ns);
+  await storage.ensureDirectories();
+
+  const result: ExtractionResult = {
+    facts: [],
+    entities: [],
+    relationships: [],
+    questions: [
+      { question: "What database does the project use?", context: "infra", priority: 0.5 },
+    ],
+    profileUpdates: [],
+  };
+
+  await orchestrator.persistExtraction(result, storage, null, undefined, ns);
+  await new Promise((r) => setTimeout(r, 50));
+
+  const record = await orchestrator.namespaceCatalog.getNamespaceRecord(ns);
+  assert.ok(record, "the base namespace is catalogued for a question-only extraction");
+  assert.ok(
+    record.lastWriteAt,
+    "a question-only extraction must record a catalog write touch (lastWriteAt)",
+  );
+});

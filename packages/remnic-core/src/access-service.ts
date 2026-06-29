@@ -7076,6 +7076,18 @@ export class EngramAccessService {
     return this.orchestrator.storage;
   }
 
+  /**
+   * Best-effort catalog write touch delegate (issue #1499 sweep). HTTP/MCP
+   * surfaces resolve a per-namespace storage and write through it directly (e.g.
+   * a contradiction merge), bypassing the extraction write path that owns
+   * `markCatalogWrite`. They call this to record the write so a (possibly
+   * dynamic) namespace's `lastWriteAt` stays accurate and QMD maintenance does
+   * not miss it. Fire-and-forget and failure-tolerant on the orchestrator side.
+   */
+  recordCatalogWrite(namespace?: string, storageDir?: string): void {
+    this.orchestrator.recordCatalogWrite(namespace, storageDir);
+  }
+
   get configRef(): PluginConfig {
     return this.orchestrator.config;
   }

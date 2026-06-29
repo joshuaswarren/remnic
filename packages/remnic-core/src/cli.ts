@@ -8955,6 +8955,13 @@ export function registerCli(
               }
               return orchestrator.getStorageForNamespace(requested || orchestrator.config.defaultNamespace);
             },
+            // Catalog write touch (issue #1499 sweep): a contradiction merge can
+            // write a new memory to a dynamic namespace via the CLI resolve path,
+            // bypassing the extraction write path. Record it so QMD maintenance /
+            // writtenSince don't miss the write. Best-effort and failure-tolerant.
+            onMergedMemoryWritten: (namespace, storageDir) => {
+              orchestrator.recordCatalogWrite(namespace, storageDir);
+            },
           });
           console.log(result.message);
           if (result.affectedIds.length > 0) {

@@ -1864,3 +1864,102 @@ test("runQmdMaintenance falls back to configured namespaces when the catalog is 
     "a disabled catalog covers exactly the configured set",
   );
 });
+
+// ── NHZEV (codex P2): the QMD STARTUP sync in deferredInitialize() must cover
+// cataloged dynamic namespaces too, not only configuredNamespaces(). A dynamic
+// namespace written before a daemon restart exists ONLY in the persisted catalog;
+// if the boot-time "sync current disk state" pass embeds only the configured set,
+// that namespace's QMD collection stays stale after restart. We drive
+// deferredInitialize() with stubbed internals and abort the signal right after the
+// sync (the next `if (signal.aborted) return;` bails before warmup), then assert the
+// startup updateNamespaces() received the UNION of configured + cataloged namespaces.
+test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV)", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let updateArg: string[] | undefined;
+  const abortController = new AbortController();
+
+  orchestrator.config = {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    qmdMaintenanceEnabled: true,
+  };
+  orchestrator.qmd = {
+    isAvailable: () => true,
+    async update() {},
+  };
+  orchestrator.namespaceCatalog = {
+    enabled: true,
+    async listNamespaces() {
+      return [
+        { namespace: "default" },
+        { namespace: "project-origin-dynamic" }, // dynamic, catalog-ONLY, NOT configured
+      ];
+    },
+  };
+  orchestrator.namespaceSearchRouter = {
+    async updateNamespaces(ns: string[]) {
+      updateArg = ns;
+      // Abort AFTER the startup sync records its arg so deferredInitialize bails
+      // at the next `if (signal.aborted) return;` before warmup/caches run.
+      abortController.abort();
+      return ns.length;
+    },
+  };
+
+  await orchestrator.deferredInitialize(abortController.signal);
+
+  assert.ok(updateArg, "startup updateNamespaces must be called");
+  assert.ok(
+    updateArg!.includes("project-origin-dynamic"),
+    "startup sync must cover the cataloged dynamic namespace (NHZEV), not just configured ones",
+  );
+  assert.ok(
+    updateArg!.includes("default") && updateArg!.includes("shared"),
+    "configured namespaces remain covered at startup",
+  );
+});
+
+// NHZEV fallback: a catalog read failure during startup sync must degrade to the
+// configured set rather than breaking deferredInitialize — same failure-tolerance
+// contract as runQmdMaintenance (maintenanceNamespaces swallows the read error).
+test("deferredInitialize startup sync falls back to configured set on catalog read failure (NHZEV)", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let updateArg: string[] | undefined;
+  const abortController = new AbortController();
+
+  orchestrator.config = {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    qmdMaintenanceEnabled: true,
+  };
+  orchestrator.qmd = {
+    isAvailable: () => true,
+    async update() {},
+  };
+  orchestrator.namespaceCatalog = {
+    enabled: true,
+    async listNamespaces() {
+      throw new Error("catalog read failed");
+    },
+  };
+  orchestrator.namespaceSearchRouter = {
+    async updateNamespaces(ns: string[]) {
+      updateArg = ns;
+      abortController.abort();
+      return ns.length;
+    },
+  };
+
+  await orchestrator.deferredInitialize(abortController.signal);
+
+  assert.ok(updateArg, "startup updateNamespaces must be called");
+  assert.deepEqual(
+    [...updateArg!].sort(),
+    ["default", "shared"],
+    "a catalog read failure degrades startup sync to the configured set",
+  );
+});
