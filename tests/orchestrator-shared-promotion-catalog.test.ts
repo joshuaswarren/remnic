@@ -149,6 +149,127 @@ test("persistExtraction shared promotion records a shared-namespace catalog writ
   }
 });
 
+// ── Round 8 (codex P2 — NElSf): the shared-promotion HASH-DEDUP branch returns
+// early (an active matching shared fact already exists, so no NEW write happens),
+// but it first runs `applyTemporalSupersession`, which REWRITES shared-namespace
+// frontmatter to retire stale conflicting facts. That return path skips the
+// post-write `markCatalogWrite`, so a supersession-only update left the shared
+// record's `lastWriteAt` stale and `writtenSince` maintenance/QMD fanout could
+// skip the namespace. The fix touches the catalog on the dedup return path WHEN
+// any ids were actually superseded. This drives the real path: an OLD conflicting
+// active shared fact (entity E, {city: NYC}) plus a hash-indexed active shared
+// fact (content X, entity E, {city: Austin}); promoting content X (entity E,
+// {city: Austin}) hits the hash-dedup branch, supersedes the older NYC fact, and
+// must record a shared-namespace catalog write. Fails pre-fix (dedup return skips
+// markCatalogWrite); passes after.
+test("shared hash-dedup supersession-only update records a shared-namespace catalog write", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-shared-dedup-catalog-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      autoPromoteToSharedEnabled: true,
+      autoPromoteToSharedCategories: ["fact"],
+      autoPromoteMinConfidenceTier: "implied",
+      temporalSupersessionEnabled: true,
+      memoryLinkingEnabled: false,
+      inlineSourceAttributionEnabled: false,
+    });
+
+    const orchestrator = new Orchestrator(config) as any;
+    orchestrator.qmd = { isAvailable: () => false };
+
+    const sourceStorage = await orchestrator.getStorage("default");
+    await sourceStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorage("shared");
+    await sharedStorage.ensureDirectories();
+
+    const entity = "user-shared-dedup";
+    const matchedContent = "Lives in Austin.";
+
+    // 1) An OLD conflicting active shared fact (same entity, attribute city=NYC)
+    //    that a later city=Austin supersession must retire. Older timestamp so it
+    //    is the one superseded, not the incoming.
+    await sharedStorage.writeMemory("fact", "Lives in NYC.", {
+      entityRef: entity,
+      structuredAttributes: { city: "NYC" },
+      source: "seed",
+      confidence: 0.9,
+      tags: ["shared-promotion"],
+      validAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    // 2) An ACTIVE shared fact whose ENRICHED content hash is indexed, so the
+    //    incoming promotion of the SAME content + attributes takes the hash-dedup
+    //    short-circuit. We do NOT pass `contentHashSource`, so writeMemory indexes
+    //    the enriched body (`<content>\n[Attributes: city: Austin]`) — the exact
+    //    `dedupContent` the orchestrator computes for the incoming fact, so both
+    //    `hasFactContentHash(dedupContent)` AND the inner same-content match fire.
+    await sharedStorage.writeMemory("fact", matchedContent, {
+      entityRef: entity,
+      structuredAttributes: { city: "Austin" },
+      source: "seed",
+      confidence: 0.9,
+      tags: ["shared-promotion"],
+      validAt: new Date(Date.now() - 30_000).toISOString(),
+    });
+    sharedStorage.invalidateAllMemoriesCacheForDir?.();
+
+    // Rebuild the orchestrator's live content-hash index so hasFactContentHash
+    // sees the seeded shared fact (mirrors gateway_start index construction).
+    orchestrator.invalidateLiveContentHashIndex?.();
+
+    // Baseline: record the shared namespace's current lastWriteAt (set by the
+    // seed writes' router resolution, if any). We assert the dedup path ADVANCES
+    // it — i.e. a fresh write touch is recorded on the supersession-only return.
+    await orchestrator.namespaceCatalog.markMaintenance("shared", "probe");
+    const before = await orchestrator.namespaceCatalog.getNamespaceRecord("shared");
+    const beforeWrite = before?.lastWriteAt;
+
+    // 3) Promote the SAME content (entity, city=Austin) — hits the hash-dedup
+    //    branch (active matching fact exists), supersedes the older NYC fact, and
+    //    returns WITHOUT a new write. The fix must still record a shared catalog
+    //    write because supersession mutated the shared namespace.
+    const result = {
+      facts: [
+        {
+          content: matchedContent,
+          category: "fact",
+          confidence: 0.95,
+          tags: ["shared-promotion"],
+          entityRef: entity,
+          structuredAttributes: { city: "Austin" },
+        },
+      ],
+      entities: [],
+      questions: [],
+      profileUpdates: [],
+    };
+    await orchestrator.persistExtraction(result, sourceStorage, null, {
+      sessionKey: "s1",
+      principal: "default",
+    });
+
+    // Serialize a read to flush fire-and-forget catalog appends.
+    await orchestrator.namespaceCatalog.markRead("shared");
+    const after = await orchestrator.namespaceCatalog.getNamespaceRecord("shared");
+    assert.ok(after?.lastWriteAt, "shared record must carry a lastWriteAt after the dedup supersession");
+    if (beforeWrite) {
+      assert.ok(
+        Date.parse(after!.lastWriteAt!) > Date.parse(beforeWrite),
+        "the supersession-only dedup path must ADVANCE the shared namespace lastWriteAt",
+      );
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 3, Issue #3 (codex P2): when the planner selects no_recall, retrieval
 // is skipped — so the recall path must NOT mark every readable namespace as
 // read. A trivial prompt ("ok") classifies as no_recall; assert the catalog

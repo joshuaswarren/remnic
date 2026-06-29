@@ -13312,7 +13312,7 @@ export class Orchestrator {
                 // `createdAt` as the ordering anchor instead of the old fact's
                 // timestamp, ensuring supersession fires correctly even when
                 // the matching fact predates conflicting candidates.
-                await applyTemporalSupersession({
+                const hashDedupSupersession = await applyTemporalSupersession({
                   storage: sharedStorage,
                   newMemoryId: hashDedupMatchingFact.frontmatter.id,
                   entityRef: options.entityRef,
@@ -13321,6 +13321,19 @@ export class Orchestrator {
                   enabled: true,
                   useCallerTimestamp: true,
                 });
+                // Catalog touch (issue #1499 — codex P2 NElSf): this dedup branch
+                // returns WITHOUT reaching the post-write `markCatalogWrite` below,
+                // but `applyTemporalSupersession` mutated the shared namespace
+                // (it rewrote frontmatter to retire stale shared facts). When any
+                // ids were actually superseded, the shared namespace changed, so we
+                // must record the write — otherwise the shared record's
+                // `lastWriteAt` stays stale and `writtenSince` maintenance / QMD
+                // fanout skips the namespace after a supersession-only update.
+                // Best-effort and failure-tolerant (markCatalogWrite swallows
+                // errors); only touch when work happened to avoid spurious writes.
+                if (hashDedupSupersession.supersededIds.length > 0) {
+                  this.markCatalogWrite(this.config.sharedNamespace, sharedStorage.dir);
+                }
                 // Active matching fact exists — normal short-circuit is safe.
                 return;
               }
