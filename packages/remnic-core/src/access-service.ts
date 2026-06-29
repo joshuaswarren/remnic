@@ -4887,18 +4887,43 @@ export class EngramAccessService {
    * use.
    */
   /**
-   * Resolve the effective LCM read NAMESPACE a same-session reader must prefix
+   * Resolve the effective LCM NAMESPACE a same-session operation must prefix
    * with (the namespace half of {@link resolveLcmReadSessionKey}). Split out so
    * `lcmSearch` can apply ONE namespace to BOTH its `sessionKey` and its
    * `sessionPrefix` — the prefix is a search fragment, not a real session, so its
    * own coding context can't be looked up; it must inherit the namespace resolved
    * from the real session (`sessionKeyForOverlay`).
+   *
+   * `purpose` selects the AUTHORIZATION gate applied before honouring the
+   * coding overlay (#1505 round 3 + round 4, codex P2):
+   *
+   *  - `"read"` (`lcmSearch` / raw-excerpt recall): the overlay rows are only
+   *    visible when the principal SELF base is in the READABLE RECALL SET — the
+   *    same gate the orchestrator's `lcmReadNamespaceForSession` and the recall
+   *    namespace set use (`recallNamespacesForPrincipal`, gated by both
+   *    `defaultRecallNamespaces.includes("self")` AND `canReadNamespace`). A
+   *    caller that passed the default read check must NOT receive
+   *    `<principal>-project-*` rows the policy never granted (cross-tenant read
+   *    leak). When the self base is not readable, keep the just-authorized
+   *    namespace (collapses to the raw key on the default store).
+   *
+   *  - `"write"` (`lcmCompactionFlush` / `lcmCompactionRecord`): these are
+   *    write/maintenance operations on the SAME queue `observe` just wrote, so
+   *    the gate must mirror observe's WRITE authorization (`canWriteNamespace`
+   *    on the self base), NOT readability. A principal that can WRITE but not
+   *    READ its self namespace (or whose `defaultRecallNamespaces` omits `self`)
+   *    archived under the overlay key via `observe`; gating compaction by
+   *    readability would fall back to the default/raw key and leave that queue
+   *    never flushed/recorded (round-4 codex P2). Write-authorized ⇒ overlay
+   *    key, matching the observe write key (rule 42 read/write parity; rule 39
+   *    identical gates across paths).
    */
   private resolveLcmReadNamespace(
     explicitNamespace: string | undefined,
     resolvedNamespace: string,
     sessionKeyForOverlay: string | undefined,
     authenticatedPrincipal: string | undefined,
+    purpose: "read" | "write" = "read",
   ): string {
     const hasExplicitNamespace =
       typeof explicitNamespace === "string" && explicitNamespace.trim().length > 0;
@@ -4918,28 +4943,19 @@ export class EngramAccessService {
     );
     // No overlay → the default store (raw sessionKey), as before.
     if (overlaid === base) return this.orchestrator.config.defaultNamespace;
-    // Overlay applied. READ-AUTHORIZATION gate (#1505 round 3, codex P2
-    // "Authorize overlay LCM access before replacing the namespace"): the
-    // caller's request was authorized for `resolvedNamespace` (usually
-    // `default`) — NOT for the principal's `<principal>-project-*` overlay base.
-    // Before switching the LCM read key to that overlay we must confirm the
-    // principal's self base is in the READABLE RECALL SET — the SAME gate the
-    // orchestrator's `lcmReadNamespaceForSession` and the recall namespace set
-    // use (`recallNamespacesForPrincipal`, gated by both
-    // `defaultRecallNamespaces.includes("self")` AND `canReadNamespace`). Using
-    // only `canReadNamespace` here would diverge from the orchestrator path when
-    // `defaultRecallNamespaces` omits `self` (rule 39 — identical feature gates
-    // across paths). Without this, an `lcmSearch` that passed the default read
-    // check could return `<principal>-project-*` rows the policy never granted
-    // (cross-tenant read leak). When the self base is not readable, keep the
-    // just-authorized namespace (collapses to the raw key for the default store)
-    // — never return overlay rows to an unauthorized caller (rule 42 read/write
-    // parity; rule 48 least-privilege).
-    const selfReadableInRecall = recallNamespacesForPrincipal(
-      principal,
-      this.orchestrator.config,
-    ).includes(base);
-    return selfReadableInRecall ? overlaid : resolvedNamespace;
+    // Overlay applied. Authorize access to the principal's `<principal>-project-*`
+    // overlay base before switching the LCM key to it. The gate differs by
+    // operation purpose (see the doc comment): reads use the readable-recall-set
+    // gate (no cross-tenant read leak), writes use observe's write authorization
+    // (so compaction targets the same overlay queue observe wrote to).
+    const authorized =
+      purpose === "write"
+        ? canWriteNamespace(principal, base, this.orchestrator.config)
+        : recallNamespacesForPrincipal(
+            principal,
+            this.orchestrator.config,
+          ).includes(base);
+    return authorized ? overlaid : resolvedNamespace;
   }
 
   private resolveLcmReadSessionKey(
@@ -4947,12 +4963,14 @@ export class EngramAccessService {
     resolvedNamespace: string,
     sessionKey: string,
     authenticatedPrincipal: string | undefined,
+    purpose: "read" | "write" = "read",
   ): string {
     const effectiveNamespace = this.resolveLcmReadNamespace(
       explicitNamespace,
       resolvedNamespace,
       sessionKey,
       authenticatedPrincipal,
+      purpose,
     );
     return (
       lcmSessionKeyForNamespace(
@@ -4990,11 +5008,16 @@ export class EngramAccessService {
     // its coding-overlay namespace (`${effectiveNamespace}:${sessionKey}`), not
     // the base `namespace` — so apply the session's coding overlay here too, or
     // the flush would target the wrong queue (#1495 thread 2, rule 42).
+    // `purpose: "write"` — compaction is a write/maintenance op on the queue
+    // observe wrote, so the overlay is gated by WRITE authorization, not
+    // readability (round-4 codex P2): a write-only / self-omitted principal
+    // still flushes the overlay queue observe archived under.
     const lcmSessionKey = this.resolveLcmReadSessionKey(
       request.namespace,
       namespace,
       request.sessionKey,
       request.authenticatedPrincipal,
+      "write",
     );
     await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
     await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey);
@@ -5037,12 +5060,15 @@ export class EngramAccessService {
     // Record against the SAME LCM session_id `observe` archived under — apply
     // the session's coding overlay when no explicit namespace is given, so an
     // auto-scoped session records its compaction on the right queue (#1495
-    // thread 2, rule 42).
+    // thread 2, rule 42). `purpose: "write"` — write/maintenance op gated by
+    // WRITE authorization, not readability (round-4 codex P2), so a write-only /
+    // self-omitted principal still records on the overlay queue observe wrote.
     const lcmSessionKey = this.resolveLcmReadSessionKey(
       request.namespace,
       namespace,
       request.sessionKey,
       request.authenticatedPrincipal,
+      "write",
     );
     await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
     await this.orchestrator.lcmEngine.recordCompaction(

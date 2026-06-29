@@ -844,6 +844,96 @@ test("#1505 round 3 thread 2: lcmSearch returns NO overlay rows when the princip
   );
 });
 
+test("#1505 round 4 thread (codex P2): compaction flush/record target the OVERLAY key even when the principal can WRITE but not READ its self base", async () => {
+  // The round-3 read-authorization gate is SHARED by lcmCompactionFlush/Record,
+  // but compaction is a WRITE/maintenance op on the queue observe just wrote.
+  // alice can WRITE her self namespace but NOT read it. observe archives under
+  // `alice-project-*:sess-1`; compaction must flush/record that SAME overlay key
+  // (gated by WRITE authorization), NOT fall back to the default/raw key — else
+  // the project-scoped LCM queue is never flushed/recorded.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      // Write-only self policy: alice can write `alice` but cannot read it.
+      { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    // self deliberately omitted from the recall set too — read gate would fall
+    // back, but the WRITE gate must still honour the overlay.
+    defaultRecallNamespaces: ["shared"],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // WRITE: alice observes sess-1 with a project tag → overlay applies on alice's
+  // write-authorized self base.
+  await service.observe(
+    observeRequest({
+      sessionKey: "sess-1",
+      authenticatedPrincipal: "alice",
+      projectTag: "Blend/Supply",
+    }),
+  );
+  const writeKey = probe.lcmWriteKeys[0];
+  assert.ok(
+    writeKey.startsWith("alice-"),
+    `observe must archive under alice's overlay key, got ${writeKey}`,
+  );
+
+  await service.lcmCompactionFlush({
+    sessionKey: "sess-1",
+    authenticatedPrincipal: "alice",
+  });
+  await service.lcmCompactionRecord({
+    sessionKey: "sess-1",
+    authenticatedPrincipal: "alice",
+    tokensBefore: 100,
+    tokensAfter: 10,
+  });
+
+  assert.equal(
+    probe.compactionFlushKeys[0],
+    writeKey,
+    "compaction flush must target the overlay key (write-authorized), not the default/raw key",
+  );
+  assert.equal(
+    probe.compactionRecordKeys[0],
+    writeKey,
+    "compaction record must target the overlay key (write-authorized), not the default/raw key",
+  );
+});
+
+test("#1505 round 4 thread (codex P2): a read-only lcmSearch by the SAME write-only principal still does NOT leak the overlay rows (read vs write gate divergence)", async () => {
+  // Companion to the compaction-write-gate test: the SAME write-only, read-denied
+  // principal must STILL get the authorized fallback (raw key) on lcmSearch — the
+  // read gate and the write gate diverge by design.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    defaultRecallNamespaces: ["shared"],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  probe.contexts.set("sess-1", {
+    projectId: "blend-supply",
+    projectName: "Blend/Supply",
+  } as unknown as CodingContext);
+
+  await service.lcmSearch({
+    query: "anything",
+    sessionKey: "sess-1",
+    authenticatedPrincipal: "alice",
+  });
+
+  assert.equal(
+    probe.searchSessionIds[0],
+    "sess-1",
+    "read gate: write-only/read-denied principal must NOT receive alice-project-* rows on lcmSearch",
+  );
+});
+
 test("#1505 round 3 thread 2: lcmSearch still routes through the overlay key when the principal CAN read its self base (round-2 positive case preserved)", async () => {
   // alice can read AND write her self namespace, so the authorized overlay LCM
   // read key is honored — lcmSearch routes the session_id through the overlay.
