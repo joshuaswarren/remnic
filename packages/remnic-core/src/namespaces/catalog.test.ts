@@ -1715,3 +1715,46 @@ test("markWrite rejects a cross-namespace explicit storageDir", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (codex P2 — NDXHe): the READ sanitizer must also reject a contained
+// but CROSS-NAMESPACE root (a pre-fix/tampered jsonl record for `project-a` whose
+// storageDir is `project-b`'s token dir or memoryDir). listNamespaces /
+// getNamespaceRecord must substitute the namespace's OWN resolved root, keeping
+// read and write symmetric (rule 42).
+test("read sanitizer substitutes a contained cross-namespace storageDir", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const nsA = "project-origin-reada";
+    const nsB = "project-origin-readb";
+    const tokenA = namespaceIdentityToken(nsA);
+    const tokenB = namespaceIdentityToken(nsB);
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    // A tampered/pre-fix record: A points at B's (contained) token dir.
+    const line = JSON.stringify({
+      namespace: nsA,
+      identityToken: tokenA,
+      kind: "project",
+      createdAt: new Date().toISOString(),
+      storageDir: path.join(memoryDir, "namespaces", tokenB),
+      discoveredBy: "write",
+    });
+    await writeFile(path.join(stateDir, "namespaces.jsonl"), line + "\n", "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const rec = await catalog.getNamespaceRecord(nsA);
+    assert.ok(rec, "record A is returned");
+    assert.notEqual(
+      path.resolve(rec!.storageDir),
+      path.resolve(path.join(memoryDir, "namespaces", tokenB)),
+      "read must NOT surface B's tree as A's root",
+    );
+    assert.equal(
+      path.resolve(rec!.storageDir),
+      path.resolve(path.join(memoryDir, "namespaces", tokenA)),
+      "read substitutes A's OWN resolved root",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

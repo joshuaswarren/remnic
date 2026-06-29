@@ -334,16 +334,24 @@ export class NamespaceCatalog {
 
   /**
    * Sanitize a record's `storageDir` at the enumeration boundary (round 5,
-   * cursor Medium + codex P2). Reads return whatever is in `namespaces.jsonl`
-   * after schema checks only, so a tampered or pre-fix out-of-root path — whether
-   * a lexical escape OR a lexically-contained SYMLINK escaping via realpath —
-   * could be surfaced to maintenance/QMD until a rewrite occurs. We apply the
-   * SAME full containment contract used on the write path (`isContainedStorageDir`:
-   * lexical + symlink/realpath) and, when a record fails it, substitute the
-   * trusted resolved-and-safe root for that namespace before returning it.
+   * cursor Medium + codex P2; round 6 — NDXHe). Reads return whatever is in
+   * `namespaces.jsonl` after schema checks only, so a tampered or pre-fix
+   * out-of-root path — whether a lexical escape, a lexically-contained SYMLINK
+   * escaping via realpath, OR a contained-but-CROSS-NAMESPACE root (another
+   * namespace's tree / memoryDir for a non-default namespace) — could be surfaced
+   * to maintenance/QMD until a rewrite occurs. We apply the SAME contract as the
+   * write path: full containment (`isContainedStorageDir`: lexical +
+   * symlink/realpath) AND namespace ownership (`isStorageDirForNamespace`). When a
+   * record fails EITHER check we substitute the trusted resolved-and-safe root for
+   * that namespace before returning it (rule 42: read and write stay symmetric).
    */
   private async sanitizeRecordForRead(record: NamespaceRecord): Promise<NamespaceRecord> {
-    if (await this.isContainedStorageDir(record.storageDir)) return record;
+    if (
+      (await this.isContainedStorageDir(record.storageDir)) &&
+      (await this.isStorageDirForNamespace(record.namespace, record.storageDir))
+    ) {
+      return record;
+    }
     const safe = await this.resolveSafeStorageDir(record.namespace);
     return { ...record, storageDir: safe };
   }

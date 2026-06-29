@@ -7151,10 +7151,16 @@ export class Orchestrator {
     // zero (`topK: 0`, a disabled/zero `memories` recall section, etc.). The QMD
     // path explicitly returns before searching when `recallResultLimit <= 0`, so
     // no namespace is actually read and the touch would be spurious.
+    // Round 6 (codex P2 — NDXHa): also skip when the recall was ALREADY aborted.
+    // `throwIfRecallAborted` runs later (in the Phase 1 retrieval block), so an
+    // already-aborted recall exits before any QMD/fallback read — firing these
+    // fire-and-forget touches would set `lastReadAt` for a canceled recall and
+    // make catalog recency/maintenance treat it as a real read.
     if (
       this.namespaceCatalog.enabled &&
       recallMode !== "no_recall" &&
-      recallResultLimit > 0
+      recallResultLimit > 0 &&
+      !options.abortSignal?.aborted
     ) {
       for (const ns of recallNamespaces) this.markCatalogRead(ns);
     }

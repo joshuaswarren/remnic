@@ -285,3 +285,49 @@ test("namespaceFromStorageDir preserves a token-shaped literal raw namespace nam
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (codex P2 — NDXHa): an already-ABORTED recall must not record catalog
+// read touches. The abort check runs later (Phase 1 retrieval), so without the
+// gate an already-aborted recall would still set `lastReadAt` for every recall
+// namespace even though it exits before any QMD/fallback read.
+test("an already-aborted recall records no catalog read touches", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-aborted-recall-catalog-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+    const orchestrator = new Orchestrator(config) as any;
+    orchestrator.qmd = { isAvailable: () => false };
+
+    // Pre-aborted signal: the recall should bail before any namespace read.
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await orchestrator.recallInternal(
+        "What is the team standup schedule and who attends it?",
+        "user:test:aborted",
+        { abortSignal: controller.signal },
+      );
+    } catch {
+      // An aborted recall may throw; that's fine — we only assert no read touch.
+    }
+
+    await new Promise((r) => setTimeout(r, 20));
+    await orchestrator.namespaceCatalog.markMaintenance("default", "probe");
+    const records = await orchestrator.namespaceCatalog.listNamespaces();
+    for (const r of records) {
+      assert.ok(
+        !r.lastReadAt,
+        `an aborted recall must not record a read touch (namespace ${r.namespace} has lastReadAt)`,
+      );
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
