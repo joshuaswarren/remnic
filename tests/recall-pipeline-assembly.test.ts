@@ -6,6 +6,35 @@ import { mkdtemp } from "node:fs/promises";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
 
+/**
+ * Derive the exact PROJECT-scope overlay namespace the orchestrator would use as
+ * a branch session's read fallback, WITHOUT depending on `combineNamespaces`
+ * (not exported from the package root). Binds a project-only coding context
+ * (branch: null) to a throwaway session and reads back the orchestrator's own
+ * `applyCodingNamespaceOverlay` result — the same source of truth the recall path
+ * uses to build `codingOverlay.readFallbacks`.
+ */
+function projectFallbackNamespace(
+  orchestrator: Orchestrator,
+  base: string,
+  projectId: string,
+): string {
+  const probeSession = `__probe__:${projectId}`;
+  orchestrator.setCodingContextForSession(probeSession, {
+    projectId,
+    branch: null,
+    rootPath: projectId,
+    defaultBranch: null,
+  });
+  const ns = (
+    orchestrator as unknown as {
+      applyCodingNamespaceOverlay: (sk: string, base: string) => string;
+    }
+  ).applyCodingNamespaceOverlay(probeSession, base);
+  orchestrator.setCodingContextForSession(probeSession, null);
+  return ns;
+}
+
 test("custom recallPipeline reorders sections and can disable transcript injection", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-recall-pipeline-"));
   const cfg = parseConfig({
@@ -454,4 +483,280 @@ test("#1505 thread 3: ALL LCM recall sections read under the SCOPED (overlay) se
   // Evidence (only returned for the scoped key) made it into the assembled
   // context, proving the sections read under the scoped key.
   assert.match(context, /SCOPED_EVIDENCE/);
+});
+
+test("#1505 fallback: branch-scoped recall reads LCM evidence archived at PROJECT (fallback) scope", async () => {
+  // Round 5 left the LCM read path targeting a SINGLE overlay key
+  // (`${branch-ns}:${sessionKey}`). Normal QMD/file recall, however, also
+  // searches `codingOverlay.readFallbacks` (project → root) so a branch-scoped
+  // session still sees project/root memories. A session whose LCM rows were
+  // archived at PROJECT scope (then later recalled from a branch) therefore had
+  // its LCM-backed sections MISS that fallback transcript evidence even though
+  // QMD/file recall would surface it. This pins that the LCM read now queries the
+  // SAME ordered readable namespace set (primary overlay → project fallback), so
+  // the project-scope evidence is found.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-recall-fallback-"));
+  const sessionId = "alice:branch-session";
+  const projectId = "origin:proj9999";
+
+  const lcmQueriedSessionIds: string[] = [];
+  // Evidence is returned ONLY for the PROJECT-fallback key — never the branch
+  // overlay key. A single-key (branch-only) LCM read would MISS it (fail-before);
+  // querying across the readable set (branch → project fallback) finds it.
+  let projectFallbackKey = "";
+  let branchOverlayKey = "";
+  const evidenceFor = (requestedSessionId?: string, limit = 8) => {
+    lcmQueriedSessionIds.push(requestedSessionId ?? "<undefined>");
+    return requestedSessionId === projectFallbackKey
+      ? [
+          {
+            id: 0,
+            session_id: projectFallbackKey,
+            turn_index: 7,
+            role: "user",
+            content:
+              "FALLBACK_EVIDENCE: my culinary journey started with Turkish, Greek, and Lebanese cuisines.",
+            score: 100,
+          },
+        ].slice(0, limit)
+      : [];
+  };
+
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    sharedContextEnabled: false,
+    knowledgeIndexEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    injectQuestions: false,
+    lcmEnabled: true,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    defaultRecallNamespaces: ["self"],
+    // Branch scope ON → project namespace becomes a read fallback.
+    codingMode: { projectScope: true, branchScope: true },
+    explicitCueRecallEnabled: true,
+    focusedListRecallEnabled: true,
+    eventOrderRecallEnabled: true,
+    recallPipeline: [
+      { id: "event-order", enabled: true, maxChars: 2_400, maxResults: 8, maxTurns: 16, maxTokens: 6_000 },
+      { id: "focused-list", enabled: true, maxChars: 2_400, maxResults: 8, maxTurns: 16, maxTokens: 6_000 },
+      { id: "explicit-cue", enabled: true, maxChars: 2_400, maxResults: 8 },
+      { id: "profile", enabled: false },
+      { id: "memories", enabled: false },
+    ],
+  });
+  const orchestrator = new Orchestrator(cfg);
+
+  // Bind a coding context WITH a branch so the overlay is branch-scoped and the
+  // project namespace becomes a read fallback.
+  orchestrator.setCodingContextForSession(sessionId, {
+    projectId,
+    branch: "feature/cuisines",
+    rootPath: projectId,
+    defaultBranch: "main",
+  });
+  // Derive the branch overlay key + project fallback key from the orchestrator's
+  // own overlay (source of truth): the principal self base (alice) overlaid with
+  // the branch namespace, and the project fallback combined with the same base.
+  const branchOverlayNs = (
+    orchestrator as unknown as {
+      applyCodingNamespaceOverlay: (sk: string, base: string) => string;
+    }
+  ).applyCodingNamespaceOverlay(sessionId, "alice");
+  assert.notEqual(branchOverlayNs, "alice", "branch overlay must change the namespace");
+  const projectFallbackNs = projectFallbackNamespace(orchestrator, "alice", projectId);
+  assert.notEqual(
+    projectFallbackNs,
+    branchOverlayNs,
+    "project fallback namespace must differ from the branch overlay namespace",
+  );
+  branchOverlayKey = `${branchOverlayNs}:${sessionId}`;
+  projectFallbackKey = `${projectFallbackNs}:${sessionId}`;
+
+  (orchestrator as any).lcmEngine = {
+    enabled: true,
+    searchContextFull: async (_q: string, limit: number, requestedSessionId?: string) =>
+      evidenceFor(requestedSessionId, limit),
+    expandContext: async (requestedSessionId: string) =>
+      requestedSessionId === projectFallbackKey
+        ? [
+            {
+              turn_index: 7,
+              role: "user",
+              content: "FALLBACK_EVIDENCE: chronological milestone",
+            },
+          ]
+        : [],
+    getStats: async (requestedSessionId?: string) => {
+      lcmQueriedSessionIds.push(requestedSessionId ?? "<undefined>");
+      return requestedSessionId === projectFallbackKey
+        ? { totalMessages: 4, maxTurnIndex: 7 }
+        : { totalMessages: 0, maxTurnIndex: -1 };
+    },
+    searchStructuredParts: async () => [],
+    formatStructuredRecall: () => "",
+    assembleRecall: async () => "",
+  };
+
+  const context = await (orchestrator as any).recallInternal(
+    "Remember when you told me to list, in chronological order, the cuisines I started my culinary journey with?",
+    sessionId,
+  );
+
+  // The branch overlay key was tried FIRST (primary), then the project fallback
+  // key — and the project-fallback evidence made it into the assembled context.
+  assert.ok(
+    lcmQueriedSessionIds.includes(branchOverlayKey),
+    `expected the branch overlay key ${branchOverlayKey} to be queried first; queried: ${JSON.stringify(lcmQueriedSessionIds)}`,
+  );
+  assert.ok(
+    lcmQueriedSessionIds.includes(projectFallbackKey),
+    `expected the project fallback key ${projectFallbackKey} to be queried; queried: ${JSON.stringify(lcmQueriedSessionIds)}`,
+  );
+  // The raw (un-prefixed) sessionId must NOT be queried — only namespaced keys.
+  assert.ok(
+    !lcmQueriedSessionIds.includes(sessionId),
+    `no LCM section may query the RAW sessionId ${sessionId}; queried: ${JSON.stringify(lcmQueriedSessionIds)}`,
+  );
+  assert.match(
+    context,
+    /FALLBACK_EVIDENCE/,
+    "branch-scoped recall must surface LCM evidence archived at the project fallback scope",
+  );
+});
+
+test("#1505 fallback read-auth: an unreadable principal self/overlay namespace is NEVER queried by the LCM read path", async () => {
+  // The unification reuses `recallNamespaces`, which already gates the overlay by
+  // read-authorization (`recallNamespacesForPrincipal` only includes the self
+  // base when `defaultRecallNamespaces` includes "self" AND `canReadNamespace`).
+  // When the self base is NOT in the readable recall set, the overlay key
+  // (`${principal}-project-*`) must NEVER be searched by the LCM read path — no
+  // cross-tenant read leak. Here `defaultRecallNamespaces` OMITS "self", so the
+  // self base / its overlay are unreadable; only the explicitly-shared namespace
+  // is readable, and the LCM read collapses to the default store (raw key).
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-recall-readauth-"));
+  const sessionId = "alice:writeonly-session";
+  const projectId = "origin:secret1234";
+
+  const lcmQueriedSessionIds: string[] = [];
+  const evidenceFor = (requestedSessionId?: string, limit = 8) => {
+    lcmQueriedSessionIds.push(requestedSessionId ?? "<undefined>");
+    // Never serve overlay evidence — the point is to prove the overlay key is
+    // never even QUERIED.
+    return [] as Array<{
+      id: number;
+      session_id: string;
+      turn_index: number;
+      role: string;
+      content: string;
+      score: number;
+    }>;
+  };
+
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    sharedContextEnabled: false,
+    knowledgeIndexEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    injectQuestions: false,
+    lcmEnabled: true,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+      // shared is readable by alice and included in recall by default.
+      {
+        name: "shared",
+        readPrincipals: ["alice"],
+        writePrincipals: ["alice"],
+        includeInRecallByDefault: true,
+      },
+    ],
+    // OMIT "self" — the principal self base (and so its project-* overlay) is NOT
+    // in the readable recall set.
+    defaultRecallNamespaces: ["shared"],
+    codingMode: { projectScope: true, branchScope: true },
+    explicitCueRecallEnabled: true,
+    focusedListRecallEnabled: true,
+    eventOrderRecallEnabled: true,
+    recallPipeline: [
+      { id: "event-order", enabled: true, maxChars: 2_400, maxResults: 8, maxTurns: 16, maxTokens: 6_000 },
+      { id: "focused-list", enabled: true, maxChars: 2_400, maxResults: 8, maxTurns: 16, maxTokens: 6_000 },
+      { id: "explicit-cue", enabled: true, maxChars: 2_400, maxResults: 8 },
+      { id: "profile", enabled: false },
+      { id: "memories", enabled: false },
+    ],
+  });
+  const orchestrator = new Orchestrator(cfg);
+
+  orchestrator.setCodingContextForSession(sessionId, {
+    projectId,
+    branch: "feature/secret",
+    rootPath: projectId,
+    defaultBranch: "main",
+  });
+  const branchOverlayNs = (
+    orchestrator as unknown as {
+      applyCodingNamespaceOverlay: (sk: string, base: string) => string;
+    }
+  ).applyCodingNamespaceOverlay(sessionId, "alice");
+  const branchOverlayKey = `${branchOverlayNs}:${sessionId}`;
+  const projectFallbackKey = `${projectFallbackNamespace(orchestrator, "alice", projectId)}:${sessionId}`;
+
+  (orchestrator as any).lcmEngine = {
+    enabled: true,
+    searchContextFull: async (_q: string, limit: number, requestedSessionId?: string) =>
+      evidenceFor(requestedSessionId, limit),
+    expandContext: async () => [],
+    getStats: async (requestedSessionId?: string) => {
+      lcmQueriedSessionIds.push(requestedSessionId ?? "<undefined>");
+      return { totalMessages: 0, maxTurnIndex: -1 };
+    },
+    searchStructuredParts: async () => [],
+    formatStructuredRecall: () => "",
+    assembleRecall: async () => "",
+  };
+
+  await (orchestrator as any).recallInternal(
+    "Remember when you told me to list, in chronological order, the cuisines I started my culinary journey with?",
+    sessionId,
+  );
+
+  // Neither the branch overlay key nor the project-* overlay fallback may be
+  // queried — the self base is unreadable, so `recallNamespaces` excludes them
+  // and the LCM read path must too (no `<principal>-project-*` leak).
+  assert.ok(
+    !lcmQueriedSessionIds.includes(branchOverlayKey),
+    `unreadable branch overlay key ${branchOverlayKey} must NEVER be queried; queried: ${JSON.stringify(lcmQueriedSessionIds)}`,
+  );
+  assert.ok(
+    !lcmQueriedSessionIds.includes(projectFallbackKey),
+    `unreadable project overlay key ${projectFallbackKey} must NEVER be queried; queried: ${JSON.stringify(lcmQueriedSessionIds)}`,
+  );
+  // No queried key may carry the `alice-project-` overlay prefix at all.
+  for (const queried of lcmQueriedSessionIds) {
+    assert.ok(
+      !queried.startsWith("alice-project-"),
+      `no LCM read may target an alice-project-* overlay namespace; saw ${queried}`,
+    );
+  }
 });

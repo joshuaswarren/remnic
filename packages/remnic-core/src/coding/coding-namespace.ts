@@ -455,3 +455,53 @@ export function lcmSessionKeyForNamespace(
   }
   return sessionKey;
 }
+
+/**
+ * Map an ORDERED, read-authorized namespace set (the SAME set normal QMD/file
+ * recall searches) to the ordered set of LCM `session_id`s a same-session reader
+ * must query (#1505 thread "Include coding fallback namespaces in LCM reads").
+ *
+ * The LCM archive filters strictly by `session_id`, and `observe` archives each
+ * turn under `${effectiveNamespace}:${sessionKey}` for the namespace that was
+ * effective when it was written. A branch-scoped session that overlays
+ * `${base-project-*-branch-*}` only sees rows written under THAT namespace if it
+ * reads a single overlay key — but normal recall ALSO searches the
+ * `codingOverlay.readFallbacks` (project / root) namespaces, so rows archived at
+ * project/root scope are surfaced by QMD/file recall yet MISSED by a single-key
+ * LCM read. Deriving the LCM read keys from the SAME `recallNamespaces` set keeps
+ * the LCM read path from diverging: every namespace recall is authorized to read
+ * (read-auth gate already applied upstream in `recallNamespaces`) contributes one
+ * LCM key, ordered primary-overlay-first then fallbacks. Unreadable namespaces
+ * are never in `recallNamespaces`, so they are never searched here either (no
+ * cross-tenant read leak).
+ *
+ * Single-user / no-overlay recall passes a single-namespace set that collapses to
+ * the raw `sessionKey`, so the result is `[sessionKey]` — byte-for-byte the
+ * pre-#1505 single-key behavior.
+ *
+ * The result is deduped while preserving first-seen order so the caller can query
+ * keys in priority order and short-circuit on the first hit without re-querying an
+ * identical key (e.g. when two namespaces both collapse to the default store).
+ */
+export function lcmReadSessionIdsForNamespaces(
+  namespaces: readonly string[],
+  sessionKey: string | undefined,
+  defaultNamespace: string,
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const namespace of namespaces) {
+    const key =
+      lcmSessionKeyForNamespace(namespace, sessionKey, defaultNamespace) ??
+      sessionKey ??
+      "default";
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(key);
+    }
+  }
+  if (out.length === 0) {
+    out.push(sessionKey ?? "default");
+  }
+  return out;
+}

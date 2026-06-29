@@ -1784,6 +1784,12 @@ export class EngramAccessService {
      * never attaches overlay transcript rows the gate excludes.
      */
     rawExcerptNamespace?: string;
+    /**
+     * Ordered, read-authorized LCM read session_id SET (#1505 fallback
+     * unification). Threaded through to `serializeRecallResults` so the x-ray raw
+     * disclosure path also finds excerpts archived at the coding read fallbacks.
+     */
+    rawExcerptSessionIds?: string[];
   }): Promise<EngramAccessRecallResponse> {
     const memoryIds = options.snapshot.results.map((result) => result.memoryId);
     const resultPaths = options.snapshot.results.map((result) => result.path);
@@ -1825,6 +1831,9 @@ export class EngramAccessService {
         ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
         ...(options.rawExcerptNamespace
           ? { rawExcerptNamespace: options.rawExcerptNamespace }
+          : {}),
+        ...(options.rawExcerptSessionIds
+          ? { rawExcerptSessionIds: options.rawExcerptSessionIds }
           : {}),
       },
     );
@@ -1874,6 +1883,15 @@ export class EngramAccessService {
            * snapshot namespace (single-store / sessionless callers, unchanged).
            */
           rawExcerptNamespace?: string;
+          /**
+           * Ordered, read-authorized LCM read session_id SET (#1505 fallback
+           * unification). When supplied, raw disclosure queries each key (primary
+           * coding overlay → read fallbacks) and merges rows so a branch-scoped
+           * session finds excerpts archived at project/root scope. Already
+           * read-gated, so no unauthorized overlay key is present. Omitted ⇒ the
+           * legacy single `rawExcerptNamespace`-prefixed key (unchanged).
+           */
+          rawExcerptSessionIds?: string[];
         }
       | null = null,
   ): Promise<EngramAccessMemorySummary[]> {
@@ -2021,6 +2039,9 @@ export class EngramAccessService {
               ? { sessionKey: rawContext.sessionKey }
               : {}),
             namespace: rawContext.rawExcerptNamespace ?? namespace,
+            ...(rawContext.rawExcerptSessionIds
+              ? { lcmSessionIds: rawContext.rawExcerptSessionIds }
+              : {}),
           }
         : null,
     );
@@ -2129,7 +2150,23 @@ export class EngramAccessService {
    */
   private async fetchRawExcerpts(
     disclosure: RecallDisclosure,
-    context: { query: string; sessionKey?: string; namespace?: string } | null,
+    context: {
+      query: string;
+      sessionKey?: string;
+      namespace?: string;
+      /**
+       * Pre-resolved, ordered, read-authorized LCM read session_id SET (#1505
+       * fallback unification). When supplied, raw disclosure queries each key in
+       * order (primary coding overlay → read fallbacks) and merges rows, exactly
+       * as the orchestrator recall path and `lcmSearch` do, so a branch-scoped
+       * session finds excerpts archived at project/root scope. Already
+       * read-gated by `resolveLcmReadSessionIds`, so an unauthorized
+       * `<principal>-project-*` key is never present. Falls back to the legacy
+       * single `namespace`-prefixed key when absent (sessionless / legacy
+       * callers).
+       */
+      lcmSessionIds?: string[];
+    } | null,
   ): Promise<EngramAccessMemorySummary["rawExcerpts"] | null> {
     if (disclosure !== "raw") return null;
     if (!context || !context.query) return [];
@@ -2144,26 +2181,44 @@ export class EngramAccessService {
     const lcm = this.orchestrator.lcmEngine;
     if (!lcm || !lcm.enabled) return [];
     try {
-      const lcmSessionKey =
+      const legacyKey =
         context.namespace &&
         context.namespace !== this.orchestrator.config.defaultNamespace
           ? `${context.namespace}:${context.sessionKey}`
           : context.sessionKey;
-      const rows = await lcm.searchContextFull(
-        context.query,
-        // Cap the excerpt fanout so recall responses stay bounded.  Five
-        // matches is enough to anchor the model in the raw transcript
-        // without ballooning token spend; raw is meant as the escape
-        // hatch, not the default.
-        5,
-        lcmSessionKey,
-      );
-      return rows.map((r) => ({
-        turnIndex: r.turn_index,
-        role: r.role,
-        content: r.content,
-        sessionId: r.session_id,
-      }));
+      const lcmSessionIds =
+        context.lcmSessionIds && context.lcmSessionIds.length > 0
+          ? context.lcmSessionIds
+          : [legacyKey];
+      // Cap the excerpt fanout so recall responses stay bounded.  Five matches
+      // is enough to anchor the model in the raw transcript without ballooning
+      // token spend; raw is meant as the escape hatch, not the default. The cap
+      // is applied across the MERGED result set so adding fallback keys never
+      // inflates the excerpt budget.
+      const limit = 5;
+      const seenRows = new Set<string>();
+      const excerpts: NonNullable<EngramAccessMemorySummary["rawExcerpts"]> = [];
+      for (const lcmSessionKey of lcmSessionIds) {
+        if (excerpts.length >= limit) break;
+        const rows = await lcm.searchContextFull(
+          context.query,
+          limit,
+          lcmSessionKey,
+        );
+        for (const r of rows) {
+          const dedupeKey = `${r.session_id} ${r.turn_index}`;
+          if (seenRows.has(dedupeKey)) continue;
+          seenRows.add(dedupeKey);
+          excerpts.push({
+            turnIndex: r.turn_index,
+            role: r.role,
+            content: r.content,
+            sessionId: r.session_id,
+          });
+          if (excerpts.length >= limit) break;
+        }
+      }
+      return excerpts;
     } catch {
       // CLAUDE.md rule 13: never let an external subsystem (LCM/SQLite)
       // crash the primary recall flow.
@@ -2891,10 +2946,24 @@ export class EngramAccessService {
             authenticatedPrincipal,
           )
         : undefined;
+    // Ordered, read-authorized LCM read key SET (#1505 fallback unification) so
+    // raw disclosure finds excerpts a branch-scoped session archived at
+    // project/root scope — exactly as recall + `lcmSearch` do. Only with a
+    // concrete sessionKey; already read-gated.
+    const rawExcerptSessionIds =
+      disclosure === "raw" && rawExcerptNamespace && request.sessionKey
+        ? this.resolveLcmReadSessionIds(
+            request.namespace,
+            rawExcerptNamespace,
+            request.sessionKey,
+            authenticatedPrincipal,
+          )
+        : undefined;
     let results = await this.serializeRecallResults(snapshot, disclosure, {
       query,
       sessionKey: request.sessionKey,
       ...(rawExcerptNamespace ? { rawExcerptNamespace } : {}),
+      ...(rawExcerptSessionIds ? { rawExcerptSessionIds } : {}),
     });
 
     // Tag filter (issue #689). Applied post-recall, post-serialization so
@@ -3403,12 +3472,29 @@ export class EngramAccessService {
                   authenticatedPrincipal,
                 )
               : namespace;
+          // Ordered, read-authorized LCM read key SET (#1505 fallback
+          // unification) so raw disclosure finds excerpts a branch-scoped session
+          // archived at project/root scope — exactly as recall + `lcmSearch` do.
+          // Only meaningful with a concrete sessionKey; already read-gated so no
+          // unauthorized overlay key is present.
+          const rawExcerptSessionIds =
+            disclosure === "raw" && trimmedSessionKey
+              ? this.resolveLcmReadSessionIds(
+                  request.namespace,
+                  rawExcerptNamespace,
+                  trimmedSessionKey,
+                  authenticatedPrincipal,
+                )
+              : undefined;
           const rawExcerpts =
             disclosure === "raw"
               ? await this.fetchRawExcerpts(disclosure, {
                   query,
                   ...(trimmedSessionKey ? { sessionKey: trimmedSessionKey } : {}),
                   namespace: rawExcerptNamespace,
+                  ...(rawExcerptSessionIds
+                    ? { lcmSessionIds: rawExcerptSessionIds }
+                    : {}),
                 })
               : null;
           const rawExcerptText =
@@ -3509,6 +3595,30 @@ export class EngramAccessService {
       xrayResponse.snapshotFound === true &&
       xrayResponse.snapshot
     ) {
+      // Same read-authorization-gated raw-excerpt namespace the recall path uses
+      // (#1505 thread 2f7), so the includeRecall x-ray path can't leak overlay
+      // transcript rows via raw disclosure. Resolved ONLY for raw disclosure (the
+      // sole consumer) so non-raw x-ray recall stays byte-for-byte unchanged. The
+      // ordered LCM read key SET (#1505 fallback unification) adds the coding read
+      // fallbacks so a branch-scoped session also finds excerpts at project/root
+      // scope.
+      const xrayRawExcerptNamespace =
+        disclosure === "raw"
+          ? this.resolveRawExcerptReadNamespace(
+              request.namespace,
+              recallSessionKey,
+              authenticatedPrincipal,
+            )
+          : undefined;
+      const xrayRawExcerptSessionIds =
+        disclosure === "raw" && xrayRawExcerptNamespace && recallSessionKey
+          ? this.resolveLcmReadSessionIds(
+              request.namespace,
+              xrayRawExcerptNamespace,
+              recallSessionKey,
+              authenticatedPrincipal,
+            )
+          : undefined;
       return {
         ...xrayResponse,
         recall: await this.buildRecallResponseFromXraySnapshot({
@@ -3519,19 +3629,11 @@ export class EngramAccessService {
           startedAt: recallStartedAt,
           requestedMode: request.mode,
           normalizedMode: mode,
-          // Same read-authorization-gated raw-excerpt namespace the recall path
-          // uses (#1505 thread 2f7), so the includeRecall x-ray path can't leak
-          // overlay transcript rows via raw disclosure. Resolved ONLY for raw
-          // disclosure (the sole consumer) so non-raw x-ray recall stays
-          // byte-for-byte unchanged.
-          ...(disclosure === "raw"
-            ? {
-                rawExcerptNamespace: this.resolveRawExcerptReadNamespace(
-                  request.namespace,
-                  recallSessionKey,
-                  authenticatedPrincipal,
-                ),
-              }
+          ...(xrayRawExcerptNamespace
+            ? { rawExcerptNamespace: xrayRawExcerptNamespace }
+            : {}),
+          ...(xrayRawExcerptSessionIds
+            ? { rawExcerptSessionIds: xrayRawExcerptSessionIds }
             : {}),
         }),
       };
@@ -4925,13 +5027,21 @@ export class EngramAccessService {
       request.sessionKey,
       request.authenticatedPrincipal,
     );
-    const lcmSessionKey = request.sessionKey
-      ? lcmSessionKeyForNamespace(
-          lcmReadNamespace,
+    // Ordered, read-authorized LCM read key SET for a concrete `sessionKey`
+    // (#1505 fallback unification). A branch-scoped session whose rows were
+    // archived at project/root scope is found by querying the primary overlay key
+    // first, then each coding read fallback — exactly as the orchestrator recall
+    // path does. Collapses to a single key for explicit-namespace / no-overlay /
+    // unreadable-self flows. The `sessionPrefix` search fragment stays on the
+    // primary overlay namespace (its own coding context can't be looked up).
+    const lcmSessionKeyIds = request.sessionKey
+      ? this.resolveLcmReadSessionIds(
+          request.namespace,
+          namespace,
           request.sessionKey,
-          this.orchestrator.config.defaultNamespace,
-        ) ?? request.sessionKey
-      : request.sessionKey;
+          request.authenticatedPrincipal,
+        )
+      : [undefined];
     const lcmSessionPrefix = request.sessionPrefix
       ? lcmSessionKeyForNamespace(
           lcmReadNamespace,
@@ -4939,18 +5049,30 @@ export class EngramAccessService {
           this.orchestrator.config.defaultNamespace,
         ) ?? request.sessionPrefix
       : request.sessionPrefix;
-    const rawResults = await this.orchestrator.lcmEngine.searchContextFull(
-      request.query,
-      limit,
-      lcmSessionKey,
-      lcmSessionPrefix,
-    );
-
-    const results = rawResults.map((r: { session_id: string; content: string; turn_index: number }) => ({
-      sessionId: r.session_id,
-      content: r.content,
-      turnIndex: r.turn_index,
-    }));
+    // Query each LCM read key in order, merging + deduping rows (by
+    // sessionId+turnIndex) and preserving first-seen order, capped at `limit`.
+    const seenRows = new Set<string>();
+    const results: Array<{ sessionId: string; content: string; turnIndex: number }> = [];
+    for (const lcmSessionKey of lcmSessionKeyIds) {
+      if (results.length >= limit) break;
+      const rawResults = await this.orchestrator.lcmEngine.searchContextFull(
+        request.query,
+        limit,
+        lcmSessionKey,
+        lcmSessionPrefix,
+      );
+      for (const r of rawResults as Array<{ session_id: string; content: string; turn_index: number }>) {
+        const dedupeKey = `${r.session_id} ${r.turn_index}`;
+        if (seenRows.has(dedupeKey)) continue;
+        seenRows.add(dedupeKey);
+        results.push({
+          sessionId: r.session_id,
+          content: r.content,
+          turnIndex: r.turn_index,
+        });
+        if (results.length >= limit) break;
+      }
+    }
 
     return {
       query: request.query,
@@ -5121,6 +5243,103 @@ export class EngramAccessService {
         this.orchestrator.config.defaultNamespace,
       ) ?? sessionKey
     );
+  }
+
+  /**
+   * Resolve the ORDERED, read-authorized set of LCM `session_id`s a same-session
+   * READER (`lcmSearch`, raw-excerpt disclosure) must query so it matches every
+   * key `observe` archived under across the coding scope (#1505 thread "Include
+   * coding fallback namespaces in LCM reads").
+   *
+   * Mirrors the orchestrator recall path exactly (rule 39): `observe` archives
+   * each turn under `${effectiveNamespace}:${sessionKey}` for whichever namespace
+   * was effective at write time, and normal QMD/file recall searches the primary
+   * coding-overlay namespace AND `codingOverlay.readFallbacks` (project → root).
+   * A single overlay key therefore MISSES rows a branch-scoped session archived at
+   * project/root scope. This returns the primary overlay LCM key first, then one
+   * per read fallback, deduped + ordered so the caller can short-circuit on the
+   * first hit.
+   *
+   * READ-AUTHORIZATION (preserved from the round-3..5 `resolveLcmReadNamespace`
+   * "read" gate; rule 42 / 48): the overlay + fallbacks are `<principal>-project-*`
+   * sub-namespaces authorized transitively by the principal SELF base. They are
+   * included ONLY when the self base is in the readable recall set
+   * (`recallNamespacesForPrincipal`). When the self base is NOT readable (write-
+   * only / self-omitted principal), or when an explicit namespace was supplied,
+   * or no overlay applies, this collapses to the single key
+   * {@link resolveLcmReadSessionKey} returns — byte-for-byte the prior behavior
+   * (single-store / no-overlay flows stay the raw `sessionKey`). No
+   * `<principal>-project-*` key is ever searched for an unauthorized reader (no
+   * cross-tenant read leak).
+   */
+  private resolveLcmReadSessionIds(
+    explicitNamespace: string | undefined,
+    resolvedNamespace: string,
+    sessionKey: string,
+    authenticatedPrincipal: string | undefined,
+  ): string[] {
+    const primary = this.resolveLcmReadSessionKey(
+      explicitNamespace,
+      resolvedNamespace,
+      sessionKey,
+      authenticatedPrincipal,
+      "read",
+    );
+    const hasExplicitNamespace =
+      typeof explicitNamespace === "string" &&
+      explicitNamespace.trim().length > 0;
+    // Explicit namespace → no overlay fallbacks (the overlay never applies to an
+    // explicit read). Single key, unchanged.
+    if (hasExplicitNamespace) return [primary];
+
+    const principal = this.resolveRequestPrincipal(
+      sessionKey,
+      authenticatedPrincipal,
+    );
+    const base = defaultNamespaceForPrincipal(
+      principal,
+      this.orchestrator.config,
+    );
+    const overlaid = this.orchestrator.applyCodingNamespaceOverlay(
+      sessionKey,
+      base,
+    );
+    // No overlay → single default-store key, unchanged.
+    if (overlaid === base) return [primary];
+    // Overlay present but self base unreadable → the "read" gate already
+    // collapsed `primary` to the default store; do NOT add overlay fallbacks
+    // (they would be unauthorized `<principal>-project-*` keys). Single key.
+    const selfReadableInRecall = recallNamespacesForPrincipal(
+      principal,
+      this.orchestrator.config,
+    ).includes(base);
+    if (!selfReadableInRecall) return [primary];
+    // Self base readable → overlay rows authorized. Append one LCM key per coding
+    // read fallback (project → root), combined with the principal base for
+    // isolation — the SAME ordered set the orchestrator recall path searches.
+    const overlay = resolveCodingNamespaceOverlay(
+      this.orchestrator.getCodingContextForSession(sessionKey),
+      this.orchestrator.config.codingMode,
+      this.orchestrator.config.defaultNamespace,
+    );
+    const fallbackNamespaces = (overlay?.readFallbacks ?? []).map((fallback) =>
+      combineNamespaces(base, fallback),
+    );
+    const out = [primary];
+    const seen = new Set<string>([primary]);
+    for (const ns of fallbackNamespaces) {
+      const key =
+        lcmSessionKeyForNamespace(
+          ns,
+          sessionKey,
+          this.orchestrator.config.defaultNamespace,
+        ) ?? sessionKey;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(key);
+      }
+    }
+    return out;
   }
 
   async lcmCompactionFlush(
