@@ -11,6 +11,7 @@ import {
   rename,
   stat,
   unlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import type { PluginConfig } from "../types.js";
@@ -123,6 +124,11 @@ const REBUILD_LOCK_STALE_MS = 30_000;
 // a CLI rebuild forever behind a busy gateway.
 const REBUILD_LOCK_MAX_WAIT_MS = 5_000;
 const REBUILD_LOCK_POLL_MS = 50;
+// Heartbeat: while a rebuild holds the lock it refreshes the lock file's mtime
+// on this interval so a long (>STALE_MS) scan is NOT mistaken for a crashed
+// holder and broken out from under it (round 5, cursor/codex Medium/P2). Must be
+// comfortably below STALE_MS so at least a couple of beats land per stale window.
+const REBUILD_LOCK_HEARTBEAT_MS = 10_000;
 
 // Children that indicate a directory holds Remnic memory data (used for legacy
 // default-root detection and to skip empty/non-data roots during rebuild).
@@ -541,23 +547,52 @@ export class NamespaceCatalog {
    *
    * Containment (round 5, codex P2): the resolved path can still be a symlink
    * escaping memoryDir, so we run the full (lexical + realpath) containment
-   * contract and fall back to the trusted legacy `memoryDir` root — which is
-   * always contained — if it fails. The lexical `resolveStorageDir` is used as a
-   * last-resort guard for unsafe tokens that the router resolver would reject.
+   * contract. When it FAILS we fall back to a NAMESPACE-SPECIFIC safe root, NOT
+   * a blanket `memoryDir`. Recording `memoryDir` for a non-default namespace
+   * would point enumeration/maintenance at the DEFAULT namespace's tree (round 5,
+   * cursor/codex Medium/P2) — a cross-namespace fanout error. The correct safe
+   * root is the namespace's own lexical tokenized dir
+   * (`<memoryDir>/namespaces/<token>`), which is always contained and is that
+   * namespace's canonical location (we record the lexical PATH as metadata; we do
+   * not follow the escaping symlink). Only the default namespace — or a token so
+   * unsafe even the lexical dir cannot be built — falls back to `memoryDir`.
    */
   private async resolveSafeStorageDir(namespace: string): Promise<string> {
     let resolved: string;
     try {
       resolved = await resolveNamespaceStorageRoot(this.config, namespace);
     } catch {
-      try {
-        resolved = this.resolveStorageDir(namespace);
-      } catch {
-        // An unsafe namespace token would throw; fall back to the default root.
-        return this.memoryDir;
-      }
+      return this.safeFallbackStorageDir(namespace);
     }
     if (await this.isContainedStorageDir(resolved)) return resolved;
+    return this.safeFallbackStorageDir(namespace);
+  }
+
+  /**
+   * The namespace-specific contained fallback root, used when the router-resolved
+   * root fails containment (round 5, cursor/codex Medium/P2).
+   *
+   * Preference order:
+   *  1. The namespace's OWN lexical tokenized dir (`namespaces/<token>`) — so a
+   *     non-default namespace is NOT pointed at the DEFAULT namespace's `memoryDir`
+   *     tree (which would misdirect maintenance fanout). This is returned only
+   *     when the token dir itself stays contained (it is not a symlink escaping
+   *     memoryDir).
+   *  2. `memoryDir` as a LAST resort — for the default namespace, an unsafe token
+   *     that cannot build a contained path, OR the irreparable case where the
+   *     token dir IS a symlink escaping the root (so even its lexical path
+   *     resolves outside). Containment must win over tree-precision here: an
+   *     escaping path is strictly worse than the (contained) default root.
+   */
+  private async safeFallbackStorageDir(namespace: string): Promise<string> {
+    if (namespace === this.config.defaultNamespace) return this.memoryDir;
+    let tokenDir: string;
+    try {
+      tokenDir = this.namespaceTokenDir(namespaceIdentityToken(namespace));
+    } catch {
+      return this.memoryDir;
+    }
+    if (await this.isContainedStorageDir(tokenDir)) return tokenDir;
     return this.memoryDir;
   }
 
@@ -886,12 +921,30 @@ export class NamespaceCatalog {
    * `REBUILD_LOCK_MAX_WAIT_MS` of contention we proceed best-effort WITHOUT the
    * lock rather than block a rebuild forever (the in-chain re-merge still
    * recovers same-host appends). The lock is always released in `finally`.
+   *
+   * HEARTBEAT (round 5, cursor/codex Medium/P2): while WE hold the lock a timer
+   * refreshes its mtime every `REBUILD_LOCK_HEARTBEAT_MS`, so a legitimately long
+   * scan (> `REBUILD_LOCK_STALE_MS`) is not treated as a crashed holder and
+   * unlinked by another process/touch — which would let overlapping rewrites lose
+   * appends. Heartbeat failures are swallowed; the timer is always cleared in
+   * `finally`.
    */
   private async withRebuildLock<T>(fn: () => Promise<T>): Promise<T> {
     const acquired = await this.acquireRebuildLock();
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    if (acquired) {
+      heartbeat = setInterval(() => {
+        const now = new Date();
+        // Refresh mtime so age-based stale detection sees an active holder.
+        utimes(this.rebuildLockPath, now, now).catch(() => undefined);
+      }, REBUILD_LOCK_HEARTBEAT_MS);
+      // Don't keep the event loop alive solely for the heartbeat.
+      heartbeat.unref?.();
+    }
     try {
       return await fn();
     } finally {
+      if (heartbeat) clearInterval(heartbeat);
       if (acquired) {
         try {
           await unlink(this.rebuildLockPath);

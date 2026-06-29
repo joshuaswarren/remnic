@@ -18294,6 +18294,19 @@ export class Orchestrator {
       .catch(() => undefined);
   }
 
+  /**
+   * Public best-effort catalog write touch (issue #1499). User-facing explicit
+   * captures (`memory_store`) and review-queue approvals persist via
+   * `persistExplicitCapture()` → `storage.writeMemory()`, which bypasses the
+   * extraction write path that calls `markCatalogWrite`. Without this their
+   * namespaces never record `lastWriteAt`, so the catalog under-reports write
+   * recency (round 5, codex P2). Fire-and-forget and failure-tolerant — a
+   * catalog error must never affect the explicit write (gotcha #13, rule #40).
+   */
+  recordCatalogWrite(namespace: string, storageDir?: string): void {
+    this.markCatalogWrite(namespace, storageDir);
+  }
+
   /** Record a namespace read in the catalog. Best-effort, failure-tolerant. */
   private markCatalogRead(namespace: string, storageDir?: string): void {
     if (!this.namespaceCatalog.enabled) return;
