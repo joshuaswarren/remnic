@@ -1584,7 +1584,12 @@ export class EngramAccessService {
       }
       return {
         principal,
-        baseNamespace: writeNamespace,
+        // scopeDebug.baseNamespace must report the principal SELF base
+        // (`defaultNamespaceForPrincipal`), NOT the general write namespace —
+        // which collapses to config.defaultNamespace on this implicit no-overlay
+        // path (#1505 cursor "Wrong scopeDebug base namespace"). It already
+        // matches `objectiveStateNamespace` below; `writeNamespace` is unchanged.
+        baseNamespace,
         writeNamespace,
         // Implicit objective-state stays on the principal self base, NOT the
         // (possibly default) general write namespace — preserving the #928
