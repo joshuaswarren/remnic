@@ -251,21 +251,33 @@ export class NamespaceStorageRouter {
   private notifyResolved(namespace: string, storageDir: string): void {
     const hook = this.hooks.onResolve;
     if (!hook) return;
-    // Skip when we've already notified this exact (namespace, storageDir) — a
-    // steady-state cache hit must not re-append to the catalog log (NCNL2). A
-    // changed dir (rare: migration/realignment) still re-fires once.
+    // Skip when we've already SUCCESSFULLY notified this exact (namespace,
+    // storageDir) — a steady-state cache hit must not re-append to the catalog
+    // log (NCNL2). A changed dir (rare: migration/realignment) still re-fires
+    // once. We mark the pair as notified ONLY AFTER the hook succeeds, and CLEAR
+    // it on failure, so a dropped registration (e.g. rebuild-lock timeout) is
+    // RETRIED on the next cache hit instead of being suppressed forever (round 6,
+    // cursor Medium — ND3EJ).
     if (this.notifiedResolved.get(namespace) === storageDir) return;
-    this.notifiedResolved.set(namespace, storageDir);
     try {
       // Handle BOTH synchronous throws and asynchronous rejections (round 6,
       // codex P2 — NDo8C). The hook is typed `void`, but a caller may supply an
       // `async` function; its rejected promise would bypass this try/catch and,
-      // where unhandled rejections are fatal, crash storage resolution. Wrap in
-      // `Promise.resolve(...).catch()` so a best-effort catalog/register failure
-      // never propagates (CLAUDE.md gotcha #13).
-      Promise.resolve(hook(namespace, storageDir)).catch(() => undefined);
+      // where unhandled rejections are fatal, crash storage resolution. On success
+      // record the dedup marker; on failure clear it so a later resolve retries.
+      Promise.resolve(hook(namespace, storageDir)).then(
+        () => {
+          this.notifiedResolved.set(namespace, storageDir);
+        },
+        () => {
+          // Registration failed — do NOT mark as notified, so it is retried.
+          if (this.notifiedResolved.get(namespace) === storageDir) {
+            this.notifiedResolved.delete(namespace);
+          }
+        },
+      );
     } catch {
-      // Intentionally swallow: catalog registration is best-effort metadata.
+      // Synchronous throw: leave the pair un-notified so a later resolve retries.
     }
   }
 }

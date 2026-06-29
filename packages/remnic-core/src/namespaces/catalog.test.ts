@@ -1817,3 +1817,37 @@ test("an async onResolve hook rejection does not crash storage resolution", asyn
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (codex P2 — NDxiS): a configured non-default namespace must be seeded
+// with the ROUTER-resolved root, not a blanket tokenized dir. When a legacy raw
+// root (`namespaces/<rawname>`) already exists, the router serves it, so the
+// catalog must record that runtime path — not `namespaces/<token>`.
+test("rebuild seeds a configured namespace at its router-resolved (legacy raw) root", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "team-pi-project-origin-cfg";
+    // An EMPTY legacy raw-name root exists (no memory data) for this configured
+    // policy namespace. The scan SKIPS empty roots, so only the configured
+    // seeding determines the storageDir — which must match the router's choice.
+    const legacyRaw = path.join(memoryDir, "namespaces", ns);
+    await mkdir(legacyRaw, { recursive: true });
+
+    const policyCfg = makeConfig(memoryDir, {
+      namespacePolicies: [{ name: ns }],
+    } as unknown as Partial<PluginConfig>);
+    const routerRoot = await resolveNamespaceStorageRoot(policyCfg, ns);
+    assert.equal(routerRoot, legacyRaw, "router resolves the empty legacy raw root when it exists");
+
+    const catalog = new NamespaceCatalog(policyCfg);
+    const result = await catalog.rebuildFromDisk();
+    const rec = result.records.find((r) => r.namespace === ns);
+    assert.ok(rec, "the configured namespace is catalogued");
+    assert.equal(
+      path.resolve(rec!.storageDir),
+      path.resolve(legacyRaw),
+      "a configured namespace must be seeded at its router-resolved root, not the tokenized dir",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

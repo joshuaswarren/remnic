@@ -927,15 +927,32 @@ export class NamespaceCatalog {
         skipped.push({ token, reason: "unsafe", detail: ns });
         continue;
       }
-      const storageDir = ns === this.config.defaultNamespace ? defaultStorageDir : this.namespaceTokenDir(namespaceIdentityToken(ns));
-      // CONTAINMENT (round 6, codex P2 — NCzT4): before seeding a configured
-      // non-default record with its token path, verify that path does not ESCAPE
-      // memoryDir. The scan below rejects escaping/symlinked roots, but this
-      // seeding runs FIRST, so without this check rebuild would persist an escaping
-      // `storageDir` for a configured namespace whose token dir was replaced by an
-      // out-of-root symlink. `isContainedStorageDir` enforces the full lexical +
-      // symlink + realpath contract and allows a not-yet-created path (a brand-new
-      // configured namespace still seeds its canonical token path).
+      // ROUTER ALIGNMENT (round 6, codex P2 — NDxiS): seed a configured
+      // non-default namespace with the SAME root the runtime router resolves, not
+      // a blanket tokenized dir. `resolveNamespaceStorageRoot` returns the legacy
+      // RAW root when it exists and only prefers the tokenized root when that has
+      // storage markers — so a configured namespace with an empty legacy raw root
+      // (e.g. `namespaces/shared`) is catalogued at the runtime path, keeping
+      // maintenance/QMD aligned with live reads. Falls back to the lexical token
+      // dir if router resolution fails.
+      let storageDir: string;
+      if (ns === this.config.defaultNamespace) {
+        storageDir = defaultStorageDir;
+      } else {
+        try {
+          storageDir = await resolveNamespaceStorageRoot(this.config, ns);
+        } catch {
+          storageDir = this.namespaceTokenDir(namespaceIdentityToken(ns));
+        }
+      }
+      // CONTAINMENT (round 6, codex P2 — NCzT4): verify the seeded path does not
+      // ESCAPE memoryDir before recording it. The scan below rejects
+      // escaping/symlinked roots, but this seeding runs FIRST, so without this
+      // check rebuild would persist an escaping `storageDir` for a configured
+      // namespace whose root is a symlink out of memoryDir. `isContainedStorageDir`
+      // enforces the full lexical + symlink + realpath contract and allows a
+      // not-yet-created path (a brand-new configured namespace seeds its canonical
+      // root).
       if (ns !== this.config.defaultNamespace && !(await this.isContainedStorageDir(storageDir))) {
         skipped.push({ token: namespaceIdentityToken(ns), reason: "escape", detail: storageDir });
         continue;

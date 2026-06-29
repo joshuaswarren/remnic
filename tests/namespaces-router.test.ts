@@ -280,3 +280,38 @@ test("storageFor fires the resolve hook once per (namespace, dir), not on every 
     "onResolve must fire exactly once for repeated cache hits on the same namespace/dir",
   );
 });
+
+// ── Round 7 (cursor Medium — ND3EJ): a FAILED resolve-hook registration must not
+// be permanently suppressed by the dedup. If the first hook invocation rejects
+// (e.g. catalog append dropped on a rebuild-lock timeout), a later cache hit must
+// RETRY the hook rather than skip it forever.
+test("storageFor retries the resolve hook after a failed registration", async () => {
+  const memoryDir = tmpDir("ns-router-resolve-retry");
+  const cfg = baseConfig(memoryDir);
+  let calls = 0;
+  const router = new NamespaceStorageRouter(cfg, {
+    onResolve: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("first registration dropped");
+      // Subsequent calls succeed.
+    },
+  });
+
+  // First resolve fires the hook, which REJECTS — dedup must not be recorded.
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10)); // let the rejection settle
+  // A later cache hit must RE-FIRE the hook (retry) since the first failed.
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(calls >= 2, "a failed registration must be retried on the next resolve");
+
+  // Once a hook succeeds, further cache hits are deduped (no unbounded growth).
+  const callsAfterSuccess = calls;
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(
+    calls,
+    callsAfterSuccess,
+    "after a successful registration, further cache hits are deduped",
+  );
+});
