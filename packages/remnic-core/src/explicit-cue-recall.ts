@@ -346,9 +346,16 @@ export async function buildExplicitCueRecallSection(
   // other keys' cues); single-key recall runs each collector directly, so a
   // failure propagates exactly as before.
   //
-  // Gather is ordered by evidence TYPE first (turn references → content cues →
-  // lexical cues), then by read-key priority within each type, so an unscored
-  // fallback cue keeps a sensible position relative to other unscored cues.
+  // Ordering: gather by evidence TYPE first (turn references → content cues →
+  // lexical cues), then by read-key priority within each type. This is the
+  // section's deliberate value order, and it carries across keys — so a fallback
+  // key's high-value turn references precede the primary key's lower-value
+  // lexical cues under a tight budget, while a single key is byte-for-byte the
+  // pre-#1505 insertion order. We intentionally do NOT score-sort the merged set:
+  // explicit-cue's highest-value cues (turn references / content cues) are
+  // deliberately UNSCORED while lexical search hits carry numeric scores, so a
+  // score-DESC sort would invert the priority and demote turn references below
+  // weak lexical hits (cursor[bot] / codex P2 on this PR).
   const readSessionIds = resolveLcmReadSessionIds(options);
   await gatherAcrossReadSessions(readSessionIds, (sessionId) =>
     collectTurnReferenceEvidence({
@@ -397,18 +404,6 @@ export async function buildExplicitCueRecallSection(
       seenTurns,
     }),
   );
-
-  // #1505 codex P2 (review follow-up): explicit-cue does NOT relevance-rank
-  // before budgeting — `buildEvidencePack` consumes `evidenceItems` in order. So
-  // when MORE than one read key contributed, stable-sort by score DESC so the
-  // strongest cues win a tight budget regardless of which key produced them
-  // (otherwise the primary key's low-score cues, gathered first, could crowd out
-  // a fallback key's stronger cues). Search-scored cues rise; unscored cues
-  // (score `undefined` → 0) keep their relative gather order. Single-key recall
-  // skips the sort, so its output is byte-for-byte the pre-#1505 insertion order.
-  if (readSessionIds.length > 1) {
-    evidenceItems.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  }
 
   const evidenceFocusQuery = buildEvidenceFocusQuery(query, {
     includeBenchmarkAnchorCues: options.includeBenchmarkAnchorCues,
