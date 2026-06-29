@@ -6,16 +6,24 @@
  * `StorageManager.readAllMemories()` per namespace, which scans the disk via
  * `collectActiveMemoryPaths()`. The old implementation only scanned four
  * directories (facts, procedures, reasoning-traces, corrections), so on-disk
- * memories in any other category directory (preferences, decisions, moments,
- * commitments, principles, rules, skills, relationships, questions) were
- * silently missed when QMD was unavailable.
+ * memories in any other recall category directory (preferences, decisions,
+ * moments, commitments, principles, rules, skills, relationships) were silently
+ * missed when QMD was unavailable.
  *
  * These tests seed `.md` memory files directly into the on-disk category
  * directories (the way an external seed, a migration, or a future routing
  * change would leave them) and assert the disk-scan recall returns them.
  *
  * They FAIL on the old four-directory behavior and PASS once
- * `collectActiveMemoryPaths()` iterates the shared `ALL_CATEGORY_DIRS`.
+ * `collectActiveMemoryPaths()` iterates the shared `RECALL_FALLBACK_DIRS`.
+ *
+ * PR #1503 review (chatgpt-codex-connector, cursor): `questions/` is NOT a
+ * recall memory dir. It holds operational question-QUEUE items written by
+ * `writeQuestion()` and surfaced only through the dedicated, disabled-by-default
+ * `injectQuestions` pipeline stage. The QMD primary recall corpus excludes them,
+ * so the fallback must exclude them too (corpus parity; CLAUDE.md rule #39).
+ * `RECALL_FALLBACK_DIRS` = `ALL_CATEGORY_DIRS` minus `RECALL_NON_MEMORY_DIRS`
+ * (currently just `questions`).
  */
 
 import assert from "node:assert/strict";
@@ -25,7 +33,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { StorageManager } from "./storage.js";
-import { ALL_CATEGORY_DIRS, CATEGORY_DIR_MAP } from "./utils/category-dir.js";
+import {
+  CATEGORY_DIR_MAP,
+  RECALL_FALLBACK_DIRS,
+  RECALL_NON_MEMORY_DIRS,
+} from "./utils/category-dir.js";
 
 /** Build a minimal-but-valid memory markdown file body. */
 function memoryFile(id: string, category: string, content: string): string {
@@ -82,24 +94,28 @@ async function makeStorage(prefix = "engram-1497-"): Promise<{
 }
 
 /**
- * Singular-category-key -> {dir, category-frontmatter-value} for every entry the
- * issue enumerates. `question` has no `MemoryCategory` enum member, so its
- * frontmatter `category` field is written as "question" (the scan is
- * directory-based, not category-based, so any valid memory file is returned).
+ * Singular-category-key -> {dir} for every RECALL category dir the fallback
+ * scan must cover. This is `ALL_CATEGORY_DIRS` minus `RECALL_NON_MEMORY_DIRS`
+ * (the `questions/` queue dir is intentionally absent — see the file header).
  */
 const CATEGORY_CASES: ReadonlyArray<{ key: string; dir: string }> = [
   { key: "fact", dir: "facts" },
   ...Object.entries(CATEGORY_DIR_MAP).map(([key, dir]) => ({ key, dir })),
-];
+].filter(({ dir }) => !RECALL_NON_MEMORY_DIRS.has(dir));
 
-test("collectActiveMemoryPaths source-of-truth: every ALL_CATEGORY_DIRS entry is covered", () => {
+test("collectActiveMemoryPaths source-of-truth: every RECALL_FALLBACK_DIRS entry is covered", () => {
   // Guards against the dir list drifting away from the shared source of truth.
-  const expected = new Set(ALL_CATEGORY_DIRS);
+  const expected = new Set(RECALL_FALLBACK_DIRS);
   const covered = new Set(CATEGORY_CASES.map((c) => c.dir));
   assert.deepEqual(
     [...covered].sort(),
     [...expected].sort(),
-    "test cases must cover exactly ALL_CATEGORY_DIRS",
+    "test cases must cover exactly RECALL_FALLBACK_DIRS",
+  );
+  // questions/ must NOT be a recall fallback dir.
+  assert.ok(
+    !expected.has("questions"),
+    "questions/ is a queue dir and must be excluded from recall fallback",
   );
 });
 
@@ -225,15 +241,14 @@ test("filesystem fallback is namespace-aware across more than one namespace", as
     await seedMemory(nsA.baseDir, "relationships", "rel-a", "relationship", "NS A relationship.");
     await seedMemory(nsA.baseDir, "commitments", "com-a", "commitment", "NS A commitment.");
     await seedMemory(nsB.baseDir, "moments", "mom-b", "moment", "NS B moment.");
-    await seedMemory(nsB.baseDir, "questions", "q-b", "question", "NS B question.");
 
     const a = new Set((await nsA.storage.readAllMemories()).map((m) => m.frontmatter.id));
     const b = new Set((await nsB.storage.readAllMemories()).map((m) => m.frontmatter.id));
 
     assert.ok(a.has("rel-a") && a.has("com-a"), "namespace A must surface its memories");
-    assert.ok(b.has("mom-b") && b.has("q-b"), "namespace B must surface its memories");
+    assert.ok(b.has("mom-b"), "namespace B must surface its memories");
     // No cross-namespace bleed.
-    assert.ok(!a.has("mom-b") && !a.has("q-b"), "namespace A must not read namespace B");
+    assert.ok(!a.has("mom-b"), "namespace A must not read namespace B");
     assert.ok(!b.has("rel-a") && !b.has("com-a"), "namespace B must not read namespace A");
   } finally {
     await nsA.cleanup();
@@ -279,6 +294,50 @@ test("non-category content dirs are deliberately EXCLUDED from fallback recall",
     }
     assert.ok(!foundIds.has("excluded-profile"), "profile.md must be excluded from fallback recall");
     assert.equal(memories.length, 1, "only the one in-category memory should be returned");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("question-queue items written by writeQuestion() do NOT leak into fallback recall", async () => {
+  // PR #1503 review (chatgpt-codex-connector P2 + cursor): scanning questions/
+  // via the category-dir list pulled writeQuestion() queue items
+  // (priority/resolved frontmatter) into recall. They are NOT recall memories —
+  // they are surfaced only via readQuestions() + the disabled-by-default
+  // injectQuestions pipeline. The QMD primary corpus excludes them; the
+  // filesystem fallback must too (CLAUDE.md rule #39 corpus parity).
+  //
+  // This test uses the REAL writeQuestion() path (not a synthetic memory file)
+  // so it exercises exactly the frontmatter shape the reviewers flagged. It
+  // FAILS on the buggy ALL_CATEGORY_DIRS scan and PASSES after the
+  // RECALL_FALLBACK_DIRS fix.
+  const { storage, baseDir, cleanup } = await makeStorage();
+  try {
+    // A genuine recall memory so the corpus is non-empty.
+    await seedMemory(baseDir, "facts", "real-fact", "fact", "A genuine fact.");
+
+    // Real operational question-queue items (frontmatter { id, created,
+    // priority, resolved }, body `<question>\n\n**Context:** ...`).
+    const qId1 = await storage.writeQuestion("What is the user's timezone?", "ctx1", 0.9);
+    const qId2 = await storage.writeQuestion("Does the user prefer dark mode?", "ctx2", 0.5);
+
+    // Queue items remain readable via the dedicated queue surface.
+    const queue = await storage.readQuestions();
+    const queueIds = new Set(queue.map((q) => q.id));
+    assert.ok(queueIds.has(qId1) && queueIds.has(qId2), "readQuestions() must still return the queue");
+
+    // ...but they must NOT appear in the recall corpus.
+    storage.invalidateAllMemoriesCacheForDir();
+    const memories = await storage.readAllMemories();
+    const foundIds = new Set(memories.map((m) => m.frontmatter.id));
+    assert.ok(foundIds.has("real-fact"), "the genuine fact must still be recalled");
+    assert.ok(!foundIds.has(qId1), "question-queue item #1 must NOT leak into recall");
+    assert.ok(!foundIds.has(qId2), "question-queue item #2 must NOT leak into recall");
+    assert.equal(
+      memories.length,
+      1,
+      "only the genuine fact should be recalled (no question-queue leakage)",
+    );
   } finally {
     await cleanup();
   }

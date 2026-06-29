@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { log } from "./logger.js";
 import { isErrnoCode } from "./utils/errno.js";
-import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
+import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 import { getCachedEntities, invalidateCachedEntities, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -4016,31 +4016,35 @@ export class StorageManager {
     // (facts/procedures/reasoning-traces/corrections). Issue #1497: the QMD
     // filesystem-fallback recall path (orchestrator `recent_scan` ->
     // readAllMemoriesForNamespaces -> readAllMemories -> here) must read every
-    // category dir so on-disk memories in preferences/decisions/moments/
-    // commitments/principles/rules/skills/relationships/questions are not
-    // missed when QMD is disabled, missing, or unhealthy. ALL_CATEGORY_DIRS is
-    // the single source of truth shared with ensureDirectories() and the write
-    // routing in utils/category-dir.ts.
+    // recall category dir so on-disk memories in preferences/decisions/moments/
+    // commitments/principles/rules/skills/relationships are not missed when QMD
+    // is disabled, missing, or unhealthy. RECALL_FALLBACK_DIRS is the single
+    // source of truth derived from ALL_CATEGORY_DIRS (shared with
+    // ensureDirectories() and the write routing in utils/category-dir.ts).
     //
     // These paths resolve identically to the legacy this.factsDir /
     // this.correctionsDir / this.proceduresDir / this.reasoningTracesDir
     // getters (all `path.join(this.baseDir, <dir>)`), so the scan stays
     // namespace-aware: this.baseDir is per-namespace, set by the storage router.
     //
-    // Deliberately EXCLUDED (issue #1497): the non-category content dirs that
-    // ensureDirectories() also creates — entities/, state/, artifacts/,
-    // identity/, config/ — plus the root profile.md. These are not
-    // standard frontmatter-backed memory files and have their own dedicated
-    // read paths (readEntities, artifact readers, identity anchors, profile
-    // injection). Including them here would surface non-memory content in
-    // recall. The exclusion is asserted by a test in
-    // storage-fallback-category-dirs.test.ts. (`questions/` IS a recall
-    // category dir and is included via ALL_CATEGORY_DIRS.)
+    // Deliberately EXCLUDED (issue #1497 + PR #1503 review): the non-category
+    // content dirs that ensureDirectories() also creates — entities/, state/,
+    // artifacts/, identity/, config/ — plus the root profile.md, AND the
+    // questions/ queue dir. questions/ holds operational question-QUEUE items
+    // written by writeQuestion() (frontmatter `{ id, created, priority,
+    // resolved }`), read only via readQuestions() and surfaced through the
+    // dedicated, disabled-by-default `injectQuestions` recall-pipeline stage —
+    // never as standard recall memories. The QMD primary recall corpus does not
+    // include them, so the fallback must not either (corpus parity; CLAUDE.md
+    // rule #39). Were questions/ scanned here, parseFrontmatter() would accept
+    // those files (they have a `---` frontmatter block) and leak queue items
+    // into recall. None of these excluded dirs are in RECALL_FALLBACK_DIRS; the
+    // exclusion is asserted by tests in storage-fallback-category-dirs.test.ts.
     //
     // collectPaths() already ignores missing dirs (try/catch) and the parser
     // returns null for non-memory markdown, so unrelated files never crash the
     // scan.
-    for (const dir of ALL_CATEGORY_DIRS) {
+    for (const dir of RECALL_FALLBACK_DIRS) {
       await collectPaths(path.join(this.baseDir, dir));
     }
     return filePaths;
