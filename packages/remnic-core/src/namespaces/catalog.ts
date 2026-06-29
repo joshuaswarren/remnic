@@ -342,6 +342,13 @@ export class NamespaceCatalog {
   // a cross-instance touch DURING the scan window and assert it is NOT blocked or
   // dropped — proving the scan no longer holds the mutex. Never set in production.
   protected onRebuildAfterScanForTest?: () => Promise<void>;
+  // Test-only seam (NG7Bg, codex P2): fires inside `breakStaleRebuildLock` AFTER it
+  // has judged the lock stale and captured its identity, but BEFORE the final
+  // re-validation+unlink. A deterministic test installs a hook here to REPLACE the
+  // lock file (a fresh holder created a new lock in the race window) and assert the
+  // break is skipped — the replacement's active lock is not deleted. Never set in
+  // production.
+  protected onBeforeBreakStaleUnlinkForTest?: () => Promise<void>;
 
   constructor(private readonly config: PluginConfig) {
     this.memoryDir = config.memoryDir;
@@ -1570,15 +1577,55 @@ export class NamespaceCatalog {
     }
   }
 
-  /** Remove the lock file if its mtime is older than the stale threshold. */
+  /**
+   * Remove the lock file if its mtime is older than the stale threshold.
+   *
+   * REPLACEMENT-SAFE (NG7Bg, codex P2): a plain `stat` → `unlink` has a TOCTOU
+   * window — two processes can both observe the SAME stale lock; one removes it and
+   * creates a FRESH lock, and the other's later `unlink` then deletes that fresh
+   * holder's ACTIVE lock based on the stale identity it read earlier, leaving the
+   * fresh holder running its critical section with no visible lock and reopening the
+   * lost-update race the mutex prevents. We therefore capture the lock's IDENTITY
+   * (its full content line: `<pid> <owner-uuid> <iso>`) when we judge it stale, then
+   * RE-READ immediately before unlinking and only remove it when the content is
+   * byte-identical AND still stale. A replacement lock has a different owner id /
+   * timestamp, so its content differs and we leave it untouched. We never unlink a
+   * lock whose mtime is now fresh (a heartbeat refreshed it) or whose identity
+   * changed (a replacement was created). This is best-effort: any mismatch/vanish
+   * simply skips the break and the caller polls again.
+   */
   private async breakStaleRebuildLock(): Promise<void> {
+    let staleIdentity: string;
     try {
       const info = await stat(this.rebuildLockPath);
-      if (Date.now() - info.mtimeMs > REBUILD_LOCK_STALE_MS) {
-        await unlink(this.rebuildLockPath).catch(() => undefined);
+      if (Date.now() - info.mtimeMs <= REBUILD_LOCK_STALE_MS) {
+        // Not stale (e.g. a live holder's heartbeat keeps it fresh) — leave it.
+        return;
       }
+      // Capture the exact identity we judged stale, so we can confirm it has not
+      // been replaced before we unlink.
+      staleIdentity = await readFile(this.rebuildLockPath, "utf8");
     } catch {
-      // Lock vanished (released by holder) or stat failed — nothing to do.
+      // Lock vanished (released by holder) or stat/read failed — nothing to do.
+      return;
+    }
+    // Test-only seam: simulate a replacement lock being created in the race window
+    // between the staleness judgment and the unlink (NG7Bg). No-op in production.
+    if (this.onBeforeBreakStaleUnlinkForTest) {
+      await this.onBeforeBreakStaleUnlinkForTest();
+    }
+    try {
+      // Re-validate immediately before unlinking: the lock must still carry the
+      // SAME identity AND still be stale. If a replacement lock was created in the
+      // window (different owner/timestamp) or a heartbeat refreshed the mtime, do
+      // NOT unlink — that would delete another process's ACTIVE lock.
+      const current = await readFile(this.rebuildLockPath, "utf8");
+      if (current !== staleIdentity) return; // replaced — leave the fresh lock
+      const recheck = await stat(this.rebuildLockPath);
+      if (Date.now() - recheck.mtimeMs <= REBUILD_LOCK_STALE_MS) return; // refreshed
+      await unlink(this.rebuildLockPath).catch(() => undefined);
+    } catch {
+      // The lock changed/vanished between checks — another process handled it.
     }
   }
 

@@ -2425,6 +2425,13 @@ class SeamCatalog extends NamespaceCatalog {
     (this as unknown as { onRebuildAfterScanForTest?: () => Promise<void> }).onRebuildAfterScanForTest =
       fn;
   }
+  setBreakStaleSeam(fn: (() => Promise<void>) | undefined): void {
+    (this as unknown as { onBeforeBreakStaleUnlinkForTest?: () => Promise<void> }).onBeforeBreakStaleUnlinkForTest =
+      fn;
+  }
+  async callBreakStaleRebuildLock(): Promise<void> {
+    await (this as unknown as { breakStaleRebuildLock: () => Promise<void> }).breakStaleRebuildLock();
+  }
 }
 
 function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void } {
@@ -2600,6 +2607,81 @@ test("a touch drops (never crashes, never appends) when it cannot acquire the he
     assert.ok(waited < 12_000, "the dropped touch must return within the bounded wait");
   } finally {
     if (heartbeat) clearInterval(heartbeat);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── NG7Bg (codex P2): breaking a STALE lock must not delete a REPLACEMENT lock
+// created in the race window. Two processes can both judge the same lock stale;
+// one removes it and creates a fresh lock, and the other's later unlink would
+// delete that fresh holder's ACTIVE lock based on the stale identity it read
+// earlier — leaving the fresh holder running its critical section unprotected. The
+// break now re-validates the lock identity immediately before unlinking and skips
+// the unlink when a replacement (different owner/timestamp) is present. We simulate
+// the replacement via the post-judgment seam and assert the fresh lock survives.
+test("breakStaleRebuildLock does not delete a replacement lock created in the race window (NG7Bg)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+
+    // 1) A genuinely STALE lock (owner A, mtime well past the stale threshold).
+    const staleIdentity = `111111 aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa ${new Date(
+      Date.now() - 120_000,
+    ).toISOString()}\n`;
+    await writeFile(lockPath, staleIdentity, "utf8");
+    const old = new Date(Date.now() - 120_000);
+    await utimes(lockPath, old, old);
+
+    const breaker = new SeamCatalog(makeConfig(memoryDir));
+    // 2) In the race window (after staleness is judged, before unlink), a DIFFERENT
+    //    process removes the stale lock and creates a FRESH replacement (owner B,
+    //    current mtime).
+    const replacementIdentity = `222222 bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb ${new Date().toISOString()}\n`;
+    breaker.setBreakStaleSeam(async () => {
+      await writeFile(lockPath, replacementIdentity, "utf8");
+      const now = new Date();
+      await utimes(lockPath, now, now);
+      breaker.setBreakStaleSeam(undefined);
+    });
+
+    await breaker.callBreakStaleRebuildLock();
+
+    // 3) The replacement lock must STILL exist with its own identity — it was not
+    //    deleted based on the stale identity the breaker read earlier.
+    const after = await readFile(lockPath, "utf8").catch(() => "");
+    assert.equal(
+      after,
+      replacementIdentity,
+      "a replacement lock created in the race window must NOT be unlinked",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// NG7Bg baseline: a genuinely stale lock with an UNCHANGED identity is still broken
+// (the fix must not stop legitimate stale-lock recovery).
+test("breakStaleRebuildLock still removes a stale lock whose identity is unchanged (NG7Bg baseline)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+    const stale = `333333 cccccccc-cccc-4ccc-8ccc-cccccccccccc ${new Date(
+      Date.now() - 120_000,
+    ).toISOString()}\n`;
+    await writeFile(lockPath, stale, "utf8");
+    const old = new Date(Date.now() - 120_000);
+    await utimes(lockPath, old, old);
+
+    const breaker = new SeamCatalog(makeConfig(memoryDir));
+    await breaker.callBreakStaleRebuildLock();
+
+    const exists = await readFile(lockPath, "utf8").then(() => true, () => false);
+    assert.equal(exists, false, "an unchanged stale lock must still be broken");
+  } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
