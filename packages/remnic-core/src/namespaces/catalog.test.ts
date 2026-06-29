@@ -6,7 +6,7 @@ import test from "node:test";
 import type { PluginConfig } from "../types.js";
 import { namespaceIdentityToken } from "./identity.js";
 import { NamespaceCatalog } from "./catalog.js";
-import { NamespaceStorageRouter } from "./storage.js";
+import { NamespaceStorageRouter, resolveDefaultNamespaceRoot } from "./storage.js";
 
 function makeConfig(memoryDir: string, overrides: Partial<PluginConfig> = {}): PluginConfig {
   return {
@@ -517,6 +517,148 @@ test("chunked write path contract: markWrite updates lastWriteAt for the namespa
     const record = await catalog.getNamespaceRecord(ns);
     assert.ok(record?.lastWriteAt, "chunked write must update lastWriteAt");
     assert.equal(record?.storageDir, storageDir);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 2, Issue A (cursor High + codex P2): a hot-path touch that lands
+// while `rebuildFromDisk --apply` is running must NOT be discarded by the
+// atomic rewrite. Round 1 snapshotted catalog state OUTSIDE the write chain and
+// then rewrote from that snapshot, so a touch appended after the snapshot but
+// before the rewrite was lost. Now the entire scan → load → rewrite runs inside
+// ONE serialized critical section, so a concurrent markWrite either lands before
+// the rebuild's in-chain load (folded into the rewrite) or after the rewrite
+// (its own later critical turn re-reads the rewritten file and re-appends). Run
+// many rounds so the assertion never depends on one lucky scheduling.
+test("rebuildFromDisk --apply does not drop a concurrent markWrite touch", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    for (let i = 0; i < 30; i++) {
+      const ns = `project-origin-rebuild-race-${i}`;
+      const storageDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+      // Give the namespace on-disk data so rebuild discovers it as a scan record
+      // (with no lastWriteAt). The racing markWrite is what supplies lastWriteAt.
+      await mkdir(path.join(storageDir, "facts"), { recursive: true });
+
+      // Fire rebuild and a write touch concurrently without awaiting between.
+      await Promise.all([
+        catalog.rebuildFromDisk(),
+        catalog.markWrite(ns, { discoveredBy: "write", storageDir }),
+      ]);
+
+      const record = await catalog.getNamespaceRecord(ns);
+      assert.ok(
+        record,
+        `round ${i}: namespace must exist after concurrent rebuild + write`,
+      );
+      assert.ok(
+        record?.lastWriteAt,
+        `round ${i}: a markWrite racing rebuildFromDisk --apply must not be dropped`,
+      );
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// Companion: markRead and registerResolved touches racing a rebuild are also
+// preserved (the lost-touch class covers all touch kinds, not just write).
+test("rebuildFromDisk --apply preserves concurrent markRead / registerResolved touches", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    for (let i = 0; i < 20; i++) {
+      const ns = `project-origin-rebuild-rr-${i}`;
+      const storageDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+      await mkdir(path.join(storageDir, "facts"), { recursive: true });
+      await Promise.all([
+        catalog.rebuildFromDisk(),
+        catalog.markRead(ns, { discoveredBy: "read" }),
+        catalog.registerResolved(ns, storageDir),
+      ]);
+      const record = await catalog.getNamespaceRecord(ns);
+      assert.ok(record, `round ${i}: namespace must survive concurrent rebuild`);
+      assert.ok(
+        record?.lastReadAt,
+        `round ${i}: a markRead racing rebuildFromDisk must not be dropped`,
+      );
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// `--dry-run` must remain non-mutating even though it now takes the critical
+// section for a consistent read.
+test("rebuildFromDisk dry-run takes the critical section but writes nothing", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    await mkdir(path.join(memoryDir, "namespaces", namespaceIdentityToken("gamma"), "facts"), {
+      recursive: true,
+    });
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const result = await catalog.rebuildFromDisk({ dryRun: true });
+    assert.equal(result.dryRun, true);
+    assert.ok(result.records.some((r) => r.namespace === "gamma"));
+    let exists = true;
+    try {
+      await readFile(path.join(memoryDir, "state", "namespaces.jsonl"), "utf8");
+    } catch {
+      exists = false;
+    }
+    assert.equal(exists, false, "dry-run must not write the catalog file");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 2, Issue C (codex P2): the rebuilt default record's storageDir must
+// match the runtime router's `defaultNamespaceRoot`. While legacy default data
+// lives directly under memoryDir, the router keeps the default root at
+// memoryDir even if a tokenized `namespaces/<default-token>` dir also exists.
+// Rebuild must NOT overwrite the default record with the tokenized path, or
+// maintenance/QMD would read a different default root than live reads.
+test("rebuildFromDisk keeps default storageDir aligned with the router (legacy data present)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const config = makeConfig(memoryDir);
+    // Legacy default data lives directly under memoryDir.
+    await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+    await writeFile(path.join(memoryDir, "facts", "legacy.md"), "# legacy\n", "utf8");
+    // AND a tokenized default dir also exists with data — the divergent case.
+    const tokenizedDefaultDir = path.join(
+      memoryDir,
+      "namespaces",
+      namespaceIdentityToken(config.defaultNamespace),
+    );
+    await mkdir(path.join(tokenizedDefaultDir, "facts"), { recursive: true });
+    await writeFile(path.join(tokenizedDefaultDir, "facts", "tok.md"), "# tok\n", "utf8");
+
+    // Resolve what the runtime router would use for the default root.
+    const routerRoot = await resolveDefaultNamespaceRoot(config);
+    assert.equal(
+      routerRoot,
+      memoryDir,
+      "router keeps default root at memoryDir while legacy data exists",
+    );
+
+    const catalog = new NamespaceCatalog(config);
+    const result = await catalog.rebuildFromDisk();
+    const def = result.records.find((r) => r.namespace === config.defaultNamespace);
+    assert.ok(def, "expected a default namespace record");
+    assert.equal(def?.kind, "default");
+    assert.equal(
+      def?.storageDir,
+      routerRoot,
+      "rebuilt default storageDir must equal the router's defaultNamespaceRoot, not the tokenized path",
+    );
+    assert.notEqual(
+      def?.storageDir,
+      tokenizedDefaultDir,
+      "rebuild must not point the default record at the tokenized dir while legacy data exists",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

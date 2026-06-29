@@ -4,6 +4,7 @@ import { appendFile, lstat, mkdir, readdir, readFile, realpath, rename, writeFil
 import type { PluginConfig } from "../types.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { namespaceIdentityFromToken, namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
+import { resolveDefaultNamespaceRoot } from "./storage.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
 /**
@@ -443,7 +444,31 @@ export class NamespaceCatalog {
       return { dryRun, records: [], skipped: [] };
     }
 
-    // Preserve existing known metadata where safe (CLAUDE.md preservation req).
+    // CONCURRENCY (Issue A — round 2): the entire scan → merge → rewrite runs
+    // inside ONE serialized critical section on the shared write chain. This
+    // closes the round-1 residual risk where a hot-path markRead/markWrite/
+    // registerResolved append could land AFTER the snapshot but BEFORE the
+    // atomic rewrite and then be discarded by the rewrite. Because touches also
+    // run through `queueCritical`, no append can interleave between the load
+    // (which now reads the latest persisted state, including touches that
+    // landed before this section started) and the rewrite. A `--dry-run` still
+    // takes the section for a consistent read but performs no mutation.
+    //
+    // Deadlock note: the rewrite inside this section uses the unchained
+    // `rewriteUnchained` helper (mirroring `appendUnchained`) rather than a
+    // helper that re-enters `queueCritical` — re-entering the chain from inside
+    // a held turn would await the very entry this section holds.
+    return this.queueCritical(async () => this.rebuildInsideChain(dryRun));
+  }
+
+  /**
+   * Body of `rebuildFromDisk`, run inside a single `queueCritical` turn. MUST
+   * only be invoked from within the serialized chain so the load and the
+   * rewrite are atomic with respect to concurrent touches.
+   */
+  private async rebuildInsideChain(dryRun: boolean): Promise<NamespaceCatalogRebuildResult> {
+    // Read the LATEST persisted state inside the chain so any touch that landed
+    // before this turn is folded in (and re-merged into the rewrite below).
     const existing = await this.loadCompacted();
     const skipped: NamespaceCatalogSkippedRoot[] = [];
     const rebuilt = new Map<string, NamespaceRecord>();
@@ -463,16 +488,15 @@ export class NamespaceCatalog {
       ...this.config.namespacePolicies.map((p) => p.name),
     ]);
 
-    // 2) Legacy/default root compatibility: if facts live directly under
-    //    memoryDir (no tokenized default dir), the default root IS memoryDir.
-    const defaultToken = namespaceIdentityToken(this.config.defaultNamespace);
-    const defaultTokenDir = this.namespaceTokenDir(defaultToken);
-    const defaultTokenHasData = await hasMemoryData(defaultTokenDir);
-    const legacyDefaultHasData = await hasMemoryData(this.memoryDir);
-    const defaultStorageDir =
-      defaultTokenHasData && (await pathExists(defaultTokenDir))
-        ? defaultTokenDir
-        : this.memoryDir;
+    // 2) Default-root alignment (Issue C — round 2): the catalog's default
+    //    record MUST point at the SAME root the runtime router resolves, or
+    //    maintenance/QMD consumers would read a different default root than
+    //    live reads. We delegate to the shared `resolveDefaultNamespaceRoot`
+    //    (the very helper the router uses) instead of reimplementing divergent
+    //    "prefer tokenized dir if it has data" logic — while legacy data lives
+    //    directly under memoryDir, this returns memoryDir, matching runtime.
+    const defaultStorageDir = await resolveDefaultNamespaceRoot(this.config);
+    const legacyDefaultHasData = defaultStorageDir === this.memoryDir;
 
     for (const ns of configured) {
       if (!ns) continue;
@@ -536,6 +560,20 @@ export class NamespaceCatalog {
       // Only catalog roots that actually hold memory data (skip empty shells).
       if (!(await hasMemoryData(fullPath))) continue;
 
+      // Default-root alignment (Issue C): never let a tokenized default dir
+      // overwrite the configured default's storageDir with `fullPath`. The
+      // default record's root is owned by `resolveDefaultNamespaceRoot` above,
+      // which mirrors the router. We still keep the default record (set in
+      // step 1) but skip clobbering its root here.
+      if (decoded === this.config.defaultNamespace) {
+        const def = rebuilt.get(this.config.defaultNamespace);
+        if (def) {
+          def.storageDir = defaultStorageDir;
+          def.kind = "default";
+        }
+        continue;
+      }
+
       const prior = existing.get(decoded);
       rebuilt.set(
         decoded,
@@ -565,7 +603,7 @@ export class NamespaceCatalog {
     });
 
     if (!dryRun) {
-      await this.rewriteAtomic(records);
+      await this.rewriteUnchained(records);
     }
 
     return { dryRun, records, skipped };
@@ -649,19 +687,19 @@ export class NamespaceCatalog {
   }
 
   /**
-   * Atomically rewrite the compacted catalog (temp file + rename) so a failed
-   * write never leaves a truncated/lost catalog (CLAUDE.md rule #54: write
-   * temp, then rename — never delete-before-write). Serialized against touches
-   * via the shared write chain.
+   * Atomic temp-file + rename rewrite (CLAUDE.md rule #54: write temp, then
+   * rename — never delete-before-write) WITHOUT re-entering the write chain.
+   * MUST only be called from inside a `queueCritical(...)` turn (e.g. the
+   * rebuild critical section, which already holds the serialized turn so its
+   * load and rewrite are atomic against concurrent touches). Re-entering the
+   * chain from within a held turn would deadlock.
    */
-  private async rewriteAtomic(records: NamespaceRecord[]): Promise<void> {
+  private async rewriteUnchained(records: NamespaceRecord[]): Promise<void> {
     const body = records.map((r) => serializeRecord(r)).join("\n") + (records.length > 0 ? "\n" : "");
-    await this.queueCritical(async () => {
-      await mkdir(this.stateDir, { recursive: true });
-      const tmp = `${this.catalogPath}.${process.pid}.${Date.now()}.tmp`;
-      await writeFile(tmp, body, "utf8");
-      await rename(tmp, this.catalogPath);
-    });
+    await mkdir(this.stateDir, { recursive: true });
+    const tmp = `${this.catalogPath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(tmp, body, "utf8");
+    await rename(tmp, this.catalogPath);
   }
 }
 

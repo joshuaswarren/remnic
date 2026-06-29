@@ -13095,6 +13095,15 @@ export class Orchestrator {
             contentHashSource: rawContent,
           },
         );
+        // Catalog touch (issue #1499, Issue B — round 2): a shared-namespace
+        // promotion is the ONLY write the shared namespace receives on this
+        // path, so without this the shared record's lastWriteAt stays stale and
+        // `writtenSince` filters / maintenance fanout skip it. The hot-path
+        // source-namespace touch (markCatalogWrite on targetStorage.dir) uses a
+        // DIFFERENT storage dir (the routed source namespace), so this does not
+        // double-count the source. Best-effort and failure-tolerant — it must
+        // never crash the promotion (markCatalogWrite already swallows errors).
+        this.markCatalogWrite(this.config.sharedNamespace, sharedStorage.dir);
         // PR #402 Finding 3 fix: run temporal supersession against the shared
         // namespace after the promoted write lands so stale shared-namespace
         // copies of the same entity attribute are retired.  Without this,

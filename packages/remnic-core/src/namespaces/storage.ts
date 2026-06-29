@@ -115,6 +115,40 @@ export interface NamespaceStorageRouterHooks {
   onResolve?: (namespace: string, storageDir: string) => void;
 }
 
+/**
+ * Resolve the runtime storage root for the configured DEFAULT namespace.
+ *
+ * Shared between the live router (`NamespaceStorageRouter.defaultNamespaceRoot`)
+ * and the rebuildable catalog (`NamespaceCatalog.rebuildFromDisk`) so the two
+ * can never diverge (CLAUDE.md rule #22/#42 — read & write paths resolve through
+ * the same logic). The contract is: while legacy memory data still lives
+ * directly under `memoryDir`, the default root stays `memoryDir`; only once the
+ * legacy root is empty and a `namespaces/<default|token>` dir holds data does
+ * the default migrate into that tokenized/legacy-named dir.
+ */
+export async function resolveDefaultNamespaceRoot(config: PluginConfig): Promise<string> {
+  if (!config.namespacesEnabled) {
+    return config.memoryDir;
+  }
+
+  const legacyNsDir = resolveNamespaceDir(config.memoryDir, config.defaultNamespace);
+  const tokenizedNsDir = resolveNamespaceDir(
+    config.memoryDir,
+    namespaceIdentityToken(config.defaultNamespace),
+  );
+  const tokenizedHasData =
+    (await exists(tokenizedNsDir)) &&
+    (await hasAnyNamespaceStorageMarker(tokenizedNsDir, { includeRuntimeState: true }));
+  const nsDir = tokenizedHasData
+    ? tokenizedNsDir
+    : (await exists(legacyNsDir))
+      ? legacyNsDir
+      : tokenizedNsDir;
+  return (await exists(nsDir)) && !(await hasAnyLegacyData(config.memoryDir))
+    ? nsDir
+    : config.memoryDir;
+}
+
 export class NamespaceStorageRouter {
   private readonly cache = new Map<string, StorageManager>();
   private defaultNsRootResolved: string | null = null;
@@ -125,25 +159,7 @@ export class NamespaceStorageRouter {
   ) {}
 
   private async defaultNamespaceRoot(): Promise<string> {
-    if (!this.config.namespacesEnabled) {
-      this.defaultNsRootResolved = this.config.memoryDir;
-      return this.defaultNsRootResolved;
-    }
-
-    const legacyNsDir = resolveNamespaceDir(this.config.memoryDir, this.config.defaultNamespace);
-    const tokenizedNsDir = resolveNamespaceDir(
-      this.config.memoryDir,
-      namespaceIdentityToken(this.config.defaultNamespace),
-    );
-    const tokenizedHasData =
-      (await exists(tokenizedNsDir)) && (await hasAnyNamespaceStorageMarker(tokenizedNsDir, { includeRuntimeState: true }));
-    const nsDir = tokenizedHasData
-      ? tokenizedNsDir
-      : (await exists(legacyNsDir)) ? legacyNsDir : tokenizedNsDir;
-    this.defaultNsRootResolved =
-      (await exists(nsDir)) && !(await hasAnyLegacyData(this.config.memoryDir))
-        ? nsDir
-        : this.config.memoryDir;
+    this.defaultNsRootResolved = await resolveDefaultNamespaceRoot(this.config);
     return this.defaultNsRootResolved;
   }
 
