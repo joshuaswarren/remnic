@@ -652,6 +652,16 @@ export class TranscriptManager {
     const end = new Date(endTime);
     const entries: TranscriptEntry[] = [];
 
+    // When a sessionKey is given, a partially-applied #1496 migration can leave
+    // the SAME raw row in both the primary `session/<hash>` dir and a read-back
+    // dir (`other/default` or an old `parts.length >= 3` dir). `readRange` scans
+    // EVERY transcript file, so it would append that row once per directory.
+    // Dedup by exact raw line to give the same exact-once guarantee `readRecent`
+    // / `readToolUse` / the summarizer fetch already provide (cursor review on
+    // PR #1504). Only applied for the session-scoped path so unfiltered range
+    // scans (each file already enumerated once) keep their existing behavior.
+    const keepRawLine = sessionKey ? makeRawLineDeduper() : undefined;
+
     try {
       // Get all transcript files from the hierarchical structure
       const transcriptFiles = await this.getAllTranscriptFiles();
@@ -672,6 +682,7 @@ export class TranscriptManager {
               if (entryTime >= start && entryTime < end) {
                 // Filter by sessionKey if provided
                 if (!sessionKey || entry.sessionKey === sessionKey) {
+                  if (keepRawLine && !keepRawLine(line)) continue;
                   entries.push(entry);
                 }
               }

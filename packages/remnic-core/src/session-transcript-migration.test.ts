@@ -233,6 +233,108 @@ test("migration never treats session/<hash> dirs as sources", async () => {
   }
 });
 
+test("migration splits a LEGACY session/<name> dir while leaving real session/<hash> untouched", async () => {
+  // Thread 3 (codex review on PR #1504): pre-#1496 the OLD parser stored a key
+  // whose 3rd colon segment was literally `session` (e.g. foo:bar:session:baz)
+  // under transcripts/session/baz — a NON-hash id. The new layer maps that key
+  // to session/<hash>, but the migration previously BLANKET-SKIPPED everything
+  // under session/, so the legacy session/baz dir was never scanned. Only the
+  // canonical 16-hex session/<hash> dirs must be skipped.
+  const memoryDir = await makeMemoryDir();
+  try {
+    const fileName = "2026-06-29.jsonl";
+    const legacyKey = "foo:bar:session:baz";
+
+    // LEGACY: OLD parser homed foo:bar:session:baz under session/baz (non-hash).
+    const legacySourcePath = await seedLegacyParserDir(memoryDir, "session", "baz", fileName, [
+      entryLine(legacyKey, "1", "user"),
+      entryLine(legacyKey, "2", "assistant"),
+    ]);
+
+    // CANONICAL: a genuinely-homed session/<hash> dir for a different key.
+    const homedKey = "pi-geek:abc123";
+    const homedDir = sessionStoragePaths(homedKey).dir; // session/<16hex>
+    const [homedType, homedId] = homedDir.split("/");
+    assert.match(homedId, /^[0-9a-f]{16}$/);
+    await seedLegacyParserDir(memoryDir, homedType, homedId, fileName, [
+      entryLine(homedKey, "1", "user"),
+    ]);
+    const homedContentBefore = await readFile(path.join(memoryDir, "transcripts", homedDir, fileName), "utf-8");
+
+    // Plan: only the legacy session/baz dir is a source; session/<hash> is left.
+    const plan = await planSessionTranscriptMigration({ memoryDir });
+    assert.equal(plan.files.length, 1, "only the legacy session/<name> dir must be a source");
+    assert.equal(plan.distinctSessions, 1);
+    assert.equal(plan.movedEntries, 2);
+    assert.equal(plan.files[0].sourceRelPath, path.join("session", "baz", fileName));
+
+    const result = await migrateSessionTranscripts({ memoryDir, apply: true });
+    assert.equal(result.errors.length, 0);
+
+    // Legacy data re-homed to its canonical session/<hash> dir, order preserved.
+    const legacyDestDir = sessionStoragePaths(legacyKey).dir;
+    assert.notEqual(legacyDestDir, path.join("session", "baz"));
+    const legacyDestContent = await readFile(
+      path.join(memoryDir, "transcripts", legacyDestDir, fileName),
+      "utf-8",
+    );
+    const legacyDestLines = legacyDestContent.split("\n").filter(Boolean);
+    assert.equal(legacyDestLines.length, 2);
+    assert.ok(legacyDestLines[0].includes('"turnId":"1"'));
+    assert.ok(legacyDestLines[1].includes('"turnId":"2"'));
+
+    // Legacy source emptied/removed (lossless move).
+    await assert.rejects(() => readFile(legacySourcePath, "utf-8"));
+
+    // The real session/<hash> dir is byte-for-byte untouched.
+    const homedContentAfter = await readFile(path.join(memoryDir, "transcripts", homedDir, fileName), "utf-8");
+    assert.equal(homedContentAfter, homedContentBefore);
+
+    // Idempotent: a second run finds nothing and does not duplicate.
+    const second = await migrateSessionTranscripts({ memoryDir, apply: true });
+    assert.equal(second.plan.files.length, 0);
+    assert.equal(second.plan.movedEntries, 0);
+    const reread = await readFile(path.join(memoryDir, "transcripts", legacyDestDir, fileName), "utf-8");
+    assert.equal(reread.split("\n").filter(Boolean).length, 2);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("migration error detail is sanitized (no raw filesystem/stack message leak)", async () => {
+  // Thread 2 (cursor review on PR #1504): the per-file catch must route
+  // operator-facing strings (CLI output + audit manifest) through the shared
+  // displayErrorDetail() sanitizer so a raw fs path or stack detail cannot leak.
+  const memoryDir = await makeMemoryDir();
+  try {
+    const fileName = "2026-06-29.jsonl";
+    // Arbitrary key routes to transcripts/session/<hash>. Planting a FILE at
+    // transcripts/session makes the destination `mkdir` fail with ENOTDIR — a
+    // realistic write-time failure whose raw OS message embeds an absolute path.
+    await seedMixedOtherDefault(memoryDir, fileName, [entryLine("pi-geek:abc123", "1", "user")]);
+    await writeFile(path.join(memoryDir, "transcripts", "session"), "blocker", "utf-8");
+
+    const result = await migrateSessionTranscripts({ memoryDir, apply: true });
+
+    assert.equal(result.errors.length, 1);
+    const message = result.errors[0];
+    // Sanitized: includes the relative source path + the error name/code only.
+    assert.ok(
+      message.startsWith(`Failed to migrate ${path.join("other", "default", fileName)}`),
+      `unexpected error prefix: ${message}`,
+    );
+    assert.match(message, /\(ENOTDIR\)/);
+    // Must NOT leak the raw OS message or any absolute filesystem path.
+    assert.ok(!message.includes(memoryDir), "sanitized error must not leak an absolute fs path");
+    assert.ok(
+      !/not a directory|open '|write '/i.test(message),
+      `sanitized error must not leak the raw OS message: ${message}`,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("apply writes an audit manifest", async () => {
   const memoryDir = await makeMemoryDir();
   try {

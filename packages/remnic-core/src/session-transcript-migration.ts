@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { log } from "./logger.js";
+import { displayErrorDetail } from "./runtime/better-sqlite.js";
 import { parseSessionIdentity, sessionStoragePaths } from "./session-identity.js";
 import { resolveSafeStoragePath } from "./storage-paths.js";
 import type { TranscriptEntry } from "./types.js";
@@ -26,11 +27,37 @@ import type { TranscriptEntry } from "./types.js";
  */
 
 /**
- * Channel type that NEW writes use for first-class arbitrary keys. Files
- * already homed under `session/<hash>` are never migration sources — every
- * line there is, by definition, already in its destination directory.
+ * Channel type that NEW writes use for first-class arbitrary keys. Subdirs of
+ * this type whose `<id>` is a canonical `storagePathHash` (16 lowercase hex)
+ * are already homed — every line there is, by definition, already in its
+ * destination directory, so they are never migration sources.
  */
 const FIRST_CLASS_CHANNEL_TYPE = "session";
+
+/**
+ * Matches a canonical `session/<hash>` channel id produced by
+ * {@link storagePathHash} (16 lowercase hex chars). Used to tell a NEW
+ * first-class directory (skip) apart from a LEGACY `session/<name>` directory.
+ *
+ * Pre-#1496 the OLD `parts.length >= 3` parser stored a key whose 3rd colon
+ * segment was literally `session` (e.g. `foo:bar:session:baz`) under
+ * `transcripts/session/baz` — a non-hash id. Those legacy dirs MUST still be
+ * scanned and split, while genuine `session/<hash>` data is left untouched
+ * (codex review on PR #1496 / PR #1504). The hex length is fixed because
+ * `storagePathHash` slices the sha256 hex digest to 16 chars.
+ */
+const CANONICAL_SESSION_HASH_RE = /^[0-9a-f]{16}$/;
+
+/**
+ * True when `<type>/<id>` is a canonical first-class `session/<hash>` directory
+ * (NEW write target) rather than a legacy stranded directory. Defensive: also
+ * confirms the id is exactly what `storagePathHash` would produce for some
+ * value by shape — a 16-hex string — so we never misclassify a legacy
+ * `session/<name>` dir as homed and skip migrating it.
+ */
+function isCanonicalSessionDir(channelType: string, channelId: string): boolean {
+  return channelType === FIRST_CLASS_CHANNEL_TYPE && CANONICAL_SESSION_HASH_RE.test(channelId);
+}
 
 export interface SessionMigrationEntryGroup {
   /** The distinct session key these lines belong to. */
@@ -124,8 +151,6 @@ async function listFallbackSourceFiles(
 
   for (const typeEnt of typeEntries) {
     if (!typeEnt.isDirectory()) continue;
-    // Files already under `session/<hash>` are homed — never a migration source.
-    if (typeEnt.name === FIRST_CLASS_CHANNEL_TYPE) continue;
 
     const typeDir = path.join(transcriptsDir, typeEnt.name);
     let idEntries: Array<{ name: string; isDirectory(): boolean }>;
@@ -137,6 +162,13 @@ async function listFallbackSourceFiles(
 
     for (const idEnt of idEntries) {
       if (!idEnt.isDirectory()) continue;
+
+      // Only canonical `session/<hash>` dirs are already homed — skip those.
+      // A LEGACY `session/<name>` dir (e.g. `foo:bar:session:baz` →
+      // `session/baz` under the OLD parser) is a real migration source and
+      // must be scanned/split (codex review on PR #1504). `planFile`'s
+      // destination gate still guarantees losslessness/idempotence.
+      if (isCanonicalSessionDir(typeEnt.name, idEnt.name)) continue;
 
       const chanDir = path.join(typeDir, idEnt.name);
       let files: string[];
@@ -431,8 +463,16 @@ export async function migrateSessionTranscripts(
         filesRewritten += 1;
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      errors.push(`Failed to migrate ${filePlan.sourceRelPath}: ${message}`);
+      // The `errors` array is surfaced to operators via the CLI
+      // (`sessions migrate-transcripts --apply`) AND persisted in the audit
+      // manifest. Raw `err.message`/`String(err)` can leak filesystem paths or
+      // stack detail, so route operator-facing strings through the shared
+      // `displayErrorDetail()` sanitizer (cursor review on PR #1504, rule #51).
+      // The full error still goes to the operator-only debug log.
+      const detail = displayErrorDetail(err);
+      errors.push(
+        `Failed to migrate ${filePlan.sourceRelPath}${detail ? `: ${detail}` : ""}`,
+      );
       log.error(`session transcript migration failed for ${filePlan.sourceRelPath}:`, err);
     }
   }

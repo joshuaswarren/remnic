@@ -337,3 +337,88 @@ test("legacy other/default data written by older builds remains readable", async
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("readRange with a session key dedupes a copied-but-not-trimmed partial migration", async () => {
+  // Thread 1 (cursor review on PR #1504): `readRange` scans EVERY transcript
+  // file. Round 1 added raw-line dedup to readRecent/readToolUse/summarizer but
+  // not to readRange, so a partially-applied migration that copied a row into
+  // session/<hash> without trimming the legacy other/default source would yield
+  // the same turn twice through bootstrap / the transcript CLI.
+  const memoryDir = await makeMemoryDir();
+  try {
+    const sessionKey = "pi-geek:abc123";
+    const row = JSON.stringify({
+      sessionKey,
+      turnId: "1",
+      role: "user",
+      content: "duplicated range row",
+      timestamp: SEED_TS,
+    });
+
+    const { sessionStoragePaths } = await import("./session-identity.js");
+    const primaryDir = path.join(memoryDir, "transcripts", sessionStoragePaths(sessionKey).dir);
+    const otherDefaultDir = path.join(memoryDir, "transcripts", "other", "default");
+    // Byte-identical row in BOTH the primary dir and the legacy read-back dir.
+    await writeJsonl(primaryDir, `${TODAY}.jsonl`, [row]);
+    await writeJsonl(otherDefaultDir, `${TODAY}.jsonl`, [row]);
+
+    const tm = new TranscriptManager(makeConfig(memoryDir));
+    await tm.initialize();
+
+    const start = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const end = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const scoped = await tm.readRange(start, end, sessionKey);
+    assert.equal(scoped.length, 1, "session-scoped readRange must return the shared row exactly once");
+    assert.equal(scoped[0].content, "duplicated range row");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("readRange without a session key preserves distinct rows from every directory", async () => {
+  // The dedup is session-scoped only — an unfiltered range scan over the whole
+  // tree must NOT collapse legitimately distinct rows that happen to share a
+  // date. Guards against the deduper changing unrelated behavior.
+  const memoryDir = await makeMemoryDir();
+  try {
+    const { sessionStoragePaths } = await import("./session-identity.js");
+    const rowA = JSON.stringify({
+      sessionKey: "pi-geek:abc123",
+      turnId: "1",
+      role: "user",
+      content: "row A",
+      timestamp: SEED_TS,
+    });
+    const rowB = JSON.stringify({
+      sessionKey: "pi-friend:def456",
+      turnId: "1",
+      role: "user",
+      content: "row B",
+      timestamp: SEED_TS,
+    });
+    await writeJsonl(
+      path.join(memoryDir, "transcripts", sessionStoragePaths("pi-geek:abc123").dir),
+      `${TODAY}.jsonl`,
+      [rowA],
+    );
+    await writeJsonl(
+      path.join(memoryDir, "transcripts", sessionStoragePaths("pi-friend:def456").dir),
+      `${TODAY}.jsonl`,
+      [rowB],
+    );
+
+    const tm = new TranscriptManager(makeConfig(memoryDir));
+    await tm.initialize();
+
+    const start = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+    const end = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const all = await tm.readRange(start, end);
+    assert.equal(all.length, 2, "unfiltered readRange must keep both distinct rows");
+    assert.deepEqual(
+      all.map((e) => e.content).sort(),
+      ["row A", "row B"],
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
