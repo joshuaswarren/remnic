@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { log } from "./logger.js";
 import { isErrnoCode } from "./utils/errno.js";
+import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
 import { getCachedEntities, invalidateCachedEntities, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -4011,10 +4012,37 @@ export class StorageManager {
       }
     };
 
-    await collectPaths(this.factsDir);
-    await collectPaths(this.proceduresDir);
-    await collectPaths(this.reasoningTracesDir);
-    await collectPaths(this.correctionsDir);
+    // Scan EVERY supported memory category directory, not just the legacy four
+    // (facts/procedures/reasoning-traces/corrections). Issue #1497: the QMD
+    // filesystem-fallback recall path (orchestrator `recent_scan` ->
+    // readAllMemoriesForNamespaces -> readAllMemories -> here) must read every
+    // category dir so on-disk memories in preferences/decisions/moments/
+    // commitments/principles/rules/skills/relationships/questions are not
+    // missed when QMD is disabled, missing, or unhealthy. ALL_CATEGORY_DIRS is
+    // the single source of truth shared with ensureDirectories() and the write
+    // routing in utils/category-dir.ts.
+    //
+    // These paths resolve identically to the legacy this.factsDir /
+    // this.correctionsDir / this.proceduresDir / this.reasoningTracesDir
+    // getters (all `path.join(this.baseDir, <dir>)`), so the scan stays
+    // namespace-aware: this.baseDir is per-namespace, set by the storage router.
+    //
+    // Deliberately EXCLUDED (issue #1497): the non-category content dirs that
+    // ensureDirectories() also creates — entities/, state/, artifacts/,
+    // identity/, config/ — plus the root profile.md. These are not
+    // standard frontmatter-backed memory files and have their own dedicated
+    // read paths (readEntities, artifact readers, identity anchors, profile
+    // injection). Including them here would surface non-memory content in
+    // recall. The exclusion is asserted by a test in
+    // storage-fallback-category-dirs.test.ts. (`questions/` IS a recall
+    // category dir and is included via ALL_CATEGORY_DIRS.)
+    //
+    // collectPaths() already ignores missing dirs (try/catch) and the parser
+    // returns null for non-memory markdown, so unrelated files never crash the
+    // scan.
+    for (const dir of ALL_CATEGORY_DIRS) {
+      await collectPaths(path.join(this.baseDir, dir));
+    }
     return filePaths;
   }
 
