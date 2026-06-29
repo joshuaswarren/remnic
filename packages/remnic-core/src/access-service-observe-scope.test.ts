@@ -384,6 +384,93 @@ test("#1505 thread 1/3: unauthorized OVERLAY self-base throws BEFORE coding cont
   assert.equal(probe.objectiveStateNamespaces.length, 0);
 });
 
+test("#1505 thread jvO: restrictive default-namespace write policy does NOT reject a valid project-scoped observe via the legacy-response path (no orphan binding)", async () => {
+  // The legacy `namespace` response field was previously a SECOND
+  // `resolveWritableNamespace(request.namespace, …)` call. For an implicit
+  // (no explicit namespace) project-scoped observe that re-authorized
+  // `undefined ⇒ config.defaultNamespace`. Under a deployment that restricts
+  // WRITE to the default namespace while still allowing the principal to write
+  // its own self/project namespace, that second auth REJECTED an observe whose
+  // effective self/project write target the scope plan had ALREADY authorized
+  // (the same target memory_store/suggestion_submit accept). Worse, the scope
+  // plan had already SEEDED the coding context to compute the overlay, so the
+  // post-plan rejection left an orphaned project binding on the session.
+  //
+  // After the fix the legacy field is DERIVED from the resolved scope plan, so
+  // there is no second authorization: the observe succeeds, and the legacy
+  // `namespace` stays byte-for-byte `config.defaultNamespace` (overlay-agnostic
+  // pre-#1495 semantics) while every side effect uses the overlay write target.
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      // Restrictive DEFAULT namespace: only `admin` may write it, NOT pi-geek.
+      { name: "default", readPrincipals: ["admin"], writePrincipals: ["admin"] },
+      // pi-geek may write its own self (and thus its `pi-geek-project-*`) base.
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  const expectedOverlay = combineNamespaces(
+    "pi-geek",
+    projectNamespaceName(projectTagProjectId("Blend/Supply")),
+  );
+
+  // FAIL-BEFORE: this threw `namespace is not writable: default`. PASS-AFTER:
+  // the observe is accepted exactly like memory_store/suggestion_submit would.
+  const res = await service.observe(
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+  );
+
+  // Every side effect uses the authorized overlay write target.
+  assert.equal(res.effectiveNamespace, expectedOverlay);
+  assert.equal(res.scopeDebug!.codingOverlayApplied, true);
+  assert.equal(probe.extractionCalls[0].writeNamespaceOverride, expectedOverlay);
+  // The legacy `namespace` field stays byte-for-byte pre-#1495: overlay-agnostic,
+  // so config.defaultNamespace for an unqualified write — NOT a re-auth result.
+  assert.equal(res.namespace, "default");
+  // The seeded coding context IS retained on success (the happy path re-binds
+  // the identical context after auth passes) — that is correct, not an orphan.
+  assert.ok(
+    probe.contexts.get("pi-geek:abc123"),
+    "a SUCCESSFUL scoped observe binds the project context for later recall",
+  );
+});
+
+test("#1505 thread jvO: a genuine reject (unwritable self base) under a restrictive default policy still leaves NO orphan binding", async () => {
+  // Companion to the jvO fix: when the observe SHOULD reject (the principal
+  // cannot write its own self base), the rejection must still come from the
+  // scope plan (resolve-before-mutate) and leave NO session binding — never
+  // from a post-plan legacy-response re-auth that fires after seeding.
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      { name: "default", readPrincipals: ["admin"], writePrincipals: ["admin"] },
+      // pi-geek's self base EXISTS but is NOT writable by pi-geek.
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["other"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  await assert.rejects(
+    service.observe(
+      observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    ),
+    /not writable/,
+  );
+
+  assert.equal(
+    probe.contexts.get("pi-geek:abc123"),
+    undefined,
+    "a rejected observe must NOT leave a project binding (resolve-before-mutate)",
+  );
+  assert.equal(probe.lcmCalls.length, 0);
+  assert.equal(probe.extractionCalls.length, 0);
+  assert.equal(probe.objectiveStateNamespaces.length, 0);
+});
+
 test("#1495 scopeDebug exposes the resolved plan for callers/tests", async () => {
   const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);
