@@ -1468,6 +1468,61 @@ test("rebuild --apply STILL purges a row whose on-disk root never exists (NFJV8 
   }
 });
 
+// ── NGLz5 (codex P2): the created-after-scan keep branch must REVALIDATE the
+// namespace key (from the untrusted log) with the SAME safety gate the scan uses
+// before re-checking its live root. An UNSAFE namespace row (pre-fix / tampered
+// `namespaces.jsonl`) whose tokenized dir happens to exist with data was SKIPPED
+// by the scan as unsafe — so it is absent from `rebuilt` by design, not deletion.
+// Without re-validating, the keep branch would resurrect it and `--apply` would
+// rewrite the catalog with a namespace the hot touch/config/scan paths all reject.
+// The unsafe row must be DROPPED (purged), not kept.
+test("rebuild --apply does NOT resurrect an UNSAFE namespace row even if its token dir has data (NGLz5)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    // Unsafe per isSafeRouteNamespace (space + `!`); its identity token still
+    // hex-encodes, so we can create a real on-disk tokenized dir with data.
+    const ns = "unsafe ns!";
+    const token = namespaceIdentityToken(ns);
+    const tokenDir = path.join(memoryDir, "namespaces", token);
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    // The unsafe namespace's tokenized dir EXISTS with memory data — the scan
+    // still skips it as unsafe, so it never enters `rebuilt`.
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const logPath = path.join(stateDir, "namespaces.jsonl");
+
+    const unsafeRow = JSON.stringify({
+      namespace: ns,
+      identityToken: token,
+      kind: "project",
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+      storageDir: tokenDir,
+      discoveredBy: "write",
+      lastWriteAt: new Date().toISOString(),
+    });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // Inject the unsafe row on the re-merge read (the dir already exists on disk),
+    // so the keep branch's live-root recheck WOULD pass — only the safety gate
+    // stops it.
+    injectConcurrentReadOnSecondLoad(catalog, logPath, unsafeRow);
+    const result = await catalog.rebuildFromDisk();
+    assert.ok(
+      !result.records.some((r) => r.namespace === ns),
+      "an unsafe namespace row must not be resurrected by the created-after-scan keep branch",
+    );
+
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    assert.equal(
+      await reader.getNamespaceRecord(ns),
+      null,
+      "an unsafe namespace must not appear in the rebuilt catalog after --apply",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 6 (codex P2 — NAUf7): a touch that TIMES OUT waiting for another
 // process's active rebuild lock must DROP the append rather than read/append into
 // the rebuild's snapshot→rename window (the lost-append race). We hold a non-stale

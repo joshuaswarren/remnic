@@ -1356,6 +1356,22 @@ export class NamespaceCatalog {
           // inverse of NATqU, not a regression of it: a touch on a REMOVED root
           // re-checks as absent and is still purged below; only a root that EXISTS
           // on a fresh re-check is kept.
+          //
+          // SAFETY REVALIDATION (NGLz5, codex P2): the `ns` key comes from the
+          // UNTRUSTED log (`latest`), which may carry an unsafe namespace row from a
+          // pre-fix or tampered catalog. The disk SCAN validates every decoded
+          // namespace with `isSafeRouteNamespace` (default exempt) and SKIPS unsafe
+          // ones — so an unsafe namespace is absent from `rebuilt` by design, NOT
+          // because it was deleted. Without re-applying that exact check here, a
+          // matching tokenized dir on disk would let this branch RESURRECT the
+          // unsafe row, and `--apply` would rewrite the catalog with a namespace the
+          // hot touch/config/scan paths all reject — leaving maintenance/QMD able to
+          // enumerate an unsafe namespace after a rebuild that appeared to skip it.
+          // Apply the SAME default-exempt safety gate before the live-root recheck;
+          // an unsafe row is dropped (fall through to purge), never kept.
+          if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) {
+            continue;
+          }
           if (await this.liveStorageRootExistsForRebuild(ns, memoryReal)) {
             // Created-after-scan: keep the live row. Re-resolve its storageDir to
             // the safe (router-aligned, contained) root so we never persist a
