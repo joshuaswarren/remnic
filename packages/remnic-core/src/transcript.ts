@@ -34,6 +34,32 @@ function makeRawLineDeduper(): (rawLine: string) => boolean {
 }
 
 /**
+ * Compute the half-open UTC instant range `[start, end)` that covers an entire
+ * calendar day, suitable for {@link TranscriptManager.readRange}.
+ *
+ * `readRange` filters with an EXCLUSIVE upper bound (`entryTime < end`, CLAUDE.md
+ * rule #35 / AGENTS.md rule 23). The end is therefore the NEXT day's
+ * `00:00:00Z`, not `${date}T23:59:59Z`: a literal `23:59:59Z` end (== `.000Z`)
+ * would drop any entry stamped in the final second of the day
+ * (`23:59:59.000Z`–`23:59:59.999Z`). Using the next day's midnight keeps the
+ * `[start, end)` semantics intact while including the whole day.
+ *
+ * @param date - A `YYYY-MM-DD` calendar day (UTC).
+ */
+export function utcDayRange(date: string): { start: string; end: string } {
+  const start = `${date}T00:00:00Z`;
+  const startMs = Date.parse(start);
+  if (Number.isNaN(startMs)) {
+    // Malformed date: preserve the pre-existing "empty range" behavior (an
+    // unparseable bound makes `readRange` match nothing) rather than throwing.
+    return { start, end: start };
+  }
+  const next = new Date(startMs);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return { start, end: `${next.toISOString().slice(0, 10)}T00:00:00Z` };
+}
+
+/**
  * Manages conversation transcript storage, checkpointing, and recall formatting.
  *
  * Transcripts are stored as JSONL files in a hierarchical structure:
