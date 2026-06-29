@@ -307,6 +307,7 @@ import {
 } from "./namespaces/principal.js";
 import {
   combineNamespaces,
+  lcmReadSessionIdsForNamespaces,
   resolveCodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
 import type { CodingContext } from "./types.js";
@@ -2009,6 +2010,66 @@ export class Orchestrator {
       this.config,
     );
     return this.applyCodingNamespaceOverlay(sessionKey, base);
+  }
+
+  /**
+   * Effective namespace a same-session LCM/structured-history READER must use
+   * to find what the access `observe` surface WROTE (#1495 thread 2).
+   *
+   * This MUST mirror the `observe` scope plan's write-namespace resolution, NOT
+   * `resolveSelfNamespace`: when no coding overlay applies, `observe` archives
+   * under `config.defaultNamespace` (an unqualified observed turn is NOT moved
+   * to the principal self namespace — identical to
+   * `resolveCodingScopedWriteNamespace`/`memory_store`, rule 39). Only when a
+   * coding overlay actually changes the namespace does the writer (and so the
+   * reader) use the overlaid `project-*` namespace. Returning the self base for
+   * the no-overlay case would prefix the read key with a namespace the writer
+   * never used, so the reader would miss its own evidence.
+   *
+   * Honours the access-surface `principalOverride` (#1505 thread 2, codex): when
+   * a recall supplies an authenticated principal NOT encoded in the raw
+   * `sessionKey`, `observe` archived LCM under THAT principal's base namespace.
+   * Deriving the base from `resolvePrincipal(sessionKey)` alone could fall back
+   * to `default`, so principal `alice` observing `sess-1` would write under
+   * `alice` but READ under `default`. Threading the override here keeps the read
+   * base identical to the write base.
+   *
+   * READ-AUTHORIZATION gate (#1505 round 3, codex P2 "Gate LCM recall keys by
+   * readable namespaces"): the overlay LCM read key is a `<principal>-project-*`
+   * sub-namespace of the principal SELF base. The normal recall namespace set
+   * below only substitutes the coding overlay when the principal SELF base is
+   * actually in the readable recall set (`recallNamespacesForPrincipal` — gated
+   * by `defaultRecallNamespaces.includes("self")` AND `canReadNamespace`). If a
+   * principal can WRITE but not READ its self namespace (or `defaultRecall-
+   * Namespaces` omits `self`), QMD/file recall never touches those overlay rows,
+   * so neither may the LCM read key. When the self base is NOT readable, fall
+   * back to the default store — exactly what an unqualified, unauthorized recall
+   * resolves to — rather than injecting overlay rows the rest of recall excludes
+   * (rule 42 read/write parity; rule 48 least-privilege).
+   */
+  private lcmReadNamespaceForSession(
+    sessionKey?: string,
+    principalOverride?: string,
+  ): string {
+    const principal =
+      typeof principalOverride === "string" && principalOverride.length > 0
+        ? principalOverride
+        : this.resolvePrincipal(sessionKey);
+    const base = defaultNamespaceForPrincipal(principal, this.config);
+    const overlaid = this.applyCodingNamespaceOverlay(sessionKey, base);
+    // No overlay → collapse to the default store so the LCM key is the raw
+    // sessionKey, exactly what an unqualified observe archived under.
+    if (overlaid === base) return this.config.defaultNamespace;
+    // Overlay applied. Only honour it when the principal SELF base is in the
+    // readable recall set (same gate the recall namespace set uses to
+    // substitute the overlay). Otherwise the overlay rows are unauthorized for
+    // this reader — fall back to the default store so the LCM read matches
+    // what QMD/file recall would surface.
+    const selfReadableInRecall = recallNamespacesForPrincipal(
+      principal,
+      this.config,
+    ).includes(base);
+    return selfReadableInRecall ? overlaid : this.config.defaultNamespace;
   }
 
   /**
@@ -6890,6 +6951,10 @@ export class Orchestrator {
       .digest("hex")
       .slice(0, 16);
     const sectionBuckets = new Map<string, string[]>();
+    // The effective LCM read session_id SET is computed below from
+    // `recallNamespaces` (the SAME read-authorized namespace set normal QMD/file
+    // recall searches, incl. coding `readFallbacks`). See the
+    // `lcmReadSessionIds` derivation after `recallNamespaces` is built.
     const queryPolicy = buildRecallQueryPolicy(prompt, sessionKey, {
       cronRecallPolicyEnabled: this.config.cronRecallPolicyEnabled,
       cronRecallNormalizedQueryMaxChars:
@@ -7119,6 +7184,86 @@ export class Orchestrator {
     } else {
       recallNamespaces = readableRecallNamespaces;
     }
+    // Effective LCM read NAMESPACE SET (#1505 thread "Include coding fallback
+    // namespaces in LCM reads"). `observe` archives LCM / structured history
+    // under `${effectiveNamespace}:${sessionKey}` for whichever namespace was
+    // effective at write time. A branch-scoped session whose evidence was
+    // archived at project / root scope must still surface it, exactly as normal
+    // QMD/file recall does — QMD/file recall searches the primary overlay key AND
+    // `codingOverlay.readFallbacks` (project / root), NOT just the primary
+    // overlay key. The prior single `lcmReadSessionId` only targeted the primary
+    // overlay, so branch-scoped sessions missed fallback LCM evidence.
+    //
+    // READ-AUTHORIZATION (preserved from the prior round's
+    // `lcmReadNamespaceForSession` gate; rule 39 / 42 / 48): the coding-overlay
+    // namespace AND its fallbacks are `<principal>-project-*` sub-namespaces of
+    // the principal SELF base, authorized transitively by that base. They are
+    // included ONLY when the principal self base is in the readable recall set
+    // (`readableRecallNamespaces` — gated by `defaultRecallNamespaces.includes
+    // ("self")` AND `canReadNamespace`). When the self base is NOT readable (e.g.
+    // a write-only / self-omitted principal), the overlay rows are unauthorized
+    // for this reader, so the LCM read collapses to the default store — exactly
+    // what an unqualified, unauthorized recall resolves to — and NEVER searches a
+    // `<principal>-project-*` key (no cross-tenant read leak). This mirrors what
+    // the rest of recall surfaces for such a principal (its readable
+    // shared/policy namespaces have no per-session LCM key, so they contribute
+    // nothing here). `recallNamespaces` itself appends fallbacks unconditionally
+    // for QMD/file recall; the LCM read keys apply the stricter, self-base gate
+    // so the prior round's authorization invariant is preserved.
+    const codingOverlaySelfReadable =
+      codingOverlay !== null &&
+      readableRecallNamespaces.includes(principalSelfNamespace);
+    let lcmReadNamespaces: string[];
+    if (namespaceOverride) {
+      // Explicit namespace already read-authorized above (canReadNamespace gate).
+      lcmReadNamespaces = [namespaceOverride];
+    } else if (codingOverlay && codingSelfNamespace && codingOverlaySelfReadable) {
+      // Self base readable → overlay rows authorized. Read the primary overlay
+      // key first, then each coding read fallback (project → root), combined with
+      // the principal base for isolation — the SAME ordered set QMD/file recall
+      // searches for this authorized coding session.
+      const fallbackNs = codingOverlay.readFallbacks.map((fallback) =>
+        combineNamespaces(principalSelfNamespace, fallback),
+      );
+      lcmReadNamespaces = [codingSelfNamespace, ...fallbackNs];
+    } else {
+      // No overlay, OR overlay present but self base unreadable → collapse to the
+      // default store (raw sessionKey), exactly as the prior round did. No
+      // `<principal>-project-*` overlay key is searched.
+      lcmReadNamespaces = [this.config.defaultNamespace];
+    }
+    // Map the ordered, read-authorized namespace set → ordered, deduped LCM read
+    // session_id set. Single-user / no-overlay recall passes a single-namespace
+    // set that collapses to the raw `sessionKey`, so this is `[sessionKey]` —
+    // byte-for-byte the pre-#1495 single-key behavior.
+    const lcmReadSessionIds = lcmReadSessionIdsForNamespaces(
+      lcmReadNamespaces,
+      sessionKey,
+      this.config.defaultNamespace,
+    );
+    // Query an LCM-backed read across the ordered read key set and return the
+    // FIRST non-empty result (#1505 fallback-namespace unification). The primary
+    // overlay key is tried first; if a branch-scoped session has no rows under
+    // its branch key, the project / root fallback keys are tried in order. Each
+    // builder applies its own per-session budget/limit, so taking the first hit
+    // (rather than concatenating across keys) preserves existing budgets while
+    // recovering fallback evidence. When the set is a single key (single-user /
+    // no-overlay / explicit-namespace), this is exactly one call — unchanged.
+    // `lcmSessionId` is `string | undefined`: a SESSIONLESS recall yields the
+    // single `undefined` key so the LCM builders run ONE archive-wide read with
+    // no `session_id` filter (pre-#1505 behavior; the builders accept an optional
+    // `sessionId`). NEVER the literal "default" session id (codex P2).
+    const firstNonEmptyLcmRead = async <T>(
+      read: (lcmSessionId: string | undefined) => Promise<T>,
+      isEmpty: (value: T) => boolean,
+      empty: T,
+    ): Promise<T> => {
+      for (const lcmSessionId of lcmReadSessionIds) {
+        const value = await read(lcmSessionId);
+        if (!isEmpty(value)) return value;
+      }
+      return empty;
+    };
     const qmdAvailable = this.qmd.isAvailable();
     let graphDecisionStatus: IntentDebugSnapshot["graphDecision"]["status"] =
       recallDecision.plannedMode === "graph_mode" ? "skipped" : "not_requested";
@@ -9368,15 +9513,24 @@ export class Orchestrator {
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
       try {
-        const explicitCueSection = await buildExplicitCueRecallSection({
-          engine: this.lcmEngine,
-          sessionId: sessionKey,
-          query: retrievalQuery,
-          maxChars: explicitCueMaxChars,
-          maxReferences:
-            this.getRecallSectionNumber("explicit-cue", "maxResults") ??
-            this.config.explicitCueRecallMaxReferences,
-        });
+        const explicitCueSection = await firstNonEmptyLcmRead(
+          (lcmSessionId) =>
+            buildExplicitCueRecallSection({
+              engine: this.lcmEngine,
+              // #1495 thread 3 + #1505 fallback unification: read across the
+              // ordered LCM read key set (primary overlay → coding fallbacks)
+              // so a branch-scoped session finds its own explicit-cue evidence
+              // even when archived at project/root scope (rule 39).
+              sessionId: lcmSessionId,
+              query: retrievalQuery,
+              maxChars: explicitCueMaxChars,
+              maxReferences:
+                this.getRecallSectionNumber("explicit-cue", "maxResults") ??
+                this.config.explicitCueRecallMaxReferences,
+            }),
+          (s) => !s,
+          "",
+        );
         if (explicitCueSection) {
           this.appendRecallSection(
             sectionBuckets,
@@ -9406,21 +9560,29 @@ export class Orchestrator {
       shouldRecallTargetedFactEvidence(retrievalQuery)
     ) {
       try {
-        const targetedFactSection = await buildTargetedFactRecallSection({
-          engine: this.lcmEngine,
-          sessionId: sessionKey,
-          query: retrievalQuery,
-          maxChars: targetedFactMaxChars,
-          maxSearchResults:
-            this.getRecallSectionNumber("targeted-facts", "maxResults") ??
-            this.config.targetedFactRecallMaxResults,
-          maxScanWindowTurns:
-            this.getRecallSectionNumber("targeted-facts", "maxTurns") ??
-            this.config.targetedFactRecallScanWindowTurns,
-          maxScanWindowTokens:
-            this.getRecallSectionNumber("targeted-facts", "maxTokens") ??
-            this.config.targetedFactRecallScanWindowTokens,
-        });
+        const targetedFactSection = await firstNonEmptyLcmRead(
+          (lcmSessionId) =>
+            buildTargetedFactRecallSection({
+              engine: this.lcmEngine,
+              // #1495 + #1505 fallback unification: read across the ordered LCM
+              // read key set so a branch-scoped session finds its own
+              // targeted-fact evidence even when archived at project/root scope.
+              sessionId: lcmSessionId,
+              query: retrievalQuery,
+              maxChars: targetedFactMaxChars,
+              maxSearchResults:
+                this.getRecallSectionNumber("targeted-facts", "maxResults") ??
+                this.config.targetedFactRecallMaxResults,
+              maxScanWindowTurns:
+                this.getRecallSectionNumber("targeted-facts", "maxTurns") ??
+                this.config.targetedFactRecallScanWindowTurns,
+              maxScanWindowTokens:
+                this.getRecallSectionNumber("targeted-facts", "maxTokens") ??
+                this.config.targetedFactRecallScanWindowTokens,
+            }),
+          (s) => !s,
+          "",
+        );
         if (targetedFactSection) {
           this.appendRecallSection(
             sectionBuckets,
@@ -9451,21 +9613,29 @@ export class Orchestrator {
       shouldRecallFocusedListEvidence(retrievalQuery)
     ) {
       try {
-        const focusedListSection = await buildFocusedListRecallSection({
-          engine: this.lcmEngine,
-          sessionId: sessionKey,
-          query: retrievalQuery,
-          maxChars: focusedListMaxChars,
-          maxSearchResults:
-            this.getRecallSectionNumber("focused-list", "maxResults") ??
-            this.config.focusedListRecallMaxResults,
-          maxScanWindowTurns:
-            this.getRecallSectionNumber("focused-list", "maxTurns") ??
-            this.config.focusedListRecallScanWindowTurns,
-          maxScanWindowTokens:
-            this.getRecallSectionNumber("focused-list", "maxTokens") ??
-            this.config.focusedListRecallScanWindowTokens,
-        });
+        const focusedListSection = await firstNonEmptyLcmRead(
+          (lcmSessionId) =>
+            buildFocusedListRecallSection({
+              engine: this.lcmEngine,
+              // #1495 thread 3 + #1505 fallback unification: read across the
+              // ordered LCM read key set so a branch-scoped session reads its own
+              // focused-list/count evidence even at project/root scope (rule 39).
+              sessionId: lcmSessionId,
+              query: retrievalQuery,
+              maxChars: focusedListMaxChars,
+              maxSearchResults:
+                this.getRecallSectionNumber("focused-list", "maxResults") ??
+                this.config.focusedListRecallMaxResults,
+              maxScanWindowTurns:
+                this.getRecallSectionNumber("focused-list", "maxTurns") ??
+                this.config.focusedListRecallScanWindowTurns,
+              maxScanWindowTokens:
+                this.getRecallSectionNumber("focused-list", "maxTokens") ??
+                this.config.focusedListRecallScanWindowTokens,
+            }),
+          (s) => !s,
+          "",
+        );
         if (focusedListSection) {
           this.appendRecallSection(
             sectionBuckets,
@@ -9500,22 +9670,30 @@ export class Orchestrator {
       (responseGuidanceMatchesQuery || responseGuidanceForcedByPipeline)
     ) {
       try {
-        const responseGuidanceSection = await buildResponseGuidanceRecallSection({
-          engine: this.lcmEngine,
-          sessionId: sessionKey,
-          query: retrievalQuery,
-          maxChars: responseGuidanceMaxChars,
-          maxSearchResults:
-            this.getRecallSectionNumber("response-guidance", "maxResults") ??
-            this.config.responseGuidanceRecallMaxResults,
-          maxScanWindowTurns:
-            this.getRecallSectionNumber("response-guidance", "maxTurns") ??
-            this.config.responseGuidanceRecallScanWindowTurns,
-          maxScanWindowTokens:
-            this.getRecallSectionNumber("response-guidance", "maxTokens") ??
-            this.config.responseGuidanceRecallScanWindowTokens,
-          forceGeneric: responseGuidanceForcedByPipeline,
-        });
+        const responseGuidanceSection = await firstNonEmptyLcmRead(
+          (lcmSessionId) =>
+            buildResponseGuidanceRecallSection({
+              engine: this.lcmEngine,
+              // #1495 thread 3 + #1505 fallback unification: read across the
+              // ordered LCM read key set so a branch-scoped session reads its own
+              // response-guidance evidence even at project/root scope (rule 39).
+              sessionId: lcmSessionId,
+              query: retrievalQuery,
+              maxChars: responseGuidanceMaxChars,
+              maxSearchResults:
+                this.getRecallSectionNumber("response-guidance", "maxResults") ??
+                this.config.responseGuidanceRecallMaxResults,
+              maxScanWindowTurns:
+                this.getRecallSectionNumber("response-guidance", "maxTurns") ??
+                this.config.responseGuidanceRecallScanWindowTurns,
+              maxScanWindowTokens:
+                this.getRecallSectionNumber("response-guidance", "maxTokens") ??
+                this.config.responseGuidanceRecallScanWindowTokens,
+              forceGeneric: responseGuidanceForcedByPipeline,
+            }),
+          (s) => !s,
+          "",
+        );
         if (responseGuidanceSection) {
           this.appendRecallSection(
             sectionBuckets,
@@ -9544,21 +9722,29 @@ export class Orchestrator {
       shouldRecallEventOrderEvidence(retrievalQuery)
     ) {
       try {
-        const eventOrderSection = await buildEventOrderRecallSection({
-          engine: this.lcmEngine,
-          sessionId: sessionKey,
-          query: retrievalQuery,
-          maxChars: eventOrderMaxChars,
-          maxItems:
-            this.getRecallSectionNumber("event-order", "maxResults") ??
-            this.config.eventOrderRecallMaxResults,
-          maxScanWindowTurns:
-            this.getRecallSectionNumber("event-order", "maxTurns") ??
-            this.config.eventOrderRecallScanWindowTurns,
-          maxScanWindowTokens:
-            this.getRecallSectionNumber("event-order", "maxTokens") ??
-            this.config.eventOrderRecallScanWindowTokens,
-        });
+        const eventOrderSection = await firstNonEmptyLcmRead(
+          (lcmSessionId) =>
+            buildEventOrderRecallSection({
+              engine: this.lcmEngine,
+              // #1495 thread 3 + #1505 fallback unification: read across the
+              // ordered LCM read key set so a branch-scoped session reads its own
+              // chronological event-order evidence even at project/root scope.
+              sessionId: lcmSessionId,
+              query: retrievalQuery,
+              maxChars: eventOrderMaxChars,
+              maxItems:
+                this.getRecallSectionNumber("event-order", "maxResults") ??
+                this.config.eventOrderRecallMaxResults,
+              maxScanWindowTurns:
+                this.getRecallSectionNumber("event-order", "maxTurns") ??
+                this.config.eventOrderRecallScanWindowTurns,
+              maxScanWindowTokens:
+                this.getRecallSectionNumber("event-order", "maxTokens") ??
+                this.config.eventOrderRecallScanWindowTokens,
+            }),
+          (s) => !s,
+          "",
+        );
         if (eventOrderSection) {
           this.appendRecallSection(
             sectionBuckets,
@@ -9732,9 +9918,20 @@ export class Orchestrator {
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
       try {
-        const structuredMatches = await this.lcmEngine.searchStructuredParts(
-          sessionKey ?? "default",
-          retrievalQuery,
+        const structuredMatches = await firstNonEmptyLcmRead(
+          (lcmSessionId) =>
+            this.lcmEngine!.searchStructuredParts(
+              // #1495 + #1505 fallback unification: read across the ordered LCM
+              // read key set so a branch-scoped session reads its own structured
+              // message-part evidence even when archived at project/root scope.
+              // Structured parts are inherently per-session (the DAG is keyed by
+              // session_id), so a SESSIONLESS read (`undefined`) normalizes to
+              // empty → no section, the correct pre-#1505 behavior (codex P2).
+              lcmSessionId ?? "",
+              retrievalQuery,
+            ),
+          (matches) => matches.length === 0,
+          [],
         );
         const structuredSection = this.lcmEngine.formatStructuredRecall(
           structuredMatches,
@@ -9758,9 +9955,20 @@ export class Orchestrator {
             }
           }
         }
-        const lcmSection = await this.lcmEngine.assembleRecall(
-          sessionKey ?? "default",
-          this.config.recallBudgetChars,
+        const lcmSection = await firstNonEmptyLcmRead(
+          (lcmSessionId) =>
+            this.lcmEngine!.assembleRecall(
+              // #1495 + #1505 fallback unification: read across the ordered LCM
+              // read key set so a branch-scoped session reads its own
+              // compressed-history evidence even at project/root scope.
+              // Compressed history is inherently per-session (a per-session DAG),
+              // so a SESSIONLESS read (`undefined`) normalizes to empty → no
+              // section, the correct pre-#1505 behavior (codex P2).
+              lcmSessionId ?? "",
+              this.config.recallBudgetChars,
+            ),
+          (s) => !s,
+          "",
         );
         if (lcmSection) {
           this.appendRecallSection(
@@ -11235,6 +11443,28 @@ export class Orchestrator {
       deadlineMs?: number;
       archiveLcm?: boolean;
       abortSignal?: AbortSignal;
+      /**
+       * Pin extraction writes to this namespace instead of deriving one from
+       * `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))` + the
+       * coding overlay (#1495). The access `observe` surface resolves a single
+       * effective scope plan and passes its `writeNamespace` here so the
+       * extracted memories land in the SAME namespace as LCM archival,
+       * objective-state snapshots, and project-scoped recall — without relying
+       * on re-deriving the namespace from a namespace-prefixed session key.
+       * Same hook bulk-import uses (#460).
+       */
+      writeNamespaceOverride?: string;
+      /**
+       * Pin the provenance PRINCIPAL instead of deriving it from
+       * `resolvePrincipal(turn.sessionKey)` (#1495 thread 1). The access
+       * `observe` surface authenticates the caller at the transport layer and
+       * passes its resolved principal here so extracted-memory provenance uses
+       * the SAME identity the surface authorized — independent of storage
+       * routing (`writeNamespaceOverride`) and of whatever `resolvePrincipal`
+       * would parse from the raw session key. Mirrors the recall path's
+       * `principalOverride` (issue #570 PR 4).
+       */
+      principalOverride?: string;
     } = {},
   ): Promise<void> {
     if (!Array.isArray(turns) || turns.length === 0) return;
@@ -11321,6 +11551,8 @@ export class Orchestrator {
               bufferKey,
               extractionDeadlineMs: options.deadlineMs,
               abortSignal: options.abortSignal,
+              writeNamespaceOverride: options.writeNamespaceOverride,
+              principalOverride: options.principalOverride,
               onTaskSettled: (err) => (err ? reject(err) : resolve()),
             }).catch(reject);
           }),
@@ -11717,6 +11949,12 @@ export class Orchestrator {
        * regardless of user-configured principal routing rules.
        */
       writeNamespaceOverride?: string;
+      /**
+       * Pin the provenance principal (#1495 thread 1). Forwarded to
+       * `runExtraction` so access `observe` can record provenance under the
+       * authenticated principal instead of `resolvePrincipal(sessionKey)`.
+       */
+      principalOverride?: string;
     } = {},
   ): Promise<void> {
     const bufferKey = options.bufferKey ?? turnsToExtract[0]?.sessionKey ?? "default";
@@ -11790,6 +12028,7 @@ export class Orchestrator {
           abortSignal: options.abortSignal,
           failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
+          principalOverride: options.principalOverride,
         });
         settleTask(undefined, result);
       } catch (err) {
@@ -11946,6 +12185,14 @@ export class Orchestrator {
        * for provenance; only the storage target is overridden.
        */
       writeNamespaceOverride?: string;
+      /**
+       * Pin the provenance principal instead of deriving it from
+       * `resolvePrincipal(sessionKey)` (#1495 thread 1). When set, this is the
+       * identity an access surface already authenticated; used so observed-turn
+       * provenance is correct even though `turn.sessionKey` is the ORIGINAL
+       * (un-prefixed) key and storage is pinned via `writeNamespaceOverride`.
+       */
+      principalOverride?: string;
     } = {},
   ): Promise<ExtractionRunResult> {
     log.debug(`running extraction on ${turns.length} turns`);
@@ -12039,7 +12286,18 @@ export class Orchestrator {
       };
     }
 
-    const principal = resolvePrincipal(sessionKey, this.config);
+    // Provenance principal honours the access-surface override (#1495 thread 1,
+    // mirroring the recall path's `principalOverride`, issue #570 PR 4). Access
+    // surfaces that authenticated the caller at the transport layer pass their
+    // resolved principal so provenance uses the SAME identity the surface
+    // authorized, instead of `resolvePrincipal(sessionKey)` — which on a
+    // namespace-prefixed key would collapse to `default`. The ORIGINAL,
+    // un-prefixed session key still drives threading.
+    const principal =
+      typeof options.principalOverride === "string" &&
+      options.principalOverride.length > 0
+        ? options.principalOverride
+        : resolvePrincipal(sessionKey, this.config);
     // Write path — overlay the coding-agent namespace (issue #569) when the
     // session has a codingContext and `codingMode.projectScope` is true.
     // Explicit `writeNamespaceOverride` from callers still wins, matching
