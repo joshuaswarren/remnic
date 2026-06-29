@@ -1758,3 +1758,62 @@ test("read sanitizer substitutes a contained cross-namespace storageDir", async 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (codex P2 — NDo79): an explicit storageDir whose LEAF does not exist
+// yet but whose existing parent (`namespaces/`) is a SYMLINK escaping memoryDir
+// must be rejected. Lexical containment alone would accept it, then a later mkdir
+// would follow the symlink outside the memory root. The touch must fall back to a
+// safe root instead of persisting the escaping path.
+test("explicit storageDir under a symlinked-out parent (non-existent leaf) is rejected", async () => {
+  const memoryDir = await mkMemoryDir();
+  const outside = await mkMemoryDir();
+  try {
+    // Replace <memoryDir>/namespaces with a symlink to an outside dir.
+    await mkdir(path.join(outside, "evilroot"), { recursive: true });
+    await symlink(path.join(outside, "evilroot"), path.join(memoryDir, "namespaces"), "dir");
+
+    const ns = "project-origin-symparent";
+    // The leaf does not exist yet; its parent (namespaces/) is the escaping link.
+    const escapingLeaf = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: escapingLeaf });
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.ok(record, "record is still created");
+    // The caller's explicit dir resolves (via the symlinked `namespaces/` parent)
+    // OUTSIDE memoryDir, so it must be REJECTED — the catalog must not persist the
+    // exact escaping path the caller supplied. Pre-fix, `isContainedStorageDir`
+    // accepted the non-existent leaf and recorded it verbatim.
+    assert.notEqual(
+      path.resolve(record!.storageDir),
+      path.resolve(escapingLeaf),
+      "a storageDir escaping via a symlinked parent must not be persisted verbatim",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+// ── Round 7 (codex P2 — NDo8C): an ASYNC onResolve hook that REJECTS must not
+// crash storage resolution — the rejection must be swallowed (best-effort).
+test("an async onResolve hook rejection does not crash storage resolution", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    let called = 0;
+    const router = new NamespaceStorageRouter(makeConfig(memoryDir), {
+      onResolve: async () => {
+        called += 1;
+        throw new Error("async hook failure");
+      },
+    });
+    // Must not throw or produce an unhandled rejection that fails the test.
+    const sm = await router.storageFor("default");
+    assert.ok(sm, "storage resolution succeeds despite a rejecting async hook");
+    // Give the swallowed rejection a tick to settle.
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(called >= 1, "the async hook was invoked");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

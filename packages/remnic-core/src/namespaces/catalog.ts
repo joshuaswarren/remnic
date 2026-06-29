@@ -523,24 +523,55 @@ export class NamespaceCatalog {
     if (!this.isLexicallyContained(candidate)) return false;
     // The default/legacy memoryDir root is trusted as-is.
     if (path.resolve(candidate) === path.resolve(this.memoryDir)) return true;
+    let memoryReal: string;
+    try {
+      memoryReal = await realpath(this.memoryDir);
+    } catch {
+      memoryReal = path.resolve(this.memoryDir);
+    }
     try {
       const stat = await lstat(candidate);
       if (stat.isSymbolicLink()) return false;
     } catch {
-      // Does not exist yet — nothing to follow; lexical containment suffices.
-      return true;
+      // The leaf does not exist yet. Lexical containment is NOT sufficient: an
+      // EXISTING ancestor (e.g. `<memoryDir>/namespaces`) could be a symlink to
+      // outside memoryDir, so a future mkdir/maintenance/QMD op would follow the
+      // persisted root outside the root (round 6, codex P2 — NDo79). Verify the
+      // nearest EXISTING ancestor's realpath still resolves inside memoryDir.
+      return this.isNearestExistingAncestorContained(candidate, memoryReal);
     }
     try {
       const real = await realpath(candidate);
-      let memoryReal: string;
-      try {
-        memoryReal = await realpath(this.memoryDir);
-      } catch {
-        memoryReal = path.resolve(this.memoryDir);
-      }
       return isPathInside(memoryReal, real);
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Walk up from a not-yet-existing candidate to the nearest ancestor that exists
+   * on disk and verify its realpath stays inside `memoryReal` (round 6, codex P2
+   * — NDo79). Rejects a non-existent leaf whose existing parent chain escapes
+   * memoryDir via a symlink. Stops at memoryDir's resolved root.
+   */
+  private async isNearestExistingAncestorContained(
+    candidate: string,
+    memoryReal: string,
+  ): Promise<boolean> {
+    let dir = path.resolve(candidate);
+    const root = path.parse(dir).root;
+    for (;;) {
+      const parent = path.dirname(dir);
+      // Reached the filesystem root without finding an existing ancestor.
+      if (parent === dir || dir === root) return false;
+      try {
+        const real = await realpath(parent);
+        // The nearest existing ancestor must resolve inside the memory root.
+        return isPathInside(memoryReal, real) || real === memoryReal;
+      } catch {
+        // Parent does not exist yet either — keep walking up.
+        dir = parent;
+      }
     }
   }
 

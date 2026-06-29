@@ -257,7 +257,13 @@ export class NamespaceStorageRouter {
     if (this.notifiedResolved.get(namespace) === storageDir) return;
     this.notifiedResolved.set(namespace, storageDir);
     try {
-      hook(namespace, storageDir);
+      // Handle BOTH synchronous throws and asynchronous rejections (round 6,
+      // codex P2 — NDo8C). The hook is typed `void`, but a caller may supply an
+      // `async` function; its rejected promise would bypass this try/catch and,
+      // where unhandled rejections are fatal, crash storage resolution. Wrap in
+      // `Promise.resolve(...).catch()` so a best-effort catalog/register failure
+      // never propagates (CLAUDE.md gotcha #13).
+      Promise.resolve(hook(namespace, storageDir)).catch(() => undefined);
     } catch {
       // Intentionally swallow: catalog registration is best-effort metadata.
     }
