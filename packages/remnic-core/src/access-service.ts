@@ -5276,7 +5276,19 @@ export class EngramAccessService {
             principal,
             this.orchestrator.config,
           ).includes(base);
-    return authorized ? overlaid : resolvedNamespace;
+    if (authorized) return overlaid;
+    // Unauthorized overlay base. For READS, collapse to the DEFAULT STORE (the
+    // raw sessionKey) EXACTLY like the orchestrator's `lcmReadNamespaceForSession`
+    // (rule 39 / 42) — NOT the caller's `resolvedNamespace`, which for an implicit
+    // read can be a readable recall namespace (e.g. `shared`). Returning that
+    // would prefix LCM reads with `shared:sessionKey` while in-prompt recall uses
+    // the raw `sessionKey`, diverging `lcmSearch`/raw disclosure from orchestrator
+    // LCM reads (cursor "LCM read gate wrong fallback"). For an explicit read the
+    // method already returned at the top, so this only affects implicit reads.
+    // The (currently unused) write purpose preserves its prior `resolvedNamespace`
+    // fallback for backward compatibility.
+    if (purpose === "read") return this.orchestrator.config.defaultNamespace;
+    return resolvedNamespace;
   }
 
   /**
@@ -5355,42 +5367,58 @@ export class EngramAccessService {
   }
 
   /**
-   * The read-authorized fallback namespace an IMPLICIT (no explicit `namespace`)
+   * The base `resolvedNamespace` an IMPLICIT (no explicit `namespace`)
    * same-session LCM READER (`resolveRawExcerptReadNamespace`, `lcmSearch`)
-   * prefixes its LCM `session_id` with when no readable coding overlay applies
-   * (#1505 thread NBHWz). Derived WITHOUT pre-authorizing `default`: it consults
-   * the SAME read-authorized recall set normal recall + the in-prompt LCM
-   * sections use (`recallNamespacesForPrincipal`, already
-   * `canReadNamespace`-filtered) and falls back to `config.defaultNamespace` ONLY
-   * when the principal may actually read it. Returns `undefined` when no readable
-   * LCM namespace exists, so the caller emits NO rows instead of throwing
-   * `namespace is not readable: default` — normal recall still succeeds through
-   * the readable self namespace, and LCM reads must degrade gracefully.
+   * passes into {@link resolveLcmReadNamespace} — WITHOUT pre-authorizing
+   * `default` (#1505 thread NBHWz). It decides PROCEED vs SUPPRESS only; the
+   * actual LCM prefix is then resolved by `resolveLcmReadNamespace`, which
+   * mirrors the orchestrator's `lcmReadNamespaceForSession` EXACTLY (rule 39 /
+   * 42): the coding overlay when the principal SELF base is in the readable
+   * recall set, else `config.defaultNamespace` (the raw key).
+   *
+   * Returns `config.defaultNamespace` (PROCEED) whenever the principal has ANY
+   * readable LCM access — either `default` itself is readable, OR a coding
+   * overlay / self base is in the readable recall set. The returned value is
+   * ALWAYS `config.defaultNamespace`, NEVER an arbitrary readable recall
+   * namespace (e.g. `shared`): `resolveLcmReadNamespace` returns this fallback
+   * verbatim only on the overlay-applies-but-self-unreadable branch, where the
+   * orchestrator collapses to the default store — so returning anything but the
+   * default store there would prefix LCM reads with `shared:sessionKey` while
+   * in-prompt recall uses the raw `sessionKey`, diverging the two (cursor
+   * "LCM read gate wrong fallback").
+   *
+   * Returns `undefined` (SUPPRESS) only when NO readable LCM namespace exists —
+   * a restrictive `default` READ policy AND no readable overlay/self — so the
+   * caller emits NO rows instead of throwing `namespace is not readable:
+   * default`. Normal recall still succeeds through the readable self namespace.
    *
    * Single-store / namespaces-disabled deployments resolve to
-   * `config.defaultNamespace` (always readable), keeping single-user recall
-   * byte-for-byte unchanged.
+   * `config.defaultNamespace`, keeping single-user recall byte-for-byte
+   * unchanged.
    */
   private resolveImplicitLcmReadFallbackNamespace(
     principal: string | undefined,
   ): string | undefined {
     const config = this.orchestrator.config;
     if (!config.namespacesEnabled) return config.defaultNamespace;
-    // Prefer the default store when the principal may read it (the historical
-    // implicit fallback — preserves single-store / readable-default flows).
+    // PROCEED when `default` is readable (single-store / readable-default flows)
+    // — the LCM prefix resolves to the overlay when self-authorized, else the
+    // default raw key.
     if (canReadNamespace(principal, config.defaultNamespace, config)) {
       return config.defaultNamespace;
     }
-    // Restrictive `default` READ policy: fall back to a namespace the principal
-    // CAN read from the recall set (e.g. the readable self base), matching what
-    // normal recall + `lcmSearch` search. `lcmSessionKeyForNamespace` prefixes
-    // only non-default namespaces, so a self-base fallback still produces a
-    // distinct, authorized LCM key.
-    const readableRecallNamespaces = recallNamespacesForPrincipal(
+    // Restrictive `default` READ policy. PROCEED only when the principal has a
+    // readable coding overlay / self base in the recall set (the SAME gate
+    // `resolveLcmReadNamespace`'s "read" branch and the orchestrator's
+    // `lcmReadNamespaceForSession` use to honour the overlay). The fallback is
+    // STILL `config.defaultNamespace` (not the readable recall namespace), so the
+    // overlay-unreadable branch collapses to the raw key exactly like the
+    // orchestrator. SUPPRESS (`undefined`) when nothing readable exists.
+    const hasReadableRecallNamespace = recallNamespacesForPrincipal(
       principal,
       config,
-    ).filter((ns) => canReadNamespace(principal, ns, config));
-    return readableRecallNamespaces[0];
+    ).some((ns) => canReadNamespace(principal, ns, config));
+    return hasReadableRecallNamespace ? config.defaultNamespace : undefined;
   }
 
   private resolveLcmReadSessionKey(

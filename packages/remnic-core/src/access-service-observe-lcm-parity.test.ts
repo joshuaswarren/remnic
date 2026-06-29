@@ -1095,6 +1095,65 @@ test("#1505 thread NBHWz (sweep): restrictive `default` READ policy + readable s
   );
 });
 
+test("#1505 cursor 'LCM read gate wrong fallback': overlay applies + self EXCLUDED from recall set + `shared` readable ⇒ lcmSearch collapses to the RAW sessionKey (default store), never `shared:`", async () => {
+  // cursor Medium on the round-7 head: when a coding overlay applies but the
+  // principal self base is excluded from the readable recall set, the implicit
+  // LCM read fallback must collapse to the DEFAULT STORE (raw sessionKey),
+  // EXACTLY like the orchestrator's `lcmReadNamespaceForSession` — NOT an
+  // arbitrary readable recall namespace (e.g. `shared`). Returning `shared` would
+  // prefix LCM reads with `shared:sessionKey` while in-prompt recall uses the raw
+  // `sessionKey`, diverging the two.
+  //
+  // alice can WRITE her self base (so observe archives under the overlay) but
+  // CANNOT read it, AND `defaultRecallNamespaces` includes `shared` (readable)
+  // but omits `self`. `default` is restrictively unreadable, so the OLD helper
+  // returned `shared`; the fix returns the default store (raw key).
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      // Restrictive default: alice may NOT read `default`.
+      { name: "default", readPrincipals: [], writePrincipals: [] },
+      // alice can WRITE but NOT read her self base.
+      { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    // `shared` is readable + in the recall set; `self` is omitted.
+    defaultRecallNamespaces: ["shared"],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // Bind a coding context so the overlay WOULD apply on alice's base.
+  probe.contexts.set("sess-1", {
+    projectId: "blend-supply",
+    projectName: "Blend/Supply",
+  } as unknown as CodingContext);
+
+  const res = await service.lcmSearch({
+    query: "what database are we using?",
+    sessionKey: "sess-1",
+    authenticatedPrincipal: "alice",
+  });
+
+  assert.equal(res.lcmEnabled, true);
+  // PROCEED (shared is a readable recall namespace ⇒ not suppressed), but the LCM
+  // prefix collapses to the default store ⇒ the RAW sessionKey.
+  assert.equal(
+    probe.searchSessionIds[0],
+    "sess-1",
+    "overlay-unreadable-self ⇒ lcmSearch must query the raw sessionKey (default store), matching the orchestrator",
+  );
+  for (const id of probe.searchSessionIds) {
+    assert.ok(
+      !String(id ?? "").startsWith("shared"),
+      `lcmSearch must NOT prefix with the shared recall namespace; got ${String(id)}`,
+    );
+    assert.ok(
+      !String(id ?? "").startsWith("alice-"),
+      `lcmSearch must NOT leak alice's unreadable overlay rows; got ${String(id)}`,
+    );
+  }
+});
+
 test("#1505 thread NBHWz (sweep): no readable LCM namespace ⇒ lcmSearch returns EMPTY (no `not readable: default` throw)", async () => {
   // Companion: when NO readable LCM namespace exists for an implicit lcmSearch
   // (restrictive default READ + unreadable self + self omitted from the recall
