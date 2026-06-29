@@ -11235,6 +11235,17 @@ export class Orchestrator {
       deadlineMs?: number;
       archiveLcm?: boolean;
       abortSignal?: AbortSignal;
+      /**
+       * Pin extraction writes to this namespace instead of deriving one from
+       * `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))` + the
+       * coding overlay (#1495). The access `observe` surface resolves a single
+       * effective scope plan and passes its `writeNamespace` here so the
+       * extracted memories land in the SAME namespace as LCM archival,
+       * objective-state snapshots, and project-scoped recall — without relying
+       * on re-deriving the namespace from a namespace-prefixed session key.
+       * Same hook bulk-import uses (#460).
+       */
+      writeNamespaceOverride?: string;
     } = {},
   ): Promise<void> {
     if (!Array.isArray(turns) || turns.length === 0) return;
@@ -11321,6 +11332,7 @@ export class Orchestrator {
               bufferKey,
               extractionDeadlineMs: options.deadlineMs,
               abortSignal: options.abortSignal,
+              writeNamespaceOverride: options.writeNamespaceOverride,
               onTaskSettled: (err) => (err ? reject(err) : resolve()),
             }).catch(reject);
           }),

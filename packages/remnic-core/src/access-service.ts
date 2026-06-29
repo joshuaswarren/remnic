@@ -822,6 +822,38 @@ export interface CodingScopedWriteInput {
   projectTag?: string;
 }
 
+/**
+ * Internal, single-resolution plan describing the effective memory scope for a
+ * write-producing access request (#1495, seed for epic #1494). One plan is
+ * resolved per request and EVERY side effect (LCM archival, extraction replay,
+ * objective-state snapshot, response) consumes the same `writeNamespace`, so an
+ * observed turn and its extracted memories never drift away from the namespace a
+ * same-session project-scoped recall searches (rule 39 / 42).
+ *
+ * The resolver that produces this is READ-ONLY with respect to namespace
+ * authorization: an explicit namespace is authorized through the existing
+ * `canWriteNamespace` policy path, and a coding overlay is always REBUILT from
+ * the authenticated principal's base — never accepted as a caller string — so a
+ * caller can never reach another principal's overlay by forging an
+ * overlay-shaped namespace (rule 42 / 47 / 48).
+ */
+export interface MemoryScopePlan {
+  /** Resolved request principal (auth precedence applied), or undefined. */
+  principal?: string;
+  /** Explicit `namespace` supplied by the caller, if any (already authorized). */
+  explicitNamespace?: string;
+  /** Principal self base namespace before any coding overlay. */
+  baseNamespace: string;
+  /** Effective write namespace — what every side effect must use. */
+  writeNamespace: string;
+  /** Namespaces a same-session recall would read (cheap subset). */
+  readNamespaces: string[];
+  /** Whether the coding overlay changed the base namespace. */
+  codingOverlayApplied: boolean;
+  /** Non-fatal diagnostics surfaced during resolution. */
+  warnings: string[];
+}
+
 export interface EngramAccessMemoryStoreRequest
   extends EngramAccessWriteEnvelope,
     ExplicitCaptureInput,
@@ -874,10 +906,45 @@ export interface EngramAccessObserveRequest {
   projectTag?: string;
 }
 
+/**
+ * Additive diagnostic view of the effective {@link MemoryScopePlan} resolved for
+ * an `observe` request (#1495 / epic #1494). Lets callers and tests inspect
+ * which namespace the operation actually wrote to without changing the
+ * backward-compatible `namespace` field. Purely informational — never gates
+ * authorization.
+ */
+export interface EngramAccessScopeDebug {
+  /** Resolved principal, or `undefined` when none could be derived. */
+  principal?: string;
+  /** Explicit `namespace` from the request, if one was supplied. */
+  explicitNamespace?: string;
+  /** Principal self base before any coding overlay. */
+  baseNamespace: string;
+  /** Effective write namespace every side effect of the request uses. */
+  writeNamespace: string;
+  /** Whether the coding (project/branch) overlay changed the base namespace. */
+  codingOverlayApplied: boolean;
+  /** Namespaces a same-session recall would read, when cheap to compute. */
+  readNamespaces?: string[];
+}
+
 export interface EngramAccessObserveResponse {
   accepted: number;
   sessionKey: string;
+  /**
+   * Backward-compatible base writable namespace (pre-#1495 semantics). Kept
+   * unchanged so existing callers/tests are not broken. The namespace the
+   * operation ACTUALLY wrote to is {@link EngramAccessObserveResponse.effectiveNamespace}.
+   */
   namespace: string;
+  /**
+   * Effective write namespace every memory-producing side effect of this
+   * request used (LCM archival, extraction replay, objective-state snapshot).
+   * Equals the namespace a same-session project-scoped recall searches (#1495).
+   */
+  effectiveNamespace: string;
+  /** Additive diagnostic view of the resolved scope plan (#1495). */
+  scopeDebug?: EngramAccessScopeDebug;
   lcmArchived: boolean;
   extractionQueued: boolean;
 }
@@ -1324,6 +1391,128 @@ export class EngramAccessService {
       throw new EngramAccessInputError(`namespace is not writable: ${base}`);
     }
     return combineNamespaces(base, overlay.namespace);
+  }
+
+  /**
+   * Resolve ONE effective memory scope plan for a write-producing request
+   * (#1495 / seed for epic #1494). The returned {@link MemoryScopePlan} is the
+   * single source of truth `observe` (and, later, other write surfaces) consume
+   * so every side effect lands in `plan.writeNamespace`.
+   *
+   * Authorization mirrors {@link resolveCodingScopedWriteNamespace} EXACTLY so
+   * `observe`'s scoping is identical to `memory_store`/`suggestion_submit`
+   * (rule 39 — feature gates identical across code paths):
+   *  - an explicit `namespace` always wins and is authorized strictly through
+   *    `resolveWritableNamespace` → `canWriteNamespace`; an overlay-shaped string
+   *    is never a writable target (rule 42 / 47 / 48);
+   *  - with NO overlay, the base stays on `config.defaultNamespace` (pre-#1434
+   *    behavior), auth-checked;
+   *  - WITH an overlay, the base is the principal self namespace and the overlay
+   *    is REBUILT from that authorized base — never accepted as a caller string.
+   *
+   * READ-ONLY: this never mutates session coding context. Callers that need the
+   * `cwd`/`projectTag` bound to the session (so a later bare recall is scoped)
+   * must attach it via `maybeAttachCodingContext` BEFORE calling this, which
+   * also preserves the no-orphan-context guard (attach only after auth passes).
+   * The overlay here reads the session's attached context first (matching recall
+   * precedence), falling back to the per-call `cwd`/`projectTag`.
+   */
+  private async resolveMemoryScopePlan(
+    request: CodingScopedWriteInput & {
+      namespace?: string;
+      sessionKey?: string;
+      authenticatedPrincipal?: string;
+    },
+  ): Promise<MemoryScopePlan> {
+    const warnings: string[] = [];
+    const principal = this.resolveRequestPrincipal(
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
+    const hasExplicitNamespace =
+      typeof request.namespace === "string" && request.namespace.trim().length > 0;
+
+    if (hasExplicitNamespace) {
+      // Explicit namespace wins; authorized through the existing policy path.
+      // The overlay never applies, so base == write == the explicit namespace.
+      const writeNamespace = this.resolveWritableNamespace(
+        request.namespace,
+        request.sessionKey,
+        request.authenticatedPrincipal,
+      );
+      return {
+        principal,
+        explicitNamespace: request.namespace!.trim(),
+        baseNamespace: writeNamespace,
+        writeNamespace,
+        readNamespaces: [writeNamespace],
+        codingOverlayApplied: false,
+        warnings,
+      };
+    }
+
+    // No explicit namespace → principal self base, optionally overlaid with the
+    // session's coding (project/branch) context — the SAME resolution recall and
+    // the orchestrator buffer-flush write path use (rule 42 symmetry).
+    const baseNamespace = defaultNamespaceForPrincipal(
+      principal,
+      this.orchestrator.config,
+    );
+
+    const hasSession =
+      typeof request.sessionKey === "string" && request.sessionKey.length > 0;
+    const overlay =
+      hasSession &&
+      this.orchestrator.config.namespacesEnabled &&
+      this.orchestrator.config.codingMode?.projectScope
+        ? resolveCodingNamespaceOverlay(
+            this.orchestrator.getCodingContextForSession(request.sessionKey) ??
+              (await this.resolveCodingContextFromOptions(request)),
+            this.orchestrator.config.codingMode,
+            this.orchestrator.config.defaultNamespace,
+          )
+        : null;
+
+    if (!overlay) {
+      // No overlay → stay on the auth-checked base. Mirror the legacy path
+      // (resolveWritableNamespace with no explicit namespace) so the
+      // namespaces-disabled / no-session / projectScope-off cases collapse to
+      // config.defaultNamespace exactly as before.
+      const writeNamespace = this.resolveWritableNamespace(
+        undefined,
+        request.sessionKey,
+        request.authenticatedPrincipal,
+      );
+      return {
+        principal,
+        baseNamespace: writeNamespace,
+        writeNamespace,
+        readNamespaces: [writeNamespace],
+        codingOverlayApplied: false,
+        warnings,
+      };
+    }
+
+    // Overlay → rebuild from the authorized principal self base.
+    if (!canWriteNamespace(principal, baseNamespace, this.orchestrator.config)) {
+      throw new EngramAccessInputError(
+        `namespace is not writable: ${baseNamespace}`,
+      );
+    }
+    const writeNamespace = combineNamespaces(baseNamespace, overlay.namespace);
+    const readNamespaces = [writeNamespace];
+    for (const fallback of overlay.readFallbacks ?? []) {
+      const ns = combineNamespaces(baseNamespace, fallback);
+      if (!readNamespaces.includes(ns)) readNamespaces.push(ns);
+    }
+    return {
+      principal,
+      baseNamespace,
+      writeNamespace,
+      readNamespaces,
+      codingOverlayApplied: writeNamespace !== baseNamespace,
+      warnings,
+    };
   }
 
   private async objectiveStateStoreLocationForNamespace(namespace: string): Promise<{
@@ -4293,16 +4482,11 @@ export class EngramAccessService {
       }
     }
 
-    // Validate namespace authorization BEFORE attaching coding context so
-    // a failed auth check doesn't leave orphaned context on the session
-    // (Codex review P2).
-    const hasExplicitNamespace =
-      typeof request.namespace === "string" &&
-      request.namespace.trim().length > 0;
-    const principal = this.resolveRequestPrincipal(
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
+    // 1. Authorize the namespace BEFORE attaching coding context so a failed
+    //    auth check doesn't leave orphaned context on the session (Codex review
+    //    P2). `namespace` is the backward-compatible BASE writable namespace
+    //    (pre-#1495 response semantics); the EFFECTIVE write namespace is
+    //    resolved by the scope plan below.
     const namespace = this.resolveWritableNamespace(
       request.namespace,
       request.sessionKey,
@@ -4311,50 +4495,37 @@ export class EngramAccessService {
     const shouldWriteObjectiveState =
       this.orchestrator.config.objectiveStateMemoryEnabled === true &&
       this.orchestrator.config.objectiveStateSnapshotWritesEnabled === true;
-    const objectiveStateBaseNamespace = hasExplicitNamespace
-      ? namespace
-      : defaultNamespaceForPrincipal(principal, this.orchestrator.config);
-    if (
-      shouldWriteObjectiveState &&
-      !hasExplicitNamespace &&
-      !canWriteNamespace(
-        principal,
-        objectiveStateBaseNamespace,
-        this.orchestrator.config,
-      )
-    ) {
-      throw new EngramAccessInputError(
-        `namespace is not writable: ${objectiveStateBaseNamespace}`,
-      );
-    }
 
-    // Auto-resolve coding context from cwd/projectTag so observe writes
-    // route to the correct project namespace (rule 42: same namespace layer
-    // as recall).
+    // 2. Auto-resolve coding context from cwd/projectTag so observe writes route
+    //    to the correct project namespace (rule 42: same namespace layer as
+    //    recall). Done AFTER auth so the no-orphan-context guard holds.
     await this.maybeAttachCodingContext(request.sessionKey, {
       cwd: request.cwd,
       projectTag: request.projectTag,
     });
 
-    const objectiveStateNamespace = hasExplicitNamespace
-      ? namespace
-      : this.orchestrator.applyCodingNamespaceOverlay(
-          request.sessionKey,
-          objectiveStateBaseNamespace,
-        );
+    // 3. Compute the single effective scope plan every side effect consumes
+    //    (#1495). The plan reads the session's now-attached coding context and
+    //    re-runs the SAME authorization as memory_store/suggestion_submit, so
+    //    observe's scoping is identical to explicit coding-scoped writes
+    //    (rule 39). The plan is read-only — context was attached in step 2.
+    const scope = await this.resolveMemoryScopePlan(request);
+    const writeNamespace = scope.writeNamespace;
 
-    // Prefix sessionKey with namespace for LCM archival so turns are namespace-scoped.
-    // This ensures multi-tenant isolation in the LCM archive.
-    const lcmSessionKey = namespace !== this.orchestrator.config.defaultNamespace
-      ? `${namespace}:${request.sessionKey}`
-      : request.sessionKey;
+    // Prefix sessionKey with the EFFECTIVE write namespace for LCM archival so
+    // observed turns are scoped to the same namespace project-scoped recall
+    // reads. Only prefix when it diverges from the default store (multi-tenant
+    // isolation); a single-store deployment keeps the raw sessionKey.
+    const lcmSessionKey =
+      writeNamespace !== this.orchestrator.config.defaultNamespace
+        ? `${writeNamespace}:${request.sessionKey}`
+        : request.sessionKey;
 
+    // 4. Objective-state snapshots → effective write namespace.
     if (shouldWriteObjectiveState) {
       try {
         const objectiveStateLocation =
-          await this.objectiveStateStoreLocationForNamespace(
-            objectiveStateNamespace,
-          );
+          await this.objectiveStateStoreLocationForNamespace(writeNamespace);
         await recordObjectiveStateSnapshotsFromObservedMessages({
           memoryDir: objectiveStateLocation.memoryDir,
           objectiveStateStoreDir: objectiveStateLocation.objectiveStateStoreDir,
@@ -4370,6 +4541,7 @@ export class EngramAccessService {
       }
     }
 
+    // 5. LCM archival → effective write namespace.
     // lcmArchived in the response means "LCM archival was queued" (not
     // "completed"), matching extractionQueued semantics.  Both run async.
     let lcmArchived = false;
@@ -4385,6 +4557,7 @@ export class EngramAccessService {
       }
     }
 
+    // 6. Extraction/replay → effective write namespace.
     let extractionQueued = false;
     if (request.skipExtraction !== true) {
       const turns = request.messages.map((m) => ({
@@ -4397,6 +4570,18 @@ export class EngramAccessService {
         sourceFormat: m.sourceFormat,
         timestamp: new Date().toISOString(),
       }));
+      // Pin extraction writes to the effective namespace rather than letting the
+      // orchestrator re-derive one from the (namespace-prefixed) lcmSessionKey —
+      // that re-derivation would miss the coding overlay (the #1495 drift) and
+      // fail to resolve a principal from a prefixed key. Passing
+      // writeNamespaceOverride makes the extraction target deterministic and
+      // identical to LCM/objective-state (rule 39). Omit it when the effective
+      // namespace is the default store, so single-store deployments keep the
+      // existing principal-derived routing unchanged.
+      const writeNamespaceOverride =
+        writeNamespace !== this.orchestrator.config.defaultNamespace
+          ? writeNamespace
+          : undefined;
       // Fire-and-forget: queue extraction in the background so the HTTP
       // response returns immediately. LCM archival (above) is also
       // enqueue-only; extraction involves LLM calls that can take
@@ -4409,6 +4594,7 @@ export class EngramAccessService {
       try {
         const extractionPromise = this.orchestrator.ingestReplayBatch(turns, {
           archiveLcm: false,
+          writeNamespaceOverride,
         });
         extractionPromise.catch((err) => {
           log.error(`access-observe background extraction failed: ${err}`);
@@ -4421,13 +4607,22 @@ export class EngramAccessService {
     }
 
     log.info(
-      `access-observe namespace=${namespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued}`,
+      `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued}`,
     );
 
     return {
       accepted: request.messages.length,
       sessionKey: request.sessionKey,
       namespace,
+      effectiveNamespace: writeNamespace,
+      scopeDebug: {
+        principal: scope.principal,
+        explicitNamespace: scope.explicitNamespace,
+        baseNamespace: scope.baseNamespace,
+        writeNamespace: scope.writeNamespace,
+        codingOverlayApplied: scope.codingOverlayApplied,
+        readNamespaces: scope.readNamespaces,
+      },
       lcmArchived,
       extractionQueued,
     };

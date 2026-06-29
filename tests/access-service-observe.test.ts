@@ -19,16 +19,30 @@ import {
  */
 
 test("EngramAccessObserveResponse shape matches contract", () => {
+  // #1495: `effectiveNamespace` is an additive required field carrying the
+  // namespace every side effect actually wrote to. `scopeDebug` is the
+  // optional diagnostic view of the resolved scope plan. `namespace` stays as
+  // the backward-compatible base value.
   const response: EngramAccessObserveResponse = {
     accepted: 2,
     sessionKey: "test-session",
     namespace: "default",
+    effectiveNamespace: "default-project-tag-foo",
+    scopeDebug: {
+      principal: "alice",
+      baseNamespace: "default",
+      writeNamespace: "default-project-tag-foo",
+      codingOverlayApplied: true,
+      readNamespaces: ["default-project-tag-foo"],
+    },
     lcmArchived: true,
     extractionQueued: true,
   };
   assert.equal(response.accepted, 2);
   assert.equal(response.sessionKey, "test-session");
   assert.equal(response.namespace, "default");
+  assert.equal(response.effectiveNamespace, "default-project-tag-foo");
+  assert.equal(response.scopeDebug?.codingOverlayApplied, true);
   assert.equal(response.lcmArchived, true);
   assert.equal(response.extractionQueued, true);
 });
