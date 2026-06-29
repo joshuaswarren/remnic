@@ -1589,3 +1589,86 @@ test("a catalog write preserves a token-shaped literal namespace name verbatim",
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (codex P2 — NCzT4): the configured-namespace seeding step must NOT
+// persist an escaping `storageDir` for a configured non-default namespace whose
+// token dir is a symlink pointing OUTSIDE memoryDir. It must reject it (skipped:
+// escape) just like the scan loop does, BEFORE the record is seeded/rewritten.
+test("rebuild --apply rejects a configured namespace whose token dir escapes via symlink", async () => {
+  const memoryDir = await mkMemoryDir();
+  const outside = await mkMemoryDir();
+  try {
+    const ns = "team-pi-project-origin-escape";
+    const token = namespaceIdentityToken(ns);
+    await mkdir(path.join(memoryDir, "namespaces"), { recursive: true });
+    await mkdir(path.join(outside, "evil"), { recursive: true });
+    // The configured namespace's token dir is a symlink escaping memoryDir.
+    await symlink(path.join(outside, "evil"), path.join(memoryDir, "namespaces", token), "dir");
+
+    const catalog = new NamespaceCatalog(
+      makeConfig(memoryDir, {
+        namespacePolicies: [{ name: ns }],
+      } as unknown as Partial<PluginConfig>),
+    );
+    const result = await catalog.rebuildFromDisk();
+    const record = result.records.find((r) => r.namespace === ns);
+    assert.ok(
+      !record,
+      "a configured namespace whose token dir escapes memoryDir must NOT be seeded",
+    );
+    assert.ok(
+      result.skipped.some((s) => s.reason === "escape" && s.token === token),
+      "the escaping configured token dir must be reported as skipped (escape)",
+    );
+    // Persisted log must not carry an escaping storageDir for the namespace.
+    const raw = await readFile(path.join(memoryDir, "state", "namespaces.jsonl"), "utf8").catch(() => "");
+    assert.ok(!raw.includes(path.join(outside, "evil")), "no escaping storageDir may be persisted");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+// ── Round 7 (codex P2 — NCzT6): a rebuild must release ONLY its own lock. If
+// another process broke our (stale) lock and acquired a REPLACEMENT before our
+// finally runs, we must NOT unlink that replacement. We simulate this by swapping
+// the lock file for a foreign-owned one during the rebuild and asserting the
+// foreign lock survives.
+test("a rebuild releases only its own lock, not a replacement foreign lock", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-lockowner";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // Drive the rebuild, but mid-flight (during the scan's loadCompacted) replace
+    // the lock file with a FOREIGN-owned one, simulating a process that broke our
+    // stale lock and acquired a replacement.
+    // A foreign owner id (UUID-shaped, not this instance's) so the rebuild's
+    // ownership check correctly treats it as NOT self-held and leaves it alone.
+    const foreignOwnerId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+    const foreignLock = `999999 ${foreignOwnerId} ${new Date().toISOString()}\n`;
+    const handle = catalog as unknown as { loadCompacted: () => Promise<Map<string, unknown>> };
+    const original = handle.loadCompacted.bind(catalog);
+    let swapped = false;
+    handle.loadCompacted = async () => {
+      if (!swapped) {
+        swapped = true;
+        await writeFile(lockPath, foreignLock, "utf8");
+      }
+      return original();
+    };
+
+    await catalog.rebuildFromDisk();
+
+    // The foreign replacement lock must still exist (we only release our own).
+    const after = await readFile(lockPath, "utf8").catch(() => "");
+    assert.equal(after, foreignLock, "a rebuild must not unlink a replacement foreign lock");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

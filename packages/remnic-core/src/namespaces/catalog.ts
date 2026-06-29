@@ -824,6 +824,18 @@ export class NamespaceCatalog {
         continue;
       }
       const storageDir = ns === this.config.defaultNamespace ? defaultStorageDir : this.namespaceTokenDir(namespaceIdentityToken(ns));
+      // CONTAINMENT (round 6, codex P2 — NCzT4): before seeding a configured
+      // non-default record with its token path, verify that path does not ESCAPE
+      // memoryDir. The scan below rejects escaping/symlinked roots, but this
+      // seeding runs FIRST, so without this check rebuild would persist an escaping
+      // `storageDir` for a configured namespace whose token dir was replaced by an
+      // out-of-root symlink. `isContainedStorageDir` enforces the full lexical +
+      // symlink + realpath contract and allows a not-yet-created path (a brand-new
+      // configured namespace still seeds its canonical token path).
+      if (ns !== this.config.defaultNamespace && !(await this.isContainedStorageDir(storageDir))) {
+        skipped.push({ token: namespaceIdentityToken(ns), reason: "escape", detail: storageDir });
+        continue;
+      }
       rebuilt.set(
         ns,
         this.mergeForRebuild(existing.get(ns), {
@@ -1034,7 +1046,15 @@ export class NamespaceCatalog {
       if (heartbeat) clearInterval(heartbeat);
       if (acquired) {
         try {
-          await unlink(this.rebuildLockPath);
+          // Release ONLY the lock still owned by THIS instance (round 6, codex
+          // P2 — NCzT6). If this rebuild paused long enough that another process
+          // treated our lock as stale, unlinked it, and acquired a REPLACEMENT,
+          // an unconditional unlink here would delete that other holder's active
+          // lock — letting writers/another rebuild proceed during its load/rename
+          // window and recreating the lost-append race. Verify ownership first.
+          if (await this.rebuildLockHeldBySelf()) {
+            await unlink(this.rebuildLockPath);
+          }
         } catch {
           // Best-effort release; a stale lock will be broken on next rebuild.
         }
