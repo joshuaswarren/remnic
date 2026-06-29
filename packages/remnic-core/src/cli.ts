@@ -4193,6 +4193,16 @@ export function registerCli(
             } else {
               console.log(note);
             }
+            // Exit-code parity with the enabled path (cursor Medium — NFb5W): an
+            // inert catalog rewrote NOTHING, so a `--apply` (dryRun=false) did NOT
+            // apply. The enabled path sets `exitCode = 1` whenever a non-dry-run
+            // rebuild reports `applied: false`; an inert `--apply` is exactly that
+            // case, so exit-code-only automation must see a non-zero exit rather
+            // than read a no-op apply as a completed rebuild. A `--dry-run` (or the
+            // default dry run) inert call stays exit 0 — it never promised to write.
+            if (!dryRun) {
+              process.exitCode = 1;
+            }
             return;
           }
 

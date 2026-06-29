@@ -330,6 +330,12 @@ export class NamespaceCatalog {
   // installs a hook here to attempt a cross-instance touch in this window and
   // assert the held mutex blocks it. Never set in production code.
   protected onRebuildBeforeRenameForTest?: () => Promise<void>;
+  // Test-only seam (NFgCT, codex P2): fires AFTER the lockless disk scan but
+  // BEFORE the rebuild acquires the cross-process file lock for its final
+  // load→merge→rename window. A deterministic test installs a hook here to attempt
+  // a cross-instance touch DURING the scan window and assert it is NOT blocked or
+  // dropped — proving the scan no longer holds the mutex. Never set in production.
+  protected onRebuildAfterScanForTest?: () => Promise<void>;
 
   constructor(private readonly config: PluginConfig) {
     this.memoryDir = config.memoryDir;
@@ -968,10 +974,16 @@ export class NamespaceCatalog {
     // 7, codex P2 — NEZkA). Because the touch path acquires this lock across its
     // read→append window and the rebuild holds it across its final
     // `loadCompacted()` → `rename()`, the two are mutually exclusive cross-process:
-    // no touch append can land between a rebuild's final load and its rename. The
-    // disk scan itself can stay lockless (it does not mutate); only the final
-    // read-merge-rename critical section requires the lock — `rebuildInsideChain`
-    // does that whole section while we hold it.
+    // no touch append can land between a rebuild's final load and its rename.
+    //
+    // SCOPED MUTEX (NFgCT, codex P2): the lock is acquired ONLY around the final
+    // load→merge→rename window, NOT the (potentially long) disk scan. The scan does
+    // not mutate, so holding the lock across it merely forces concurrent gateway
+    // touches to wait — and they DROP their append after `REBUILD_LOCK_MAX_WAIT_MS`,
+    // losing real `lastWriteAt`/new-namespace data the rewrite then misses. Keeping
+    // the scan lockless shrinks the window in which a touch must contend with the
+    // rebuild to just the final critical section, which is brief. `rebuildInsideChain`
+    // acquires `withHeldCatalogLock` itself, immediately before its re-merge+rewrite.
     //
     // LOCK ORDERING (round 7 — NEZkA): the file lock is acquired INSIDE
     // `queueCritical`, identically to the touch path (`queueCritical` → file lock),
@@ -981,24 +993,26 @@ export class NamespaceCatalog {
     // lock the other is not even running — the OS lock is never self-contended
     // in-process and a same-instance touch never stalls/drops behind its own
     // rebuild. The file lock therefore adds ONLY the missing cross-process
-    // exclusion.
-    return this.queueCritical(async () =>
-      // canMutate iff we actually hold the cross-process lock (round 6, codex P2
-      // — NBPmY). If acquisition timed out, run compute-only: never perform the
-      // load/rename window unlocked, or a second unlocked rename could clobber a
-      // concurrent gateway touch and recreate the lost-append race.
-      this.withHeldCatalogLock((acquired) => this.rebuildInsideChain(dryRun, acquired)),
-    );
+    // exclusion. `rebuildInsideChain` still runs entirely inside `queueCritical`;
+    // it just narrows the cross-process file lock to the final rewrite window.
+    return this.queueCritical(async () => this.rebuildInsideChain(dryRun, true));
   }
 
   /**
    * Body of `rebuildFromDisk`, run inside a single `queueCritical` turn. MUST
    * only be invoked from within the serialized chain so the load and the
-   * rewrite are atomic with respect to concurrent touches.
+   * rewrite are atomic with respect to concurrent touches (in-process).
+   *
+   * `wantMutate` is true for an `--apply` (the caller intends to rewrite). The
+   * cross-process file lock is acquired LATE — only around the final
+   * load→merge→rename window (NFgCT, codex P2) — never across the disk scan, so a
+   * long scan does not force concurrent gateway touches to wait (and drop their
+   * append). Whether the rewrite actually happened is reported via the result's
+   * `applied`: true only when `wantMutate` AND the lock was acquired.
    */
   private async rebuildInsideChain(
     dryRun: boolean,
-    canMutate: boolean,
+    wantMutate: boolean,
   ): Promise<NamespaceCatalogRebuildResult> {
     // Read the LATEST persisted state inside the chain so any touch that landed
     // before this turn is folded in (and re-merged into the rewrite below).
@@ -1249,6 +1263,47 @@ export class NamespaceCatalog {
       if (def) def.kind = "default";
     }
 
+    // ── Final critical section (SCOPED MUTEX — NFgCT, codex P2) ──────────────
+    // The disk scan above ran LOCKLESS (it only reads). Now, for a mutating
+    // rebuild, acquire the cross-process file lock ONLY for the
+    // load→merge→rename window — the brief section a concurrent touch must be
+    // excluded from. `canMutate` is true iff we ACTUALLY hold the lock: if
+    // acquisition timed out (`acquired === false`) we run compute-only and never
+    // re-merge+rewrite unlocked (which would race a concurrent lock holder and
+    // recreate the lost-append window). A dry-run skips the lock entirely.
+    if (!wantMutate) {
+      return this.finishRebuild(rebuilt, skipped, dryRun, false, memoryReal, nowIso);
+    }
+    // Test-only seam: the SCAN is now complete but the cross-process lock has NOT
+    // yet been acquired (NFgCT). A concurrency test attempts a cross-instance touch
+    // here and asserts it is NOT blocked/dropped — proving the scan is lockless.
+    if (this.onRebuildAfterScanForTest) {
+      await this.onRebuildAfterScanForTest();
+    }
+    return this.withHeldCatalogLock((acquired) =>
+      this.finishRebuild(rebuilt, skipped, dryRun, acquired, memoryReal, nowIso),
+    );
+  }
+
+  /**
+   * Final load→merge→rename window of a rebuild, factored out so the caller can
+   * run it WITHIN the cross-process file lock (NFgCT, codex P2) without holding
+   * that lock across the preceding disk scan. Re-reads the latest on-disk state,
+   * folds concurrent touches, then (when `canMutate`) atomically rewrites the log.
+   *
+   * `canMutate` records that the cross-process lock was actually held. The
+   * re-merge + rewrite run only when it is true — a dry-run, or an unlocked apply
+   * (lock-acquisition timeout), computes records but does NOT rename, so it can
+   * never clobber a concurrent lock holder's window. `applied` mirrors `canMutate`.
+   */
+  private async finishRebuild(
+    rebuilt: Map<string, NamespaceRecord>,
+    skipped: NamespaceCatalogSkippedRoot[],
+    dryRun: boolean,
+    canMutate: boolean,
+    memoryReal: string | null,
+    nowIso: string,
+  ): Promise<NamespaceCatalogRebuildResult> {
     if (canMutate) {
       // CROSS-PROCESS re-merge (round 5, codex P2): under the rebuild lock,
       // re-read the on-disk log ONE more time and fold any touch fields that

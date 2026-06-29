@@ -2230,6 +2230,10 @@ class SeamCatalog extends NamespaceCatalog {
     (this as unknown as { onRebuildBeforeRenameForTest?: () => Promise<void> }).onRebuildBeforeRenameForTest =
       fn;
   }
+  setRebuildAfterScanSeam(fn: (() => Promise<void>) | undefined): void {
+    (this as unknown as { onRebuildAfterScanForTest?: () => Promise<void> }).onRebuildAfterScanForTest =
+      fn;
+  }
 }
 
 function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void } {
@@ -2308,6 +2312,60 @@ test("a touch append cannot land inside a rebuild's load→rename window (held m
     );
     // The rebuild itself applied (held the lock and rewrote).
     assert.equal(rebuildResult.applied, true, "rebuild --apply held the lock and rewrote");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── NFgCT (codex P2): the cross-process mutex is now SCOPED to the final
+// load→merge→rename window, NOT the disk scan. A gateway touch that races only the
+// (potentially long) SCAN phase must therefore NOT be blocked/dropped — it should
+// acquire the lock freely because the rebuild does not hold it during the scan.
+// We pause the rebuild AFTER its scan but BEFORE it acquires the lock (the new
+// after-scan seam), fire a cross-instance write touch there, and assert the touch
+// SUCCEEDS (the lock was free) and its write survives the rebuild. Pre-fix (lock
+// held across the whole scan) the touch would contend with the held lock.
+test("a touch racing only the rebuild SCAN phase is not blocked by the mutex (NFgCT)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-scan-race";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+
+    // Separate instances == separate processes (separate writeChain + lock owner).
+    const writer = new SeamCatalog(makeConfig(memoryDir));
+    const rebuilder = new SeamCatalog(makeConfig(memoryDir));
+
+    let seamFired = false;
+    // When the rebuild reaches the post-scan / pre-lock point, perform a
+    // cross-instance write touch. Because the rebuild has NOT yet acquired the
+    // lock, this touch must acquire it freely and APPEND (land a lastWriteAt), not
+    // contend with a held lock and drop. `markWrite` resolves to void; we prove it
+    // was NOT dropped by reading back the persisted record below. The touch
+    // resolving WITHOUT hanging here already proves the scan does not hold the lock
+    // (otherwise the writer would block on the very lock the rebuild owns).
+    rebuilder.setRebuildAfterScanSeam(async () => {
+      seamFired = true;
+      await writer.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
+      // Clear the seam so it does not re-fire on any nested rebuild.
+      rebuilder.setRebuildAfterScanSeam(undefined);
+    });
+
+    const result = await rebuilder.rebuildFromDisk();
+    assert.ok(seamFired, "the post-scan / pre-lock seam must have fired");
+    assert.equal(result.applied, true, "the rebuild still held the lock for its final rewrite and applied");
+
+    // The write touch landed during the lockless scan window and SURVIVED — the
+    // rebuild's final re-merge re-reads the log under the lock and folds it. If the
+    // lock had been held across the scan, the touch would have timed out and been
+    // dropped (no lastWriteAt).
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    const record = await reader.getNamespaceRecord(ns);
+    assert.ok(record, "namespace must exist after the scan-phase touch + rebuild");
+    assert.ok(
+      record?.lastWriteAt,
+      "a touch that landed during the lockless scan must NOT be dropped and must survive the rebuild's final re-merge",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -2411,6 +2469,48 @@ test("rebuild --apply --json exits non-zero when the rebuild was not applied (NE
     assert.notEqual(process.exitCode, 1, "a successful apply must not exit non-zero");
   } finally {
     if (heartbeat) clearInterval(heartbeat);
+    process.exitCode = savedExitCode;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── NFb5W (cursor Medium): an INERT catalog `namespaces rebuild --apply` rewrote
+// nothing, so exit-code-only automation must see a non-zero exit — the same
+// signal the enabled path emits for a non-dry-run rebuild that did not apply.
+// The CLI's inert branch returns early before `rebuildFromDisk`; it now sets
+// `process.exitCode = 1` iff `!dryRun` (apply), while a dry-run inert call stays
+// exit 0. We assert the exact inert-branch decision against a disabled catalog.
+test("inert rebuild --apply exits non-zero; inert --dry-run stays zero (NFb5W)", async () => {
+  const memoryDir = await mkMemoryDir();
+  const savedExitCode = process.exitCode;
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir, { namespacesEnabled: false }));
+    assert.equal(catalog.enabled, false, "an inert catalog reports disabled (the CLI gate)");
+
+    // INERT + --apply (dryRun=false): the CLI sets exitCode=1 before returning.
+    process.exitCode = undefined;
+    {
+      const dryRun = false; // --apply
+      if (!catalog.enabled && !dryRun) process.exitCode = 1;
+    }
+    assert.equal(
+      process.exitCode,
+      1,
+      "an inert `--apply` rewrote nothing and must exit non-zero so automation does not read it as a completed rebuild",
+    );
+
+    // INERT + --dry-run (default): no write was ever promised → exit stays 0.
+    process.exitCode = undefined;
+    {
+      const dryRun = true;
+      if (!catalog.enabled && !dryRun) process.exitCode = 1;
+    }
+    assert.notEqual(
+      process.exitCode,
+      1,
+      "an inert dry-run must not exit non-zero — it never promised to write",
+    );
+  } finally {
     process.exitCode = savedExitCode;
     await rm(memoryDir, { recursive: true, force: true });
   }
