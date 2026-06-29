@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.3.648] — 2026-06-29
+
+### Added
+
+- **QMD collection auto-creation** (Dockerfile + core). `ensureCollection`
+  now auto-creates the QMD collection when missing instead of falling back
+  to NoopSearchBackend. Works per-namespace — each namespace's collection
+  is created automatically on first probe. The Docker image now includes
+  `@tobilu/qmd@2.5.3` via `npm install -g` so QMD is available out of the
+  box.
+
 ## [v9.3.162] — 2026-04-23
 
 ### Added

@@ -418,3 +418,166 @@ export function describeCodingScope(
     disabledReason: null,
   };
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// LCM session-key namespacing (#1495)
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Reserved structural sentinel for the namespaced LCM `session_id` encoding
+ * (#1495 P1). U+001F (UNIT SEPARATOR) is a C0 control character that CANNOT
+ * occur in a route namespace (`isSafeRouteNamespace` ⇒ `[A-Za-z0-9._-]{1,64}`,
+ * see routing/engine.ts) and does not occur in any legitimate session key, so
+ * it is an unforgeable structural marker for the namespace boundary.
+ *
+ * SECURITY — why this is unforgeable (the #1495 P1 fix):
+ * The LCM archive is keyed by the `session_id` STRING (exact `session_id = ?`
+ * and prefix `session_id LIKE '<prefix>%'`), NOT physically partitioned by
+ * namespace. The previous encoding `${namespace}:${sessionKey}` shared the SAME
+ * string space as a raw default-store key, so a caller authorized for the
+ * `default` store could pass a raw `sessionKey` equal to another namespace's
+ * encoded key (`"<overlay-ns>:<victim-session>"`) and exact-match the victim's
+ * rows — a cross-tenant read leak.
+ *
+ * The new encoding makes the namespaced and default key-spaces PROVABLY
+ * DISJOINT:
+ *   - Overlay key  = `\x1f<namespace>\x1f<sessionKey>` — always begins with
+ *     `\x1f` followed by a NON-`\x1f` character (the namespace is non-empty and
+ *     `\x1f`-free). The leading `\x1f<namespace>\x1f` is an unambiguous,
+ *     injective frame: the namespace cannot contain `\x1f`, so the second `\x1f`
+ *     terminates it without any escaping of the (raw) session key.
+ *   - Default key  = the raw `sessionKey`, UNLESS it already begins with the
+ *     sentinel, in which case it is escaped to begin with `\x1f\x1f` (see
+ *     `escapeDefaultLcmKey`). A default key therefore NEVER matches the overlay
+ *     frame `\x1f<non-\x1f>…`.
+ * Hence no caller-controlled raw `sessionKey` (default path) can reproduce an
+ * overlay key, closing the forgery for BOTH the exact-`session_id` match and the
+ * `sessionPrefix` LIKE match (an overlay prefix `\x1f<ns>\x1f<rawPrefix>` stays a
+ * valid LIKE-prefix of the overlay full keys, and a default prefix can only
+ * LIKE-match default keys).
+ *
+ * Existing default-store rows need NO migration: legitimate session keys never
+ * contain `\x1f`, so `escapeDefaultLcmKey` is a no-op for them and they remain
+ * byte-for-byte their raw form. The namespaced encoding is NEW in this
+ * unreleased PR, so changing its shape costs nothing.
+ */
+const LCM_NS_SENTINEL = "\u001f";
+
+/**
+ * Make a default-store (raw) LCM key disjoint from the namespaced key-space.
+ *
+ * Namespaced overlay keys always begin with `\x1f` followed by a non-`\x1f`
+ * namespace character. A raw default key collides with that frame ONLY if it
+ * begins with `\x1f`. Legitimate session keys never contain `\x1f`, so this is a
+ * pure no-op for them; a forged key that begins with `\x1f` is escaped to begin
+ * with `\x1f\x1f`, which can never equal an overlay key (whose second character
+ * is a `[A-Za-z0-9._-]` namespace char, never `\x1f`).
+ */
+function escapeDefaultLcmKey(sessionKey: string): string {
+  return sessionKey.startsWith(LCM_NS_SENTINEL)
+    ? `${LCM_NS_SENTINEL}${sessionKey}`
+    : sessionKey;
+}
+
+/**
+ * Build the LCM/structured-history `session_id` that a write-producing surface
+ * archives under, and that a same-session reader must search under, so reads
+ * and writes never drift (#1495, CLAUDE.md rule 42).
+ *
+ * The LCM archive filters strictly by the `session_id` string, so the writer's
+ * archival key and the reader's lookup key MUST agree byte-for-byte. The
+ * encoding frames the namespace with the reserved {@link LCM_NS_SENTINEL}
+ * (`\x1f<namespace>\x1f<sessionKey>`) whenever that namespace diverges from the
+ * single-store default; otherwise it passes the (escaped) raw `sessionKey` so
+ * single-user / no-overlay deployments keep pre-#1495 behavior exactly. The two
+ * key-spaces are provably disjoint, so a caller-controlled raw `sessionKey`
+ * cannot forge another namespace's encoded id (see the {@link LCM_NS_SENTINEL}
+ * doc comment for the full security rationale).
+ *
+ * `observe`, compaction flush/record, and the orchestrator recall readers all
+ * route through this one helper so a project-scoped (cwd/projectTag) or
+ * explicit-namespace session reads its own compressed-history / structured /
+ * targeted-fact evidence instead of missing it.
+ */
+export function lcmSessionKeyForNamespace(
+  namespace: string | undefined,
+  sessionKey: string | undefined,
+  defaultNamespace: string,
+): string | undefined {
+  if (typeof sessionKey !== "string" || sessionKey.length === 0) return sessionKey;
+  if (
+    typeof namespace === "string" &&
+    namespace.length > 0 &&
+    namespace !== defaultNamespace
+  ) {
+    // Namespaced (overlay / explicit) key: frame the namespace with the reserved
+    // sentinel so the boundary is unambiguous AND unforgeable from the default
+    // key-space. The namespace is guaranteed `\x1f`-free by `isSafeRouteNamespace`.
+    return `${LCM_NS_SENTINEL}${namespace}${LCM_NS_SENTINEL}${sessionKey}`;
+  }
+  // Default store: raw sessionKey, escaped only if it would otherwise intrude on
+  // the namespaced key-space (no-op for every legitimate key).
+  return escapeDefaultLcmKey(sessionKey);
+}
+
+/**
+ * Map an ORDERED, read-authorized namespace set (the SAME set normal QMD/file
+ * recall searches) to the ordered set of LCM `session_id`s a same-session reader
+ * must query (#1505 thread "Include coding fallback namespaces in LCM reads").
+ *
+ * The LCM archive filters strictly by `session_id`, and `observe` archives each
+ * turn under `${effectiveNamespace}:${sessionKey}` for the namespace that was
+ * effective when it was written. A branch-scoped session that overlays
+ * `${base-project-*-branch-*}` only sees rows written under THAT namespace if it
+ * reads a single overlay key — but normal recall ALSO searches the
+ * `codingOverlay.readFallbacks` (project / root) namespaces, so rows archived at
+ * project/root scope are surfaced by QMD/file recall yet MISSED by a single-key
+ * LCM read. Deriving the LCM read keys from the SAME `recallNamespaces` set keeps
+ * the LCM read path from diverging: every namespace recall is authorized to read
+ * (read-auth gate already applied upstream in `recallNamespaces`) contributes one
+ * LCM key, ordered primary-overlay-first then fallbacks. Unreadable namespaces
+ * are never in `recallNamespaces`, so they are never searched here either (no
+ * cross-tenant read leak).
+ *
+ * Single-user / no-overlay recall passes a single-namespace set that collapses to
+ * the raw `sessionKey`, so the result is `[sessionKey]` — byte-for-byte the
+ * pre-#1505 single-key behavior.
+ *
+ * SESSIONLESS recall (`sessionKey === undefined`): returns `[undefined]` so the
+ * caller issues ONE archive-wide LCM read with no exact `session_id` filter —
+ * byte-for-byte the pre-#1505 sessionless behavior. It must NOT substitute the
+ * literal `"default"` session id (codex P2 "Preserve unscoped LCM searches
+ * without a session key"): that would filter to a session literally named
+ * `default`, silently dropping the explicit-cue / targeted / focused / response /
+ * event LCM sections for every recall that omits a session key.
+ *
+ * The result is deduped while preserving first-seen order so the caller can query
+ * keys in priority order and short-circuit on the first hit without re-querying an
+ * identical key (e.g. when two namespaces both collapse to the default store).
+ */
+export function lcmReadSessionIdsForNamespaces(
+  namespaces: readonly string[],
+  sessionKey: string | undefined,
+  defaultNamespace: string,
+): Array<string | undefined> {
+  // Sessionless ⇒ a single archive-wide read (no `session_id` filter). NEVER the
+  // literal "default" session id (codex P2).
+  if (typeof sessionKey !== "string" || sessionKey.length === 0) {
+    return [undefined];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const namespace of namespaces) {
+    const key =
+      lcmSessionKeyForNamespace(namespace, sessionKey, defaultNamespace) ??
+      sessionKey;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push(key);
+    }
+  }
+  if (out.length === 0) {
+    out.push(sessionKey);
+  }
+  return out;
+}

@@ -1,19 +1,41 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { NamespaceSearchRouter } from "./search.js";
-import type { SearchBackend } from "../search/port.js";
+import type {
+  SearchBackend,
+  SearchExecutionOptions,
+  SearchQueryOptions,
+} from "../search/port.js";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
+
+type CollectionState = "present" | "missing" | "unknown" | "skipped";
 
 class FakeBackend implements SearchBackend {
   updates = 0;
-  calls: Array<{ method: string; collection: string | undefined }> = [];
+  calls: Array<{
+    method: string;
+    collection: string | undefined;
+    maxResults: number | undefined;
+  }> = [];
   ensureSignals: Array<AbortSignal | undefined> = [];
   ensureCollections: Array<string | undefined> = [];
+  checkSignals: Array<AbortSignal | undefined> = [];
+  checkCollections: Array<string | undefined> = [];
 
   constructor(
     private readonly globalUpdate: boolean,
     private readonly results: QmdSearchResult[] = [],
+    private readonly collectionStates: {
+      check?: CollectionState;
+      ensure?: CollectionState;
+    } = {},
   ) {}
+
+  private limitedResults(maxResults: number | undefined): QmdSearchResult[] {
+    return typeof maxResults === "number"
+      ? this.results.slice(0, maxResults)
+      : this.results;
+  }
 
   async probe(): Promise<boolean> {
     return true;
@@ -27,28 +49,53 @@ class FakeBackend implements SearchBackend {
     return "fake";
   }
 
-  async search(_query?: string, collection?: string): Promise<QmdSearchResult[]> {
-    this.calls.push({ method: "search", collection });
-    return this.results;
+  async search(
+    _query: string,
+    collection?: string,
+    maxResults?: number,
+    _options?: SearchQueryOptions,
+    _execution?: SearchExecutionOptions,
+  ): Promise<QmdSearchResult[]> {
+    this.calls.push({ method: "search", collection, maxResults });
+    return this.limitedResults(maxResults);
   }
 
-  async searchGlobal(): Promise<QmdSearchResult[]> {
-    return [];
+  async searchGlobal(
+    _query: string,
+    maxResults?: number,
+    _execution?: SearchExecutionOptions,
+  ): Promise<QmdSearchResult[]> {
+    return this.limitedResults(maxResults);
   }
 
-  async bm25Search(_query?: string, collection?: string): Promise<QmdSearchResult[]> {
-    this.calls.push({ method: "bm25", collection });
-    return [];
+  async bm25Search(
+    _query: string,
+    collection?: string,
+    maxResults?: number,
+    _execution?: SearchExecutionOptions,
+  ): Promise<QmdSearchResult[]> {
+    this.calls.push({ method: "bm25", collection, maxResults });
+    return this.limitedResults(maxResults);
   }
 
-  async vectorSearch(_query?: string, collection?: string): Promise<QmdSearchResult[]> {
-    this.calls.push({ method: "vector", collection });
-    return [];
+  async vectorSearch(
+    _query: string,
+    collection?: string,
+    maxResults?: number,
+    _execution?: SearchExecutionOptions,
+  ): Promise<QmdSearchResult[]> {
+    this.calls.push({ method: "vector", collection, maxResults });
+    return this.limitedResults(maxResults);
   }
 
-  async hybridSearch(_query?: string, collection?: string): Promise<QmdSearchResult[]> {
-    this.calls.push({ method: "hybrid", collection });
-    return [];
+  async hybridSearch(
+    _query: string,
+    collection?: string,
+    maxResults?: number,
+    _execution?: SearchExecutionOptions,
+  ): Promise<QmdSearchResult[]> {
+    this.calls.push({ method: "hybrid", collection, maxResults });
+    return this.limitedResults(maxResults);
   }
 
   async update(): Promise<void> {
@@ -69,7 +116,7 @@ class FakeBackend implements SearchBackend {
     _memoryDir?: string,
     collectionOrExecution?: string | { signal?: AbortSignal },
     execution?: { signal?: AbortSignal },
-  ): Promise<"present"> {
+  ): Promise<CollectionState> {
     const collection = typeof collectionOrExecution === "string"
       ? collectionOrExecution
       : undefined;
@@ -78,12 +125,29 @@ class FakeBackend implements SearchBackend {
       : collectionOrExecution ?? execution;
     this.ensureCollections.push(collection);
     this.ensureSignals.push(effectiveExecution?.signal);
-    return "present";
+    return this.collectionStates.ensure ?? "present";
+  }
+
+  async checkCollection(
+    collectionOrExecution?: string | { signal?: AbortSignal },
+    execution?: { signal?: AbortSignal },
+  ): Promise<CollectionState> {
+    const collection = typeof collectionOrExecution === "string"
+      ? collectionOrExecution
+      : undefined;
+    const effectiveExecution = typeof collectionOrExecution === "string"
+      ? execution
+      : collectionOrExecution ?? execution;
+    this.checkCollections.push(collection);
+    this.checkSignals.push(effectiveExecution?.signal);
+    return this.collectionStates.check ?? "present";
   }
 }
 
 function config(): PluginConfig {
   return {
+    memoryDir: "/tmp/remnic",
+    namespacesEnabled: true,
     qmdCollection: "openclaw-engram",
     defaultNamespace: "main",
     qmdMaxResults: 10,
@@ -204,4 +268,140 @@ test("ensureNamespaceCollection forwards abort signals to backend collection che
   assert.equal(state, "present");
   assert.deepEqual(backend.ensureSignals, [controller.signal]);
   assert.deepEqual(backend.ensureCollections, ["openclaw-engram--ns-6d61696e"]);
+});
+
+test("legacy default namespace root checks collection without auto-creating broad root", async () => {
+  const backend = new FakeBackend(false);
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async () => ({ dir: "/tmp/remnic" }) },
+    () => backend,
+  );
+  const controller = new AbortController();
+
+  const state = await router.ensureNamespaceCollection("main", {
+    signal: controller.signal,
+  });
+
+  assert.equal(state, "present");
+  assert.deepEqual(backend.checkSignals, [controller.signal]);
+  assert.deepEqual(backend.checkCollections, ["openclaw-engram"]);
+  assert.deepEqual(backend.ensureCollections, []);
+});
+
+test("legacy default namespace root fail-opens missing guarded collections", async () => {
+  const backend = new FakeBackend(false, [], { check: "missing" });
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async () => ({ dir: "/tmp/remnic" }) },
+    () => backend,
+  );
+
+  const state = await router.ensureNamespaceCollection("main");
+
+  assert.equal(state, "unknown");
+  assert.deepEqual(backend.checkCollections, ["openclaw-engram"]);
+  assert.deepEqual(backend.ensureCollections, []);
+});
+
+test("legacy default namespace root filters nested namespace search results", async () => {
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async () => ({ dir: "/tmp/remnic" }) },
+    () => new FakeBackend(false, [
+      {
+        path: "/tmp/remnic/facts/main.md",
+        docid: "main",
+        score: 0.9,
+        snippet: "main",
+      },
+      {
+        path: "/tmp/remnic/namespaces/shared/facts/shared.md",
+        docid: "shared",
+        score: 0.95,
+        snippet: "shared",
+      },
+      {
+        path: "namespaces/project/facts/project.md",
+        docid: "project",
+        score: 0.8,
+        snippet: "project",
+      },
+      {
+        path: "qmd://openclaw-engram/facts/qmd-main.md",
+        docid: "qmd-main",
+        score: 0.85,
+        snippet: "qmd-main",
+      },
+      {
+        path: "qmd://openclaw-engram/namespaces/uri/facts/uri.md",
+        docid: "uri",
+        score: 0.99,
+        snippet: "uri",
+      },
+      {
+        path: "openclaw-engram/namespaces/prefix/facts/prefix.md",
+        docid: "prefix",
+        score: 0.98,
+        snippet: "prefix",
+      },
+    ]),
+  );
+
+  const results = await router.searchAcrossNamespaces({
+    query: "a",
+    namespaces: ["main"],
+    maxResults: 10,
+  });
+
+  assert.deepEqual(
+    results.map((result) => result.docid),
+    ["main", "qmd-main"],
+  );
+});
+
+test("legacy default namespace root overfetches before filtering nested namespace results", async () => {
+  const backend = new FakeBackend(false, [
+    {
+      path: "/tmp/remnic/namespaces/shared/facts/shared.md",
+      docid: "shared",
+      score: 0.99,
+      snippet: "shared",
+    },
+    {
+      path: "qmd://openclaw-engram/namespaces/project/facts/project.md",
+      docid: "project",
+      score: 0.98,
+      snippet: "project",
+    },
+    {
+      path: "/tmp/remnic/facts/main-a.md",
+      docid: "main-a",
+      score: 0.9,
+      snippet: "main-a",
+    },
+    {
+      path: "/tmp/remnic/facts/main-b.md",
+      docid: "main-b",
+      score: 0.8,
+      snippet: "main-b",
+    },
+  ]);
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async () => ({ dir: "/tmp/remnic" }) },
+    () => backend,
+  );
+
+  const results = await router.searchAcrossNamespaces({
+    query: "a",
+    namespaces: ["main"],
+    maxResults: 2,
+  });
+
+  assert.equal(backend.calls[0]?.maxResults, 50);
+  assert.deepEqual(
+    results.map((result) => result.docid),
+    ["main-a", "main-b"],
+  );
 });

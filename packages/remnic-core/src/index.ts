@@ -335,6 +335,24 @@ export {
 } from "./namespaces/catalog.js";
 
 // ---------------------------------------------------------------------------
+// Session identity / transcript pathing (issue #1496)
+// ---------------------------------------------------------------------------
+
+// Shared, deterministic session-key → storage-path resolution. Exported so
+// downstream consumers (the @remnic/bench adapter + its tests, host adapters)
+// resolve transcript directories through the SAME layer the core writer uses
+// instead of hard-coding `other/default` (rule #20, #22, #26).
+export {
+  SESSION_CHANNEL_TYPE,
+  parseSessionIdentity,
+  sessionStoragePaths,
+  legacyParserReadbackDir,
+  type SessionIdentity,
+  type SessionStoragePaths,
+} from "./session-identity.js";
+export { storagePathHash } from "./storage-paths.js";
+
+// ---------------------------------------------------------------------------
 // Trust zones
 // ---------------------------------------------------------------------------
 

@@ -11,11 +11,9 @@ import type { TranscriptManager } from "./transcript.js";
 import { readSummarySnapshot, upsertSummarySnapshot, writeSummarySnapshot } from "./summary-snapshot.js";
 import {
   encodeStoragePathSegment,
-  encodeStoragePathSegmentWithHash,
-  isSafeLegacyPathSegment,
   resolveSafeStoragePath,
-  storagePathHash,
 } from "./storage-paths.js";
+import { sessionStoragePaths } from "./session-identity.js";
 
 // Schema for LLM summary output
 const HourlySummarySchema = z.object({
@@ -763,45 +761,25 @@ Respond with valid JSON matching this schema:
     startTime: Date,
     endTime: Date
   ): Promise<TranscriptEntry[]> {
-    const parts = sessionKey.split(":");
-    let channelType = "other";
-    let channelId = "default";
-
-    if (parts.length >= 3) {
-      channelType = parts[2];
-      if (channelType === "main") {
-        channelId = "default";
-      } else if (channelType === "discord" && parts.length >= 5 && parts[3] === "channel") {
-        channelId = parts[4];
-      } else if (channelType === "slack" && parts.length >= 5 && parts[3] === "channel") {
-        channelId = parts[4];
-      } else if (channelType === "cron" && parts.length >= 4) {
-        channelId = parts[3];
-      } else if (parts.length >= 4) {
-        channelId = parts[3];
-      }
-    }
+    // Shared session-identity layer (issue #1496, rule #22). Arbitrary keys
+    // route to `session/<hash>`; legacy `agent:<id>:...` keep their paths. The
+    // shared helper also supplies the read-back-only candidate dirs (mirrors
+    // TranscriptManager) so legacy `other/default` AND old `parts.length >= 3`
+    // data stays discoverable here too.
+    const paths = sessionStoragePaths(sessionKey);
 
     try {
       const transcriptRoot = path.join(this.config.memoryDir, "transcripts");
-      const encodedDir = path.join(
-        encodeStoragePathSegment(channelType),
-        encodeStoragePathSegment(channelId),
-      );
-      const alternateDir = path.join(
-        encodeStoragePathSegmentWithHash(channelType),
-        `${encodeStoragePathSegmentWithHash(channelId)}--session-${storagePathHash(sessionKey)}`,
-      );
-      const legacyDir =
-        isSafeLegacyPathSegment(channelType) && isSafeLegacyPathSegment(channelId)
-          ? path.join(channelType, channelId)
-          : undefined;
       const candidateDirs = new Set(
-        [encodedDir, alternateDir, legacyDir].filter(
+        [paths.dir, paths.alternateDir, paths.legacyDir, ...paths.readbackDirs].filter(
           (dir): dir is string => typeof dir === "string" && dir.length > 0,
         ),
       );
       const entries: TranscriptEntry[] = [];
+      // Dedup identical raw rows that a partially-applied migration may have
+      // left in both the primary dir and a read-back dir (issue #1496, cursor
+      // review). Exact raw JSONL line is the stable identity.
+      const seenRawLines = new Set<string>();
 
       // Read all daily transcript files in the directory
       for (const candidateDir of candidateDirs) {
@@ -828,8 +806,10 @@ Respond with valid JSON matching this schema:
                 if (
                   entry.sessionKey === sessionKey &&
                   entryTime >= startTime.getTime() &&
-                  entryTime < endTime.getTime()
+                  entryTime < endTime.getTime() &&
+                  !seenRawLines.has(line)
                 ) {
+                  seenRawLines.add(line);
                   entries.push(entry);
                 }
               } catch {

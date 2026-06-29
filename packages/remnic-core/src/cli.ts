@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { Orchestrator } from "./orchestrator.js";
 import { ThreadingManager } from "./threading.js";
+import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
 import type {
   BehaviorSignalEvent,
@@ -202,6 +203,10 @@ import {
   type SessionRepairApplyResult,
   type SessionRepairPlan,
 } from "./session-integrity.js";
+import {
+  migrateSessionTranscripts,
+  planSessionTranscriptMigration,
+} from "./session-transcript-migration.js";
 import type { TierMigrationCycleSummary, TierMigrationStatusSnapshot } from "./recall-state.js";
 import {
   readRuntimePolicySnapshot as readPolicyRuntimeSnapshot,
@@ -8705,12 +8710,11 @@ export function registerCli(
           }
 
           if (date) {
-            // Read specific date
-            const entries = await orchestrator.transcript.readRange(
-              `${date}T00:00:00Z`,
-              `${date}T23:59:59Z`,
-              channel,
-            );
+            // Read specific date. Use a half-open [start, next-day-00:00:00Z)
+            // window so `readRange`'s exclusive upper bound still covers the
+            // final second of the day (rule #35).
+            const { start, end } = utcDayRange(date);
+            const entries = await orchestrator.transcript.readRange(start, end, channel);
             console.log(formatTranscript(entries));
           } else if (recent) {
             // Parse duration (e.g., "12h", "30m")
@@ -8718,15 +8722,88 @@ export function registerCli(
             const entries = await orchestrator.transcript.readRecent(hours, channel);
             console.log(formatTranscript(entries));
           } else {
-            // Default: show today's transcript
+            // Default: show today's transcript. Same half-open day window as
+            // the --date branch so the final second of the day is included.
             const today = new Date().toISOString().slice(0, 10);
-            const entries = await orchestrator.transcript.readRange(
-              `${today}T00:00:00Z`,
-              `${today}T23:59:59Z`,
-              channel,
-            );
+            const { start, end } = utcDayRange(today);
+            const entries = await orchestrator.transcript.readRange(start, end, channel);
             console.log(formatTranscript(entries));
           }
+        });
+
+      // ── Sessions subcommand (issue #1496) ───────────────────────────────
+      const sessionsCmd = cmd
+        .command("sessions")
+        .description("Inspect and migrate session transcript storage");
+
+      sessionsCmd
+        .command("migrate-transcripts")
+        .description(
+          "Split conflated other/default transcripts into first-class session/<hash> dirs",
+        )
+        .option("--dry-run", "Report the migration plan without moving files (default)")
+        .option("--apply", "Apply the migration (move files; default is dry-run)")
+        .action(async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as Record<string, unknown>;
+          const dryRunFlag = options.dryRun === true;
+          const applyFlag = options.apply === true;
+
+          // Rule #51: reject contradictory flags rather than silently picking one.
+          if (dryRunFlag && applyFlag) {
+            console.error("Cannot pass both --dry-run and --apply. Choose one.");
+            process.exit(1);
+          }
+
+          // Safe default: dry-run when neither flag is given.
+          const apply = applyFlag;
+          const memoryDir = orchestrator.config.memoryDir;
+
+          if (!apply) {
+            const plan = await planSessionTranscriptMigration({ memoryDir });
+            console.log("=== Session Transcript Migration (DRY RUN) ===\n");
+            if (!dryRunFlag && !applyFlag) {
+              console.log("No flag given — defaulting to --dry-run. Pass --apply to migrate.\n");
+            }
+            console.log(`transcripts dir: ${plan.transcriptsDir}`);
+            console.log(`files to migrate: ${plan.files.length}`);
+            console.log(`distinct sessions: ${plan.distinctSessions}`);
+            console.log(`entries to move: ${plan.movedEntries}`);
+            if (plan.files.length > 0) {
+              console.log("\nPlanned splits:");
+              for (const file of plan.files) {
+                console.log(`- ${file.sourceRelPath}`);
+                for (const group of file.groups) {
+                  console.log(
+                    `    ${group.entryCount} entr${group.entryCount === 1 ? "y" : "ies"} → ${group.destDir} (${group.legacy ? "legacy" : "session"})`,
+                  );
+                }
+                if (file.unmovableLines > 0) {
+                  console.log(`    ${file.unmovableLines} unmovable line(s) retained in source`);
+                }
+              }
+            }
+            console.log("\nDRY RUN — no files changed.");
+            return;
+          }
+
+          const result = await migrateSessionTranscripts({ memoryDir, apply: true });
+          console.log("=== Session Transcript Migration (APPLY) ===\n");
+          console.log(`files rewritten: ${result.filesRewritten}`);
+          console.log(`files removed: ${result.filesRemoved}`);
+          console.log(`distinct sessions: ${result.plan.distinctSessions}`);
+          console.log(`entries moved: ${result.plan.movedEntries}`);
+          if (result.manifestPath) {
+            console.log(`manifest: ${result.manifestPath}`);
+          }
+          if (result.errors.length > 0) {
+            console.log("\nErrors:");
+            for (const err of result.errors) {
+              console.log(`- ${err}`);
+            }
+            process.exitCode = 1;
+            return;
+          }
+          console.log("\nOK");
         });
 
       // Checkpoint command

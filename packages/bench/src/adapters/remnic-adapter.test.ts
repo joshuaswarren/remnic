@@ -14,7 +14,13 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { Orchestrator, parseConfig, parseEntityFile, StorageManager } from "@remnic/core";
+import {
+  Orchestrator,
+  parseConfig,
+  parseEntityFile,
+  sessionStoragePaths,
+  StorageManager,
+} from "@remnic/core";
 import { LcmEngine } from "@remnic/core/lcm";
 
 import {
@@ -3408,11 +3414,14 @@ test("runtime-backed adapter preserves source timestamps for historical recall",
     ]);
     await adapter.drain?.();
 
+    // After issue #1496, an arbitrary session key routes to
+    // transcripts/session/<hash>/ rather than the legacy shared other/default
+    // fallback. Resolve the directory through the same identity layer the core
+    // transcript writer uses so the test tracks routing (rule #20).
     const transcriptPath = path.join(
       sandboxDir,
       "transcripts",
-      "other",
-      "default",
+      sessionStoragePaths("beam-source-time-session").dir,
       `${new Date().toISOString().slice(0, 10)}.jsonl`,
     );
     const transcriptLines = (await readFile(transcriptPath, "utf8"))
