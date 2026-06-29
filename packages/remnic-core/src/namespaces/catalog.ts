@@ -376,39 +376,61 @@ export class NamespaceCatalog {
     jobName?: string,
   ): Promise<void> {
     if (!this.enabled) return;
+    // Validate up front (outside the chain) so caller-facing rejections — e.g.
+    // an unsafe namespace token — surface immediately and deterministically,
+    // not interleaved with serialized I/O.
     const ns = this.validateNamespace(namespace);
     const nowIso = (metadata?.at ?? new Date()).toISOString();
-    const records = await this.loadCompacted();
-    const existing = records.get(ns);
 
-    const storageDir = metadata?.storageDir ?? existing?.storageDir ?? this.resolveStorageDir(ns);
-    const record: NamespaceRecord = existing
-      ? { ...existing }
-      : {
-          namespace: ns,
-          identityToken: namespaceIdentityToken(ns),
-          kind: metadata?.kind ?? inferKind(ns, this.config),
-          createdAt: nowIso,
-          storageDir,
-          discoveredBy: metadata?.discoveredBy ?? (kind === "register" ? "config" : kind === "maintenance" ? "scan" : kind),
-        };
+    // Run the read → merge → append as a single serialized critical section so
+    // two concurrent touches for the same namespace cannot both observe the same
+    // stale record and then have the later append win compaction while dropping
+    // the earlier touch's fields (CLAUDE.md rule #40 — the chain also recovers
+    // from rejection). Reading inside the chain guarantees each touch sees the
+    // most recent appended state, including any concurrent read/write/register.
+    await this.queueCritical(async () => {
+      const records = await this.loadCompacted();
+      const existing = records.get(ns);
 
-    // Update mutable fields.
-    record.storageDir = storageDir;
-    if (metadata?.kind) record.kind = metadata.kind;
-    if (metadata?.principal !== undefined) record.principal = metadata.principal;
-    if (metadata?.projectId !== undefined) record.projectId = metadata.projectId;
-    if (metadata?.branch !== undefined) record.branch = metadata.branch;
-    if (metadata?.parentNamespace !== undefined) record.parentNamespace = metadata.parentNamespace;
-    if (metadata?.discoveredBy) record.discoveredBy = metadata.discoveredBy;
+      const storageDir = metadata?.storageDir ?? existing?.storageDir ?? this.resolveStorageDir(ns);
+      // Provenance (discoveredBy) and createdAt are CREATION-ONLY fields. Once a
+      // record exists they are preserved, so a routine routing/recall touch (or
+      // the router's `config` register hook firing on a cache hit) can never
+      // clobber the original discovery source — e.g. a `write`-discovered record
+      // is not reset to `config` by a later resolve. Touch fields (lastReadAt /
+      // lastWriteAt / lastMaintenanceAt) still update on every touch below.
+      const record: NamespaceRecord = existing
+        ? { ...existing }
+        : {
+            namespace: ns,
+            identityToken: namespaceIdentityToken(ns),
+            kind: metadata?.kind ?? inferKind(ns, this.config),
+            createdAt: nowIso,
+            storageDir,
+            discoveredBy:
+              metadata?.discoveredBy ??
+              (kind === "register" ? "config" : kind === "maintenance" ? "scan" : kind),
+          };
 
-    if (kind === "read") record.lastReadAt = nowIso;
-    if (kind === "write") record.lastWriteAt = nowIso;
-    if (kind === "maintenance" && jobName) {
-      record.lastMaintenanceAt = { ...(record.lastMaintenanceAt ?? {}), [jobName]: nowIso };
-    }
+      // Update mutable fields. storageDir, kind, and the principal/project hints
+      // may legitimately change over a namespace's lifetime, so they upsert.
+      record.storageDir = storageDir;
+      if (metadata?.kind) record.kind = metadata.kind;
+      if (metadata?.principal !== undefined) record.principal = metadata.principal;
+      if (metadata?.projectId !== undefined) record.projectId = metadata.projectId;
+      if (metadata?.branch !== undefined) record.branch = metadata.branch;
+      if (metadata?.parentNamespace !== undefined) record.parentNamespace = metadata.parentNamespace;
+      // NOTE: discoveredBy is intentionally NOT reassigned here for existing
+      // records — see the creation-only rationale above (Issue 1 fix).
 
-    await this.append(record);
+      if (kind === "read") record.lastReadAt = nowIso;
+      if (kind === "write") record.lastWriteAt = nowIso;
+      if (kind === "maintenance" && jobName) {
+        record.lastMaintenanceAt = { ...(record.lastMaintenanceAt ?? {}), [jobName]: nowIso };
+      }
+
+      await this.appendUnchained(record);
+    });
   }
 
   // ── Rebuild from disk ────────────────────────────────────────────────────
@@ -596,17 +618,17 @@ export class NamespaceCatalog {
   }
 
   /**
-   * Append a single record to the JSONL log. Serialized through a write chain
-   * that recovers from rejection (CLAUDE.md rule #40). Failure-tolerant: errors
-   * are surfaced to the caller's awaited promise but do not poison the chain.
+   * Serialize an arbitrary read-modify-write critical section through the single
+   * write chain. Every catalog mutation (touch read+merge+append, full rewrite)
+   * runs through this so they are mutually exclusive: a touch always reads the
+   * latest persisted state before appending, and a rebuild rewrite cannot
+   * interleave with a touch's append. The chain recovers from rejection
+   * (CLAUDE.md rule #40) — one failed section never poisons subsequent ones —
+   * while still surfacing the error to that section's awaited promise.
    */
-  private append(record: NamespaceRecord): Promise<void> {
-    const line = serializeRecord(record) + "\n";
-    const run = this.writeChain.then(async () => {
-      await mkdir(this.stateDir, { recursive: true });
-      await appendFile(this.catalogPath, line, "utf8");
-    });
-    // Keep the chain alive after a rejection so later writes still run.
+  private queueCritical<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.writeChain.then(fn);
+    // Keep the chain alive after a rejection so later sections still run.
     this.writeChain = run.then(
       () => undefined,
       () => undefined,
@@ -615,23 +637,31 @@ export class NamespaceCatalog {
   }
 
   /**
+   * Append a single record to the JSONL log WITHOUT re-serializing through the
+   * write chain. MUST only be called from inside a `queueCritical(...)` section
+   * (which already holds the serialized turn); calling it directly would bypass
+   * the read-before-append ordering that prevents lost-field races.
+   */
+  private async appendUnchained(record: NamespaceRecord): Promise<void> {
+    const line = serializeRecord(record) + "\n";
+    await mkdir(this.stateDir, { recursive: true });
+    await appendFile(this.catalogPath, line, "utf8");
+  }
+
+  /**
    * Atomically rewrite the compacted catalog (temp file + rename) so a failed
    * write never leaves a truncated/lost catalog (CLAUDE.md rule #54: write
-   * temp, then rename — never delete-before-write).
+   * temp, then rename — never delete-before-write). Serialized against touches
+   * via the shared write chain.
    */
   private async rewriteAtomic(records: NamespaceRecord[]): Promise<void> {
     const body = records.map((r) => serializeRecord(r)).join("\n") + (records.length > 0 ? "\n" : "");
-    const run = this.writeChain.then(async () => {
+    await this.queueCritical(async () => {
       await mkdir(this.stateDir, { recursive: true });
       const tmp = `${this.catalogPath}.${process.pid}.${Date.now()}.tmp`;
       await writeFile(tmp, body, "utf8");
       await rename(tmp, this.catalogPath);
     });
-    this.writeChain = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
   }
 }
 

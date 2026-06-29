@@ -2590,8 +2590,11 @@ export function parseConfig(raw: unknown): PluginConfig {
     namespacesEnabled: cfg.namespacesEnabled === true,
     // Namespace catalog (issue #1499): default ON, but only does anything when
     // namespacesEnabled is also true (the catalog is inert otherwise). Operators
-    // opt out with namespaceCatalogEnabled: false.
-    namespaceCatalogEnabled: cfg.namespaceCatalogEnabled !== false,
+    // opt out with namespaceCatalogEnabled: false. Parse via coerceBooleanLike
+    // so string/number opt-outs from CLI/env/JSON ("false", "0", "no", "off")
+    // are honored rather than staying truthy (CLAUDE.md rule #36); default to
+    // enabled only when the value is absent or unrecognized.
+    namespaceCatalogEnabled: coerceBooleanLike(cfg.namespaceCatalogEnabled) ?? true,
     // NOTE: namespace identifiers are intentionally NOT sanitized here — the
     // codebase rejects unsafe namespaces at the point of use (see
     // codex-materialize-runner and NamespaceStorageRouter / resolveNamespaceDir),

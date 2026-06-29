@@ -13902,6 +13902,16 @@ export class Orchestrator {
               contentHashSource: rawChunkedContent,
             },
           );
+          // Catalog touch (issue #1499): the chunked write path persists the
+          // parent memory then `continue`s past the non-chunked write below, so
+          // it must record its own write touch here or chunked writes would
+          // never update lastWriteAt. Best-effort and failure-tolerant; the
+          // non-chunked path records its touch separately, so this fires exactly
+          // once per write (no double-count).
+          this.markCatalogWrite(
+            this.namespaceFromStorageDir(targetStorage.dir),
+            targetStorage.dir,
+          );
 
           // Write individual chunks with parent reference
           for (const chunk of chunkResult.chunks) {

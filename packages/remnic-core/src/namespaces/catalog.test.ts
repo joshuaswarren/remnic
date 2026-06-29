@@ -345,3 +345,179 @@ test("StorageRouter integration: catalog registers namespace on storageFor", asy
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Issue 1 (cursor[bot]): the register/resolve hook must NOT clobber prior
+// provenance on an existing record. A namespace first discovered via a `write`
+// touch must keep discoveredBy:"write" even after later routing resolves fire
+// the `config` register hook (including on router cache hits).
+test("register does not overwrite prior discoveredBy on an existing record", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // First seen via a write — provenance is "write".
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const afterWrite = await catalog.getNamespaceRecord("project-origin-abc123");
+    assert.equal(afterWrite?.discoveredBy, "write");
+    const createdAt = afterWrite?.createdAt;
+
+    // A later routing resolve fires the register hook with discoveredBy:"config".
+    await catalog.registerResolved(
+      "project-origin-abc123",
+      path.join(memoryDir, "namespaces", namespaceIdentityToken("project-origin-abc123")),
+    );
+
+    const afterRegister = await catalog.getNamespaceRecord("project-origin-abc123");
+    assert.equal(
+      afterRegister?.discoveredBy,
+      "write",
+      "register must preserve prior write provenance, not reset it to config",
+    );
+    assert.equal(afterRegister?.createdAt, createdAt, "createdAt is creation-only and must be preserved");
+    // The write touch field is still present (register does not erase it).
+    assert.ok(afterRegister?.lastWriteAt, "lastWriteAt must survive the register touch");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// Symmetric: a record first registered via config keeps discoveredBy:"config"
+// after a routing resolve (no spurious downgrade either), and a later explicit
+// write touch still updates lastWriteAt without rewriting provenance.
+test("explicit discoveredBy is only applied at record creation, not on later touches", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.registerResolved(
+      "project-origin-xyz",
+      path.join(memoryDir, "namespaces", namespaceIdentityToken("project-origin-xyz")),
+    );
+    assert.equal((await catalog.getNamespaceRecord("project-origin-xyz"))?.discoveredBy, "config");
+
+    // A later write touch carries discoveredBy:"write" but must NOT relabel the
+    // already-discovered record.
+    await catalog.markWrite("project-origin-xyz", { discoveredBy: "write" });
+    const after = await catalog.getNamespaceRecord("project-origin-xyz");
+    assert.equal(after?.discoveredBy, "config", "existing provenance is preserved");
+    assert.ok(after?.lastWriteAt, "write touch still records lastWriteAt");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Issue 4 (codex P2): concurrent fire-and-forget touches for the same
+// namespace must each read the latest record inside the serialized chain and
+// merge their fields — none may be dropped by a racing append winning
+// compaction. Fire many touches without awaiting between them, then assert the
+// final compacted record retains read + write + maintenance + register fields.
+test("concurrent touches on one namespace preserve all fields (no dropped metadata)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const storageDir = path.join(memoryDir, "namespaces", namespaceIdentityToken("project-origin-race"));
+
+    // Kick off near-simultaneous touches of every kind; do NOT await between
+    // them so the read-modify-append sections must serialize correctly.
+    await Promise.all([
+      catalog.markRead("project-origin-race", { discoveredBy: "read" }),
+      catalog.markWrite("project-origin-race", { discoveredBy: "write" }),
+      catalog.markMaintenance("project-origin-race", "dreams"),
+      catalog.registerResolved("project-origin-race", storageDir),
+      catalog.markMaintenance("project-origin-race", "compaction"),
+    ]);
+
+    const record = await catalog.getNamespaceRecord("project-origin-race");
+    assert.ok(record, "expected a record after concurrent touches");
+    assert.ok(record?.lastReadAt, "lastReadAt must survive concurrent touches");
+    assert.ok(record?.lastWriteAt, "lastWriteAt must survive concurrent touches");
+    assert.ok(record?.lastMaintenanceAt?.dreams, "dreams maintenance ts must survive");
+    assert.ok(record?.lastMaintenanceAt?.compaction, "compaction maintenance ts must survive");
+    // Exactly one logical namespace record after compaction.
+    const list = await catalog.listNamespaces();
+    assert.equal(
+      list.filter((r) => r.namespace === "project-origin-race").length,
+      1,
+      "compaction must fold concurrent appends into a single record",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// Tighter race: a register firing concurrently with read+write must not drop
+// the write's lastWriteAt or the read's lastReadAt (the exact scenario the
+// codex thread called out — the router hook is fire-and-forget alongside the
+// hot-path read/write touches). Run several rounds on distinct namespaces so
+// the assertion does not depend on one lucky scheduling.
+test("concurrent register + markWrite + markRead never drops touch fields", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    for (let i = 0; i < 25; i++) {
+      const ns = `project-origin-rw-${i}`;
+      const storageDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+      await Promise.all([
+        catalog.registerResolved(ns, storageDir),
+        catalog.markWrite(ns, { discoveredBy: "write" }),
+        catalog.markRead(ns, { discoveredBy: "read" }),
+      ]);
+      const record = await catalog.getNamespaceRecord(ns);
+      assert.ok(record?.lastWriteAt, `round ${i}: write must survive a racing register/read`);
+      assert.ok(record?.lastReadAt, `round ${i}: read must survive a racing register/write`);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Issue 3 (cursor + codex): a string "false"/"0" opt-out from CLI/env/JSON
+// must keep the catalog inert (no jsonl writes), matching the boolean opt-out.
+// parseConfig is what coerces these strings; assert the catalog honors the
+// resulting flag end to end by feeding it a config whose flag is the coerced
+// boolean.
+test("catalog is inert when namespaceCatalogEnabled is false (string opt-out coerced)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    // Simulate the post-parseConfig state for `namespaceCatalogEnabled: "false"`
+    // / "0": the coerced boolean is false, so the catalog must do nothing.
+    const catalog = new NamespaceCatalog(
+      makeConfig(memoryDir, { namespaceCatalogEnabled: false }),
+    );
+    assert.equal(catalog.enabled, false, "catalog must report disabled");
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    await catalog.markRead("shared");
+    await catalog.registerConfiguredNamespaces();
+
+    assert.deepEqual(await catalog.listNamespaces(), [], "disabled catalog enumerates nothing");
+    let exists = true;
+    try {
+      await readFile(path.join(memoryDir, "state", "namespaces.jsonl"), "utf8");
+    } catch {
+      exists = false;
+    }
+    assert.equal(exists, false, "opted-out catalog must not write the jsonl file");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Issue 2 (cursor[bot]): the chunked extraction path writes the parent memory
+// then `continue`s past the non-chunked write, so it must record its OWN write
+// touch. This asserts the catalog contract the orchestrator's chunked branch now
+// relies on: a markWrite (as fired by the chunked path) updates lastWriteAt for
+// the target namespace exactly like the non-chunked path.
+test("chunked write path contract: markWrite updates lastWriteAt for the namespace", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const ns = "project-origin-chunked";
+    const storageDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    // This is exactly the call the orchestrator chunked branch now makes
+    // (markCatalogWrite -> markWrite with discoveredBy "write" + storageDir).
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir });
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.ok(record?.lastWriteAt, "chunked write must update lastWriteAt");
+    assert.equal(record?.storageDir, storageDir);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
