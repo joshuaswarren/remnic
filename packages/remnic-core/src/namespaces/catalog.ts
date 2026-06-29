@@ -556,6 +556,15 @@ export class NamespaceCatalog {
     try {
       const stat = await lstat(candidate);
       if (stat.isSymbolicLink()) return false;
+      // Reject an EXISTING non-directory root (NF21i, codex P2; CLAUDE.md rule
+      // #24). A regular file (or socket/fifo) at `<memoryDir>/namespaces/<token>`
+      // is lexically contained and its realpath stays inside memoryDir, so the
+      // realpath check below would ACCEPT it — but a storage root must be a
+      // directory. Recording a file as a namespace root yields a broken install
+      // that only fails later when maintenance/QMD/mkdir treat it as a dir. The
+      // disk scan already skips non-directory entries; mirror that here so every
+      // containment consumer (resolve/touch/fallback/live-recheck) agrees.
+      if (!stat.isDirectory()) return false;
     } catch {
       // The leaf does not exist yet. Lexical containment is NOT sufficient: an
       // EXISTING ancestor (e.g. `<memoryDir>/namespaces`) could be a symlink to
@@ -730,14 +739,22 @@ export class NamespaceCatalog {
    * Preference order:
    *  1. The namespace's OWN lexical tokenized dir (`namespaces/<token>`) — so a
    *     non-default namespace is NOT pointed at the DEFAULT namespace's `memoryDir`
-   *     tree (which would misdirect maintenance fanout). This is returned only
-   *     when the token dir itself stays contained (it is not a symlink escaping
-   *     memoryDir).
+   *     tree (which would misdirect maintenance fanout). Returned only when the
+   *     token dir itself stays CONTAINED (it is not a symlink, and its realpath
+   *     does not escape memoryDir — e.g. via a symlinked `namespaces/` parent).
    *  2. `memoryDir` as a LAST resort — for the default namespace, an unsafe token
    *     that cannot build a contained path, OR the irreparable case where the
-   *     token dir IS a symlink escaping the root (so even its lexical path
-   *     resolves outside). Containment must win over tree-precision here: an
-   *     escaping path is strictly worse than the (contained) default root.
+   *     token dir's realpath escapes the root (so even its lexical path resolves
+   *     outside). NF21m note (codex P2): we deliberately do NOT record the lexical
+   *     token dir in that irreparable case — its realpath escapes memoryDir, and
+   *     the NDo79 contract REQUIRES that an escaping path is never persisted (a
+   *     later mkdir/maintenance/QMD op would follow it outside the root). Since no
+   *     contained namespace-specific path exists, containment wins: `memoryDir` is
+   *     the only safe root left. A namespace whose token dir's realpath escapes is
+   *     an irreparable on-disk state; recording the contained default root is
+   *     strictly safer than persisting an escaping one. The common case where the
+   *     token dir IS contained is handled by branch 1, so a healthy non-default
+   *     namespace never reaches `memoryDir`.
    */
   private async safeFallbackStorageDir(namespace: string): Promise<string> {
     if (namespace === this.config.defaultNamespace) return this.memoryDir;

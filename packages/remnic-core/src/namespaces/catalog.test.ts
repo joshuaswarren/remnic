@@ -1969,6 +1969,40 @@ test("explicit storageDir under a symlinked-out parent (non-existent leaf) is re
   }
 });
 
+// ── NF21i (codex P2): an explicit storageDir that EXISTS as a regular FILE (not a
+// directory) must be REJECTED by the containment check. We place the file at the
+// namespace's OWN canonical token dir path (`namespaces/<token>`) so it passes the
+// namespace-ownership check (isStorageDirForNamespace) and the ONLY thing that can
+// reject it is the directory check inside isContainedStorageDir. A file is
+// lexically contained and its realpath stays inside memoryDir, so pre-fix it was
+// accepted and persisted as a broken root. Post-fix the file root is rejected and
+// the touch falls back to a safe contained root (CLAUDE.md rule #24).
+test("an explicit storageDir that is a regular FILE at the token dir is rejected (NF21i)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-fileroot";
+    const token = namespaceIdentityToken(ns);
+    await mkdir(path.join(memoryDir, "namespaces"), { recursive: true });
+    // The namespace's canonical token dir path is occupied by a regular FILE.
+    const tokenPathAsFile = path.join(memoryDir, "namespaces", token);
+    await writeFile(tokenPathAsFile, "# not a directory\n", "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: tokenPathAsFile });
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.ok(record, "record is still created");
+    // The file at the token path must NOT be persisted as the namespace's root —
+    // a storage root must be a directory. (Pre-fix the file was accepted verbatim.)
+    assert.notEqual(
+      path.resolve(record!.storageDir),
+      path.resolve(tokenPathAsFile),
+      "a regular file must not be persisted as a namespace storage root",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 7 (codex P2 — NDo8C): an ASYNC onResolve hook that REJECTS must not
 // crash storage resolution — the rejection must be swallowed (best-effort).
 test("an async onResolve hook rejection does not crash storage resolution", async () => {
