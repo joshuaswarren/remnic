@@ -937,6 +937,65 @@ test("listNamespaces/getNamespaceRecord sanitize an out-of-root storageDir on re
   }
 });
 
+// ── NGZqr (codex P2): the READ sanitizer must REJECT an unsafe non-default
+// namespace NAME, not only sanitize its storageDir. A pre-fix/tampered jsonl row
+// with an unsafe namespace (e.g. `../evil`) was surfaced by listNamespaces/
+// getNamespaceRecord because the sanitizer only fixed storageDir — and
+// isStorageDirForNamespace can still build a tokenized root for such a name, so
+// the storageDir check alone passes. The hot touch + rebuild scan paths reject
+// these names with isSafeRouteNamespace; the read boundary must agree, or
+// maintenance/QMD could enumerate a namespace those paths reject.
+test("listNamespaces/getNamespaceRecord drop an UNSAFE namespace row on read (NGZqr)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const unsafeNs = "../evil"; // fails isSafeRouteNamespace (parent ref + slash)
+    const safeNs = "project-origin-ok";
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lines = [
+      // A tampered/pre-fix row carrying an unsafe namespace name.
+      JSON.stringify({
+        namespace: unsafeNs,
+        identityToken: namespaceIdentityToken(unsafeNs),
+        kind: "project",
+        createdAt: new Date().toISOString(),
+        storageDir: path.join(memoryDir, "namespaces", namespaceIdentityToken(unsafeNs)),
+        discoveredBy: "write",
+      }),
+      // A normal, safe row that MUST still be returned.
+      JSON.stringify({
+        namespace: safeNs,
+        identityToken: namespaceIdentityToken(safeNs),
+        kind: "project",
+        createdAt: new Date().toISOString(),
+        storageDir: path.join(memoryDir, "namespaces", namespaceIdentityToken(safeNs)),
+        discoveredBy: "write",
+      }),
+    ];
+    await writeFile(path.join(stateDir, "namespaces.jsonl"), lines.join("\n") + "\n", "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // The unsafe namespace must NOT be surfaced by either read surface.
+    assert.equal(
+      await catalog.getNamespaceRecord(unsafeNs),
+      null,
+      "getNamespaceRecord must drop an unsafe namespace row",
+    );
+    const list = await catalog.listNamespaces();
+    assert.ok(
+      !list.some((r) => r.namespace === unsafeNs),
+      "listNamespaces must not surface an unsafe namespace row",
+    );
+    // The safe namespace is unaffected.
+    assert.ok(
+      list.some((r) => r.namespace === safeNs),
+      "a safe namespace row must still be enumerated",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 5, Issue #3 (codex P2): an explicit storageDir that is lexically
 // contained but is a SYMLINK escaping memoryDir must be rejected (the round-4
 // containment check was lexical only).
