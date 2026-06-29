@@ -1851,3 +1851,48 @@ test("rebuild seeds a configured namespace at its router-resolved (legacy raw) r
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (codex P2 — ND6Cz): touches run on per-process write chains, so two
+// processes can each append a full snapshot for the same namespace carrying
+// DIFFERENT touch fields. Plain last-record-wins compaction would erase the
+// earlier snapshot's field; field-level merge during compaction preserves the
+// MAX of each touch field so no cross-process touch recency is lost.
+test("compaction preserves both touch fields from concurrent cross-process snapshots", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-xproc-merge";
+    const token = namespaceIdentityToken(ns);
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const tokenDir = path.join(memoryDir, "namespaces", token);
+
+    const base = {
+      namespace: ns,
+      identityToken: token,
+      kind: "project",
+      createdAt: new Date(Date.now() - 120_000).toISOString(),
+      storageDir: tokenDir,
+      discoveredBy: "write",
+    };
+    const writeAt = new Date(Date.now() - 60_000).toISOString();
+    const readAt = new Date(Date.now() - 30_000).toISOString();
+    // Process A appended a WRITE snapshot (only lastWriteAt); process B then
+    // appended a READ snapshot (only lastReadAt) built from the SAME prior state,
+    // so it lacks A's lastWriteAt. Last-record-wins would drop lastWriteAt.
+    const lineA = JSON.stringify({ ...base, lastWriteAt: writeAt });
+    const lineB = JSON.stringify({ ...base, lastReadAt: readAt });
+    await writeFile(path.join(stateDir, "namespaces.jsonl"), `${lineA}\n${lineB}\n`, "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const rec = await catalog.getNamespaceRecord(ns);
+    assert.ok(rec, "the namespace is present after compaction");
+    assert.equal(rec?.lastReadAt, readAt, "the later read snapshot's lastReadAt survives");
+    assert.equal(
+      rec?.lastWriteAt,
+      writeAt,
+      "the earlier write snapshot's lastWriteAt is NOT erased by the later read snapshot",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

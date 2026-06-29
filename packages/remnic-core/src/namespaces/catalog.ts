@@ -1369,7 +1369,19 @@ export class NamespaceCatalog {
       }
       const record = coerceRecord(parsed);
       if (!record) continue;
-      records.set(record.namespace, record);
+      // Field-level touch merge during compaction (round 6, codex P2 — ND6Cz).
+      // Touches run on PER-PROCESS write chains, so two processes (a gateway write
+      // racing a CLI/second-server read or maintenance touch) can each load the
+      // same prior record and append a full snapshot. Plain last-record-wins
+      // compaction would then discard the earlier snapshot's `lastReadAt` /
+      // `lastWriteAt` / `lastMaintenanceAt`, erasing a real touch and skewing
+      // `writtenSince`. We instead take the LATER record as the base (most recent
+      // identity/disk-derived state) and fold in the MAX of each touch field from
+      // both, so no cross-process touch recency is lost without locking the hot
+      // touch path. A destructive overwrite of real memory is never at stake here
+      // — only best-effort recency metadata.
+      const prior = records.get(record.namespace);
+      records.set(record.namespace, prior ? mergeNewerTouchFields(record, prior) : record);
     }
     return records;
   }
