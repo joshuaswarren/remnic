@@ -1436,3 +1436,156 @@ test("rebuild --apply skips an unsafe configured namespace", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (cursor Medium / codex P2 — NBn3n/NBsGG): `applied` reflects whether
+// the rebuild actually rewrote the log. A normal apply sets applied=true; a
+// dry-run sets applied=false; an apply that cannot acquire the lock (compute-only)
+// sets applied=false so the CLI does not report unqualified success.
+test("rebuildFromDisk reports applied=true on a normal apply and false on dry-run", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-applied";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+
+    const dry = await catalog.rebuildFromDisk({ dryRun: true });
+    assert.equal(dry.applied, false, "a dry-run never applies");
+
+    const apply = await catalog.rebuildFromDisk();
+    assert.equal(apply.applied, true, "a normal apply that holds the lock applies");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildFromDisk reports applied=false when it cannot acquire the lock", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-noapply";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+    // Hold a non-stale FOREIGN lock for the whole rebuild so acquisition times out.
+    await writeFile(lockPath, `999999 ${new Date().toISOString()}\n`, "utf8");
+    const hb = setInterval(() => {
+      const now = new Date();
+      utimes(lockPath, now, now).catch(() => undefined);
+    }, 1_000);
+    hb.unref?.();
+    try {
+      const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+      const result = await catalog.rebuildFromDisk();
+      assert.equal(result.dryRun, false, "this is an apply, not a dry-run");
+      assert.equal(
+        result.applied,
+        false,
+        "an apply that cannot acquire the lock must report applied=false (compute-only)",
+      );
+    } finally {
+      clearInterval(hb);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 7 (cursor Low — NBn3w): registerConfiguredNamespaces must SKIP an
+// unsafe configured name (e.g. `sharedNamespace: "../evil"`) instead of throwing
+// and aborting the whole batch, so the remaining safe names still register.
+test("registerConfiguredNamespaces skips an unsafe configured name without aborting", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(
+      makeConfig(memoryDir, {
+        sharedNamespace: "../evil",
+        namespacePolicies: [{ name: "team-pi-project-origin-safe" }],
+      } as unknown as Partial<PluginConfig>),
+    );
+    // Must not throw despite the unsafe sharedNamespace.
+    await catalog.registerConfiguredNamespaces();
+    const list = await catalog.listNamespaces();
+    assert.ok(list.some((r) => r.namespace === "default"), "default still registered");
+    assert.ok(
+      list.some((r) => r.namespace === "team-pi-project-origin-safe"),
+      "a safe policy name after the unsafe one still registers",
+    );
+    assert.ok(
+      !list.some((r) => r.namespace === "../evil"),
+      "the unsafe configured name must not be registered",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 7 (codex P2 — NBsGP): two catalog instances in the SAME process
+// sharing a memoryDir must not treat each other's rebuild lock as self-held. A
+// touch on instance B must DROP its append while instance A holds the lock,
+// instead of skipping the wait (same PID) and appending into A's window.
+test("a same-process second instance does not treat another instance's lock as self-held", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-twoinstances";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+
+    // Instance A writes a lock with ITS OWN owner id (a UUID) — same PID as B.
+    const instanceA = new NamespaceCatalog(makeConfig(memoryDir));
+    const aOwnerId = (instanceA as unknown as { lockOwnerId: string }).lockOwnerId;
+    await writeFile(lockPath, `${process.pid} ${aOwnerId} ${new Date().toISOString()}\n`, "utf8");
+    const hb = setInterval(() => {
+      const now = new Date();
+      utimes(lockPath, now, now).catch(() => undefined);
+    }, 1_000);
+    hb.unref?.();
+
+    try {
+      // Instance B (different owner id, same PID) must NOT consider A's lock
+      // self-held; its touch waits then DROPS on timeout (no append).
+      const instanceB = new NamespaceCatalog(makeConfig(memoryDir));
+      const started = Date.now();
+      await instanceB.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
+      const waited = Date.now() - started;
+      assert.ok(waited >= 4_000, "instance B must wait on instance A's lock, not skip it as self");
+      assert.equal(
+        await instanceB.getNamespaceRecord(ns),
+        null,
+        "instance B's touch must DROP while instance A's lock is held (no overwrite race)",
+      );
+    } finally {
+      clearInterval(hb);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 7 (codex P2 — NBsFz): a token-SHAPED raw namespace name must be
+// preserved by a catalog write touch, not decoded into a different identity. We
+// drive the orchestrator-side derivation indirectly: a markWrite with an explicit
+// storageDir under a legacy raw-name dir whose name merely looks like a token
+// keeps the literal name. (Covered end-to-end via the orchestrator; here we
+// assert the catalog preserves whatever namespace it is given verbatim.)
+test("a catalog write preserves a token-shaped literal namespace name verbatim", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    // A raw name that merely LOOKS like a token (hex-suffixed) but is the literal
+    // configured/dynamic namespace. The catalog stores exactly what it is given.
+    const literal = "ns-616c706861";
+    const rawDir = path.join(memoryDir, "namespaces", literal);
+    await mkdir(path.join(rawDir, "facts"), { recursive: true });
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite(literal, { discoveredBy: "write", storageDir: rawDir });
+    const record = await catalog.getNamespaceRecord(literal);
+    assert.ok(record, "the literal token-shaped namespace must exist");
+    assert.equal(record?.namespace, literal, "the literal name must be preserved, not decoded");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

@@ -4206,7 +4206,20 @@ export function registerCli(
             }
           }
 
-          console.log(dryRun ? "\nDRY RUN" : "\nOK");
+          if (dryRun) {
+            console.log("\nDRY RUN");
+          } else if (result.applied) {
+            console.log("\nOK");
+          } else {
+            // An --apply that could not acquire the cross-process rebuild lock
+            // ran compute-only and did NOT rewrite the catalog (NBn3n/NBsGG).
+            // Report the non-mutation explicitly and exit non-zero so scripts
+            // and operators retry rather than assume the rebuild persisted.
+            console.log(
+              "\nNOT APPLIED: another rebuild holds the lock; the catalog was NOT rewritten. Retry shortly.",
+            );
+            process.exitCode = 1;
+          }
         });
 
       cmd

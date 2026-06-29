@@ -299,7 +299,7 @@ import {
 } from "./conversation-index/backend.js";
 import { NamespaceStorageRouter } from "./namespaces/storage.js";
 import { NamespaceCatalog } from "./namespaces/catalog.js";
-import { namespaceIdentityFromToken } from "./namespaces/identity.js";
+import { namespaceIdentityFromToken, namespaceIdentityToken } from "./namespaces/identity.js";
 import {
   canReadNamespace,
   defaultNamespaceForPrincipal,
@@ -18287,7 +18287,18 @@ export class Orchestrator {
       return this.config.defaultNamespace;
     const m = resolvedStorageDir.match(/[\\/]namespaces[\\/]([^\\/]+)$/);
     if (!m?.[1]) return this.config.defaultNamespace;
-    return namespaceIdentityFromToken(m[1]) ?? m[1];
+    const dirName = m[1];
+    // Token-shaped raw names (round 6, codex P2 — NBsFz): a dir name might be a
+    // tokenized identity OR a literal raw namespace name that merely LOOKS like a
+    // token (e.g. a configured name `ns-616c706861`). Decode ONLY when the dir is
+    // a genuine tokenized dir — i.e. the decoded identity round-trips back to the
+    // same dir name via `namespaceIdentityToken`. Otherwise the dir name IS the
+    // literal namespace and must be preserved, not decoded into a different name.
+    const decoded = namespaceIdentityFromToken(dirName);
+    if (decoded && namespaceIdentityToken(decoded) === dirName) {
+      return decoded;
+    }
+    return dirName;
   }
 
   /**

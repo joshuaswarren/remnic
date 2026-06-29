@@ -1,4 +1,5 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import {
   appendFile,
@@ -113,6 +114,15 @@ export interface NamespaceCatalogRebuildResult {
   records: NamespaceRecord[];
   /** Roots reported as ambiguous/unsafe rather than silently misclassified. */
   skipped: NamespaceCatalogSkippedRoot[];
+  /**
+   * Whether the rebuild actually rewrote the on-disk catalog (round 6, codex P2
+   * / cursor Medium — NBn3n/NBsGG). `false` for a dry-run, AND for an `--apply`
+   * that could NOT acquire the cross-process rebuild lock within the bounded wait
+   * (it ran compute-only to avoid clobbering a concurrent lock holder). Callers
+   * (CLI) must NOT report unqualified success when `applied` is false for a
+   * non-dry-run — the catalog was left unchanged and a retry is needed.
+   */
+  applied: boolean;
 }
 
 const CATALOG_FILE = "namespaces.jsonl";
@@ -298,6 +308,12 @@ export class NamespaceCatalog {
   private readonly stateDir: string;
   private readonly catalogPath: string;
   private readonly rebuildLockPath: string;
+  // Per-INSTANCE lock owner id (round 6, codex P2 — NBsGP). The rebuild lock
+  // file records this id, not just `process.pid`, so two NamespaceCatalog
+  // instances in the SAME process sharing a memoryDir are NOT mistaken for each
+  // other: a touch on instance B must still wait for instance A's rebuild lock
+  // (different owner id, same PID) instead of skipping as "self-held".
+  private readonly lockOwnerId: string = randomUUID();
   // Serialized write chain that recovers from rejection (CLAUDE.md rule #40)
   // so a single failed append cannot permanently poison subsequent writes.
   private writeChain: Promise<void> = Promise.resolve();
@@ -393,7 +409,18 @@ export class NamespaceCatalog {
     ]);
     for (const ns of names) {
       if (!ns) continue;
-      await this.register(ns, { discoveredBy: "config" });
+      // Skip unsafe configured names (e.g. a `sharedNamespace`/policy name like
+      // `../evil`) consistently with `rebuildFromDisk` (round 6, cursor Low —
+      // NBn3w). `register`→`validateNamespace` THROWS on unsafe tokens; without
+      // this guard one bad name would abort registration of all the rest. The
+      // default namespace is exempt (it may be a non-route literal). Each call is
+      // also wrapped so a single failure never blocks the remaining names.
+      if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) continue;
+      try {
+        await this.register(ns, { discoveredBy: "config" });
+      } catch {
+        // Best-effort: a single bad/unsafe name must not abort the batch.
+      }
     }
   }
 
@@ -700,7 +727,7 @@ export class NamespaceCatalog {
   ): Promise<NamespaceCatalogRebuildResult> {
     const dryRun = options?.dryRun === true;
     if (!this.enabled) {
-      return { dryRun, records: [], skipped: [] };
+      return { dryRun, records: [], skipped: [], applied: false };
     }
 
     // CONCURRENCY (Issue A — round 2): the entire scan → merge → rewrite runs
@@ -958,7 +985,11 @@ export class NamespaceCatalog {
       await this.rewriteUnchained(records);
     }
 
-    return { dryRun, records, skipped };
+    // `applied` is true only when we actually rewrote the log: never for a
+    // dry-run, and never for an `--apply` that ran compute-only because it could
+    // not acquire the lock (canMutate=false). Surfaces the real mutation state so
+    // the CLI does not report success on a skipped rewrite (NBn3n/NBsGG).
+    return { dryRun, records, skipped, applied: canMutate };
   }
 
   // ── Cross-process rebuild lock ───────────────────────────────────────────
@@ -1019,7 +1050,12 @@ export class NamespaceCatalog {
       try {
         const handle = await open(this.rebuildLockPath, "wx");
         try {
-          await handle.writeFile(`${process.pid} ${new Date().toISOString()}\n`, "utf8");
+          // Record PID, this instance's owner id, and a timestamp. The owner id
+          // distinguishes same-process instances (NBsGP).
+          await handle.writeFile(
+            `${process.pid} ${this.lockOwnerId} ${new Date().toISOString()}\n`,
+            "utf8",
+          );
         } catch {
           // Ignore write failures — the exclusive create already gave us the lock.
         } finally {
@@ -1100,11 +1136,29 @@ export class NamespaceCatalog {
     }
   }
 
-  /** Whether the rebuild lock file was written by THIS process (PID match). */
+  /**
+   * Whether the rebuild lock file was written by THIS instance (round 6, codex
+   * P2 — NBsGP). Matches the per-instance owner id, NOT just `process.pid`: two
+   * NamespaceCatalog instances in the same process share a PID, so a PID-only
+   * check would wrongly treat instance A's lock as self-held by instance B and
+   * let B's touch skip the wait and append into A's rebuild window. Falls back to
+   * the legacy PID-only form for lock files written before owner ids existed.
+   */
   private async rebuildLockHeldBySelf(): Promise<boolean> {
     try {
       const body = await readFile(this.rebuildLockPath, "utf8");
-      const pid = Number.parseInt(body.trim().split(/\s+/)[0] ?? "", 10);
+      const parts = body.trim().split(/\s+/);
+      const pid = Number.parseInt(parts[0] ?? "", 10);
+      const ownerId = parts[1];
+      // New format: "<pid> <uuid> <iso>". A UUID at parts[1] uniquely identifies
+      // the writing INSTANCE; only the same instance is self. The strict UUID
+      // shape avoids mistaking a legacy "<pid> <iso>" timestamp (also hyphenated)
+      // for an owner id.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (ownerId && UUID_RE.test(ownerId)) {
+        return ownerId === this.lockOwnerId;
+      }
+      // Legacy format: "<pid> <iso>" (no owner id). Best-effort PID match.
       return Number.isFinite(pid) && pid === process.pid;
     } catch {
       return false;

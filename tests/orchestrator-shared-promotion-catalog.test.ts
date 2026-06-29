@@ -235,3 +235,53 @@ test("zero recall result limit (topK:0) records no catalog read touches", async 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (codex P2 — NBsFz): `namespaceFromStorageDir` decodes ONLY a genuine
+// tokenized dir — one whose decoded identity round-trips back to the exact dir
+// name via `namespaceIdentityToken`. A `ns-...`-shaped dir name that does NOT
+// round-trip is treated as a literal raw name and returned verbatim, so a
+// token-shaped raw namespace name is never silently rewritten into a different
+// identity by the catalog write touch. (Regression guard for the round-trip
+// containment; the inherent same-bytes ambiguity of a raw name that is ALSO a
+// canonical token is resolved at the call site by passing the known namespace.)
+test("namespaceFromStorageDir preserves a token-shaped literal raw namespace name", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-from-dir-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+    const orchestrator = new Orchestrator(config) as any;
+
+    // Helper mirroring `namespaceIdentityToken`: ns-<lowercase hex of UTF-8>.
+    const tokenize = (name: string) => `ns-${Buffer.from(name, "utf8").toString("hex")}`;
+
+    // A legacy raw-name dir whose name is `ns-`-prefixed and hex-shaped but is
+    // NOT a valid canonical token (odd-length hex does not decode). Pre-fix this
+    // mangled the name via `namespaceIdentityFromToken(...) ?? name`; the
+    // round-trip guard now preserves it verbatim.
+    const literal = "ns-deadbee"; // odd-length hex after the prefix → not decodable
+    const rawDir = path.join(memoryDir, "namespaces", literal);
+    assert.equal(
+      orchestrator.namespaceFromStorageDir(rawDir),
+      literal,
+      "a token-shaped but non-canonical raw name must be preserved verbatim, not mangled",
+    );
+
+    // Control: a GENUINE tokenized dir still decodes back to its identity.
+    const realNs = "team-pi-project-origin-abc123";
+    const tokenDir = path.join(memoryDir, "namespaces", tokenize(realNs));
+    assert.equal(
+      orchestrator.namespaceFromStorageDir(tokenDir),
+      realNs,
+      "a genuine tokenized dir must still decode to its namespace identity",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
