@@ -11,11 +11,14 @@ import type { TranscriptManager } from "./transcript.js";
 import { readSummarySnapshot, upsertSummarySnapshot, writeSummarySnapshot } from "./summary-snapshot.js";
 import {
   encodeStoragePathSegment,
-  encodeStoragePathSegmentWithHash,
-  isSafeLegacyPathSegment,
   resolveSafeStoragePath,
-  storagePathHash,
 } from "./storage-paths.js";
+import {
+  LEGACY_FALLBACK_CHANNEL_ID,
+  LEGACY_FALLBACK_CHANNEL_TYPE,
+  parseSessionIdentity,
+  sessionStoragePaths,
+} from "./session-identity.js";
 
 // Schema for LLM summary output
 const HourlySummarySchema = z.object({
@@ -763,41 +766,22 @@ Respond with valid JSON matching this schema:
     startTime: Date,
     endTime: Date
   ): Promise<TranscriptEntry[]> {
-    const parts = sessionKey.split(":");
-    let channelType = "other";
-    let channelId = "default";
-
-    if (parts.length >= 3) {
-      channelType = parts[2];
-      if (channelType === "main") {
-        channelId = "default";
-      } else if (channelType === "discord" && parts.length >= 5 && parts[3] === "channel") {
-        channelId = parts[4];
-      } else if (channelType === "slack" && parts.length >= 5 && parts[3] === "channel") {
-        channelId = parts[4];
-      } else if (channelType === "cron" && parts.length >= 4) {
-        channelId = parts[3];
-      } else if (parts.length >= 4) {
-        channelId = parts[3];
-      }
-    }
+    // Shared session-identity layer (issue #1496, rule #22). Arbitrary keys
+    // route to `session/<hash>`; legacy `agent:<id>:...` keep their paths.
+    const identity = parseSessionIdentity(sessionKey);
+    const paths = sessionStoragePaths(sessionKey);
 
     try {
       const transcriptRoot = path.join(this.config.memoryDir, "transcripts");
-      const encodedDir = path.join(
-        encodeStoragePathSegment(channelType),
-        encodeStoragePathSegment(channelId),
-      );
-      const alternateDir = path.join(
-        encodeStoragePathSegmentWithHash(channelType),
-        `${encodeStoragePathSegmentWithHash(channelId)}--session-${storagePathHash(sessionKey)}`,
-      );
-      const legacyDir =
-        isSafeLegacyPathSegment(channelType) && isSafeLegacyPathSegment(channelId)
-          ? path.join(channelType, channelId)
+      // Read-back-only `other/default` candidate for arbitrary keys whose data
+      // predates first-class routing (mirrors TranscriptManager).
+      const otherDefaultReadbackDir =
+        !identity.legacy &&
+        paths.dir !== path.join(LEGACY_FALLBACK_CHANNEL_TYPE, LEGACY_FALLBACK_CHANNEL_ID)
+          ? path.join(LEGACY_FALLBACK_CHANNEL_TYPE, LEGACY_FALLBACK_CHANNEL_ID)
           : undefined;
       const candidateDirs = new Set(
-        [encodedDir, alternateDir, legacyDir].filter(
+        [paths.dir, paths.alternateDir, paths.legacyDir, otherDefaultReadbackDir].filter(
           (dir): dir is string => typeof dir === "string" && dir.length > 0,
         ),
       );

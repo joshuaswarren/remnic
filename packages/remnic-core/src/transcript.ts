@@ -3,13 +3,13 @@ import path from "node:path";
 import { log } from "./logger.js";
 import type { TranscriptEntry, Checkpoint, PluginConfig } from "./types.js";
 import { analyzeSessionIntegrity, type SessionIntegrityReport } from "./session-integrity.js";
+import { resolveSafeStoragePath } from "./storage-paths.js";
 import {
-  encodeStoragePathSegment,
-  encodeStoragePathSegmentWithHash,
-  isSafeLegacyPathSegment,
-  resolveSafeStoragePath,
-  storagePathHash,
-} from "./storage-paths.js";
+  LEGACY_FALLBACK_CHANNEL_ID,
+  LEGACY_FALLBACK_CHANNEL_TYPE,
+  parseSessionIdentity,
+  sessionStoragePaths,
+} from "./session-identity.js";
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
 type DirectoryOwnershipCacheEntry = {
@@ -17,17 +17,17 @@ type DirectoryOwnershipCacheEntry = {
   fileSizes: Map<string, number>;
 };
 
-function legacyTranscriptDirFor(
-  channelType: string,
-  channelId: string,
-  encodedDir: string,
-): string | undefined {
-  if (!isSafeLegacyPathSegment(channelType) || !isSafeLegacyPathSegment(channelId)) {
-    return undefined;
-  }
-  const legacyDir = path.join(channelType, channelId);
-  return legacyDir === encodedDir ? undefined : legacyDir;
-}
+/**
+ * Read-back-only directory for arbitrary (non-legacy) session keys written by
+ * builds predating issue #1496, when every non-legacy key was routed into the
+ * shared `other/default` directory on first write. New writes never target this
+ * directory — it is only added to read/footprint candidate lists so existing
+ * data stays discoverable until migrated. See `session-transcript-migration.ts`.
+ */
+const OTHER_DEFAULT_READBACK_DIR = path.join(
+  LEGACY_FALLBACK_CHANNEL_TYPE,
+  LEGACY_FALLBACK_CHANNEL_ID,
+);
 
 /**
  * Manages conversation transcript storage, checkpointing, and recall formatting.
@@ -64,13 +64,15 @@ export class TranscriptManager {
   }
 
   /**
-   * Parse a sessionKey to extract channel type and ID.
+   * Resolve the storage path pieces for a sessionKey via the shared
+   * {@link sessionStoragePaths} helper (issue #1496, rule #22).
    *
-   * SessionKey patterns:
-   *   - agent:<agent-id>:main → type="main", id="default"
-   *   - agent:<agent-id>:discord:channel:<channel-id> → type="discord", id="<channel-id>"
-   *   - agent:<agent-id>:cron:<job-id> → type="cron", id="<job-id>"
-   *   - agent:<agent-id>:slack:channel:<channel-id> → type="slack", id="<channel-id>"
+   * Legacy `agent:<id>:...` shapes keep their existing readable channel paths.
+   * Arbitrary / non-legacy keys (e.g. `pi-geek:abc123`) route to
+   * `transcripts/session/<hash>/YYYY-MM-DD.jsonl` from the FIRST write — they
+   * never start life in `other/default`. For those keys an additional
+   * read-back-only `otherDefaultReadbackDir` is returned so data written by
+   * older builds under `other/default` stays discoverable until migrated.
    *
    * @returns Object with raw channel identifiers and encoded storage path pieces.
    */
@@ -81,49 +83,28 @@ export class TranscriptManager {
     channelId: string;
     alternateDir: string;
     legacyDir?: string;
+    otherDefaultReadbackDir?: string;
   } {
-    const parts = sessionKey.split(":");
-
-    // Default fallback
-    let channelType = "other";
-    let channelId = "default";
-
-    if (parts.length >= 3) {
-      // parts[0] = "agent", parts[1] = agent name, parts[2] = channel type
-      channelType = parts[2];
-
-      // Extract channel ID based on pattern
-      if (channelType === "main") {
-        channelId = "default";
-      } else if (channelType === "discord" && parts.length >= 5 && parts[3] === "channel") {
-        channelId = parts[4];
-      } else if (channelType === "slack" && parts.length >= 5 && parts[3] === "channel") {
-        channelId = parts[4];
-      } else if (channelType === "cron" && parts.length >= 4) {
-        channelId = parts[3];
-      } else if (parts.length >= 4) {
-        // For other types, use the 4th part as ID if available
-        channelId = parts[3];
-      }
-    }
+    const paths = sessionStoragePaths(sessionKey);
+    const identity = parseSessionIdentity(sessionKey);
 
     // Daily rotation: transcripts/{channelType}/{channelId}/YYYY-MM-DD.jsonl
     const today = new Date().toISOString().slice(0, 10);
-    const dir = path.join(
-      encodeStoragePathSegment(channelType),
-      encodeStoragePathSegment(channelId),
-    );
-    const alternateDir = path.join(
-      encodeStoragePathSegmentWithHash(channelType),
-      `${encodeStoragePathSegmentWithHash(channelId)}--session-${storagePathHash(sessionKey)}`,
-    );
+
+    // Non-legacy keys may have legacy data stranded under `other/default`.
+    const otherDefaultReadbackDir =
+      !identity.legacy && paths.dir !== OTHER_DEFAULT_READBACK_DIR
+        ? OTHER_DEFAULT_READBACK_DIR
+        : undefined;
+
     return {
-      dir,
+      dir: paths.dir,
       file: `${today}.jsonl`,
-      channelType,
-      channelId,
-      alternateDir,
-      legacyDir: legacyTranscriptDirFor(channelType, channelId, dir),
+      channelType: paths.channelType,
+      channelId: paths.channelId,
+      alternateDir: paths.alternateDir,
+      legacyDir: paths.legacyDir,
+      otherDefaultReadbackDir,
     };
   }
 
@@ -183,9 +164,16 @@ export class TranscriptManager {
     file: string;
     alternateDir: string;
     legacyDir?: string;
+    otherDefaultReadbackDir?: string;
   } {
     const p = this.getTranscriptPath(sessionKey);
-    return { dir: p.dir, file: p.file, alternateDir: p.alternateDir, legacyDir: p.legacyDir };
+    return {
+      dir: p.dir,
+      file: p.file,
+      alternateDir: p.alternateDir,
+      legacyDir: p.legacyDir,
+      otherDefaultReadbackDir: p.otherDefaultReadbackDir,
+    };
   }
 
   private async selectStorageDirForWrite(
@@ -344,11 +332,12 @@ export class TranscriptManager {
     dir: string,
     legacyDir?: string,
     alternateDir?: string,
+    otherDefaultReadbackDir?: string,
   ): Promise<Array<{ cacheKey: string; name: string; path: string }>> {
     const files: Array<{ cacheKey: string; name: string; path: string }> = [];
     const seenDirs = new Set<string>();
 
-    for (const candidateDir of [dir, alternateDir, legacyDir]) {
+    for (const candidateDir of [dir, alternateDir, legacyDir, otherDefaultReadbackDir]) {
       if (!candidateDir || seenDirs.has(candidateDir)) continue;
       seenDirs.add(candidateDir);
 
@@ -400,9 +389,15 @@ export class TranscriptManager {
     startTime: Date,
     endTime: Date,
   ): Promise<Array<{ timestamp: string; sessionKey: string; tool: string }>> {
-    const { dir, alternateDir, legacyDir } = this.getToolUsagePath(sessionKey);
+    const { dir, alternateDir, legacyDir, otherDefaultReadbackDir } = this.getToolUsagePath(sessionKey);
     try {
-      const files = await this.getSessionStorageFiles(this.toolUsageDir, dir, legacyDir, alternateDir);
+      const files = await this.getSessionStorageFiles(
+        this.toolUsageDir,
+        dir,
+        legacyDir,
+        alternateDir,
+        otherDefaultReadbackDir,
+      );
       const out: Array<{ timestamp: string; sessionKey: string; tool: string }> = [];
       for (const file of files) {
         const raw = await readFile(file.path, "utf-8");
@@ -431,11 +426,17 @@ export class TranscriptManager {
   }
 
   async estimateSessionFootprint(sessionKey: string): Promise<{ bytes: number; tokens: number }> {
-    const { dir, alternateDir, legacyDir } = this.getTranscriptPath(sessionKey);
+    const { dir, alternateDir, legacyDir, otherDefaultReadbackDir } = this.getTranscriptPath(sessionKey);
     let bytes = 0;
 
     try {
-      const files = await this.getSessionStorageFiles(this.transcriptsDir, dir, legacyDir, alternateDir);
+      const files = await this.getSessionStorageFiles(
+        this.transcriptsDir,
+        dir,
+        legacyDir,
+        alternateDir,
+        otherDefaultReadbackDir,
+      );
       const cached = this.sessionFootprintCache.get(sessionKey);
       if (!cached) {
         const fileBytes = new Map<string, number>();
@@ -711,7 +712,7 @@ export class TranscriptManager {
     end: Date,
     sessionKey: string,
   ): Promise<TranscriptEntry[]> {
-    const { dir, alternateDir, legacyDir } = this.getTranscriptPath(sessionKey);
+    const { dir, alternateDir, legacyDir, otherDefaultReadbackDir } = this.getTranscriptPath(sessionKey);
 
     // Build set of date strings that overlap with [start, end].
     // Always include end's date to handle midnight-crossing lookbacks
@@ -725,7 +726,13 @@ export class TranscriptManager {
     dateStrings.add(end.toISOString().slice(0, 10));
 
     const entries: TranscriptEntry[] = [];
-    const files = await this.getSessionStorageFiles(this.transcriptsDir, dir, legacyDir, alternateDir);
+    const files = await this.getSessionStorageFiles(
+      this.transcriptsDir,
+      dir,
+      legacyDir,
+      alternateDir,
+      otherDefaultReadbackDir,
+    );
 
     for (const file of files) {
       // Only read files whose date is within the window
