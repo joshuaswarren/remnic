@@ -107,6 +107,12 @@ const STATE_DIR = "state";
 
 // Children that indicate a directory holds Remnic memory data (used for legacy
 // default-root detection and to skip empty/non-data roots during rebuild).
+//
+// `state` is included to MATCH the router's storage-presence check
+// (`NamespaceStorageRouter` counts the `state` runtime child via
+// `includeRuntimeState: true`). Without it (round 3, cursor Medium) a namespace
+// the router actively resolves because it has only a `state/` dir would be
+// treated as absent by rebuild and vanish from the catalog after `--apply`.
 const MEMORY_DATA_CHILDREN = [
   ...ALL_CATEGORY_DIRS,
   "entities",
@@ -115,6 +121,7 @@ const MEMORY_DATA_CHILDREN = [
   "config",
   "summaries",
   "profile.md",
+  "state",
 ] as const;
 
 function isCatalogEnabled(config: PluginConfig): boolean {
@@ -611,12 +618,23 @@ export class NamespaceCatalog {
 
   /**
    * Merge a prior record's preserved metadata (timestamps, principal hints)
-   * onto a freshly-discovered record. Disk-derived fields (storageDir, kind,
-   * discoveredBy) take precedence from the new record.
+   * onto a freshly-discovered record. Disk-derived fields (storageDir, kind)
+   * take precedence from the new record.
+   *
+   * PROVENANCE (round 3, cursor Low): `discoveredBy` and `createdAt` are
+   * CREATION-ONLY — identical to the touch path's invariant. A rebuild must NOT
+   * reset a namespace first seen via a `write`/`read` touch back to `config`
+   * just because it is also listed in policies. So when a prior record exists we
+   * carry its `discoveredBy` forward; only brand-new records keep the fresh
+   * (config/scan) provenance.
    */
   private mergeForRebuild(prior: NamespaceRecord | undefined, fresh: NamespaceRecord): NamespaceRecord {
     if (!prior) return fresh;
-    const merged: NamespaceRecord = { ...fresh, createdAt: prior.createdAt ?? fresh.createdAt };
+    const merged: NamespaceRecord = {
+      ...fresh,
+      createdAt: prior.createdAt ?? fresh.createdAt,
+      discoveredBy: prior.discoveredBy ?? fresh.discoveredBy,
+    };
     if (prior.lastReadAt) merged.lastReadAt = prior.lastReadAt;
     if (prior.lastWriteAt) merged.lastWriteAt = prior.lastWriteAt;
     if (prior.lastMaintenanceAt) merged.lastMaintenanceAt = { ...prior.lastMaintenanceAt };

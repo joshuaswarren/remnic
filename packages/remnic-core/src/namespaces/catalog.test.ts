@@ -663,3 +663,76 @@ test("rebuildFromDisk keeps default storageDir aligned with the router (legacy d
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 3, Issue #1 (cursor Medium): rebuild must NOT skip a tokenized
+// namespace root that only holds a `state/` dir — the router counts the `state`
+// runtime child (includeRuntimeState) when deciding a root has storage, so a
+// namespace the router actively resolves would otherwise vanish from the
+// rebuilt catalog after --apply.
+test("rebuildFromDisk catalogs a tokenized root that only has a state dir", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-stateonly";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    // Only a runtime `state/` child — no content category dirs.
+    await mkdir(path.join(tokenDir, "state"), { recursive: true });
+
+    const config = makeConfig(memoryDir);
+    // The router treats this root as present (runtime state counts as a marker).
+    const router = new NamespaceStorageRouter(config);
+    const sm = await router.storageFor(ns);
+    assert.equal(sm.dir, tokenDir, "router resolves the state-only tokenized root");
+
+    const catalog = new NamespaceCatalog(config);
+    const result = await catalog.rebuildFromDisk();
+    assert.ok(
+      result.records.some((r) => r.namespace === ns),
+      "rebuild must catalog a state-only root the router resolves",
+    );
+    assert.ok(
+      !result.skipped.some((s) => s.token === namespaceIdentityToken(ns)),
+      "state-only root must not be reported as skipped",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 3, Issue #2 (cursor Low): rebuild must preserve creation-only
+// provenance. A configured/policy namespace first DISCOVERED via a write touch
+// keeps discoveredBy:"write" after rebuild — rebuild must not reset it to
+// "config" just because it is listed in policies. Mirrors the touch-path
+// creation-only invariant.
+test("rebuildFromDisk preserves prior write provenance for a configured namespace", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "explicit-policy-ns";
+    const config = makeConfig(memoryDir, {
+      namespacePolicies: [{ name: ns } as any],
+    });
+    const catalog = new NamespaceCatalog(config);
+
+    // First seen via a write — provenance is "write", with on-disk data so the
+    // scan branch also discovers it.
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
+    assert.equal(
+      (await catalog.getNamespaceRecord(ns))?.discoveredBy,
+      "write",
+      "precondition: namespace discovered via write",
+    );
+
+    await catalog.rebuildFromDisk();
+
+    const after = await catalog.getNamespaceRecord(ns);
+    assert.equal(
+      after?.discoveredBy,
+      "write",
+      "rebuild must preserve prior write provenance, not reset configured ns to config",
+    );
+    assert.ok(after?.lastWriteAt, "rebuild must preserve the lastWriteAt touch field");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

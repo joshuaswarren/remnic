@@ -148,3 +148,44 @@ test("persistExtraction shared promotion records a shared-namespace catalog writ
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 3, Issue #3 (codex P2): when the planner selects no_recall, retrieval
+// is skipped — so the recall path must NOT mark every readable namespace as
+// read. A trivial prompt ("ok") classifies as no_recall; assert the catalog
+// records no lastReadAt for the recalled namespaces. Fails on the round-2 code
+// (read touch fired before the no_recall early return), passes after the gate.
+test("no_recall recall does not record catalog read touches", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-no-recall-catalog-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+
+    const orchestrator = new Orchestrator(config) as any;
+    assert.equal(orchestrator.namespaceCatalog.enabled, true, "catalog must be enabled");
+
+    // A trivial prompt the planner classifies as no_recall (mirrors the existing
+    // recall-no-recall-short-circuit tests).
+    const out = await orchestrator.recallInternal("ok", "user:test:no-recall-catalog");
+    assert.equal(out, "", "no_recall must produce no recall context");
+
+    // Allow any (incorrect) fire-and-forget read touch to settle, then assert
+    // NONE was recorded for the readable namespaces.
+    await orchestrator.namespaceCatalog.markMaintenance("default", "probe");
+    const records = await orchestrator.namespaceCatalog.listNamespaces();
+    for (const r of records) {
+      assert.ok(
+        !r.lastReadAt,
+        `no_recall must not record a read touch (namespace ${r.namespace} has lastReadAt)`,
+      );
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

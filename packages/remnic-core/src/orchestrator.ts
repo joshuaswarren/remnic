@@ -7135,7 +7135,12 @@ export class Orchestrator {
     }
     // Catalog touch (issue #1499): record reads against the recalled namespaces
     // so the catalog reflects active read scopes. Best-effort, failure-tolerant.
-    if (this.namespaceCatalog.enabled) {
+    // Round 3 (codex P2): gate behind the no_recall guard — when the planner
+    // selects `no_recall` retrieval is skipped entirely (see the early return at
+    // `recallMode === "no_recall"` below), so marking every readable namespace as
+    // read would falsely inflate `lastReadAt` / catalog recency for prompts that
+    // explicitly should not read memory.
+    if (this.namespaceCatalog.enabled && recallMode !== "no_recall") {
       for (const ns of recallNamespaces) this.markCatalogRead(ns);
     }
     const qmdAvailable = this.qmd.isAvailable();
