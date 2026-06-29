@@ -617,6 +617,14 @@ export class NamespaceCatalog {
    * on disk and verify its realpath stays inside `memoryReal` (round 6, codex P2
    * — NDo79). Rejects a non-existent leaf whose existing parent chain escapes
    * memoryDir via a symlink. Stops at memoryDir's resolved root.
+   *
+   * The nearest existing ancestor must also be a DIRECTORY (NHIdt, codex P2): if
+   * an existing parent such as `<memoryDir>/namespaces` is a regular FILE (or
+   * socket/fifo), `realpath(parent)` still succeeds and resolves inside memoryDir,
+   * so a containment-only check would ACCEPT a leaf that can never be created — you
+   * cannot mkdir a child under a file. We `lstat` the nearest existing ancestor and
+   * reject when it is not a directory, mirroring the leaf non-directory rejection
+   * (NF21i) and the disk scan, so every containment consumer agrees.
    */
   private async isNearestExistingAncestorContained(
     candidate: string,
@@ -628,13 +636,24 @@ export class NamespaceCatalog {
       const parent = path.dirname(dir);
       // Reached the filesystem root without finding an existing ancestor.
       if (parent === dir || dir === root) return false;
+      let real: string;
       try {
-        const real = await realpath(parent);
-        // The nearest existing ancestor must resolve inside the memory root.
-        return isPathInside(memoryReal, real) || real === memoryReal;
+        real = await realpath(parent);
       } catch {
         // Parent does not exist yet either — keep walking up.
         dir = parent;
+        continue;
+      }
+      // The nearest EXISTING ancestor must resolve inside the memory root...
+      if (!(isPathInside(memoryReal, real) || real === memoryReal)) return false;
+      // ...AND be a directory: a non-directory ancestor (e.g. a file occupying
+      // `namespaces`) cannot hold the not-yet-created leaf (NHIdt).
+      try {
+        const stat = await lstat(real);
+        return stat.isDirectory();
+      } catch {
+        // The ancestor vanished between realpath and lstat — treat as not usable.
+        return false;
       }
     }
   }

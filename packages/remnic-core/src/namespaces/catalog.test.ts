@@ -2160,6 +2160,37 @@ test("an explicit storageDir that is a regular FILE at the token dir is rejected
   }
 });
 
+// ── NHIdt (codex P2): a NOT-YET-EXISTING leaf whose nearest existing ANCESTOR is a
+// regular FILE must be rejected. `realpath(parent)` succeeds and resolves inside
+// memoryDir for a file `<memoryDir>/namespaces`, so a containment-only ancestor
+// check would ACCEPT a leaf that can never be created (no child dir under a file).
+// We place a FILE at `namespaces` and pass an explicit non-existent leaf under it;
+// the touch must not persist that escaping/uncreatable path.
+test("an explicit storageDir whose nearest existing ancestor is a FILE is rejected (NHIdt)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-fileancestor";
+    const token = namespaceIdentityToken(ns);
+    // `<memoryDir>/namespaces` is a regular FILE, not a directory.
+    const namespacesAsFile = path.join(memoryDir, "namespaces");
+    await writeFile(namespacesAsFile, "# not a directory\n", "utf8");
+    // The explicit leaf does not exist; its nearest existing ancestor is the file.
+    const leafUnderFile = path.join(namespacesAsFile, token);
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: leafUnderFile });
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.ok(record, "record is still created");
+    assert.notEqual(
+      path.resolve(record!.storageDir),
+      path.resolve(leafUnderFile),
+      "a leaf whose nearest existing ancestor is a file must not be persisted as a root",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 7 (codex P2 — NDo8C): an ASYNC onResolve hook that REJECTS must not
 // crash storage resolution — the rejection must be swallowed (best-effort).
 test("an async onResolve hook rejection does not crash storage resolution", async () => {

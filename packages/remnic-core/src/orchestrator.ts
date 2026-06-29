@@ -12549,6 +12549,9 @@ export class Orchestrator {
       storage,
       threadIdForExtraction,
       { sessionKey, principal, validAt: sourceValidAt },
+      // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
+      // real namespace rather than a guess decoded from the storage dir.
+      selfNamespace,
     );
     let postPersistMetadataFailed = false;
     meta ??= await storage.loadMeta();
@@ -13066,6 +13069,7 @@ export class Orchestrator {
     storage: StorageManager,
     threadIdForExtraction?: string | null,
     sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
+    baseNamespace?: string,
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
@@ -13833,9 +13837,15 @@ export class Orchestrator {
       // codex P2 — NCQI0). Re-deriving it from `targetStorage.dir` mangles a raw
       // namespace literally named like a canonical token (e.g. `ns-616c706861`
       // served from its legacy raw dir decodes to `alpha`). We seed it from the
-      // base storage dir once, then carry the EXPLICIT routed name verbatim so
-      // the catalog write touch records the real namespace, not a decoded guess.
-      let targetNamespaceName = this.namespaceFromStorageDir(targetStorage.dir);
+      // EXPLICIT base namespace the caller used to obtain `storage` (NHIdx, codex
+      // P2) — `selfNamespace`/`writeNamespaceOverride` — so the catalog write touch
+      // records the real namespace, not a guess decoded from the directory. We only
+      // fall back to decoding the dir when no base namespace was passed (legacy
+      // callers). The EXPLICIT routed name (below) still overrides this verbatim.
+      let targetNamespaceName =
+        baseNamespace && baseNamespace.length > 0
+          ? baseNamespace
+          : this.namespaceFromStorageDir(targetStorage.dir);
       let routedRuleId: string | undefined;
       let routedNamespaceExplicit = false;
       if (routeRules.length > 0) {
