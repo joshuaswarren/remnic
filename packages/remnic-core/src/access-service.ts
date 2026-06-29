@@ -2454,6 +2454,7 @@ export class EngramAccessService {
       qmd: await this.qmdHealth(
         searchBackend,
         qmdEnabled,
+        resolvedNamespace,
         this.qmdCollectionForHealth(resolvedNamespace, storage.dir),
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
@@ -2478,10 +2479,51 @@ export class EngramAccessService {
   private async qmdHealth(
     searchBackend: string,
     qmdEnabled: boolean,
+    namespace: string,
     collection: string,
   ): Promise<EngramAccessQmdHealthResponse> {
+    if (searchBackend !== "qmd" || !qmdEnabled) {
+      return {
+        enabled: qmdEnabled,
+        active: false,
+        degraded: false,
+        mode: searchBackend !== "qmd" ? "not-selected" : "disabled",
+        collection,
+        collectionState: "skipped",
+        installedVersion: null,
+        supportedVersion: null,
+        supported: null,
+        upgradeAvailable: null,
+        doctorAvailable: null,
+        debugStatus: searchBackend !== "qmd" ? `backend=${searchBackend}` : "backend=disabled",
+      };
+    }
+
+    if (this.orchestrator.config.namespacesEnabled === true) {
+      const namespaceHealth = await this.namespaceQmdHealth(searchBackend, qmdEnabled, namespace, collection);
+      if (namespaceHealth) return namespaceHealth;
+    }
+
     const qmd = this.orchestrator.qmd;
-    const active = searchBackend === "qmd" && qmdEnabled && qmd.isAvailable();
+    if (!qmd) {
+      return {
+        enabled: true,
+        active: false,
+        degraded: true,
+        mode: "fallback",
+        collection,
+        collectionState: "unknown",
+        installedVersion: null,
+        supportedVersion: null,
+        supported: null,
+        upgradeAvailable: null,
+        doctorAvailable: null,
+        debugStatus: "backend=unavailable",
+      };
+    }
+    const collectionState = await this.qmdCollectionState(searchBackend, qmdEnabled, collection);
+    const binaryAvailable = searchBackend === "qmd" && qmdEnabled && qmd.isAvailable();
+    const active = binaryAvailable && collectionState !== "missing";
     const debugStatus = qmd.debugStatus();
     const versionStatus =
       "getVersionStatus" in qmd && typeof qmd.getVersionStatus === "function"
@@ -2508,7 +2550,7 @@ export class EngramAccessService {
       degraded: searchBackend === "qmd" && qmdEnabled && !active,
       mode,
       collection,
-      collectionState: await this.qmdCollectionState(searchBackend, qmdEnabled, collection),
+      collectionState,
       installedVersion: versionStatus?.installedVersion ?? null,
       supportedVersion: versionStatus?.supportedVersion ?? null,
       supported: versionStatus?.supported ?? null,
@@ -2516,6 +2558,70 @@ export class EngramAccessService {
       doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
       debugStatus,
     };
+  }
+
+  private async namespaceQmdHealth(
+    searchBackend: string,
+    qmdEnabled: boolean,
+    namespace: string,
+    fallbackCollection: string,
+  ): Promise<EngramAccessQmdHealthResponse | null> {
+    if (searchBackend !== "qmd" || !qmdEnabled) return null;
+    const searchHealthForNamespace = (
+      this.orchestrator as Orchestrator & {
+        searchHealthForNamespace?: (
+          namespace: string,
+          execution?: { signal?: AbortSignal },
+        ) => Promise<{
+          collection: string;
+          available: boolean;
+          collectionState: EngramAccessQmdCollectionState;
+          debugStatus: string;
+          installedVersion: string | null;
+          supportedVersion: string | null;
+          supported: boolean | null;
+          upgradeAvailable: boolean | null;
+          doctorAvailable: boolean | null;
+          daemonMode: boolean | null;
+        }>;
+      }
+    ).searchHealthForNamespace;
+    if (typeof searchHealthForNamespace !== "function") return null;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2_000);
+    timer.unref?.();
+    try {
+      const health = await searchHealthForNamespace.call(this.orchestrator, namespace, {
+        signal: controller.signal,
+      });
+      const active = health.available && health.collectionState !== "missing";
+      const mode =
+        !active
+          ? "fallback"
+          : health.daemonMode === true
+          ? "daemon"
+          : "cli";
+
+      return {
+        enabled: true,
+        active,
+        degraded: !active,
+        mode,
+        collection: health.collection || fallbackCollection,
+        collectionState: health.collectionState,
+        installedVersion: health.installedVersion,
+        supportedVersion: health.supportedVersion,
+        supported: health.supported,
+        upgradeAvailable: health.upgradeAvailable,
+        doctorAvailable: health.doctorAvailable,
+        debugStatus: health.debugStatus,
+      };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async qmdCollectionState(

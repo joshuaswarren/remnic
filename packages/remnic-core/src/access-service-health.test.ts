@@ -133,7 +133,40 @@ test("health marks QMD as degraded when configured search falls back to noop", a
   }
 });
 
-test("health reports namespace-scoped QMD collection names", async () => {
+test("health marks QMD as degraded when the checked collection is missing", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-missing-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      qmdCollection: "remnic-memory",
+    });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({
+        isAvailable: () => true,
+        debugStatus: () => "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
+        checkCollection: async () => "missing",
+        isDaemonMode: () => false,
+      }),
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+
+    assert.equal(health.qmd.collectionState, "missing");
+    assert.equal(health.qmd.active, false);
+    assert.equal(health.qmd.degraded, true);
+    assert.equal(health.qmd.mode, "fallback");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health reports namespace-scoped QMD backend state", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-ns-"));
   try {
     const teamDir = path.join(rootDir, "namespaces", "team");
@@ -149,27 +182,38 @@ test("health reports namespace-scoped QMD collection names", async () => {
     const expectedCollection = namespaceCollectionName("remnic-memory", "team", {
       defaultNamespace: "default",
     });
-    const qmd = makeQmd({
-      isAvailable: () => true,
-      debugStatus: () => "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
-      checkCollection: async (collection) => {
-        assert.equal(collection, expectedCollection);
-        return "present";
-      },
-    });
     const service = new EngramAccessService({
       config,
-      qmd,
+      qmd: makeQmd({}),
       async getStorage(namespace: string) {
         return { dir: namespace === "team" ? teamDir : rootDir };
+      },
+      async searchHealthForNamespace(namespace: string, execution?: { signal?: AbortSignal }) {
+        assert.equal(namespace, "team");
+        assert.ok(execution?.signal instanceof AbortSignal);
+        return {
+          collection: expectedCollection,
+          available: true,
+          collectionState: "present",
+          debugStatus: "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
+          installedVersion: "qmd 2.5.3",
+          supportedVersion: "2.5.3",
+          supported: true,
+          upgradeAvailable: false,
+          doctorAvailable: true,
+          daemonMode: false,
+        };
       },
     } as unknown as Orchestrator);
 
     const health = await service.health("team");
 
     assert.equal(health.memoryDir, teamDir);
+    assert.equal(health.qmd.active, true);
+    assert.equal(health.qmd.degraded, false);
     assert.equal(health.qmd.collection, expectedCollection);
     assert.equal(health.qmd.collectionState, "present");
+    assert.equal(health.qmd.installedVersion, "qmd 2.5.3");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

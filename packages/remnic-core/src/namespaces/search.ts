@@ -44,7 +44,21 @@ type NamespaceBackendRecord = {
   filtersNestedNamespaces: boolean;
 };
 
-type CollectionState = "present" | "missing" | "unknown" | "skipped";
+export type CollectionState = "present" | "missing" | "unknown" | "skipped";
+
+export interface NamespaceSearchHealth {
+  collection: string;
+  memoryDir: string;
+  available: boolean;
+  collectionState: CollectionState;
+  debugStatus: string;
+  installedVersion: string | null;
+  supportedVersion: string | null;
+  supported: boolean | null;
+  upgradeAvailable: boolean | null;
+  doctorAvailable: boolean | null;
+  daemonMode: boolean | null;
+}
 
 type NamespaceScopedSearchConfig = PluginConfig & {
   hostEmbeddingProviderScope?: string;
@@ -182,6 +196,37 @@ export class NamespaceSearchRouter {
   ): Promise<"present" | "missing" | "unknown" | "skipped"> {
     const record = await this.backendRecordFor(namespace, execution);
     return record.collectionState;
+  }
+
+  async healthForNamespace(
+    namespace: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<NamespaceSearchHealth> {
+    const record = await this.backendRecordFor(namespace, execution);
+    const versionStatus =
+      "getVersionStatus" in record.backend &&
+      typeof record.backend.getVersionStatus === "function"
+        ? record.backend.getVersionStatus()
+        : null;
+    const daemonMode =
+      "isDaemonMode" in record.backend &&
+      typeof record.backend.isDaemonMode === "function"
+        ? record.backend.isDaemonMode() === true
+        : null;
+
+    return {
+      collection: record.collection,
+      memoryDir: record.memoryDir,
+      available: record.available,
+      collectionState: record.collectionState,
+      debugStatus: record.backend.debugStatus(),
+      installedVersion: versionStatus?.installedVersion ?? null,
+      supportedVersion: versionStatus?.supportedVersion ?? null,
+      supported: versionStatus?.supported ?? null,
+      upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
+      doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
+      daemonMode,
+    };
   }
 
   /** Clear cached backend records so the next access re-probes availability. */
