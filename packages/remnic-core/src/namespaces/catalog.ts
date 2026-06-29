@@ -746,6 +746,67 @@ export class NamespaceCatalog {
   }
 
   /**
+   * Re-check, NOW, whether a namespace's storage root currently EXISTS on disk
+   * with the SAME safety the directory scan uses (NFJV8, codex P2).
+   *
+   * The rebuild's final re-merge runs under the held lock and folds the freshly
+   * re-read log (`latest`) into the scanned `rebuilt` set. A namespace present in
+   * `latest` (a live touch row) but ABSENT from `rebuilt` is normally PURGED as
+   * deleted (the NATqU "disk scan is authoritative" rule). But there is a TOCTOU
+   * window: a dynamic namespace can be CREATED on disk AFTER `rebuildFromDisk()`
+   * already enumerated `namespaces/` but BEFORE this re-merge. The scan snapshot
+   * missed its new root, yet a gateway `markWrite` already appended a row for it.
+   * Blindly purging that row would rewrite the catalog WITHOUT a live namespace
+   * that now has data on disk, so `writtenSince`/maintenance/QMD consumers miss
+   * it until another touch or rebuild.
+   *
+   * So before purging, we re-resolve the namespace's safe storage root (the same
+   * router-aligned, containment-checked path the scan would have catalogued) and
+   * confirm it is a real, contained, non-symlink directory that actually holds
+   * memory data RIGHT NOW. If so the namespace was created-after-scan and is LIVE
+   * — KEEP its row. This is the precise inverse of NATqU and does NOT reintroduce
+   * it: a touch on a REMOVED root re-checks as ABSENT (no data on disk) and is
+   * still purged; only a root that EXISTS on a fresh re-check is kept.
+   *
+   * Mirrors the per-entry scan checks (symlink rejection + realpath containment +
+   * `hasMemoryData`) so a symlinked/escaping root is never resurrected.
+   */
+  private async liveStorageRootExistsForRebuild(
+    namespace: string,
+    memoryReal: string | null,
+  ): Promise<boolean> {
+    let root: string;
+    try {
+      // Use the SAME router-aligned, containment-enforcing resolver the catalog
+      // uses everywhere else. It never returns an escaping path (falls back to a
+      // namespace-specific contained root on containment failure).
+      root = await this.resolveSafeStorageDir(namespace);
+    } catch {
+      return false;
+    }
+    let stat;
+    try {
+      stat = await lstat(root);
+    } catch {
+      // Root does not exist on disk → genuinely absent → allow the purge.
+      return false;
+    }
+    // Reject a symlinked root rather than resurrecting it (scan parity).
+    if (stat.isSymbolicLink()) return false;
+    if (!stat.isDirectory()) return false;
+    // Realpath must stay inside the memory root (scan parity).
+    try {
+      const real = await realpath(root);
+      if (memoryReal && !isPathInside(memoryReal, real)) return false;
+    } catch {
+      return false;
+    }
+    // Only treat the root as a live namespace when it actually holds memory data,
+    // exactly as the scan does (empty shells are not catalogued).
+    return hasMemoryData(root);
+  }
+
+  /**
    * Record a namespace touch. Returns whether the touch actually APPENDED to the
    * log (round 6, codex P2 — NEFoX): a disabled catalog or a dropped append (the
    * NAUf7 rebuild-lock-timeout drop) returns `false`, so callers (e.g. the router
@@ -1209,9 +1270,37 @@ export class NamespaceCatalog {
           // best-effort `markRead`/`markWrite` touched it after our snapshot. A
           // touch on a dynamic namespace whose on-disk root was removed only
           // bumps a timestamp; re-inserting that row (with its stale `storageDir`)
-          // would defeat the purge the rebuild is meant to perform. Losing a touch
-          // timestamp for a deleted root is acceptable (the catalog is rebuildable
-          // best-effort metadata); resurrecting a purged record is not. Drop it.
+          // would defeat the purge the rebuild is meant to perform.
+          //
+          // CREATED-AFTER-SCAN RE-CHECK (NFJV8, codex P2): there is a TOCTOU
+          // window where a dynamic namespace is CREATED on disk AFTER the scan
+          // enumerated `namespaces/` but BEFORE this re-merge. Its new root was
+          // missed by the snapshot, yet a gateway `markWrite` already landed a row
+          // in `latest`. Purging that row would drop a LIVE namespace that now has
+          // data on disk. So before purging, re-check the namespace's storage root
+          // RIGHT NOW (with the same symlink/realpath/containment + memory-data
+          // safety the scan uses). If it currently EXISTS with data, the namespace
+          // was created-after-scan and is live — KEEP its row. This is the precise
+          // inverse of NATqU, not a regression of it: a touch on a REMOVED root
+          // re-checks as absent and is still purged below; only a root that EXISTS
+          // on a fresh re-check is kept.
+          if (await this.liveStorageRootExistsForRebuild(ns, memoryReal)) {
+            // Created-after-scan: keep the live row. Re-resolve its storageDir to
+            // the safe (router-aligned, contained) root so we never persist a
+            // touch's stale/escaping `storageDir`.
+            const safeDir = await this.resolveSafeStorageDir(ns);
+            rebuilt.set(ns, {
+              ...fresh,
+              storageDir: safeDir,
+              identityToken: namespaceIdentityToken(ns),
+              kind: fresh.kind ?? inferKind(ns, this.config),
+              createdAt: fresh.createdAt ?? nowIso,
+            });
+            continue;
+          }
+          // Confirmed absent on disk. Losing a touch timestamp for a deleted root
+          // is acceptable (the catalog is rebuildable best-effort metadata);
+          // resurrecting a purged record is not. Drop it.
           continue;
         }
         // SURVIVING namespace (still present in the authoritative disk scan):

@@ -1339,6 +1339,135 @@ test("rebuild --apply still folds a concurrent touch for a SURVIVING namespace",
   }
 });
 
+// ── NFJV8 (codex P2): a dynamic namespace CREATED on disk AFTER the rebuild's
+// directory scan but BEFORE its final cross-process re-merge must be KEPT, not
+// purged. The scan snapshot missed the brand-new root, yet a gateway markWrite
+// already appended a row that shows up in the re-merge's `latest` read. Pre-fix,
+// that row (absent from `rebuilt`) was dropped as if the namespace was deleted,
+// silently rewriting the catalog without a live, on-disk namespace. The fix
+// re-checks the namespace's storage root on disk RIGHT NOW (same symlink/realpath/
+// containment + memory-data safety as the scan): exists ⇒ keep (created-after-scan
+// is live), confirmed-gone ⇒ purge (preserving the NATqU removed-root fix).
+//
+// We reuse the second-load injection seam, but ALSO create the namespace's facts
+// dir on the SECOND load — so the dir appears AFTER the scan's `readdir` ran but
+// BEFORE the re-merge's purge re-check, exactly modelling create-after-scan.
+function injectCreatedAfterScanOnSecondLoad(
+  catalog: NamespaceCatalog,
+  logPath: string,
+  injectLine: string,
+  rootFactsDir: string,
+): void {
+  const handle = catalog as unknown as LoadCompactedHandle;
+  const original = handle.loadCompacted.bind(catalog);
+  let calls = 0;
+  handle.loadCompacted = async () => {
+    calls += 1;
+    if (calls === 2) {
+      // 1) The namespace's root is created on disk now (after the scan snapshot).
+      await mkdir(rootFactsDir, { recursive: true });
+      // 2) The gateway's concurrent markWrite row, present in this re-merge read.
+      const prev = await readFile(logPath, "utf8").catch(() => "");
+      await writeFile(logPath, prev + injectLine + "\n", "utf8");
+    }
+    return original();
+  };
+}
+
+test("rebuild --apply KEEPS a namespace created on disk after the scan but before the re-merge", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-postscan";
+    const token = namespaceIdentityToken(ns);
+    const tokenDir = path.join(memoryDir, "namespaces", token);
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(path.join(memoryDir, "namespaces"), { recursive: true });
+    const logPath = path.join(stateDir, "namespaces.jsonl");
+
+    // The row a gateway markWrite would have appended for the brand-new namespace.
+    // Its on-disk root does NOT exist at scan time; it is created (with memory
+    // data) on the second load, so the scan misses it but the re-check finds it.
+    const writeAt = new Date().toISOString();
+    const fresh = JSON.stringify({
+      namespace: ns,
+      identityToken: token,
+      kind: "project",
+      createdAt: new Date(Date.now() - 1_000).toISOString(),
+      storageDir: tokenDir,
+      discoveredBy: "write",
+      lastWriteAt: writeAt,
+    });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    injectCreatedAfterScanOnSecondLoad(catalog, logPath, fresh, path.join(tokenDir, "facts"));
+    const result = await catalog.rebuildFromDisk();
+    assert.ok(
+      result.records.some((r) => r.namespace === ns),
+      "a namespace created on disk after the scan but before the re-merge must be KEPT, not purged",
+    );
+
+    // Persisted + its live write timestamp preserved so writtenSince/maintenance
+    // can find it without waiting for another touch or rebuild.
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    const record = await reader.getNamespaceRecord(ns);
+    assert.ok(record, "created-after-scan namespace must be persisted in the catalog");
+    assert.equal(
+      record?.lastWriteAt,
+      writeAt,
+      "the live write timestamp for a created-after-scan namespace must be preserved",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// NFJV8 inverse guard: a row whose root is GENUINELY gone (never created on disk)
+// must STILL be purged — the re-check distinguishes created-after-scan (root
+// EXISTS now) from a removed/never-present root (confirmed ABSENT), so it does not
+// reintroduce the NATqU resurrection bug. Same injection seam, but the dir is
+// never created, so the disk re-check confirms absence and the row is dropped.
+test("rebuild --apply STILL purges a row whose on-disk root never exists (NFJV8 does not regress NATqU)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-ghost";
+    const token = namespaceIdentityToken(ns);
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    await mkdir(path.join(memoryDir, "namespaces"), { recursive: true });
+    const logPath = path.join(stateDir, "namespaces.jsonl");
+
+    const stale = JSON.stringify({
+      namespace: ns,
+      identityToken: token,
+      kind: "project",
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+      storageDir: path.join(memoryDir, "namespaces", token),
+      discoveredBy: "write",
+      lastWriteAt: new Date().toISOString(),
+    });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // Inject the concurrent row on the second load WITHOUT creating the dir, so the
+    // re-check confirms the root is absent on disk and the row is purged.
+    injectConcurrentReadOnSecondLoad(catalog, logPath, stale);
+    const result = await catalog.rebuildFromDisk();
+    assert.ok(
+      !result.records.some((r) => r.namespace === ns),
+      "a row whose on-disk root never exists must still be purged after the disk re-check",
+    );
+
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    assert.equal(
+      await reader.getNamespaceRecord(ns),
+      null,
+      "ghost-root namespace must not reappear after the disk re-check confirms absence",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 6 (codex P2 — NAUf7): a touch that TIMES OUT waiting for another
 // process's active rebuild lock must DROP the append rather than read/append into
 // the rebuild's snapshot→rename window (the lost-append race). We hold a non-stale
@@ -1858,6 +1987,84 @@ test("an async onResolve hook rejection does not crash storage resolution", asyn
     // Give the swallowed rejection a tick to settle.
     await new Promise((r) => setTimeout(r, 10));
     assert.ok(called >= 1, "the async hook was invoked");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── NFJV- (codex P2): the once-per-namespace resolve-hook dedup must account for
+// IN-FLIGHT async registrations. The catalog's onResolve hook is async (returns
+// registerResolved(...)), so the `notifiedResolved` map is only set after the
+// promise settles. A burst of storageFor() cache hits for the SAME namespace
+// before the first append finishes must NOT each fire their own registration —
+// otherwise hot recall/extraction grows namespaces.jsonl with duplicate touches.
+test("concurrent storageFor() for one namespace fires the resolve hook ONCE while it is in-flight", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    let calls = 0;
+    // A deferred promise we resolve manually, so every concurrent storageFor()
+    // call observes the registration as still IN-FLIGHT (not yet settled).
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const router = new NamespaceStorageRouter(makeConfig(memoryDir), {
+      onResolve: async () => {
+        calls += 1;
+        await gate;
+      },
+    });
+
+    // Fire N concurrent resolutions for the SAME namespace while the first hook
+    // is still awaiting `gate`. Pre-fix, all N pass the post-settle dedup guard
+    // and fire N hooks; post-fix the in-flight marker collapses them to one.
+    const N = 8;
+    await Promise.all(Array.from({ length: N }, () => router.storageFor("project-origin-inflight")));
+    assert.equal(calls, 1, "only one resolve hook may fire while the registration is in-flight");
+
+    // Let the in-flight registration settle, then a steady-state cache hit must
+    // still be a catalog no-op (now deduped via notifiedResolved).
+    release();
+    await new Promise((r) => setTimeout(r, 10));
+    await router.storageFor("project-origin-inflight");
+    assert.equal(calls, 1, "a steady-state cache hit after settle must not re-fire the hook");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── NFJV- inverse: a DROPPED registration (hook returns false — e.g. the touch
+// could not acquire the rebuild lock) must clear the in-flight marker so a LATER
+// storageFor() RETRIES it. A dropped touch must remain retryable, not be
+// permanently suppressed by the in-flight dedup.
+test("a dropped resolve registration (hook returns false) is retried on a later storageFor()", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    let calls = 0;
+    let result: boolean | void = false; // first registration is DROPPED
+    const router = new NamespaceStorageRouter(makeConfig(memoryDir), {
+      onResolve: async () => {
+        calls += 1;
+        return result;
+      },
+    });
+
+    await router.storageFor("project-origin-retry");
+    // Give the async hook a tick to settle and clear the in-flight marker.
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(calls, 1, "the hook fired once for the dropped registration");
+
+    // Now the registration will succeed; a later resolve must RETRY (not be
+    // suppressed by a stale in-flight/notified marker from the dropped attempt).
+    result = undefined; // success (legacy void)
+    await router.storageFor("project-origin-retry");
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(calls, 2, "a dropped registration must be retried on the next storageFor()");
+
+    // After a SUCCESSFUL registration, further cache hits are deduped (no retry).
+    await router.storageFor("project-origin-retry");
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(calls, 2, "a successful registration is not re-fired on subsequent cache hits");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
