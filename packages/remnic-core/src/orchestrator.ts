@@ -307,6 +307,7 @@ import {
 } from "./namespaces/principal.js";
 import {
   combineNamespaces,
+  lcmSessionKeyForNamespace,
   resolveCodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
 import type { CodingContext } from "./types.js";
@@ -2009,6 +2010,32 @@ export class Orchestrator {
       this.config,
     );
     return this.applyCodingNamespaceOverlay(sessionKey, base);
+  }
+
+  /**
+   * Effective namespace a same-session LCM/structured-history READER must use
+   * to find what the access `observe` surface WROTE (#1495 thread 2).
+   *
+   * This MUST mirror the `observe` scope plan's write-namespace resolution, NOT
+   * `resolveSelfNamespace`: when no coding overlay applies, `observe` archives
+   * under `config.defaultNamespace` (an unqualified observed turn is NOT moved
+   * to the principal self namespace — identical to
+   * `resolveCodingScopedWriteNamespace`/`memory_store`, rule 39). Only when a
+   * coding overlay actually changes the namespace does the writer (and so the
+   * reader) use the overlaid `project-*` namespace. Returning the self base for
+   * the no-overlay case would prefix the read key with a namespace the writer
+   * never used, so the reader would miss its own evidence.
+   */
+  private lcmReadNamespaceForSession(sessionKey?: string): string {
+    const base = defaultNamespaceForPrincipal(
+      this.resolvePrincipal(sessionKey),
+      this.config,
+    );
+    const overlaid = this.applyCodingNamespaceOverlay(sessionKey, base);
+    // Overlay applied → use the overlaid namespace (what observe wrote).
+    // No overlay → collapse to the default store so the LCM key is the raw
+    // sessionKey, exactly what an unqualified observe archived under.
+    return overlaid !== base ? overlaid : this.config.defaultNamespace;
   }
 
   /**
@@ -6890,6 +6917,31 @@ export class Orchestrator {
       .digest("hex")
       .slice(0, 16);
     const sectionBuckets = new Map<string, string[]>();
+    // Effective LCM session_id for this recall (#1495 thread 2). The access
+    // `observe` surface archives LCM/structured history under
+    // `${effectiveNamespace}:${sessionKey}` when the effective write namespace
+    // diverges from the default store (explicit namespace OR coding overlay).
+    // The LCM archive filters strictly by session_id, so the readers below MUST
+    // search the SAME key or a project-scoped session misses its own
+    // compressed-history / structured / targeted-fact evidence. The effective
+    // namespace mirrors observe's write resolution: an explicit recall
+    // `options.namespace` override wins; otherwise use the session's
+    // coding-overlay namespace when one applies, else the default store
+    // (`lcmReadNamespaceForSession` — NOT the principal self base, which would
+    // prefix a namespace the unqualified writer never used).
+    // `lcmSessionKeyForNamespace` collapses to the raw `sessionKey` whenever the
+    // namespace is the default store, so single-user / no-overlay recall is
+    // byte-for-byte unchanged.
+    const lcmReadSessionId =
+      lcmSessionKeyForNamespace(
+        typeof options.namespace === "string" && options.namespace.length > 0
+          ? options.namespace
+          : this.lcmReadNamespaceForSession(sessionKey),
+        sessionKey,
+        this.config.defaultNamespace,
+      ) ??
+      sessionKey ??
+      "default";
     const queryPolicy = buildRecallQueryPolicy(prompt, sessionKey, {
       cronRecallPolicyEnabled: this.config.cronRecallPolicyEnabled,
       cronRecallNormalizedQueryMaxChars:
@@ -9408,7 +9460,9 @@ export class Orchestrator {
       try {
         const targetedFactSection = await buildTargetedFactRecallSection({
           engine: this.lcmEngine,
-          sessionId: sessionKey,
+          // #1495: read under the EFFECTIVE namespaced LCM session_id so a
+          // project-scoped session finds its own targeted-fact evidence.
+          sessionId: lcmReadSessionId,
           query: retrievalQuery,
           maxChars: targetedFactMaxChars,
           maxSearchResults:
@@ -9733,7 +9787,9 @@ export class Orchestrator {
     ) {
       try {
         const structuredMatches = await this.lcmEngine.searchStructuredParts(
-          sessionKey ?? "default",
+          // #1495: namespaced LCM session_id so a project-scoped session reads
+          // its own structured message-part evidence.
+          lcmReadSessionId,
           retrievalQuery,
         );
         const structuredSection = this.lcmEngine.formatStructuredRecall(
@@ -9759,7 +9815,9 @@ export class Orchestrator {
           }
         }
         const lcmSection = await this.lcmEngine.assembleRecall(
-          sessionKey ?? "default",
+          // #1495: namespaced LCM session_id so a project-scoped session reads
+          // its own compressed-history evidence.
+          lcmReadSessionId,
           this.config.recallBudgetChars,
         );
         if (lcmSection) {

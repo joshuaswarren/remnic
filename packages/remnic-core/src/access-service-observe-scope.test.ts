@@ -320,6 +320,45 @@ test("#1495 unauthorized explicit namespace throws BEFORE session context is att
   assert.equal(probe.objectiveStateNamespaces.length, 0);
 });
 
+test("#1505 thread 1/3: unauthorized OVERLAY self-base throws BEFORE coding context is attached (no orphan context)", async () => {
+  // Threads 1 & 3 (cursor / codex): a project-scoped observe with NO explicit
+  // namespace. Step 1 (resolveWritableNamespace(undefined)) authorizes the
+  // DEFAULT namespace and PASSES. The overlay self-base auth only runs inside
+  // the scope plan. If the principal has a self namespace policy that EXISTS but
+  // is NOT writable, the scope plan throws — and before this fix that happened
+  // AFTER maybeAttachCodingContext mutated the session, leaving a project
+  // binding from a rejected op. The invariant: an observe that throws leaves NO
+  // coding context on the session, matching memory_store's resolve-before-mutate
+  // ordering.
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      // Self namespace exists (so defaultNamespaceForPrincipal → "pi-geek")
+      // but pi-geek may NOT write it — only some other principal can.
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["other"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  await assert.rejects(
+    service.observe(
+      observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+    ),
+    /not writable/,
+  );
+
+  // No orphaned coding context, no side effects after the overlay auth failure.
+  assert.equal(
+    probe.contexts.get("pi-geek:abc123"),
+    undefined,
+    "a rejected observe must NOT leave a project binding on the session",
+  );
+  assert.equal(probe.lcmCalls.length, 0);
+  assert.equal(probe.extractionCalls.length, 0);
+  assert.equal(probe.objectiveStateNamespaces.length, 0);
+});
+
 test("#1495 scopeDebug exposes the resolved plan for callers/tests", async () => {
   const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);

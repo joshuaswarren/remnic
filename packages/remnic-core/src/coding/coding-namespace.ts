@@ -418,3 +418,40 @@ export function describeCodingScope(
     disabledReason: null,
   };
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// LCM session-key namespacing (#1495)
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the LCM/structured-history `session_id` that a write-producing surface
+ * archives under, and that a same-session reader must search under, so reads
+ * and writes never drift (#1495, CLAUDE.md rule 42).
+ *
+ * The LCM archive filters strictly by `session_id` string, so the writer's
+ * archival key and the reader's lookup key MUST agree byte-for-byte. The
+ * encoding is: prefix the raw `sessionKey` with the EFFECTIVE write namespace
+ * (`${namespace}:${sessionKey}`) whenever that namespace diverges from the
+ * single-store default; otherwise pass the raw `sessionKey` unchanged so
+ * single-user / no-overlay deployments keep pre-#1495 behavior exactly.
+ *
+ * `observe`, compaction flush/record, and the orchestrator recall readers all
+ * route through this one helper so a project-scoped (cwd/projectTag) or
+ * explicit-namespace session reads its own compressed-history / structured /
+ * targeted-fact evidence instead of missing it.
+ */
+export function lcmSessionKeyForNamespace(
+  namespace: string | undefined,
+  sessionKey: string | undefined,
+  defaultNamespace: string,
+): string | undefined {
+  if (typeof sessionKey !== "string" || sessionKey.length === 0) return sessionKey;
+  if (
+    typeof namespace === "string" &&
+    namespace.length > 0 &&
+    namespace !== defaultNamespace
+  ) {
+    return `${namespace}:${sessionKey}`;
+  }
+  return sessionKey;
+}
