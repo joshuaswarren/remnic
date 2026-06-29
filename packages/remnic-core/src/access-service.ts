@@ -4916,7 +4916,30 @@ export class EngramAccessService {
       sessionKeyForOverlay,
       base,
     );
-    return overlaid !== base ? overlaid : this.orchestrator.config.defaultNamespace;
+    // No overlay → the default store (raw sessionKey), as before.
+    if (overlaid === base) return this.orchestrator.config.defaultNamespace;
+    // Overlay applied. READ-AUTHORIZATION gate (#1505 round 3, codex P2
+    // "Authorize overlay LCM access before replacing the namespace"): the
+    // caller's request was authorized for `resolvedNamespace` (usually
+    // `default`) — NOT for the principal's `<principal>-project-*` overlay base.
+    // Before switching the LCM read key to that overlay we must confirm the
+    // principal's self base is in the READABLE RECALL SET — the SAME gate the
+    // orchestrator's `lcmReadNamespaceForSession` and the recall namespace set
+    // use (`recallNamespacesForPrincipal`, gated by both
+    // `defaultRecallNamespaces.includes("self")` AND `canReadNamespace`). Using
+    // only `canReadNamespace` here would diverge from the orchestrator path when
+    // `defaultRecallNamespaces` omits `self` (rule 39 — identical feature gates
+    // across paths). Without this, an `lcmSearch` that passed the default read
+    // check could return `<principal>-project-*` rows the policy never granted
+    // (cross-tenant read leak). When the self base is not readable, keep the
+    // just-authorized namespace (collapses to the raw key for the default store)
+    // — never return overlay rows to an unauthorized caller (rule 42 read/write
+    // parity; rule 48 least-privilege).
+    const selfReadableInRecall = recallNamespacesForPrincipal(
+      principal,
+      this.orchestrator.config,
+    ).includes(base);
+    return selfReadableInRecall ? overlaid : resolvedNamespace;
   }
 
   private resolveLcmReadSessionKey(

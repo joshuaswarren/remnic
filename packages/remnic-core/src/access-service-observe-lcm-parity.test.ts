@@ -78,6 +78,10 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
     defaultNamespace: "default",
     sharedNamespace: "shared",
     namespacePolicies: [],
+    // Production default. The #1505 round-3 read-authorization gate consults
+    // `recallNamespacesForPrincipal`, which reads `defaultRecallNamespaces`;
+    // omitting it would throw. Per-test overrides can still narrow it.
+    defaultRecallNamespaces: ["self", "shared"],
     codingMode: { projectScope: true },
     memoryDir: "/synthetic/remnic-observe-lcm-parity",
     // LCM-only test: keep objective-state off so the storage router is not hit.
@@ -669,4 +673,218 @@ test("#1505 round 3: extraction is pinned to the resolved writeNamespace even wh
     new Set(["pi-geek:abc123"]),
   );
   assert.equal(probe.extractionCalls[0].principalOverride, "pi-geek");
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// #1505 round 3 (codex P2): READ-AUTHORIZATION gating of the overlay LCM read
+// key. The round-2 parity fix made LCM READS always substitute the principal
+// self-overlay namespace. That bypassed the read-authorization / readable-
+// recall-namespace gating the rest of recall honors, so a principal who can
+// WRITE but NOT READ its self namespace (or whose `defaultRecallNamespaces`
+// omits `self`) would have `<principal>-project-*` overlay rows injected into
+// recall / returned by `lcmSearch` even though QMD/file recall excludes them
+// (cross-tenant read leak). Both sites must gate the overlay substitution by
+// the readable recall namespace set (rule 42 read/write parity; rule 48
+// least-privilege).
+// ──────────────────────────────────────────────────────────────────────────
+
+test("#1505 round 3 thread 1: orchestrator LCM read key falls back to default when the principal can WRITE but not READ its self namespace", async () => {
+  // alice may WRITE her self namespace but NOT read it (readPrincipals omits
+  // alice). A project-scoped observe archives LCM under
+  // `alice-project-*:sess-1`, but a no-namespace recall by alice may NOT inject
+  // those overlay rows — QMD/file recall would exclude `alice` (unreadable), so
+  // the LCM read key MUST collapse to the default store too.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      // WRITE-only self policy: alice can write `alice` but cannot read it.
+      { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    defaultRecallNamespaces: ["self", "shared"],
+  } as Partial<PluginConfig>);
+
+  // Bind a coding context to sess-1 so the overlay would apply on alice's base.
+  probe.contexts.set("sess-1", {
+    projectId: "blend-supply",
+    projectName: "Blend/Supply",
+  } as unknown as CodingContext);
+
+  const lcmReadNamespaceForSession = Orchestrator.prototype[
+    "lcmReadNamespaceForSession" as keyof Orchestrator
+  ] as unknown as (
+    this: Orchestrator,
+    sk?: string,
+    principalOverride?: string,
+  ) => string;
+
+  // With the authenticated principal = alice (NOT encoded in sess-1), the
+  // overlay base is `alice`. alice cannot READ `alice`, so the read namespace
+  // MUST fall back to the default store (NOT `alice-project-*`).
+  const readNs = lcmReadNamespaceForSession.call(probe.orch, "sess-1", "alice");
+  assert.equal(
+    readNs,
+    "default",
+    `unreadable self base ⇒ LCM read key must fall back to the default store, got ${readNs}`,
+  );
+  assert.ok(
+    !readNs.startsWith("alice-"),
+    `LCM read key must NOT inject alice's overlay rows when alice cannot read her self namespace, got ${readNs}`,
+  );
+});
+
+test("#1505 round 3 thread 1: orchestrator LCM read key falls back to default when defaultRecallNamespaces omits self", async () => {
+  // alice CAN read her self namespace, but `defaultRecallNamespaces` omits
+  // `self`, so QMD/file recall never includes `alice` for a no-namespace
+  // recall. The overlay LCM read key must mirror that exclusion.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    // Self deliberately omitted from the recall set.
+    defaultRecallNamespaces: ["shared"],
+  } as Partial<PluginConfig>);
+
+  probe.contexts.set("sess-1", {
+    projectId: "blend-supply",
+    projectName: "Blend/Supply",
+  } as unknown as CodingContext);
+
+  const lcmReadNamespaceForSession = Orchestrator.prototype[
+    "lcmReadNamespaceForSession" as keyof Orchestrator
+  ] as unknown as (
+    this: Orchestrator,
+    sk?: string,
+    principalOverride?: string,
+  ) => string;
+
+  const readNs = lcmReadNamespaceForSession.call(probe.orch, "sess-1", "alice");
+  assert.equal(
+    readNs,
+    "default",
+    `self omitted from defaultRecallNamespaces ⇒ overlay LCM read key must fall back to default, got ${readNs}`,
+  );
+});
+
+test("#1505 round 3 thread 1: orchestrator LCM read key still uses the overlay when self IS readable (round-2 positive case preserved)", async () => {
+  // pi-geek can read AND write its self namespace, and `self` is in the recall
+  // set, so the overlay LCM read key must STILL be the project-scoped overlay
+  // (the round-2 parity behavior must stay green).
+  const probe = makeParityProbe({
+    ...withSelfPolicyPrefix("pi-geek"),
+    defaultRecallNamespaces: ["self", "shared"],
+  } as Partial<PluginConfig>);
+
+  probe.contexts.set("pi-geek:abc123", {
+    projectId: "blend-supply",
+    projectName: "Blend/Supply",
+  } as unknown as CodingContext);
+
+  const lcmReadNamespaceForSession = Orchestrator.prototype[
+    "lcmReadNamespaceForSession" as keyof Orchestrator
+  ] as unknown as (this: Orchestrator, sk?: string) => string;
+
+  const readNs = lcmReadNamespaceForSession.call(probe.orch, "pi-geek:abc123");
+  assert.ok(
+    readNs.startsWith("pi-geek-"),
+    `readable self ⇒ overlay LCM read key must be the project overlay, got ${readNs}`,
+  );
+  assert.notEqual(readNs, "default");
+});
+
+test("#1505 round 3 thread 2: lcmSearch returns NO overlay rows when the principal cannot read its self base (authorized fallback)", async () => {
+  // alice authenticates and passes the `default` read check, but her policy does
+  // NOT permit reading her self/overlay base (readPrincipals omits alice). A
+  // coding context is bound to the session, so the overlay WOULD apply — but the
+  // read-authorization gate must keep the just-authorized (default) namespace,
+  // so lcmSearch queries the RAW sessionKey, NOT `alice-project-*`.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    defaultRecallNamespaces: ["self", "shared"],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  probe.contexts.set("sess-1", {
+    projectId: "blend-supply",
+    projectName: "Blend/Supply",
+  } as unknown as CodingContext);
+
+  await service.lcmSearch({
+    query: "what database are we using?",
+    sessionKey: "sess-1",
+    sessionPrefix: "alice:",
+    authenticatedPrincipal: "alice",
+  });
+
+  assert.equal(
+    probe.searchSessionIds[0],
+    "sess-1",
+    `unauthorized overlay base ⇒ lcmSearch must query the raw sessionKey, got ${String(
+      probe.searchSessionIds[0],
+    )}`,
+  );
+  assert.ok(
+    !String(probe.searchSessionIds[0] ?? "").startsWith("alice-"),
+    `lcmSearch must NOT return alice-project-* rows to a caller who cannot read the alice namespace; queried: ${JSON.stringify(
+      probe.searchSessionIds,
+    )}`,
+  );
+  // The prefix must NOT carry the overlay namespace either.
+  assert.ok(
+    !String(probe.searchSessionPrefixes[0] ?? "").startsWith("alice-"),
+    `lcmSearch sessionPrefix must NOT carry the alice overlay namespace; got ${String(
+      probe.searchSessionPrefixes[0],
+    )}`,
+  );
+});
+
+test("#1505 round 3 thread 2: lcmSearch still routes through the overlay key when the principal CAN read its self base (round-2 positive case preserved)", async () => {
+  // alice can read AND write her self namespace, so the authorized overlay LCM
+  // read key is honored — lcmSearch routes the session_id through the overlay.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    defaultRecallNamespaces: ["self", "shared"],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // Archive under alice's overlay (binds the coding context to the session).
+  const writeRes = await service.observe(
+    observeRequest({
+      sessionKey: "sess-1",
+      authenticatedPrincipal: "alice",
+      projectTag: "Blend/Supply",
+    }),
+  );
+  const writeKey = probe.lcmWriteKeys[0];
+  assert.ok(
+    writeKey.startsWith("alice-"),
+    `observe must archive under alice's overlay key, got ${writeKey}`,
+  );
+
+  await service.lcmSearch({
+    query: "what database are we using?",
+    sessionKey: "sess-1",
+    authenticatedPrincipal: "alice",
+  });
+
+  assert.equal(
+    probe.searchSessionIds[0],
+    writeKey,
+    "readable self ⇒ lcmSearch session_id must be the overlay-scoped key matching the write key",
+  );
+  assert.equal(
+    writeRes.effectiveNamespace?.startsWith("alice-"),
+    true,
+    "observe effectiveNamespace must be the alice overlay (sanity)",
+  );
 });

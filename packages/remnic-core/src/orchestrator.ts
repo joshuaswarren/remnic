@@ -2033,6 +2033,19 @@ export class Orchestrator {
    * to `default`, so principal `alice` observing `sess-1` would write under
    * `alice` but READ under `default`. Threading the override here keeps the read
    * base identical to the write base.
+   *
+   * READ-AUTHORIZATION gate (#1505 round 3, codex P2 "Gate LCM recall keys by
+   * readable namespaces"): the overlay LCM read key is a `<principal>-project-*`
+   * sub-namespace of the principal SELF base. The normal recall namespace set
+   * below only substitutes the coding overlay when the principal SELF base is
+   * actually in the readable recall set (`recallNamespacesForPrincipal` — gated
+   * by `defaultRecallNamespaces.includes("self")` AND `canReadNamespace`). If a
+   * principal can WRITE but not READ its self namespace (or `defaultRecall-
+   * Namespaces` omits `self`), QMD/file recall never touches those overlay rows,
+   * so neither may the LCM read key. When the self base is NOT readable, fall
+   * back to the default store — exactly what an unqualified, unauthorized recall
+   * resolves to — rather than injecting overlay rows the rest of recall excludes
+   * (rule 42 read/write parity; rule 48 least-privilege).
    */
   private lcmReadNamespaceForSession(
     sessionKey?: string,
@@ -2044,10 +2057,19 @@ export class Orchestrator {
         : this.resolvePrincipal(sessionKey);
     const base = defaultNamespaceForPrincipal(principal, this.config);
     const overlaid = this.applyCodingNamespaceOverlay(sessionKey, base);
-    // Overlay applied → use the overlaid namespace (what observe wrote).
     // No overlay → collapse to the default store so the LCM key is the raw
     // sessionKey, exactly what an unqualified observe archived under.
-    return overlaid !== base ? overlaid : this.config.defaultNamespace;
+    if (overlaid === base) return this.config.defaultNamespace;
+    // Overlay applied. Only honour it when the principal SELF base is in the
+    // readable recall set (same gate the recall namespace set uses to
+    // substitute the overlay). Otherwise the overlay rows are unauthorized for
+    // this reader — fall back to the default store so the LCM read matches
+    // what QMD/file recall would surface.
+    const selfReadableInRecall = recallNamespacesForPrincipal(
+      principal,
+      this.config,
+    ).includes(base);
+    return selfReadableInRecall ? overlaid : this.config.defaultNamespace;
   }
 
   /**
