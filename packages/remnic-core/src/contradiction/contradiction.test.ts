@@ -91,6 +91,7 @@ function makeResolutionStorage(options: {
   failRollbackFor?: string;
   partialSupersedeBeforeFailureFor?: string;
   onSupersede?: (oldId: string, newId: string) => void;
+  dir?: string;
 } = {}) {
   const memories = new Map<string, MemoryFile>([
     ["mem-a-001", makeMemory("mem-a-001")],
@@ -111,6 +112,7 @@ function makeResolutionStorage(options: {
     supersedeCalls,
     frontmatterWrites,
     removedFactHashIds,
+    dir: options.dir ?? "/tmp/contradiction-namespace-storage",
     async getMemoryById(id: string) {
       const memory = memories.get(id);
       return memory ? cloneMemory(memory) : null;
@@ -1814,6 +1816,77 @@ test("executeResolution rolls back memory changes when pair resolution persisten
     assert.equal(storage.memories.get("mem-b-002")?.frontmatter.status, undefined);
     assert.equal(storage.memories.get("mem-b-002")?.frontmatter.supersededBy, undefined);
     assert.equal(readPair(dir, written.pairId), null);
+  } finally {
+    await cleanup();
+  }
+});
+
+// ── Catalog-write touch ordering (NH1dX, rule #25) ──────────────────────────────
+// The merge catalog touch (onMergedMemoryWritten) must fire ONLY after the
+// resolution durably commits past the rollback point. If resolvePair fails and
+// the merge rolls back, NO catalog write may be recorded for a write that did
+// not survive.
+
+test("executeResolution merge records NO catalog write touch when resolution persistence fails and rolls back", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ namespace: "work" }));
+    const pairFile = path.join(dir, ".review", "contradictions", `${written.pairId}.json`);
+    // Force resolvePair to fail by removing the pair file once supersession runs,
+    // mirroring the existing rollback test. This drives the rollback path.
+    const storage = makeResolutionStorage({
+      dir: "/tmp/work-namespace-storage",
+      onSupersede: () => {
+        fs.rmSync(pairFile, { force: true });
+      },
+    });
+    const catalogTouches: Array<{ namespace: string | undefined; storageDir: string }> = [];
+
+    const result = await executeResolution(dir, storage, written.pairId, "merge", {
+      mergedContent: "merged canonical fact",
+      storageForNamespace: () => storage,
+      onMergedMemoryWritten: (namespace, storageDir) => {
+        catalogTouches.push({ namespace, storageDir });
+      },
+    });
+
+    assert.match(result.message, /Resolution persistence failed; rolled back memory changes/);
+    assert.deepEqual(result.affectedIds, []);
+    // The merged memory was created then cleaned up by the rollback, and the
+    // resolution never persisted — so the catalog touch must NOT have fired.
+    assert.deepEqual(
+      catalogTouches,
+      [],
+      "no catalog write touch may be recorded for a rolled-back merge",
+    );
+    assert.equal(readPair(dir, written.pairId), null);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("executeResolution merge records exactly one catalog write touch for the pair namespace on success", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ namespace: "work" }));
+    const storage = makeResolutionStorage({ dir: "/tmp/work-namespace-storage" });
+    const catalogTouches: Array<{ namespace: string | undefined; storageDir: string }> = [];
+
+    const result = await executeResolution(dir, storage, written.pairId, "merge", {
+      mergedContent: "merged canonical fact",
+      storageForNamespace: () => storage,
+      onMergedMemoryWritten: (namespace, storageDir) => {
+        catalogTouches.push({ namespace, storageDir });
+      },
+    });
+
+    assert.match(result.message, /Both memories superseded by merged/);
+    assert.deepEqual(result.affectedIds, ["mem-a-001", "mem-b-002"]);
+    assert.equal(readPair(dir, written.pairId)?.resolution, "merge");
+    // Exactly one touch, carrying the pair namespace and the routed storage dir.
+    assert.deepEqual(catalogTouches, [
+      { namespace: "work", storageDir: "/tmp/work-namespace-storage" },
+    ]);
   } finally {
     await cleanup();
   }
