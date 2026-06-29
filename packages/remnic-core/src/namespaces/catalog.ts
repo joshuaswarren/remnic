@@ -434,20 +434,25 @@ export class NamespaceCatalog {
 
   /**
    * Register a namespace whose storage was just resolved by the router. Used as
-   * a fire-and-forget integration hook (`discoveredBy: config`). Storage dir is
-   * provided so we do not re-resolve it. Failure-tolerant.
+   * the router's integration hook (`discoveredBy: config`). Storage dir is
+   * provided so we do not re-resolve it. Failure-tolerant. Returns whether the
+   * registration actually APPENDED (round 6, codex P2 — NEFoX), so the router's
+   * resolve-hook dedup only marks a namespace notified when it truly persisted —
+   * a dropped append (disabled catalog or rebuild-lock-timeout drop) returns
+   * `false` and is retried on the next resolve.
    */
-  async registerResolved(namespace: string, storageDir: string): Promise<void> {
-    if (!this.enabled) return;
-    await this.register(namespace, { discoveredBy: "config", storageDir });
+  async registerResolved(namespace: string, storageDir: string): Promise<boolean> {
+    if (!this.enabled) return false;
+    return this.register(namespace, { discoveredBy: "config", storageDir });
   }
 
   /**
    * Generic register/touch without changing read/write timestamps unless the
    * source implies it. Validates the namespace and resolves a storage dir.
+   * Returns whether the touch actually appended.
    */
-  private async register(namespace: string, metadata: NamespaceTouchMetadata): Promise<void> {
-    await this.touch(namespace, "register", metadata);
+  private async register(namespace: string, metadata: NamespaceTouchMetadata): Promise<boolean> {
+    return this.touch(namespace, "register", metadata);
   }
 
   private validateNamespace(namespace: string): string {
@@ -727,13 +732,20 @@ export class NamespaceCatalog {
     return this.memoryDir;
   }
 
+  /**
+   * Record a namespace touch. Returns whether the touch actually APPENDED to the
+   * log (round 6, codex P2 — NEFoX): a disabled catalog or a dropped append (the
+   * NAUf7 rebuild-lock-timeout drop) returns `false`, so callers (e.g. the router
+   * resolve-hook dedup) can avoid marking a dropped registration as completed and
+   * suppressing its retry.
+   */
   private async touch(
     namespace: string,
     kind: "read" | "write" | "maintenance" | "register",
     metadata?: NamespaceTouchMetadata,
     jobName?: string,
-  ): Promise<void> {
-    if (!this.enabled) return;
+  ): Promise<boolean> {
+    if (!this.enabled) return false;
     // Validate up front (outside the chain) so caller-facing rejections — e.g.
     // an unsafe namespace token — surface immediately and deterministically,
     // not interleaved with serialized I/O.
@@ -746,7 +758,7 @@ export class NamespaceCatalog {
     // the earlier touch's fields (CLAUDE.md rule #40 — the chain also recovers
     // from rejection). Reading inside the chain guarantees each touch sees the
     // most recent appended state, including any concurrent read/write/register.
-    await this.queueCritical(async () => {
+    return this.queueCritical(async () => {
       // Cross-process serialization (round 4 + round 6, codex P2): a CLI
       // `rebuild --apply` holds the rebuild lock across its final
       // `loadCompacted()` → atomic `rename`. An append that lands inside that
@@ -759,7 +771,7 @@ export class NamespaceCatalog {
       // catalog is rebuildable best-effort metadata, so skipping one touch is
       // acceptable; it NEVER blocks forever or crashes the primary memory op.
       const safeToAppend = await this.waitForRebuildLockClear();
-      if (!safeToAppend) return;
+      if (!safeToAppend) return false;
 
       const records = await this.loadCompacted();
       const existing = records.get(ns);
@@ -821,6 +833,7 @@ export class NamespaceCatalog {
       }
 
       await this.appendUnchained(record);
+      return true;
     });
   }
 

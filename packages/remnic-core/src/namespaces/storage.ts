@@ -105,14 +105,24 @@ async function hasAnyNamespaceStorageMarker(
  * migrating existing data.
  */
 /**
- * Optional hooks for the storage router. `onResolve` fires (fire-and-forget)
- * whenever a namespace's storage is resolved/created, so a downstream consumer
- * (e.g. the namespace catalog, issue #1499) can register the namespace. The
- * hook MUST NOT throw into the router; the router invokes it defensively and a
- * hook failure never affects storage resolution.
+ * Optional hooks for the storage router. `onResolve` fires whenever a namespace's
+ * storage is resolved/created, so a downstream consumer (e.g. the namespace
+ * catalog, issue #1499) can register the namespace. The hook MUST NOT throw into
+ * the router; the router invokes it defensively and a hook failure never affects
+ * storage resolution.
+ *
+ * The hook MAY return (or resolve to) a boolean indicating whether the
+ * registration actually PERSISTED (round 6, codex P2 — NEFoX). When it resolves
+ * to `false` (a dropped/no-op registration), the router does NOT mark the
+ * (namespace, storageDir) pair as notified, so the next resolve RETRIES it
+ * instead of suppressing it forever. A `void`/`undefined` result is treated as
+ * success (legacy hooks).
  */
 export interface NamespaceStorageRouterHooks {
-  onResolve?: (namespace: string, storageDir: string) => void;
+  onResolve?: (
+    namespace: string,
+    storageDir: string,
+  ) => void | boolean | Promise<void | boolean>;
 }
 
 /**
@@ -261,13 +271,18 @@ export class NamespaceStorageRouter {
     if (this.notifiedResolved.get(namespace) === storageDir) return;
     try {
       // Handle BOTH synchronous throws and asynchronous rejections (round 6,
-      // codex P2 — NDo8C). The hook is typed `void`, but a caller may supply an
-      // `async` function; its rejected promise would bypass this try/catch and,
-      // where unhandled rejections are fatal, crash storage resolution. On success
-      // record the dedup marker; on failure clear it so a later resolve retries.
+      // codex P2 — NDo8C). The hook may be `async`; its rejected promise would
+      // bypass this try/catch and, where unhandled rejections are fatal, crash
+      // storage resolution. Mark the dedup pair as notified ONLY when the hook
+      // resolves to a PERSISTED result (round 6, codex P2 — NEFoX): a result of
+      // `false` means the registration was dropped/no-op (e.g. rebuild-lock
+      // timeout), so we must NOT suppress its retry. `void`/`undefined` is treated
+      // as success for legacy hooks. On rejection we leave it un-notified to retry.
       Promise.resolve(hook(namespace, storageDir)).then(
-        () => {
-          this.notifiedResolved.set(namespace, storageDir);
+        (persisted) => {
+          if (persisted !== false) {
+            this.notifiedResolved.set(namespace, storageDir);
+          }
         },
         () => {
           // Registration failed — do NOT mark as notified, so it is retried.

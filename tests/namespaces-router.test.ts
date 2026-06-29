@@ -315,3 +315,38 @@ test("storageFor retries the resolve hook after a failed registration", async ()
     "after a successful registration, further cache hits are deduped",
   );
 });
+
+// ── Round 7 (codex P2 — NEFoX): a resolve hook that RESOLVES TO `false` (a
+// dropped/no-op registration — e.g. the catalog touch returned without appending
+// under a rebuild-lock timeout) must NOT be marked notified, so a later cache hit
+// retries it. A `false` result is distinct from a thrown/rejected failure.
+test("storageFor retries a resolve hook that resolves to false (dropped registration)", async () => {
+  const memoryDir = tmpDir("ns-router-resolve-false");
+  const cfg = baseConfig(memoryDir);
+  let calls = 0;
+  const router = new NamespaceStorageRouter(cfg, {
+    onResolve: async () => {
+      calls += 1;
+      // First two registrations are DROPPED (false); the third persists (true).
+      return calls >= 3;
+    },
+  });
+
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(calls >= 3, "a registration resolving to false must be retried, not suppressed");
+
+  // After the persisted (true) result, further cache hits are deduped.
+  const callsAfterPersist = calls;
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(
+    calls,
+    callsAfterPersist,
+    "after a persisted registration (true), further cache hits are deduped",
+  );
+});

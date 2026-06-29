@@ -4187,6 +4187,13 @@ export function registerCli(
 
           if (options.json === true) {
             console.log(JSON.stringify({ enabled: true, ...result }, null, 2));
+            // Mirror the non-JSON failure signal (round 6, codex P2 — NEFoa): an
+            // `--apply` that could not acquire the lock returns `applied: false`
+            // and rewrote nothing, so automation must see a non-zero exit even in
+            // JSON mode rather than treating a no-op apply as a successful rebuild.
+            if (!dryRun && result.applied === false) {
+              process.exitCode = 1;
+            }
             return;
           }
 

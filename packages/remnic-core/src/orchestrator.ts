@@ -2288,11 +2288,12 @@ export class Orchestrator {
     // a catalog write failure never affects storage resolution.
     this.namespaceCatalog = new NamespaceCatalog(config);
     this.storageRouter = new NamespaceStorageRouter(config, {
-      onResolve: (namespace, storageDir) => {
-        void this.namespaceCatalog
-          .registerResolved(namespace, storageDir)
-          .catch(() => undefined);
-      },
+      // Return the registration promise (round 6, codex P2 — NEFoX) so the
+      // router's resolve-hook dedup only marks a namespace notified when the
+      // catalog actually APPENDED. A dropped append (rebuild-lock timeout) or a
+      // failure resolves to `false`/rejects, so the next `storageFor` retries.
+      onResolve: (namespace, storageDir) =>
+        this.namespaceCatalog.registerResolved(namespace, storageDir),
     });
     this.namespaceSearchRouter = new NamespaceSearchRouter(
       config,
