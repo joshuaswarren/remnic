@@ -1,7 +1,15 @@
+import path from "node:path";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
-import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions } from "../search/port.js";
+import type {
+  SearchBackend,
+  SearchExecutionOptions,
+  SearchQueryOptions,
+} from "../search/port.js";
 import { createSearchBackend } from "../search/factory.js";
 import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
+
+const NESTED_NAMESPACE_FILTER_OVERFETCH_FACTOR = 4;
+const NESTED_NAMESPACE_FILTER_OVERFETCH_MIN = 50;
 
 export function namespaceCollectionName(
   baseCollection: string,
@@ -32,8 +40,11 @@ type NamespaceBackendRecord = {
   collection: string;
   memoryDir: string;
   available: boolean;
-  collectionState: "present" | "missing" | "unknown" | "skipped";
+  collectionState: CollectionState;
+  filtersNestedNamespaces: boolean;
 };
+
+type CollectionState = "present" | "missing" | "unknown" | "skipped";
 
 type NamespaceScopedSearchConfig = PluginConfig & {
   hostEmbeddingProviderScope?: string;
@@ -75,27 +86,44 @@ export class NamespaceSearchRouter {
         if (!record.available || record.collectionState === "missing") {
           return { namespace, results: [] as QmdSearchResult[] };
         }
+        const backendLimit = backendSearchLimit(record, maxResults);
         let results: QmdSearchResult[];
         switch (method) {
           case "hybrid":
-            results = await record.backend.hybridSearch(query, record.collection, maxResults, options.execution);
+            results = await record.backend.hybridSearch(
+              query,
+              record.collection,
+              backendLimit,
+              options.execution,
+            );
             break;
           case "bm25":
-            results = await record.backend.bm25Search(query, record.collection, maxResults, options.execution);
+            results = await record.backend.bm25Search(
+              query,
+              record.collection,
+              backendLimit,
+              options.execution,
+            );
             break;
           case "vector":
-            results = await record.backend.vectorSearch(query, record.collection, maxResults, options.execution);
+            results = await record.backend.vectorSearch(
+              query,
+              record.collection,
+              backendLimit,
+              options.execution,
+            );
             break;
           default:
             results = await record.backend.search(
               query,
               record.collection,
-              maxResults,
+              backendLimit,
               options.searchOptions,
               options.execution,
             );
             break;
         }
+        results = filterNamespaceSubtreeResults(record, results);
         return { namespace, results };
       }),
     );
@@ -187,6 +215,8 @@ export class NamespaceSearchRouter {
       const storage = await this.storageRouter.storageFor(key);
       const useLegacyDefaultCollection =
         key === this.config.defaultNamespace && storage.dir === this.config.memoryDir;
+      const filtersNestedNamespaces =
+        this.config.namespacesEnabled === true && useLegacyDefaultCollection;
       const rootHostEmbeddingScope =
         (this.config as NamespaceScopedSearchConfig).hostEmbeddingProviderScope ??
         this.config.memoryDir;
@@ -203,7 +233,10 @@ export class NamespaceSearchRouter {
       const backend = this.createBackend(scopedConfig);
       const available = await backend.probe().catch(() => false);
       const collectionState = available
-        ? await backend.ensureCollection(storage.dir, scopedConfig.qmdCollection, execution).catch(() => "unknown" as const)
+        ? await this.collectionStateForBackend(backend, storage.dir, scopedConfig.qmdCollection, {
+          skipAutoCreate: filtersNestedNamespaces,
+          execution,
+        })
         : "unknown";
       return {
         backend,
@@ -211,12 +244,94 @@ export class NamespaceSearchRouter {
         memoryDir: storage.dir,
         available,
         collectionState,
+        filtersNestedNamespaces,
       };
     })();
 
     this.cache.set(key, pending);
     return await pending;
   }
+
+  private async collectionStateForBackend(
+    backend: SearchBackend,
+    memoryDir: string,
+    collection: string,
+    options: {
+      skipAutoCreate: boolean;
+      execution?: SearchExecutionOptions;
+    },
+  ): Promise<CollectionState> {
+    if (options.skipAutoCreate) {
+      if (!backend.checkCollection) return "unknown";
+      const collectionState = await backend
+        .checkCollection(collection, options.execution)
+        .catch(() => "unknown" as const);
+      return collectionState === "missing" ? "unknown" : collectionState;
+    }
+    return await backend.ensureCollection(memoryDir, collection, options.execution).catch(() => "unknown" as const);
+  }
+}
+
+function filterNamespaceSubtreeResults(
+  record: NamespaceBackendRecord,
+  results: QmdSearchResult[],
+): QmdSearchResult[] {
+  if (!record.filtersNestedNamespaces) return results;
+  return results.filter((result) =>
+    !pathIsInsideNamespaceSubtree(record.memoryDir, record.collection, result.path)
+  );
+}
+
+function backendSearchLimit(
+  record: NamespaceBackendRecord,
+  maxResults: number,
+): number {
+  if (!record.filtersNestedNamespaces) return maxResults;
+  return Math.max(
+    maxResults,
+    maxResults * NESTED_NAMESPACE_FILTER_OVERFETCH_FACTOR,
+    NESTED_NAMESPACE_FILTER_OVERFETCH_MIN,
+  );
+}
+
+function pathIsInsideNamespaceSubtree(
+  memoryDir: string,
+  collection: string,
+  resultPath: string | undefined,
+): boolean {
+  if (!resultPath) return false;
+  const normalizedResultPath = normalizeQmdResultPath(resultPath, collection);
+  const memoryRoot = path.resolve(memoryDir);
+  const namespacesRoot = path.join(memoryRoot, "namespaces");
+  const candidate = path.isAbsolute(normalizedResultPath)
+    ? path.normalize(normalizedResultPath)
+    : path.resolve(memoryRoot, normalizedResultPath);
+  const relative = path.relative(namespacesRoot, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function normalizeQmdResultPath(resultPath: string, collection: string): string {
+  let value = resultPath.trim();
+  if (value.startsWith("qmd://")) {
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol === "qmd:" && parsed.hostname === collection) {
+        value = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+      }
+    } catch {
+      const remainder = value.slice("qmd://".length);
+      const slashIndex = remainder.indexOf("/");
+      if (slashIndex !== -1) {
+        value = remainder.slice(slashIndex + 1);
+      }
+    }
+  }
+
+  const collectionPrefix = `${collection}/`;
+  if (value.startsWith(collectionPrefix)) {
+    value = value.slice(collectionPrefix.length);
+  }
+  return value;
 }
 
 function mergeNamespaceSearchResults(

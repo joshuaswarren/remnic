@@ -93,6 +93,15 @@ export interface SearchBackend {
   embedCollection(collection: string): Promise<void>;
 
   // ── Collection management ──
+  /**
+   * Optional non-mutating collection probe. Backends that can distinguish a
+   * missing collection from a transient probe failure should implement this so
+   * callers can avoid auto-creating collections in unsafe layouts.
+   */
+  checkCollection?(
+    collectionOrExecution?: string | SearchExecutionOptions,
+    execution?: SearchExecutionOptions,
+  ): Promise<"present" | "missing" | "unknown" | "skipped">;
   ensureCollection(
     memoryDir: string,
     execution?: SearchExecutionOptions,

@@ -2700,8 +2700,7 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  async ensureCollection(
-    memoryDir: string,
+  async checkCollection(
     collectionOrExecution?: string | SearchExecutionOptions,
     execution?: SearchExecutionOptions,
   ): Promise<"present" | "missing" | "unknown" | "skipped"> {
@@ -2723,6 +2722,7 @@ export class QmdClient implements SearchBackend {
       if (collectionRegex.test(stdout)) {
         return "present";
       }
+      return "missing";
     } catch (err) {
       // Treat command/probe failures as unknown so callers do not disable features
       // permanently after a transient CLI or daemon hiccup.
@@ -2731,12 +2731,58 @@ export class QmdClient implements SearchBackend {
       );
       return "unknown";
     }
+  }
 
-    log.info(
-      `QMD collection "${targetCollection}" not found. ` +
-        `Add it to ~/.config/qmd/index.yml pointing at ${memoryDir}`,
+  async ensureCollection(
+    memoryDir: string,
+    collectionOrExecution?: string | SearchExecutionOptions,
+    execution?: SearchExecutionOptions,
+  ): Promise<"present" | "missing" | "unknown" | "skipped"> {
+    const { collection, execution: effectiveExecution } = resolveEnsureCollectionArgs(
+      collectionOrExecution,
+      execution,
     );
-    return "missing";
+    const targetCollection = collection ?? this.collection;
+    const collectionState = await this.checkCollection(targetCollection, effectiveExecution);
+    if (collectionState !== "missing") return collectionState;
+
+    try {
+      await this.runQmdCommand(
+        ["collection", "add", memoryDir, "--name", targetCollection],
+        QMD_TIMEOUT_MS,
+        effectiveExecution?.signal,
+      );
+      log.info(
+        `QMD collection "${targetCollection}" auto-created at ${memoryDir}`,
+      );
+      return "present";
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isCallerCancellation(err, effectiveExecution?.signal)) {
+        log.debug(
+          `QMD collection auto-create for "${targetCollection}" was cancelled; keeping collection state unknown`,
+        );
+        return "unknown";
+      }
+      const postCreateState = await this.checkCollection(targetCollection, effectiveExecution);
+      if (postCreateState === "present") {
+        log.info(
+          `QMD collection "${targetCollection}" is present after auto-create failure; continuing`,
+        );
+        return "present";
+      }
+      if (/\balready exists\b|\bexists already\b/i.test(msg)) {
+        log.info(
+          `QMD collection "${targetCollection}" already exists after concurrent auto-create; continuing`,
+        );
+        return "present";
+      }
+      if (postCreateState !== "missing") return postCreateState;
+      log.warn(
+        `QMD collection "${targetCollection}" not found and auto-create failed: ${msg}`,
+      );
+      return "missing";
+    }
   }
 }
 

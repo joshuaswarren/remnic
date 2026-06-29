@@ -2,10 +2,12 @@ FROM node:22-bookworm-slim AS build
 
 WORKDIR /app
 
+COPY package.json ./
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends build-essential ca-certificates python3 \
   && rm -rf /var/lib/apt/lists/* \
-  && corepack enable
+  && npm install -g "pnpm@$(node -p 'require("./package.json").packageManager.split("@")[1]')" @tobilu/qmd@2.5.3
 
 COPY . .
 
@@ -29,9 +31,15 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-RUN corepack enable \
-  && mkdir -p /data /app \
+RUN mkdir -p /data /app \
   && chown -R node:node /data /app
+
+# QMD was installed via npm install -g in the build stage (where python3 is available
+# for node-gyp native addons). npm creates a symlink at /usr/local/bin/qmd pointing
+# to <package-dir>/bin/qmd. COPY preserves the link destination, so use --link to
+# keep the symlink intact and copy the full package tree for resolved requires.
+COPY --from=build /usr/local/lib/node_modules/@tobilu /usr/local/lib/node_modules/@tobilu
+RUN ln -s /usr/local/lib/node_modules/@tobilu/qmd/bin/qmd /usr/local/bin/qmd
 
 COPY --from=build --chown=node:node /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
