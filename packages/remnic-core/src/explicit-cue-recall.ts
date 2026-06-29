@@ -1,4 +1,5 @@
 import { buildEvidencePack } from "./evidence-pack.js";
+import { resolveLcmReadSessionIds } from "./lcm-fallback-read.js";
 
 export interface ExplicitCueRecallEngine {
   expandContext(
@@ -29,6 +30,13 @@ export interface ExplicitCueRecallEngine {
 export interface ExplicitCueRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   sessionId?: string;
+  /**
+   * Ordered, read-authorized LCM read key set (primary overlay → project/root
+   * fallbacks). When present, cue evidence is gathered across EVERY key into one
+   * shared accumulator and merged under this section's budget (#1505 codex P2).
+   * Falls back to `sessionId`.
+   */
+  sessionIds?: readonly (string | undefined)[];
   query: string;
   maxChars: number;
   maxItemChars?: number;
@@ -324,45 +332,54 @@ export async function buildExplicitCueRecallSection(
   }> = [];
   const seenTurns = new Set<string>();
 
-  await collectTurnReferenceEvidence({
-    engine,
-    sessionId: options.sessionId,
-    query,
-    maxReferences,
-    evidenceItems,
-    seenTurns,
-  });
-
-  if (options.includeContentLexicalCues) {
-    await collectNamedMeetingFactEvidence({
+  // #1505 codex P2: gather cue evidence across the ordered LCM read key set
+  // (primary overlay → project/root fallbacks) into ONE shared accumulator
+  // (`evidenceItems` / `seenTurns`), so a stronger project-fallback cue is not
+  // masked by a weak primary-key hit. `seenTurns` dedupes across keys by
+  // `session_id`+`turn_index`; the budget is applied exactly once in the
+  // `buildEvidencePack` call below. A single key (or a single sessionless
+  // `undefined`) runs the gather once — byte-for-byte the pre-#1505 behavior.
+  for (const sessionId of resolveLcmReadSessionIds(options)) {
+    await collectTurnReferenceEvidence({
       engine,
-      sessionId: options.sessionId,
+      sessionId,
       query,
       maxReferences,
       evidenceItems,
       seenTurns,
     });
 
-    await collectFocusedTranscriptCueEvidence({
+    if (options.includeContentLexicalCues) {
+      await collectNamedMeetingFactEvidence({
+        engine,
+        sessionId,
+        query,
+        maxReferences,
+        evidenceItems,
+        seenTurns,
+      });
+
+      await collectFocusedTranscriptCueEvidence({
+        engine,
+        sessionId,
+        query,
+        evidenceItems,
+        seenTurns,
+      });
+    }
+
+    await collectLexicalCueEvidence({
       engine,
-      sessionId: options.sessionId,
+      sessionId,
       query,
+      maxReferences,
+      includeBenchmarkAnchorCues: options.includeBenchmarkAnchorCues,
+      includeContentLexicalCues: options.includeContentLexicalCues,
+      includeStructuredPlanCues: options.includeStructuredPlanCues,
       evidenceItems,
       seenTurns,
     });
   }
-
-  await collectLexicalCueEvidence({
-    engine,
-    sessionId: options.sessionId,
-    query,
-    maxReferences,
-    includeBenchmarkAnchorCues: options.includeBenchmarkAnchorCues,
-    includeContentLexicalCues: options.includeContentLexicalCues,
-    includeStructuredPlanCues: options.includeStructuredPlanCues,
-    evidenceItems,
-    seenTurns,
-  });
 
   const evidenceFocusQuery = buildEvidenceFocusQuery(query, {
     includeBenchmarkAnchorCues: options.includeBenchmarkAnchorCues,

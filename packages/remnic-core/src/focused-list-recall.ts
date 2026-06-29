@@ -4,10 +4,17 @@ import {
   type EvidencePackItem,
 } from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
+import { resolveLcmReadSessionIds } from "./lcm-fallback-read.js";
 
 export interface FocusedListRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   sessionId?: string;
+  /**
+   * Ordered, read-authorized LCM read key set (primary overlay → project/root
+   * fallbacks). When present, evidence is gathered across EVERY key and merged
+   * under this section's budget (#1505 codex P2). Falls back to `sessionId`.
+   */
+  sessionIds?: readonly (string | undefined)[];
   query: string;
   maxChars: number;
   maxItemChars?: number;
@@ -52,7 +59,17 @@ export async function buildFocusedListRecallSection(
     return "";
   }
 
-  const items = await collectFocusedListItems(options, intent);
+  // #1505 codex P2: gather candidates across the ordered LCM read key set
+  // (primary overlay → project/root fallbacks) and UNION them into the existing
+  // rank/dedupe/budget pass, so a stronger project-fallback candidate is not
+  // masked by a weak primary-key hit. `rankAndDedupeFocusedListItems` applies
+  // the section-appropriate dedupe; the budget is applied exactly once below.
+  // The single-key path runs exactly one collect — byte-for-byte the pre-#1505
+  // behavior.
+  const items: EvidencePackItem[] = [];
+  for (const sessionId of resolveLcmReadSessionIds(options)) {
+    items.push(...(await collectFocusedListItems({ ...options, sessionId }, intent)));
+  }
   const ranked = rankAndDedupeFocusedListItems(items, options.query, intent)
     .slice(0, maxResults);
   if (ranked.length === 0) {

@@ -1,9 +1,18 @@
 import { buildEvidencePack, type EvidencePackItem } from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
+import { resolveLcmReadSessionIds } from "./lcm-fallback-read.js";
 
 export interface EventOrderRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   sessionId?: string;
+  /**
+   * Ordered, read-authorized LCM read key set (primary overlay → project/root
+   * fallbacks). When present, chronological evidence is gathered across EVERY
+   * key and merged under this section's budget (#1505 codex P2). Falls back to
+   * `sessionId`. Sessionless (`undefined`) keys are skipped — event-order
+   * evidence is inherently per-session.
+   */
+  sessionIds?: readonly (string | undefined)[];
   query: string;
   maxChars: number;
   maxItemChars?: number;
@@ -42,7 +51,16 @@ export async function buildEventOrderRecallSection(
 ): Promise<string> {
   const budget = normalizePositiveInteger(options.maxChars);
   const maxItems = normalizePositiveInteger(options.maxItems ?? DEFAULT_MAX_ITEMS);
-  if (!options.engine || !options.sessionId || budget <= 0) {
+  // #1505 codex P2: gather chronological evidence across the ordered LCM read key
+  // set (primary overlay → project/root fallbacks). event-order evidence is
+  // inherently per-session, so sessionless keys are skipped; the section runs
+  // when at least one real read key is authorized. A single real sessionId is
+  // byte-for-byte the pre-#1505 behavior.
+  const readSessionIds = resolveLcmReadSessionIds(options);
+  const hasReadKey = readSessionIds.some(
+    (sessionId) => typeof sessionId === "string" && sessionId.length > 0,
+  );
+  if (!options.engine || !hasReadKey || budget <= 0) {
     return "";
   }
   if (maxItems <= 0) {
@@ -52,7 +70,13 @@ export async function buildEventOrderRecallSection(
     return "";
   }
 
-  const items = await collectEventOrderItems(options);
+  // UNION per-key candidates into the existing rank/select/budget pass so a
+  // stronger project-fallback turn is not masked by a weak primary-key hit.
+  const items: EvidencePackItem[] = [];
+  for (const sessionId of readSessionIds) {
+    if (typeof sessionId !== "string" || sessionId.length === 0) continue;
+    items.push(...(await collectEventOrderItems({ ...options, sessionId })));
+  }
   const ranked = rankAndSelectEventOrderItems(items, options, maxItems);
   if (ranked.length === 0) {
     return "";

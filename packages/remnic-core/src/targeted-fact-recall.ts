@@ -4,10 +4,17 @@ import {
   type EvidencePackItem,
 } from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
+import { resolveLcmReadSessionIds } from "./lcm-fallback-read.js";
 
 export interface TargetedFactRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   sessionId?: string;
+  /**
+   * Ordered, read-authorized LCM read key set (primary overlay → project/root
+   * fallbacks). When present, evidence is gathered across EVERY key and merged
+   * under this section's budget (#1505 codex P2). Falls back to `sessionId`.
+   */
+  sessionIds?: readonly (string | undefined)[];
   query: string;
   maxChars: number;
   maxItemChars?: number;
@@ -43,10 +50,19 @@ export async function buildTargetedFactRecallSection(
     return "";
   }
 
-  const searchItems = await collectTargetedFactSearchItems(options);
-  const scannedItems = await collectTargetedFactScanItems(options);
+  // #1505 codex P2: gather candidates across the ordered LCM read key set
+  // (primary overlay → project/root fallbacks) and UNION them into the existing
+  // rank/dedupe/budget pass, so stronger project-fallback evidence is not masked
+  // by a weak primary-key hit. The single-key path collects exactly one
+  // search+scan pair — byte-for-byte the pre-#1505 behavior.
+  const collected: EvidencePackItem[] = [];
+  for (const sessionId of resolveLcmReadSessionIds(options)) {
+    const scoped = { ...options, sessionId };
+    collected.push(...(await collectTargetedFactSearchItems(scoped)));
+    collected.push(...(await collectTargetedFactScanItems(scoped)));
+  }
   const ranked = rankAndDedupeTargetedFactItems(
-    [...searchItems, ...scannedItems],
+    collected,
     options.query,
   ).slice(0, maxResults);
 
