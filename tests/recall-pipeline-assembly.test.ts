@@ -1080,3 +1080,114 @@ test("#1505 codex P2: structured message-parts merge across branch + project fal
   assert.match(context, /STRONG_PROJECT_PART/);
   assert.match(context, /WEAK_BRANCH_PART/);
 });
+
+test("#1505 codex P2: a failing fallback structured-parts read must NOT discard the other key's parts or the compressed-history section", async () => {
+  // Fault isolation: the structured-parts merge reads every key, but one key's
+  // search throwing (e.g. a SqliteError on a corrupt/locked fallback index) must
+  // not reject the whole batch. With `Promise.all` it would, and — because the
+  // structured-parts read and the compressed-history read share one try block —
+  // BOTH sections would be silently dropped even though the primary key is
+  // healthy. This pins `Promise.allSettled` semantics: the surviving key's parts
+  // AND the compressed-history section still appear.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-recall-parts-fail-"));
+  const sessionId = "alice:branch-session";
+  const projectId = "origin:proj4242";
+
+  let branchOverlayKey = "";
+  let projectFallbackKey = "";
+
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    sharedContextEnabled: false,
+    knowledgeIndexEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    injectQuestions: false,
+    lcmEnabled: true,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    defaultRecallNamespaces: ["self"],
+    codingMode: { projectScope: true, branchScope: true },
+    recallPipeline: [
+      { id: "profile", enabled: false },
+      { id: "memories", enabled: false },
+    ],
+  });
+  const orchestrator = new Orchestrator(cfg);
+
+  orchestrator.setCodingContextForSession(sessionId, {
+    projectId,
+    branch: "feature/cuisines",
+    rootPath: projectId,
+    defaultBranch: "main",
+  });
+  const branchOverlayNs = (
+    orchestrator as unknown as {
+      applyCodingNamespaceOverlay: (sk: string, base: string) => string;
+    }
+  ).applyCodingNamespaceOverlay(sessionId, "alice");
+  branchOverlayKey = encodeNs(branchOverlayNs, sessionId);
+  projectFallbackKey = encodeNs(projectFallbackNamespace(orchestrator, "alice", projectId), sessionId);
+
+  (orchestrator as any).lcmEngine = {
+    enabled: true,
+    searchContextFull: async () => [],
+    expandContext: async () => [],
+    getStats: async () => ({ totalMessages: 0, maxTurnIndex: -1 }),
+    // The PRIMARY (branch) key's structured read throws; the project fallback
+    // key returns a healthy part.
+    searchStructuredParts: async (requestedSessionId: string) => {
+      if (requestedSessionId === branchOverlayKey) {
+        throw new Error("simulated SqliteError on branch index");
+      }
+      if (requestedSessionId === projectFallbackKey) {
+        return [
+          {
+            part_id: 7,
+            session_id: projectFallbackKey,
+            turn_index: 3,
+            role: "user",
+            kind: "text",
+            content: "SURVIVING_PROJECT_PART",
+            score: 100,
+          },
+        ];
+      }
+      return [];
+    },
+    formatStructuredRecall: (matches: Array<{ content: string }>) =>
+      matches.length > 0
+        ? `## Structured Session Matches\n\n${matches.map((m) => m.content).join("\n")}`
+        : "",
+    // Compressed history is healthy for the primary key — it must survive a
+    // structured-parts failure on a fallback key.
+    assembleRecall: async (requestedSessionId: string) =>
+      requestedSessionId ? "## Compressed History\n\nCOMPRESSED_HISTORY_BODY" : "",
+  };
+
+  const context = await (orchestrator as any).recallInternal(
+    "What did we cover earlier?",
+    sessionId,
+  );
+
+  assert.match(
+    context,
+    /SURVIVING_PROJECT_PART/,
+    "a fallback key's structured read failure must not discard the other key's parts",
+  );
+  assert.match(
+    context,
+    /COMPRESSED_HISTORY_BODY/,
+    "a structured-parts failure must not discard the sibling compressed-history section",
+  );
+});

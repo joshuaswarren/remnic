@@ -9921,18 +9921,35 @@ export class Orchestrator {
         // below. A sessionless key (`undefined`) normalizes to "" → no matches
         // (structured parts are inherently per-session; pre-#1505 behavior, codex
         // P2).
-        const structuredBatches = await Promise.all(
+        // FAULT ISOLATION (allSettled, not all): the pre-#1505 first-non-empty read
+        // short-circuited, so a fallback key was often never queried and its latent
+        // search failure never surfaced. Querying every key eagerly must NOT let one
+        // key's failure (e.g. a SqliteError from a corrupt/locked fallback index)
+        // reject the batch and discard the OTHER keys' parts — or, since this and
+        // the compressed-history read below share one try block, silently drop the
+        // compressed-history section a healthy primary key would still produce. So
+        // read each key independently and keep the fulfilled batches.
+        const structuredSettled = await Promise.allSettled(
           lcmReadSessionIds.map((lcmSessionId) =>
             this.lcmEngine!.searchStructuredParts(lcmSessionId ?? "", retrievalQuery),
           ),
         );
+        for (const settled of structuredSettled) {
+          if (settled.status === "rejected") {
+            log.debug(
+              `LCM structured-parts read failed for one key: ${settled.reason}`,
+            );
+          }
+        }
         const seenStructuredParts = new Set<string>();
-        const structuredMatches = structuredBatches.flat().filter((match) => {
-          const key = `${match.session_id} ${match.turn_index} ${match.part_id}`;
-          if (seenStructuredParts.has(key)) return false;
-          seenStructuredParts.add(key);
-          return true;
-        })
+        const structuredMatches = structuredSettled
+          .flatMap((settled) => (settled.status === "fulfilled" ? settled.value : []))
+          .filter((match) => {
+            const key = `${match.session_id} ${match.turn_index} ${match.part_id}`;
+            if (seenStructuredParts.has(key)) return false;
+            seenStructuredParts.add(key);
+            return true;
+          })
           // Restore the archive's per-key ordering (score DESC, then turn DESC)
           // across the MERGED set so the strongest parts win the shared budget in
           // `formatStructuredRecall` — otherwise weak primary-key parts could crowd

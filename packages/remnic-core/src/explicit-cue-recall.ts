@@ -334,12 +334,24 @@ export async function buildExplicitCueRecallSection(
 
   // #1505 codex P2: gather cue evidence across the ordered LCM read key set
   // (primary overlay → project/root fallbacks) into ONE shared accumulator
-  // (`evidenceItems` / `seenTurns`), so a stronger project-fallback cue is not
-  // masked by a weak primary-key hit. `seenTurns` dedupes across keys by
+  // (`evidenceItems` / `seenTurns`), so a branch-scoped session's project/root
+  // fallback cues are RECOVERED instead of being skipped by the old
+  // first-non-empty short-circuit. `seenTurns` dedupes across keys by
   // `session_id`+`turn_index`; the budget is applied exactly once in the
-  // `buildEvidencePack` call below. A single key (or a single sessionless
-  // `undefined`) runs the gather once — byte-for-byte the pre-#1505 behavior.
-  for (const sessionId of resolveLcmReadSessionIds(options)) {
+  // `buildEvidencePack` call below.
+  //
+  // Ordering note: unlike the other LCM sections, explicit-cue does NOT
+  // relevance-rank before budgeting — `buildEvidencePack` consumes
+  // `evidenceItems` in insertion order. To keep a lower-value evidence TYPE from
+  // one key from crowding out a higher-value type from another key under a tight
+  // budget, gather is ordered by evidence TYPE first (turn references → content
+  // cues → lexical cues), then by read-key priority (primary overlay first)
+  // WITHIN each type. So a tight budget still prefers the primary key within a
+  // type, but a fallback key's turn references outrank the primary key's lexical
+  // cues. A single key (or a single sessionless `undefined`) runs each collector
+  // exactly once, in the original order — byte-for-byte the pre-#1505 behavior.
+  const readSessionIds = resolveLcmReadSessionIds(options);
+  for (const sessionId of readSessionIds) {
     await collectTurnReferenceEvidence({
       engine,
       sessionId,
@@ -348,8 +360,10 @@ export async function buildExplicitCueRecallSection(
       evidenceItems,
       seenTurns,
     });
+  }
 
-    if (options.includeContentLexicalCues) {
+  if (options.includeContentLexicalCues) {
+    for (const sessionId of readSessionIds) {
       await collectNamedMeetingFactEvidence({
         engine,
         sessionId,
@@ -358,7 +372,9 @@ export async function buildExplicitCueRecallSection(
         evidenceItems,
         seenTurns,
       });
+    }
 
+    for (const sessionId of readSessionIds) {
       await collectFocusedTranscriptCueEvidence({
         engine,
         sessionId,
@@ -367,7 +383,9 @@ export async function buildExplicitCueRecallSection(
         seenTurns,
       });
     }
+  }
 
+  for (const sessionId of readSessionIds) {
     await collectLexicalCueEvidence({
       engine,
       sessionId,
