@@ -1725,6 +1725,49 @@ test("rebuild --apply skips an unsafe configured namespace", async () => {
   }
 });
 
+// ── NGnek (codex P2): a configured namespace with harmless surrounding whitespace
+// (e.g. `sharedNamespace: "shared "`) must be NORMALIZED before seeding, so the
+// catalog records the same identity + router-resolved root the live router uses.
+// Pre-fix, rebuild seeded a row for the RAW `"shared "` resolving to a
+// `namespaces/shared ` root that live reads/writes never touch — pointing
+// maintenance/QMD at the wrong directory.
+test("rebuild normalizes a configured namespace with surrounding whitespace (NGnek)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const config = makeConfig(memoryDir, { sharedNamespace: "shared " } as Partial<PluginConfig>);
+    const catalog = new NamespaceCatalog(config);
+    const result = await catalog.rebuildFromDisk();
+
+    // The catalog must record the TRIMMED identity, not the raw whitespace name.
+    assert.ok(
+      result.records.some((r) => r.namespace === "shared"),
+      "a configured namespace must be seeded under its normalized (trimmed) identity",
+    );
+    assert.ok(
+      !result.records.some((r) => r.namespace === "shared "),
+      "the raw whitespace namespace must NOT be seeded",
+    );
+    const shared = result.records.find((r) => r.namespace === "shared");
+    assert.ok(shared, "normalized shared namespace is catalogued");
+    // Its kind is correctly classified as `shared` (inferKind normalizes config).
+    assert.equal(shared!.kind, "shared", "the normalized namespace is classified as shared");
+    // Its storageDir must be the router-aligned root for the trimmed name, with no
+    // trailing-space directory component. The router itself trims, so resolving for
+    // "shared" yields the live root.
+    assert.equal(
+      path.resolve(shared!.storageDir),
+      path.resolve(await resolveNamespaceStorageRoot(config, "shared")),
+      "the normalized namespace resolves to the router root for the trimmed name",
+    );
+    assert.ok(
+      !shared!.storageDir.endsWith("shared "),
+      "the storageDir must not point at a trailing-space directory",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 7 (cursor Medium / codex P2 — NBn3n/NBsGG): `applied` reflects whether
 // the rebuild actually rewrote the log. A normal apply sets applied=true; a
 // dry-run sets applied=false; an apply that cannot acquire the lock (compute-only)

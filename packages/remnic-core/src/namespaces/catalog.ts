@@ -285,9 +285,15 @@ function serializeRecord(record: NamespaceRecord): string {
  * `explicit` when no structural signal is present. The caller can override.
  */
 function inferKind(namespace: string, config: PluginConfig): NamespaceKind {
-  if (namespace === config.defaultNamespace) return "default";
-  if (namespace === config.sharedNamespace) return "shared";
-  if (config.namespacePolicies.some((p) => p.name === namespace)) return "explicit";
+  // Compare against NORMALIZED config names (NGnek, codex P2): the catalog seeds
+  // normalized namespace identities, so a configured name with surrounding
+  // whitespace (e.g. `sharedNamespace: "shared "`) must still classify the
+  // normalized `"shared"` as `shared`, not fall through to `explicit`.
+  if (namespace === normalizeNamespaceIdentity(config.defaultNamespace)) return "default";
+  if (namespace === normalizeNamespaceIdentity(config.sharedNamespace)) return "shared";
+  if (config.namespacePolicies.some((p) => normalizeNamespaceIdentity(p.name) === namespace)) {
+    return "explicit";
+  }
   // Branch overlays embed "-branch-" (project-<id>-branch-<name>).
   if (/-branch-|^project-[^-]+-branch-/.test(namespace) || namespace.includes("-branch-")) {
     return "branch";
@@ -1064,11 +1070,29 @@ export class NamespaceCatalog {
     }
 
     // 1) Configured namespaces always belong in the catalog.
-    const configured = new Set<string>([
-      this.config.defaultNamespace,
-      this.config.sharedNamespace,
-      ...this.config.namespacePolicies.map((p) => p.name),
-    ]);
+    //
+    // NORMALIZE FIRST (NGnek, codex P2): the live router normalizes every namespace
+    // via `normalizeNamespaceIdentity` (a trim) in `storageFor()` before resolving
+    // storage, and `isSafeRouteNamespace` also trims before validating. So a
+    // configured name with harmless surrounding whitespace (e.g.
+    // `sharedNamespace: "shared "` or a policy name copied with a trailing space)
+    // would otherwise seed a catalog row for the RAW string and resolve a
+    // `namespaces/shared ` root the live reads/writes never use — pointing
+    // maintenance/QMD at the wrong directory after `rebuild --apply`. We normalize
+    // configured names here so the catalog seeds the SAME identity the router uses
+    // (rule #42: read/write resolve through the same normalization). The default
+    // namespace is normalized too and compared via its normalized form (`defaultNs`)
+    // wherever a configured/scanned name is matched against it below.
+    const defaultNs = normalizeNamespaceIdentity(this.config.defaultNamespace);
+    const configured = new Set<string>(
+      [
+        this.config.defaultNamespace,
+        this.config.sharedNamespace,
+        ...this.config.namespacePolicies.map((p) => p.name),
+      ]
+        .map((n) => normalizeNamespaceIdentity(n))
+        .filter((n) => n.length > 0),
+    );
 
     // 2) Default-root alignment (Issue C — round 2): the catalog's default
     //    record MUST point at the SAME root the runtime router resolves, or
@@ -1098,7 +1122,7 @@ export class NamespaceCatalog {
       // that admits an unsafe configured namespace into the catalog. The default
       // namespace is exempt (it may be a non-route literal), matching the scan
       // loop's exemption below.
-      if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) {
+      if (ns !== defaultNs && !isSafeRouteNamespace(ns)) {
         let token: string;
         try {
           token = namespaceIdentityToken(ns);
@@ -1117,7 +1141,7 @@ export class NamespaceCatalog {
       // maintenance/QMD aligned with live reads. Falls back to the lexical token
       // dir if router resolution fails.
       let storageDir: string;
-      if (ns === this.config.defaultNamespace) {
+      if (ns === defaultNs) {
         storageDir = defaultStorageDir;
       } else {
         try {
@@ -1138,7 +1162,7 @@ export class NamespaceCatalog {
       // "skipped" (it must always exist), so it falls back to the trusted
       // `memoryDir` root; a non-default namespace is skipped (escape).
       if (!(await this.isContainedStorageDir(storageDir))) {
-        if (ns === this.config.defaultNamespace) {
+        if (ns === defaultNs) {
           storageDir = this.memoryDir;
         } else {
           skipped.push({ token: namespaceIdentityToken(ns), reason: "escape", detail: storageDir });
@@ -1244,7 +1268,7 @@ export class NamespaceCatalog {
       // namespace and records it verbatim (NCQI0); the scanner cannot recover a
       // name the encoding cannot distinguish, so we keep the canonical decode.
       const decoded = configured.has(token) ? token : namespaceIdentityFromToken(token) ?? token;
-      if (decoded !== this.config.defaultNamespace && !isSafeRouteNamespace(decoded)) {
+      if (decoded !== defaultNs && !isSafeRouteNamespace(decoded)) {
         skipped.push({ token, reason: "unsafe", detail: decoded });
         continue;
       }
@@ -1256,8 +1280,8 @@ export class NamespaceCatalog {
       // default record's root is owned by `resolveDefaultNamespaceRoot` above,
       // which mirrors the router. We still keep the default record (set in
       // step 1) but skip clobbering its root here.
-      if (decoded === this.config.defaultNamespace) {
-        const def = rebuilt.get(this.config.defaultNamespace);
+      if (decoded === defaultNs) {
+        const def = rebuilt.get(defaultNs);
         if (def) {
           def.storageDir = defaultStorageDir;
           def.kind = "default";
@@ -1294,7 +1318,7 @@ export class NamespaceCatalog {
 
     // Mark legacy default root explicitly when applicable.
     if (legacyDefaultHasData && defaultStorageDir === this.memoryDir) {
-      const def = rebuilt.get(this.config.defaultNamespace);
+      const def = rebuilt.get(defaultNs);
       if (def) def.kind = "default";
     }
 

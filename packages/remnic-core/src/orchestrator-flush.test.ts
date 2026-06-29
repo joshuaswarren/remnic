@@ -1767,3 +1767,100 @@ test("runExtraction still clears the session buffer after persistence even if re
     "persisted reset flushes must still clear the session buffer even when the reset timeout aborts after persistence",
   );
 });
+
+// ── NGnei (codex P2): runQmdMaintenance must cover CATALOGED dynamic namespaces,
+// not only the configured set. An extraction writing to a coding-scoped/dynamic
+// namespace is made discoverable via the catalog; if maintenance embeds only
+// configuredNamespaces(), that namespace's QMD collection stays stale. We stub the
+// orchestrator internals and assert update/embed receive the UNION of configured +
+// cataloged namespaces.
+test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let updateArg: string[] | undefined;
+  let embedArg: string[] | undefined;
+
+  orchestrator.config = {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    qmdAutoEmbedEnabled: true,
+    qmdEmbedMinIntervalMs: 0,
+  };
+  orchestrator.qmdMaintenanceInFlight = false;
+  orchestrator.qmdMaintenancePending = true;
+  orchestrator.lastQmdEmbedAtMs = 0;
+  orchestrator.namespaceCatalog = {
+    enabled: true,
+    async listNamespaces() {
+      return [
+        { namespace: "default" },
+        { namespace: "project-origin-dynamic" }, // dynamic, NOT configured
+      ];
+    },
+  };
+  orchestrator.namespaceSearchRouter = {
+    async updateNamespaces(ns: string[]) {
+      updateArg = ns;
+      return ns.length;
+    },
+    async embedNamespaces(ns: string[]) {
+      embedArg = ns;
+    },
+  };
+
+  await orchestrator.runQmdMaintenance();
+
+  assert.ok(updateArg, "updateNamespaces must be called");
+  assert.ok(
+    updateArg!.includes("project-origin-dynamic"),
+    "QMD update must cover the cataloged dynamic namespace, not just configured ones",
+  );
+  assert.ok(updateArg!.includes("default") && updateArg!.includes("shared"), "configured namespaces remain covered");
+  assert.ok(
+    embedArg && embedArg.includes("project-origin-dynamic"),
+    "QMD embed must cover the cataloged dynamic namespace",
+  );
+});
+
+// NGnei fallback: when the catalog is disabled, maintenance covers exactly the
+// configured set (no catalog read), and a catalog read failure degrades to the
+// configured set rather than breaking maintenance.
+test("runQmdMaintenance falls back to configured namespaces when the catalog is disabled (NGnei)", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let updateArg: string[] | undefined;
+
+  orchestrator.config = {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    qmdAutoEmbedEnabled: false,
+    qmdEmbedMinIntervalMs: 0,
+  };
+  orchestrator.qmdMaintenanceInFlight = false;
+  orchestrator.qmdMaintenancePending = true;
+  orchestrator.lastQmdEmbedAtMs = 0;
+  orchestrator.namespaceCatalog = {
+    enabled: false,
+    async listNamespaces() {
+      throw new Error("catalog disabled — must not be read");
+    },
+  };
+  orchestrator.namespaceSearchRouter = {
+    async updateNamespaces(ns: string[]) {
+      updateArg = ns;
+      return ns.length;
+    },
+    async embedNamespaces() {},
+  };
+
+  await orchestrator.runQmdMaintenance();
+
+  assert.ok(updateArg, "updateNamespaces must be called");
+  assert.deepEqual(
+    [...updateArg!].sort(),
+    ["default", "shared"],
+    "a disabled catalog covers exactly the configured set",
+  );
+});

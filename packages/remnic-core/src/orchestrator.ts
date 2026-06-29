@@ -2245,6 +2245,35 @@ export class Orchestrator {
     );
   }
 
+  /**
+   * Namespaces that QMD maintenance (update/embed) must cover: the CONFIGURED set
+   * PLUS every dynamic namespace recorded in the catalog (NGnei, codex P2). An
+   * extraction that writes to a coding-scoped/dynamic namespace (not in
+   * defaultNamespace/sharedNamespace/namespacePolicies) is only made discoverable
+   * via the catalog; if maintenance embeds only `configuredNamespaces()`, that
+   * namespace's QMD collection is never updated/embedded after writes and
+   * recall/search stays stale or empty until it is manually configured. We union in
+   * the catalog's namespaces so maintenance keeps dynamic namespaces fresh.
+   * `updateNamespaces`/`embedNamespaces` already trim, dedup, and skip
+   * unavailable/missing collections, so extra names are filtered safely. A catalog
+   * read failure must never break maintenance — fall back to the configured set.
+   */
+  private async maintenanceNamespaces(): Promise<string[]> {
+    const configured = this.configuredNamespaces();
+    if (!this.namespaceCatalog.enabled) return configured;
+    let cataloged: string[] = [];
+    try {
+      const records = await this.namespaceCatalog.listNamespaces();
+      cataloged = records.map((record) => record.namespace);
+    } catch {
+      // Best-effort: a catalog read failure must not break QMD maintenance.
+      cataloged = [];
+    }
+    return Array.from(
+      new Set([...configured, ...cataloged].map((value) => value.trim()).filter(Boolean)),
+    );
+  }
+
   private buildConfiguredQmdSearchOptions(
     queryText: string,
   ): SearchQueryOptions | undefined {
@@ -13001,25 +13030,28 @@ export class Orchestrator {
 
     try {
       if (this.config.namespacesEnabled) {
-        await this.namespaceSearchRouter.updateNamespaces(
-          this.configuredNamespaces(),
-        );
+        // Include cataloged dynamic namespaces, not just the configured set
+        // (NGnei) — resolve once and reuse for both update and embed.
+        const maintenanceNamespaces = await this.maintenanceNamespaces();
+        await this.namespaceSearchRouter.updateNamespaces(maintenanceNamespaces);
+        const now = Date.now();
+        if (
+          this.config.qmdAutoEmbedEnabled &&
+          now - this.lastQmdEmbedAtMs >= this.config.qmdEmbedMinIntervalMs
+        ) {
+          await this.namespaceSearchRouter.embedNamespaces(maintenanceNamespaces);
+          this.lastQmdEmbedAtMs = now;
+        }
       } else {
         await this.qmd.update();
-      }
-      const now = Date.now();
-      if (
-        this.config.qmdAutoEmbedEnabled &&
-        now - this.lastQmdEmbedAtMs >= this.config.qmdEmbedMinIntervalMs
-      ) {
-        if (this.config.namespacesEnabled) {
-          await this.namespaceSearchRouter.embedNamespaces(
-            this.configuredNamespaces(),
-          );
-        } else {
+        const now = Date.now();
+        if (
+          this.config.qmdAutoEmbedEnabled &&
+          now - this.lastQmdEmbedAtMs >= this.config.qmdEmbedMinIntervalMs
+        ) {
           await this.qmd.embed();
+          this.lastQmdEmbedAtMs = now;
         }
-        this.lastQmdEmbedAtMs = now;
       }
     } finally {
       this.qmdMaintenanceInFlight = false;
