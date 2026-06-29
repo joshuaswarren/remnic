@@ -12,6 +12,7 @@ type CollectionState = "present" | "missing" | "unknown" | "skipped";
 
 class FakeBackend implements SearchBackend {
   updates = 0;
+  disposed = 0;
   calls: Array<{
     method: string;
     collection: string | undefined;
@@ -47,6 +48,10 @@ class FakeBackend implements SearchBackend {
 
   debugStatus(): string {
     return "fake";
+  }
+
+  async dispose(): Promise<void> {
+    this.disposed += 1;
   }
 
   async search(
@@ -302,6 +307,35 @@ test("legacy default namespace root fail-opens missing guarded collections", asy
   assert.equal(state, "unknown");
   assert.deepEqual(backend.checkCollections, ["openclaw-engram"]);
   assert.deepEqual(backend.ensureCollections, []);
+});
+
+test("healthForNamespace checks namespace collection without auto-creating or caching state", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], created.length === 0
+        ? { check: "missing" }
+        : { ensure: "present" });
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const health = await router.healthForNamespace("shared");
+
+  assert.equal(health.collectionState, "missing");
+  assert.equal(health.collection, "openclaw-engram--ns-736861726564");
+  assert.deepEqual(created[0]?.checkCollections, ["openclaw-engram--ns-736861726564"]);
+  assert.deepEqual(created[0]?.ensureCollections, []);
+  assert.equal(created[0]?.disposed, 1);
+
+  const ensured = await router.ensureNamespaceCollection("shared");
+
+  assert.equal(ensured, "present");
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1]?.ensureCollections, ["openclaw-engram--ns-736861726564"]);
 });
 
 test("legacy default namespace root filters nested namespace search results", async () => {

@@ -64,6 +64,11 @@ type NamespaceScopedSearchConfig = PluginConfig & {
   hostEmbeddingProviderScope?: string;
 };
 
+type BackendRecordOptions = {
+  autoCreateCollection: boolean;
+  failOpenMissingGuardedCollection: boolean;
+};
+
 export class NamespaceSearchRouter {
   private readonly cache = new Map<string, Promise<NamespaceBackendRecord>>();
 
@@ -202,31 +207,43 @@ export class NamespaceSearchRouter {
     namespace: string,
     execution?: SearchExecutionOptions,
   ): Promise<NamespaceSearchHealth> {
-    const record = await this.backendRecordFor(namespace, execution);
-    const versionStatus =
-      "getVersionStatus" in record.backend &&
-      typeof record.backend.getVersionStatus === "function"
-        ? record.backend.getVersionStatus()
-        : null;
-    const daemonMode =
-      "isDaemonMode" in record.backend &&
-      typeof record.backend.isDaemonMode === "function"
-        ? record.backend.isDaemonMode() === true
-        : null;
+    const record = await this.createBackendRecordFor(
+      namespace.trim() || this.config.defaultNamespace,
+      execution,
+      {
+        autoCreateCollection: false,
+        failOpenMissingGuardedCollection: false,
+      },
+    );
+    try {
+      const versionStatus =
+        "getVersionStatus" in record.backend &&
+        typeof record.backend.getVersionStatus === "function"
+          ? record.backend.getVersionStatus()
+          : null;
+      const daemonMode =
+        "isDaemonMode" in record.backend &&
+        typeof record.backend.isDaemonMode === "function"
+          ? record.backend.isDaemonMode() === true
+          : null;
 
-    return {
-      collection: record.collection,
-      memoryDir: record.memoryDir,
-      available: record.available,
-      collectionState: record.collectionState,
-      debugStatus: record.backend.debugStatus(),
-      installedVersion: versionStatus?.installedVersion ?? null,
-      supportedVersion: versionStatus?.supportedVersion ?? null,
-      supported: versionStatus?.supported ?? null,
-      upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
-      doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
-      daemonMode,
-    };
+      return {
+        collection: record.collection,
+        memoryDir: record.memoryDir,
+        available: record.available,
+        collectionState: record.collectionState,
+        debugStatus: record.backend.debugStatus(),
+        installedVersion: versionStatus?.installedVersion ?? null,
+        supportedVersion: versionStatus?.supportedVersion ?? null,
+        supported: versionStatus?.supported ?? null,
+        upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
+        doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
+        daemonMode,
+      };
+    } finally {
+      const dispose = (record.backend as { dispose?: () => void | Promise<void> }).dispose;
+      await dispose?.call(record.backend);
+    }
   }
 
   /** Clear cached backend records so the next access re-probes availability. */
@@ -256,45 +273,57 @@ export class NamespaceSearchRouter {
     const existing = this.cache.get(key);
     if (existing) return await existing;
 
-    const pending = (async (): Promise<NamespaceBackendRecord> => {
-      const storage = await this.storageRouter.storageFor(key);
-      const useLegacyDefaultCollection =
-        key === this.config.defaultNamespace && storage.dir === this.config.memoryDir;
-      const filtersNestedNamespaces =
-        this.config.namespacesEnabled === true && useLegacyDefaultCollection;
-      const rootHostEmbeddingScope =
-        (this.config as NamespaceScopedSearchConfig).hostEmbeddingProviderScope ??
-        this.config.memoryDir;
-      const scopedConfig: NamespaceScopedSearchConfig = {
-        ...this.config,
-        memoryDir: storage.dir,
-        hostEmbeddingProviderScope: rootHostEmbeddingScope,
-        qmdCollection: namespaceCollectionName(this.config.qmdCollection, key, {
-          defaultNamespace: this.config.defaultNamespace,
-          useLegacyDefaultCollection,
-        }),
-      };
-
-      const backend = this.createBackend(scopedConfig);
-      const available = await backend.probe().catch(() => false);
-      const collectionState = available
-        ? await this.collectionStateForBackend(backend, storage.dir, scopedConfig.qmdCollection, {
-          skipAutoCreate: filtersNestedNamespaces,
-          execution,
-        })
-        : "unknown";
-      return {
-        backend,
-        collection: scopedConfig.qmdCollection,
-        memoryDir: storage.dir,
-        available,
-        collectionState,
-        filtersNestedNamespaces,
-      };
-    })();
+    const pending = this.createBackendRecordFor(key, execution, {
+      autoCreateCollection: true,
+      failOpenMissingGuardedCollection: true,
+    });
 
     this.cache.set(key, pending);
     return await pending;
+  }
+
+  private async createBackendRecordFor(
+    namespace: string,
+    execution: SearchExecutionOptions | undefined,
+    options: BackendRecordOptions,
+  ): Promise<NamespaceBackendRecord> {
+    const key = namespace.trim() || this.config.defaultNamespace;
+    const storage = await this.storageRouter.storageFor(key);
+    const useLegacyDefaultCollection =
+      key === this.config.defaultNamespace && storage.dir === this.config.memoryDir;
+    const filtersNestedNamespaces =
+      this.config.namespacesEnabled === true && useLegacyDefaultCollection;
+    const rootHostEmbeddingScope =
+      (this.config as NamespaceScopedSearchConfig).hostEmbeddingProviderScope ??
+      this.config.memoryDir;
+    const scopedConfig: NamespaceScopedSearchConfig = {
+      ...this.config,
+      memoryDir: storage.dir,
+      hostEmbeddingProviderScope: rootHostEmbeddingScope,
+      qmdCollection: namespaceCollectionName(this.config.qmdCollection, key, {
+        defaultNamespace: this.config.defaultNamespace,
+        useLegacyDefaultCollection,
+      }),
+    };
+
+    const backend = this.createBackend(scopedConfig);
+    const available = await backend.probe().catch(() => false);
+    const collectionState = available
+      ? await this.collectionStateForBackend(backend, storage.dir, scopedConfig.qmdCollection, {
+        autoCreate: options.autoCreateCollection,
+        failOpenMissingGuardedCollection: options.failOpenMissingGuardedCollection,
+        skipAutoCreate: filtersNestedNamespaces,
+        execution,
+      })
+      : "unknown";
+    return {
+      backend,
+      collection: scopedConfig.qmdCollection,
+      memoryDir: storage.dir,
+      available,
+      collectionState,
+      filtersNestedNamespaces,
+    };
   }
 
   private async collectionStateForBackend(
@@ -302,16 +331,20 @@ export class NamespaceSearchRouter {
     memoryDir: string,
     collection: string,
     options: {
+      autoCreate: boolean;
+      failOpenMissingGuardedCollection: boolean;
       skipAutoCreate: boolean;
       execution?: SearchExecutionOptions;
     },
   ): Promise<CollectionState> {
-    if (options.skipAutoCreate) {
+    if (!options.autoCreate || options.skipAutoCreate) {
       if (!backend.checkCollection) return "unknown";
       const collectionState = await backend
         .checkCollection(collection, options.execution)
         .catch(() => "unknown" as const);
-      return collectionState === "missing" ? "unknown" : collectionState;
+      return options.failOpenMissingGuardedCollection && collectionState === "missing"
+        ? "unknown"
+        : collectionState;
     }
     return await backend.ensureCollection(memoryDir, collection, options.execution).catch(() => "unknown" as const);
   }
