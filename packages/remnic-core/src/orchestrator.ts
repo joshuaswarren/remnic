@@ -9955,7 +9955,13 @@ export class Orchestrator {
           // `formatStructuredRecall` — otherwise weak primary-key parts could crowd
           // out stronger fallback parts. Stable sort: a single key is already in
           // this order, so it stays byte-for-byte the pre-#1505 behavior.
-          .sort((a, b) => b.score - a.score || b.turn_index - a.turn_index);
+          // `?? 0` is defensive: `LcmStructuredRecallMatch.score` is always a
+          // number here, but a bare `b.score - a.score` would yield NaN (falsy)
+          // for any future unscored match and silently fall through to turn order.
+          .sort(
+            (a, b) =>
+              (b.score ?? 0) - (a.score ?? 0) || b.turn_index - a.turn_index,
+          );
         const structuredSection = this.lcmEngine.formatStructuredRecall(
           structuredMatches,
           Math.ceil(this.config.recallBudgetChars * 0.08),
