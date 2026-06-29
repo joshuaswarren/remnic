@@ -317,6 +317,19 @@ export class NamespaceCatalog {
   // Serialized write chain that recovers from rejection (CLAUDE.md rule #40)
   // so a single failed append cannot permanently poison subsequent writes.
   private writeChain: Promise<void> = Promise.resolve();
+  // Test-only seam (round 7 — NEZkA): fires inside a touch's HELD-lock critical
+  // section, after the lock is acquired but BEFORE the read→merge→append. A
+  // deterministic concurrency test installs a hook here to widen the (otherwise
+  // microscopic) window and prove that a cross-process rebuild CANNOT run its
+  // load→rename while a touch holds the lock. Never set in production code.
+  protected onTouchCriticalSectionForTest?: () => Promise<void>;
+  // Test-only seam (round 7 — NEZkA): fires inside a mutating rebuild's HELD-lock
+  // critical section, after the final cross-process re-merge `loadCompacted()` and
+  // BEFORE the atomic `rename()`. This is the EXACT window in which a check-then-
+  // append touch (the old bug) would clobber its append. A deterministic test
+  // installs a hook here to attempt a cross-instance touch in this window and
+  // assert the held mutex blocks it. Never set in production code.
+  protected onRebuildBeforeRenameForTest?: () => Promise<void>;
 
   constructor(private readonly config: PluginConfig) {
     this.memoryDir = config.memoryDir;
@@ -758,83 +771,101 @@ export class NamespaceCatalog {
     // the earlier touch's fields (CLAUDE.md rule #40 — the chain also recovers
     // from rejection). Reading inside the chain guarantees each touch sees the
     // most recent appended state, including any concurrent read/write/register.
-    return this.queueCritical(async () => {
-      // Cross-process serialization (round 4 + round 6, codex P2): a CLI
-      // `rebuild --apply` holds the rebuild lock across its final
-      // `loadCompacted()` → atomic `rename`. An append that lands inside that
-      // window is clobbered by the rename. `queueCritical` only serializes THIS
-      // process, so before reading and appending we wait (bounded) for any
-      // holder's lock to clear, then read the freshly-rewritten log. If the wait
-      // TIMES OUT while ANOTHER process still holds an active lock, we DROP the
-      // append: proceeding would re-introduce the lost-append race (the rebuild
-      // can rename over our append between its final load and rename). The
-      // catalog is rebuildable best-effort metadata, so skipping one touch is
-      // acceptable; it NEVER blocks forever or crashes the primary memory op.
-      const safeToAppend = await this.waitForRebuildLockClear();
-      if (!safeToAppend) return false;
+    // Cross-process serialization (round 7, codex P2 — NEZkA: HELD MUTEX). A CLI
+    // `rebuild --apply` holds the rebuild lock across its final `loadCompacted()`
+    // → atomic `rename`. Previously a touch only POLLED (`waitForRebuildLockClear`)
+    // for the lock before reading/appending WITHOUT holding it — a check-then-act
+    // gap: a touch could see no lock, a rebuild could then acquire the lock + run
+    // its final `loadCompacted()`, and the touch's later append would be clobbered
+    // by the rebuild's `rename()`. We now make the touch HOLD the SAME advisory
+    // lock for the WHOLE read → merge → append window. While the touch holds the
+    // lock, a rebuild in another process blocks on it (and vice-versa), so no
+    // append can land between a rebuild's final load and its rename. `queueCritical`
+    // serializes this within ONE process (so the OS lock is never self-contended in
+    // process); the file lock adds the missing CROSS-process exclusion. If the touch
+    // cannot ACQUIRE the lock within the bounded wait (another process's rebuild is
+    // mid-flight), it DROPS the append: the catalog is rebuildable best-effort
+    // metadata, so skipping one touch is acceptable; it NEVER blocks forever, NEVER
+    // appends without the lock, and NEVER crashes the primary memory op.
+    return this.queueCritical(async () =>
+      this.withHeldCatalogLock(async (acquired) => {
+        // Could not hold the lock (a cross-process rebuild is in its load→rename
+        // window). DROP rather than append into that window (the lost-append race
+        // this lock exists to prevent). Returning false also lets the router's
+        // resolve-hook dedup retry a dropped registration later.
+        if (!acquired) return false;
 
-      const records = await this.loadCompacted();
-      const existing = records.get(ns);
+        // Test-only seam: widen the held-lock window so a concurrency test can
+        // attempt a cross-process rebuild here and assert it is BLOCKED by this
+        // held lock (no-op in production).
+        if (this.onTouchCriticalSectionForTest) {
+          await this.onTouchCriticalSectionForTest();
+        }
 
-      // Containment-check any explicit storageDir before persisting it (round 4
-      // + round 5, codex P2). Never trust a caller-provided path verbatim;
-      // reject lexical escapes AND symlinks that escape via realpath.
-      const storageDir = await this.resolveTouchStorageDir(
-        ns,
-        metadata?.storageDir,
-        existing?.storageDir,
-      );
-      // Provenance (discoveredBy) and createdAt are CREATION-ONLY fields. Once a
-      // record exists they are preserved, so a routine routing/recall touch (or
-      // the router's `config` register hook firing on a cache hit) can never
-      // clobber the original discovery source — e.g. a `write`-discovered record
-      // is not reset to `config` by a later resolve. Touch fields (lastReadAt /
-      // lastWriteAt / lastMaintenanceAt) still update on every touch below.
-      const record: NamespaceRecord = existing
-        ? { ...existing }
-        : {
-            namespace: ns,
-            identityToken: namespaceIdentityToken(ns),
-            kind: metadata?.kind ?? inferKind(ns, this.config),
-            createdAt: nowIso,
-            storageDir,
-            discoveredBy:
-              metadata?.discoveredBy ??
-              (kind === "register" ? "config" : kind === "maintenance" ? "scan" : kind),
-          };
+        const records = await this.loadCompacted();
+        const existing = records.get(ns);
 
-      // Update mutable fields. storageDir, kind, and the principal/project hints
-      // may legitimately change over a namespace's lifetime, so they upsert.
-      record.storageDir = storageDir;
-      if (metadata?.kind) record.kind = metadata.kind;
-      if (metadata?.principal !== undefined) record.principal = metadata.principal;
-      if (metadata?.projectId !== undefined) record.projectId = metadata.projectId;
-      if (metadata?.branch !== undefined) record.branch = metadata.branch;
-      if (metadata?.parentNamespace !== undefined) record.parentNamespace = metadata.parentNamespace;
-      // PROVENANCE (creation-only, with one upgrade — round 6, codex P2 NBPmT):
-      // `discoveredBy` is otherwise preserved for existing records (a routine
-      // read/register/resolve never relabels it). The single exception is a real
-      // WRITE upgrading a record that was only PRE-REGISTERED by the router's
-      // `onResolve` hook (`discoveredBy: "config"`) before any data was written.
-      // Without this upgrade, `listNamespaces({ discoveredBy: "write" })` misses
-      // namespaces that were genuinely written, because `storageFor()` fires
-      // `registerResolved()` (config) before `recordCatalogWrite()` runs. We
-      // upgrade ONLY config→write — never downgrade write/read, never relabel a
-      // read-discovered record — so the authoritative "this namespace has been
-      // written" signal is recorded.
-      if (kind === "write" && existing && record.discoveredBy === "config") {
-        record.discoveredBy = "write";
-      }
+        // Containment-check any explicit storageDir before persisting it (round 4
+        // + round 5, codex P2). Never trust a caller-provided path verbatim;
+        // reject lexical escapes AND symlinks that escape via realpath.
+        const storageDir = await this.resolveTouchStorageDir(
+          ns,
+          metadata?.storageDir,
+          existing?.storageDir,
+        );
+        // Provenance (discoveredBy) and createdAt are CREATION-ONLY fields. Once a
+        // record exists they are preserved, so a routine routing/recall touch (or
+        // the router's `config` register hook firing on a cache hit) can never
+        // clobber the original discovery source — e.g. a `write`-discovered record
+        // is not reset to `config` by a later resolve. Touch fields (lastReadAt /
+        // lastWriteAt / lastMaintenanceAt) still update on every touch below.
+        const record: NamespaceRecord = existing
+          ? { ...existing }
+          : {
+              namespace: ns,
+              identityToken: namespaceIdentityToken(ns),
+              kind: metadata?.kind ?? inferKind(ns, this.config),
+              createdAt: nowIso,
+              storageDir,
+              discoveredBy:
+                metadata?.discoveredBy ??
+                (kind === "register" ? "config" : kind === "maintenance" ? "scan" : kind),
+            };
 
-      if (kind === "read") record.lastReadAt = nowIso;
-      if (kind === "write") record.lastWriteAt = nowIso;
-      if (kind === "maintenance" && jobName) {
-        record.lastMaintenanceAt = { ...(record.lastMaintenanceAt ?? {}), [jobName]: nowIso };
-      }
+        // Update mutable fields. storageDir, kind, and the principal/project hints
+        // may legitimately change over a namespace's lifetime, so they upsert.
+        record.storageDir = storageDir;
+        if (metadata?.kind) record.kind = metadata.kind;
+        if (metadata?.principal !== undefined) record.principal = metadata.principal;
+        if (metadata?.projectId !== undefined) record.projectId = metadata.projectId;
+        if (metadata?.branch !== undefined) record.branch = metadata.branch;
+        if (metadata?.parentNamespace !== undefined)
+          record.parentNamespace = metadata.parentNamespace;
+        // PROVENANCE (creation-only, with one upgrade — round 6, codex P2 NBPmT):
+        // `discoveredBy` is otherwise preserved for existing records (a routine
+        // read/register/resolve never relabels it). The single exception is a real
+        // WRITE upgrading a record that was only PRE-REGISTERED by the router's
+        // `onResolve` hook (`discoveredBy: "config"`) before any data was written.
+        // Without this upgrade, `listNamespaces({ discoveredBy: "write" })` misses
+        // namespaces that were genuinely written, because `storageFor()` fires
+        // `registerResolved()` (config) before `recordCatalogWrite()` runs. We
+        // upgrade ONLY config→write — never downgrade write/read, never relabel a
+        // read-discovered record — so the authoritative "this namespace has been
+        // written" signal is recorded.
+        if (kind === "write" && existing && record.discoveredBy === "config") {
+          record.discoveredBy = "write";
+        }
 
-      await this.appendUnchained(record);
-      return true;
-    });
+        if (kind === "read") record.lastReadAt = nowIso;
+        if (kind === "write") record.lastWriteAt = nowIso;
+        if (kind === "maintenance" && jobName) {
+          record.lastMaintenanceAt = { ...(record.lastMaintenanceAt ?? {}), [jobName]: nowIso };
+        }
+
+        await this.appendUnchained(record);
+        return true;
+      }),
+    );
   }
 
   // ── Rebuild from disk ────────────────────────────────────────────────────
@@ -872,12 +903,30 @@ export class NamespaceCatalog {
     if (dryRun) {
       return this.queueCritical(async () => this.rebuildInsideChain(dryRun, false));
     }
-    return this.withRebuildLock((acquired) =>
+    // A mutating rebuild HOLDS the same advisory lock that touches now hold (round
+    // 7, codex P2 — NEZkA). Because the touch path acquires this lock across its
+    // read→append window and the rebuild holds it across its final
+    // `loadCompacted()` → `rename()`, the two are mutually exclusive cross-process:
+    // no touch append can land between a rebuild's final load and its rename. The
+    // disk scan itself can stay lockless (it does not mutate); only the final
+    // read-merge-rename critical section requires the lock — `rebuildInsideChain`
+    // does that whole section while we hold it.
+    //
+    // LOCK ORDERING (round 7 — NEZkA): the file lock is acquired INSIDE
+    // `queueCritical`, identically to the touch path (`queueCritical` → file lock),
+    // NOT around it. A consistent acquire order is what prevents an in-process
+    // deadlock between a same-instance touch and rebuild: `queueCritical` fully
+    // serializes the two turns in this process, so when one turn holds the file
+    // lock the other is not even running — the OS lock is never self-contended
+    // in-process and a same-instance touch never stalls/drops behind its own
+    // rebuild. The file lock therefore adds ONLY the missing cross-process
+    // exclusion.
+    return this.queueCritical(async () =>
       // canMutate iff we actually hold the cross-process lock (round 6, codex P2
       // — NBPmY). If acquisition timed out, run compute-only: never perform the
       // load/rename window unlocked, or a second unlocked rename could clobber a
       // concurrent gateway touch and recreate the lost-append race.
-      this.queueCritical(async () => this.rebuildInsideChain(dryRun, acquired)),
+      this.withHeldCatalogLock((acquired) => this.rebuildInsideChain(dryRun, acquired)),
     );
   }
 
@@ -918,7 +967,16 @@ export class NamespaceCatalog {
     //    (the very helper the router uses) instead of reimplementing divergent
     //    "prefer tokenized dir if it has data" logic — while legacy data lives
     //    directly under memoryDir, this returns memoryDir, matching runtime.
-    const defaultStorageDir = await resolveDefaultNamespaceRoot(this.config);
+    const resolvedDefaultRoot = await resolveDefaultNamespaceRoot(this.config);
+    // CONTAINMENT (round 6, codex P2 — NEOFS): `resolveDefaultNamespaceRoot()` can
+    // return a `namespaces/<default-token>` symlink escaping memoryDir when the
+    // legacy default root is empty. The default record must never carry an
+    // escaping `storageDir`; fall back to the trusted `memoryDir` root when the
+    // resolved one fails containment. Computed ONCE so every later use (the
+    // configured-seeding step and the scan's default-dir re-apply) stays safe.
+    const defaultStorageDir = (await this.isContainedStorageDir(resolvedDefaultRoot))
+      ? resolvedDefaultRoot
+      : this.memoryDir;
     const legacyDefaultHasData = defaultStorageDir === this.memoryDir;
 
     for (const ns of configured) {
@@ -958,17 +1016,24 @@ export class NamespaceCatalog {
           storageDir = this.namespaceTokenDir(namespaceIdentityToken(ns));
         }
       }
-      // CONTAINMENT (round 6, codex P2 — NCzT4): verify the seeded path does not
-      // ESCAPE memoryDir before recording it. The scan below rejects
+      // CONTAINMENT (round 6, codex P2 — NCzT4/NEOFS): verify the seeded path does
+      // not ESCAPE memoryDir before recording it. The scan below rejects
       // escaping/symlinked roots, but this seeding runs FIRST, so without this
-      // check rebuild would persist an escaping `storageDir` for a configured
-      // namespace whose root is a symlink out of memoryDir. `isContainedStorageDir`
+      // check rebuild would persist an escaping `storageDir`. `isContainedStorageDir`
       // enforces the full lexical + symlink + realpath contract and allows a
       // not-yet-created path (a brand-new configured namespace seeds its canonical
-      // root).
-      if (ns !== this.config.defaultNamespace && !(await this.isContainedStorageDir(storageDir))) {
-        skipped.push({ token: namespaceIdentityToken(ns), reason: "escape", detail: storageDir });
-        continue;
+      // root). The DEFAULT namespace is also checked (NEOFS): if
+      // `resolveDefaultNamespaceRoot()` returns a `namespaces/<default-token>`
+      // symlink escaping memoryDir, we must NOT persist it. The default cannot be
+      // "skipped" (it must always exist), so it falls back to the trusted
+      // `memoryDir` root; a non-default namespace is skipped (escape).
+      if (!(await this.isContainedStorageDir(storageDir))) {
+        if (ns === this.config.defaultNamespace) {
+          storageDir = this.memoryDir;
+        } else {
+          skipped.push({ token: namespaceIdentityToken(ns), reason: "escape", detail: storageDir });
+          continue;
+        }
       }
       rebuilt.set(
         ns,
@@ -1139,6 +1204,12 @@ export class NamespaceCatalog {
     // timed out) returns the computed records WITHOUT renaming over the log, so
     // it can never clobber a concurrent lock holder's window.
     if (canMutate) {
+      // Test-only seam: the load→rename window where the old check-then-append
+      // touch could be clobbered. A concurrency test attempts a cross-instance
+      // touch here and asserts the held lock blocks it (no-op in production).
+      if (this.onRebuildBeforeRenameForTest) {
+        await this.onRebuildBeforeRenameForTest();
+      }
       await this.rewriteUnchained(records);
     }
 
@@ -1149,31 +1220,43 @@ export class NamespaceCatalog {
     return { dryRun, records, skipped, applied: canMutate };
   }
 
-  // ── Cross-process rebuild lock ───────────────────────────────────────────
+  // ── Cross-process catalog write lock (held mutex) ────────────────────────
 
   /**
-   * Run `fn` while holding a cross-process advisory lock (round 5, codex P2).
+   * Run `fn` while HOLDING the shared cross-process advisory lock (round 5, codex
+   * P2; generalized round 7 — NEZkA). This is the SINGLE mutex shared by BOTH the
+   * touch read→merge→append window AND the rebuild final load→merge→rename window,
+   * so a touch and a rebuild in different processes are mutually exclusive over
+   * their respective critical sections — closing the check-then-append gap where a
+   * polled-only touch could append into a rebuild's load→rename window.
+   *
    * Acquisition is atomic via `open(..., "wx")`. A lock older than
    * `REBUILD_LOCK_STALE_MS` is treated as a crashed holder and broken. After
    * `REBUILD_LOCK_MAX_WAIT_MS` of contention we proceed best-effort WITHOUT the
-   * lock rather than block a rebuild forever (the in-chain re-merge still
-   * recovers same-host appends). The lock is always released in `finally`.
+   * lock rather than block forever. The lock is always released in `finally`.
+   *
+   * IN-PROCESS SAFETY: every caller invokes this from inside (or wrapping) the
+   * per-process `queueCritical` chain, which serializes all catalog mutations in
+   * THIS process. So within one process only one logical holder attempts OS-lock
+   * acquisition at a time — the file lock is never self-contended in-process, and
+   * the lock is acquired and released within a single in-process turn. The file
+   * lock adds only the missing CROSS-process exclusion.
    *
    * HEARTBEAT (round 5, cursor/codex Medium/P2): while WE hold the lock a timer
    * refreshes its mtime every `REBUILD_LOCK_HEARTBEAT_MS`, so a legitimately long
-   * scan (> `REBUILD_LOCK_STALE_MS`) is not treated as a crashed holder and
-   * unlinked by another process/touch — which would let overlapping rewrites lose
+   * holder (> `REBUILD_LOCK_STALE_MS`) is not treated as a crashed holder and
+   * unlinked by another process — which would let overlapping windows lose
    * appends. Heartbeat failures are swallowed; the timer is always cleared in
    * `finally`.
    *
    * ACQUISITION RESULT (round 6, codex P2 — NBPmY): `fn` receives whether WE
-   * actually hold the lock. When acquisition TIMED OUT (another `rebuild --apply`
-   * holds it), a MUTATING rebuild must NOT perform its load/rename window
-   * unlocked — that second unlocked rename can clobber gateway touches that the
-   * first lock holder's window let through, recreating the lost-append race. The
-   * caller uses `acquired` to suppress the rewrite (compute-only) when unlocked.
+   * actually hold the lock. When acquisition TIMED OUT (another holder is active),
+   * a MUTATING rebuild must NOT perform its load/rename window unlocked, and a
+   * touch must NOT append unlocked — both would recreate the lost-append race. The
+   * caller uses `acquired` to run compute-only (rebuild) or DROP the append
+   * (touch) when unlocked.
    */
-  private async withRebuildLock<T>(fn: (acquired: boolean) => Promise<T>): Promise<T> {
+  private async withHeldCatalogLock<T>(fn: (acquired: boolean) => Promise<T>): Promise<T> {
     const acquired = await this.acquireRebuildLock();
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     if (acquired) {
@@ -1249,55 +1332,6 @@ export class NamespaceCatalog {
       }
     } catch {
       // Lock vanished (released by holder) or stat failed — nothing to do.
-    }
-  }
-
-  /**
-   * Wait (bounded, best-effort) for a held rebuild lock to clear before a touch
-   * appends (round 4 + round 6, codex P2). This makes catalog WRITERS respect the
-   * rebuild lock — without it the lock only serialized rebuilds against each other
-   * while a gateway `markWrite` could append into the rebuild's snapshot→rename
-   * window and be lost. We poll up to `REBUILD_LOCK_MAX_WAIT_MS`, breaking a stale
-   * lock (crashed rebuild) so a touch is never blocked indefinitely. ALL failures
-   * are swallowed: a touch must degrade gracefully and never crash the primary op.
-   *
-   * RETURNS `true` when it is SAFE for the caller to read/append (no lock, the
-   * lock was stale and broken, or the lock is held by our own process), and
-   * `false` when the wait TIMED OUT while ANOTHER process still holds an active
-   * (non-stale) lock. On `false` the caller MUST NOT append: a different process's
-   * `rebuild --apply` can still be mid-flight between its final `loadCompacted()`
-   * and its atomic `rename()`, so an append now would be clobbered by that rename
-   * — the lost-append race this lock exists to prevent (round 6, codex P2). The
-   * catalog is rebuildable best-effort metadata, so dropping the touch is the
-   * correct trade-off vs. resurrecting/overwriting under the rebuild's rename.
-   *
-   * IMPORTANT: a lock held by OUR OWN process returns `true` (safe). An in-process
-   * rebuild already serializes against touches via `queueCritical`; waiting on our
-   * own lock here would deadlock (the rebuild holds the file lock then queues
-   * behind the very touch that is now waiting for it). Only a DIFFERENT process's
-   * lock (e.g. a separate CLI rebuild vs. the gateway) forces the wait/drop.
-   */
-  private async waitForRebuildLockClear(): Promise<boolean> {
-    const deadline = Date.now() + REBUILD_LOCK_MAX_WAIT_MS;
-    for (;;) {
-      let info;
-      try {
-        info = await stat(this.rebuildLockPath);
-      } catch {
-        // No lock file (or stat failed) — nothing to wait on; safe to append.
-        return true;
-      }
-      // A stale lock (crashed holder) must not block touches — break it.
-      if (Date.now() - info.mtimeMs > REBUILD_LOCK_STALE_MS) {
-        await unlink(this.rebuildLockPath).catch(() => undefined);
-        return true;
-      }
-      // Skip a lock held by our own process to avoid an in-process deadlock.
-      if (await this.rebuildLockHeldBySelf()) return true;
-      // Timed out while ANOTHER process's lock is still active: the caller must
-      // DROP the append rather than race the in-progress rebuild's rename.
-      if (Date.now() >= deadline) return false;
-      await new Promise((r) => setTimeout(r, REBUILD_LOCK_POLL_MS));
     }
   }
 

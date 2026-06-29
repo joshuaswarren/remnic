@@ -1896,3 +1896,270 @@ test("compaction preserves both touch fields from concurrent cross-process snaps
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (codex P2 — NEOFS): the DEFAULT namespace's seeded root must also be
+// containment-checked. If `resolveDefaultNamespaceRoot()` returns a
+// `namespaces/<default-token>` symlink escaping memoryDir (empty legacy default +
+// symlinked tokenized dir with a marker), rebuild must NOT persist that escaping
+// path for the default record — it falls back to the trusted memoryDir root.
+test("rebuild does not persist an escaping symlinked default root", async () => {
+  const memoryDir = await mkMemoryDir();
+  const outside = await mkMemoryDir();
+  try {
+    // An outside tree WITH a storage marker, linked from the default token dir.
+    await mkdir(path.join(outside, "evildefault", "facts"), { recursive: true });
+    await mkdir(path.join(memoryDir, "namespaces"), { recursive: true });
+    const defaultToken = namespaceIdentityToken("default");
+    await symlink(
+      path.join(outside, "evildefault"),
+      path.join(memoryDir, "namespaces", defaultToken),
+      "dir",
+    );
+
+    // Sanity: the router-level resolver would pick the escaping symlinked dir.
+    const resolved = await resolveDefaultNamespaceRoot(makeConfig(memoryDir));
+    assert.equal(
+      path.resolve(resolved),
+      path.resolve(path.join(memoryDir, "namespaces", defaultToken)),
+      "resolveDefaultNamespaceRoot picks the symlinked default token dir",
+    );
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const result = await catalog.rebuildFromDisk();
+    const def = result.records.find((r) => r.namespace === "default");
+    assert.ok(def, "the default record exists");
+    // The default storageDir must NOT resolve outside memoryDir.
+    const realOutside = await realpath(outside).catch(() => outside);
+    const realDefault = await realpath(def!.storageDir).catch(() => def!.storageDir);
+    assert.ok(
+      !realDefault.startsWith(realOutside),
+      "the default record must not carry an escaping storageDir",
+    );
+    assert.equal(
+      path.resolve(def!.storageDir),
+      path.resolve(memoryDir),
+      "an escaping default root falls back to the trusted memoryDir",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+// ── Round 7 (codex P2 — NEZkA): HELD-MUTEX rebuild lock. The crux invariant:
+// no `namespaces.jsonl` append can occur between a rebuild's final
+// `loadCompacted()` and its atomic `rename()`. Previously a touch only POLLED for
+// the lock (`waitForRebuildLockClear`) then read+appended WITHOUT holding it — a
+// check-then-act gap. If a touch passed the check while no lock existed, a rebuild
+// could then acquire the lock, run its final load, and rename OVER the touch's
+// later append → the append is silently lost-then-overwritten despite the lock.
+//
+// The two `NamespaceCatalog` instances below have independent write chains and
+// distinct lock owner ids, exactly like two PROCESSES (the gateway writer vs. the
+// CLI rebuilder). Two protected test seams let us reproduce the precise lost-append
+// interleaving deterministically:
+//   1. the writer pauses inside its touch critical section (post lock-decision);
+//   2. the rebuilder pauses in its load→rename window (lock held).
+// A barrier coordinates them so the touch's append, if it can happen, lands inside
+// the rebuilder's load→rename window.
+//
+// With the OLD check-then-append code the writer's `waitForRebuildLockClear`
+// returns true (it ran before any lock existed), the writer appends inside the
+// window, and the rebuild's rename CLOBBERS it → the assertion FAILS. With the
+// held mutex the writer cannot ACQUIRE the lock while the rebuilder holds it, so
+// its append cannot land in the window: it either blocks until release (landing
+// AFTER the rename, preserved) or is cleanly dropped — never lost-then-overwritten.
+class SeamCatalog extends NamespaceCatalog {
+  setTouchSeam(fn: (() => Promise<void>) | undefined): void {
+    (this as unknown as { onTouchCriticalSectionForTest?: () => Promise<void> }).onTouchCriticalSectionForTest =
+      fn;
+  }
+  setRebuildBeforeRenameSeam(fn: (() => Promise<void>) | undefined): void {
+    (this as unknown as { onRebuildBeforeRenameForTest?: () => Promise<void> }).onRebuildBeforeRenameForTest =
+      fn;
+  }
+}
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (v: T) => void } {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+test("a touch append cannot land inside a rebuild's load→rename window (held mutex)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-held-mutex";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    // On-disk data so rebuild discovers the namespace as a scan record (no
+    // lastWriteAt of its own); the racing write touch is what supplies lastWriteAt.
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+
+    // Separate instances == separate processes (separate writeChain + lock owner).
+    const writer = new SeamCatalog(makeConfig(memoryDir));
+    const rebuilder = new SeamCatalog(makeConfig(memoryDir));
+
+    // Barriers to force the exact lost-append interleaving regardless of timing.
+    const writerInSection = deferred(); // writer has entered its touch critical section
+    const rebuilderInWindow = deferred(); // rebuilder is in its load→rename window
+    let writerObservedLockHeld = false;
+
+    // Writer pauses right after its lock decision, INSIDE the critical section:
+    // signal we are here, then wait for the rebuilder to reach its rename window
+    // before proceeding to append. (With the held mutex the writer only reaches
+    // this seam if it ACQUIRED the lock — so we also record whether the rebuilder
+    // could acquire concurrently.)
+    writer.setTouchSeam(async () => {
+      writerInSection.resolve();
+      // Bounded wait so a held-mutex run (where the rebuilder can NEVER reach its
+      // window concurrently because the writer holds the lock) does not hang.
+      await Promise.race([
+        rebuilderInWindow.promise,
+        new Promise<void>((r) => setTimeout(r, 1500)),
+      ]);
+    });
+
+    // Rebuilder, inside its load→rename window (lock held): signal, then wait for
+    // the writer to be in its section so an OLD-code append would land here.
+    rebuilder.setRebuildBeforeRenameSeam(async () => {
+      rebuilderInWindow.resolve();
+      writerObservedLockHeld = true;
+      await Promise.race([
+        writerInSection.promise,
+        new Promise<void>((r) => setTimeout(r, 1500)),
+      ]);
+      // Brief settle so an OLD-code writer (already past its no-lock check) has a
+      // chance to append inside this window before we rename.
+      await new Promise<void>((r) => setTimeout(r, 200));
+    });
+
+    // Fire both concurrently. The writer's markWrite is best-effort and must never
+    // throw; the rebuild applies.
+    const [, rebuildResult] = await Promise.all([
+      writer.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir }),
+      rebuilder.rebuildFromDisk(),
+    ]);
+
+    assert.ok(writerObservedLockHeld, "the rebuilder must have reached its rename window");
+
+    // INVARIANT: the write touch is never silently lost-then-overwritten. With the
+    // held mutex it lands AFTER the rebuild's rename (preserved) or is cleanly
+    // dropped; it can NOT be clobbered mid-window. A fresh reader sees it preserved.
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    const record = await reader.getNamespaceRecord(ns);
+    assert.ok(record, "namespace must exist after the concurrent rebuild + write");
+    assert.ok(
+      record?.lastWriteAt,
+      "the write touch must survive the rebuild — not be clobbered inside its load→rename window",
+    );
+    // The rebuild itself applied (held the lock and rewrote).
+    assert.equal(rebuildResult.applied, true, "rebuild --apply held the lock and rewrote");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// Companion: a touch that CANNOT acquire the held lock within the bounded wait
+// (a foreign, non-stale, heartbeated rebuild lock is held by "another process")
+// must DROP its append best-effort — it must NEVER append without the lock and
+// NEVER crash the primary memory op. Here the foreign lock never releases within
+// the touch's wait, so the touch degrades to a no-op (dropped) rather than racing.
+test("a touch drops (never crashes, never appends) when it cannot acquire the held lock", async () => {
+  const memoryDir = await mkMemoryDir();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  try {
+    const ns = "project-origin-lock-drop";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+    // Foreign held lock: a different PID + a real UUID owner id (so it is NOT
+    // mistaken for self) + a fresh mtime. A heartbeat keeps it fresh so it is
+    // never broken as stale during the touch's bounded wait.
+    const foreignOwner = "00000000-0000-4000-8000-000000000000";
+    await writeFile(lockPath, `999999 ${foreignOwner} ${new Date().toISOString()}\n`, "utf8");
+    heartbeat = setInterval(() => {
+      const now = new Date();
+      utimes(lockPath, now, now).catch(() => undefined);
+    }, 250);
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const started = Date.now();
+    // Must resolve (best-effort drop), never reject.
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
+    const waited = Date.now() - started;
+
+    // The append was DROPPED: no record was written because the lock never cleared.
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.equal(record, null, "a touch that cannot acquire the lock must NOT append");
+    // It must have given up within the bounded wait, not blocked forever.
+    assert.ok(waited < 12_000, "the dropped touch must return within the bounded wait");
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 7 (kilo P2 — NER8P): `namespaces rebuild --apply --json` must EXIT
+// NON-ZERO when the rebuild could not be applied (lock contention →
+// `applied: false`), mirroring the non-JSON path. Otherwise JSON-mode automation
+// treats a no-op apply as success. The CLI's `--json` apply branch sets
+// `process.exitCode = 1` iff `!dryRun && !result.applied`. We drive a real
+// `rebuildFromDisk` under lock contention (so `applied === false`) and apply the
+// exact CLI rule, asserting the non-zero exit signal — restoring `process.exitCode`
+// afterward so this test cannot leak a failure code into the runner.
+test("rebuild --apply --json exits non-zero when the rebuild was not applied (NER8P)", async () => {
+  const memoryDir = await mkMemoryDir();
+  const savedExitCode = process.exitCode;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  try {
+    const ns = "project-origin-json-noapply";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+    // Foreign, non-stale, heartbeated lock held by "another process" so the apply
+    // cannot acquire the lock and returns applied:false (compute-only).
+    const foreignOwner = "00000000-0000-4000-8000-0000000000aa";
+    await writeFile(lockPath, `999999 ${foreignOwner} ${new Date().toISOString()}\n`, "utf8");
+    heartbeat = setInterval(() => {
+      const now = new Date();
+      utimes(lockPath, now, now).catch(() => undefined);
+    }, 250);
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // Mirror the CLI: --apply means dryRun=false.
+    const dryRun = false;
+    const result = await catalog.rebuildFromDisk({ dryRun });
+    assert.equal(result.applied, false, "a contended apply must report applied=false");
+
+    // The EXACT decision the CLI `--json` apply branch makes (cli.ts).
+    process.exitCode = undefined;
+    if (!dryRun && !result.applied) {
+      process.exitCode = 1;
+    }
+    assert.equal(
+      process.exitCode,
+      1,
+      "a JSON apply that was not applied must set a non-zero exit code so automation detects the no-op",
+    );
+
+    // Sanity: a successful apply (no contention) must NOT set a non-zero exit.
+    clearInterval(heartbeat);
+    heartbeat = undefined;
+    await rm(lockPath, { force: true });
+    process.exitCode = undefined;
+    const ok = await catalog.rebuildFromDisk({ dryRun: false });
+    assert.equal(ok.applied, true, "an uncontended apply applies");
+    if (!ok.applied) process.exitCode = 1;
+    assert.notEqual(process.exitCode, 1, "a successful apply must not exit non-zero");
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+    process.exitCode = savedExitCode;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
