@@ -5151,6 +5151,35 @@ export class EngramAccessService {
           this.orchestrator.config.defaultNamespace,
         ) ?? request.sessionPrefix
       : request.sessionPrefix;
+    // SECURITY (codex P1 "Don't treat any readable namespace as default LCM
+    // access"): a sessionless, prefixless `lcmSearch` issues
+    // `searchContextFull(query, limit, undefined, undefined)`, which scans the
+    // ENTIRE LCM archive across every session/namespace. That is only acceptable
+    // when the caller may read the DEFAULT store the archive scan effectively
+    // exposes. Under a restrictive `default` READ policy (the principal cannot
+    // read `default`), an implicit `lcmSearch` with no `sessionKey` AND no
+    // `sessionPrefix` must NOT run the unbounded scan — return EMPTY. A scoped
+    // call (sessionKey or sessionPrefix present) stays gated by its own
+    // overlay/recall authorization above; an explicit, read-authorized namespace
+    // is unaffected (it already passed `resolveReadableNamespace`).
+    const hasScopedSession =
+      (typeof request.sessionKey === "string" &&
+        request.sessionKey.length > 0) ||
+      (typeof lcmSessionPrefix === "string" && lcmSessionPrefix.length > 0);
+    const defaultStoreReadable = canReadNamespace(
+      principal,
+      this.orchestrator.config.defaultNamespace,
+      this.orchestrator.config,
+    );
+    if (!hasExplicitNamespace && !hasScopedSession && !defaultStoreReadable) {
+      return {
+        query: request.query,
+        namespace: this.orchestrator.config.defaultNamespace,
+        results: [],
+        count: 0,
+        lcmEnabled: true,
+      };
+    }
     // Query each LCM read key in order, merging + deduping rows (by
     // sessionId+turnIndex) and preserving first-seen order, capped at `limit`.
     const seenRows = new Set<string>();
@@ -5407,18 +5436,26 @@ export class EngramAccessService {
     if (canReadNamespace(principal, config.defaultNamespace, config)) {
       return config.defaultNamespace;
     }
-    // Restrictive `default` READ policy. PROCEED only when the principal has a
-    // readable coding overlay / self base in the recall set (the SAME gate
-    // `resolveLcmReadNamespace`'s "read" branch and the orchestrator's
-    // `lcmReadNamespaceForSession` use to honour the overlay). The fallback is
-    // STILL `config.defaultNamespace` (not the readable recall namespace), so the
-    // overlay-unreadable branch collapses to the raw key exactly like the
-    // orchestrator. SUPPRESS (`undefined`) when nothing readable exists.
-    const hasReadableRecallNamespace = recallNamespacesForPrincipal(
+    // Restrictive `default` READ policy. The ONLY way the implicit LCM read can
+    // target an AUTHORIZED key is via the coding OVERLAY, which
+    // `resolveLcmReadNamespace` switches to ONLY when the principal SELF base is
+    // in the readable recall set (the SAME gate the orchestrator's
+    // `lcmReadNamespaceForSession` uses). So PROCEED here ONLY when the SELF base
+    // is readable-in-recall — NOT when merely some OTHER recall namespace (e.g.
+    // `shared`) is readable: the LCM read can never legitimately target `shared`,
+    // and returning `config.defaultNamespace` for that case would let a sessionless
+    // `lcmSearch`/raw recall scan the DENIED default LCM store (codex P1 "Don't
+    // treat any readable namespace as default LCM access"). The downstream
+    // overlay-unreadable READ branch and `lcmSearch`'s sessionless guard both
+    // collapse to the default raw key, so a self-readable PROCEED still yields the
+    // scoped overlay key (with a session) or empty (sessionless). SUPPRESS
+    // (`undefined`) when the self base is not readable-in-recall.
+    const selfBase = defaultNamespaceForPrincipal(principal, config);
+    const selfReadableInRecall = recallNamespacesForPrincipal(
       principal,
       config,
-    ).some((ns) => canReadNamespace(principal, ns, config));
-    return hasReadableRecallNamespace ? config.defaultNamespace : undefined;
+    ).includes(selfBase);
+    return selfReadableInRecall ? config.defaultNamespace : undefined;
   }
 
   private resolveLcmReadSessionKey(

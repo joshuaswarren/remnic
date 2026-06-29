@@ -479,6 +479,14 @@ export function lcmSessionKeyForNamespace(
  * the raw `sessionKey`, so the result is `[sessionKey]` — byte-for-byte the
  * pre-#1505 single-key behavior.
  *
+ * SESSIONLESS recall (`sessionKey === undefined`): returns `[undefined]` so the
+ * caller issues ONE archive-wide LCM read with no exact `session_id` filter —
+ * byte-for-byte the pre-#1505 sessionless behavior. It must NOT substitute the
+ * literal `"default"` session id (codex P2 "Preserve unscoped LCM searches
+ * without a session key"): that would filter to a session literally named
+ * `default`, silently dropping the explicit-cue / targeted / focused / response /
+ * event LCM sections for every recall that omits a session key.
+ *
  * The result is deduped while preserving first-seen order so the caller can query
  * keys in priority order and short-circuit on the first hit without re-querying an
  * identical key (e.g. when two namespaces both collapse to the default store).
@@ -487,21 +495,25 @@ export function lcmReadSessionIdsForNamespaces(
   namespaces: readonly string[],
   sessionKey: string | undefined,
   defaultNamespace: string,
-): string[] {
+): Array<string | undefined> {
+  // Sessionless ⇒ a single archive-wide read (no `session_id` filter). NEVER the
+  // literal "default" session id (codex P2).
+  if (typeof sessionKey !== "string" || sessionKey.length === 0) {
+    return [undefined];
+  }
   const out: string[] = [];
   const seen = new Set<string>();
   for (const namespace of namespaces) {
     const key =
       lcmSessionKeyForNamespace(namespace, sessionKey, defaultNamespace) ??
-      sessionKey ??
-      "default";
+      sessionKey;
     if (!seen.has(key)) {
       seen.add(key);
       out.push(key);
     }
   }
   if (out.length === 0) {
-    out.push(sessionKey ?? "default");
+    out.push(sessionKey);
   }
   return out;
 }

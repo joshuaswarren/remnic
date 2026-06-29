@@ -1095,19 +1095,18 @@ test("#1505 thread NBHWz (sweep): restrictive `default` READ policy + readable s
   );
 });
 
-test("#1505 cursor 'LCM read gate wrong fallback': overlay applies + self EXCLUDED from recall set + `shared` readable ⇒ lcmSearch collapses to the RAW sessionKey (default store), never `shared:`", async () => {
-  // cursor Medium on the round-7 head: when a coding overlay applies but the
-  // principal self base is excluded from the readable recall set, the implicit
-  // LCM read fallback must collapse to the DEFAULT STORE (raw sessionKey),
-  // EXACTLY like the orchestrator's `lcmReadNamespaceForSession` — NOT an
-  // arbitrary readable recall namespace (e.g. `shared`). Returning `shared` would
-  // prefix LCM reads with `shared:sessionKey` while in-prompt recall uses the raw
-  // `sessionKey`, diverging the two.
+test("#1505 codex P1 'Don't treat any readable namespace as default LCM access': self EXCLUDED from recall + `shared` readable + `default` denied ⇒ lcmSearch SUPPRESSES (never the denied default store, never `shared:`)", async () => {
+  // codex P1 on the round-7 head: my first NBHWz fix treated ANY readable recall
+  // namespace (e.g. `shared`) as license to read the DEFAULT LCM store. But the
+  // implicit LCM read can ONLY target the coding overlay (when the SELF base is
+  // readable-in-recall) or the default store — never `shared`. So when the self
+  // base is NOT readable-in-recall AND `default` is denied, there is NO
+  // authorized LCM target: lcmSearch must SUPPRESS (empty), NOT fall back to the
+  // denied default store (which, sessionless, would scan the whole archive).
   //
   // alice can WRITE her self base (so observe archives under the overlay) but
-  // CANNOT read it, AND `defaultRecallNamespaces` includes `shared` (readable)
-  // but omits `self`. `default` is restrictively unreadable, so the OLD helper
-  // returned `shared`; the fix returns the default store (raw key).
+  // CANNOT read it; `self` is omitted from the recall set; only `shared` is
+  // readable; `default` is restrictively unreadable.
   const probe = makeParityProbe({
     namespacePolicies: [
       // Restrictive default: alice may NOT read `default`.
@@ -1135,21 +1134,57 @@ test("#1505 cursor 'LCM read gate wrong fallback': overlay applies + self EXCLUD
   });
 
   assert.equal(res.lcmEnabled, true);
-  // PROCEED (shared is a readable recall namespace ⇒ not suppressed), but the LCM
-  // prefix collapses to the default store ⇒ the RAW sessionKey.
+  assert.equal(res.count, 0, "no authorized LCM target ⇒ empty results");
+  // SUPPRESS: self unreadable-in-recall AND default denied ⇒ no authorized LCM
+  // target. `searchContextFull` must NEVER run — not against the denied default
+  // store (raw key), not against `shared`, not against alice's unreadable
+  // overlay.
+  assert.equal(
+    probe.searchSessionIds.length,
+    0,
+    "lcmSearch must SUPPRESS (no searchContextFull) — never read the denied default store via a `shared`-only authorization",
+  );
+});
+
+test("#1505 cursor 'LCM read gate wrong fallback' (positive): self READABLE-in-recall but overlay-self gate denies ⇒ lcmSearch uses the raw sessionKey (default store), never `shared:`", async () => {
+  // The complementary case to the codex P1 suppress: when the principal self base
+  // IS readable-in-recall (so PROCEED is authorized) but `default` is restrictively
+  // unreadable, the implicit LCM read still collapses to the DEFAULT STORE raw key
+  // for a session whose overlay does not apply — EXACTLY like the orchestrator's
+  // `lcmReadNamespaceForSession` — and NEVER an arbitrary readable recall namespace
+  // (e.g. `shared`). Here NO coding context is bound, so no overlay applies and the
+  // key is the raw sessionKey.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      // Restrictive default: alice may NOT read `default`.
+      { name: "default", readPrincipals: [], writePrincipals: [] },
+      // alice CAN read AND write her self base.
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    // self IS readable + in the recall set, so PROCEED is authorized.
+    defaultRecallNamespaces: ["self", "shared"],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // No coding context bound ⇒ no overlay ⇒ the LCM key is the raw sessionKey.
+  const res = await service.lcmSearch({
+    query: "what database are we using?",
+    sessionKey: "sess-1",
+    authenticatedPrincipal: "alice",
+  });
+
+  assert.equal(res.lcmEnabled, true);
   assert.equal(
     probe.searchSessionIds[0],
     "sess-1",
-    "overlay-unreadable-self ⇒ lcmSearch must query the raw sessionKey (default store), matching the orchestrator",
+    "self-readable PROCEED + no overlay ⇒ lcmSearch queries the raw sessionKey (default store), matching the orchestrator",
   );
   for (const id of probe.searchSessionIds) {
     assert.ok(
       !String(id ?? "").startsWith("shared"),
       `lcmSearch must NOT prefix with the shared recall namespace; got ${String(id)}`,
-    );
-    assert.ok(
-      !String(id ?? "").startsWith("alice-"),
-      `lcmSearch must NOT leak alice's unreadable overlay rows; got ${String(id)}`,
     );
   }
 });
@@ -1181,6 +1216,66 @@ test("#1505 thread NBHWz (sweep): no readable LCM namespace ⇒ lcmSearch return
     probe.searchSessionIds.length,
     0,
     "searchContextFull must NOT be called when no readable LCM namespace exists",
+  );
+});
+
+test("#1505 codex P1 (sessionless archive-scan guard): restrictive `default` READ + readable self but NO sessionKey/sessionPrefix ⇒ lcmSearch SUPPRESSES (no unbounded archive scan)", async () => {
+  // codex P1 defense-in-depth: a sessionless, prefixless `lcmSearch` issues
+  // `searchContextFull(query, limit, undefined, undefined)`, scanning the ENTIRE
+  // LCM archive across every session/namespace. Under a restrictive `default`
+  // READ policy (alice cannot read `default`), that scan exposes the denied
+  // default store's rows. Even though alice's SELF base is readable (so the
+  // implicit fallback PROCEEDs), with NO sessionKey the overlay cannot apply and
+  // the read collapses to the default store — so the sessionless scan must be
+  // SUPPRESSED.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "default", readPrincipals: [], writePrincipals: [] },
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    defaultRecallNamespaces: ["self", "shared"],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // NO sessionKey, NO sessionPrefix → would otherwise scan the whole archive.
+  const res = await service.lcmSearch({
+    query: "what database are we using?",
+    authenticatedPrincipal: "alice",
+  });
+
+  assert.equal(res.lcmEnabled, true);
+  assert.equal(res.count, 0, "sessionless + denied default ⇒ empty results");
+  assert.equal(
+    probe.searchSessionIds.length,
+    0,
+    "searchContextFull must NOT run an unbounded archive scan against the denied default store",
+  );
+});
+
+test("#1505 codex P1 (sessionless regression): namespaces DISABLED (single-store) + no sessionKey ⇒ lcmSearch still scans the archive (byte-for-byte prior behavior)", async () => {
+  // Regression guard: in a single-store deployment (namespaces disabled, default
+  // always readable), a sessionless `lcmSearch` keeps its prior unbounded
+  // behavior — the P1 guard only fires when the principal cannot read the default
+  // store (i.e. namespaces enabled + a restrictive default policy / unauthenticated
+  // caller).
+  const probe = makeParityProbe({
+    namespacesEnabled: false,
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  await service.lcmSearch({ query: "anything" });
+
+  assert.equal(
+    probe.searchSessionIds.length,
+    1,
+    "namespaces disabled + sessionless ⇒ the archive search still runs (byte-for-byte prior behavior)",
+  );
+  assert.equal(
+    probe.searchSessionIds[0],
+    undefined,
+    "sessionless search passes no session_id filter (archive-wide), unchanged",
   );
 });
 

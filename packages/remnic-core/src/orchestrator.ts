@@ -7249,8 +7249,12 @@ export class Orchestrator {
     // (rather than concatenating across keys) preserves existing budgets while
     // recovering fallback evidence. When the set is a single key (single-user /
     // no-overlay / explicit-namespace), this is exactly one call — unchanged.
+    // `lcmSessionId` is `string | undefined`: a SESSIONLESS recall yields the
+    // single `undefined` key so the LCM builders run ONE archive-wide read with
+    // no `session_id` filter (pre-#1505 behavior; the builders accept an optional
+    // `sessionId`). NEVER the literal "default" session id (codex P2).
     const firstNonEmptyLcmRead = async <T>(
-      read: (lcmSessionId: string) => Promise<T>,
+      read: (lcmSessionId: string | undefined) => Promise<T>,
       isEmpty: (value: T) => boolean,
       empty: T,
     ): Promise<T> => {
@@ -9920,7 +9924,10 @@ export class Orchestrator {
               // #1495 + #1505 fallback unification: read across the ordered LCM
               // read key set so a branch-scoped session reads its own structured
               // message-part evidence even when archived at project/root scope.
-              lcmSessionId,
+              // Structured parts are inherently per-session (the DAG is keyed by
+              // session_id), so a SESSIONLESS read (`undefined`) normalizes to
+              // empty → no section, the correct pre-#1505 behavior (codex P2).
+              lcmSessionId ?? "",
               retrievalQuery,
             ),
           (matches) => matches.length === 0,
@@ -9954,7 +9961,10 @@ export class Orchestrator {
               // #1495 + #1505 fallback unification: read across the ordered LCM
               // read key set so a branch-scoped session reads its own
               // compressed-history evidence even at project/root scope.
-              lcmSessionId,
+              // Compressed history is inherently per-session (a per-session DAG),
+              // so a SESSIONLESS read (`undefined`) normalizes to empty → no
+              // section, the correct pre-#1505 behavior (codex P2).
+              lcmSessionId ?? "",
               this.config.recallBudgetChars,
             ),
           (s) => !s,
