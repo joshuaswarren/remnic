@@ -490,6 +490,42 @@ test("#1495 scopeDebug exposes the resolved plan for callers/tests", async () =>
   assert.equal(res.scopeDebug!.codingOverlayApplied, true);
 });
 
+test("#1505 (cursor hAp) scopeDebug.baseNamespace reports the principal self base on the implicit no-overlay path", async () => {
+  // Regression for the round-4 cursor "Wrong scopeDebug base namespace" thread.
+  // Implicit (no explicit namespace) + projectScope OFF ⇒ the no-overlay branch
+  // of resolveMemoryScopePlan runs: the general write namespace collapses to
+  // config.defaultNamespace ("default") for memory_store parity (rule 39), but
+  // the plan's diagnostic baseNamespace must report the principal SELF base
+  // ("pi-geek" via defaultNamespaceForPrincipal) — the same base
+  // objectiveStateNamespace already targets — NOT the write namespace. Before the
+  // fix, scopeDebug.baseNamespace misstated the self base as "default".
+  const probe = makeObserveProbe({
+    ...withSelfPolicyPrefix("pi-geek"),
+    codingMode: { projectScope: false },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  const res = await service.observe(
+    observeRequest({ sessionKey: "pi-geek:abc123" }),
+  );
+
+  assert.ok(res.scopeDebug, "scopeDebug must be present");
+  assert.equal(
+    res.scopeDebug!.codingOverlayApplied,
+    false,
+    "no overlay on this path",
+  );
+  // Write/effective namespace collapses to the default store (memory_store parity)…
+  assert.equal(res.scopeDebug!.writeNamespace, "default");
+  assert.equal(res.effectiveNamespace, "default");
+  // …but the diagnostic base must be the principal SELF base, not the write ns.
+  assert.equal(
+    res.scopeDebug!.baseNamespace,
+    "pi-geek",
+    "scopeDebug.baseNamespace must be the principal self base on the implicit no-overlay path",
+  );
+});
+
 test("#1495 the scope plan's writeNamespace matches resolveCodingScopedWriteNamespace (memory_store / suggestion_submit parity, rule 39)", async () => {
   // Regression guard: observe's effective scope MUST be identical to what the
   // explicit-write tools (memory_store / suggestion_submit) resolve via
