@@ -5,6 +5,7 @@ Namespaces allow multiple agents to share one Engram installation while keeping 
 ## Key Config
 
 - `namespacesEnabled` (default: false)
+- `namespaceCatalogEnabled` (default: true; inert unless `namespacesEnabled` — see [Namespace Catalog](#namespace-catalog-issue-1499))
 - `defaultNamespace` (default: `default`)
 - `sharedNamespace` (default: `shared`)
 - `namespacePolicies`: list of namespaces and read/write principals
@@ -171,6 +172,50 @@ curl -X POST http://localhost:4318/engram/v1/observe \
 
 See the [Standalone Server Guide](guides/standalone-server.md) for full multi-tenant setup instructions.
 
+## Namespace Catalog (issue #1499)
+
+The **namespace catalog** is a rebuildable metadata index that lets Remnic
+*enumerate* the configured and dynamically-created namespaces that exist or
+should be maintained — for maintenance fanout, QMD indexing diagnostics,
+dashboard listings, and `doctor`. The filesystem remains the source of truth;
+the catalog is downstream metadata and is fully rebuildable from disk.
+
+- **Storage:** an append-and-compact JSON-lines log at
+  `<memoryDir>/state/namespaces.jsonl`. Touches (read/write/maintenance) are
+  cheap single appends; reads fold the log into current state (last-record-wins);
+  `rebuild` rewrites it atomically (temp file + rename).
+- **Metadata only:** the catalog stores namespace names, kinds, timestamps, and
+  resolved storage dirs. It NEVER holds raw memory content or secrets.
+- **No authorization:** catalog presence grants *no* access. Read/write access
+  still flows through namespace policies (`principalFromSessionKey*`,
+  `namespacePolicies`). The catalog never makes an access decision.
+- **Inert when disabled:** the catalog is a no-op (enumerates nothing, writes
+  nothing) unless `namespacesEnabled: true`. Set `namespaceCatalogEnabled: false`
+  to opt out even when namespaces are enabled. Single-namespace behavior is
+  unchanged.
+
+How namespaces are discovered:
+
+- **config** — `default`, `shared`, and explicit `namespacePolicies` entries.
+- **write / read** — recorded on hot-path writes and recall reads (best-effort;
+  a catalog write failure never crashes the primary memory op).
+- **scan** — `rebuild` walks `<memoryDir>/namespaces/<token>` directories,
+  rejects/reports symlinked or escaping roots, decodes the namespace token, and
+  infers each record's `kind` (`default`, `shared`, `project`, `branch`,
+  `team-project`, `explicit`, `legacy`).
+
+Rebuild from disk (dry-run first):
+
+```bash
+openclaw engram namespaces rebuild --dry-run   # show the plan, write nothing
+openclaw engram namespaces rebuild --apply     # rewrite state/namespaces.jsonl
+openclaw engram namespaces rebuild --apply --json
+```
+
+Rebuild preserves known metadata (timestamps, principal hints) where safe,
+preserves the legacy/default-root compatibility case, and reports ambiguous
+roots instead of silently misclassifying them.
+
 ## CLI
 
 First-class namespace commands:
@@ -179,6 +224,8 @@ First-class namespace commands:
 openclaw engram namespaces ls
 openclaw engram namespaces verify
 openclaw engram namespaces migrate --to default --dry-run
+openclaw engram namespaces rebuild --dry-run
+openclaw engram namespaces rebuild --apply
 ```
 
 When namespaces are enabled, these commands also accept `--namespace <ns>`:
