@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Health responses now include structured QMD diagnostics (`qmd.active`,
+  `qmd.mode`, version support, collection state, and degraded fallback status)
+  so Docker/standalone deployments can tell whether QMD is actually active
+  instead of inferring it from recall behavior.
+
 ## [v9.3.648] — 2026-06-29
 
 ### Added

@@ -111,22 +111,26 @@ The standalone topology supports all the same endpoints and MCP tools as the Ope
 ## 5. Containerized (Docker)
 
 Run Remnic in Docker, either standalone or as a sidecar alongside other services.
+The default Dockerfile builds a full local-first image with `@tobilu/qmd@2.5.3`
+installed and available as `qmd` for the non-root runtime user. Persist `/data`
+so Remnic memory files and QMD index state survive container restarts.
 
 ```yaml
 # docker-compose.yml
 version: "3.8"
 services:
-  engram:
-    image: node:22-slim
-    working_dir: /app
-    command: ["node", "dist/access-cli.js", "http-serve", "--host", "0.0.0.0", "--port", "4318"]
+  remnic:
+    build: .
     ports:
       - "4318:4318"
     environment:
-      OPENCLAW_ENGRAM_ACCESS_TOKEN: ${ENGRAM_TOKEN}
+      REMNIC_AUTH_TOKEN: ${REMNIC_AUTH_TOKEN}
       NODE_ENV: production
     volumes:
-      - ./engram-data:/root/.openclaw/workspace/memory
+      - remnic-data:/data
+
+volumes:
+  remnic-data:
 ```
 
 ## Port Selection
@@ -192,7 +196,27 @@ Returns:
   "defaultNamespace": "default",
   "searchBackend": "qmd",
   "qmdEnabled": true,
+  "qmd": {
+    "enabled": true,
+    "active": true,
+    "degraded": false,
+    "mode": "cli",
+    "collection": "remnic-memory",
+    "collectionState": "present",
+    "installedVersion": "qmd 2.5.3",
+    "supportedVersion": "2.5.3",
+    "supported": true,
+    "upgradeAvailable": false,
+    "doctorAvailable": true,
+    "debugStatus": "cli=true daemon=false ..."
+  },
   "nativeKnowledgeEnabled": false,
   "projectionAvailable": true
 }
 ```
+
+If `qmdEnabled` is true but `qmd.active` is false, the server is running in
+degraded filesystem fallback mode. Check `qmd.debugStatus` and
+`qmd.collectionState`; the default Docker image should report an installed
+QMD version and an active `present` or fail-open `unknown` collection state
+after startup.

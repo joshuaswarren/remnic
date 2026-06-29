@@ -66,7 +66,13 @@ curl -s http://localhost:4318/engram/v1/health \
   -H "Authorization: Bearer $REMNIC_AUTH_TOKEN" | jq .
 ```
 
-You should see a JSON response with `status: "ok"` and details about search availability. The API path remains `/engram/v1/...` during the v1.x compatibility window.
+You should see a JSON response with `ok: true` and a `qmd` object. In a full
+standalone or Docker image, `qmd.active` should be true and `qmd.mode` should be
+`"cli"` or `"daemon"`. If `qmd.active` is false while `qmd.enabled` is true,
+Remnic is in degraded filesystem fallback mode; use `qmd.debugStatus`,
+`qmd.installedVersion`, and `qmd.collectionState` to diagnose the missing
+binary, unsupported version, or collection probe problem. The API path remains
+`/engram/v1/...` during the v1.x compatibility window.
 
 To bind to all interfaces (e.g., for LAN access from other machines), use `--host 0.0.0.0`. Only do this on trusted networks or behind a reverse proxy.
 

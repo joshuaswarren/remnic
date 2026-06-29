@@ -279,8 +279,30 @@ export interface EngramAccessHealthResponse {
   defaultNamespace: string;
   searchBackend: string;
   qmdEnabled: boolean;
+  qmd: EngramAccessQmdHealthResponse;
   nativeKnowledgeEnabled: boolean;
   projectionAvailable: boolean;
+}
+
+export type EngramAccessQmdCollectionState =
+  | "present"
+  | "missing"
+  | "unknown"
+  | "skipped";
+
+export interface EngramAccessQmdHealthResponse {
+  enabled: boolean;
+  active: boolean;
+  degraded: boolean;
+  mode: "cli" | "daemon" | "fallback" | "disabled" | "not-selected";
+  collection: string;
+  collectionState: EngramAccessQmdCollectionState;
+  installedVersion: string | null;
+  supportedVersion: string | null;
+  supported: boolean | null;
+  upgradeAvailable: boolean | null;
+  doctorAvailable: boolean | null;
+  debugStatus: string;
 }
 
 export interface EngramAccessRecallRequest {
@@ -2412,6 +2434,8 @@ export class EngramAccessService {
   async health(namespace?: string): Promise<EngramAccessHealthResponse> {
     const resolvedNamespace = this.resolveNamespace(namespace);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
+    const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
+    const qmdEnabled = this.orchestrator.config.qmdEnabled === true;
     let projectionAvailable = false;
     try {
       await stat(getMemoryProjectionPath(storage.dir));
@@ -2425,11 +2449,97 @@ export class EngramAccessService {
       memoryDir: storage.dir,
       namespacesEnabled: this.orchestrator.config.namespacesEnabled === true,
       defaultNamespace: this.orchestrator.config.defaultNamespace,
-      searchBackend: this.orchestrator.config.searchBackend ?? "qmd",
-      qmdEnabled: this.orchestrator.config.qmdEnabled === true,
+      searchBackend,
+      qmdEnabled,
+      qmd: await this.qmdHealth(
+        searchBackend,
+        qmdEnabled,
+        this.qmdCollectionForHealth(resolvedNamespace, storage.dir),
+      ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
     };
+  }
+
+  private qmdCollectionForHealth(namespace: string, storageDir: string): string {
+    if (this.orchestrator.config.namespacesEnabled !== true) {
+      return this.orchestrator.config.qmdCollection;
+    }
+
+    const useLegacyDefaultCollection =
+      namespace === this.orchestrator.config.defaultNamespace &&
+      storageDir === this.orchestrator.config.memoryDir;
+    return namespaceCollectionName(this.orchestrator.config.qmdCollection, namespace, {
+      defaultNamespace: this.orchestrator.config.defaultNamespace,
+      useLegacyDefaultCollection,
+    });
+  }
+
+  private async qmdHealth(
+    searchBackend: string,
+    qmdEnabled: boolean,
+    collection: string,
+  ): Promise<EngramAccessQmdHealthResponse> {
+    const qmd = this.orchestrator.qmd;
+    const active = searchBackend === "qmd" && qmdEnabled && qmd.isAvailable();
+    const debugStatus = qmd.debugStatus();
+    const versionStatus =
+      "getVersionStatus" in qmd && typeof qmd.getVersionStatus === "function"
+        ? qmd.getVersionStatus()
+        : null;
+    const daemonMode =
+      "isDaemonMode" in qmd && typeof qmd.isDaemonMode === "function"
+        ? qmd.isDaemonMode() === true
+        : false;
+    const mode =
+      searchBackend !== "qmd"
+        ? "not-selected"
+        : !qmdEnabled
+        ? "disabled"
+        : !active
+        ? "fallback"
+        : daemonMode
+        ? "daemon"
+        : "cli";
+
+    return {
+      enabled: qmdEnabled,
+      active,
+      degraded: searchBackend === "qmd" && qmdEnabled && !active,
+      mode,
+      collection,
+      collectionState: await this.qmdCollectionState(searchBackend, qmdEnabled, collection),
+      installedVersion: versionStatus?.installedVersion ?? null,
+      supportedVersion: versionStatus?.supportedVersion ?? null,
+      supported: versionStatus?.supported ?? null,
+      upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
+      doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
+      debugStatus,
+    };
+  }
+
+  private async qmdCollectionState(
+    searchBackend: string,
+    qmdEnabled: boolean,
+    collection: string,
+  ): Promise<EngramAccessQmdCollectionState> {
+    if (searchBackend !== "qmd" || !qmdEnabled) return "skipped";
+    const qmd = this.orchestrator.qmd;
+    if (!qmd.isAvailable()) return "unknown";
+    if (!qmd.checkCollection) return "skipped";
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2_000);
+    timer.unref?.();
+    try {
+      return await qmd.checkCollection(collection, {
+        signal: controller.signal,
+      });
+    } catch {
+      return "unknown";
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async actionConfidence(

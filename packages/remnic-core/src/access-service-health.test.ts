@@ -1,0 +1,176 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { EngramAccessService } from "./access-service.js";
+import { parseConfig } from "./config.js";
+import { namespaceCollectionName } from "./namespaces/search.js";
+import type { Orchestrator } from "./orchestrator.js";
+import type { SearchBackend } from "./search/port.js";
+
+function makeQmd(overrides: Partial<SearchBackend> & Record<string, unknown>): SearchBackend {
+  return {
+    async probe() {
+      return false;
+    },
+    isAvailable() {
+      return false;
+    },
+    debugStatus() {
+      return "backend=noop";
+    },
+    async search() {
+      return [];
+    },
+    async searchGlobal() {
+      return [];
+    },
+    async bm25Search() {
+      return [];
+    },
+    async vectorSearch() {
+      return [];
+    },
+    async hybridSearch() {
+      return [];
+    },
+    async update() {},
+    async updateCollection() {},
+    async embed() {},
+    async embedCollection() {},
+    async ensureCollection() {
+      return "skipped";
+    },
+    ...overrides,
+  } as SearchBackend;
+}
+
+test("health reports active QMD version and collection state", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      qmdCollection: "remnic-memory",
+    });
+    const qmd = makeQmd({
+      isAvailable: () => true,
+      debugStatus: () => "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
+      checkCollection: async (collection, execution) => {
+        assert.equal(collection, "remnic-memory");
+        assert.ok(execution?.signal instanceof AbortSignal);
+        return "present";
+      },
+      getVersionStatus: () => ({
+        installedVersion: "qmd 2.5.3",
+        supportedVersion: "2.5.3",
+        supported: true,
+        newerThanSupported: false,
+        upgradeAvailable: false,
+        capabilities: { doctor: true },
+      }),
+      isDaemonMode: () => false,
+    });
+    const service = new EngramAccessService({
+      config,
+      qmd,
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+
+    assert.equal(health.qmdEnabled, true);
+    assert.deepEqual(health.qmd, {
+      enabled: true,
+      active: true,
+      degraded: false,
+      mode: "cli",
+      collection: "remnic-memory",
+      collectionState: "present",
+      installedVersion: "qmd 2.5.3",
+      supportedVersion: "2.5.3",
+      supported: true,
+      upgradeAvailable: false,
+      doctorAvailable: true,
+      debugStatus: "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health marks QMD as degraded when configured search falls back to noop", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-degraded-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      qmdCollection: "remnic-memory",
+    });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+
+    assert.equal(health.qmd.active, false);
+    assert.equal(health.qmd.degraded, true);
+    assert.equal(health.qmd.mode, "fallback");
+    assert.equal(health.qmd.collectionState, "unknown");
+    assert.equal(health.qmd.debugStatus, "backend=noop");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health reports namespace-scoped QMD collection names", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-ns-"));
+  try {
+    const teamDir = path.join(rootDir, "namespaces", "team");
+    const config = parseConfig({
+      memoryDir: rootDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      qmdCollection: "remnic-memory",
+      namespacePolicies: [{ name: "team", readPrincipals: [], writePrincipals: [] }],
+    });
+    const expectedCollection = namespaceCollectionName("remnic-memory", "team", {
+      defaultNamespace: "default",
+    });
+    const qmd = makeQmd({
+      isAvailable: () => true,
+      debugStatus: () => "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
+      checkCollection: async (collection) => {
+        assert.equal(collection, expectedCollection);
+        return "present";
+      },
+    });
+    const service = new EngramAccessService({
+      config,
+      qmd,
+      async getStorage(namespace: string) {
+        return { dir: namespace === "team" ? teamDir : rootDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health("team");
+
+    assert.equal(health.memoryDir, teamDir);
+    assert.equal(health.qmd.collection, expectedCollection);
+    assert.equal(health.qmd.collectionState, "present");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
