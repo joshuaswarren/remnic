@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { Orchestrator } from "./orchestrator.js";
 import { ThreadingManager } from "./threading.js";
+import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
 import type {
   BehaviorSignalEvent,
@@ -8630,12 +8631,11 @@ export function registerCli(
           }
 
           if (date) {
-            // Read specific date
-            const entries = await orchestrator.transcript.readRange(
-              `${date}T00:00:00Z`,
-              `${date}T23:59:59Z`,
-              channel,
-            );
+            // Read specific date. Use a half-open [start, next-day-00:00:00Z)
+            // window so `readRange`'s exclusive upper bound still covers the
+            // final second of the day (rule #35).
+            const { start, end } = utcDayRange(date);
+            const entries = await orchestrator.transcript.readRange(start, end, channel);
             console.log(formatTranscript(entries));
           } else if (recent) {
             // Parse duration (e.g., "12h", "30m")
@@ -8643,13 +8643,11 @@ export function registerCli(
             const entries = await orchestrator.transcript.readRecent(hours, channel);
             console.log(formatTranscript(entries));
           } else {
-            // Default: show today's transcript
+            // Default: show today's transcript. Same half-open day window as
+            // the --date branch so the final second of the day is included.
             const today = new Date().toISOString().slice(0, 10);
-            const entries = await orchestrator.transcript.readRange(
-              `${today}T00:00:00Z`,
-              `${today}T23:59:59Z`,
-              channel,
-            );
+            const { start, end } = utcDayRange(today);
+            const entries = await orchestrator.transcript.readRange(start, end, channel);
             console.log(formatTranscript(entries));
           }
         });
