@@ -384,10 +384,13 @@ test("register does not overwrite prior discoveredBy on an existing record", asy
   }
 });
 
-// Symmetric: a record first registered via config keeps discoveredBy:"config"
-// after a routing resolve (no spurious downgrade either), and a later explicit
-// write touch still updates lastWriteAt without rewriting provenance.
-test("explicit discoveredBy is only applied at record creation, not on later touches", async () => {
+// A record first PRE-REGISTERED via the router's onResolve hook (config) is
+// UPGRADED to "write" by a later real write touch (round 6, codex P2 — NBPmT):
+// `storageFor()` fires registerResolved (config) before recordCatalogWrite runs,
+// so without the upgrade `listNamespaces({ discoveredBy: "write" })` would miss a
+// genuinely-written namespace. A non-write touch (read/register) still preserves
+// provenance.
+test("a write upgrades a config pre-registration to write provenance (NBPmT)", async () => {
   const memoryDir = await mkMemoryDir();
   try {
     const catalog = new NamespaceCatalog(makeConfig(memoryDir));
@@ -397,12 +400,29 @@ test("explicit discoveredBy is only applied at record creation, not on later tou
     );
     assert.equal((await catalog.getNamespaceRecord("project-origin-xyz"))?.discoveredBy, "config");
 
-    // A later write touch carries discoveredBy:"write" but must NOT relabel the
-    // already-discovered record.
+    // A later read touch must NOT relabel the config pre-registration.
+    await catalog.markRead("project-origin-xyz", { discoveredBy: "read" });
+    assert.equal(
+      (await catalog.getNamespaceRecord("project-origin-xyz"))?.discoveredBy,
+      "config",
+      "a read touch preserves config provenance (only a write upgrades it)",
+    );
+
+    // A real write touch UPGRADES the config pre-registration to "write".
     await catalog.markWrite("project-origin-xyz", { discoveredBy: "write" });
     const after = await catalog.getNamespaceRecord("project-origin-xyz");
-    assert.equal(after?.discoveredBy, "config", "existing provenance is preserved");
+    assert.equal(
+      after?.discoveredBy,
+      "write",
+      "a real write upgrades a config-only pre-registration to write provenance",
+    );
     assert.ok(after?.lastWriteAt, "write touch still records lastWriteAt");
+    // listNamespaces({ discoveredBy: "write" }) now finds the written namespace.
+    const writeList = await catalog.listNamespaces({ discoveredBy: "write" });
+    assert.ok(
+      writeList.some((r) => r.namespace === "project-origin-xyz"),
+      "a written namespace must be discoverable by discoveredBy:write filter",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -1328,6 +1348,90 @@ test("a touch drops its append when the rebuild-lock wait times out", async () =
     } finally {
       clearInterval(heartbeat);
     }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 6 (codex P2 — NBPmY): a MUTATING rebuild that CANNOT acquire the
+// cross-process lock (another rebuild holds it) must run compute-only — it must
+// NOT perform its load/rename window unlocked, or a second unlocked rename could
+// clobber a concurrent gateway touch. We hold a non-stale FOREIGN lock for the
+// whole rebuild and assert the on-disk log is left untouched (no rewrite).
+test("a mutating rebuild that cannot acquire the lock does NOT rewrite the log", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-unlocked";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const logPath = path.join(stateDir, "namespaces.jsonl");
+
+    // Seed a known log so we can detect whether the unlocked rebuild rewrote it.
+    const seeded = JSON.stringify({
+      namespace: ns,
+      identityToken: namespaceIdentityToken(ns),
+      kind: "project",
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+      storageDir: tokenDir,
+      discoveredBy: "write",
+      lastWriteAt: new Date(Date.now() - 30_000).toISOString(),
+    });
+    await writeFile(logPath, seeded + "\n", "utf8");
+    const before = await readFile(logPath, "utf8");
+
+    // Hold a non-stale FOREIGN rebuild lock for the whole rebuild so acquisition
+    // times out and the rebuild runs unlocked (compute-only).
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+    await writeFile(lockPath, `999999 ${new Date().toISOString()}\n`, "utf8");
+    const hb = setInterval(() => {
+      const now = new Date();
+      utimes(lockPath, now, now).catch(() => undefined);
+    }, 1_000);
+    hb.unref?.();
+
+    try {
+      const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+      const result = await catalog.rebuildFromDisk();
+      // The rebuild still computes/returns records (compute-only) ...
+      assert.ok(result.records.some((r) => r.namespace === ns), "compute-only rebuild still returns records");
+      // ... but must NOT have rewritten the on-disk log while unlocked.
+      const after = await readFile(logPath, "utf8");
+      assert.equal(after, before, "an unlocked mutating rebuild must NOT rewrite the log (NBPmY)");
+    } finally {
+      clearInterval(hb);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 6 (codex P2 — NBPmO): rebuild must NOT admit an UNSAFE configured
+// namespace (e.g. a `sharedNamespace`/`namespacePolicies[].name` like `../evil`)
+// into the catalog. The hot touch/scan paths reject these; rebuild must too. The
+// default namespace stays exempt (may be a non-route literal).
+test("rebuild --apply skips an unsafe configured namespace", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const unsafe = "../evil";
+    const catalog = new NamespaceCatalog(
+      makeConfig(memoryDir, { sharedNamespace: unsafe } as Partial<PluginConfig>),
+    );
+    const result = await catalog.rebuildFromDisk();
+    assert.ok(
+      !result.records.some((r) => r.namespace === unsafe),
+      "an unsafe configured namespace must not be added to the catalog by rebuild",
+    );
+    assert.ok(
+      result.skipped.some((s) => s.reason === "unsafe" && s.detail === unsafe),
+      "an unsafe configured namespace must be reported as skipped",
+    );
+    // The default namespace is still catalogued (exempt from the safety gate).
+    assert.ok(
+      result.records.some((r) => r.namespace === "default"),
+      "the default namespace must still be catalogued",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

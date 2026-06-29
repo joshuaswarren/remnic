@@ -2782,6 +2782,14 @@ export class Orchestrator {
           await sm.ensureDirectories();
           await sm.loadAliases().catch(() => undefined);
         }
+        // Explicitly seed the catalog with all configured namespaces at startup
+        // (round 6, cursor Medium — NBLlR). The storageFor loop above fires the
+        // router's onResolve hook, but a warm router cache (reused instance
+        // across stop/start) can skip onResolve, leaving policy namespaces absent
+        // from the live catalog until an operator runs `rebuild --apply`. This
+        // call is cheap, idempotent, and best-effort: a catalog failure must
+        // never break initialization (rule #13, #40).
+        await this.namespaceCatalog.registerConfiguredNamespaces().catch(() => undefined);
       }
       await this.relevance.load();
       await this.negatives.load();

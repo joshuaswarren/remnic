@@ -668,8 +668,20 @@ export class NamespaceCatalog {
       if (metadata?.projectId !== undefined) record.projectId = metadata.projectId;
       if (metadata?.branch !== undefined) record.branch = metadata.branch;
       if (metadata?.parentNamespace !== undefined) record.parentNamespace = metadata.parentNamespace;
-      // NOTE: discoveredBy is intentionally NOT reassigned here for existing
-      // records — see the creation-only rationale above (Issue 1 fix).
+      // PROVENANCE (creation-only, with one upgrade — round 6, codex P2 NBPmT):
+      // `discoveredBy` is otherwise preserved for existing records (a routine
+      // read/register/resolve never relabels it). The single exception is a real
+      // WRITE upgrading a record that was only PRE-REGISTERED by the router's
+      // `onResolve` hook (`discoveredBy: "config"`) before any data was written.
+      // Without this upgrade, `listNamespaces({ discoveredBy: "write" })` misses
+      // namespaces that were genuinely written, because `storageFor()` fires
+      // `registerResolved()` (config) before `recordCatalogWrite()` runs. We
+      // upgrade ONLY config→write — never downgrade write/read, never relabel a
+      // read-discovered record — so the authoritative "this namespace has been
+      // written" signal is recorded.
+      if (kind === "write" && existing && record.discoveredBy === "config") {
+        record.discoveredBy = "write";
+      }
 
       if (kind === "read") record.lastReadAt = nowIso;
       if (kind === "write") record.lastWriteAt = nowIso;
@@ -714,10 +726,14 @@ export class NamespaceCatalog {
     // on-disk touches under that lock immediately before the rewrite (see
     // `rebuildInsideChain`). A dry-run never mutates, so it skips the lock.
     if (dryRun) {
-      return this.queueCritical(async () => this.rebuildInsideChain(dryRun));
+      return this.queueCritical(async () => this.rebuildInsideChain(dryRun, false));
     }
-    return this.withRebuildLock(() =>
-      this.queueCritical(async () => this.rebuildInsideChain(dryRun)),
+    return this.withRebuildLock((acquired) =>
+      // canMutate iff we actually hold the cross-process lock (round 6, codex P2
+      // — NBPmY). If acquisition timed out, run compute-only: never perform the
+      // load/rename window unlocked, or a second unlocked rename could clobber a
+      // concurrent gateway touch and recreate the lost-append race.
+      this.queueCritical(async () => this.rebuildInsideChain(dryRun, acquired)),
     );
   }
 
@@ -726,7 +742,10 @@ export class NamespaceCatalog {
    * only be invoked from within the serialized chain so the load and the
    * rewrite are atomic with respect to concurrent touches.
    */
-  private async rebuildInsideChain(dryRun: boolean): Promise<NamespaceCatalogRebuildResult> {
+  private async rebuildInsideChain(
+    dryRun: boolean,
+    canMutate: boolean,
+  ): Promise<NamespaceCatalogRebuildResult> {
     // Read the LATEST persisted state inside the chain so any touch that landed
     // before this turn is folded in (and re-merged into the rewrite below).
     const existing = await this.loadCompacted();
@@ -760,6 +779,23 @@ export class NamespaceCatalog {
 
     for (const ns of configured) {
       if (!ns) continue;
+      // SAFETY (round 6, codex P2 — NBPmO): `parseConfig` intentionally preserves
+      // unsafe namespace strings (e.g. a `sharedNamespace`/`namespacePolicies[]`
+      // name like `../evil`) so sinks reject them. The hot touch/scan paths
+      // already reject via `isSafeRouteNamespace`; rebuild must NOT be the path
+      // that admits an unsafe configured namespace into the catalog. The default
+      // namespace is exempt (it may be a non-route literal), matching the scan
+      // loop's exemption below.
+      if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) {
+        let token: string;
+        try {
+          token = namespaceIdentityToken(ns);
+        } catch {
+          token = ns;
+        }
+        skipped.push({ token, reason: "unsafe", detail: ns });
+        continue;
+      }
       const storageDir = ns === this.config.defaultNamespace ? defaultStorageDir : this.namespaceTokenDir(namespaceIdentityToken(ns));
       rebuilt.set(
         ns,
@@ -875,13 +911,15 @@ export class NamespaceCatalog {
       if (def) def.kind = "default";
     }
 
-    if (!dryRun) {
+    if (canMutate) {
       // CROSS-PROCESS re-merge (round 5, codex P2): under the rebuild lock,
       // re-read the on-disk log ONE more time and fold any touch fields that
       // landed AFTER our initial `loadCompacted()` (e.g. a gateway markWrite in
       // another process) into the rebuilt records — last-write-wins per touch
       // field. This recovers cross-process appends that completed during the
-      // scan, which the in-process `queueCritical` alone cannot see.
+      // scan, which the in-process `queueCritical` alone cannot see. Only runs
+      // when we hold the lock (round 6, codex P2 — NBPmY): an unlocked rebuild
+      // must not re-merge then rename, or it races a concurrent lock holder.
       const latest = await this.loadCompacted();
       for (const [ns, fresh] of latest) {
         const current = rebuilt.get(ns);
@@ -912,7 +950,11 @@ export class NamespaceCatalog {
       return a.identityToken.localeCompare(b.identityToken);
     });
 
-    if (!dryRun) {
+    // Only rewrite when we actually hold the cross-process lock (round 6, codex
+    // P2 — NBPmY). A dry-run never mutates; an unlocked rebuild (acquisition
+    // timed out) returns the computed records WITHOUT renaming over the log, so
+    // it can never clobber a concurrent lock holder's window.
+    if (canMutate) {
       await this.rewriteUnchained(records);
     }
 
@@ -935,8 +977,15 @@ export class NamespaceCatalog {
    * unlinked by another process/touch — which would let overlapping rewrites lose
    * appends. Heartbeat failures are swallowed; the timer is always cleared in
    * `finally`.
+   *
+   * ACQUISITION RESULT (round 6, codex P2 — NBPmY): `fn` receives whether WE
+   * actually hold the lock. When acquisition TIMED OUT (another `rebuild --apply`
+   * holds it), a MUTATING rebuild must NOT perform its load/rename window
+   * unlocked — that second unlocked rename can clobber gateway touches that the
+   * first lock holder's window let through, recreating the lost-append race. The
+   * caller uses `acquired` to suppress the rewrite (compute-only) when unlocked.
    */
-  private async withRebuildLock<T>(fn: () => Promise<T>): Promise<T> {
+  private async withRebuildLock<T>(fn: (acquired: boolean) => Promise<T>): Promise<T> {
     const acquired = await this.acquireRebuildLock();
     let heartbeat: ReturnType<typeof setInterval> | undefined;
     if (acquired) {
@@ -949,7 +998,7 @@ export class NamespaceCatalog {
       heartbeat.unref?.();
     }
     try {
-      return await fn();
+      return await fn(acquired);
     } finally {
       if (heartbeat) clearInterval(heartbeat);
       if (acquired) {
