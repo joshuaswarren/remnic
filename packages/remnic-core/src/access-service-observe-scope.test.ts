@@ -279,7 +279,7 @@ test("#1495 projectScope:false ⇒ no overlay (unqualified write stays on config
   // stays on config.defaultNamespace — exactly the pre-#1434 / memory_store
   // behavior for an unqualified write (rule 39: identical across paths). It must
   // NOT be silently moved to the principal self namespace. lcmSessionKey carries
-  // no prefix (effective == default), and no extraction override is needed.
+  // no prefix (effective == default).
   const probe = makeObserveProbe({
     ...withSelfPolicyPrefix("pi-geek"),
     codingMode: { projectScope: false },
@@ -293,7 +293,14 @@ test("#1495 projectScope:false ⇒ no overlay (unqualified write stays on config
   assert.equal(res.effectiveNamespace, "default");
   assert.equal(res.scopeDebug!.codingOverlayApplied, false);
   assert.equal(probe.lcmCalls[0].sessionKey, "pi-geek:abc123");
-  assert.equal(probe.extractionCalls[0].writeNamespaceOverride, undefined);
+  // #1505 round 3 (codex "Pin default-store extraction writes too"): with
+  // namespaces ENABLED, extraction must be pinned to the resolved writeNamespace
+  // (config.defaultNamespace here) even though it equals the default store —
+  // otherwise an unpinned runExtraction would fall back to
+  // defaultNamespaceForPrincipal("pi-geek") == "pi-geek" (the SELF namespace),
+  // diverging from where LCM/objective-state/response wrote ("default"). Pinning
+  // forces every side effect onto the one scope-plan namespace.
+  assert.equal(probe.extractionCalls[0].writeNamespaceOverride, "default");
 });
 
 test("#1495 namespacesEnabled:false ⇒ single-store behavior preserved", async () => {

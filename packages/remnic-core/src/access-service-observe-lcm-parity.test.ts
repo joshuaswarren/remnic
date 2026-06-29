@@ -48,6 +48,8 @@ interface ParityProbe {
   lcmWriteKeys: string[];
   compactionFlushKeys: string[];
   compactionRecordKeys: string[];
+  searchSessionIds: Array<string | undefined>;
+  searchSessionPrefixes: Array<string | undefined>;
   extractionCalls: Array<{
     sessionKeys: string[];
     writeNamespaceOverride?: string;
@@ -67,6 +69,8 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
   const lcmWriteKeys: string[] = [];
   const compactionFlushKeys: string[] = [];
   const compactionRecordKeys: string[] = [];
+  const searchSessionIds: Array<string | undefined> = [];
+  const searchSessionPrefixes: Array<string | undefined> = [];
   const extractionCalls: ParityProbe["extractionCalls"] = [];
 
   const config = {
@@ -118,6 +122,16 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
       ) => {
         compactionRecordKeys.push(sessionKey);
       },
+      searchContextFull: async (
+        _query: string,
+        _limit: number,
+        sessionId?: string,
+        sessionPrefix?: string,
+      ) => {
+        searchSessionIds.push(sessionId);
+        searchSessionPrefixes.push(sessionPrefix);
+        return [];
+      },
     },
     // Capture extraction routing/identity so the provenance-principal tests can
     // assert what `observe` threads into `ingestReplayBatch`.
@@ -139,6 +153,8 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
     lcmWriteKeys,
     compactionFlushKeys,
     compactionRecordKeys,
+    searchSessionIds,
+    searchSessionPrefixes,
     extractionCalls,
   };
 }
@@ -556,4 +572,101 @@ test("#1505 thread 2 compaction regression: flush/record overlay-derived key mat
     observedWriteKey,
     "compaction flush must target the overlay key, not the base",
   );
+});
+
+test("#1505 round 3: access lcmSearch routes the session_id through the SCOPED (overlay) key", async () => {
+  // cursor "LCM search misses overlay keys" / codex "Route access LCM search
+  // through the scoped key". A project-scoped observe (no explicit namespace)
+  // archives under `${overlayNs}:${sessionKey}` and binds the coding context to
+  // the session. A subsequent lcmSearch({ sessionKey }) with NO explicit
+  // namespace must search under the SAME overlay key — not the raw sessionKey —
+  // or it misses the turns just archived.
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+
+  await service.observe(
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+  );
+  const writeKey = probe.lcmWriteKeys[0];
+  assert.ok(
+    writeKey.startsWith("pi-geek-"),
+    `observe must archive under the overlay key, got ${writeKey}`,
+  );
+
+  await service.lcmSearch({
+    query: "what database are we using?",
+    sessionKey: "pi-geek:abc123",
+    sessionPrefix: "pi-geek:",
+  });
+
+  assert.equal(
+    probe.searchSessionIds[0],
+    writeKey,
+    "lcmSearch session_id must be the overlay-scoped key, matching the write key",
+  );
+  assert.ok(
+    !probe.searchSessionIds.includes("pi-geek:abc123"),
+    `lcmSearch must NOT query the raw sessionKey; queried: ${JSON.stringify(probe.searchSessionIds)}`,
+  );
+  // The sessionPrefix is prefixed with the same overlay namespace.
+  const overlayNs = writeKey.slice(0, writeKey.length - ":pi-geek:abc123".length);
+  assert.equal(
+    probe.searchSessionPrefixes[0],
+    `${overlayNs}:pi-geek:`,
+    "lcmSearch sessionPrefix must carry the overlay namespace too",
+  );
+});
+
+test("#1505 round 3: lcmSearch on a single-store / no-overlay session keeps the raw key (regression guard)", async () => {
+  const probe = makeParityProbe({
+    ...withSelfPolicyPrefix("pi-geek"),
+    codingMode: { projectScope: false },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  await service.lcmSearch({
+    query: "anything",
+    sessionKey: "pi-geek:abc123",
+  });
+  assert.equal(
+    probe.searchSessionIds[0],
+    "pi-geek:abc123",
+    "no overlay ⇒ lcmSearch searches the raw sessionKey (byte-for-byte preserved)",
+  );
+});
+
+test("#1505 round 3: extraction is pinned to the resolved writeNamespace even when it equals the default store", async () => {
+  // codex "Pin default-store extraction writes too". An unqualified observe by a
+  // principal that HAS a self namespace resolves writeNamespace ==
+  // config.defaultNamespace (general path) but, left unpinned, runExtraction
+  // would fall back to defaultNamespaceForPrincipal(principal) == the SELF
+  // namespace — diverging from LCM/objective-state/response. With namespaces
+  // enabled, observe must pin writeNamespaceOverride = writeNamespace (= default)
+  // so every side effect lands in ONE namespace.
+  const probe = makeParityProbe({
+    ...withSelfPolicyPrefix("pi-geek"),
+    // No overlay so writeNamespace collapses to config.defaultNamespace.
+    codingMode: { projectScope: false },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  await service.observe(
+    observeRequest({
+      sessionKey: "pi-geek:abc123",
+      skipExtraction: false, // exercise extraction
+    }),
+  );
+
+  assert.equal(probe.extractionCalls.length, 1);
+  assert.equal(
+    probe.extractionCalls[0].writeNamespaceOverride,
+    "default",
+    "extraction must be pinned to the default store, not left to fall back to the principal self namespace",
+  );
+  // Identity is still the original key + resolved principal.
+  assert.deepEqual(
+    new Set(probe.extractionCalls[0].sessionKeys),
+    new Set(["pi-geek:abc123"]),
+  );
+  assert.equal(probe.extractionCalls[0].principalOverride, "pi-geek");
 });

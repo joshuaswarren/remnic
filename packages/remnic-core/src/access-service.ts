@@ -4720,10 +4720,20 @@ export class EngramAccessService {
       // re-derivation would have to reparse identity and could miss the overlay
       // (the #1495 drift). Passing writeNamespaceOverride makes the extraction
       // target deterministic and identical to LCM/objective-state (rule 39).
-      // Omit it when the effective namespace is the default store, so single-store
-      // deployments keep the existing principal-derived routing unchanged.
+      //
+      // Pin WHENEVER namespaces are enabled, not only when writeNamespace differs
+      // from the default store (#1505 round 3, codex "Pin default-store extraction
+      // writes too"). For an unqualified/no-overlay observe by a principal that
+      // HAS a self namespace, writeNamespace is `config.defaultNamespace` but an
+      // unpinned `runExtraction` would fall back to
+      // `defaultNamespaceForPrincipal(principal)` = the SELF namespace — diverging
+      // from where LCM/objective-state/response wrote (`default`). Pinning the
+      // resolved writeNamespace forces all side effects onto the one scope-plan
+      // namespace. When namespaces are DISABLED the router collapses every
+      // namespace to one store, so leaving the override undefined preserves the
+      // existing single-store routing byte-for-byte.
       const writeNamespaceOverride =
-        writeNamespace !== this.orchestrator.config.defaultNamespace
+        this.orchestrator.config.namespacesEnabled === true
           ? writeNamespace
           : undefined;
       // Pin provenance PRINCIPAL to the scope plan's resolved principal (#1505
@@ -4803,11 +4813,34 @@ export class EngramAccessService {
     }
 
     const limit = Math.max(1, Math.min(request.limit ?? 10, 100));
-    const lcmSessionKey = request.sessionKey && namespace !== this.orchestrator.config.defaultNamespace
-      ? `${namespace}:${request.sessionKey}`
+    // Route the LCM read session_id AND prefix through the SAME overlay-aware
+    // namespace `observe`'s write key and compaction use (#1505 round 3). A
+    // project-scoped `observe` with no explicit namespace archived under the
+    // coding-overlay namespace; deriving the prefix only from the readable
+    // `namespace` (as before) would search the raw key and miss those turns.
+    // The effective namespace is resolved ONCE from the real session
+    // (`request.sessionKey`) — the prefix is a search fragment with no bound
+    // coding context, so it inherits the same namespace. Collapses to the raw key
+    // for single-store / no-overlay / explicit-default flows (existing behavior).
+    const lcmReadNamespace = this.resolveLcmReadNamespace(
+      request.namespace,
+      namespace,
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
+    const lcmSessionKey = request.sessionKey
+      ? lcmSessionKeyForNamespace(
+          lcmReadNamespace,
+          request.sessionKey,
+          this.orchestrator.config.defaultNamespace,
+        ) ?? request.sessionKey
       : request.sessionKey;
-    const lcmSessionPrefix = request.sessionPrefix && namespace !== this.orchestrator.config.defaultNamespace
-      ? `${namespace}:${request.sessionPrefix}`
+    const lcmSessionPrefix = request.sessionPrefix
+      ? lcmSessionKeyForNamespace(
+          lcmReadNamespace,
+          request.sessionPrefix,
+          this.orchestrator.config.defaultNamespace,
+        ) ?? request.sessionPrefix
       : request.sessionPrefix;
     const rawResults = await this.orchestrator.lcmEngine.searchContextFull(
       request.query,
@@ -4832,8 +4865,11 @@ export class EngramAccessService {
   }
 
   /**
-   * Resolve the LCM `session_id` a compaction flush/record must target so it
-   * matches the key `observe` archived under (#1495 thread 2, rule 42).
+   * Resolve the LCM `session_id` a same-session READER (compaction flush/record,
+   * `lcmSearch`, raw-excerpt lookup) must target so it matches the key `observe`
+   * archived under (#1495 thread 2 + #1505 round 3, rule 42). One helper for
+   * EVERY access-surface LCM read so the read key cannot drift from the write key
+   * (rule 22).
    *
    * Precedence mirrors `observe`'s effective write namespace:
    *  - With an explicit `request.namespace`, use the already-authorized
@@ -4847,32 +4883,54 @@ export class EngramAccessService {
    *    sessionKey exactly as before.
    *
    * Then encode the `${namespace}:${sessionKey}` prefix via the shared helper
-   * so the flush/record key is byte-for-byte what the LCM write and the recall
-   * readers use.
+   * so the read key is byte-for-byte what the LCM write and the recall readers
+   * use.
    */
-  private resolveLcmSessionKeyForCompaction(
+  /**
+   * Resolve the effective LCM read NAMESPACE a same-session reader must prefix
+   * with (the namespace half of {@link resolveLcmReadSessionKey}). Split out so
+   * `lcmSearch` can apply ONE namespace to BOTH its `sessionKey` and its
+   * `sessionPrefix` — the prefix is a search fragment, not a real session, so its
+   * own coding context can't be looked up; it must inherit the namespace resolved
+   * from the real session (`sessionKeyForOverlay`).
+   */
+  private resolveLcmReadNamespace(
+    explicitNamespace: string | undefined,
+    resolvedNamespace: string,
+    sessionKeyForOverlay: string | undefined,
+    authenticatedPrincipal: string | undefined,
+  ): string {
+    const hasExplicitNamespace =
+      typeof explicitNamespace === "string" && explicitNamespace.trim().length > 0;
+    if (hasExplicitNamespace) return resolvedNamespace;
+    // Mirror observe's write resolution: use the coding-overlay namespace when
+    // one applies, else the default store. NOT the principal self base — an
+    // unqualified observe archives under the default store, so a self-base prefix
+    // here would target a queue observe never wrote to (#1495).
+    const principal = this.resolveRequestPrincipal(
+      sessionKeyForOverlay,
+      authenticatedPrincipal,
+    );
+    const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
+    const overlaid = this.orchestrator.applyCodingNamespaceOverlay(
+      sessionKeyForOverlay,
+      base,
+    );
+    return overlaid !== base ? overlaid : this.orchestrator.config.defaultNamespace;
+  }
+
+  private resolveLcmReadSessionKey(
     explicitNamespace: string | undefined,
     resolvedNamespace: string,
     sessionKey: string,
     authenticatedPrincipal: string | undefined,
   ): string {
-    const hasExplicitNamespace =
-      typeof explicitNamespace === "string" && explicitNamespace.trim().length > 0;
-    let effectiveNamespace = resolvedNamespace;
-    if (!hasExplicitNamespace) {
-      // Mirror observe's write resolution: use the coding-overlay namespace
-      // when one applies, else the default store. NOT the principal self base —
-      // an unqualified observe archives under the default store, so a self-base
-      // prefix here would target a queue observe never wrote to (#1495).
-      const principal = this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal);
-      const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
-      const overlaid = this.orchestrator.applyCodingNamespaceOverlay(
-        sessionKey,
-        base,
-      );
-      effectiveNamespace =
-        overlaid !== base ? overlaid : this.orchestrator.config.defaultNamespace;
-    }
+    const effectiveNamespace = this.resolveLcmReadNamespace(
+      explicitNamespace,
+      resolvedNamespace,
+      sessionKey,
+      authenticatedPrincipal,
+    );
     return (
       lcmSessionKeyForNamespace(
         effectiveNamespace,
@@ -4909,7 +4967,7 @@ export class EngramAccessService {
     // its coding-overlay namespace (`${effectiveNamespace}:${sessionKey}`), not
     // the base `namespace` — so apply the session's coding overlay here too, or
     // the flush would target the wrong queue (#1495 thread 2, rule 42).
-    const lcmSessionKey = this.resolveLcmSessionKeyForCompaction(
+    const lcmSessionKey = this.resolveLcmReadSessionKey(
       request.namespace,
       namespace,
       request.sessionKey,
@@ -4957,7 +5015,7 @@ export class EngramAccessService {
     // the session's coding overlay when no explicit namespace is given, so an
     // auto-scoped session records its compaction on the right queue (#1495
     // thread 2, rule 42).
-    const lcmSessionKey = this.resolveLcmSessionKeyForCompaction(
+    const lcmSessionKey = this.resolveLcmReadSessionKey(
       request.namespace,
       namespace,
       request.sessionKey,
