@@ -1,5 +1,8 @@
 import { buildEvidencePack } from "./evidence-pack.js";
-import { resolveLcmReadSessionIds } from "./lcm-fallback-read.js";
+import {
+  gatherAcrossReadSessions,
+  resolveLcmReadSessionIds,
+} from "./lcm-fallback-read.js";
 
 export interface ExplicitCueRecallEngine {
   expandContext(
@@ -338,55 +341,51 @@ export async function buildExplicitCueRecallSection(
   // fallback cues are RECOVERED instead of being skipped by the old
   // first-non-empty short-circuit. `seenTurns` dedupes across keys by
   // `session_id`+`turn_index`; the budget is applied exactly once in the
-  // `buildEvidencePack` call below.
+  // `buildEvidencePack` call below. `gatherAcrossReadSessions` isolates a
+  // per-key read failure (a corrupt/locked fallback index must not discard the
+  // other keys' cues); single-key recall runs each collector directly, so a
+  // failure propagates exactly as before.
   //
-  // Ordering note: unlike the other LCM sections, explicit-cue does NOT
-  // relevance-rank before budgeting — `buildEvidencePack` consumes
-  // `evidenceItems` in insertion order. To keep a lower-value evidence TYPE from
-  // one key from crowding out a higher-value type from another key under a tight
-  // budget, gather is ordered by evidence TYPE first (turn references → content
-  // cues → lexical cues), then by read-key priority (primary overlay first)
-  // WITHIN each type. So a tight budget still prefers the primary key within a
-  // type, but a fallback key's turn references outrank the primary key's lexical
-  // cues. A single key (or a single sessionless `undefined`) runs each collector
-  // exactly once, in the original order — byte-for-byte the pre-#1505 behavior.
+  // Gather is ordered by evidence TYPE first (turn references → content cues →
+  // lexical cues), then by read-key priority within each type, so an unscored
+  // fallback cue keeps a sensible position relative to other unscored cues.
   const readSessionIds = resolveLcmReadSessionIds(options);
-  for (const sessionId of readSessionIds) {
-    await collectTurnReferenceEvidence({
+  await gatherAcrossReadSessions(readSessionIds, (sessionId) =>
+    collectTurnReferenceEvidence({
       engine,
       sessionId,
       query,
       maxReferences,
       evidenceItems,
       seenTurns,
-    });
-  }
+    }),
+  );
 
   if (options.includeContentLexicalCues) {
-    for (const sessionId of readSessionIds) {
-      await collectNamedMeetingFactEvidence({
+    await gatherAcrossReadSessions(readSessionIds, (sessionId) =>
+      collectNamedMeetingFactEvidence({
         engine,
         sessionId,
         query,
         maxReferences,
         evidenceItems,
         seenTurns,
-      });
-    }
+      }),
+    );
 
-    for (const sessionId of readSessionIds) {
-      await collectFocusedTranscriptCueEvidence({
+    await gatherAcrossReadSessions(readSessionIds, (sessionId) =>
+      collectFocusedTranscriptCueEvidence({
         engine,
         sessionId,
         query,
         evidenceItems,
         seenTurns,
-      });
-    }
+      }),
+    );
   }
 
-  for (const sessionId of readSessionIds) {
-    await collectLexicalCueEvidence({
+  await gatherAcrossReadSessions(readSessionIds, (sessionId) =>
+    collectLexicalCueEvidence({
       engine,
       sessionId,
       query,
@@ -396,7 +395,19 @@ export async function buildExplicitCueRecallSection(
       includeStructuredPlanCues: options.includeStructuredPlanCues,
       evidenceItems,
       seenTurns,
-    });
+    }),
+  );
+
+  // #1505 codex P2 (review follow-up): explicit-cue does NOT relevance-rank
+  // before budgeting — `buildEvidencePack` consumes `evidenceItems` in order. So
+  // when MORE than one read key contributed, stable-sort by score DESC so the
+  // strongest cues win a tight budget regardless of which key produced them
+  // (otherwise the primary key's low-score cues, gathered first, could crowd out
+  // a fallback key's stronger cues). Search-scored cues rise; unscored cues
+  // (score `undefined` → 0) keep their relative gather order. Single-key recall
+  // skips the sort, so its output is byte-for-byte the pre-#1505 insertion order.
+  if (readSessionIds.length > 1) {
+    evidenceItems.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   }
 
   const evidenceFocusQuery = buildEvidenceFocusQuery(query, {

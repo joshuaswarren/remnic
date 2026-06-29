@@ -72,3 +72,42 @@ export function resolveLcmReadSessionIds(
   // Defensive: an all-empty `sessionIds` still collapses to the single-key path.
   return out.length > 0 ? out : [target.sessionId];
 }
+
+/**
+ * Run a per-key LCM `gather` across the resolved read-key set with FAULT
+ * ISOLATION across keys (#1505 codex P2 review follow-up).
+ *
+ * A recall section that reads every key in a bare `for…await` loop loses the
+ * WHOLE section if any one key throws (e.g. a `SqliteError` from a corrupt or
+ * locked fallback index) — even when the primary overlay key already gathered
+ * evidence. The pre-#1505 first-non-empty read never had this problem: it
+ * returned the primary key's non-empty result without ever touching a failing
+ * fallback. This helper restores that resilience for the merged path: when more
+ * than one key is read, a per-key failure is contained so the other keys'
+ * evidence survives (best-effort recall — a total failure degrades to an empty
+ * section, which the orchestrator already treats as "no evidence").
+ *
+ * SINGLE-KEY is byte-for-byte the pre-#1505 behavior: the gather runs directly,
+ * so a failure PROPAGATES exactly as before (the caller / orchestrator catch
+ * still logs it). Fault isolation only engages once there is a fallback key that
+ * could fail independently of the primary.
+ */
+export async function gatherAcrossReadSessions(
+  sessionIds: ReadonlyArray<string | undefined>,
+  gather: (sessionId: string | undefined) => Promise<void>,
+): Promise<void> {
+  if (sessionIds.length <= 1) {
+    for (const sessionId of sessionIds) {
+      await gather(sessionId);
+    }
+    return;
+  }
+  for (const sessionId of sessionIds) {
+    try {
+      await gather(sessionId);
+    } catch {
+      // One read key failed; keep the evidence already gathered from the other
+      // keys instead of discarding the whole section.
+    }
+  }
+}

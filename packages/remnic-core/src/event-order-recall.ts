@@ -1,6 +1,9 @@
 import { buildEvidencePack, type EvidencePackItem } from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
-import { resolveLcmReadSessionIds } from "./lcm-fallback-read.js";
+import {
+  gatherAcrossReadSessions,
+  resolveLcmReadSessionIds,
+} from "./lcm-fallback-read.js";
 
 export interface EventOrderRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
@@ -72,11 +75,14 @@ export async function buildEventOrderRecallSection(
 
   // UNION per-key candidates into the existing rank/select/budget pass so a
   // stronger project-fallback turn is not masked by a weak primary-key hit.
+  // `gatherAcrossReadSessions` isolates a per-key read failure so a
+  // corrupt/locked fallback index can't discard the primary key's turns; the
+  // single-key path runs one collect and propagates a failure as before.
   const items: EvidencePackItem[] = [];
-  for (const sessionId of readSessionIds) {
-    if (typeof sessionId !== "string" || sessionId.length === 0) continue;
+  await gatherAcrossReadSessions(readSessionIds, async (sessionId) => {
+    if (typeof sessionId !== "string" || sessionId.length === 0) return;
     items.push(...(await collectEventOrderItems({ ...options, sessionId })));
-  }
+  });
   const ranked = rankAndSelectEventOrderItems(items, options, maxItems);
   if (ranked.length === 0) {
     return "";

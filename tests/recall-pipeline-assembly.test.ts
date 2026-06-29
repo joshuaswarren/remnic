@@ -1191,3 +1191,128 @@ test("#1505 codex P2: a failing fallback structured-parts read must NOT discard 
     "a structured-parts failure must not discard the sibling compressed-history section",
   );
 });
+
+test("#1505 codex review: a fallback read-key failure must NOT discard the PRIMARY key's section evidence", async () => {
+  // cursor[bot] Medium: the merged builders read every key in one call. If the
+  // PRIMARY overlay key already gathered evidence but a later FALLBACK key throws
+  // (e.g. a corrupt/locked fallback index), a bare `for...await` loop would
+  // propagate and lose the whole section — discarding the primary's evidence the
+  // old first-non-empty read would have returned. This pins per-key fault
+  // isolation: the primary key's evidence still surfaces when a fallback read
+  // throws.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-recall-keyfail-"));
+  const sessionId = "alice:branch-session";
+  const projectId = "origin:proj3131";
+
+  let branchOverlayKey = "";
+  let projectFallbackKey = "";
+  const primaryEvidence = {
+    turn_index: 9,
+    role: "user",
+    content:
+      "PRIMARY_SURVIVES: my culinary journey started with Turkish, Greek, and Lebanese cuisines.",
+  };
+  // The PRIMARY (branch) key returns evidence; every read for the FALLBACK
+  // (project) key throws, simulating a corrupt/locked fallback index.
+  const failIfFallback = (requestedSessionId?: string) => {
+    if (requestedSessionId === projectFallbackKey) {
+      throw new Error("simulated corrupt fallback index");
+    }
+  };
+
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    sharedContextEnabled: false,
+    knowledgeIndexEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    injectQuestions: false,
+    lcmEnabled: true,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    defaultRecallNamespaces: ["self"],
+    codingMode: { projectScope: true, branchScope: true },
+    explicitCueRecallEnabled: true,
+    focusedListRecallEnabled: true,
+    eventOrderRecallEnabled: true,
+    recallPipeline: [
+      { id: "event-order", enabled: true, maxChars: 2_400, maxResults: 8, maxTurns: 16, maxTokens: 6_000 },
+      { id: "focused-list", enabled: true, maxChars: 2_400, maxResults: 8, maxTurns: 16, maxTokens: 6_000 },
+      { id: "explicit-cue", enabled: true, maxChars: 2_400, maxResults: 8 },
+      { id: "profile", enabled: false },
+      { id: "memories", enabled: false },
+    ],
+  });
+  const orchestrator = new Orchestrator(cfg);
+
+  orchestrator.setCodingContextForSession(sessionId, {
+    projectId,
+    branch: "feature/cuisines",
+    rootPath: projectId,
+    defaultBranch: "main",
+  });
+  const branchOverlayNs = (
+    orchestrator as unknown as {
+      applyCodingNamespaceOverlay: (sk: string, base: string) => string;
+    }
+  ).applyCodingNamespaceOverlay(sessionId, "alice");
+  branchOverlayKey = encodeNs(branchOverlayNs, sessionId);
+  projectFallbackKey = encodeNs(projectFallbackNamespace(orchestrator, "alice", projectId), sessionId);
+
+  (orchestrator as any).lcmEngine = {
+    enabled: true,
+    searchContextFull: async (_q: string, limit: number, requestedSessionId?: string) => {
+      failIfFallback(requestedSessionId);
+      return requestedSessionId === branchOverlayKey
+        ? [
+            {
+              id: 0,
+              session_id: branchOverlayKey,
+              turn_index: primaryEvidence.turn_index,
+              role: primaryEvidence.role,
+              content: primaryEvidence.content,
+              score: 100,
+            },
+          ].slice(0, limit)
+        : [];
+    },
+    expandContext: async (requestedSessionId: string, fromTurn: number, toTurn: number) => {
+      failIfFallback(requestedSessionId);
+      return requestedSessionId === branchOverlayKey &&
+        primaryEvidence.turn_index >= fromTurn &&
+        primaryEvidence.turn_index <= toTurn
+        ? [primaryEvidence]
+        : [];
+    },
+    getStats: async (requestedSessionId?: string) => {
+      failIfFallback(requestedSessionId);
+      return requestedSessionId === branchOverlayKey
+        ? { totalMessages: 10, maxTurnIndex: primaryEvidence.turn_index }
+        : { totalMessages: 0, maxTurnIndex: -1 };
+    },
+    searchStructuredParts: async () => [],
+    formatStructuredRecall: () => "",
+    assembleRecall: async () => "",
+  };
+
+  const context = await (orchestrator as any).recallInternal(
+    "Remember when you told me to list, in chronological order, the cuisines I started my culinary journey with?",
+    sessionId,
+  );
+
+  assert.match(
+    context,
+    /PRIMARY_SURVIVES/,
+    "a fallback read-key failure must not discard the primary key's already-gathered evidence",
+  );
+});
