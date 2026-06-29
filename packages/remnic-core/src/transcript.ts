@@ -4,12 +4,7 @@ import { log } from "./logger.js";
 import type { TranscriptEntry, Checkpoint, PluginConfig } from "./types.js";
 import { analyzeSessionIntegrity, type SessionIntegrityReport } from "./session-integrity.js";
 import { resolveSafeStoragePath } from "./storage-paths.js";
-import {
-  LEGACY_FALLBACK_CHANNEL_ID,
-  LEGACY_FALLBACK_CHANNEL_TYPE,
-  parseSessionIdentity,
-  sessionStoragePaths,
-} from "./session-identity.js";
+import { sessionStoragePaths } from "./session-identity.js";
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
 type DirectoryOwnershipCacheEntry = {
@@ -18,16 +13,25 @@ type DirectoryOwnershipCacheEntry = {
 };
 
 /**
- * Read-back-only directory for arbitrary (non-legacy) session keys written by
- * builds predating issue #1496, when every non-legacy key was routed into the
- * shared `other/default` directory on first write. New writes never target this
- * directory — it is only added to read/footprint candidate lists so existing
- * data stays discoverable until migrated. See `session-transcript-migration.ts`.
+ * De-duplicate JSONL lines collected across multiple read-back candidate
+ * directories. A partially-applied migration (issue #1496) can leave the SAME
+ * raw row in both the primary `session/<hash>` tree and a legacy read-back dir
+ * (`other/default` or an old `parts.length >= 3` directory) when the source was
+ * copied but not yet trimmed. Without this guard, `readRecent`, `readToolUse`,
+ * footprint estimation, and the summarizer fetch would return that row twice
+ * (cursor review on PR #1504). The exact raw JSONL line is the stable identity:
+ * the migration preserves byte content per session, so a copied-but-not-trimmed
+ * row is byte-identical in both locations. Returns `true` the first time a line
+ * is seen, `false` for every subsequent duplicate.
  */
-const OTHER_DEFAULT_READBACK_DIR = path.join(
-  LEGACY_FALLBACK_CHANNEL_TYPE,
-  LEGACY_FALLBACK_CHANNEL_ID,
-);
+function makeRawLineDeduper(): (rawLine: string) => boolean {
+  const seen = new Set<string>();
+  return (rawLine: string): boolean => {
+    if (seen.has(rawLine)) return false;
+    seen.add(rawLine);
+    return true;
+  };
+}
 
 /**
  * Manages conversation transcript storage, checkpointing, and recall formatting.
@@ -70,9 +74,11 @@ export class TranscriptManager {
    * Legacy `agent:<id>:...` shapes keep their existing readable channel paths.
    * Arbitrary / non-legacy keys (e.g. `pi-geek:abc123`) route to
    * `transcripts/session/<hash>/YYYY-MM-DD.jsonl` from the FIRST write — they
-   * never start life in `other/default`. For those keys an additional
-   * read-back-only `otherDefaultReadbackDir` is returned so data written by
-   * older builds under `other/default` stays discoverable until migrated.
+   * never start life in `other/default`. For those keys a list of
+   * read-back-only `readbackDirs` is returned so data written by older builds
+   * (under `other/default`, or under an old `parts.length >= 3` directory such
+   * as `baz/default`) stays discoverable until migrated. New writes never
+   * target read-back dirs. See `session-identity.ts`.
    *
    * @returns Object with raw channel identifiers and encoded storage path pieces.
    */
@@ -83,19 +89,12 @@ export class TranscriptManager {
     channelId: string;
     alternateDir: string;
     legacyDir?: string;
-    otherDefaultReadbackDir?: string;
+    readbackDirs: string[];
   } {
     const paths = sessionStoragePaths(sessionKey);
-    const identity = parseSessionIdentity(sessionKey);
 
     // Daily rotation: transcripts/{channelType}/{channelId}/YYYY-MM-DD.jsonl
     const today = new Date().toISOString().slice(0, 10);
-
-    // Non-legacy keys may have legacy data stranded under `other/default`.
-    const otherDefaultReadbackDir =
-      !identity.legacy && paths.dir !== OTHER_DEFAULT_READBACK_DIR
-        ? OTHER_DEFAULT_READBACK_DIR
-        : undefined;
 
     return {
       dir: paths.dir,
@@ -104,7 +103,7 @@ export class TranscriptManager {
       channelId: paths.channelId,
       alternateDir: paths.alternateDir,
       legacyDir: paths.legacyDir,
-      otherDefaultReadbackDir,
+      readbackDirs: paths.readbackDirs,
     };
   }
 
@@ -164,7 +163,7 @@ export class TranscriptManager {
     file: string;
     alternateDir: string;
     legacyDir?: string;
-    otherDefaultReadbackDir?: string;
+    readbackDirs: string[];
   } {
     const p = this.getTranscriptPath(sessionKey);
     return {
@@ -172,7 +171,7 @@ export class TranscriptManager {
       file: p.file,
       alternateDir: p.alternateDir,
       legacyDir: p.legacyDir,
-      otherDefaultReadbackDir: p.otherDefaultReadbackDir,
+      readbackDirs: p.readbackDirs,
     };
   }
 
@@ -332,12 +331,12 @@ export class TranscriptManager {
     dir: string,
     legacyDir?: string,
     alternateDir?: string,
-    otherDefaultReadbackDir?: string,
+    readbackDirs: string[] = [],
   ): Promise<Array<{ cacheKey: string; name: string; path: string }>> {
     const files: Array<{ cacheKey: string; name: string; path: string }> = [];
     const seenDirs = new Set<string>();
 
-    for (const candidateDir of [dir, alternateDir, legacyDir, otherDefaultReadbackDir]) {
+    for (const candidateDir of [dir, alternateDir, legacyDir, ...readbackDirs]) {
       if (!candidateDir || seenDirs.has(candidateDir)) continue;
       seenDirs.add(candidateDir);
 
@@ -389,16 +388,19 @@ export class TranscriptManager {
     startTime: Date,
     endTime: Date,
   ): Promise<Array<{ timestamp: string; sessionKey: string; tool: string }>> {
-    const { dir, alternateDir, legacyDir, otherDefaultReadbackDir } = this.getToolUsagePath(sessionKey);
+    const { dir, alternateDir, legacyDir, readbackDirs } = this.getToolUsagePath(sessionKey);
     try {
       const files = await this.getSessionStorageFiles(
         this.toolUsageDir,
         dir,
         legacyDir,
         alternateDir,
-        otherDefaultReadbackDir,
+        readbackDirs,
       );
       const out: Array<{ timestamp: string; sessionKey: string; tool: string }> = [];
+      // Dedup identical raw rows that a partially-applied migration may have left
+      // in both the primary dir and a read-back dir (issue #1496, cursor review).
+      const keepRawLine = makeRawLineDeduper();
       for (const file of files) {
         const raw = await readFile(file.path, "utf-8");
         for (const line of raw.split("\n")) {
@@ -409,7 +411,7 @@ export class TranscriptManager {
             if (!Number.isFinite(ts)) continue;
             if (ts >= startTime.getTime() && ts < endTime.getTime()) {
               if (typeof obj.tool === "string" && typeof obj.sessionKey === "string") {
-                if (obj.sessionKey === sessionKey) {
+                if (obj.sessionKey === sessionKey && keepRawLine(line)) {
                   out.push({ timestamp: obj.timestamp, sessionKey: obj.sessionKey, tool: obj.tool });
                 }
               }
@@ -426,16 +428,23 @@ export class TranscriptManager {
   }
 
   async estimateSessionFootprint(sessionKey: string): Promise<{ bytes: number; tokens: number }> {
-    const { dir, alternateDir, legacyDir, otherDefaultReadbackDir } = this.getTranscriptPath(sessionKey);
+    const { dir, alternateDir, legacyDir, readbackDirs } = this.getTranscriptPath(sessionKey);
     let bytes = 0;
 
+    // NOTE: this is a best-effort byte ESTIMATE for compaction sizing, not an
+    // exact row count, and is maintained via an incremental per-file cache. A
+    // copied-but-not-trimmed migration window (issue #1496) can transiently
+    // over-estimate by counting a duplicated row in both the primary and a
+    // read-back dir; that self-heals once the migration trims the source. The
+    // exact-once guarantee that matters for callers lives in readRecent /
+    // readToolUse / the summarizer fetch, which dedup by raw line.
     try {
       const files = await this.getSessionStorageFiles(
         this.transcriptsDir,
         dir,
         legacyDir,
         alternateDir,
-        otherDefaultReadbackDir,
+        readbackDirs,
       );
       const cached = this.sessionFootprintCache.get(sessionKey);
       if (!cached) {
@@ -712,7 +721,7 @@ export class TranscriptManager {
     end: Date,
     sessionKey: string,
   ): Promise<TranscriptEntry[]> {
-    const { dir, alternateDir, legacyDir, otherDefaultReadbackDir } = this.getTranscriptPath(sessionKey);
+    const { dir, alternateDir, legacyDir, readbackDirs } = this.getTranscriptPath(sessionKey);
 
     // Build set of date strings that overlap with [start, end].
     // Always include end's date to handle midnight-crossing lookbacks
@@ -731,9 +740,12 @@ export class TranscriptManager {
       dir,
       legacyDir,
       alternateDir,
-      otherDefaultReadbackDir,
+      readbackDirs,
     );
 
+    // Dedup identical raw rows that a partially-applied migration may have left
+    // in both the primary dir and a read-back dir (issue #1496, cursor review).
+    const keepRawLine = makeRawLineDeduper();
     for (const file of files) {
       // Only read files whose date is within the window
       const dateStr = file.name.slice(0, 10);
@@ -746,7 +758,7 @@ export class TranscriptManager {
           try {
             const entry = JSON.parse(line) as TranscriptEntry;
             const ts = new Date(entry.timestamp);
-            if (ts >= start && ts < end && entry.sessionKey === sessionKey) {
+            if (ts >= start && ts < end && entry.sessionKey === sessionKey && keepRawLine(line)) {
               entries.push(entry);
             }
           } catch {

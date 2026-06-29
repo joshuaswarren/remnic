@@ -1,12 +1,7 @@
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { log } from "./logger.js";
-import {
-  LEGACY_FALLBACK_CHANNEL_ID,
-  LEGACY_FALLBACK_CHANNEL_TYPE,
-  parseSessionIdentity,
-  sessionStoragePaths,
-} from "./session-identity.js";
+import { parseSessionIdentity, sessionStoragePaths } from "./session-identity.js";
 import { resolveSafeStoragePath } from "./storage-paths.js";
 import type { TranscriptEntry } from "./types.js";
 
@@ -30,8 +25,12 @@ import type { TranscriptEntry } from "./types.js";
  *     trail.
  */
 
-/** Channel types whose `default` directory is eligible for splitting. */
-const MIGRATABLE_FALLBACK_TYPES = new Set<string>([LEGACY_FALLBACK_CHANNEL_TYPE]);
+/**
+ * Channel type that NEW writes use for first-class arbitrary keys. Files
+ * already homed under `session/<hash>` are never migration sources — every
+ * line there is, by definition, already in its destination directory.
+ */
+const FIRST_CLASS_CHANNEL_TYPE = "session";
 
 export interface SessionMigrationEntryGroup {
   /** The distinct session key these lines belong to. */
@@ -95,9 +94,22 @@ function isDateStampedJsonl(name: string): boolean {
 }
 
 /**
- * Source directories that older builds used to conflate arbitrary sessions.
- * We scan `transcripts/<type>/<id>/` two levels deep and only consider the
- * `<fallbackType>/default` directories as migration sources.
+ * Candidate source directories that older builds may have used to conflate or
+ * misroute arbitrary sessions. We scan `transcripts/<type>/<id>/` two levels
+ * deep and consider any directory EXCEPT the first-class `session/<hash>` tree
+ * (whose contents are already homed). This covers:
+ *
+ *   - the shared `other/default` fallback every arbitrary key once landed in;
+ *   - the OLD `parts.length >= 3` parser's directories (e.g. `foo:bar:baz` →
+ *     `baz/default`, `foo:bar:baz:qux` → `baz/qux`), which the pre-#1496 build
+ *     wrote even for non-`agent:` keys (Thread B / codex review on PR #1504).
+ *
+ * `planFile` is the actual gate: a line is only moved when its session key now
+ * resolves to a DIFFERENT directory than the one it sits in. Legacy
+ * `agent:<id>:...` keys still resolve to their original channel directory, so
+ * scanning `main/default`, `discord/<chan>`, etc. is a safe no-op for them
+ * (rule #39 — identical routing across paths). This keeps the migration
+ * lossless and idempotent regardless of which directory data was stranded in.
  */
 async function listFallbackSourceFiles(
   transcriptsDir: string
@@ -112,7 +124,8 @@ async function listFallbackSourceFiles(
 
   for (const typeEnt of typeEntries) {
     if (!typeEnt.isDirectory()) continue;
-    if (!MIGRATABLE_FALLBACK_TYPES.has(typeEnt.name)) continue;
+    // Files already under `session/<hash>` are homed — never a migration source.
+    if (typeEnt.name === FIRST_CLASS_CHANNEL_TYPE) continue;
 
     const typeDir = path.join(transcriptsDir, typeEnt.name);
     let idEntries: Array<{ name: string; isDirectory(): boolean }>;
@@ -124,7 +137,6 @@ async function listFallbackSourceFiles(
 
     for (const idEnt of idEntries) {
       if (!idEnt.isDirectory()) continue;
-      if (idEnt.name !== LEGACY_FALLBACK_CHANNEL_ID) continue;
 
       const chanDir = path.join(typeDir, idEnt.name);
       let files: string[];

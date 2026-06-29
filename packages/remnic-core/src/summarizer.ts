@@ -13,12 +13,7 @@ import {
   encodeStoragePathSegment,
   resolveSafeStoragePath,
 } from "./storage-paths.js";
-import {
-  LEGACY_FALLBACK_CHANNEL_ID,
-  LEGACY_FALLBACK_CHANNEL_TYPE,
-  parseSessionIdentity,
-  sessionStoragePaths,
-} from "./session-identity.js";
+import { sessionStoragePaths } from "./session-identity.js";
 
 // Schema for LLM summary output
 const HourlySummarySchema = z.object({
@@ -767,25 +762,24 @@ Respond with valid JSON matching this schema:
     endTime: Date
   ): Promise<TranscriptEntry[]> {
     // Shared session-identity layer (issue #1496, rule #22). Arbitrary keys
-    // route to `session/<hash>`; legacy `agent:<id>:...` keep their paths.
-    const identity = parseSessionIdentity(sessionKey);
+    // route to `session/<hash>`; legacy `agent:<id>:...` keep their paths. The
+    // shared helper also supplies the read-back-only candidate dirs (mirrors
+    // TranscriptManager) so legacy `other/default` AND old `parts.length >= 3`
+    // data stays discoverable here too.
     const paths = sessionStoragePaths(sessionKey);
 
     try {
       const transcriptRoot = path.join(this.config.memoryDir, "transcripts");
-      // Read-back-only `other/default` candidate for arbitrary keys whose data
-      // predates first-class routing (mirrors TranscriptManager).
-      const otherDefaultReadbackDir =
-        !identity.legacy &&
-        paths.dir !== path.join(LEGACY_FALLBACK_CHANNEL_TYPE, LEGACY_FALLBACK_CHANNEL_ID)
-          ? path.join(LEGACY_FALLBACK_CHANNEL_TYPE, LEGACY_FALLBACK_CHANNEL_ID)
-          : undefined;
       const candidateDirs = new Set(
-        [paths.dir, paths.alternateDir, paths.legacyDir, otherDefaultReadbackDir].filter(
+        [paths.dir, paths.alternateDir, paths.legacyDir, ...paths.readbackDirs].filter(
           (dir): dir is string => typeof dir === "string" && dir.length > 0,
         ),
       );
       const entries: TranscriptEntry[] = [];
+      // Dedup identical raw rows that a partially-applied migration may have
+      // left in both the primary dir and a read-back dir (issue #1496, cursor
+      // review). Exact raw JSONL line is the stable identity.
+      const seenRawLines = new Set<string>();
 
       // Read all daily transcript files in the directory
       for (const candidateDir of candidateDirs) {
@@ -812,8 +806,10 @@ Respond with valid JSON matching this schema:
                 if (
                   entry.sessionKey === sessionKey &&
                   entryTime >= startTime.getTime() &&
-                  entryTime < endTime.getTime()
+                  entryTime < endTime.getTime() &&
+                  !seenRawLines.has(line)
                 ) {
+                  seenRawLines.add(line);
                   entries.push(entry);
                 }
               } catch {

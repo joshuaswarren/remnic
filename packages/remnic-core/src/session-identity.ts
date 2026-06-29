@@ -79,6 +79,17 @@ export interface SessionStoragePaths {
    * identical to `dir` or when either segment is path-unsafe.
    */
   legacyDir?: string;
+  /**
+   * Ordered, de-duplicated list of READ-BACK-ONLY directories where an older
+   * build may have stranded this key's data. NEW writes never target these —
+   * they exist purely so pre-#1496 transcripts/tool-usage stay discoverable
+   * (and migratable). Populated only for non-legacy keys. Includes:
+   *   1. the shared `other/default` fallback (every arbitrary key landed here);
+   *   2. the directory the OLD `parts.length >= 3` parser would have chosen
+   *      (e.g. `foo:bar:baz` → `baz/default`, `foo:bar:baz:qux` → `baz/qux`).
+   * See {@link legacyParserReadbackDir}.
+   */
+  readbackDirs: string[];
 }
 
 /**
@@ -134,7 +145,77 @@ export function sessionStoragePaths(sessionKey: string): SessionStoragePaths {
     }
   }
 
-  return { channelType, channelId, dir, alternateDir, legacyDir };
+  // Read-back-only candidates are only relevant for non-legacy keys: legacy
+  // `agent:<id>:...` keys still resolve to their original channel directory, so
+  // nothing about their on-disk location moved.
+  const readbackDirs: string[] = [];
+  if (!identity.legacy) {
+    const seen = new Set<string>([dir]);
+    if (alternateDir) seen.add(alternateDir);
+    if (legacyDir) seen.add(legacyDir);
+    for (const candidate of [OTHER_DEFAULT_READBACK_DIR, legacyParserReadbackDir(canonicalSessionKey)]) {
+      if (!candidate || seen.has(candidate)) continue;
+      seen.add(candidate);
+      readbackDirs.push(candidate);
+    }
+  }
+
+  return { channelType, channelId, dir, alternateDir, legacyDir, readbackDirs };
+}
+
+/**
+ * The shared `other/default` directory every arbitrary key was routed into by
+ * builds predating issue #1496. Exposed so transcript/tool-usage/summary read
+ * paths and the migration scanner all agree on the same fallback location.
+ */
+export const OTHER_DEFAULT_READBACK_DIR = path.join(
+  LEGACY_FALLBACK_CHANNEL_TYPE,
+  LEGACY_FALLBACK_CHANNEL_ID
+);
+
+/**
+ * Reconstruct the transcript/tool-usage directory the OLD `getTranscriptPath`
+ * parser (pre-#1496) would have produced for a key the NEW parser reclassifies
+ * as a first-class `session/<hash>` identity.
+ *
+ * The OLD parser treated ANY key with `parts.length >= 3` as legacy — it did
+ * NOT require a leading `agent` segment — so an arbitrary key like
+ * `foo:bar:baz` was stored under `baz/default` and `foo:bar:baz:qux` under
+ * `baz/qux`. Those directories must stay readable (and migratable) for existing
+ * installs even though the key now writes to `session/<hash>` (Thread B / codex
+ * review on PR #1504). Path segments are encoded exactly as the old `dir` was
+ * built (`encodeStoragePathSegment`) so the candidate matches the bytes on disk.
+ *
+ * Returns `undefined` when the key has fewer than three colon parts (the old
+ * parser would have used the `other/default` fallback, already covered), when
+ * the channel type is empty, or when the result is unsafe.
+ */
+export function legacyParserReadbackDir(sessionKey: string): string | undefined {
+  if (typeof sessionKey !== "string" || sessionKey.length === 0) return undefined;
+  const parts = sessionKey.split(":");
+  if (parts.length < 3) return undefined;
+
+  const channelType = parts[2];
+  if (!channelType || channelType.length === 0) return undefined;
+
+  // Mirror the OLD parser's channelId derivation for parts.length >= 3 keys.
+  let channelId = LEGACY_FALLBACK_CHANNEL_ID;
+  if (channelType === "main") {
+    channelId = "default";
+  } else if (channelType === "discord" && parts.length >= 5 && parts[3] === "channel") {
+    channelId = parts[4];
+  } else if (channelType === "slack" && parts.length >= 5 && parts[3] === "channel") {
+    channelId = parts[4];
+  } else if (channelType === "cron" && parts.length >= 4) {
+    channelId = parts[3];
+  } else if (parts.length >= 4) {
+    channelId = parts[3];
+  }
+  if (!channelId || channelId.length === 0) {
+    channelId = LEGACY_FALLBACK_CHANNEL_ID;
+  }
+
+  return path.join(encodeStoragePathSegment(channelType), encodeStoragePathSegment(channelId));
 }
 
 /**

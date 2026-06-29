@@ -147,6 +147,92 @@ test("unparseable and legacy-homed lines are retained in the source file", async
   }
 });
 
+async function seedLegacyParserDir(
+  memoryDir: string,
+  channelType: string,
+  channelId: string,
+  fileName: string,
+  lines: string[]
+): Promise<string> {
+  const dir = path.join(memoryDir, "transcripts", channelType, channelId);
+  await mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, fileName);
+  await writeFile(filePath, `${lines.join("\n")}\n`, "utf-8");
+  return filePath;
+}
+
+test("migration scan picks up pre-existing foo:bar:baz data under old baz/default", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    const fileName = "2026-06-29.jsonl";
+    // OLD build stored foo:bar:baz under baz/default (parts.length >= 3 parser).
+    const sourcePath = await seedLegacyParserDir(memoryDir, "baz", "default", fileName, [
+      entryLine("foo:bar:baz", "1", "user"),
+      entryLine("foo:bar:baz", "2", "assistant"),
+    ]);
+
+    const plan = await planSessionTranscriptMigration({ memoryDir });
+    assert.equal(plan.files.length, 1, "baz/default must be a migration candidate");
+    assert.equal(plan.distinctSessions, 1);
+    assert.equal(plan.movedEntries, 2);
+
+    const result = await migrateSessionTranscripts({ memoryDir, apply: true });
+    assert.equal(result.errors.length, 0);
+
+    const destDir = sessionStoragePaths("foo:bar:baz").dir;
+    const destContent = await readFile(path.join(memoryDir, "transcripts", destDir, fileName), "utf-8");
+    assert.equal(destContent.split("\n").filter(Boolean).length, 2);
+
+    // Source emptied/removed.
+    await assert.rejects(() => readFile(sourcePath, "utf-8"));
+
+    // Idempotent: a second run finds nothing.
+    const second = await migrateSessionTranscripts({ memoryDir, apply: true });
+    assert.equal(second.plan.files.length, 0);
+    assert.equal(second.plan.movedEntries, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("migration leaves legitimate legacy agent:<id>:main data in place (dest === source)", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    const fileName = "2026-06-29.jsonl";
+    // agent:generalist:main legitimately lives in main/default and must NOT move.
+    await seedLegacyParserDir(memoryDir, "main", "default", fileName, [
+      entryLine("agent:generalist:main", "1", "user"),
+    ]);
+
+    const plan = await planSessionTranscriptMigration({ memoryDir });
+    assert.equal(plan.files.length, 0, "legacy agent data must not be a migration source");
+    assert.equal(plan.movedEntries, 0);
+
+    const result = await migrateSessionTranscripts({ memoryDir, apply: true });
+    assert.equal(result.errors.length, 0);
+    const stillThere = await readFile(path.join(memoryDir, "transcripts", "main", "default", fileName), "utf-8");
+    assert.equal(stillThere.split("\n").filter(Boolean).length, 1);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("migration never treats session/<hash> dirs as sources", async () => {
+  const memoryDir = await makeMemoryDir();
+  try {
+    const fileName = "2026-06-29.jsonl";
+    const sessionKey = "pi-geek:abc123";
+    const destDir = sessionStoragePaths(sessionKey).dir; // session/<hash>
+    const [type, id] = destDir.split("/");
+    await seedLegacyParserDir(memoryDir, type, id, fileName, [entryLine(sessionKey, "1", "user")]);
+
+    const plan = await planSessionTranscriptMigration({ memoryDir });
+    assert.equal(plan.files.length, 0, "already-homed session/<hash> must never be scanned");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("apply writes an audit manifest", async () => {
   const memoryDir = await makeMemoryDir();
   try {

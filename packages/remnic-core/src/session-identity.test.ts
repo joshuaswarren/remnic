@@ -5,6 +5,7 @@ import {
   LEGACY_FALLBACK_CHANNEL_ID,
   LEGACY_FALLBACK_CHANNEL_TYPE,
   SESSION_CHANNEL_TYPE,
+  legacyParserReadbackDir,
   parseSessionIdentity,
   sessionStoragePaths,
 } from "./session-identity.js";
@@ -96,4 +97,34 @@ test("display label strips control characters and separators", () => {
   const id = parseSessionIdentity("pi-geek:abc/123");
   assert.ok(!id.displayLabel.includes("/"));
   assert.ok(id.displayLabel.length > 0);
+});
+
+test("legacyParserReadbackDir reconstructs the OLD parser dir for >=3-part keys", () => {
+  // foo:bar:baz → channelType=baz, channelId=default
+  assert.equal(legacyParserReadbackDir("foo:bar:baz"), "baz/default");
+  // foo:bar:baz:qux → channelType=baz, channelId=qux
+  assert.equal(legacyParserReadbackDir("foo:bar:baz:qux"), "baz/qux");
+});
+
+test("legacyParserReadbackDir returns undefined for <3-part keys (old build used other/default)", () => {
+  assert.equal(legacyParserReadbackDir("pi-geek:abc123"), undefined);
+  assert.equal(legacyParserReadbackDir("bare"), undefined);
+  assert.equal(legacyParserReadbackDir(""), undefined);
+});
+
+test("readbackDirs for a >=3-part arbitrary key include other/default AND the old parser dir", () => {
+  const paths = sessionStoragePaths("foo:bar:baz");
+  assert.match(paths.dir, /^session\/[0-9a-f]{16}$/);
+  assert.ok(paths.readbackDirs.includes("other/default"));
+  assert.ok(paths.readbackDirs.includes("baz/default"));
+});
+
+test("readbackDirs for a 2-part arbitrary key include only other/default", () => {
+  const paths = sessionStoragePaths("pi-geek:abc123");
+  assert.deepEqual(paths.readbackDirs, ["other/default"]);
+});
+
+test("legacy agent:<id>:... keys expose no read-back dirs (their location never moved)", () => {
+  assert.deepEqual(sessionStoragePaths("agent:generalist:main").readbackDirs, []);
+  assert.deepEqual(sessionStoragePaths("agent:generalist:discord:channel:998877").readbackDirs, []);
 });
