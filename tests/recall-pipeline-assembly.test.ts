@@ -6,6 +6,19 @@ import { mkdtemp } from "node:fs/promises";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
 
+// #1495 P1: the namespaced LCM `session_id` is framed with a reserved sentinel
+// (U+001F UNIT SEPARATOR) — `\x1f<namespace>\x1f<sessionKey>` — kept in sync with
+// `coding-namespace.ts:lcmSessionKeyForNamespace`. U+001F cannot occur in a
+// route namespace (`[A-Za-z0-9._-]`) nor any legitimate session key, so the
+// namespaced + default key-spaces are provably disjoint (unforgeable). Encoded
+// locally here because `coding-namespace` is not exported from the package root
+// (same reason `projectFallbackNamespace` reads the overlay back off the
+// orchestrator instead of importing `combineNamespaces`).
+const LCM_NS_SENTINEL = "\u001f";
+function encodeNs(namespace: string, sessionKey: string): string {
+  return `${LCM_NS_SENTINEL}${namespace}${LCM_NS_SENTINEL}${sessionKey}`;
+}
+
 /**
  * Derive the exact PROJECT-scope overlay namespace the orchestrator would use as
  * a branch session's read fallback, WITHOUT depending on `combineNamespaces`
@@ -436,7 +449,7 @@ test("#1505 thread 3: ALL LCM recall sections read under the SCOPED (overlay) se
     }
   ).applyCodingNamespaceOverlay(sessionId, "alice");
   assert.notEqual(overlayNs, "alice", "coding overlay must change the namespace");
-  scopedKey = `${overlayNs}:${sessionId}`;
+  scopedKey = encodeNs(overlayNs, sessionId);
 
   (orchestrator as any).lcmEngine = {
     enabled: true,
@@ -581,8 +594,8 @@ test("#1505 fallback: branch-scoped recall reads LCM evidence archived at PROJEC
     branchOverlayNs,
     "project fallback namespace must differ from the branch overlay namespace",
   );
-  branchOverlayKey = `${branchOverlayNs}:${sessionId}`;
-  projectFallbackKey = `${projectFallbackNs}:${sessionId}`;
+  branchOverlayKey = encodeNs(branchOverlayNs, sessionId);
+  projectFallbackKey = encodeNs(projectFallbackNs, sessionId);
 
   (orchestrator as any).lcmEngine = {
     enabled: true,
@@ -719,8 +732,8 @@ test("#1505 fallback read-auth: an unreadable principal self/overlay namespace i
       applyCodingNamespaceOverlay: (sk: string, base: string) => string;
     }
   ).applyCodingNamespaceOverlay(sessionId, "alice");
-  const branchOverlayKey = `${branchOverlayNs}:${sessionId}`;
-  const projectFallbackKey = `${projectFallbackNamespace(orchestrator, "alice", projectId)}:${sessionId}`;
+  const branchOverlayKey = encodeNs(branchOverlayNs, sessionId);
+  const projectFallbackKey = encodeNs(projectFallbackNamespace(orchestrator, "alice", projectId), sessionId);
 
   (orchestrator as any).lcmEngine = {
     enabled: true,
@@ -755,7 +768,7 @@ test("#1505 fallback read-auth: an unreadable principal self/overlay namespace i
   // No queried key may carry the `alice-project-` overlay prefix at all.
   for (const queried of lcmQueriedSessionIds) {
     assert.ok(
-      !queried.startsWith("alice-project-"),
+      !queried.includes("alice-project-"),
       `no LCM read may target an alice-project-* overlay namespace; saw ${queried}`,
     );
   }

@@ -2969,11 +2969,18 @@ export class EngramAccessService {
     // it is the sole consumer, and resolving the overlay on every chunk/section
     // recall would be wasted work — keeping non-raw recall byte-for-byte
     // unchanged.
+    // Trim the sessionKey to match what `orchestrator.recall(...)` already does
+    // (`request.sessionKey?.trim() || undefined`) and what the x-ray raw-excerpt
+    // path uses (cursor "Raw excerpt key not trimmed"). A whitespace-padded key
+    // otherwise drives recall under one identity but resolves the raw-excerpt
+    // overlay namespace + LCM `session_id` under a DIFFERENT (untrimmed) prefix,
+    // so excerpts are gated/queried inconsistently with recall and the x-ray path.
+    const trimmedSessionKey = request.sessionKey?.trim() || undefined;
     const rawExcerptNamespace =
       disclosure === "raw"
         ? this.resolveRawExcerptReadNamespace(
             request.namespace,
-            request.sessionKey,
+            trimmedSessionKey,
             authenticatedPrincipal,
           )
         : undefined;
@@ -2995,17 +3002,17 @@ export class EngramAccessService {
     // project/root scope — exactly as recall + `lcmSearch` do. Only with a
     // concrete sessionKey; already read-gated.
     const rawExcerptSessionIds =
-      disclosure === "raw" && rawExcerptNamespace && request.sessionKey
+      disclosure === "raw" && rawExcerptNamespace && trimmedSessionKey
         ? this.resolveLcmReadSessionIds(
             request.namespace,
             rawExcerptNamespace,
-            request.sessionKey,
+            trimmedSessionKey,
             authenticatedPrincipal,
           )
         : undefined;
     let results = await this.serializeRecallResults(snapshot, disclosure, {
       query,
-      sessionKey: request.sessionKey,
+      sessionKey: trimmedSessionKey,
       ...(rawExcerptNamespace ? { rawExcerptNamespace } : {}),
       ...(rawExcerptSessionIds ? { rawExcerptSessionIds } : {}),
       ...(rawExcerptsSuppressed ? { rawExcerptsSuppressed } : {}),
@@ -5151,30 +5158,32 @@ export class EngramAccessService {
           this.orchestrator.config.defaultNamespace,
         ) ?? request.sessionPrefix
       : request.sessionPrefix;
-    // SECURITY (codex P1 "Don't treat any readable namespace as default LCM
-    // access"): a sessionless, prefixless `lcmSearch` issues
-    // `searchContextFull(query, limit, undefined, undefined)`, which scans the
-    // ENTIRE LCM archive across every session/namespace. That is only acceptable
-    // when the caller may read the DEFAULT store the archive scan effectively
-    // exposes. Under a restrictive `default` READ policy (the principal cannot
-    // read `default`), an implicit `lcmSearch` with no `sessionKey` AND no
-    // `sessionPrefix` must NOT run the unbounded scan — return EMPTY. A scoped
-    // call (sessionKey or sessionPrefix present) stays gated by its own
-    // overlay/recall authorization above; an explicit, read-authorized namespace
-    // is unaffected (it already passed `resolveReadableNamespace`).
+    // SECURITY (#1495 P1 + codex P1 r2 "Require a scoped LCM filter before
+    // archive searches"): a sessionless, prefixless `lcmSearch` issues
+    // `searchContextFull(query, limit, undefined, undefined)`, an archive-wide
+    // FTS scan over EVERY `session_id`, including the sentinel-framed
+    // `<ns>`-scoped overlay/tenant rows. The LCM archive is keyed by the
+    // `session_id` STRING and is NOT partitioned by namespace, so an unscoped
+    // scan CANNOT be constrained to the caller's authorized namespace — neither
+    // an explicit `namespace` nor a readable `default` confines its results to
+    // rows the caller may read. The scan is therefore safe ONLY in single-store
+    // mode (namespaces disabled, one shared archive owned by the caller). When
+    // namespaces are ENABLED, an unscoped `lcmSearch` (no `sessionKey` AND no
+    // `sessionPrefix`) must be SUPPRESSED — return EMPTY — regardless of an
+    // explicit namespace or default-readability, so a caller authorized for
+    // `default` (or for one explicit namespace) cannot read other namespaces'
+    // transcript rows via the archive-wide scan (cross-tenant read leak). A
+    // SCOPED call (sessionKey or sessionPrefix present) is unaffected: it carries
+    // a namespace-framed `session_id` / prefix filter that already constrains the
+    // search to the caller's authorized, read-gated namespace.
     const hasScopedSession =
       (typeof request.sessionKey === "string" &&
         request.sessionKey.length > 0) ||
       (typeof lcmSessionPrefix === "string" && lcmSessionPrefix.length > 0);
-    const defaultStoreReadable = canReadNamespace(
-      principal,
-      this.orchestrator.config.defaultNamespace,
-      this.orchestrator.config,
-    );
-    if (!hasExplicitNamespace && !hasScopedSession && !defaultStoreReadable) {
+    if (!hasScopedSession && this.orchestrator.config.namespacesEnabled === true) {
       return {
         query: request.query,
-        namespace: this.orchestrator.config.defaultNamespace,
+        namespace,
         results: [],
         count: 0,
         lcmEnabled: true,

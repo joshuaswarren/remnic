@@ -312,3 +312,99 @@ test("#1495 P1 LEGITIMATE ACCESS PRESERVED: a session key that legitimately cont
     )}`,
   );
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// #1505 codex P1 (round 2): a SESSIONLESS + prefixless `lcmSearch` issues
+// `searchContextFull(query, limit, undefined, undefined)` — an archive-wide FTS
+// scan over EVERY `session_id`, including sentinel-framed overlay rows. The
+// archive is keyed by `session_id`, NOT partitioned by namespace, so an
+// unscoped scan cannot be constrained to the caller's authorized namespace.
+// When namespaces are ENABLED it must therefore be SUPPRESSED regardless of an
+// explicit `namespace` or default-readability; only single-store (namespaces
+// disabled) keeps the legitimate archive-wide scan.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("#1505 codex P1 r2 FORGERY BLOCKED: explicit-namespace + sessionless lcmSearch does NOT archive-scan another tenant's overlay rows", async () => {
+  const probe = makeForgeryProbe(twoTenantConfig());
+  const service = new EngramAccessService(probe.orch);
+
+  // VICTIM archives overlay rows.
+  const victimRes = await service.observe(
+    observeRequest({ sessionKey: "alice:s1", projectTag: "Blend/Supply" }),
+  );
+  assert.ok(victimRes.effectiveNamespace!.startsWith("alice-"));
+
+  // ATTACKER reads an explicit namespace they ARE authorized for (`default`),
+  // with NO sessionKey/sessionPrefix. The underlying search would be an
+  // archive-wide scan (no session_id filter), exposing alice's overlay rows.
+  const res = await service.lcmSearch({
+    query: "secret deploy key",
+    namespace: "default",
+    authenticatedPrincipal: "default",
+  });
+
+  assert.equal(
+    res.results.some((r) => r.content.includes(VICTIM_SECRET)),
+    false,
+    `cross-tenant LEAK via explicit-namespace archive scan; results=${JSON.stringify(res.results)}`,
+  );
+  assert.equal(res.count, 0, "explicit-namespace sessionless lcmSearch must NOT archive-scan");
+  assert.equal(
+    probe.searchSessionIds.length,
+    0,
+    "searchContextFull must NOT run an unscoped archive scan when namespaces are enabled",
+  );
+});
+
+test("#1505 codex P1 r2 FORGERY BLOCKED: default-readable implicit + sessionless lcmSearch does NOT archive-scan overlay rows", async () => {
+  const probe = makeForgeryProbe(twoTenantConfig());
+  const service = new EngramAccessService(probe.orch);
+
+  const victimRes = await service.observe(
+    observeRequest({ sessionKey: "alice:s1", projectTag: "Blend/Supply" }),
+  );
+  assert.ok(victimRes.effectiveNamespace!.startsWith("alice-"));
+
+  // ATTACKER (default-readable) with NO sessionKey/namespace/sessionPrefix. The
+  // pre-fix guard allowed this through to an archive-wide scan.
+  const res = await service.lcmSearch({
+    query: "secret deploy key",
+    authenticatedPrincipal: "default",
+  });
+
+  assert.equal(
+    res.results.some((r) => r.content.includes(VICTIM_SECRET)),
+    false,
+    `cross-tenant LEAK via default-readable archive scan; results=${JSON.stringify(res.results)}`,
+  );
+  assert.equal(
+    probe.searchSessionIds.length,
+    0,
+    "searchContextFull must NOT run an unscoped archive scan when namespaces are enabled",
+  );
+});
+
+test("#1505 codex P1 r2 regression: single-store (namespaces disabled) + sessionless lcmSearch STILL archive-scans (byte-for-byte prior behavior)", async () => {
+  const probe = makeForgeryProbe({
+    namespacesEnabled: false,
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // Single-store: one shared archive owned by the caller. Seed a row, then a
+  // sessionless search must still scan it.
+  await service.observe(
+    observeRequest({ sessionKey: "owner-sess", skipExtraction: true }),
+  );
+  const res = await service.lcmSearch({ query: "secret deploy key" });
+
+  assert.equal(
+    probe.searchSessionIds.length,
+    1,
+    "namespaces disabled ⇒ sessionless archive scan still runs",
+  );
+  assert.equal(probe.searchSessionIds[0], undefined, "archive-wide scan passes no session_id filter");
+  assert.ok(
+    res.results.some((r) => r.content.includes(VICTIM_SECRET)),
+    "single-store owner still reads its archive",
+  );
+});
