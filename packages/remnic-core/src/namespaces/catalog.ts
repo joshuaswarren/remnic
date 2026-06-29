@@ -1,6 +1,18 @@
 import path from "node:path";
 import type { Dirent } from "node:fs";
-import { appendFile, lstat, mkdir, readdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import type { PluginConfig } from "../types.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { namespaceIdentityFromToken, namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
@@ -104,6 +116,13 @@ export interface NamespaceCatalogRebuildResult {
 
 const CATALOG_FILE = "namespaces.jsonl";
 const STATE_DIR = "state";
+const REBUILD_LOCK_FILE = "namespaces.rebuild.lock";
+// A held lock older than this is treated as stale (a crashed rebuild) and broken.
+const REBUILD_LOCK_STALE_MS = 30_000;
+// Bounded acquisition: poll briefly, then proceed best-effort rather than block
+// a CLI rebuild forever behind a busy gateway.
+const REBUILD_LOCK_MAX_WAIT_MS = 5_000;
+const REBUILD_LOCK_POLL_MS = 50;
 
 // Children that indicate a directory holds Remnic memory data (used for legacy
 // default-root detection and to skip empty/non-data roots during rebuild).
@@ -185,6 +204,42 @@ function coerceRecord(value: unknown): NamespaceRecord | null {
   return record;
 }
 
+/** Later of two optional ISO timestamps (undefined-safe). */
+function laterIso(a: string | undefined, b: string | undefined): string | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  const am = Date.parse(a);
+  const bm = Date.parse(b);
+  if (!Number.isFinite(am)) return b;
+  if (!Number.isFinite(bm)) return a;
+  return bm > am ? b : a;
+}
+
+/**
+ * Fold the touch fields (lastReadAt / lastWriteAt / lastMaintenanceAt) from a
+ * freshly re-read on-disk record into the rebuilt record, taking the LATER
+ * timestamp per field (round 5 cross-process re-merge). Disk-derived fields
+ * (storageDir, kind, discoveredBy, createdAt, principal hints) are owned by the
+ * rebuilt record and left untouched — we only recover touch recency that a
+ * concurrent (possibly cross-process) writer recorded after our initial load.
+ */
+function mergeNewerTouchFields(base: NamespaceRecord, fresh: NamespaceRecord): NamespaceRecord {
+  const merged: NamespaceRecord = { ...base };
+  const lr = laterIso(base.lastReadAt, fresh.lastReadAt);
+  if (lr) merged.lastReadAt = lr;
+  const lw = laterIso(base.lastWriteAt, fresh.lastWriteAt);
+  if (lw) merged.lastWriteAt = lw;
+  if (base.lastMaintenanceAt || fresh.lastMaintenanceAt) {
+    const jobs: Record<string, string> = { ...(base.lastMaintenanceAt ?? {}) };
+    for (const [job, ts] of Object.entries(fresh.lastMaintenanceAt ?? {})) {
+      const latest = laterIso(jobs[job], ts);
+      if (latest) jobs[job] = latest;
+    }
+    if (Object.keys(jobs).length > 0) merged.lastMaintenanceAt = jobs;
+  }
+  return merged;
+}
+
 /**
  * Serialize a record with sorted keys (CLAUDE.md rule #38) so byte output is
  * stable across runs — required for idempotent rebuilds.
@@ -236,6 +291,7 @@ export class NamespaceCatalog {
   private readonly memoryDir: string;
   private readonly stateDir: string;
   private readonly catalogPath: string;
+  private readonly rebuildLockPath: string;
   // Serialized write chain that recovers from rejection (CLAUDE.md rule #40)
   // so a single failed append cannot permanently poison subsequent writes.
   private writeChain: Promise<void> = Promise.resolve();
@@ -244,6 +300,7 @@ export class NamespaceCatalog {
     this.memoryDir = config.memoryDir;
     this.stateDir = path.join(this.memoryDir, STATE_DIR);
     this.catalogPath = path.join(this.stateDir, CATALOG_FILE);
+    this.rebuildLockPath = path.join(this.stateDir, REBUILD_LOCK_FILE);
   }
 
   /** Whether the catalog is active (namespaces enabled and catalog not opted out). */
@@ -253,10 +310,26 @@ export class NamespaceCatalog {
 
   // ── Public enumeration API ──────────────────────────────────────────────
 
+  /**
+   * Sanitize a record's `storageDir` at the enumeration boundary (round 5,
+   * cursor Medium + codex P2). Reads return whatever is in `namespaces.jsonl`
+   * after schema checks only, so a tampered or pre-fix out-of-root path — whether
+   * a lexical escape OR a lexically-contained SYMLINK escaping via realpath —
+   * could be surfaced to maintenance/QMD until a rewrite occurs. We apply the
+   * SAME full containment contract used on the write path (`isContainedStorageDir`:
+   * lexical + symlink/realpath) and, when a record fails it, substitute the
+   * trusted resolved-and-safe root for that namespace before returning it.
+   */
+  private async sanitizeRecordForRead(record: NamespaceRecord): Promise<NamespaceRecord> {
+    if (await this.isContainedStorageDir(record.storageDir)) return record;
+    const safe = await this.resolveSafeStorageDir(record.namespace);
+    return { ...record, storageDir: safe };
+  }
+
   async listNamespaces(filter?: NamespaceCatalogFilter): Promise<NamespaceRecord[]> {
     if (!this.enabled) return [];
     const records = await this.loadCompacted();
-    let out = [...records.values()];
+    let out = await Promise.all([...records.values()].map((r) => this.sanitizeRecordForRead(r)));
     if (filter?.kind) out = out.filter((r) => r.kind === filter.kind);
     if (filter?.discoveredBy) out = out.filter((r) => r.discoveredBy === filter.discoveredBy);
     if (filter?.writtenSince) {
@@ -280,7 +353,8 @@ export class NamespaceCatalog {
     if (!this.enabled) return null;
     const ns = normalizeNamespaceIdentity(namespace);
     const records = await this.loadCompacted();
-    return records.get(ns) ?? null;
+    const record = records.get(ns);
+    return record ? await this.sanitizeRecordForRead(record) : null;
   }
 
   // ── Touch API (cheap, failure-tolerant) ─────────────────────────────────
@@ -378,13 +452,14 @@ export class NamespaceCatalog {
   }
 
   /**
-   * Whether a candidate storage dir satisfies the catalog containment contract:
-   * it is either the legacy default root (`memoryDir`) or lives under
+   * Whether a candidate storage dir is LEXICALLY contained: it is either the
+   * legacy default root (`memoryDir`) or a strict descendant of
    * `<memoryDir>/namespaces/`. The router legitimately resolves a namespace to
    * EITHER the tokenized dir or a legacy raw-name dir under `namespaces/`, so we
-   * accept any contained child rather than a single exact token path.
+   * accept any contained child rather than a single exact token path. This is a
+   * pure string check — symlink escape is checked separately via realpath.
    */
-  private isContainedStorageDir(candidate: string): boolean {
+  private isLexicallyContained(candidate: string): boolean {
     const resolved = path.resolve(candidate);
     if (resolved === path.resolve(this.memoryDir)) return true;
     const nsBase = path.resolve(path.join(this.memoryDir, "namespaces"));
@@ -394,25 +469,82 @@ export class NamespaceCatalog {
   }
 
   /**
+   * Whether a candidate storage dir satisfies the catalog containment contract,
+   * including SYMLINK-escape rejection (round 5, codex P2). A lexically-contained
+   * path that is actually a symlink to an outside directory would let maintenance
+   * or QMD follow it outside `memoryDir`. We mirror `rebuildFromDisk`'s posture:
+   * the path must be lexically contained AND, if it exists on disk, neither the
+   * path itself a symlink nor its realpath escaping the memory root. Non-existent
+   * paths pass the realpath stage (nothing to follow yet) but still must be
+   * lexically contained.
+   */
+  private async isContainedStorageDir(candidate: string): Promise<boolean> {
+    if (!this.isLexicallyContained(candidate)) return false;
+    // The default/legacy memoryDir root is trusted as-is.
+    if (path.resolve(candidate) === path.resolve(this.memoryDir)) return true;
+    try {
+      const stat = await lstat(candidate);
+      if (stat.isSymbolicLink()) return false;
+    } catch {
+      // Does not exist yet — nothing to follow; lexical containment suffices.
+      return true;
+    }
+    try {
+      const real = await realpath(candidate);
+      let memoryReal: string;
+      try {
+        memoryReal = await realpath(this.memoryDir);
+      } catch {
+        memoryReal = path.resolve(this.memoryDir);
+      }
+      return isPathInside(memoryReal, real);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Resolve the storage dir to persist for a touch, validating any caller-
    * provided `metadata.storageDir` against the catalog containment contract
-   * (round 4, codex P2). `markWrite`/`registerResolved` accept an explicit
-   * storageDir, but persisting it verbatim would let a bad hook or external
-   * consumer write an arbitrary path — including one outside `memoryDir` — into
-   * the catalog, handing maintenance/QMD an unsafe root. We accept an explicit
-   * (or previously-stored) dir ONLY when it stays contained under memoryDir;
-   * otherwise we drop it and fall back to the trusted resolved dir.
+   * (round 4 + round 5, codex P2). `markWrite`/`registerResolved` accept an
+   * explicit storageDir, but persisting it verbatim would let a bad hook or
+   * external consumer write an arbitrary path — including one outside `memoryDir`
+   * or a symlink that escapes it — into the catalog, handing maintenance/QMD an
+   * unsafe root. We accept an explicit (or previously-stored) dir ONLY when it
+   * stays contained under memoryDir (lexically AND via realpath); otherwise we
+   * drop it and fall back to the trusted resolved dir.
    */
-  private resolveTouchStorageDir(
+  private async resolveTouchStorageDir(
     namespace: string,
     explicit: string | undefined,
     existingDir: string | undefined,
-  ): string {
-    if (explicit !== undefined && this.isContainedStorageDir(explicit)) return explicit;
+  ): Promise<string> {
+    if (explicit !== undefined && (await this.isContainedStorageDir(explicit))) return explicit;
     // Don't let a record poisoned by a pre-fix out-of-containment write keep an
     // unsafe dir alive across touches — only preserve a contained existing dir.
-    if (existingDir !== undefined && this.isContainedStorageDir(existingDir)) return existingDir;
-    return this.resolveStorageDir(namespace);
+    if (existingDir !== undefined && (await this.isContainedStorageDir(existingDir))) return existingDir;
+    return this.resolveSafeStorageDir(namespace);
+  }
+
+  /**
+   * Resolve the canonical storage dir for a namespace, but NEVER return a path
+   * that itself escapes the memory root via a symlink (round 5, codex P2). The
+   * lexical `resolveStorageDir` can return `<memoryDir>/namespaces/<token>` even
+   * when THAT very path is a symlink to an outside directory — so a rejected
+   * explicit symlink-escape would silently fall back to the same escaping path.
+   * If the resolved dir fails the full (lexical + realpath) containment contract,
+   * fall back to the trusted legacy `memoryDir` root, which is always contained.
+   */
+  private async resolveSafeStorageDir(namespace: string): Promise<string> {
+    let resolved: string;
+    try {
+      resolved = this.resolveStorageDir(namespace);
+    } catch {
+      // An unsafe namespace token would throw; fall back to the default root.
+      return this.memoryDir;
+    }
+    if (await this.isContainedStorageDir(resolved)) return resolved;
+    return this.memoryDir;
   }
 
   private async touch(
@@ -438,9 +570,14 @@ export class NamespaceCatalog {
       const records = await this.loadCompacted();
       const existing = records.get(ns);
 
-      // Containment-check any explicit storageDir before persisting it (round 4,
-      // codex P2). Never trust a caller-provided path verbatim.
-      const storageDir = this.resolveTouchStorageDir(ns, metadata?.storageDir, existing?.storageDir);
+      // Containment-check any explicit storageDir before persisting it (round 4
+      // + round 5, codex P2). Never trust a caller-provided path verbatim;
+      // reject lexical escapes AND symlinks that escape via realpath.
+      const storageDir = await this.resolveTouchStorageDir(
+        ns,
+        metadata?.storageDir,
+        existing?.storageDir,
+      );
       // Provenance (discoveredBy) and createdAt are CREATION-ONLY fields. Once a
       // record exists they are preserved, so a routine routing/recall touch (or
       // the router's `config` register hook firing on a cache hit) can never
@@ -505,7 +642,20 @@ export class NamespaceCatalog {
     // `rewriteUnchained` helper (mirroring `appendUnchained`) rather than a
     // helper that re-enters `queueCritical` — re-entering the chain from inside
     // a held turn would await the very entry this section holds.
-    return this.queueCritical(async () => this.rebuildInsideChain(dryRun));
+    //
+    // CROSS-PROCESS (round 5, codex P2): `queueCritical` only serializes this
+    // process's instance. A CLI `rebuild --apply` and the live gateway are
+    // SEPARATE processes with independent write chains, so a gateway append can
+    // still land between the CLI's load and its atomic rename. For the mutating
+    // path we additionally take a cross-process file lock AND re-merge the latest
+    // on-disk touches under that lock immediately before the rewrite (see
+    // `rebuildInsideChain`). A dry-run never mutates, so it skips the lock.
+    if (dryRun) {
+      return this.queueCritical(async () => this.rebuildInsideChain(dryRun));
+    }
+    return this.withRebuildLock(() =>
+      this.queueCritical(async () => this.rebuildInsideChain(dryRun)),
+    );
   }
 
   /**
@@ -570,6 +720,14 @@ export class NamespaceCatalog {
       entries = [];
     }
 
+    // Dual-root alignment (round 5, cursor Medium): when both a legacy raw-name
+    // dir and a tokenized dir hold data for the SAME namespace, the router
+    // prefers the tokenized root. Track which scanned namespaces were already
+    // sourced from their tokenized dir so a later legacy-named `readdir` entry
+    // cannot overwrite the tokenized record (and vice-versa: a tokenized entry
+    // always wins over a previously-set legacy one).
+    const scannedFromTokenized = new Set<string>();
+
     for (const entry of entries) {
       const token = entry.name;
       const fullPath = path.join(namespacesDir, token);
@@ -621,6 +779,17 @@ export class NamespaceCatalog {
         continue;
       }
 
+      // Dual-root preference: mirror the router, which uses the tokenized root
+      // over a legacy raw-name root when the tokenized one has data. `entry.name`
+      // is the on-disk dir name; it is the tokenized dir iff it equals the
+      // namespace's identity token. If we already recorded this namespace from
+      // its tokenized dir, a later legacy-named entry must not clobber it.
+      const isTokenizedEntry = token === namespaceIdentityToken(decoded);
+      if (rebuilt.has(decoded) && scannedFromTokenized.has(decoded) && !isTokenizedEntry) {
+        continue;
+      }
+      if (isTokenizedEntry) scannedFromTokenized.add(decoded);
+
       const prior = existing.get(decoded);
       rebuilt.set(
         decoded,
@@ -643,6 +812,26 @@ export class NamespaceCatalog {
       if (def) def.kind = "default";
     }
 
+    if (!dryRun) {
+      // CROSS-PROCESS re-merge (round 5, codex P2): under the rebuild lock,
+      // re-read the on-disk log ONE more time and fold any touch fields that
+      // landed AFTER our initial `loadCompacted()` (e.g. a gateway markWrite in
+      // another process) into the rebuilt records — last-write-wins per touch
+      // field. This recovers cross-process appends that completed during the
+      // scan, which the in-process `queueCritical` alone cannot see.
+      const latest = await this.loadCompacted();
+      for (const [ns, fresh] of latest) {
+        const current = rebuilt.get(ns);
+        if (!current) {
+          // A namespace that appeared purely via a concurrent touch (no on-disk
+          // root scanned) must survive the rewrite rather than be dropped.
+          rebuilt.set(ns, fresh);
+          continue;
+        }
+        rebuilt.set(ns, mergeNewerTouchFields(current, fresh));
+      }
+    }
+
     const records = [...rebuilt.values()].sort((a, b) => {
       const byName = a.namespace.localeCompare(b.namespace);
       if (byName !== 0) return byName;
@@ -654,6 +843,71 @@ export class NamespaceCatalog {
     }
 
     return { dryRun, records, skipped };
+  }
+
+  // ── Cross-process rebuild lock ───────────────────────────────────────────
+
+  /**
+   * Run `fn` while holding a cross-process advisory lock (round 5, codex P2).
+   * Acquisition is atomic via `open(..., "wx")`. A lock older than
+   * `REBUILD_LOCK_STALE_MS` is treated as a crashed holder and broken. After
+   * `REBUILD_LOCK_MAX_WAIT_MS` of contention we proceed best-effort WITHOUT the
+   * lock rather than block a rebuild forever (the in-chain re-merge still
+   * recovers same-host appends). The lock is always released in `finally`.
+   */
+  private async withRebuildLock<T>(fn: () => Promise<T>): Promise<T> {
+    const acquired = await this.acquireRebuildLock();
+    try {
+      return await fn();
+    } finally {
+      if (acquired) {
+        try {
+          await unlink(this.rebuildLockPath);
+        } catch {
+          // Best-effort release; a stale lock will be broken on next rebuild.
+        }
+      }
+    }
+  }
+
+  /** Try to acquire the rebuild lock; returns true if WE created it. */
+  private async acquireRebuildLock(): Promise<boolean> {
+    const deadline = Date.now() + REBUILD_LOCK_MAX_WAIT_MS;
+    await mkdir(this.stateDir, { recursive: true });
+    for (;;) {
+      try {
+        const handle = await open(this.rebuildLockPath, "wx");
+        try {
+          await handle.writeFile(`${process.pid} ${new Date().toISOString()}\n`, "utf8");
+        } catch {
+          // Ignore write failures — the exclusive create already gave us the lock.
+        } finally {
+          await handle.close();
+        }
+        return true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") {
+          // Unexpected FS error — proceed best-effort without the lock.
+          return false;
+        }
+        // Lock exists: break it if stale, otherwise wait briefly.
+        await this.breakStaleRebuildLock();
+        if (Date.now() >= deadline) return false;
+        await new Promise((r) => setTimeout(r, REBUILD_LOCK_POLL_MS));
+      }
+    }
+  }
+
+  /** Remove the lock file if its mtime is older than the stale threshold. */
+  private async breakStaleRebuildLock(): Promise<void> {
+    try {
+      const info = await stat(this.rebuildLockPath);
+      if (Date.now() - info.mtimeMs > REBUILD_LOCK_STALE_MS) {
+        await unlink(this.rebuildLockPath).catch(() => undefined);
+      }
+    } catch {
+      // Lock vanished (released by holder) or stat failed — nothing to do.
+    }
   }
 
   /**

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -785,6 +785,171 @@ test("explicit storageDir contained under namespaces/ is accepted", async () => 
       record?.storageDir,
       legacyDir,
       "a contained explicit dir must be persisted as-is",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 5, Issue #1 (cursor Medium): when both a legacy raw-name dir and a
+// tokenized dir hold data for the same namespace, rebuild must prefer the
+// TOKENIZED root (matching NamespaceStorageRouter), not let last-readdir-wins
+// pick arbitrarily.
+test("rebuildFromDisk prefers the tokenized root over a legacy dual root", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-dual";
+    const token = namespaceIdentityToken(ns);
+    const tokenizedDir = path.join(memoryDir, "namespaces", token);
+    const legacyDir = path.join(memoryDir, "namespaces", ns);
+    // Both roots hold data for the same namespace.
+    await mkdir(path.join(tokenizedDir, "facts"), { recursive: true });
+    await mkdir(path.join(legacyDir, "facts"), { recursive: true });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const result = await catalog.rebuildFromDisk();
+    const rec = result.records.find((r) => r.namespace === ns);
+    assert.ok(rec, "expected the dual-root namespace to be cataloged");
+    assert.equal(
+      rec?.storageDir,
+      tokenizedDir,
+      "rebuild must prefer the tokenized root for a dual-root namespace",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 5, Issue #2 (cursor Medium): reads must not surface an out-of-root
+// storageDir. A tampered/pre-fix jsonl record with an absolute path outside
+// memoryDir must be sanitized to the resolved safe root on enumeration.
+test("listNamespaces/getNamespaceRecord sanitize an out-of-root storageDir on read", async () => {
+  const memoryDir = await mkMemoryDir();
+  const outside = await mkMemoryDir();
+  try {
+    const ns = "project-origin-tampered";
+    const token = namespaceIdentityToken(ns);
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    // Hand-craft a record whose storageDir escapes memoryDir (tampered file).
+    const evil = path.join(outside, "evil");
+    const line = JSON.stringify({
+      namespace: ns,
+      identityToken: token,
+      kind: "project",
+      createdAt: new Date().toISOString(),
+      storageDir: evil,
+      discoveredBy: "write",
+    });
+    await writeFile(path.join(stateDir, "namespaces.jsonl"), line + "\n", "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const viaGet = await catalog.getNamespaceRecord(ns);
+    assert.ok(viaGet, "record should be returned");
+    assert.ok(
+      !viaGet!.storageDir.startsWith(outside),
+      "getNamespaceRecord must not surface an out-of-root storageDir",
+    );
+    assert.equal(
+      viaGet!.storageDir,
+      path.join(memoryDir, "namespaces", token),
+      "out-of-root dir must be sanitized to the resolved safe root",
+    );
+
+    const viaList = await catalog.listNamespaces();
+    const listed = viaList.find((r) => r.namespace === ns);
+    assert.ok(
+      listed && !listed.storageDir.startsWith(outside),
+      "listNamespaces must not surface an out-of-root storageDir",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+// ── Round 5, Issue #3 (codex P2): an explicit storageDir that is lexically
+// contained but is a SYMLINK escaping memoryDir must be rejected (the round-4
+// containment check was lexical only).
+test("explicit storageDir that is a symlink escaping memoryDir is rejected", async () => {
+  const memoryDir = await mkMemoryDir();
+  const outside = await mkMemoryDir();
+  try {
+    const ns = "project-origin-symlink";
+    const token = namespaceIdentityToken(ns);
+    await mkdir(path.join(memoryDir, "namespaces"), { recursive: true });
+    await mkdir(path.join(outside, "target"), { recursive: true });
+    const linkPath = path.join(memoryDir, "namespaces", token);
+    try {
+      await symlink(path.join(outside, "target"), linkPath, "dir");
+    } catch {
+      // Some CI environments disallow symlinks; skip gracefully.
+      return;
+    }
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // The symlink path is lexically under namespaces/ but escapes via realpath.
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: linkPath });
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.ok(record, "record should be created");
+    // The REALPATH of the persisted storage dir must stay inside memoryDir — a
+    // lexical-only check (the round-4 behavior) would wrongly accept the symlink
+    // whose realpath escapes to `outside`.
+    const memoryReal = await realpath(memoryDir);
+    const outsideReal = await realpath(outside);
+    let persistedReal: string;
+    try {
+      persistedReal = await realpath(record!.storageDir);
+    } catch {
+      // The fallback resolved token dir may not exist on disk; use the lexical
+      // path, which is by construction inside memoryDir.
+      persistedReal = record!.storageDir;
+    }
+    assert.ok(
+      !persistedReal.startsWith(outsideReal),
+      "a symlink-escaping explicit dir must not be persisted (realpath must stay inside memoryDir)",
+    );
+    assert.ok(
+      persistedReal.startsWith(memoryReal) ||
+        record!.storageDir === path.join(memoryDir, "namespaces", token),
+      "persisted dir must be the trusted resolved root, not the escaping symlink target",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+// ── Round 5, Issue #4 (codex P2): a cross-process append (simulated by a SECOND
+// NamespaceCatalog instance — a distinct in-process write chain, standing in for
+// the gateway process) that lands during a rebuild must survive. The in-chain
+// re-merge under the rebuild lock folds the latest on-disk touch fields into the
+// rewrite.
+test("rebuildFromDisk re-merges a concurrent cross-instance write touch", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-xproc";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+
+    // "CLI" catalog runs the rebuild; "gateway" catalog is a separate instance
+    // (separate writeChain) that records a write touch concurrently.
+    const cli = new NamespaceCatalog(makeConfig(memoryDir));
+    const gateway = new NamespaceCatalog(makeConfig(memoryDir));
+
+    await Promise.all([
+      cli.rebuildFromDisk(),
+      gateway.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir }),
+    ]);
+
+    // A fresh reader must see the write touch preserved (not clobbered by the
+    // rebuild's rewrite).
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    const record = await reader.getNamespaceRecord(ns);
+    assert.ok(record, "namespace must exist after concurrent rebuild + cross-instance write");
+    assert.ok(
+      record?.lastWriteAt,
+      "a cross-instance write landing during rebuild must survive the rewrite",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
