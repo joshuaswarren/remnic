@@ -646,6 +646,12 @@ export class TranscriptManager {
    * Read transcript entries for a date range.
    * Returns entries within the time range, optionally filtered by sessionKey.
    * Reads from all channel subdirectories in the hierarchical structure.
+   *
+   * The window is half-open `[start, end)`: the upper bound is exclusive so
+   * caller-specified ranges (explicit dates, analytics buckets) don't
+   * double-count at shared boundaries (CLAUDE.md rule #35 / AGENTS.md rule 23).
+   * readRecent's inclusive-of-now behavior is handled by readRecent itself
+   * extending its end, not by relaxing this bound.
    */
   async readRange(startTime: string, endTime: string, sessionKey?: string): Promise<TranscriptEntry[]> {
     const start = new Date(startTime);
@@ -678,7 +684,7 @@ export class TranscriptManager {
               const entry = JSON.parse(line) as TranscriptEntry;
               const entryTime = new Date(entry.timestamp);
 
-              // Check if entry is within time range
+              // Check if entry is within time range (half-open: exclusive end)
               if (entryTime >= start && entryTime < end) {
                 // Filter by sessionKey if provided
                 if (!sessionKey || entry.sessionKey === sessionKey) {
@@ -714,8 +720,17 @@ export class TranscriptManager {
    * specific channel instead of scanning all 95+ transcript files across all channels.
    */
   async readRecent(hours: number, sessionKey?: string): Promise<TranscriptEntry[]> {
-    const end = new Date();
-    const start = new Date(end.getTime() - hours * 60 * 60 * 1000);
+    const now = new Date();
+    // The recent-read window is inclusive of "now": a turn that is buffered and
+    // then immediately read back can carry the same millisecond timestamp as
+    // this read, so a half-open [start, now) filter would drop it. Extend the
+    // upper bound by 1ms so the exclusive [start, end) filters in
+    // readRecentForSession / readRange (which stay half-open for
+    // caller-specified ranges, CLAUDE.md rule #35) still capture an entry
+    // stamped at exactly "now". This is the only place the "up to now" boundary
+    // is widened; explicit ranges are unaffected.
+    const end = new Date(now.getTime() + 1);
+    const start = new Date(now.getTime() - hours * 60 * 60 * 1000);
 
     if (sessionKey) {
       return this.readRecentForSession(start, end, sessionKey);
@@ -769,6 +784,9 @@ export class TranscriptManager {
           try {
             const entry = JSON.parse(line) as TranscriptEntry;
             const ts = new Date(entry.timestamp);
+            // Half-open window: exclusive end. readRecent widens its own end by
+            // 1ms so a just-written "now" entry is still captured here without
+            // relaxing this bound for direct callers (tests/transcript-boundary).
             if (ts >= start && ts < end && entry.sessionKey === sessionKey && keepRawLine(line)) {
               entries.push(entry);
             }
