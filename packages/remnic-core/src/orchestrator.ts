@@ -7138,9 +7138,16 @@ export class Orchestrator {
     // Round 3 (codex P2): gate behind the no_recall guard — when the planner
     // selects `no_recall` retrieval is skipped entirely (see the early return at
     // `recallMode === "no_recall"` below), so marking every readable namespace as
-    // read would falsely inflate `lastReadAt` / catalog recency for prompts that
-    // explicitly should not read memory.
-    if (this.namespaceCatalog.enabled && recallMode !== "no_recall") {
+    // read would falsely inflate `lastReadAt` / catalog recency.
+    // Round 4 (codex P2): also skip when the effective memory result limit is
+    // zero (`topK: 0`, a disabled/zero `memories` recall section, etc.). The QMD
+    // path explicitly returns before searching when `recallResultLimit <= 0`, so
+    // no namespace is actually read and the touch would be spurious.
+    if (
+      this.namespaceCatalog.enabled &&
+      recallMode !== "no_recall" &&
+      recallResultLimit > 0
+    ) {
       for (const ns of recallNamespaces) this.markCatalogRead(ns);
     }
     const qmdAvailable = this.qmd.isAvailable();

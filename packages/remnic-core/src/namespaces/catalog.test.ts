@@ -736,3 +736,57 @@ test("rebuildFromDisk preserves prior write provenance for a configured namespac
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 4, Issue #4 (codex P2): an explicit metadata.storageDir from a
+// markWrite/registerResolved caller must be containment-checked before it is
+// persisted. An out-of-memoryDir path must NOT end up as the namespace's
+// catalog storageDir; the catalog falls back to the trusted resolved dir.
+test("explicit storageDir outside memoryDir is rejected (containment)", async () => {
+  const memoryDir = await mkMemoryDir();
+  const outside = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const ns = "project-origin-escape";
+    const evilDir = path.join(outside, "evil");
+
+    // A bad hook passes an arbitrary path outside memoryDir.
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: evilDir });
+
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.ok(record, "record should still be created");
+    assert.ok(
+      !record!.storageDir.startsWith(outside),
+      "catalog must not persist a storage dir outside memoryDir",
+    );
+    // Falls back to the trusted tokenized root under <memoryDir>/namespaces.
+    assert.equal(
+      record!.storageDir,
+      path.join(memoryDir, "namespaces", namespaceIdentityToken(ns)),
+      "rejected explicit dir must fall back to the resolved namespaces/<token> root",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+// A legitimate explicit storageDir contained under <memoryDir>/namespaces (the
+// router's resolved dir, incl. a legacy raw-name dir) is accepted verbatim.
+test("explicit storageDir contained under namespaces/ is accepted", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const ns = "project-origin-ok";
+    // A legacy raw-name dir under namespaces/ (what the router may resolve to).
+    const legacyDir = path.join(memoryDir, "namespaces", ns);
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: legacyDir });
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.equal(
+      record?.storageDir,
+      legacyDir,
+      "a contained explicit dir must be persisted as-is",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

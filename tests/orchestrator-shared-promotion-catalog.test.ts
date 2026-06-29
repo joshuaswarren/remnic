@@ -175,14 +175,60 @@ test("no_recall recall does not record catalog read touches", async () => {
     const out = await orchestrator.recallInternal("ok", "user:test:no-recall-catalog");
     assert.equal(out, "", "no_recall must produce no recall context");
 
-    // Allow any (incorrect) fire-and-forget read touch to settle, then assert
-    // NONE was recorded for the readable namespaces.
+    // Allow any (incorrect) fire-and-forget read touch to settle, then serialize
+    // a maintenance touch on the catalog write chain to flush pending appends
+    // before asserting NONE was recorded for the readable namespaces.
+    await new Promise((r) => setTimeout(r, 20));
     await orchestrator.namespaceCatalog.markMaintenance("default", "probe");
     const records = await orchestrator.namespaceCatalog.listNamespaces();
     for (const r of records) {
       assert.ok(
         !r.lastReadAt,
         `no_recall must not record a read touch (namespace ${r.namespace} has lastReadAt)`,
+      );
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 4, Issue #5 (codex P2): even when recallMode is not no_recall, a zero
+// effective result limit (topK: 0, disabled/zero `memories` section) means no
+// namespace is actually read — the QMD path returns before searching when
+// recallResultLimit <= 0. The catalog must not record read touches in that case.
+test("zero recall result limit (topK:0) records no catalog read touches", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-zero-limit-catalog-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+
+    const orchestrator = new Orchestrator(config) as any;
+    orchestrator.qmd = { isAvailable: () => false };
+
+    // Force a non-no_recall mode but a zero result limit via topK: 0.
+    await orchestrator.recallInternal(
+      "What is the team standup schedule and who attends it?",
+      "user:test:zero-limit",
+      { mode: "minimal", topK: 0 },
+    );
+
+    // Drain any fire-and-forget tails, then serialize a maintenance touch on the
+    // catalog write chain so any (incorrectly) enqueued read append is flushed
+    // before we assert its absence.
+    await new Promise((r) => setTimeout(r, 20));
+    await orchestrator.namespaceCatalog.markMaintenance("default", "probe");
+    const records = await orchestrator.namespaceCatalog.listNamespaces();
+    for (const r of records) {
+      assert.ok(
+        !r.lastReadAt,
+        `zero result limit must not record a read touch (namespace ${r.namespace} has lastReadAt)`,
       );
     }
   } finally {

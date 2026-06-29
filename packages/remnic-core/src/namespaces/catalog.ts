@@ -377,6 +377,44 @@ export class NamespaceCatalog {
     return path.join(this.memoryDir, "namespaces", token);
   }
 
+  /**
+   * Whether a candidate storage dir satisfies the catalog containment contract:
+   * it is either the legacy default root (`memoryDir`) or lives under
+   * `<memoryDir>/namespaces/`. The router legitimately resolves a namespace to
+   * EITHER the tokenized dir or a legacy raw-name dir under `namespaces/`, so we
+   * accept any contained child rather than a single exact token path.
+   */
+  private isContainedStorageDir(candidate: string): boolean {
+    const resolved = path.resolve(candidate);
+    if (resolved === path.resolve(this.memoryDir)) return true;
+    const nsBase = path.resolve(path.join(this.memoryDir, "namespaces"));
+    const rel = path.relative(nsBase, resolved);
+    // Must be a strict descendant of namespaces/ (non-empty, no parent escape).
+    return rel.length > 0 && !rel.startsWith("..") && !path.isAbsolute(rel);
+  }
+
+  /**
+   * Resolve the storage dir to persist for a touch, validating any caller-
+   * provided `metadata.storageDir` against the catalog containment contract
+   * (round 4, codex P2). `markWrite`/`registerResolved` accept an explicit
+   * storageDir, but persisting it verbatim would let a bad hook or external
+   * consumer write an arbitrary path — including one outside `memoryDir` — into
+   * the catalog, handing maintenance/QMD an unsafe root. We accept an explicit
+   * (or previously-stored) dir ONLY when it stays contained under memoryDir;
+   * otherwise we drop it and fall back to the trusted resolved dir.
+   */
+  private resolveTouchStorageDir(
+    namespace: string,
+    explicit: string | undefined,
+    existingDir: string | undefined,
+  ): string {
+    if (explicit !== undefined && this.isContainedStorageDir(explicit)) return explicit;
+    // Don't let a record poisoned by a pre-fix out-of-containment write keep an
+    // unsafe dir alive across touches — only preserve a contained existing dir.
+    if (existingDir !== undefined && this.isContainedStorageDir(existingDir)) return existingDir;
+    return this.resolveStorageDir(namespace);
+  }
+
   private async touch(
     namespace: string,
     kind: "read" | "write" | "maintenance" | "register",
@@ -400,7 +438,9 @@ export class NamespaceCatalog {
       const records = await this.loadCompacted();
       const existing = records.get(ns);
 
-      const storageDir = metadata?.storageDir ?? existing?.storageDir ?? this.resolveStorageDir(ns);
+      // Containment-check any explicit storageDir before persisting it (round 4,
+      // codex P2). Never trust a caller-provided path verbatim.
+      const storageDir = this.resolveTouchStorageDir(ns, metadata?.storageDir, existing?.storageDir);
       // Provenance (discoveredBy) and createdAt are CREATION-ONLY fields. Once a
       // record exists they are preserved, so a routine routing/recall touch (or
       // the router's `config` register hook firing on a cache hit) can never
