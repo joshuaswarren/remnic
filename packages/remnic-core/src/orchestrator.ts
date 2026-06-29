@@ -7151,19 +7151,11 @@ export class Orchestrator {
     // zero (`topK: 0`, a disabled/zero `memories` recall section, etc.). The QMD
     // path explicitly returns before searching when `recallResultLimit <= 0`, so
     // no namespace is actually read and the touch would be spurious.
-    // Round 6 (codex P2 — NDXHa): also skip when the recall was ALREADY aborted.
-    // `throwIfRecallAborted` runs later (in the Phase 1 retrieval block), so an
-    // already-aborted recall exits before any QMD/fallback read — firing these
-    // fire-and-forget touches would set `lastReadAt` for a canceled recall and
-    // make catalog recency/maintenance treat it as a real read.
-    if (
-      this.namespaceCatalog.enabled &&
-      recallMode !== "no_recall" &&
-      recallResultLimit > 0 &&
-      !options.abortSignal?.aborted
-    ) {
-      for (const ns of recallNamespaces) this.markCatalogRead(ns);
-    }
+    // NOTE: the catalog read touch is recorded LATER, immediately after the
+    // Phase 1 `throwIfRecallAborted` gate (round 6, codex P2 / cursor Medium —
+    // NDXHa/NDmle), so it fires only once retrieval is actually about to run.
+    // Recording it here (recall entry) would set `lastReadAt` for recalls that
+    // are aborted, error out, or short-circuit before any QMD/filesystem read.
     const qmdAvailable = this.qmd.isAvailable();
     let graphDecisionStatus: IntentDebugSnapshot["graphDecision"]["status"] =
       recallDecision.plannedMode === "graph_mode" ? "skipped" : "not_requested";
@@ -7354,6 +7346,21 @@ export class Orchestrator {
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
     throwIfRecallAborted(options.abortSignal);
+
+    // Catalog read touch (issue #1499): record reads against the recalled
+    // namespaces HERE — after the abort gate, immediately before retrieval
+    // actually runs — so `lastReadAt` reflects a real read, not a recall that was
+    // aborted/errored/short-circuited before reaching this point (round 3/4/6,
+    // codex/cursor — no_recall, zero-limit, aborted, and pre-read-error cases).
+    // `no_recall` already returned earlier, so it cannot reach here. Best-effort
+    // and failure-tolerant.
+    if (
+      this.namespaceCatalog.enabled &&
+      recallResultLimit > 0 &&
+      !options.abortSignal?.aborted
+    ) {
+      for (const ns of recallNamespaces) this.markCatalogRead(ns);
+    }
 
     // 0. Shared context (v4.0, optional)
     const sharedContextPromise = (async (): Promise<string | null> => {
