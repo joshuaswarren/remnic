@@ -33,6 +33,7 @@ import { Orchestrator } from "./orchestrator.js";
 import type { LastRecallSnapshot } from "./recall-state.js";
 import {
   combineNamespaces,
+  lcmSessionKeyForNamespace,
   projectNamespaceName,
   projectTagProjectId,
 } from "./coding/coding-namespace.js";
@@ -283,7 +284,7 @@ test("#1505 thread 2f7 (positive): overlay IS readable ⇒ raw disclosure includ
   assert.equal(probe.searchSessionIds.length, 1);
   assert.equal(
     probe.searchSessionIds[0],
-    `${overlayNamespace()}:${SESSION_KEY}`,
+    lcmSessionKeyForNamespace(overlayNamespace(), SESSION_KEY, "default"),
     "readable overlay ⇒ raw disclosure keeps the overlay prefix",
   );
 });
@@ -340,7 +341,7 @@ test("#1505 thread NBHWz (codex P2): restrictive `default` READ policy + readabl
   // after the primary; the primary overlay key is what matters here.)
   assert.equal(
     probe.searchSessionIds[0],
-    `${overlayNamespace()}:${SESSION_KEY}`,
+    lcmSessionKeyForNamespace(overlayNamespace(), SESSION_KEY, "default"),
     "raw excerpts must read the recall-authorized self overlay, not pre-authorize the denied default",
   );
   // No queried key may be the bare default-store key (the unprefixed raw
@@ -349,6 +350,10 @@ test("#1505 thread NBHWz (codex P2): restrictive `default` READ policy + readabl
   // namespace the principal may read (the `pi-geek` self base or its
   // `pi-geek-project-*` overlay), matching what normal recall + `lcmSearch`
   // search.
+  // #1495 P1: the namespaced key is sentinel-framed (`\x1f<ns>\x1f<sessionKey>`),
+  // so parse the namespace out of the frame and assert it is an authorized
+  // pi-geek namespace (the self base or its `pi-geek-project-*` overlay).
+  const SENTINEL = "\u001f";
   for (const id of probe.searchSessionIds) {
     assert.notEqual(
       id,
@@ -356,8 +361,13 @@ test("#1505 thread NBHWz (codex P2): restrictive `default` READ policy + readabl
       "raw-excerpt LCM keys must NOT fall back to the bare default store (the denied default)",
     );
     assert.ok(
-      typeof id === "string" && id.startsWith("pi-geek"),
-      `every raw-excerpt LCM key must be prefixed with an authorized pi-geek namespace, got ${String(id)}`,
+      typeof id === "string" && id.startsWith(SENTINEL),
+      `every raw-excerpt LCM key must be the sentinel-framed namespaced key, got ${String(id)}`,
+    );
+    const framedNs = (id as string).slice(SENTINEL.length).split(SENTINEL)[0]!;
+    assert.ok(
+      framedNs.startsWith("pi-geek"),
+      `every raw-excerpt LCM key must be framed with an authorized pi-geek namespace, got ${String(id)}`,
     );
   }
 });

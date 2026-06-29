@@ -385,15 +385,27 @@ test("#1505 codex P2: lcmReadSessionIdsForNamespaces preserves UNDEFINED for a s
 });
 
 test("#1505 codex P2: lcmReadSessionIdsForNamespaces keeps the raw sessionKey + overlay keys when a session IS present", async () => {
-  const { lcmReadSessionIdsForNamespaces } = await import("./coding-namespace.js");
+  const { lcmReadSessionIdsForNamespaces, lcmSessionKeyForNamespace } = await import(
+    "./coding-namespace.js"
+  );
+  // Shape-agnostic expectation: derive each expected key through the SAME shared
+  // encoder production uses (#1495 P1 made the namespaced encoding sentinel-framed
+  // and unforgeable; rule 22: never re-hardcode the join).
+  const enc = (ns: string, sk: string) =>
+    lcmSessionKeyForNamespace(ns, sk, "default") ?? sk;
   // Single-store / default namespace ⇒ raw sessionKey (byte-for-byte prior).
   assert.deepEqual(
     lcmReadSessionIdsForNamespaces(["default"], "sk", "default"),
     ["sk"],
   );
-  // Non-default namespaces ⇒ prefixed keys, deduped, ordered.
+  // Non-default namespaces ⇒ sentinel-framed keys, deduped, ordered. The default
+  // key collapses to the raw `sk`, and the namespaced key is disjoint from it.
   assert.deepEqual(
     lcmReadSessionIdsForNamespaces(["acme", "default", "acme"], "sk", "default"),
-    ["acme:sk", "sk"],
+    [enc("acme", "sk"), "sk"],
   );
+  // Security invariant: the namespaced key cannot equal a raw default key, so a
+  // forged default read can never collide with the overlay key.
+  assert.notEqual(enc("acme", "sk"), "acme:sk");
+  assert.notEqual(enc("acme", "sk"), "sk");
 });

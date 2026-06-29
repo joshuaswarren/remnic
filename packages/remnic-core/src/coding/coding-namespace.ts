@@ -424,16 +424,75 @@ export function describeCodingScope(
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
+ * Reserved structural sentinel for the namespaced LCM `session_id` encoding
+ * (#1495 P1). U+001F (UNIT SEPARATOR) is a C0 control character that CANNOT
+ * occur in a route namespace (`isSafeRouteNamespace` ⇒ `[A-Za-z0-9._-]{1,64}`,
+ * see routing/engine.ts) and does not occur in any legitimate session key, so
+ * it is an unforgeable structural marker for the namespace boundary.
+ *
+ * SECURITY — why this is unforgeable (the #1495 P1 fix):
+ * The LCM archive is keyed by the `session_id` STRING (exact `session_id = ?`
+ * and prefix `session_id LIKE '<prefix>%'`), NOT physically partitioned by
+ * namespace. The previous encoding `${namespace}:${sessionKey}` shared the SAME
+ * string space as a raw default-store key, so a caller authorized for the
+ * `default` store could pass a raw `sessionKey` equal to another namespace's
+ * encoded key (`"<overlay-ns>:<victim-session>"`) and exact-match the victim's
+ * rows — a cross-tenant read leak.
+ *
+ * The new encoding makes the namespaced and default key-spaces PROVABLY
+ * DISJOINT:
+ *   - Overlay key  = `\x1f<namespace>\x1f<sessionKey>` — always begins with
+ *     `\x1f` followed by a NON-`\x1f` character (the namespace is non-empty and
+ *     `\x1f`-free). The leading `\x1f<namespace>\x1f` is an unambiguous,
+ *     injective frame: the namespace cannot contain `\x1f`, so the second `\x1f`
+ *     terminates it without any escaping of the (raw) session key.
+ *   - Default key  = the raw `sessionKey`, UNLESS it already begins with the
+ *     sentinel, in which case it is escaped to begin with `\x1f\x1f` (see
+ *     `escapeDefaultLcmKey`). A default key therefore NEVER matches the overlay
+ *     frame `\x1f<non-\x1f>…`.
+ * Hence no caller-controlled raw `sessionKey` (default path) can reproduce an
+ * overlay key, closing the forgery for BOTH the exact-`session_id` match and the
+ * `sessionPrefix` LIKE match (an overlay prefix `\x1f<ns>\x1f<rawPrefix>` stays a
+ * valid LIKE-prefix of the overlay full keys, and a default prefix can only
+ * LIKE-match default keys).
+ *
+ * Existing default-store rows need NO migration: legitimate session keys never
+ * contain `\x1f`, so `escapeDefaultLcmKey` is a no-op for them and they remain
+ * byte-for-byte their raw form. The namespaced encoding is NEW in this
+ * unreleased PR, so changing its shape costs nothing.
+ */
+const LCM_NS_SENTINEL = "\u001f";
+
+/**
+ * Make a default-store (raw) LCM key disjoint from the namespaced key-space.
+ *
+ * Namespaced overlay keys always begin with `\x1f` followed by a non-`\x1f`
+ * namespace character. A raw default key collides with that frame ONLY if it
+ * begins with `\x1f`. Legitimate session keys never contain `\x1f`, so this is a
+ * pure no-op for them; a forged key that begins with `\x1f` is escaped to begin
+ * with `\x1f\x1f`, which can never equal an overlay key (whose second character
+ * is a `[A-Za-z0-9._-]` namespace char, never `\x1f`).
+ */
+function escapeDefaultLcmKey(sessionKey: string): string {
+  return sessionKey.startsWith(LCM_NS_SENTINEL)
+    ? `${LCM_NS_SENTINEL}${sessionKey}`
+    : sessionKey;
+}
+
+/**
  * Build the LCM/structured-history `session_id` that a write-producing surface
  * archives under, and that a same-session reader must search under, so reads
  * and writes never drift (#1495, CLAUDE.md rule 42).
  *
- * The LCM archive filters strictly by `session_id` string, so the writer's
+ * The LCM archive filters strictly by the `session_id` string, so the writer's
  * archival key and the reader's lookup key MUST agree byte-for-byte. The
- * encoding is: prefix the raw `sessionKey` with the EFFECTIVE write namespace
- * (`${namespace}:${sessionKey}`) whenever that namespace diverges from the
- * single-store default; otherwise pass the raw `sessionKey` unchanged so
- * single-user / no-overlay deployments keep pre-#1495 behavior exactly.
+ * encoding frames the namespace with the reserved {@link LCM_NS_SENTINEL}
+ * (`\x1f<namespace>\x1f<sessionKey>`) whenever that namespace diverges from the
+ * single-store default; otherwise it passes the (escaped) raw `sessionKey` so
+ * single-user / no-overlay deployments keep pre-#1495 behavior exactly. The two
+ * key-spaces are provably disjoint, so a caller-controlled raw `sessionKey`
+ * cannot forge another namespace's encoded id (see the {@link LCM_NS_SENTINEL}
+ * doc comment for the full security rationale).
  *
  * `observe`, compaction flush/record, and the orchestrator recall readers all
  * route through this one helper so a project-scoped (cwd/projectTag) or
@@ -451,9 +510,14 @@ export function lcmSessionKeyForNamespace(
     namespace.length > 0 &&
     namespace !== defaultNamespace
   ) {
-    return `${namespace}:${sessionKey}`;
+    // Namespaced (overlay / explicit) key: frame the namespace with the reserved
+    // sentinel so the boundary is unambiguous AND unforgeable from the default
+    // key-space. The namespace is guaranteed `\x1f`-free by `isSafeRouteNamespace`.
+    return `${LCM_NS_SENTINEL}${namespace}${LCM_NS_SENTINEL}${sessionKey}`;
   }
-  return sessionKey;
+  // Default store: raw sessionKey, escaped only if it would otherwise intrude on
+  // the namespaced key-space (no-op for every legitimate key).
+  return escapeDefaultLcmKey(sessionKey);
 }
 
 /**

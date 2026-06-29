@@ -37,11 +37,21 @@ import { Orchestrator } from "./orchestrator.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
 import {
   combineNamespaces,
+  lcmSessionKeyForNamespace,
   projectNamespaceName,
   projectTagProjectId,
 } from "./coding/coding-namespace.js";
 import { resolveGitContext } from "./coding/git-context.js";
 import type { CodingContext, PluginConfig } from "./types.js";
+
+/**
+ * Encode the expected namespaced LCM `session_id` via the SAME shared helper
+ * production uses, so these assertions stay shape-agnostic after the #1495 P1
+ * fix made the namespaced encoding sentinel-framed and unforgeable (rule 22).
+ */
+function encodeNs(namespace: string, sessionKey: string): string {
+  return lcmSessionKeyForNamespace(namespace, sessionKey, "default") ?? sessionKey;
+}
 
 interface ObserveProbe {
   orch: Orchestrator;
@@ -168,7 +178,7 @@ test("#1495 projectTag: LCM, extraction, objective-state, and response all agree
   assert.equal(probe.lcmCalls.length, 1);
   assert.equal(
     probe.lcmCalls[0].sessionKey,
-    `${expected}:pi-geek:abc123`,
+    encodeNs(expected, "pi-geek:abc123"),
     "LCM key must be prefixed with the EFFECTIVE write namespace",
   );
 
@@ -228,7 +238,7 @@ test("#1495 cwd (git repo): every observe side effect agrees on the effective na
     );
 
     assert.equal(res.effectiveNamespace, expected);
-    assert.equal(probe.lcmCalls[0].sessionKey, `${expected}:pi-geek:cwd1`);
+    assert.equal(probe.lcmCalls[0].sessionKey, encodeNs(expected, "pi-geek:cwd1"));
     // #1505 thread 1: extraction turns carry the ORIGINAL session key (identity);
     // routing + provenance are pinned via the override options.
     assert.deepEqual(
@@ -262,7 +272,7 @@ test("#1495 explicit namespace wins and project context does NOT silently overri
   );
 
   assert.equal(res.effectiveNamespace, "team", "explicit namespace must win");
-  assert.equal(probe.lcmCalls[0].sessionKey, "team:pi-geek:abc123");
+  assert.equal(probe.lcmCalls[0].sessionKey, encodeNs("team", "pi-geek:abc123"));
   assert.equal(probe.extractionCalls[0].writeNamespaceOverride, "team");
   // #1505 thread 1: extraction turns carry the ORIGINAL session key (identity),
   // even with an explicit namespace; routing is pinned via writeNamespaceOverride.
@@ -585,5 +595,5 @@ test("#1495 skipExtraction does not enqueue extraction but still archives LCM un
   );
   assert.equal(res.extractionQueued, false);
   assert.equal(probe.extractionCalls.length, 0);
-  assert.equal(probe.lcmCalls[0].sessionKey, `${expected}:pi-geek:abc123`);
+  assert.equal(probe.lcmCalls[0].sessionKey, encodeNs(expected, "pi-geek:abc123"));
 });

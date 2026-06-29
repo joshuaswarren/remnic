@@ -218,9 +218,50 @@ function readerLcmKey(probe: ParityProbe, sessionKey: string): string {
   );
 }
 
+// #1495 P1: reserved structural sentinel framing the namespaced LCM key
+// (`\x1f<namespace>\x1f<sessionKey>`). Kept in sync with
+// `coding-namespace.ts:LCM_NS_SENTINEL`. U+001F cannot occur in a route
+// namespace (`[A-Za-z0-9._-]`) nor any legitimate session key, so the
+// namespaced and default key-spaces are provably disjoint and an overlay id is
+// unforgeable from a caller-controlled raw default-store sessionKey.
+const LCM_NS_SENTINEL = "\u001f";
+
+/**
+ * Encode the expected namespaced LCM `session_id` exactly as production does —
+ * via the shared `lcmSessionKeyForNamespace` helper — so these parity
+ * assertions stay shape-agnostic and never re-hardcode the `:`-join the #1495
+ * P1 fix removed (CLAUDE.md rule 22: never fork the encoding).
+ */
+function encodeNs(namespace: string, sessionKey: string): string {
+  return lcmSessionKeyForNamespace(namespace, sessionKey, "default") ?? sessionKey;
+}
+
+/**
+ * Assert a namespaced LCM write key (new #1495 P1 encoding
+ * `\x1f<overlayNs>\x1f<sessionKey>`) was archived under an overlay namespace
+ * whose name begins with `overlayPrefix` (e.g. `alice-`, `pi-geek-`). Replaces
+ * the pre-#1495 `writeKey.startsWith("<principal>-")`, which no longer holds now
+ * that the key is sentinel-framed.
+ */
+function assertOverlayWriteKey(writeKey: string, overlayPrefix: string): void {
+  assert.ok(
+    writeKey.startsWith(LCM_NS_SENTINEL),
+    `write key must be sentinel-framed, got ${JSON.stringify(writeKey)}`,
+  );
+  const overlayNs = writeKey.slice(LCM_NS_SENTINEL.length).split(LCM_NS_SENTINEL)[0]!;
+  assert.ok(
+    overlayNs.startsWith(overlayPrefix),
+    `overlay namespace must start with ${overlayPrefix}, got ${overlayNs} (key ${JSON.stringify(writeKey)})`,
+  );
+}
+
 test("#1505 thread 2 helper: write/read encoding agrees and collapses to raw key on the default store", () => {
-  // Non-default namespace ⇒ prefixed.
-  assert.equal(lcmSessionKeyForNamespace("acme", "sk", "default"), "acme:sk");
+  // Non-default namespace ⇒ sentinel-framed, NOT `${ns}:${sessionKey}` (#1495 P1
+  // unforgeable encoding).
+  assert.equal(
+    lcmSessionKeyForNamespace("acme", "sk", "default"),
+    `${LCM_NS_SENTINEL}acme${LCM_NS_SENTINEL}sk`,
+  );
   // Default namespace ⇒ raw key (single-store byte-for-byte).
   assert.equal(lcmSessionKeyForNamespace("default", "sk", "default"), "sk");
   // Undefined namespace ⇒ raw key.
@@ -230,6 +271,33 @@ test("#1505 thread 2 helper: write/read encoding agrees and collapses to raw key
   // Missing sessionKey is passed through unchanged (recall's `?? "default"`
   // fallback handles the undefined case downstream).
   assert.equal(lcmSessionKeyForNamespace("acme", undefined, "default"), undefined);
+
+  // #1495 P1 UNFORGEABILITY: a default-store raw sessionKey can NEVER reproduce
+  // another namespace's encoded id, so a forged default read cannot collide with
+  // an overlay write key.
+  const overlayKey = lcmSessionKeyForNamespace("acme", "sk", "default");
+  // The classic forgery: a default-store caller passing the OLD `${ns}:${sk}`
+  // string. Under the new encoding the default path returns it verbatim (it does
+  // not start with the sentinel), which is disjoint from the overlay key-space.
+  const forgedDefaultKey = lcmSessionKeyForNamespace("default", "acme:sk", "default");
+  assert.equal(forgedDefaultKey, "acme:sk");
+  assert.notEqual(
+    forgedDefaultKey,
+    overlayKey,
+    "a forged `${ns}:${sk}` default key must NOT equal the overlay encoded id",
+  );
+  // Even a default sessionKey that itself begins with the sentinel is escaped so
+  // it can never equal an overlay key (whose 2nd char is a namespace char).
+  const sentinelLeadingDefault = lcmSessionKeyForNamespace(
+    "default",
+    `${LCM_NS_SENTINEL}acme${LCM_NS_SENTINEL}sk`,
+    "default",
+  );
+  assert.notEqual(
+    sentinelLeadingDefault,
+    overlayKey,
+    "a sentinel-leading default key must be escaped disjoint from the overlay key-space",
+  );
 });
 
 test("#1505 thread 2 (c) projectTag: observe LCM write key == recall reader key == compaction keys", async () => {
@@ -244,7 +312,7 @@ test("#1505 thread 2 (c) projectTag: observe LCM write key == recall reader key 
     "pi-geek",
     projectNamespaceName(projectTagProjectId("Blend/Supply")),
   );
-  const expectedKey = `${expectedNs}:pi-geek:abc123`;
+  const expectedKey = encodeNs(expectedNs, "pi-geek:abc123");
   assert.equal(res.effectiveNamespace, expectedNs);
   assert.notEqual(expectedNs, "default", "overlay must change the namespace");
 
@@ -292,7 +360,7 @@ test("#1505 thread 2 (b) cwd git repo: observe LCM write key == recall reader ke
       "pi-geek",
       projectNamespaceName(gitCtx!.projectId),
     );
-    const expectedKey = `${expectedNs}:pi-geek:cwd1`;
+    const expectedKey = encodeNs(expectedNs, "pi-geek:cwd1");
 
     assert.equal(res.effectiveNamespace, expectedNs);
     assert.equal(probe.lcmWriteKeys[0], expectedKey, "LCM write key");
@@ -329,13 +397,17 @@ test("#1505 thread 2 (a) explicit namespace: write key prefixed; compaction agre
     observeRequest({ sessionKey: "pi-geek:abc123", namespace: "team" }),
   );
   assert.equal(res.effectiveNamespace, "team");
-  assert.equal(probe.lcmWriteKeys[0], "team:pi-geek:abc123", "LCM write key");
+  assert.equal(
+    probe.lcmWriteKeys[0],
+    encodeNs("team", "pi-geek:abc123"),
+    "LCM write key",
+  );
 
   // A recall that wants the `team` namespace passes namespace=team; its reader
   // key is built from that override and agrees with the write key.
   assert.equal(
     lcmSessionKeyForNamespace("team", "pi-geek:abc123", "default"),
-    "team:pi-geek:abc123",
+    encodeNs("team", "pi-geek:abc123"),
     "explicit-namespace recall reader key matches the write key",
   );
 
@@ -350,8 +422,16 @@ test("#1505 thread 2 (a) explicit namespace: write key prefixed; compaction agre
     tokensBefore: 100,
     tokensAfter: 10,
   });
-  assert.equal(probe.compactionFlushKeys[0], "team:pi-geek:abc123", "flush key");
-  assert.equal(probe.compactionRecordKeys[0], "team:pi-geek:abc123", "record key");
+  assert.equal(
+    probe.compactionFlushKeys[0],
+    encodeNs("team", "pi-geek:abc123"),
+    "flush key",
+  );
+  assert.equal(
+    probe.compactionRecordKeys[0],
+    encodeNs("team", "pi-geek:abc123"),
+    "record key",
+  );
 });
 
 test("#1505 thread 2 (d) projectScope:false ⇒ raw sessionKey everywhere (single-user regression guard)", async () => {
@@ -514,10 +594,7 @@ test("#1505 thread 2: LCM read namespace honors authenticatedPrincipal (write-un
     }),
   );
   const writeKey = probe.lcmWriteKeys[0];
-  assert.ok(
-    writeKey.startsWith("alice-"),
-    `observe must archive under alice's overlay namespace, got ${writeKey}`,
-  );
+  assertOverlayWriteKey(writeKey, "alice-"); // observe must archive under alice's overlay namespace, got ${writeKey}
 
   // The orchestrator's real lcmReadNamespaceForSession (the stub delegates
   // resolvePrincipal/overlay to the prototype).
@@ -545,7 +622,7 @@ test("#1505 thread 2: LCM read namespace honors authenticatedPrincipal (write-un
     "alice",
   );
   assert.equal(
-    `${withOverride}:sess-1`,
+    encodeNs(withOverride, "sess-1"),
     writeKey,
     "authenticated principal override ⇒ read key matches the alice-prefixed write key",
   );
@@ -567,10 +644,7 @@ test("#1505 thread 2 compaction regression: flush/record overlay-derived key mat
   await service.lcmCompactionFlush({ sessionKey: "pi-geek:abc123" });
 
   const observedWriteKey = probe.lcmWriteKeys[0];
-  assert.ok(
-    observedWriteKey.startsWith("pi-geek-"),
-    `observe must archive under the overlay namespace, got ${observedWriteKey}`,
-  );
+  assertOverlayWriteKey(observedWriteKey, "pi-geek-"); // observe must archive under the overlay namespace, got ${observedWriteKey}
   assert.equal(
     probe.compactionFlushKeys[0],
     observedWriteKey,
@@ -592,9 +666,16 @@ test("#1505 round 3: access lcmSearch routes the session_id through the SCOPED (
     observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
   );
   const writeKey = probe.lcmWriteKeys[0];
+  // New #1495 P1 encoding: `\x1f<overlayNs>\x1f<sessionKey>`. Parse the overlay
+  // namespace out of the sentinel frame (the namespace is `\x1f`-free).
   assert.ok(
-    writeKey.startsWith("pi-geek-"),
-    `observe must archive under the overlay key, got ${writeKey}`,
+    writeKey.startsWith(LCM_NS_SENTINEL),
+    `observe must archive under the sentinel-framed overlay key, got ${JSON.stringify(writeKey)}`,
+  );
+  const overlayNs = writeKey.slice(LCM_NS_SENTINEL.length).split(LCM_NS_SENTINEL)[0]!;
+  assert.ok(
+    overlayNs.startsWith("pi-geek-"),
+    `overlay namespace must be pi-geek's project overlay, got ${overlayNs}`,
   );
 
   await service.lcmSearch({
@@ -612,11 +693,11 @@ test("#1505 round 3: access lcmSearch routes the session_id through the SCOPED (
     !probe.searchSessionIds.includes("pi-geek:abc123"),
     `lcmSearch must NOT query the raw sessionKey; queried: ${JSON.stringify(probe.searchSessionIds)}`,
   );
-  // The sessionPrefix is prefixed with the same overlay namespace.
-  const overlayNs = writeKey.slice(0, writeKey.length - ":pi-geek:abc123".length);
+  // The sessionPrefix is framed with the same overlay namespace (so it stays a
+  // valid LIKE-prefix of the overlay full keys).
   assert.equal(
     probe.searchSessionPrefixes[0],
-    `${overlayNs}:pi-geek:`,
+    encodeNs(overlayNs, "pi-geek:"),
     "lcmSearch sessionPrefix must carry the overlay namespace too",
   );
 });
@@ -830,14 +911,14 @@ test("#1505 round 3 thread 2: lcmSearch returns NO overlay rows when the princip
     )}`,
   );
   assert.ok(
-    !String(probe.searchSessionIds[0] ?? "").startsWith("alice-"),
+    !String(probe.searchSessionIds[0] ?? "").includes("alice-"),
     `lcmSearch must NOT return alice-project-* rows to a caller who cannot read the alice namespace; queried: ${JSON.stringify(
       probe.searchSessionIds,
     )}`,
   );
   // The prefix must NOT carry the overlay namespace either.
   assert.ok(
-    !String(probe.searchSessionPrefixes[0] ?? "").startsWith("alice-"),
+    !String(probe.searchSessionPrefixes[0] ?? "").includes("alice-"),
     `lcmSearch sessionPrefix must NOT carry the alice overlay namespace; got ${String(
       probe.searchSessionPrefixes[0],
     )}`,
@@ -874,10 +955,7 @@ test("#1505 round 4 thread (codex P2): compaction flush/record target the OVERLA
     }),
   );
   const writeKey = probe.lcmWriteKeys[0];
-  assert.ok(
-    writeKey.startsWith("alice-"),
-    `observe must archive under alice's overlay key, got ${writeKey}`,
-  );
+  assertOverlayWriteKey(writeKey, "alice-"); // observe must archive under alice's overlay key, got ${writeKey}
 
   await service.lcmCompactionFlush({
     sessionKey: "sess-1",
@@ -956,10 +1034,7 @@ test("#1505 round 3 thread 2: lcmSearch still routes through the overlay key whe
     }),
   );
   const writeKey = probe.lcmWriteKeys[0];
-  assert.ok(
-    writeKey.startsWith("alice-"),
-    `observe must archive under alice's overlay key, got ${writeKey}`,
-  );
+  assertOverlayWriteKey(writeKey, "alice-"); // observe must archive under alice's overlay key, got ${writeKey}
 
   await service.lcmSearch({
     query: "what database are we using?",
@@ -1016,10 +1091,7 @@ test("#1505 thread NBHWs (codex P2): restrictive `default` WRITE policy + writab
     }),
   );
   const writeKey = probe.lcmWriteKeys[0];
-  assert.ok(
-    writeKey.startsWith("alice-"),
-    `observe must archive under alice's writable overlay key, got ${writeKey}`,
-  );
+  assertOverlayWriteKey(writeKey, "alice-"); // observe must archive under alice's writable overlay key, got ${writeKey}
   assert.ok(
     observeRes.effectiveNamespace?.startsWith("alice-"),
     "observe effectiveNamespace must be the alice overlay (sanity)",
@@ -1076,10 +1148,7 @@ test("#1505 thread NBHWz (sweep): restrictive `default` READ policy + readable s
     observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
   );
   const writeKey = probe.lcmWriteKeys[0];
-  assert.ok(
-    writeKey.startsWith("pi-geek-"),
-    `observe must archive under pi-geek's overlay key, got ${writeKey}`,
-  );
+  assertOverlayWriteKey(writeKey, "pi-geek-"); // observe must archive under pi-geek's overlay key, got ${writeKey}
 
   // lcmSearch with NO explicit namespace must NOT throw `not readable: default`
   // and must route the session_id through the readable overlay key.
