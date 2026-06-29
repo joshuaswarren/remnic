@@ -4179,8 +4179,16 @@ export function registerCli(
             const note =
               "Namespace catalog is inert: it only runs when namespacesEnabled is true and namespaceCatalogEnabled is not false.";
             if (options.json === true) {
+              // Include `applied: false` so the inert JSON payload carries the SAME
+              // shape as the enabled path (cursor Low — NFDBM). An inert catalog
+              // rewrote nothing, so a `--apply` did NOT apply; automation that keys
+              // on `applied` must not misread a missing field as a completed rebuild.
               console.log(
-                JSON.stringify({ dryRun, enabled: false, records: [], skipped: [], note }, null, 2),
+                JSON.stringify(
+                  { dryRun, enabled: false, applied: false, records: [], skipped: [], note },
+                  null,
+                  2,
+                ),
               );
             } else {
               console.log(note);
