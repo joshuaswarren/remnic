@@ -149,6 +149,35 @@ export async function resolveDefaultNamespaceRoot(config: PluginConfig): Promise
     : config.memoryDir;
 }
 
+/**
+ * Resolve the runtime storage root for ANY namespace exactly as the live router
+ * would (`NamespaceStorageRouter.namespaceRoot`). Shared so the rebuildable
+ * catalog records the SAME on-disk root the router routes to — a recall/read
+ * touch must not guess `namespaces/<token>` when the router actually serves a
+ * legacy raw-name dir or a migrated default root (CLAUDE.md rule #22/#42; round
+ * 4, cursor Medium). The default namespace delegates to `resolveDefaultNamespaceRoot`;
+ * every other namespace prefers the tokenized root when it has a storage marker,
+ * else a legacy raw-name dir when present, else the tokenized root.
+ */
+export async function resolveNamespaceStorageRoot(
+  config: PluginConfig,
+  namespace: string,
+): Promise<string> {
+  if (!config.namespacesEnabled) return config.memoryDir;
+  if (namespace === config.defaultNamespace) {
+    return resolveDefaultNamespaceRoot(config);
+  }
+  const legacyRoot = resolveNamespaceDir(config.memoryDir, namespace);
+  const tokenizedRoot = resolveNamespaceDir(config.memoryDir, namespaceIdentityToken(namespace));
+  if (
+    (await exists(tokenizedRoot)) &&
+    (await hasAnyNamespaceStorageMarker(tokenizedRoot, { includeRuntimeState: true }))
+  ) {
+    return tokenizedRoot;
+  }
+  return (await exists(legacyRoot)) ? legacyRoot : tokenizedRoot;
+}
+
 export class NamespaceStorageRouter {
   private readonly cache = new Map<string, StorageManager>();
   private defaultNsRootResolved: string | null = null;
@@ -169,12 +198,7 @@ export class NamespaceStorageRouter {
     if (namespace === this.config.defaultNamespace) {
       return this.defaultNsRootResolved ?? this.config.memoryDir;
     }
-    const legacyRoot = resolveNamespaceDir(this.config.memoryDir, namespace);
-    const tokenizedRoot = resolveNamespaceDir(this.config.memoryDir, namespaceIdentityToken(namespace));
-    if ((await exists(tokenizedRoot)) && (await hasAnyNamespaceStorageMarker(tokenizedRoot, { includeRuntimeState: true }))) {
-      return tokenizedRoot;
-    }
-    return (await exists(legacyRoot)) ? legacyRoot : tokenizedRoot;
+    return resolveNamespaceStorageRoot(this.config, namespace);
   }
 
   async storageFor(namespace: string): Promise<StorageManager> {

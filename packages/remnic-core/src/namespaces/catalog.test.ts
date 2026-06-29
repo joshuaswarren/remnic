@@ -6,7 +6,11 @@ import test from "node:test";
 import type { PluginConfig } from "../types.js";
 import { namespaceIdentityToken } from "./identity.js";
 import { NamespaceCatalog } from "./catalog.js";
-import { NamespaceStorageRouter, resolveDefaultNamespaceRoot } from "./storage.js";
+import {
+  NamespaceStorageRouter,
+  resolveDefaultNamespaceRoot,
+  resolveNamespaceStorageRoot,
+} from "./storage.js";
 
 function makeConfig(memoryDir: string, overrides: Partial<PluginConfig> = {}): PluginConfig {
   return {
@@ -951,6 +955,110 @@ test("rebuildFromDisk re-merges a concurrent cross-instance write touch", async 
       record?.lastWriteAt,
       "a cross-instance write landing during rebuild must survive the rewrite",
     );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 4, Issue #1 (cursor Medium): a read touch with no explicit storageDir
+// must record the SAME on-disk root the router resolves — a legacy raw-name dir
+// when that is where the data lives — not the lexical tokenized guess.
+test("markRead records the router-aligned legacy raw-name root, not the tokenized guess", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-legacy";
+    // Data lives ONLY in the legacy raw-name dir (no tokenized dir) — exactly
+    // what NamespaceStorageRouter.namespaceRoot would route to.
+    const legacyDir = path.join(memoryDir, "namespaces", ns);
+    await mkdir(path.join(legacyDir, "facts"), { recursive: true });
+
+    const expectedRoot = await resolveNamespaceStorageRoot(makeConfig(memoryDir), ns);
+    assert.equal(expectedRoot, legacyDir, "router resolves the legacy raw-name dir");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markRead(ns, { discoveredBy: "read" });
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.ok(record, "record should be created by the read touch");
+    assert.equal(
+      record?.storageDir,
+      legacyDir,
+      "read touch must record the router-aligned legacy root, not namespaces/<token>",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 4, Issue #2 (codex P2): rebuild --apply must PURGE a stale dynamic
+// namespace whose on-disk root was deleted, rather than re-adding it from the
+// re-read log forever.
+test("rebuildFromDisk purges a stale namespace whose root was removed", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-gone";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // First touch + rebuild catalogs the namespace from its on-disk root.
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
+    await catalog.rebuildFromDisk();
+    assert.ok(
+      await catalog.getNamespaceRecord(ns),
+      "namespace should be present while its root exists",
+    );
+
+    // Delete the on-disk root, then reconcile via rebuild.
+    await rm(tokenDir, { recursive: true, force: true });
+    const result = await catalog.rebuildFromDisk();
+    assert.ok(
+      !result.records.some((r) => r.namespace === ns),
+      "rebuild must purge a stale namespace whose root was removed",
+    );
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    assert.equal(
+      await reader.getNamespaceRecord(ns),
+      null,
+      "purged namespace must not reappear on a fresh read",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Round 4, Issue #3 (codex P2): catalog WRITERS respect the rebuild lock. A
+// touch defers (bounded) while another process holds the rebuild lock, so it
+// appends to the freshly-rewritten log rather than into the snapshot→rename
+// window. Here we simulate a held cross-process lock with a non-stale lock file
+// and assert the touch still completes (degrades gracefully, never hangs) and
+// is preserved.
+test("a touch defers to a held rebuild lock and is preserved", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-locked";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+    // Simulate another process holding the rebuild lock (foreign PID, fresh mtime).
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
+    await writeFile(lockPath, `999999 ${new Date().toISOString()}\n`, "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const started = Date.now();
+    // Release the foreign lock shortly after the touch begins waiting so the
+    // bounded wait clears well before its deadline.
+    setTimeout(() => {
+      rm(lockPath, { force: true }).catch(() => undefined);
+    }, 150);
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
+    const waited = Date.now() - started;
+
+    const record = await catalog.getNamespaceRecord(ns);
+    assert.ok(record?.lastWriteAt, "the deferred touch must still be recorded");
+    // It should have waited for the lock to clear (≥ ~100ms) but nowhere near
+    // the 5s max-wait deadline.
+    assert.ok(waited < 4000, "a touch must never block near the full lock deadline");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

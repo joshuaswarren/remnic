@@ -16,7 +16,7 @@ import {
 import type { PluginConfig } from "../types.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { namespaceIdentityFromToken, namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
-import { resolveDefaultNamespaceRoot } from "./storage.js";
+import { resolveDefaultNamespaceRoot, resolveNamespaceStorageRoot } from "./storage.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
 /**
@@ -527,21 +527,35 @@ export class NamespaceCatalog {
   }
 
   /**
-   * Resolve the canonical storage dir for a namespace, but NEVER return a path
-   * that itself escapes the memory root via a symlink (round 5, codex P2). The
-   * lexical `resolveStorageDir` can return `<memoryDir>/namespaces/<token>` even
-   * when THAT very path is a symlink to an outside directory — so a rejected
-   * explicit symlink-escape would silently fall back to the same escaping path.
-   * If the resolved dir fails the full (lexical + realpath) containment contract,
-   * fall back to the trusted legacy `memoryDir` root, which is always contained.
+   * Resolve the canonical storage dir for a namespace as the LIVE ROUTER would,
+   * but NEVER return a path that escapes the memory root.
+   *
+   * Router alignment (round 4, cursor Medium): a read/register touch with no
+   * explicit storageDir previously used the lexical `resolveStorageDir`, which
+   * always picks `<memoryDir>/namespaces/<token>` (or `memoryDir` for the
+   * default). That diverges from `NamespaceStorageRouter`, which can route to a
+   * legacy raw-name dir or a migrated default root — so a recall touch could
+   * record a contained-but-WRONG root that maintenance/rebuild then targets. We
+   * now delegate to the shared `resolveNamespaceStorageRoot` (the very helper the
+   * router uses) so the catalog records the same on-disk root the router serves.
+   *
+   * Containment (round 5, codex P2): the resolved path can still be a symlink
+   * escaping memoryDir, so we run the full (lexical + realpath) containment
+   * contract and fall back to the trusted legacy `memoryDir` root — which is
+   * always contained — if it fails. The lexical `resolveStorageDir` is used as a
+   * last-resort guard for unsafe tokens that the router resolver would reject.
    */
   private async resolveSafeStorageDir(namespace: string): Promise<string> {
     let resolved: string;
     try {
-      resolved = this.resolveStorageDir(namespace);
+      resolved = await resolveNamespaceStorageRoot(this.config, namespace);
     } catch {
-      // An unsafe namespace token would throw; fall back to the default root.
-      return this.memoryDir;
+      try {
+        resolved = this.resolveStorageDir(namespace);
+      } catch {
+        // An unsafe namespace token would throw; fall back to the default root.
+        return this.memoryDir;
+      }
     }
     if (await this.isContainedStorageDir(resolved)) return resolved;
     return this.memoryDir;
@@ -567,6 +581,16 @@ export class NamespaceCatalog {
     // from rejection). Reading inside the chain guarantees each touch sees the
     // most recent appended state, including any concurrent read/write/register.
     await this.queueCritical(async () => {
+      // Cross-process serialization (round 4, codex P2): a CLI `rebuild --apply`
+      // holds the rebuild lock across its final `loadCompacted()` → atomic
+      // `rename`. An append that lands inside that window is clobbered by the
+      // rename. `queueCritical` only serializes THIS process, so before reading
+      // and appending we wait (bounded) for any holder's lock to clear, then
+      // read the freshly-rewritten log. Degrades gracefully — a stale lock is
+      // ignored and a timeout proceeds best-effort so a touch NEVER blocks
+      // forever or crashes the primary memory op.
+      await this.waitForRebuildLockClear();
+
       const records = await this.loadCompacted();
       const existing = records.get(ns);
 
@@ -823,9 +847,17 @@ export class NamespaceCatalog {
       for (const [ns, fresh] of latest) {
         const current = rebuilt.get(ns);
         if (!current) {
-          // A namespace that appeared purely via a concurrent touch (no on-disk
-          // root scanned) must survive the rewrite rather than be dropped.
-          rebuilt.set(ns, fresh);
+          // A namespace absent from the rebuilt set was NOT discovered on disk
+          // (its root is empty/deleted) and is NOT configured. Re-adding it
+          // unconditionally would make rebuild unable to ever PURGE deleted
+          // dynamic namespaces from the log (round 4, codex P2). Only resurrect
+          // it when a CONCURRENT touch changed it after our initial snapshot
+          // (i.e. it is new since scan start, or its bytes differ from the
+          // `existing` snapshot). A record unchanged since the snapshot is a
+          // stale leftover for a removed root and is intentionally dropped.
+          const prior = existing.get(ns);
+          const concurrentlyTouched = !prior || serializeRecord(prior) !== serializeRecord(fresh);
+          if (concurrentlyTouched) rebuilt.set(ns, fresh);
           continue;
         }
         rebuilt.set(ns, mergeNewerTouchFields(current, fresh));
@@ -907,6 +939,54 @@ export class NamespaceCatalog {
       }
     } catch {
       // Lock vanished (released by holder) or stat failed — nothing to do.
+    }
+  }
+
+  /**
+   * Wait (bounded, best-effort) for a held rebuild lock to clear before a touch
+   * appends (round 4, codex P2). This makes catalog WRITERS respect the rebuild
+   * lock — without it the lock only serialized rebuilds against each other while
+   * a gateway `markWrite` could append into the rebuild's snapshot→rename window
+   * and be lost. We poll up to `REBUILD_LOCK_MAX_WAIT_MS`, breaking a stale lock
+   * (crashed rebuild) so a touch is never blocked indefinitely. ALL failures are
+   * swallowed: a touch must degrade gracefully and never crash the primary op.
+   *
+   * IMPORTANT: a lock held by OUR OWN process is skipped. An in-process rebuild
+   * already serializes against touches via `queueCritical`; waiting on our own
+   * lock here would deadlock (the rebuild holds the file lock then queues behind
+   * the very touch that is now waiting for it). Only a DIFFERENT process's lock
+   * (e.g. a separate CLI rebuild vs. the gateway) needs the wait.
+   */
+  private async waitForRebuildLockClear(): Promise<void> {
+    const deadline = Date.now() + REBUILD_LOCK_MAX_WAIT_MS;
+    for (;;) {
+      let info;
+      try {
+        info = await stat(this.rebuildLockPath);
+      } catch {
+        // No lock file (or stat failed) — nothing to wait on.
+        return;
+      }
+      // A stale lock (crashed holder) must not block touches — break it.
+      if (Date.now() - info.mtimeMs > REBUILD_LOCK_STALE_MS) {
+        await unlink(this.rebuildLockPath).catch(() => undefined);
+        return;
+      }
+      // Skip a lock held by our own process to avoid an in-process deadlock.
+      if (await this.rebuildLockHeldBySelf()) return;
+      if (Date.now() >= deadline) return;
+      await new Promise((r) => setTimeout(r, REBUILD_LOCK_POLL_MS));
+    }
+  }
+
+  /** Whether the rebuild lock file was written by THIS process (PID match). */
+  private async rebuildLockHeldBySelf(): Promise<boolean> {
+    try {
+      const body = await readFile(this.rebuildLockPath, "utf8");
+      const pid = Number.parseInt(body.trim().split(/\s+/)[0] ?? "", 10);
+      return Number.isFinite(pid) && pid === process.pid;
+    } catch {
+      return false;
     }
   }
 
