@@ -2025,12 +2025,24 @@ export class Orchestrator {
    * reader) use the overlaid `project-*` namespace. Returning the self base for
    * the no-overlay case would prefix the read key with a namespace the writer
    * never used, so the reader would miss its own evidence.
+   *
+   * Honours the access-surface `principalOverride` (#1505 thread 2, codex): when
+   * a recall supplies an authenticated principal NOT encoded in the raw
+   * `sessionKey`, `observe` archived LCM under THAT principal's base namespace.
+   * Deriving the base from `resolvePrincipal(sessionKey)` alone could fall back
+   * to `default`, so principal `alice` observing `sess-1` would write under
+   * `alice` but READ under `default`. Threading the override here keeps the read
+   * base identical to the write base.
    */
-  private lcmReadNamespaceForSession(sessionKey?: string): string {
-    const base = defaultNamespaceForPrincipal(
-      this.resolvePrincipal(sessionKey),
-      this.config,
-    );
+  private lcmReadNamespaceForSession(
+    sessionKey?: string,
+    principalOverride?: string,
+  ): string {
+    const principal =
+      typeof principalOverride === "string" && principalOverride.length > 0
+        ? principalOverride
+        : this.resolvePrincipal(sessionKey);
+    const base = defaultNamespaceForPrincipal(principal, this.config);
     const overlaid = this.applyCodingNamespaceOverlay(sessionKey, base);
     // Overlay applied → use the overlaid namespace (what observe wrote).
     // No overlay → collapse to the default store so the LCM key is the raw
@@ -6928,7 +6940,9 @@ export class Orchestrator {
     // `options.namespace` override wins; otherwise use the session's
     // coding-overlay namespace when one applies, else the default store
     // (`lcmReadNamespaceForSession` — NOT the principal self base, which would
-    // prefix a namespace the unqualified writer never used).
+    // prefix a namespace the unqualified writer never used). The authenticated
+    // `principalOverride` (#1505 thread 2) is threaded so the read base matches
+    // the write base when the principal is not encoded in the raw sessionKey.
     // `lcmSessionKeyForNamespace` collapses to the raw `sessionKey` whenever the
     // namespace is the default store, so single-user / no-overlay recall is
     // byte-for-byte unchanged.
@@ -6936,7 +6950,10 @@ export class Orchestrator {
       lcmSessionKeyForNamespace(
         typeof options.namespace === "string" && options.namespace.length > 0
           ? options.namespace
-          : this.lcmReadNamespaceForSession(sessionKey),
+          : this.lcmReadNamespaceForSession(
+              sessionKey,
+              options.principalOverride,
+            ),
         sessionKey,
         this.config.defaultNamespace,
       ) ??
@@ -9422,7 +9439,10 @@ export class Orchestrator {
       try {
         const explicitCueSection = await buildExplicitCueRecallSection({
           engine: this.lcmEngine,
-          sessionId: sessionKey,
+          // #1495 thread 3: read under the EFFECTIVE namespaced LCM session_id
+          // (same as targeted-facts/structured/compressed-history) so a
+          // project-scoped session finds its own explicit-cue evidence (rule 39).
+          sessionId: lcmReadSessionId,
           query: retrievalQuery,
           maxChars: explicitCueMaxChars,
           maxReferences:
@@ -9507,7 +9527,9 @@ export class Orchestrator {
       try {
         const focusedListSection = await buildFocusedListRecallSection({
           engine: this.lcmEngine,
-          sessionId: sessionKey,
+          // #1495 thread 3: namespaced LCM session_id so a project-scoped session
+          // reads its own focused-list/count evidence (rule 39).
+          sessionId: lcmReadSessionId,
           query: retrievalQuery,
           maxChars: focusedListMaxChars,
           maxSearchResults:
@@ -9556,7 +9578,9 @@ export class Orchestrator {
       try {
         const responseGuidanceSection = await buildResponseGuidanceRecallSection({
           engine: this.lcmEngine,
-          sessionId: sessionKey,
+          // #1495 thread 3: namespaced LCM session_id so a project-scoped session
+          // reads its own response-guidance evidence (rule 39).
+          sessionId: lcmReadSessionId,
           query: retrievalQuery,
           maxChars: responseGuidanceMaxChars,
           maxSearchResults:
@@ -9600,7 +9624,9 @@ export class Orchestrator {
       try {
         const eventOrderSection = await buildEventOrderRecallSection({
           engine: this.lcmEngine,
-          sessionId: sessionKey,
+          // #1495 thread 3: namespaced LCM session_id so a project-scoped session
+          // reads its own chronological event-order evidence (rule 39).
+          sessionId: lcmReadSessionId,
           query: retrievalQuery,
           maxChars: eventOrderMaxChars,
           maxItems:
@@ -11304,6 +11330,17 @@ export class Orchestrator {
        * Same hook bulk-import uses (#460).
        */
       writeNamespaceOverride?: string;
+      /**
+       * Pin the provenance PRINCIPAL instead of deriving it from
+       * `resolvePrincipal(turn.sessionKey)` (#1495 thread 1). The access
+       * `observe` surface authenticates the caller at the transport layer and
+       * passes its resolved principal here so extracted-memory provenance uses
+       * the SAME identity the surface authorized — independent of storage
+       * routing (`writeNamespaceOverride`) and of whatever `resolvePrincipal`
+       * would parse from the raw session key. Mirrors the recall path's
+       * `principalOverride` (issue #570 PR 4).
+       */
+      principalOverride?: string;
     } = {},
   ): Promise<void> {
     if (!Array.isArray(turns) || turns.length === 0) return;
@@ -11391,6 +11428,7 @@ export class Orchestrator {
               extractionDeadlineMs: options.deadlineMs,
               abortSignal: options.abortSignal,
               writeNamespaceOverride: options.writeNamespaceOverride,
+              principalOverride: options.principalOverride,
               onTaskSettled: (err) => (err ? reject(err) : resolve()),
             }).catch(reject);
           }),
@@ -11787,6 +11825,12 @@ export class Orchestrator {
        * regardless of user-configured principal routing rules.
        */
       writeNamespaceOverride?: string;
+      /**
+       * Pin the provenance principal (#1495 thread 1). Forwarded to
+       * `runExtraction` so access `observe` can record provenance under the
+       * authenticated principal instead of `resolvePrincipal(sessionKey)`.
+       */
+      principalOverride?: string;
     } = {},
   ): Promise<void> {
     const bufferKey = options.bufferKey ?? turnsToExtract[0]?.sessionKey ?? "default";
@@ -11860,6 +11904,7 @@ export class Orchestrator {
           abortSignal: options.abortSignal,
           failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
+          principalOverride: options.principalOverride,
         });
         settleTask(undefined, result);
       } catch (err) {
@@ -12016,6 +12061,14 @@ export class Orchestrator {
        * for provenance; only the storage target is overridden.
        */
       writeNamespaceOverride?: string;
+      /**
+       * Pin the provenance principal instead of deriving it from
+       * `resolvePrincipal(sessionKey)` (#1495 thread 1). When set, this is the
+       * identity an access surface already authenticated; used so observed-turn
+       * provenance is correct even though `turn.sessionKey` is the ORIGINAL
+       * (un-prefixed) key and storage is pinned via `writeNamespaceOverride`.
+       */
+      principalOverride?: string;
     } = {},
   ): Promise<ExtractionRunResult> {
     log.debug(`running extraction on ${turns.length} turns`);
@@ -12109,7 +12162,18 @@ export class Orchestrator {
       };
     }
 
-    const principal = resolvePrincipal(sessionKey, this.config);
+    // Provenance principal honours the access-surface override (#1495 thread 1,
+    // mirroring the recall path's `principalOverride`, issue #570 PR 4). Access
+    // surfaces that authenticated the caller at the transport layer pass their
+    // resolved principal so provenance uses the SAME identity the surface
+    // authorized, instead of `resolvePrincipal(sessionKey)` — which on a
+    // namespace-prefixed key would collapse to `default`. The ORIGINAL,
+    // un-prefixed session key still drives threading.
+    const principal =
+      typeof options.principalOverride === "string" &&
+      options.principalOverride.length > 0
+        ? options.principalOverride
+        : resolvePrincipal(sessionKey, this.config);
     // Write path — overlay the coding-agent namespace (issue #569) when the
     // session has a codingContext and `codingMode.projectScope` is true.
     // Explicit `writeNamespaceOverride` from callers still wins, matching

@@ -48,6 +48,11 @@ interface ParityProbe {
   lcmWriteKeys: string[];
   compactionFlushKeys: string[];
   compactionRecordKeys: string[];
+  extractionCalls: Array<{
+    sessionKeys: string[];
+    writeNamespaceOverride?: string;
+    principalOverride?: string;
+  }>;
 }
 
 /**
@@ -62,6 +67,7 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
   const lcmWriteKeys: string[] = [];
   const compactionFlushKeys: string[] = [];
   const compactionRecordKeys: string[] = [];
+  const extractionCalls: ParityProbe["extractionCalls"] = [];
 
   const config = {
     namespacesEnabled: true,
@@ -113,8 +119,18 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
         compactionRecordKeys.push(sessionKey);
       },
     },
-    // No extraction side effects needed for LCM parity — skipExtraction below.
-    ingestReplayBatch: async () => {},
+    // Capture extraction routing/identity so the provenance-principal tests can
+    // assert what `observe` threads into `ingestReplayBatch`.
+    ingestReplayBatch: async (
+      turns: Array<{ sessionKey: string }>,
+      options: { writeNamespaceOverride?: string; principalOverride?: string } = {},
+    ) => {
+      extractionCalls.push({
+        sessionKeys: turns.map((t) => t.sessionKey),
+        writeNamespaceOverride: options.writeNamespaceOverride,
+        principalOverride: options.principalOverride,
+      });
+    },
   } as unknown as Orchestrator;
 
   return {
@@ -123,6 +139,7 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
     lcmWriteKeys,
     compactionFlushKeys,
     compactionRecordKeys,
+    extractionCalls,
   };
 }
 
@@ -367,6 +384,150 @@ test("#1505 thread 2 (d) namespacesEnabled:false ⇒ raw sessionKey everywhere",
   assert.equal(
     defaultNamespaceForPrincipal("pi-geek", probe.orch.config),
     "default",
+  );
+});
+
+test("#1505 thread 1: extraction provenance principal is the resolved principal (NOT default) for a project-scoped observe with an encoded-principal key", async () => {
+  // Identity-vs-routing separation. A project-scoped observe prefixes the LCM
+  // key with the overlay namespace (`pi-geek-project-...:pi-geek:abc123`). Before
+  // this fix, that prefixed key was ALSO fed to extraction as the turn
+  // sessionKey, so `resolvePrincipal` parsed `pi-geek-project-...` → no prefix
+  // rule match → `default`, mis-attributing provenance. The fix passes the
+  // ORIGINAL sessionKey (identity) plus principalOverride (the resolved
+  // principal) and writeNamespaceOverride (routing).
+  const probe = makeParityProbe(withSelfPolicyPrefix("pi-geek"));
+  const service = new EngramAccessService(probe.orch);
+
+  await service.observe(
+    observeRequest({
+      sessionKey: "pi-geek:abc123",
+      projectTag: "Blend/Supply",
+      skipExtraction: false, // exercise the extraction path
+    }),
+  );
+
+  const expectedNs = combineNamespaces(
+    "pi-geek",
+    projectNamespaceName(projectTagProjectId("Blend/Supply")),
+  );
+  assert.equal(probe.extractionCalls.length, 1);
+  // Provenance identity: the resolved principal, never a default parsed from the
+  // prefixed key.
+  assert.equal(
+    probe.extractionCalls[0].principalOverride,
+    "pi-geek",
+    "provenance principal must be the resolved principal, not default",
+  );
+  // The extraction turns carry the ORIGINAL session key (identity / threading).
+  assert.deepEqual(
+    new Set(probe.extractionCalls[0].sessionKeys),
+    new Set(["pi-geek:abc123"]),
+    "extraction turns must carry the ORIGINAL un-prefixed session key",
+  );
+  // Storage routing is pinned to the effective overlay namespace.
+  assert.equal(probe.extractionCalls[0].writeNamespaceOverride, expectedNs);
+});
+
+test("#1505 thread 1: provenance principal honors authenticatedPrincipal not encoded in the session key", async () => {
+  // alice authenticates at the transport layer but the raw sessionKey ("sess-1")
+  // encodes no principal. The scope plan resolves principal=alice (auth
+  // precedence), so extraction provenance must be pinned to alice — independent
+  // of what `resolvePrincipal("sess-1")` would parse (default).
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  await service.observe(
+    observeRequest({
+      sessionKey: "sess-1",
+      authenticatedPrincipal: "alice",
+      skipExtraction: false,
+    }),
+  );
+
+  assert.equal(probe.extractionCalls.length, 1);
+  assert.equal(
+    probe.extractionCalls[0].principalOverride,
+    "alice",
+    "provenance principal must honor the authenticated principal",
+  );
+  assert.deepEqual(
+    new Set(probe.extractionCalls[0].sessionKeys),
+    new Set(["sess-1"]),
+    "extraction turns carry the original session key",
+  );
+});
+
+test("#1505 thread 2: LCM read namespace honors authenticatedPrincipal (write-under-alice ⇒ read-under-alice)", async () => {
+  // alice authenticates at the transport layer but is NOT encoded in the raw
+  // sessionKey ("sess-1"). With a PROJECT overlay, observe archives LCM under
+  // `combineNamespaces("alice", project):sess-1`. A same-session recall that
+  // supplies the SAME authenticated principal (principalOverride) must derive the
+  // base = alice so the overlay namespace — and thus the LCM read key — matches
+  // the write. Without the override, `lcmReadNamespaceForSession` derives the
+  // base from `resolvePrincipal("sess-1")` → default, so the overlay would be
+  // `combineNamespaces("default", project)` and the reader would MISS alice's
+  // evidence (the thread-2 bug).
+  // makeParityProbe defaults codingMode to { projectScope: true }; alice is NOT
+  // encoded in any prefix rule, so resolvePrincipal("sess-1") → default.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // WRITE: alice observes sess-1 with a project tag → overlay applies on alice's
+  // self base. (No explicit namespace.)
+  await service.observe(
+    observeRequest({
+      sessionKey: "sess-1",
+      authenticatedPrincipal: "alice",
+      projectTag: "Blend/Supply",
+    }),
+  );
+  const writeKey = probe.lcmWriteKeys[0];
+  assert.ok(
+    writeKey.startsWith("alice-"),
+    `observe must archive under alice's overlay namespace, got ${writeKey}`,
+  );
+
+  // The orchestrator's real lcmReadNamespaceForSession (the stub delegates
+  // resolvePrincipal/overlay to the prototype).
+  const lcmReadNamespaceForSession = Orchestrator.prototype[
+    "lcmReadNamespaceForSession" as keyof Orchestrator
+  ] as unknown as (
+    this: Orchestrator,
+    sk?: string,
+    principalOverride?: string,
+  ) => string;
+
+  // Without the override, the base derives from resolvePrincipal("sess-1") →
+  // default, so the read namespace is the DEFAULT-based overlay (the bug).
+  const withoutOverride = lcmReadNamespaceForSession.call(probe.orch, "sess-1");
+  assert.ok(
+    !withoutOverride.startsWith("alice-"),
+    `without override the read base must NOT be alice (demonstrates the bug), got ${withoutOverride}`,
+  );
+
+  // With the authenticated principal override, the read base is alice → the read
+  // namespace matches the write namespace, so the read key matches the write key.
+  const withOverride = lcmReadNamespaceForSession.call(
+    probe.orch,
+    "sess-1",
+    "alice",
+  );
+  assert.equal(
+    `${withOverride}:sess-1`,
+    writeKey,
+    "authenticated principal override ⇒ read key matches the alice-prefixed write key",
   );
 });
 

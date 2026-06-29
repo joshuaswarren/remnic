@@ -319,3 +319,139 @@ test("top-level response-guidance enable remains query-gated for unclassified qu
   assert.doesNotMatch(context, /## Response guidance evidence/);
   assert.equal(searchCalls, 0);
 });
+
+test("#1505 thread 3: ALL LCM recall sections read under the SCOPED (overlay) session key", async () => {
+  // Round 1 wired only targeted-facts / structured / compressed-history to the
+  // namespaced LCM read key (`lcmReadSessionId`). The explicit-cue, focused-list,
+  // response-guidance, and event-order sections still passed the RAW `sessionKey`
+  // to their LCM helpers, so a project-scoped session whose evidence is archived
+  // under `${overlayNs}:${sessionKey}` would NEVER surface it through those
+  // sections. This pins that EVERY LCM-backed section reads under the scoped key
+  // (CLAUDE.md rule 39: identical across all paths).
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-recall-thread3-"));
+  const sessionId = "alice:proj-session";
+  const projectId = "origin:abcd1234";
+
+  const lcmQueriedSessionIds: string[] = [];
+  // Resolved AFTER the orchestrator is constructed (the overlay namespace is
+  // derived from the orchestrator's own `applyCodingNamespaceOverlay`, the source
+  // of truth). Evidence is returned ONLY for the SCOPED key — if any section
+  // queries the raw sessionId, that evidence is MISSING and the asserts fail.
+  let scopedKey = "";
+  const evidenceFor = (requestedSessionId?: string, limit = 8) => {
+    lcmQueriedSessionIds.push(requestedSessionId ?? "<undefined>");
+    return requestedSessionId === scopedKey
+      ? [
+          {
+            id: 0,
+            session_id: scopedKey,
+            turn_index: 10,
+            role: "user",
+            content:
+              "SCOPED_EVIDENCE: my culinary journey started with Turkish, Greek, and Lebanese cuisines.",
+            score: 100,
+          },
+        ].slice(0, limit)
+      : [];
+  };
+
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    sharedContextEnabled: false,
+    knowledgeIndexEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    injectQuestions: false,
+    lcmEnabled: true,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    defaultRecallNamespaces: ["self"],
+    codingMode: { projectScope: true },
+    // Enable the four sections that round 1 left on the raw key.
+    explicitCueRecallEnabled: true,
+    focusedListRecallEnabled: true,
+    eventOrderRecallEnabled: true,
+    recallPipeline: [
+      { id: "event-order", enabled: true, maxChars: 2_400, maxResults: 8, maxTurns: 16, maxTokens: 6_000 },
+      { id: "focused-list", enabled: true, maxChars: 2_400, maxResults: 8, maxTurns: 16, maxTokens: 6_000 },
+      { id: "explicit-cue", enabled: true, maxChars: 2_400, maxResults: 8 },
+      { id: "profile", enabled: false },
+      { id: "memories", enabled: false },
+    ],
+  });
+  const orchestrator = new Orchestrator(cfg);
+
+  // Bind the project coding context so the recall path overlays the namespace
+  // exactly as a same-session project-scoped recall would.
+  orchestrator.setCodingContextForSession(sessionId, {
+    projectId,
+    branch: null,
+    rootPath: projectId,
+    defaultBranch: null,
+  });
+  // Derive the SCOPED LCM read key from the orchestrator's own overlay (source
+  // of truth): the principal self base (alice) overlaid with the project.
+  const overlayNs = (
+    orchestrator as unknown as {
+      applyCodingNamespaceOverlay: (sk: string, base: string) => string;
+    }
+  ).applyCodingNamespaceOverlay(sessionId, "alice");
+  assert.notEqual(overlayNs, "alice", "coding overlay must change the namespace");
+  scopedKey = `${overlayNs}:${sessionId}`;
+
+  (orchestrator as any).lcmEngine = {
+    enabled: true,
+    searchContextFull: async (_q: string, limit: number, requestedSessionId?: string) =>
+      evidenceFor(requestedSessionId, limit),
+    expandContext: async (requestedSessionId: string) =>
+      requestedSessionId === scopedKey
+        ? [
+            {
+              turn_index: 10,
+              role: "user",
+              content: "SCOPED_EVIDENCE: chronological milestone",
+            },
+          ]
+        : [],
+    getStats: async (requestedSessionId?: string) => {
+      lcmQueriedSessionIds.push(requestedSessionId ?? "<undefined>");
+      return requestedSessionId === scopedKey
+        ? { totalMessages: 4, maxTurnIndex: 10 }
+        : { totalMessages: 0, maxTurnIndex: -1 };
+    },
+    searchStructuredParts: async () => [],
+    formatStructuredRecall: () => "",
+    assembleRecall: async () => "",
+  };
+
+  // A prompt that triggers the explicit-cue / focused-list / event-order gates
+  // (chronological + list-shaped + cue phrasing).
+  const context = await (orchestrator as any).recallInternal(
+    "Remember when you told me to list, in chronological order, the cuisines I started my culinary journey with?",
+    sessionId,
+  );
+
+  // The scoped key was queried, and the raw (un-prefixed) sessionId was NOT used
+  // by any LCM section (otherwise evidence would be missing).
+  assert.ok(
+    lcmQueriedSessionIds.includes(scopedKey),
+    `expected at least one LCM section to query the scoped key ${scopedKey}; queried: ${JSON.stringify(lcmQueriedSessionIds)}`,
+  );
+  assert.ok(
+    !lcmQueriedSessionIds.includes(sessionId),
+    `no LCM section may query the RAW sessionId ${sessionId}; queried: ${JSON.stringify(lcmQueriedSessionIds)}`,
+  );
+  // Evidence (only returned for the scoped key) made it into the assembled
+  // context, proving the sections read under the scoped key.
+  assert.match(context, /SCOPED_EVIDENCE/);
+});

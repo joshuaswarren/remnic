@@ -50,6 +50,7 @@ interface ObserveProbe {
   extractionCalls: Array<{
     sessionKeys: string[];
     writeNamespaceOverride?: string;
+    principalOverride?: string;
   }>;
   objectiveStateNamespaces: string[];
 }
@@ -108,11 +109,12 @@ function makeObserveProbe(overrides: Partial<PluginConfig> = {}): ObserveProbe {
     },
     ingestReplayBatch: async (
       turns: Array<{ sessionKey: string }>,
-      options: { writeNamespaceOverride?: string } = {},
+      options: { writeNamespaceOverride?: string; principalOverride?: string } = {},
     ) => {
       extractionCalls.push({
         sessionKeys: turns.map((t) => t.sessionKey),
         writeNamespaceOverride: options.writeNamespaceOverride,
+        principalOverride: options.principalOverride,
       });
     },
   } as unknown as Orchestrator;
@@ -170,17 +172,27 @@ test("#1495 projectTag: LCM, extraction, objective-state, and response all agree
     "LCM key must be prefixed with the EFFECTIVE write namespace",
   );
 
-  // Extraction replay turns key off the effective namespace and pin the write.
+  // #1505 thread 1 (identity-vs-routing separation): extraction replay turns
+  // carry the ORIGINAL, un-prefixed session key so provenance principal
+  // resolution and conversation threading see the real identity — NOT the
+  // namespace-prefixed key (which `resolvePrincipal` would collapse to
+  // `default`). Storage routing is pinned independently via
+  // writeNamespaceOverride, and the authenticated principal via principalOverride.
   assert.equal(probe.extractionCalls.length, 1);
   assert.deepEqual(
     new Set(probe.extractionCalls[0].sessionKeys),
-    new Set([`${expected}:pi-geek:abc123`]),
-    "extraction replay turns must carry the effective-namespace session key",
+    new Set(["pi-geek:abc123"]),
+    "extraction replay turns must carry the ORIGINAL session key (identity), not the namespace-prefixed key",
   );
   assert.equal(
     probe.extractionCalls[0].writeNamespaceOverride,
     expected,
-    "extraction must pin the write to the effective namespace",
+    "extraction must pin the write (routing) to the effective namespace",
+  );
+  assert.equal(
+    probe.extractionCalls[0].principalOverride,
+    "pi-geek",
+    "extraction must pin provenance to the resolved principal, not a default parsed from a prefixed key",
   );
 
   // Objective-state snapshot target == effective namespace.
@@ -217,11 +229,14 @@ test("#1495 cwd (git repo): every observe side effect agrees on the effective na
 
     assert.equal(res.effectiveNamespace, expected);
     assert.equal(probe.lcmCalls[0].sessionKey, `${expected}:pi-geek:cwd1`);
+    // #1505 thread 1: extraction turns carry the ORIGINAL session key (identity);
+    // routing + provenance are pinned via the override options.
     assert.deepEqual(
       new Set(probe.extractionCalls[0].sessionKeys),
-      new Set([`${expected}:pi-geek:cwd1`]),
+      new Set(["pi-geek:cwd1"]),
     );
     assert.equal(probe.extractionCalls[0].writeNamespaceOverride, expected);
+    assert.equal(probe.extractionCalls[0].principalOverride, "pi-geek");
     assert.ok(probe.objectiveStateNamespaces.every((ns) => ns === expected));
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
@@ -249,10 +264,13 @@ test("#1495 explicit namespace wins and project context does NOT silently overri
   assert.equal(res.effectiveNamespace, "team", "explicit namespace must win");
   assert.equal(probe.lcmCalls[0].sessionKey, "team:pi-geek:abc123");
   assert.equal(probe.extractionCalls[0].writeNamespaceOverride, "team");
+  // #1505 thread 1: extraction turns carry the ORIGINAL session key (identity),
+  // even with an explicit namespace; routing is pinned via writeNamespaceOverride.
   assert.deepEqual(
     new Set(probe.extractionCalls[0].sessionKeys),
-    new Set(["team:pi-geek:abc123"]),
+    new Set(["pi-geek:abc123"]),
   );
+  assert.equal(probe.extractionCalls[0].principalOverride, "pi-geek");
   assert.ok(probe.objectiveStateNamespaces.every((ns) => ns === "team"));
 });
 
