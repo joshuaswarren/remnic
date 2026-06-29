@@ -298,6 +298,7 @@ import {
   type ConversationQmdRuntime,
 } from "./conversation-index/backend.js";
 import { NamespaceStorageRouter } from "./namespaces/storage.js";
+import { NamespaceCatalog } from "./namespaces/catalog.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import {
   canReadNamespace,
@@ -1753,6 +1754,8 @@ export function resolvePersistedMemoryRelativePath(options: {
 export class Orchestrator {
   readonly storage: StorageManager;
   private readonly storageRouter: NamespaceStorageRouter;
+  /** Rebuildable namespace catalog (issue #1499). Inert unless namespaces enabled. */
+  readonly namespaceCatalog: NamespaceCatalog;
   private readonly namespaceSearchRouter: NamespaceSearchRouter;
   qmd: SearchBackend;
   private readonly conversationQmd?: ConversationQmdRuntime;
@@ -2279,7 +2282,18 @@ export class Orchestrator {
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),
       maxTraces: config.profilingMaxTraces,
     });
-    this.storageRouter = new NamespaceStorageRouter(config);
+    // Namespace catalog (issue #1499): downstream, rebuildable metadata index.
+    // Inert unless namespacesEnabled is true. Storage resolution registers
+    // namespaces via the router's onResolve hook; the touch is best-effort and
+    // a catalog write failure never affects storage resolution.
+    this.namespaceCatalog = new NamespaceCatalog(config);
+    this.storageRouter = new NamespaceStorageRouter(config, {
+      onResolve: (namespace, storageDir) => {
+        void this.namespaceCatalog
+          .registerResolved(namespace, storageDir)
+          .catch(() => undefined);
+      },
+    });
     this.namespaceSearchRouter = new NamespaceSearchRouter(
       config,
       this.storageRouter,
@@ -7118,6 +7132,11 @@ export class Orchestrator {
       recallNamespaces = Array.from(new Set<string>([...mapped, ...fallbackNs]));
     } else {
       recallNamespaces = readableRecallNamespaces;
+    }
+    // Catalog touch (issue #1499): record reads against the recalled namespaces
+    // so the catalog reflects active read scopes. Best-effort, failure-tolerant.
+    if (this.namespaceCatalog.enabled) {
+      for (const ns of recallNamespaces) this.markCatalogRead(ns);
     }
     const qmdAvailable = this.qmd.isAvailable();
     let graphDecisionStatus: IntentDebugSnapshot["graphDecision"]["status"] =
@@ -14130,6 +14149,12 @@ export class Orchestrator {
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
         },
       );
+      // Catalog touch (issue #1499): record the write so dynamic namespaces are
+      // discoverable after hot-path writes. Best-effort and failure-tolerant.
+      this.markCatalogWrite(
+        this.namespaceFromStorageDir(targetStorage.dir),
+        targetStorage.dir,
+      );
       if (routedRuleId) {
         log.debug(
           `routing applied for memory ${memoryId}: rule=${routedRuleId} category=${writeCategory} storage=${targetStorage.dir}`,
@@ -18224,6 +18249,26 @@ export class Orchestrator {
     const m = resolvedStorageDir.match(/[\\/]namespaces[\\/]([^\\/]+)$/);
     if (!m?.[1]) return this.config.defaultNamespace;
     return namespaceIdentityFromToken(m[1]) ?? m[1];
+  }
+
+  /**
+   * Record a namespace write in the catalog (issue #1499). Best-effort and
+   * failure-tolerant: a catalog write error MUST NOT crash the primary memory
+   * write (CLAUDE.md gotcha #13, rule #40). Fire-and-forget by design.
+   */
+  private markCatalogWrite(namespace: string, storageDir?: string): void {
+    if (!this.namespaceCatalog.enabled) return;
+    void this.namespaceCatalog
+      .markWrite(namespace, { discoveredBy: "write", storageDir })
+      .catch(() => undefined);
+  }
+
+  /** Record a namespace read in the catalog. Best-effort, failure-tolerant. */
+  private markCatalogRead(namespace: string, storageDir?: string): void {
+    if (!this.namespaceCatalog.enabled) return;
+    void this.namespaceCatalog
+      .markRead(namespace, { discoveredBy: "read", storageDir })
+      .catch(() => undefined);
   }
 
   private async readAllMemoriesForNamespaces(

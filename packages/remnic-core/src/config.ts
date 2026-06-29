@@ -2588,6 +2588,10 @@ export function parseConfig(raw: unknown): PluginConfig {
 
     // v3.0 namespaces (default off)
     namespacesEnabled: cfg.namespacesEnabled === true,
+    // Namespace catalog (issue #1499): default ON, but only does anything when
+    // namespacesEnabled is also true (the catalog is inert otherwise). Operators
+    // opt out with namespaceCatalogEnabled: false.
+    namespaceCatalogEnabled: cfg.namespaceCatalogEnabled !== false,
     // NOTE: namespace identifiers are intentionally NOT sanitized here — the
     // codebase rejects unsafe namespaces at the point of use (see
     // codex-materialize-runner and NamespaceStorageRouter / resolveNamespaceDir),

@@ -104,11 +104,25 @@ async function hasAnyNamespaceStorageMarker(
  * This avoids surprising "lost memories" when an install flips namespaces on without
  * migrating existing data.
  */
+/**
+ * Optional hooks for the storage router. `onResolve` fires (fire-and-forget)
+ * whenever a namespace's storage is resolved/created, so a downstream consumer
+ * (e.g. the namespace catalog, issue #1499) can register the namespace. The
+ * hook MUST NOT throw into the router; the router invokes it defensively and a
+ * hook failure never affects storage resolution.
+ */
+export interface NamespaceStorageRouterHooks {
+  onResolve?: (namespace: string, storageDir: string) => void;
+}
+
 export class NamespaceStorageRouter {
   private readonly cache = new Map<string, StorageManager>();
   private defaultNsRootResolved: string | null = null;
 
-  constructor(private readonly config: PluginConfig) {}
+  constructor(
+    private readonly config: PluginConfig,
+    private readonly hooks: NamespaceStorageRouterHooks = {},
+  ) {}
 
   private async defaultNamespaceRoot(): Promise<string> {
     if (!this.config.namespacesEnabled) {
@@ -162,12 +176,16 @@ export class NamespaceStorageRouter {
       root = await this.defaultNamespaceRoot();
       const cached = this.cache.get(ns);
       if (cached && cached.dir === root) {
+        this.notifyResolved(ns, root);
         return cached;
       }
     } else {
       const cached = this.cache.get(ns);
       root = await this.namespaceRoot(ns);
-      if (cached && cached.dir === root) return cached;
+      if (cached && cached.dir === root) {
+        this.notifyResolved(ns, root);
+        return cached;
+      }
     }
 
     const sm = new StorageManager(root, this.config.entitySchemas);
@@ -176,6 +194,21 @@ export class NamespaceStorageRouter {
     // matching the behaviour of the primary this.storage instance in the orchestrator.
     sm.citationTemplate = this.config.inlineSourceAttributionFormat;
     this.cache.set(ns, sm);
+    this.notifyResolved(ns, root);
     return sm;
+  }
+
+  /**
+   * Fire the resolve hook defensively. A hook failure (e.g. a catalog write
+   * error) MUST NOT crash storage resolution — see CLAUDE.md gotcha #13.
+   */
+  private notifyResolved(namespace: string, storageDir: string): void {
+    const hook = this.hooks.onResolve;
+    if (!hook) return;
+    try {
+      hook(namespace, storageDir);
+    } catch {
+      // Intentionally swallow: catalog registration is best-effort metadata.
+    }
   }
 }

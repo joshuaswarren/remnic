@@ -4150,6 +4150,65 @@ export function registerCli(
           console.log("\nOK");
         });
 
+      namespacesCmd
+        .command("rebuild")
+        .description(
+          "Rebuild the namespace catalog from disk (issue #1499). Scans configured + dynamic namespace roots safely and rewrites <memoryDir>/state/namespaces.jsonl",
+        )
+        .option("--dry-run", "Show the rebuilt catalog without writing it")
+        .option("--apply", "Write the rebuilt catalog to disk")
+        .option("--json", "Emit the rebuild result as JSON")
+        .action(async (optionsRaw: unknown) => {
+          const options =
+            optionsRaw && typeof optionsRaw === "object"
+              ? (optionsRaw as { dryRun?: boolean; apply?: boolean; json?: boolean })
+              : {};
+          // Default to a non-destructive dry run unless --apply is given.
+          // Reject contradictory flags rather than silently choosing one.
+          if (options.dryRun === true && options.apply === true) {
+            throw new Error("Pass only one of --dry-run or --apply, not both.");
+          }
+          const dryRun = options.apply !== true;
+
+          if (!orchestrator.namespaceCatalog.enabled) {
+            const note =
+              "Namespace catalog is inert: it only runs when namespacesEnabled is true and namespaceCatalogEnabled is not false.";
+            if (options.json === true) {
+              console.log(
+                JSON.stringify({ dryRun, enabled: false, records: [], skipped: [], note }, null, 2),
+              );
+            } else {
+              console.log(note);
+            }
+            return;
+          }
+
+          const result = await orchestrator.namespaceCatalog.rebuildFromDisk({ dryRun });
+
+          if (options.json === true) {
+            console.log(JSON.stringify({ enabled: true, ...result }, null, 2));
+            return;
+          }
+
+          console.log("=== Namespace Catalog Rebuild ===\n");
+          console.log(`mode: ${dryRun ? "dry-run" : "apply"}`);
+          console.log(`namespaces: ${result.records.length}`);
+          for (const record of result.records) {
+            console.log(
+              `${record.namespace}\n  kind: ${record.kind}\n  storage: ${record.storageDir}\n  discovered-by: ${record.discoveredBy}`,
+            );
+          }
+
+          if (result.skipped.length > 0) {
+            console.log("\nSkipped / ambiguous roots:");
+            for (const skip of result.skipped) {
+              console.log(`- ${skip.token} (${skip.reason})${skip.detail ? `: ${skip.detail}` : ""}`);
+            }
+          }
+
+          console.log(dryRun ? "\nDRY RUN" : "\nOK");
+        });
+
       cmd
         .command("export")
         .description("Export Remnic memory to JSON, Markdown bundle, or SQLite")
