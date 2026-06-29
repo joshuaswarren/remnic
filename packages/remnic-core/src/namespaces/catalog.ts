@@ -1051,10 +1051,38 @@ export class NamespaceCatalog {
     // 3) Scan the namespaces/ directory for tokenized roots.
     const namespacesDir = path.join(this.memoryDir, "namespaces");
     let entries: Dirent[] = [];
+    // CONTAINMENT (round 8, codex P2 — NE9K_): check the `namespaces` ROOT itself
+    // BEFORE `readdir` follows it. If `<memoryDir>/namespaces` is a symlink (or its
+    // realpath escapes memoryDir), `readdir()` would enumerate an arbitrary outside
+    // tree — leaking names or spending time on a huge directory — even though the
+    // catalog rejects symlinked/escaping per-entry roots. The per-entry lstat/realpath
+    // checks below run AFTER the readdir, so they cannot prevent following an
+    // escaping ROOT. We lstat the root: if it is a symlink, OR its realpath escapes
+    // memoryDir, we DO NOT read it and report it as a single unsafe scan root.
+    let namespacesDirSafe = true;
     try {
-      entries = await readdir(namespacesDir, { withFileTypes: true });
+      const rootStat = await lstat(namespacesDir);
+      if (rootStat.isSymbolicLink()) {
+        namespacesDirSafe = false;
+      } else {
+        const realNamespacesDir = await realpath(namespacesDir);
+        if (memoryReal && !isPathInside(memoryReal, realNamespacesDir)) {
+          namespacesDirSafe = false;
+        }
+      }
     } catch {
-      entries = [];
+      // The `namespaces` dir does not exist yet (or lstat failed): nothing to scan,
+      // and there is no symlink to follow. Treat as an empty, safe scan.
+      namespacesDirSafe = true;
+    }
+    if (!namespacesDirSafe) {
+      skipped.push({ token: "namespaces", reason: "symlink", detail: namespacesDir });
+    } else {
+      try {
+        entries = await readdir(namespacesDir, { withFileTypes: true });
+      } catch {
+        entries = [];
+      }
     }
 
     // Dual-root alignment (round 5, cursor Medium): when both a legacy raw-name

@@ -161,6 +161,51 @@ test("rebuildFromDisk reports symlinked namespace roots instead of trusting them
   }
 });
 
+// ── Round 8 (codex P2 — NE9K_): the `namespaces` SCAN ROOT itself must be
+// containment-checked BEFORE `readdir` follows it. If `<memoryDir>/namespaces` is
+// a symlink to an outside tree, readdir would enumerate that arbitrary tree
+// (leaking names / spending time on a huge dir) before the per-entry lstat checks
+// run. rebuild must NOT read a symlinked scan root: it reports it as one skipped
+// unsafe root and catalogs none of the outside entries.
+test("rebuildFromDisk rejects a symlinked namespaces scan root without enumerating it", async () => {
+  const memoryDir = await mkMemoryDir();
+  const outside = await mkMemoryDir();
+  try {
+    // The outside tree contains tokenized namespace dirs WITH data that would be
+    // catalogued if the symlinked root were followed.
+    const leakedNs = "project-origin-leaked";
+    await mkdir(path.join(outside, namespaceIdentityToken(leakedNs), "facts"), { recursive: true });
+    // `<memoryDir>/namespaces` IS a symlink to the outside tree.
+    try {
+      await symlink(outside, path.join(memoryDir, "namespaces"), "dir");
+    } catch {
+      // Some CI environments disallow symlinks; skip gracefully.
+      return;
+    }
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const result = await catalog.rebuildFromDisk();
+
+    // The outside namespace must NOT be enumerated/catalogued.
+    assert.ok(
+      !result.records.some((r) => r.namespace === leakedNs),
+      "a symlinked namespaces scan root must not be enumerated into the catalog",
+    );
+    assert.ok(
+      !result.records.some((r) => r.storageDir.startsWith(outside)),
+      "no record may point at a storageDir inside the symlinked-out scan root",
+    );
+    // The symlinked root is reported as one skipped unsafe root.
+    assert.ok(
+      result.skipped.some((s) => s.token === "namespaces" && s.reason === "symlink"),
+      "the symlinked namespaces scan root must be reported as skipped",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 test("unsafe namespace tokens are rejected by mark APIs", async () => {
   const memoryDir = await mkMemoryDir();
   try {
