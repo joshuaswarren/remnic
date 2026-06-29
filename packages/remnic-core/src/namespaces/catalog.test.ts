@@ -1672,3 +1672,46 @@ test("a rebuild releases only its own lock, not a replacement foreign lock", asy
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── Round 7 (codex P2 — NDATT): an explicit storageDir that is contained but
+// belongs to ANOTHER namespace's tree (or memoryDir for a non-default namespace)
+// must be REJECTED — it must not be persisted as this namespace's root. The touch
+// falls back to the namespace's own resolved root.
+test("markWrite rejects a cross-namespace explicit storageDir", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const nsA = "project-origin-aaa";
+    const nsB = "project-origin-bbb";
+    const tokenA = namespaceIdentityToken(nsA);
+    const tokenB = namespaceIdentityToken(nsB);
+    const bDir = path.join(memoryDir, "namespaces", tokenB);
+    await mkdir(path.join(bDir, "facts"), { recursive: true });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // Attempt to record namespace A with namespace B's tree as its storageDir.
+    await catalog.markWrite(nsA, { discoveredBy: "write", storageDir: bDir });
+    const recordA = await catalog.getNamespaceRecord(nsA);
+    assert.ok(recordA, "namespace A record is still created");
+    assert.notEqual(
+      path.resolve(recordA!.storageDir),
+      path.resolve(bDir),
+      "A must NOT be recorded under B's tree (cross-namespace root)",
+    );
+    assert.equal(
+      path.resolve(recordA!.storageDir),
+      path.resolve(path.join(memoryDir, "namespaces", tokenA)),
+      "A falls back to its OWN resolved tokenized root",
+    );
+
+    // And memoryDir is rejected for a non-default namespace.
+    await catalog.markWrite(nsA, { discoveredBy: "write", storageDir: memoryDir });
+    const recordA2 = await catalog.getNamespaceRecord(nsA);
+    assert.notEqual(
+      path.resolve(recordA2!.storageDir),
+      path.resolve(memoryDir),
+      "a non-default namespace must not be recorded at memoryDir (default tree)",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

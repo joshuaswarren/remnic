@@ -552,11 +552,76 @@ export class NamespaceCatalog {
     explicit: string | undefined,
     existingDir: string | undefined,
   ): Promise<string> {
-    if (explicit !== undefined && (await this.isContainedStorageDir(explicit))) return explicit;
+    // An explicit storageDir is accepted ONLY when it is both contained AND
+    // actually belongs to THIS namespace (round 6, codex P2 — NDATT). Containment
+    // alone let a caller pass another namespace's tree (e.g.
+    // `markWrite("project-a", { storageDir: ".../namespaces/<project-b-token>" })`)
+    // or `memoryDir` for a non-default namespace; `listNamespaces()` would then
+    // tell maintenance/QMD that `project-a` lives in another namespace's (or the
+    // default) tree — a cross-namespace root confusion. We reject a mismatched
+    // explicit root and fall back to the namespace's own resolved root.
+    if (
+      explicit !== undefined &&
+      (await this.isContainedStorageDir(explicit)) &&
+      (await this.isStorageDirForNamespace(namespace, explicit))
+    ) {
+      return explicit;
+    }
     // Don't let a record poisoned by a pre-fix out-of-containment write keep an
-    // unsafe dir alive across touches — only preserve a contained existing dir.
-    if (existingDir !== undefined && (await this.isContainedStorageDir(existingDir))) return existingDir;
+    // unsafe dir alive across touches — only preserve a contained existing dir
+    // that also belongs to this namespace.
+    if (
+      existingDir !== undefined &&
+      (await this.isContainedStorageDir(existingDir)) &&
+      (await this.isStorageDirForNamespace(namespace, existingDir))
+    ) {
+      return existingDir;
+    }
     return this.resolveSafeStorageDir(namespace);
+  }
+
+  /**
+   * Whether `candidate` is a legitimate storage root FOR `namespace` (round 6,
+   * codex P2 — NDATT). Accepts the namespace's router-resolved root, its canonical
+   * lexical tokenized dir, and (for the default namespace only) memoryDir. This
+   * prevents a contained-but-CROSS-NAMESPACE path — another namespace's tree, or
+   * memoryDir for a non-default namespace — from being persisted as this
+   * namespace's root. Compared on resolved (absolute) paths.
+   */
+  private async isStorageDirForNamespace(namespace: string, candidate: string): Promise<boolean> {
+    const resolvedCandidate = path.resolve(candidate);
+    const valid = new Set<string>();
+    // The namespace's canonical lexical TOKENIZED dir is always a valid root.
+    try {
+      valid.add(path.resolve(this.namespaceTokenDir(namespaceIdentityToken(namespace))));
+    } catch {
+      // Unsafe token cannot build a lexical dir; fall through to other roots.
+    }
+    // The namespace's legacy RAW-NAME dir (`namespaces/<rawname>`) is also a
+    // valid root — the router serves data from it when present, even before any
+    // dir exists on disk. Both forms belong to THIS namespace, never another's.
+    try {
+      valid.add(path.resolve(this.namespaceTokenDir(namespace)));
+    } catch {
+      // Unsafe raw name cannot build a lexical dir; rely on the other roots.
+    }
+    // The router-resolved root (whichever of the above it currently serves, a
+    // migrated default, etc.).
+    try {
+      valid.add(path.resolve(await resolveNamespaceStorageRoot(this.config, namespace)));
+    } catch {
+      // Router resolution failed; rely on the lexical/default roots below.
+    }
+    // memoryDir is a valid root ONLY for the default namespace.
+    if (namespace === this.config.defaultNamespace) {
+      valid.add(path.resolve(this.memoryDir));
+      try {
+        valid.add(path.resolve(await resolveDefaultNamespaceRoot(this.config)));
+      } catch {
+        // ignore; memoryDir already covers the common default case.
+      }
+    }
+    return valid.has(resolvedCandidate);
   }
 
   /**
@@ -894,7 +959,18 @@ export class NamespaceCatalog {
         continue;
       }
 
-      // Decode the namespace from the token, falling back to the raw dir name.
+      // Decode the namespace from the dir name. A configured dir name is used
+      // verbatim. Otherwise decode a genuine tokenized dir back to its identity,
+      // falling back to the raw dir name when it is not a decodable token.
+      //
+      // NDATN note (round 6, codex P2): a raw dir literally named like a CANONICAL
+      // token (e.g. `namespaces/ns-616c706861`, the canonical token of `alpha`) is
+      // inherently ambiguous from disk alone — the bytes are identical whether the
+      // namespace is `alpha` (in its tokenized dir) or the literal `ns-616c706861`
+      // (in a raw dir). Decoding a canonical token is the correct default. The
+      // unambiguous fix lives on the WRITE path, where the caller knows the true
+      // namespace and records it verbatim (NCQI0); the scanner cannot recover a
+      // name the encoding cannot distinguish, so we keep the canonical decode.
       const decoded = configured.has(token) ? token : namespaceIdentityFromToken(token) ?? token;
       if (decoded !== this.config.defaultNamespace && !isSafeRouteNamespace(decoded)) {
         skipped.push({ token, reason: "unsafe", detail: decoded });
