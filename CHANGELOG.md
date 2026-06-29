@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.3.648] — 2026-06-29
+
 ### Added
 
 - **QMD collection auto-creation** (Dockerfile + core). `ensureCollection`
