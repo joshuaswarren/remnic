@@ -307,6 +307,7 @@ import {
 } from "./namespaces/principal.js";
 import {
   combineNamespaces,
+  isForgedDefaultStoreLcmSessionKey,
   resolveCodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
 import type { CodingContext } from "./types.js";
@@ -9352,6 +9353,24 @@ export class Orchestrator {
     // --- Phase 2: Assemble sections in correct order ---
     this.profiler.startSpan("assembly", profileTraceId);
 
+    // Cross-namespace forgery guard (issue #1505, Codex P1): the in-prompt LCM
+    // sections below read the archive keyed VERBATIM by `sessionKey`. Overlay
+    // (coding-scope) namespaces archive turns under `${overlayNamespace}:${sk}`,
+    // so a caller-controlled `sessionKey` shaped like `<overlayNamespace>:<victim>`
+    // would surface another scope's transcript rows directly into the prompt.
+    // Refuse such forged keys here exactly as the access-service LCM read
+    // surfaces do (CLAUDE.md rule 39 — identical gate on every read path). The
+    // principal's own self base is exempt; namespaces-disabled is a no-op.
+    const lcmSessionForged =
+      this.config.namespacesEnabled === true &&
+      isForgedDefaultStoreLcmSessionKey(
+        sessionKey,
+        defaultNamespaceForPrincipal(
+          resolvePrincipal(sessionKey, this.config),
+          this.config,
+        ),
+      );
+
     // 0. Shared context
     if (sharedCtx)
       this.appendRecallSection(sectionBuckets, "shared-context", sharedCtx);
@@ -9365,6 +9384,7 @@ export class Orchestrator {
       this.isRecallSectionEnabled("explicit-cue") &&
       explicitCueMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
+      !lcmSessionForged &&
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
       try {
@@ -9402,6 +9422,7 @@ export class Orchestrator {
       ) &&
       targetedFactMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
+      !lcmSessionForged &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
       shouldRecallTargetedFactEvidence(retrievalQuery)
     ) {
@@ -9447,6 +9468,7 @@ export class Orchestrator {
       ) &&
       focusedListMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
+      !lcmSessionForged &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
       shouldRecallFocusedListEvidence(retrievalQuery)
     ) {
@@ -9496,6 +9518,7 @@ export class Orchestrator {
       ) &&
       responseGuidanceMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
+      !lcmSessionForged &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
       (responseGuidanceMatchesQuery || responseGuidanceForcedByPipeline)
     ) {
@@ -9540,6 +9563,7 @@ export class Orchestrator {
       ) &&
       eventOrderMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
+      !lcmSessionForged &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
       shouldRecallEventOrderEvidence(retrievalQuery)
     ) {
@@ -9728,6 +9752,7 @@ export class Orchestrator {
     // LCM compressed history section
     if (
       this.lcmEngine?.enabled &&
+      !lcmSessionForged &&
       recallMode !== "minimal" &&
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {

@@ -9,6 +9,7 @@ import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
 import {
   combineNamespaces,
+  isForgedDefaultStoreLcmSessionKey,
   projectTagProjectId,
   resolveCodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
@@ -1510,6 +1511,12 @@ export class EngramAccessService {
       {
         query: options.query,
         ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
+        // selfBase exempts the principal's own self namespace from the
+        // raw-excerpt forgery guard (#1505).
+        selfBase: defaultNamespaceForPrincipal(
+          resolvePrincipal(options.sessionKey, this.orchestrator.config),
+          this.orchestrator.config,
+        ),
       },
     );
     const context = results
@@ -1545,7 +1552,7 @@ export class EngramAccessService {
   private async serializeRecallResults(
     snapshot: LastRecallSnapshot | null,
     disclosure: RecallDisclosure,
-    rawContext: { query: string; sessionKey?: string } | null = null,
+    rawContext: { query: string; sessionKey?: string; selfBase?: string } | null = null,
   ): Promise<EngramAccessMemorySummary[]> {
     if (!snapshot) return [];
     const namespace = snapshot.namespace ? this.resolveNamespace(snapshot.namespace) : this.orchestrator.config.defaultNamespace;
@@ -1787,7 +1794,9 @@ export class EngramAccessService {
    */
   private async fetchRawExcerpts(
     disclosure: RecallDisclosure,
-    context: { query: string; sessionKey?: string; namespace?: string } | null,
+    context:
+      | { query: string; sessionKey?: string; namespace?: string; selfBase?: string }
+      | null,
   ): Promise<EngramAccessMemorySummary["rawExcerpts"] | null> {
     if (disclosure !== "raw") return null;
     if (!context || !context.query) return [];
@@ -1799,6 +1808,23 @@ export class EngramAccessService {
     // missing sessionKey as "no excerpts" — callers asking for raw
     // disclosure outside a session get an empty list, not a leak.
     if (!context.sessionKey) return [];
+    // Cross-namespace forgery guard (issue #1505, Codex P1): mirror lcmSearch.
+    // On the DEFAULT store the LCM key below is the verbatim sessionKey, so a
+    // raw key shaped like an overlay-encoded id (`<overlayNamespace>:<victim>`)
+    // would surface another scope's transcript rows here too. Refuse it (empty
+    // excerpts — the safe failure mode). `selfBase` is exempt; gated to the
+    // default store with namespaces enabled, identical to the lcmSearch gate
+    // (CLAUDE.md rule 39 — the same gate on every read path).
+    const onDefaultStore =
+      !context.namespace ||
+      context.namespace === this.orchestrator.config.defaultNamespace;
+    if (
+      this.orchestrator.config.namespacesEnabled === true &&
+      onDefaultStore &&
+      isForgedDefaultStoreLcmSessionKey(context.sessionKey, context.selfBase)
+    ) {
+      return [];
+    }
     const lcm = this.orchestrator.lcmEngine;
     if (!lcm || !lcm.enabled) return [];
     try {
@@ -2536,6 +2562,9 @@ export class EngramAccessService {
     let results = await this.serializeRecallResults(snapshot, disclosure, {
       query,
       sessionKey: request.sessionKey,
+      // selfBase exempts the principal's own (possibly overlay-shaped) self
+      // namespace from the raw-excerpt forgery guard (#1505).
+      selfBase: principalNamespace,
     });
 
     // Tag filter (issue #689). Applied post-recall, post-serialization so
@@ -3034,6 +3063,12 @@ export class EngramAccessService {
                   query,
                   ...(trimmedSessionKey ? { sessionKey: trimmedSessionKey } : {}),
                   namespace,
+                  // selfBase exempts the principal's own self namespace from the
+                  // raw-excerpt forgery guard (#1505).
+                  selfBase: defaultNamespaceForPrincipal(
+                    principal,
+                    this.orchestrator.config,
+                  ),
                 })
               : null;
           const rawExcerptText =
@@ -4449,6 +4484,33 @@ export class EngramAccessService {
         count: 0,
         lcmEnabled: false,
       };
+    }
+
+    // Cross-namespace forgery guard (issue #1505, Codex P1): on the DEFAULT
+    // store the LCM `session_id` is the caller's raw sessionKey/prefix, used
+    // verbatim. Overlay (coding-scope) namespaces archive under
+    // `${overlayNamespace}:${sessionKey}`, so a raw key shaped like an
+    // overlay-encoded id would surface another scope's rows. Refuse it — the
+    // safe failure mode is empty results. Gated to the default store with
+    // namespaces enabled: a non-default store's `${namespace}:` prefix already
+    // isolates the key, and namespaces-disabled has no overlay encoding at all.
+    if (
+      this.orchestrator.config.namespacesEnabled === true &&
+      namespace === this.orchestrator.config.defaultNamespace
+    ) {
+      const selfBase = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
+      if (
+        isForgedDefaultStoreLcmSessionKey(request.sessionKey, selfBase) ||
+        isForgedDefaultStoreLcmSessionKey(request.sessionPrefix, selfBase)
+      ) {
+        return {
+          query: request.query,
+          namespace,
+          results: [],
+          count: 0,
+          lcmEnabled: true,
+        };
+      }
     }
 
     const limit = Math.max(1, Math.min(request.limit ?? 10, 100));

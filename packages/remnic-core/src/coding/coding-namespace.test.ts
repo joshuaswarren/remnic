@@ -12,6 +12,8 @@ import test from "node:test";
 import {
   branchNamespaceName,
   combineNamespaces,
+  isCodingOverlayNamespaceToken,
+  isForgedDefaultStoreLcmSessionKey,
   projectTagProjectId,
   projectNamespaceName,
   resolveCodingNamespaceOverlay,
@@ -364,4 +366,126 @@ test("resolveCodingNamespaceOverlay: read path and write path see identical name
   const readOverlay = resolveCodingNamespaceOverlay(input[0], input[1]);
   const writeOverlay = resolveCodingNamespaceOverlay(input[0], input[1]);
   assert.deepEqual(readOverlay, writeOverlay);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Unforgeable LCM session keys across namespaces (issue #1505, Codex P1)
+//
+// Overlay (coding-scope) namespaces archive LCM turns under
+// `${overlayNamespace}:${sessionKey}`; the default store passes the raw
+// caller-controlled `sessionKey` through VERBATIM. Because overlay namespace
+// names are predictable, surfaced via `effectiveNamespace`, and sanitization
+// never yields `:`, a default-store-authorized caller could otherwise forge a
+// raw key shaped like `<overlayNamespace>:<victim-session>` and read another
+// scope's transcript rows. These helpers restore injectivity by detecting the
+// overlay shape on the default read path.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("isCodingOverlayNamespaceToken: recognizes bare project/branch overlay names", () => {
+  // Produced by projectNamespaceName / branchNamespaceName when the base is
+  // empty/collapsed (combineNamespaces('', overlay)).
+  assert.equal(isCodingOverlayNamespaceToken("project-origin-abcd1234"), true);
+  assert.equal(isCodingOverlayNamespaceToken("branch-main"), true);
+  assert.equal(
+    isCodingOverlayNamespaceToken("project-origin-abcd1234-branch-main"),
+    true,
+  );
+});
+
+test("isCodingOverlayNamespaceToken: recognizes base-prefixed overlay names", () => {
+  // combineNamespaces(base, overlay) → `<base>-project-…` / `<base>-branch-…`.
+  assert.equal(
+    isCodingOverlayNamespaceToken("alice-project-origin-abcd1234"),
+    true,
+  );
+  assert.equal(
+    isCodingOverlayNamespaceToken("alice-project-tag-foo"),
+    true,
+  );
+  assert.equal(
+    isCodingOverlayNamespaceToken(
+      "alice-project-origin-ab12-branch-main",
+    ),
+    true,
+  );
+});
+
+test("isCodingOverlayNamespaceToken: rejects plain namespaces and principal ids", () => {
+  // The default store, shared store, principal self-namespaces, and bare
+  // principal ids are NEVER overlay-shaped.
+  assert.equal(isCodingOverlayNamespaceToken("default"), false);
+  assert.equal(isCodingOverlayNamespaceToken("shared"), false);
+  assert.equal(isCodingOverlayNamespaceToken("alice"), false);
+  assert.equal(isCodingOverlayNamespaceToken("pi-geek"), false);
+  assert.equal(isCodingOverlayNamespaceToken("agent"), false);
+  assert.equal(isCodingOverlayNamespaceToken(""), false);
+  // "project"/"branch" without the trailing `-` are not overlay markers.
+  assert.equal(isCodingOverlayNamespaceToken("project"), false);
+  assert.equal(isCodingOverlayNamespaceToken("branchwork"), false);
+});
+
+test("isForgedDefaultStoreLcmSessionKey: forged overlay-encoded exact key is rejected", () => {
+  // The core attack: a default-store caller passes another scope's encoded id.
+  assert.equal(
+    isForgedDefaultStoreLcmSessionKey(
+      "alice-project-tag-foo:victim-session",
+      "default",
+    ),
+    true,
+  );
+});
+
+test("isForgedDefaultStoreLcmSessionKey: forged branch-overlay key is rejected", () => {
+  assert.equal(
+    isForgedDefaultStoreLcmSessionKey(
+      "alice-project-origin-ab12-branch-main:victim-session",
+      "default",
+    ),
+    true,
+  );
+});
+
+test("isForgedDefaultStoreLcmSessionKey: colon-less overlay-shaped LIKE-prefix is rejected", () => {
+  // `searchContextFull(..., sessionPrefix)` is a LIKE-prefix match, so a
+  // colon-less overlay namespace prefixes `alice-project-tag-foo:<victim>`.
+  assert.equal(
+    isForgedDefaultStoreLcmSessionKey("alice-project-tag-foo", "default"),
+    true,
+  );
+});
+
+test("isForgedDefaultStoreLcmSessionKey: legitimate principal-encoded self key is allowed", () => {
+  // Regression guard: a principal's OWN default-store key naturally begins with
+  // `<principal>:` (e.g. `pi-geek:abc123`). Blindly rejecting `<token>:` keys
+  // would break a principal reading its own session — it must still pass.
+  assert.equal(
+    isForgedDefaultStoreLcmSessionKey("pi-geek:abc123", "pi-geek"),
+    false,
+  );
+  assert.equal(
+    isForgedDefaultStoreLcmSessionKey("pi-geek:abc123", "default"),
+    false,
+  );
+});
+
+test("isForgedDefaultStoreLcmSessionKey: principal's own overlay-shaped self base is exempt", () => {
+  // If a principal's self namespace is itself overlay-shaped, that one token is
+  // legitimately theirs to address.
+  assert.equal(
+    isForgedDefaultStoreLcmSessionKey(
+      "alice-project-tag-foo:victim-session",
+      "alice-project-tag-foo",
+    ),
+    false,
+  );
+});
+
+test("isForgedDefaultStoreLcmSessionKey: plain/bare keys and empty inputs are allowed", () => {
+  assert.equal(isForgedDefaultStoreLcmSessionKey("victim-session", "default"), false);
+  assert.equal(isForgedDefaultStoreLcmSessionKey("agent:foo:slack:1", "default"), false);
+  assert.equal(isForgedDefaultStoreLcmSessionKey(undefined, "default"), false);
+  assert.equal(isForgedDefaultStoreLcmSessionKey("", "default"), false);
+  assert.equal(isForgedDefaultStoreLcmSessionKey(null, "default"), false);
+  // Leading colon → empty token → not overlay-shaped.
+  assert.equal(isForgedDefaultStoreLcmSessionKey(":foo", "default"), false);
 });

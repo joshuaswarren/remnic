@@ -250,6 +250,85 @@ export function branchNamespaceName(projectId: string, branch: string): string {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Unforgeable LCM session keys across namespaces (issue #1505, Codex P1)
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * True when `token` has the structural shape of a coding-agent overlay
+ * namespace — the form produced by `combineNamespaces` /
+ * `projectNamespaceName` / `branchNamespaceName`: `project-…`, `branch-…`, or
+ * `<base>-project-…` / `<base>-branch-…`.
+ *
+ * The global default store NEVER legitimately holds a namespace of this shape
+ * (overlay namespaces only ever exist when project/branch scope is active and
+ * namespaces are enabled), so an LCM `session_id` whose leading namespace
+ * segment matches this shape, encountered on the DEFAULT read path, is a
+ * cross-namespace forgery rather than a key the default store could own.
+ *
+ * Pure and allocation-light: four substring checks, no regex — keeping this
+ * module's no-polynomial-backtracking posture (CodeQL).
+ */
+export function isCodingOverlayNamespaceToken(token: string): boolean {
+  if (typeof token !== "string" || token.length === 0) return false;
+  return (
+    token.startsWith("project-") ||
+    token.startsWith("branch-") ||
+    token.includes("-project-") ||
+    token.includes("-branch-")
+  );
+}
+
+/**
+ * Decide whether a raw LCM `sessionKey` / `sessionPrefix` — one used VERBATIM
+ * as an LCM `session_id` (exact match) or LIKE-prefix on the DEFAULT store — is
+ * forging another namespace's overlay-encoded id.
+ *
+ * Why this is needed (the P1 read leak): overlay (non-default) namespaces
+ * archive turns under `${overlayNamespace}:${sessionKey}` (see
+ * `EngramAccessService.observe`), while the default store passes the
+ * caller-controlled `sessionKey` through verbatim. That encoding is therefore
+ * NOT injective: a caller authorized only for the default store could pass a
+ * raw key shaped like `<overlayNamespace>:<victim-session>` and `lcmSearch` /
+ * the raw-disclosure excerpt path would query that exact `session_id` and
+ * surface another scope's transcript rows. Namespace names are sanitized to
+ * `[A-Za-z0-9._-]` (never contain `:`) and overlay names are predictable and
+ * surfaced via `effectiveNamespace`, so the forge is trivial to construct. This
+ * predicate restores injectivity by refusing such keys on the default path.
+ *
+ * Returns true (⇒ the caller MUST suppress the read; the safe failure mode is
+ * EMPTY results, never a leak) when the candidate's leading namespace segment —
+ * the part before the first `:`, or the whole value when there is none, so a
+ * colon-less overlay-shaped LIKE-prefix is caught too — has the overlay shape
+ * and is NOT the principal's own self base.
+ *
+ * A value whose leading segment is not overlay-shaped is never treated as
+ * forged. In particular a legitimate principal-encoded key such as
+ * `pi-geek:abc123` (leading token `pi-geek`) passes, so a principal reading its
+ * OWN default-store session is unaffected — blindly rejecting every `<token>:`
+ * key would regress that legitimate self-read.
+ *
+ * NOTE for callers: gate this only when namespaces are enabled AND the read is
+ * on the default store. With namespaces disabled no overlay encoding ever
+ * happens (every row is a verbatim sessionKey in the single store), and on a
+ * non-default store the `${namespace}:` prefix already makes the key
+ * non-colliding — applying the guard there would be a false-positive.
+ *
+ * @param rawKey   the verbatim `sessionKey` or `sessionPrefix` (nullish ⇒ false)
+ * @param selfBase `defaultNamespaceForPrincipal(principal)` — the one
+ *                 overlay-shaped segment the principal may legitimately address
+ */
+export function isForgedDefaultStoreLcmSessionKey(
+  rawKey: string | undefined | null,
+  selfBase?: string,
+): boolean {
+  if (typeof rawKey !== "string" || rawKey.length === 0) return false;
+  const colon = rawKey.indexOf(":");
+  const token = colon >= 0 ? rawKey.slice(0, colon) : rawKey;
+  if (selfBase && token === selfBase) return false;
+  return isCodingOverlayNamespaceToken(token);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Overlay resolver
 // ──────────────────────────────────────────────────────────────────────────
 
