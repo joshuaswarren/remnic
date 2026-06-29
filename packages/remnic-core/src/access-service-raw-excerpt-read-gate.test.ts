@@ -288,6 +288,125 @@ test("#1505 thread 2f7 (positive): overlay IS readable ⇒ raw disclosure includ
   );
 });
 
+test("#1505 thread NBHWz (codex P2): restrictive `default` READ policy + readable self ⇒ raw excerpts read the self/recall-authorized namespace (no `not readable: default` throw)", async () => {
+  // The root defect: the raw-excerpt path PRE-authorized
+  // `undefined ⇒ config.defaultNamespace` via `resolveReadableNamespace` BEFORE
+  // computing the LCM excerpt key. Under a deployment whose `default` namespace
+  // has a RESTRICTIVE read policy (pi-geek may NOT read `default`) but where
+  // pi-geek's self namespace IS readable, normal recall still succeeds via
+  // `recallNamespacesForPrincipal`, yet `disclosure: "raw"` threw `namespace is
+  // not readable: default` before serialization.
+  //
+  // FAIL-BEFORE: `executeRecall({ disclosure: "raw" })` throws `namespace is not
+  // readable: default`. PASS-AFTER: the fallback comes from the already
+  // read-authorized recall namespace set, so the raw lookup runs and prefixes
+  // its LCM session_id with the readable self namespace (no pre-auth of default).
+  const probe = makeRawExcerptProbe({
+    config: {
+      // RESTRICTIVE default: pi-geek may NOT read `default`.
+      namespacePolicies: [
+        { name: "default", readPrincipals: [], writePrincipals: [] },
+        { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      ],
+      // self IS in the recall set and IS readable, so the overlay resolves and
+      // the read gate keeps it (no pre-auth of the denied default).
+      defaultRecallNamespaces: ["self", "shared"],
+      codingMode: { projectScope: true, branchScope: false, globalFallback: true },
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
+    },
+    // snapshot.namespace records the overlay (the write target observe used);
+    // the read gate independently derives the readable overlay.
+    snapshotNamespace: overlayNamespace(),
+    sessionContext: sessionContext(),
+    sessionKey: SESSION_KEY,
+  });
+
+  await (probe.service as unknown as ExecuteRecallInternals).executeRecall({
+    query: "what database are we using?",
+    sessionKey: SESSION_KEY,
+    authenticatedPrincipal: "pi-geek",
+    disclosure: "raw",
+  });
+
+  assert.ok(
+    probe.searchSessionIds.length >= 1,
+    "raw excerpt lookup must run (NOT throw `not readable: default`)",
+  );
+  // The readable self overlay is honoured ⇒ the PRIMARY LCM session_id is
+  // prefixed with it, matching what normal recall + `lcmSearch` search for this
+  // principal. The premature `default` read-auth (which would have thrown) is
+  // gone. (The fallback-unification may append project/root read-fallback keys
+  // after the primary; the primary overlay key is what matters here.)
+  assert.equal(
+    probe.searchSessionIds[0],
+    `${overlayNamespace()}:${SESSION_KEY}`,
+    "raw excerpts must read the recall-authorized self overlay, not pre-authorize the denied default",
+  );
+  // No queried key may be the bare default-store key (the unprefixed raw
+  // sessionKey) — that would mean the read gate fell back to the DENIED default
+  // store. Every searched key must be namespace-prefixed with an AUTHORIZED
+  // namespace the principal may read (the `pi-geek` self base or its
+  // `pi-geek-project-*` overlay), matching what normal recall + `lcmSearch`
+  // search.
+  for (const id of probe.searchSessionIds) {
+    assert.notEqual(
+      id,
+      SESSION_KEY,
+      "raw-excerpt LCM keys must NOT fall back to the bare default store (the denied default)",
+    );
+    assert.ok(
+      typeof id === "string" && id.startsWith("pi-geek"),
+      `every raw-excerpt LCM key must be prefixed with an authorized pi-geek namespace, got ${String(id)}`,
+    );
+  }
+});
+
+test("#1505 thread NBHWz (codex P2): no readable LCM namespace ⇒ raw excerpts are EMPTY (no throw, no fallback to unreadable default)", async () => {
+  // alice authenticates but her policy denies reading `default`, `shared` is not
+  // in the recall set, and she has NO readable self namespace
+  // (`defaultRecallNamespaces` omits `self` AND her self base is unreadable). No
+  // readable LCM namespace exists for an implicit raw recall.
+  //
+  // FAIL-BEFORE: throws `namespace is not readable: default`. PASS-AFTER: the
+  // raw-excerpt lookup is suppressed (returns EMPTY) — `searchContextFull` is
+  // never called — so raw recall degrades gracefully instead of throwing.
+  const probe = makeRawExcerptProbe({
+    config: {
+      namespacePolicies: [
+        { name: "default", readPrincipals: [], writePrincipals: [] },
+        // alice can WRITE but NOT read her self namespace, and self is omitted
+        // from the recall set ⇒ nothing readable to fall back to.
+        { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
+      ],
+      // `shared` deliberately not granted either (default policy denies, no
+      // shared policy ⇒ canReadNamespace(alice, "shared") is true by the
+      // default-or-shared fallback). Omit shared from the recall set so it is not
+      // a fallback.
+      defaultRecallNamespaces: [],
+      codingMode: { projectScope: false, branchScope: false, globalFallback: true },
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+    },
+    snapshotNamespace: "default",
+    sessionKey: SESSION_KEY,
+  });
+
+  // Must NOT throw.
+  await (probe.service as unknown as ExecuteRecallInternals).executeRecall({
+    query: "what database are we using?",
+    sessionKey: SESSION_KEY,
+    authenticatedPrincipal: "alice",
+    disclosure: "raw",
+  });
+
+  assert.equal(
+    probe.searchSessionIds.length,
+    0,
+    "no readable LCM namespace ⇒ raw excerpts must be EMPTY (searchContextFull never called), not throw",
+  );
+});
+
 test("#1505 thread 2f7 (single-store regression): namespaces disabled ⇒ raw excerpts use the raw sessionKey", async () => {
   // Byte-for-byte single-user behavior: no namespaces, no overlay, raw key.
   const probe = makeRawExcerptProbe({

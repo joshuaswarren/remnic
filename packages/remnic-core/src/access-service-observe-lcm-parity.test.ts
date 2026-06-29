@@ -978,3 +978,197 @@ test("#1505 round 3 thread 2: lcmSearch still routes through the overlay key whe
     "observe effectiveNamespace must be the alice overlay (sanity)",
   );
 });
+
+test("#1505 thread NBHWs (codex P2): restrictive `default` WRITE policy + writable self ⇒ compaction flush/record the OVERLAY queue (no `not writable: default` throw)", async () => {
+  // The root defect: `lcmCompactionFlush`/`Record` PRE-authorized
+  // `undefined ⇒ config.defaultNamespace` via `resolveWritableNamespace` BEFORE
+  // the scoped write key was computed. Under a deployment whose `default`
+  // namespace has a RESTRICTIVE write policy (alice may NOT write `default`) but
+  // where alice CAN write her self/project overlay, `observe({ projectTag })`
+  // succeeds and archives LCM under `alice-project-*:sess-1` — yet compaction
+  // threw `namespace is not writable: default`, so the queue observe just wrote
+  // could never be flushed or recorded.
+  //
+  // FAIL-BEFORE: both compaction calls throw `namespace is not writable:
+  // default`. PASS-AFTER: compaction derives the namespace through the SAME
+  // write-scoped plan/gate observe uses (`resolveMemoryScopePlan`), authorizes
+  // the writable self base, and flushes/records the overlay key.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      // RESTRICTIVE default: NO principal may write (or read) `default`.
+      { name: "default", readPrincipals: [], writePrincipals: [] },
+      // alice CAN write (and read) her self namespace.
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    defaultRecallNamespaces: ["self", "shared"],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // observe succeeds under alice's writable self/project overlay even though
+  // `default` is not writable.
+  const observeRes = await service.observe(
+    observeRequest({
+      sessionKey: "sess-1",
+      authenticatedPrincipal: "alice",
+      projectTag: "Blend/Supply",
+    }),
+  );
+  const writeKey = probe.lcmWriteKeys[0];
+  assert.ok(
+    writeKey.startsWith("alice-"),
+    `observe must archive under alice's writable overlay key, got ${writeKey}`,
+  );
+  assert.ok(
+    observeRes.effectiveNamespace?.startsWith("alice-"),
+    "observe effectiveNamespace must be the alice overlay (sanity)",
+  );
+
+  // Compaction must NOT throw `not writable: default` and must target the
+  // overlay queue observe wrote.
+  const flushRes = await service.lcmCompactionFlush({
+    sessionKey: "sess-1",
+    authenticatedPrincipal: "alice",
+  });
+  const recordRes = await service.lcmCompactionRecord({
+    sessionKey: "sess-1",
+    authenticatedPrincipal: "alice",
+    tokensBefore: 100,
+    tokensAfter: 10,
+  });
+
+  assert.equal(flushRes.flushed, true, "flush must succeed");
+  assert.equal(recordRes.recorded, true, "record must succeed");
+  assert.equal(
+    probe.compactionFlushKeys[0],
+    writeKey,
+    "compaction flush must target the overlay key observe wrote, not the (unwritable) default key",
+  );
+  assert.equal(
+    probe.compactionRecordKeys[0],
+    writeKey,
+    "compaction record must target the overlay key observe wrote, not the (unwritable) default key",
+  );
+});
+
+test("#1505 thread NBHWz (sweep): restrictive `default` READ policy + readable self ⇒ lcmSearch reads the self/recall-authorized overlay (no `not readable: default` throw)", async () => {
+  // Convergence sweep: `lcmSearch` is the SAME defect class as the raw-excerpt
+  // path — it pre-authorized `undefined ⇒ config.defaultNamespace` via
+  // `resolveReadableNamespace` BEFORE deriving the scoped read namespace. Under a
+  // restrictive `default` READ policy where pi-geek's self namespace IS readable,
+  // normal recall succeeds via `recallNamespacesForPrincipal`, so `lcmSearch`
+  // must too. FAIL-BEFORE: throws `namespace is not readable: default`.
+  // PASS-AFTER: routes through the readable self overlay.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "default", readPrincipals: [], writePrincipals: [] },
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
+    defaultRecallNamespaces: ["self", "shared"],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // observe archives under pi-geek's readable+writable project overlay.
+  await service.observe(
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Blend/Supply" }),
+  );
+  const writeKey = probe.lcmWriteKeys[0];
+  assert.ok(
+    writeKey.startsWith("pi-geek-"),
+    `observe must archive under pi-geek's overlay key, got ${writeKey}`,
+  );
+
+  // lcmSearch with NO explicit namespace must NOT throw `not readable: default`
+  // and must route the session_id through the readable overlay key.
+  const res = await service.lcmSearch({
+    query: "what database are we using?",
+    sessionKey: "pi-geek:abc123",
+  });
+  assert.equal(res.lcmEnabled, true);
+  assert.equal(
+    probe.searchSessionIds[0],
+    writeKey,
+    "lcmSearch must route through the readable self overlay key, not pre-authorize the denied default",
+  );
+});
+
+test("#1505 thread NBHWz (sweep): no readable LCM namespace ⇒ lcmSearch returns EMPTY (no `not readable: default` throw)", async () => {
+  // Companion: when NO readable LCM namespace exists for an implicit lcmSearch
+  // (restrictive default READ + unreadable self + self omitted from the recall
+  // set), the search returns EMPTY rather than throwing — `searchContextFull` is
+  // never called.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "default", readPrincipals: [], writePrincipals: [] },
+      { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    defaultRecallNamespaces: [],
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  const res = await service.lcmSearch({
+    query: "anything",
+    sessionKey: "sess-1",
+    authenticatedPrincipal: "alice",
+  });
+  assert.equal(res.lcmEnabled, true);
+  assert.equal(res.count, 0, "no readable LCM namespace ⇒ empty results");
+  assert.equal(
+    probe.searchSessionIds.length,
+    0,
+    "searchContextFull must NOT be called when no readable LCM namespace exists",
+  );
+});
+
+test("#1505 thread NBHWs regression: restrictive `default` WRITE policy + no overlay (writable self) ⇒ compaction still authorizes the self base, no `not writable: default`", async () => {
+  // Companion: even with projectScope OFF (no overlay), an implicit observe by a
+  // principal that can write its self base archives under the default store ONLY
+  // when objective-state writes are off; with objective-state writes enabled the
+  // scope plan authorizes the self base. Here we keep objective-state off (the
+  // probe default) and projectScope off, so the write namespace collapses to the
+  // default store — but `default` is NOT writable. The scope plan's no-overlay
+  // branch still collapses to `config.defaultNamespace` via
+  // `resolveWritableNamespace(undefined)`, which DOES throw when default is
+  // unwritable — matching observe EXACTLY (if observe can't write, there is no
+  // queue to flush). This pins that compaction and observe agree on the throw.
+  const probe = makeParityProbe({
+    namespacePolicies: [
+      { name: "default", readPrincipals: [], writePrincipals: [] },
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [],
+    defaultRecallNamespaces: ["self", "shared"],
+    codingMode: { projectScope: false, branchScope: false, globalFallback: true },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  // No overlay ⇒ implicit write collapses to the (unwritable) default store, so
+  // observe itself rejects. Compaction must reject identically (parity), NOT
+  // succeed against a phantom queue.
+  await assert.rejects(
+    () =>
+      service.observe(
+        observeRequest({
+          sessionKey: "sess-1",
+          authenticatedPrincipal: "alice",
+        }),
+      ),
+    /not writable: default/,
+    "no-overlay implicit observe must reject on the unwritable default store",
+  );
+  await assert.rejects(
+    () =>
+      service.lcmCompactionFlush({
+        sessionKey: "sess-1",
+        authenticatedPrincipal: "alice",
+      }),
+    /not writable: default/,
+    "compaction must reject identically to observe when the effective write target is the unwritable default store (parity)",
+  );
+});

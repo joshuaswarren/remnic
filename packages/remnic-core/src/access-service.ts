@@ -1790,6 +1790,13 @@ export class EngramAccessService {
      * disclosure path also finds excerpts archived at the coding read fallbacks.
      */
     rawExcerptSessionIds?: string[];
+    /**
+     * Force NO raw excerpts (#1505 thread NBHWz). Set when the IMPLICIT
+     * raw-excerpt read gate found NO readable LCM namespace, so the x-ray
+     * includeRecall path degrades to empty excerpts rather than falling back to
+     * the write/overlay namespace the read gate excludes.
+     */
+    rawExcerptsSuppressed?: boolean;
   }): Promise<EngramAccessRecallResponse> {
     const memoryIds = options.snapshot.results.map((result) => result.memoryId);
     const resultPaths = options.snapshot.results.map((result) => result.path);
@@ -1834,6 +1841,9 @@ export class EngramAccessService {
           : {}),
         ...(options.rawExcerptSessionIds
           ? { rawExcerptSessionIds: options.rawExcerptSessionIds }
+          : {}),
+        ...(options.rawExcerptsSuppressed
+          ? { rawExcerptsSuppressed: options.rawExcerptsSuppressed }
           : {}),
       },
     );
@@ -1892,6 +1902,16 @@ export class EngramAccessService {
            * legacy single `rawExcerptNamespace`-prefixed key (unchanged).
            */
           rawExcerptSessionIds?: string[];
+          /**
+           * Force NO raw excerpts even when `disclosure === "raw"` (#1505 thread
+           * NBHWz). Set by callers when the IMPLICIT raw-excerpt read gate found
+           * NO readable LCM namespace (a restrictive `default` READ policy with
+           * no readable overlay/self namespace). The lookup must NOT fall back to
+           * `snapshot.namespace` (the write/overlay namespace the read gate
+           * excludes) — it returns empty excerpts so raw recall degrades
+           * gracefully instead of leaking unreadable rows or throwing.
+           */
+          rawExcerptsSuppressed?: boolean;
         }
       | null = null,
   ): Promise<EngramAccessMemorySummary[]> {
@@ -2030,21 +2050,27 @@ export class EngramAccessService {
     // + `lcmSearch` and never attaches `<principal>-project-*` overlay rows the
     // gate excludes. Fall back to the snapshot's resolved namespace only when no
     // gated namespace was threaded (sessionless / legacy callers) — unchanged.
-    const rawExcerptsResult = await this.fetchRawExcerpts(
-      disclosure,
-      rawContext
-        ? {
-            query: rawContext.query,
-            ...(rawContext.sessionKey
-              ? { sessionKey: rawContext.sessionKey }
-              : {}),
-            namespace: rawContext.rawExcerptNamespace ?? namespace,
-            ...(rawContext.rawExcerptSessionIds
-              ? { lcmSessionIds: rawContext.rawExcerptSessionIds }
-              : {}),
-          }
-        : null,
-    );
+    const rawExcerptsResult =
+      rawContext?.rawExcerptsSuppressed === true
+        ? // Implicit raw recall with NO readable LCM namespace (#1505 thread
+          // NBHWz): emit empty excerpts rather than falling back to the
+          // write/overlay `namespace` the read gate excludes.
+          []
+        : await this.fetchRawExcerpts(
+            disclosure,
+            rawContext
+              ? {
+                  query: rawContext.query,
+                  ...(rawContext.sessionKey
+                    ? { sessionKey: rawContext.sessionKey }
+                    : {}),
+                  namespace: rawContext.rawExcerptNamespace ?? namespace,
+                  ...(rawContext.rawExcerptSessionIds
+                    ? { lcmSessionIds: rawContext.rawExcerptSessionIds }
+                    : {}),
+                }
+              : null,
+          );
     const rawExcerpts = rawExcerptsResult ?? undefined;
 
     for (const memoryPath of snapshot.resultPaths ?? []) {
@@ -2946,6 +2972,19 @@ export class EngramAccessService {
             authenticatedPrincipal,
           )
         : undefined;
+    // `undefined` for an IMPLICIT raw recall means NO readable LCM namespace
+    // exists (restrictive `default` READ policy, no readable overlay/self) —
+    // suppress excerpts rather than fall back to the write/overlay namespace the
+    // read gate excludes (#1505 thread NBHWz). An EXPLICIT namespace always
+    // resolves (or throws) above, so suppression only applies to the implicit
+    // path.
+    const hasExplicitNamespace =
+      typeof request.namespace === "string" &&
+      request.namespace.trim().length > 0;
+    const rawExcerptsSuppressed =
+      disclosure === "raw" &&
+      !hasExplicitNamespace &&
+      rawExcerptNamespace === undefined;
     // Ordered, read-authorized LCM read key SET (#1505 fallback unification) so
     // raw disclosure finds excerpts a branch-scoped session archived at
     // project/root scope — exactly as recall + `lcmSearch` do. Only with a
@@ -2964,6 +3003,7 @@ export class EngramAccessService {
       sessionKey: request.sessionKey,
       ...(rawExcerptNamespace ? { rawExcerptNamespace } : {}),
       ...(rawExcerptSessionIds ? { rawExcerptSessionIds } : {}),
+      ...(rawExcerptsSuppressed ? { rawExcerptsSuppressed } : {}),
     });
 
     // Tag filter (issue #689). Applied post-recall, post-serialization so
@@ -3472,13 +3512,24 @@ export class EngramAccessService {
                   authenticatedPrincipal,
                 )
               : namespace;
+          // `undefined` for an IMPLICIT raw recall means NO readable LCM namespace
+          // exists (restrictive `default` READ policy, no readable overlay/self)
+          // — suppress excerpts rather than fall back to the write/overlay
+          // namespace the read gate excludes (#1505 thread NBHWz).
+          const xrayHasExplicitNamespace =
+            typeof request.namespace === "string" &&
+            request.namespace.trim().length > 0;
+          const rawExcerptsSuppressed =
+            disclosure === "raw" &&
+            !xrayHasExplicitNamespace &&
+            rawExcerptNamespace === undefined;
           // Ordered, read-authorized LCM read key SET (#1505 fallback
           // unification) so raw disclosure finds excerpts a branch-scoped session
           // archived at project/root scope — exactly as recall + `lcmSearch` do.
-          // Only meaningful with a concrete sessionKey; already read-gated so no
-          // unauthorized overlay key is present.
+          // Only meaningful with a concrete sessionKey + a readable namespace;
+          // already read-gated so no unauthorized overlay key is present.
           const rawExcerptSessionIds =
-            disclosure === "raw" && trimmedSessionKey
+            disclosure === "raw" && trimmedSessionKey && rawExcerptNamespace
               ? this.resolveLcmReadSessionIds(
                   request.namespace,
                   rawExcerptNamespace,
@@ -3487,16 +3538,20 @@ export class EngramAccessService {
                 )
               : undefined;
           const rawExcerpts =
-            disclosure === "raw"
+            disclosure === "raw" && !rawExcerptsSuppressed
               ? await this.fetchRawExcerpts(disclosure, {
                   query,
                   ...(trimmedSessionKey ? { sessionKey: trimmedSessionKey } : {}),
-                  namespace: rawExcerptNamespace,
+                  ...(rawExcerptNamespace
+                    ? { namespace: rawExcerptNamespace }
+                    : {}),
                   ...(rawExcerptSessionIds
                     ? { lcmSessionIds: rawExcerptSessionIds }
                     : {}),
                 })
-              : null;
+              : disclosure === "raw"
+                ? []
+                : null;
           const rawExcerptText =
             rawExcerpts && rawExcerpts.length > 0
               ? rawExcerpts.map((e) => e.content).join("\n")
@@ -3610,6 +3665,16 @@ export class EngramAccessService {
               authenticatedPrincipal,
             )
           : undefined;
+      // `undefined` for an IMPLICIT raw recall means NO readable LCM namespace
+      // exists — suppress excerpts rather than fall back to the write/overlay
+      // namespace the read gate excludes (#1505 thread NBHWz).
+      const xrayHasExplicitNamespace =
+        typeof request.namespace === "string" &&
+        request.namespace.trim().length > 0;
+      const xrayRawExcerptsSuppressed =
+        disclosure === "raw" &&
+        !xrayHasExplicitNamespace &&
+        xrayRawExcerptNamespace === undefined;
       const xrayRawExcerptSessionIds =
         disclosure === "raw" && xrayRawExcerptNamespace && recallSessionKey
           ? this.resolveLcmReadSessionIds(
@@ -3634,6 +3699,9 @@ export class EngramAccessService {
             : {}),
           ...(xrayRawExcerptSessionIds
             ? { rawExcerptSessionIds: xrayRawExcerptSessionIds }
+            : {}),
+          ...(xrayRawExcerptsSuppressed
+            ? { rawExcerptsSuppressed: xrayRawExcerptsSuppressed }
             : {}),
         }),
       };
@@ -4999,15 +5067,44 @@ export class EngramAccessService {
     }
 
     const principal = this.resolveRequestPrincipal(request.sessionKey, request.authenticatedPrincipal);
-    const namespace = this.resolveReadableNamespace(request.namespace, principal);
+    const hasExplicitNamespace =
+      typeof request.namespace === "string" &&
+      request.namespace.trim().length > 0;
+    // Resolve the readable base namespace WITHOUT pre-authorizing `default`
+    // (#1505 thread NBHWz). An EXPLICIT namespace is still authorized strictly
+    // via `resolveReadableNamespace` (explicit reads must pass the ACL — throws
+    // on an unreadable explicit namespace). For an IMPLICIT read, derive the
+    // fallback from the ALREADY read-authorized recall namespace set instead of
+    // read-authorizing `config.defaultNamespace`: under a restrictive `default`
+    // READ policy where the principal's self namespace is readable, normal recall
+    // still succeeds via `recallNamespacesForPrincipal`, so `lcmSearch` must too
+    // (the same defect class the raw-excerpt path fixes). `undefined` ⇒ no
+    // readable LCM namespace exists, so return NO rows rather than throwing.
+    const namespace = hasExplicitNamespace
+      ? this.resolveReadableNamespace(request.namespace, principal)
+      : this.resolveImplicitLcmReadFallbackNamespace(principal);
 
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
       return {
         query: request.query,
-        namespace,
+        namespace: namespace ?? this.orchestrator.config.defaultNamespace,
         results: [],
         count: 0,
         lcmEnabled: false,
+      };
+    }
+
+    // No readable LCM namespace for an IMPLICIT read (restrictive `default` READ
+    // policy, no readable overlay/self) ⇒ return NO rows instead of pre-
+    // authorizing the denied default (#1505 thread NBHWz). Normal recall still
+    // succeeds through the readable self namespace; LCM search degrades to empty.
+    if (namespace === undefined) {
+      return {
+        query: request.query,
+        namespace: this.orchestrator.config.defaultNamespace,
+        results: [],
+        count: 0,
+        lcmEnabled: true,
       };
     }
 
@@ -5192,34 +5289,103 @@ export class EngramAccessService {
    * sessionKey for single-store / no-overlay / explicit-default flows, so
    * single-user recall is byte-for-byte unchanged.
    *
-   * The `resolvedNamespace` fallback is the principal's READABLE namespace (an
-   * explicit `request.namespace` is already read-authorized; otherwise the
-   * default store), so even when the overlay is NOT readable the prefix is a
-   * namespace the principal may read.
+   * Returns `undefined` when NO readable LCM namespace exists for an IMPLICIT
+   * (no explicit `namespace`) raw recall — i.e. a restrictive `default` READ
+   * policy denies the principal `default` AND no overlay/self namespace is
+   * readable. In that case the caller emits NO excerpts rather than throwing
+   * `namespace is not readable: default` (#1505 thread NBHWz): normal recall
+   * still succeeds via `recallNamespacesForPrincipal`, so `disclosure: "raw"`
+   * must degrade gracefully (empty excerpts), never pre-authorize `default`.
+   *
+   * IMPLICIT-namespace fallback selection derives from the ALREADY
+   * read-authorized recall namespace set (`recallNamespacesForPrincipal` +
+   * `canReadNamespace`) — the principal's self base when it is in the readable
+   * recall set, else `config.defaultNamespace` ONLY when the principal may read
+   * it. It NEVER pre-authorizes `default`. An EXPLICIT `namespace` is still
+   * authorized strictly via `resolveReadableNamespace` (explicit reads must pass
+   * the ACL — no behavior change).
    */
   private resolveRawExcerptReadNamespace(
     explicitNamespace: string | undefined,
     sessionKey: string | undefined,
     authenticatedPrincipal: string | undefined,
-  ): string {
+  ): string | undefined {
     const principal = this.resolveRequestPrincipal(
       sessionKey,
       authenticatedPrincipal,
     );
-    // Read-authorize the fallback namespace exactly like `lcmSearch`: an
-    // explicit namespace is checked via `resolveReadableNamespace`; with none,
-    // the fallback is the default store (never the unreadable overlay).
-    const resolvedNamespace = this.resolveReadableNamespace(
-      explicitNamespace,
-      principal,
-    );
+    const hasExplicitNamespace =
+      typeof explicitNamespace === "string" &&
+      explicitNamespace.trim().length > 0;
+    if (hasExplicitNamespace) {
+      // Explicit reads must pass the ACL — authorize strictly, exactly as
+      // `lcmSearch` does (throws on an unreadable explicit namespace).
+      const resolvedNamespace = this.resolveReadableNamespace(
+        explicitNamespace,
+        principal,
+      );
+      return this.resolveLcmReadNamespace(
+        explicitNamespace,
+        resolvedNamespace,
+        sessionKey,
+        authenticatedPrincipal,
+        "read",
+      );
+    }
+    // IMPLICIT raw recall: derive the read fallback from the ALREADY
+    // read-authorized recall namespace set — NEVER pre-authorize `default`
+    // (#1505 thread NBHWz). When namespaces are disabled the default store is the
+    // only namespace and is always readable (byte-for-byte single-user path).
+    const fallbackNamespace =
+      this.resolveImplicitLcmReadFallbackNamespace(principal);
+    // No readable LCM namespace at all ⇒ no excerpts (caller short-circuits).
+    if (fallbackNamespace === undefined) return undefined;
     return this.resolveLcmReadNamespace(
       explicitNamespace,
-      resolvedNamespace,
+      fallbackNamespace,
       sessionKey,
       authenticatedPrincipal,
       "read",
     );
+  }
+
+  /**
+   * The read-authorized fallback namespace an IMPLICIT (no explicit `namespace`)
+   * same-session LCM READER (`resolveRawExcerptReadNamespace`, `lcmSearch`)
+   * prefixes its LCM `session_id` with when no readable coding overlay applies
+   * (#1505 thread NBHWz). Derived WITHOUT pre-authorizing `default`: it consults
+   * the SAME read-authorized recall set normal recall + the in-prompt LCM
+   * sections use (`recallNamespacesForPrincipal`, already
+   * `canReadNamespace`-filtered) and falls back to `config.defaultNamespace` ONLY
+   * when the principal may actually read it. Returns `undefined` when no readable
+   * LCM namespace exists, so the caller emits NO rows instead of throwing
+   * `namespace is not readable: default` — normal recall still succeeds through
+   * the readable self namespace, and LCM reads must degrade gracefully.
+   *
+   * Single-store / namespaces-disabled deployments resolve to
+   * `config.defaultNamespace` (always readable), keeping single-user recall
+   * byte-for-byte unchanged.
+   */
+  private resolveImplicitLcmReadFallbackNamespace(
+    principal: string | undefined,
+  ): string | undefined {
+    const config = this.orchestrator.config;
+    if (!config.namespacesEnabled) return config.defaultNamespace;
+    // Prefer the default store when the principal may read it (the historical
+    // implicit fallback — preserves single-store / readable-default flows).
+    if (canReadNamespace(principal, config.defaultNamespace, config)) {
+      return config.defaultNamespace;
+    }
+    // Restrictive `default` READ policy: fall back to a namespace the principal
+    // CAN read from the recall set (e.g. the readable self base), matching what
+    // normal recall + `lcmSearch` search. `lcmSessionKeyForNamespace` prefixes
+    // only non-default namespaces, so a self-base fallback still produces a
+    // distinct, authorized LCM key.
+    const readableRecallNamespaces = recallNamespacesForPrincipal(
+      principal,
+      config,
+    ).filter((ns) => canReadNamespace(principal, ns, config));
+    return readableRecallNamespaces[0];
   }
 
   private resolveLcmReadSessionKey(
@@ -5349,11 +5515,30 @@ export class EngramAccessService {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
     }
 
-    const namespace = this.resolveWritableNamespace(
-      request.namespace,
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
+    // Authorize compaction against the SCOPED WRITE TARGET — the SAME effective
+    // write namespace `observe` archived the LCM queue under — NOT a premature
+    // `resolveWritableNamespace(undefined ⇒ config.defaultNamespace)` (#1505
+    // thread NBHWs). Under a restrictive `default` WRITE policy where the
+    // principal can still write its self/project overlay, that premature default
+    // write-auth threw `namespace is not writable: default` BEFORE the scoped key
+    // was computed, so the overlay queue `observe` just wrote could never be
+    // flushed. `resolveMemoryScopePlan` is the ONE write-scoped plan/gate observe
+    // uses (rule 22 / 39 / 42): it authorizes the principal self base for an
+    // overlay write and only collapses to `config.defaultNamespace` (always
+    // writable) when no overlay applies — so it never throws `not writable:
+    // default` for a validly scoped observe's queue.
+    const scope = await this.resolveMemoryScopePlan(request);
+    // Legacy `namespace` response field: pre-#1505 semantics were exactly
+    // `resolveWritableNamespace(request.namespace)` (overlay-agnostic) — the
+    // authorized explicit namespace when supplied, else `config.defaultNamespace`.
+    // DERIVED from the scope plan (NOT a second auth pass, #1505 thread jvO):
+    // explicit ⇒ writeNamespace; coding overlay ⇒ defaultNamespace; no overlay ⇒
+    // writeNamespace (== defaultNamespace). Identical to observe's legacy field.
+    const namespace = scope.explicitNamespace
+      ? scope.writeNamespace
+      : scope.codingOverlayApplied
+        ? this.orchestrator.config.defaultNamespace
+        : scope.writeNamespace;
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
       return {
         enabled: false,
@@ -5364,22 +5549,19 @@ export class EngramAccessService {
       };
     }
 
-    // Flush the SAME LCM session_id that `observe` archived under. When no
-    // explicit namespace is supplied, an auto-scoped session was archived under
-    // its coding-overlay namespace (`${effectiveNamespace}:${sessionKey}`), not
-    // the base `namespace` — so apply the session's coding overlay here too, or
-    // the flush would target the wrong queue (#1495 thread 2, rule 42).
-    // `purpose: "write"` — compaction is a write/maintenance op on the queue
-    // observe wrote, so the overlay is gated by WRITE authorization, not
-    // readability (round-4 codex P2): a write-only / self-omitted principal
-    // still flushes the overlay queue observe archived under.
-    const lcmSessionKey = this.resolveLcmReadSessionKey(
-      request.namespace,
-      namespace,
-      request.sessionKey,
-      request.authenticatedPrincipal,
-      "write",
-    );
+    // Flush the SAME LCM session_id `observe` archived under: encode the scope
+    // plan's EFFECTIVE write namespace (the coding overlay when one applies, else
+    // the default store) through the SAME `lcmSessionKeyForNamespace` helper
+    // observe uses for archival, so the flush key is byte-for-byte the write key
+    // (#1495 thread 2 / #1505 thread NBHWs, rule 42). A write-only / self-omitted
+    // principal still flushes the overlay queue because the scope plan authorized
+    // the write target by WRITE policy, not readability.
+    const lcmSessionKey =
+      lcmSessionKeyForNamespace(
+        scope.writeNamespace,
+        request.sessionKey,
+        this.orchestrator.config.defaultNamespace,
+      ) ?? request.sessionKey;
     await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
     await this.orchestrator.lcmEngine.preCompactionFlush(lcmSessionKey);
     return {
@@ -5403,11 +5585,23 @@ export class EngramAccessService {
       throw new EngramAccessInputError("tokensAfter must be a non-negative integer");
     }
 
-    const namespace = this.resolveWritableNamespace(
-      request.namespace,
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
+    // Authorize compaction against the SCOPED WRITE TARGET — the SAME effective
+    // write namespace `observe` archived the LCM queue under — NOT a premature
+    // `resolveWritableNamespace(undefined ⇒ config.defaultNamespace)` (#1505
+    // thread NBHWs). See `lcmCompactionFlush` for the full rationale: under a
+    // restrictive `default` WRITE policy where the principal can still write its
+    // self/project overlay, the old premature default write-auth threw `namespace
+    // is not writable: default` before the scoped key was computed, leaving the
+    // overlay queue observe wrote unrecordable. `resolveMemoryScopePlan` is the
+    // ONE write-scoped plan/gate observe uses; it authorizes the self base for an
+    // overlay write and never throws `not writable: default` for a validly scoped
+    // observe's queue.
+    const scope = await this.resolveMemoryScopePlan(request);
+    const namespace = scope.explicitNamespace
+      ? scope.writeNamespace
+      : scope.codingOverlayApplied
+        ? this.orchestrator.config.defaultNamespace
+        : scope.writeNamespace;
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
       return {
         enabled: false,
@@ -5418,19 +5612,18 @@ export class EngramAccessService {
       };
     }
 
-    // Record against the SAME LCM session_id `observe` archived under — apply
-    // the session's coding overlay when no explicit namespace is given, so an
-    // auto-scoped session records its compaction on the right queue (#1495
-    // thread 2, rule 42). `purpose: "write"` — write/maintenance op gated by
-    // WRITE authorization, not readability (round-4 codex P2), so a write-only /
-    // self-omitted principal still records on the overlay queue observe wrote.
-    const lcmSessionKey = this.resolveLcmReadSessionKey(
-      request.namespace,
-      namespace,
-      request.sessionKey,
-      request.authenticatedPrincipal,
-      "write",
-    );
+    // Record against the SAME LCM session_id `observe` archived under — encode
+    // the scope plan's EFFECTIVE write namespace through the SAME
+    // `lcmSessionKeyForNamespace` helper observe uses, so the record key is
+    // byte-for-byte the write key (#1495 thread 2 / #1505 thread NBHWs, rule 42).
+    // A write-only / self-omitted principal still records on the overlay queue
+    // because the scope plan authorized the write target by WRITE policy.
+    const lcmSessionKey =
+      lcmSessionKeyForNamespace(
+        scope.writeNamespace,
+        request.sessionKey,
+        this.orchestrator.config.defaultNamespace,
+      ) ?? request.sessionKey;
     await this.orchestrator.lcmEngine.waitForSessionObserveIdle(lcmSessionKey);
     await this.orchestrator.lcmEngine.recordCompaction(
       lcmSessionKey,
