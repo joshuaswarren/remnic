@@ -9717,25 +9717,38 @@ export class Orchestrator {
       shouldRecallEventOrderEvidence(retrievalQuery)
     ) {
       try {
-        const eventOrderSection = await buildEventOrderRecallSection({
-          engine: this.lcmEngine,
-          // #1495 thread 3 + #1505 fallback unification: read across the ordered
-          // LCM read key set so a branch-scoped session reads its own
-          // chronological event-order evidence even at project/root scope. #1505
-          // codex P2: the builder MERGES per-key turns under its single budget.
-          sessionIds: lcmReadSessionIds,
-          query: retrievalQuery,
-          maxChars: eventOrderMaxChars,
-          maxItems:
-            this.getRecallSectionNumber("event-order", "maxResults") ??
-            this.config.eventOrderRecallMaxResults,
-          maxScanWindowTurns:
-            this.getRecallSectionNumber("event-order", "maxTurns") ??
-            this.config.eventOrderRecallScanWindowTurns,
-          maxScanWindowTokens:
-            this.getRecallSectionNumber("event-order", "maxTokens") ??
-            this.config.eventOrderRecallScanWindowTokens,
-        });
+        // #1495 thread 3 + #1505 fallback unification: read across the ordered LCM
+        // read key set so a branch-scoped session reads its own chronological
+        // event-order evidence even at project/root scope. UNLIKE the relevance-
+        // ranked sections, event-order must NOT merge across keys: `turn_index` is
+        // LOCAL to each LCM `session_id` (`observe` numbers turns per session via
+        // `getMaxTurnIndex`), so interleaving two keys and sorting by `turn_index`
+        // would place an older project-scope turn after a newer branch-scope turn
+        // and misstate the chronology (#1505 codex P2). Like compressed-history,
+        // event-order is an inherently per-session ORDERED artifact, so it takes
+        // the highest-priority authorized key (primary overlay → project/root)
+        // that actually has chronological evidence — each key's timeline is
+        // internally consistent.
+        const eventOrderSection = await firstNonEmptyLcmRead(
+          (lcmSessionId) =>
+            buildEventOrderRecallSection({
+              engine: this.lcmEngine,
+              sessionId: lcmSessionId,
+              query: retrievalQuery,
+              maxChars: eventOrderMaxChars,
+              maxItems:
+                this.getRecallSectionNumber("event-order", "maxResults") ??
+                this.config.eventOrderRecallMaxResults,
+              maxScanWindowTurns:
+                this.getRecallSectionNumber("event-order", "maxTurns") ??
+                this.config.eventOrderRecallScanWindowTurns,
+              maxScanWindowTokens:
+                this.getRecallSectionNumber("event-order", "maxTokens") ??
+                this.config.eventOrderRecallScanWindowTokens,
+            }),
+          (s) => !s,
+          "",
+        );
         if (eventOrderSection) {
           this.appendRecallSection(
             sectionBuckets,

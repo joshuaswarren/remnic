@@ -1,21 +1,14 @@
 import { buildEvidencePack, type EvidencePackItem } from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
-import {
-  gatherAcrossReadSessions,
-  resolveLcmReadSessionIds,
-} from "./lcm-fallback-read.js";
 
 export interface EventOrderRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
+  // event-order reads a SINGLE LCM session key. Unlike the relevance-ranked
+  // sections, its evidence must not be merged across the #1505 fallback key set:
+  // `turn_index` is local to each LCM `session_id`, so interleaving keys would
+  // misstate chronology. The orchestrator reads the ordered key set via
+  // first-non-empty instead (see the event-order call site).
   sessionId?: string;
-  /**
-   * Ordered, read-authorized LCM read key set (primary overlay → project/root
-   * fallbacks). When present, chronological evidence is gathered across EVERY
-   * key and merged under this section's budget (#1505 codex P2). Falls back to
-   * `sessionId`. Sessionless (`undefined`) keys are skipped — event-order
-   * evidence is inherently per-session.
-   */
-  sessionIds?: readonly (string | undefined)[];
   query: string;
   maxChars: number;
   maxItemChars?: number;
@@ -54,16 +47,10 @@ export async function buildEventOrderRecallSection(
 ): Promise<string> {
   const budget = normalizePositiveInteger(options.maxChars);
   const maxItems = normalizePositiveInteger(options.maxItems ?? DEFAULT_MAX_ITEMS);
-  // #1505 codex P2: gather chronological evidence across the ordered LCM read key
-  // set (primary overlay → project/root fallbacks). event-order evidence is
-  // inherently per-session, so sessionless keys are skipped; the section runs
-  // when at least one real read key is authorized. A single real sessionId is
-  // byte-for-byte the pre-#1505 behavior.
-  const readSessionIds = resolveLcmReadSessionIds(options);
-  const hasReadKey = readSessionIds.some(
-    (sessionId) => typeof sessionId === "string" && sessionId.length > 0,
-  );
-  if (!options.engine || !hasReadKey || budget <= 0) {
+  // event-order reads a SINGLE session key (`turn_index` is local to each LCM
+  // `session_id`, so chronology can't be merged across the #1505 fallback set —
+  // the orchestrator drives the ordered key set via first-non-empty instead).
+  if (!options.engine || !options.sessionId || budget <= 0) {
     return "";
   }
   if (maxItems <= 0) {
@@ -73,16 +60,7 @@ export async function buildEventOrderRecallSection(
     return "";
   }
 
-  // UNION per-key candidates into the existing rank/select/budget pass so a
-  // stronger project-fallback turn is not masked by a weak primary-key hit.
-  // `gatherAcrossReadSessions` isolates a per-key read failure so a
-  // corrupt/locked fallback index can't discard the primary key's turns; the
-  // single-key path runs one collect and propagates a failure as before.
-  const items: EvidencePackItem[] = [];
-  await gatherAcrossReadSessions(readSessionIds, async (sessionId) => {
-    if (typeof sessionId !== "string" || sessionId.length === 0) return;
-    items.push(...(await collectEventOrderItems({ ...options, sessionId })));
-  });
+  const items = await collectEventOrderItems(options);
   const ranked = rankAndSelectEventOrderItems(items, options, maxItems);
   if (ranked.length === 0) {
     return "";
