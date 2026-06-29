@@ -181,6 +181,12 @@ export async function resolveNamespaceStorageRoot(
 export class NamespaceStorageRouter {
   private readonly cache = new Map<string, StorageManager>();
   private defaultNsRootResolved: string | null = null;
+  // Dedup the resolve hook (round 6, cursor Medium — NCNL2). Recall/extraction
+  // call `storageFor` repeatedly; firing `onResolve` (→ catalog loadCompacted +
+  // append) on every cache hit grows `namespaces.jsonl` without bound between
+  // rebuilds. We fire the hook only when the (namespace, storageDir) pair is new
+  // or its dir changed, so a steady-state cache hit is a no-op for the catalog.
+  private readonly notifiedResolved = new Map<string, string>();
 
   constructor(
     private readonly config: PluginConfig,
@@ -245,6 +251,11 @@ export class NamespaceStorageRouter {
   private notifyResolved(namespace: string, storageDir: string): void {
     const hook = this.hooks.onResolve;
     if (!hook) return;
+    // Skip when we've already notified this exact (namespace, storageDir) — a
+    // steady-state cache hit must not re-append to the catalog log (NCNL2). A
+    // changed dir (rare: migration/realignment) still re-fires once.
+    if (this.notifiedResolved.get(namespace) === storageDir) return;
+    this.notifiedResolved.set(namespace, storageDir);
     try {
       hook(namespace, storageDir);
     } catch {

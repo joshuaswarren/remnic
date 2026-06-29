@@ -253,3 +253,30 @@ test("v3 namespaces router propagates custom entity schemas to routed storage ma
     },
   ]);
 });
+
+// ── Round 7 (cursor Medium — NCNL2): the resolve hook must fire only ONCE per
+// (namespace, storageDir). Recall/extraction call `storageFor` repeatedly; firing
+// onResolve (→ catalog loadCompacted + append) on every cache hit grows the log
+// without bound between rebuilds. A steady-state cache hit must be a hook no-op.
+test("storageFor fires the resolve hook once per (namespace, dir), not on every cache hit", async () => {
+  const memoryDir = tmpDir("ns-router-resolve-dedup");
+  const cfg = baseConfig(memoryDir);
+  const resolves: Array<{ ns: string; dir: string }> = [];
+  const router = new NamespaceStorageRouter(cfg, {
+    onResolve: (ns, dir) => {
+      resolves.push({ ns, dir });
+    },
+  });
+
+  // First resolve fires the hook; subsequent cache hits for the same dir do not.
+  const a = await router.storageFor("default");
+  const b = await router.storageFor("default");
+  const c = await router.storageFor("default");
+  assert.equal(a, b, "cache hit returns the same StorageManager");
+  assert.equal(b, c, "cache hit returns the same StorageManager");
+  assert.equal(
+    resolves.filter((r) => r.ns === "default").length,
+    1,
+    "onResolve must fire exactly once for repeated cache hits on the same namespace/dir",
+  );
+});

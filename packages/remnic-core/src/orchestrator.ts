@@ -13511,6 +13511,13 @@ export class Orchestrator {
       // affect both the dedup fingerprint and importance (issue #519 procedure routing).
       let writeCategory = fact.category;
       let targetStorage = storage;
+      // Track the KNOWN target namespace NAME alongside targetStorage (round 6,
+      // codex P2 — NCQI0). Re-deriving it from `targetStorage.dir` mangles a raw
+      // namespace literally named like a canonical token (e.g. `ns-616c706861`
+      // served from its legacy raw dir decodes to `alpha`). We seed it from the
+      // base storage dir once, then carry the EXPLICIT routed name verbatim so
+      // the catalog write touch records the real namespace, not a decoded guess.
+      let targetNamespaceName = this.namespaceFromStorageDir(targetStorage.dir);
       let routedRuleId: string | undefined;
       let routedNamespaceExplicit = false;
       if (routeRules.length > 0) {
@@ -13527,6 +13534,7 @@ export class Orchestrator {
               targetStorage = await this.storageRouter.storageFor(
                 selected.target.namespace,
               );
+              targetNamespaceName = selected.target.namespace;
             }
           }
         } catch (err) {
@@ -13556,6 +13564,7 @@ export class Orchestrator {
             targetStorage = await this.storageRouter.storageFor(
               this.config.sharedNamespace,
             );
+            targetNamespaceName = this.config.sharedNamespace;
             log.debug(
               `scope-routing: fact "${fact.content.slice(0, 60)}…" routed to shared namespace (scope=global)`,
             );
@@ -13936,11 +13945,9 @@ export class Orchestrator {
           // it must record its own write touch here or chunked writes would
           // never update lastWriteAt. Best-effort and failure-tolerant; the
           // non-chunked path records its touch separately, so this fires exactly
-          // once per write (no double-count).
-          this.markCatalogWrite(
-            this.namespaceFromStorageDir(targetStorage.dir),
-            targetStorage.dir,
-          );
+          // once per write (no double-count). Use the KNOWN routed name, not a
+          // dir-decoded guess (NCQI0).
+          this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
 
           // Write individual chunks with parent reference
           for (const chunk of chunkResult.chunks) {
@@ -14190,10 +14197,8 @@ export class Orchestrator {
       );
       // Catalog touch (issue #1499): record the write so dynamic namespaces are
       // discoverable after hot-path writes. Best-effort and failure-tolerant.
-      this.markCatalogWrite(
-        this.namespaceFromStorageDir(targetStorage.dir),
-        targetStorage.dir,
-      );
+      // Use the KNOWN routed name, not a dir-decoded guess (NCQI0).
+      this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
       if (routedRuleId) {
         log.debug(
           `routing applied for memory ${memoryId}: rule=${routedRuleId} category=${writeCategory} storage=${targetStorage.dir}`,
