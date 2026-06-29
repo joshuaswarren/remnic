@@ -857,6 +857,21 @@ export class NamespaceCatalog {
     } catch {
       return false;
     }
+    // NH3Xy (codex P2): for a NON-default namespace, a generic fallback root is
+    // NOT proof of liveness. When the namespace's own token root was skipped by
+    // the scan as a symlink/escape, `resolveSafeStorageDir` can fall back to the
+    // DEFAULT namespace's `memoryDir`; `hasMemoryData()` on that shared default
+    // tree then returns true whenever the default namespace has any data, which
+    // would wrongly KEEP a stale project row now pointing at the default tree
+    // instead of purging the skipped namespace. Only the namespace's OWN root may
+    // attest its liveness — so if a non-default namespace resolved to `memoryDir`,
+    // it has no independent contained root and must be treated as absent (purge).
+    if (
+      namespace !== this.config.defaultNamespace &&
+      path.resolve(root) === path.resolve(this.memoryDir)
+    ) {
+      return false;
+    }
     let stat;
     try {
       stat = await lstat(root);

@@ -1892,6 +1892,109 @@ test("executeResolution merge records exactly one catalog write touch for the pa
   }
 });
 
+// NH3X3: supersede-only resolutions (keep-a / keep-b) also mutate the namespace,
+// so they must record a catalog touch — post-commit, never on rollback.
+
+test("executeResolution keep-a records exactly one catalog write touch on success", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ namespace: "work" }));
+    const storage = makeResolutionStorage({ dir: "/tmp/work-namespace-storage" });
+    const catalogTouches: Array<{ namespace: string | undefined; storageDir: string }> = [];
+
+    const result = await executeResolution(dir, storage, written.pairId, "keep-a", {
+      storageForNamespace: () => storage,
+      onMergedMemoryWritten: (namespace, storageDir) => {
+        catalogTouches.push({ namespace, storageDir });
+      },
+    });
+
+    assert.deepEqual(result.affectedIds, ["mem-b-002"]);
+    assert.equal(readPair(dir, written.pairId)?.resolution, "keep-a");
+    assert.deepEqual(catalogTouches, [
+      { namespace: "work", storageDir: "/tmp/work-namespace-storage" },
+    ]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("executeResolution keep-b records exactly one catalog write touch on success", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ namespace: "work" }));
+    const storage = makeResolutionStorage({ dir: "/tmp/work-namespace-storage" });
+    const catalogTouches: Array<{ namespace: string | undefined; storageDir: string }> = [];
+
+    const result = await executeResolution(dir, storage, written.pairId, "keep-b", {
+      storageForNamespace: () => storage,
+      onMergedMemoryWritten: (namespace, storageDir) => {
+        catalogTouches.push({ namespace, storageDir });
+      },
+    });
+
+    assert.deepEqual(result.affectedIds, ["mem-a-001"]);
+    assert.equal(readPair(dir, written.pairId)?.resolution, "keep-b");
+    assert.deepEqual(catalogTouches, [
+      { namespace: "work", storageDir: "/tmp/work-namespace-storage" },
+    ]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("executeResolution keep-a records NO catalog write touch when resolution persistence fails and rolls back", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ namespace: "work" }));
+    const pairFile = path.join(dir, ".review", "contradictions", `${written.pairId}.json`);
+    const storage = makeResolutionStorage({
+      dir: "/tmp/work-namespace-storage",
+      onSupersede: () => {
+        fs.rmSync(pairFile, { force: true });
+      },
+    });
+    const catalogTouches: Array<{ namespace: string | undefined; storageDir: string }> = [];
+
+    const result = await executeResolution(dir, storage, written.pairId, "keep-a", {
+      storageForNamespace: () => storage,
+      onMergedMemoryWritten: (namespace, storageDir) => {
+        catalogTouches.push({ namespace, storageDir });
+      },
+    });
+
+    assert.match(result.message, /Resolution persistence failed; rolled back memory changes/);
+    assert.deepEqual(result.affectedIds, []);
+    assert.deepEqual(catalogTouches, [], "a rolled-back keep-a must not record a catalog write touch");
+    assert.equal(readPair(dir, written.pairId), null);
+  } finally {
+    await cleanup();
+  }
+});
+
+// Non-mutating verbs never touch the catalog (no namespace memory changed).
+test("executeResolution both-valid records no catalog write touch", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ namespace: "work" }));
+    const storage = makeResolutionStorage({ dir: "/tmp/work-namespace-storage" });
+    const catalogTouches: Array<{ namespace: string | undefined; storageDir: string }> = [];
+
+    const result = await executeResolution(dir, storage, written.pairId, "both-valid", {
+      storageForNamespace: () => storage,
+      onMergedMemoryWritten: (namespace, storageDir) => {
+        catalogTouches.push({ namespace, storageDir });
+      },
+    });
+
+    assert.deepEqual(result.affectedIds, []);
+    assert.equal(readPair(dir, written.pairId)?.resolution, "both-valid");
+    assert.deepEqual(catalogTouches, [], "both-valid mutates no namespace memory — no catalog touch");
+  } finally {
+    await cleanup();
+  }
+});
+
 test("executeResolution merge rolls back the first supersession when the second fails", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
@@ -2603,9 +2706,10 @@ test("executeResolution merge fires onMergedMemoryWritten with the pair namespac
   }
 });
 
-// Negative: reusing an EXISTING merged memory id is not a new durable write, so the
-// catalog touch must NOT fire (avoids spurious lastWriteAt refreshes / double-count).
-test("executeResolution merge does not fire onMergedMemoryWritten when reusing an existing merged id", async () => {
+// Reusing an EXISTING merged memory id still supersedes BOTH sources — a durable
+// namespace mutation — so the catalog touch MUST fire so `lastWriteAt` refreshes
+// (NH3X3). It fires exactly once, post-commit.
+test("executeResolution merge fires onMergedMemoryWritten exactly once when reusing an existing merged id", async () => {
   const { dir, cleanup } = await makeTempDir();
   try {
     const written = writePair(dir, makePair({ namespace: "project-origin-dynamic" }));
@@ -2615,7 +2719,7 @@ test("executeResolution merge does not fire onMergedMemoryWritten when reusing a
     let touchCount = 0;
 
     const result = await executeResolution(dir, storage, written.pairId, "merge", {
-      mergedMemoryId: "mem-merged-003", // pre-existing — no new write
+      mergedMemoryId: "mem-merged-003", // pre-existing merged memory, sources still superseded
       storageForNamespace: () => storage,
       onMergedMemoryWritten: () => {
         touchCount += 1;
@@ -2623,7 +2727,8 @@ test("executeResolution merge does not fire onMergedMemoryWritten when reusing a
     });
 
     assert.deepEqual(result.affectedIds, ["mem-a-001", "mem-b-002"]);
-    assert.equal(touchCount, 0, "reusing an existing merged memory must not record a catalog write touch");
+    assert.equal(touchCount, 1, "reusing an existing merged memory still supersedes both sources — record one touch");
+    assert.equal(readPair(dir, written.pairId)?.resolution, "merge");
   } finally {
     await cleanup();
   }

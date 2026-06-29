@@ -1150,6 +1150,58 @@ test("rebuildFromDisk purges a stale namespace whose root was removed", async ()
   }
 });
 
+// NH3Xy (codex P2): a fallback root must NOT prove a non-default namespace's
+// liveness during rebuild --apply. When a dynamic namespace's own token root is a
+// symlink/escape (skipped by the scan) but a stale touch row remains, the liveness
+// recheck used to resolve the namespace to the DEFAULT `memoryDir` (the fallback)
+// and — because the default tree has data — wrongly KEEP the stale row pointing at
+// the default tree. The fix treats a non-default namespace that resolves only to
+// memoryDir as having no independent live root, so the stale row is purged.
+test("rebuildFromDisk purges a stale non-default namespace whose only resolvable root is the default memoryDir", async () => {
+  const memoryDir = await mkMemoryDir();
+  const outside = await mkMemoryDir();
+  try {
+    // The DEFAULT namespace (memoryDir root) has data, so hasMemoryData(memoryDir)
+    // is true — this is what made the buggy fallback look "live".
+    await mkdir(path.join(memoryDir, "facts"), { recursive: true });
+
+    const ns = "project-origin-skipped";
+    const token = namespaceIdentityToken(ns);
+    await mkdir(path.join(memoryDir, "namespaces"), { recursive: true });
+    // The namespace's OWN token dir is a symlink escaping memoryDir — the scan
+    // skips it as unsafe, and its fallback (token dir not contained) lands on
+    // memoryDir. Point the symlink at real outside data so a followed link would
+    // (wrongly) look populated.
+    await mkdir(path.join(outside, "target", "facts"), { recursive: true });
+    const tokenDir = path.join(memoryDir, "namespaces", token);
+    try {
+      await symlink(path.join(outside, "target"), tokenDir, "dir");
+    } catch {
+      return; // symlinks unsupported in this CI env
+    }
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // A touch row exists for the namespace (the escaping legacy/explicit dir forces
+    // the resolved root to fail containment), but the scan skips its symlinked root.
+    await catalog.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
+
+    const result = await catalog.rebuildFromDisk();
+    assert.ok(
+      !result.records.some((r) => r.namespace === ns),
+      "a non-default namespace that resolves only to the default memoryDir must be purged, not kept",
+    );
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    assert.equal(
+      await reader.getNamespaceRecord(ns),
+      null,
+      "the purged namespace must not reappear on a fresh read",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 // ── Round 4, Issue #3 (codex P2): catalog WRITERS respect the rebuild lock. A
 // touch defers (bounded) while another process holds the rebuild lock, so it
 // appends to the freshly-rewritten log rather than into the snapshot→rename
