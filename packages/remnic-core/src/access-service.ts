@@ -2668,7 +2668,11 @@ export class EngramAccessService {
           resolve(false);
         };
         controller.signal.addEventListener("abort", onAbort, { once: true });
-        qmd.probe()
+        const probe =
+          typeof qmd.checkAvailability === "function"
+            ? qmd.checkAvailability({ signal: controller.signal })
+            : qmd.probe();
+        probe
           .then(resolve, () => resolve(false))
           .finally(() => {
             controller.signal.removeEventListener("abort", onAbort);

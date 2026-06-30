@@ -202,6 +202,50 @@ test("health re-probes root QMD before reporting it active", async () => {
   }
 });
 
+test("health uses read-only root QMD availability checks", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-readonly-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      qmdCollection: "remnic-memory",
+    });
+    let checkAvailabilityCalled = false;
+    let probeCalled = false;
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({
+        probe: async () => {
+          probeCalled = true;
+          return true;
+        },
+        checkAvailability: async (execution) => {
+          checkAvailabilityCalled = true;
+          assert.ok(execution?.signal instanceof AbortSignal);
+          return true;
+        },
+        isAvailable: () => true,
+        debugStatus: () => "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
+        checkCollection: async () => "present",
+        isDaemonMode: () => false,
+      }),
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+
+    assert.equal(checkAvailabilityCalled, true);
+    assert.equal(probeCalled, false);
+    assert.equal(health.qmd.active, true);
+    assert.equal(health.qmd.degraded, false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("health reports namespace-scoped QMD backend state", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-ns-"));
   try {

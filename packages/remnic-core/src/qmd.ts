@@ -1362,6 +1362,13 @@ export class QmdClient implements SearchBackend {
     return cliOk || this.daemonAvailable;
   }
 
+  async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {
+    return this.probeCli({
+      allowAutoUpgrade: false,
+      signal: execution?.signal,
+    });
+  }
+
   private async probeDaemon(): Promise<boolean> {
     this.lastDaemonCheckAtMs = Date.now();
     const normalizedPath = this.qmdPath.trim() || "qmd";
@@ -1409,7 +1416,7 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  private async probeCli(): Promise<boolean> {
+  private async probeCli(options: { allowAutoUpgrade?: boolean; signal?: AbortSignal } = {}): Promise<boolean> {
     let configuredProbeFailure: string | null = null;
     const markProbeFailure = (err: unknown): void => {
       this.lastCliProbeError = err instanceof Error ? err.message : String(err);
@@ -1431,12 +1438,14 @@ export class QmdClient implements SearchBackend {
       this.cliVersion = parseQmdVersionOutput(result.stdout, result.stderr);
       this.qmdCapabilities = resolveQmdCapabilities(this.cliVersion);
       this.lastCliProbeError = null;
-      await this.maybeAutoUpgradeQmd();
+      if (options.allowAutoUpgrade !== false) {
+        await this.maybeAutoUpgradeQmd();
+      }
     };
 
     if (this.configuredQmdPath) {
       try {
-        const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, this.configuredQmdPath, undefined, this.qmdRuntimeEnv);
+        const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, this.configuredQmdPath, options.signal, this.qmdRuntimeEnv);
         await recordProbeSuccess(result, this.configuredQmdPath, "configured");
         return true;
       } catch (err) {
@@ -1452,7 +1461,7 @@ export class QmdClient implements SearchBackend {
 
     // Try PATH first
     try {
-      const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, "qmd", undefined, this.qmdRuntimeEnv);
+      const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, "qmd", options.signal, this.qmdRuntimeEnv);
       await recordProbeSuccess(result, "qmd", "auto-path");
       return true;
     } catch (err) {
@@ -1460,7 +1469,7 @@ export class QmdClient implements SearchBackend {
       // Try fallback paths
       for (const fallbackPath of this.qmdFallbackPaths) {
         try {
-          const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, fallbackPath, undefined, this.qmdRuntimeEnv);
+          const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, fallbackPath, options.signal, this.qmdRuntimeEnv);
           await recordProbeSuccess(result, fallbackPath, "auto-fallback");
           log.info(`QMD: found at ${fallbackPath}`);
           return true;
