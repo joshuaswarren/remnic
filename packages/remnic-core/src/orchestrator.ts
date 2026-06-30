@@ -301,7 +301,11 @@ import {
   NamespaceStorageRouter,
   resolveNamespaceStorageRoot,
 } from "./namespaces/storage.js";
-import { NamespaceCatalog, type NamespaceRecord } from "./namespaces/catalog.js";
+import {
+  NamespaceCatalog,
+  hasMemoryData,
+  type NamespaceRecord,
+} from "./namespaces/catalog.js";
 import {
   namespaceIdentityFromToken,
   namespaceIdentityToken,
@@ -2380,7 +2384,11 @@ export class Orchestrator {
     }
     try {
       const liveRoot = await resolveNamespaceStorageRoot(this.config, record.namespace);
-      return path.resolve(liveRoot) === path.resolve(record.storageDir);
+      if (path.resolve(liveRoot) !== path.resolve(record.storageDir)) {
+        return false;
+      }
+      if (record.lastWriteAt) return true;
+      return hasMemoryData(liveRoot);
     } catch {
       return false;
     }
@@ -14763,122 +14771,127 @@ export class Orchestrator {
       } catch (err) {
         log.warn(`temporal-supersession: unexpected error: ${err}`);
       }
-      // Catalog touch (issue #1499): record AFTER the write AND temporal
-      // supersession, so lastWriteAt reflects every durable mutation in this
-      // extraction pass — not just the initial writeMemory (cursor NUtCT).
-      // Best-effort; uses the KNOWN routed name, not a dir-decoded guess (NCQI0).
-      this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
-      trackBehaviorSignals(
-        targetStorage,
-        buildBehaviorSignalsForMemory({
-          memoryId,
+      try {
+        trackBehaviorSignals(
+          targetStorage,
+          buildBehaviorSignalsForMemory({
+            memoryId,
+            category: writeCategory,
+            content: fact.content,
+            namespace: this.namespaceFromStorageDir(targetStorage.dir),
+            confidence: fact.confidence,
+            source: "extraction",
+          }),
+        );
+        trackPersistedId(targetStorage, memoryId);
+        if (
+          threadEpisodeIdsForGraph &&
+          !threadEpisodeIdsForGraph.includes(memoryId)
+        ) {
+          threadEpisodeIdsForGraph.push(memoryId);
+        }
+        await this.indexPersistedMemory(targetStorage, memoryId);
+        await promoteMemoryToShared({
+          sourceStorage: targetStorage,
           category: writeCategory,
           content: fact.content,
-          namespace: this.namespaceFromStorageDir(targetStorage.dir),
           confidence: fact.confidence,
-          source: "extraction",
-        }),
-      );
-      trackPersistedId(targetStorage, memoryId);
-      if (
-        threadEpisodeIdsForGraph &&
-        !threadEpisodeIdsForGraph.includes(memoryId)
-      ) {
-        threadEpisodeIdsForGraph.push(memoryId);
-      }
-      await this.indexPersistedMemory(targetStorage, memoryId);
-      await promoteMemoryToShared({
-        sourceStorage: targetStorage,
-        category: writeCategory,
-        content: fact.content,
-        confidence: fact.confidence,
-        tags: fact.tags,
-        entityRef:
-          typeof (fact as any).entityRef === "string"
-            ? (fact as any).entityRef
-            : undefined,
-        structuredAttributes: fact.structuredAttributes,
-        sourceMemoryId: memoryId,
-        importance,
-        intentGoal: inferredIntent?.goal,
-        intentActionType: inferredIntent?.actionType,
-        intentEntityTypes: inferredIntent?.entityTypes,
-        memoryKind,
-        validAt: sourceContext?.validAt,
-        source: extractionWriteSource,
-      });
-      // v8.2: graph edge building (fail-open — errors caught inside GraphIndex)
-      if (this.config.multiGraphMemoryEnabled) {
-        try {
-          const graphContext = await ensureGraphContext(targetStorage);
-          const entityRef =
+          tags: fact.tags,
+          entityRef:
             typeof (fact as any).entityRef === "string"
               ? (fact as any).entityRef
-              : undefined;
-          const memoryRelPath = resolvePersistedMemoryRelativePath({
-            memoryId,
-            pathById: graphContext.memoryPathById,
-            category: writeCategory,
-          });
-          graphContext.memoryPathById.set(memoryId, memoryRelPath);
-          appendMemoryToGraphContext({
-            allMemsForGraph: graphContext.allMemsForGraph,
-            storageDir: targetStorage.dir,
-            memoryRelPath: memoryRelPath,
-            memoryId,
-            category: writeCategory,
-            content: fact.content ?? "",
-            entityRef,
-          });
-          await this.buildGraphEdge(
-            targetStorage,
-            memoryRelPath,
-            entityRef,
-            memoryId,
-            fact.content ?? "",
-            graphContext.allMemsForGraph,
-            graphContext.memoryPathById,
-            threadIdForExtraction ?? undefined,
-            threadEpisodeIdsForGraph,
-            graphContext.previousPersistedRelPath,
-          );
-          graphContext.previousPersistedRelPath = memoryRelPath;
-        } catch {
-          /* fail-open */
-        }
-      }
-      if (
-        this.config.verbatimArtifactsEnabled &&
-        this.config.verbatimArtifactCategories.includes(writeCategory) &&
-        fact.confidence >= this.config.verbatimArtifactsMinConfidence
-      ) {
-        // Reuse citedFactContent so the artifact carries the same citation
-        // timestamp as the memory write above (Fix #3 — duplicate-citation).
-        await targetStorage.writeArtifact(citedFactContent, {
-          confidence: fact.confidence,
-          tags: [...fact.tags, "artifact"],
-          artifactType: this.artifactTypeForCategory(writeCategory),
+              : undefined,
+          structuredAttributes: fact.structuredAttributes,
           sourceMemoryId: memoryId,
+          importance,
           intentGoal: inferredIntent?.goal,
           intentActionType: inferredIntent?.actionType,
           intentEntityTypes: inferredIntent?.entityTypes,
+          memoryKind,
+          validAt: sourceContext?.validAt,
+          source: extractionWriteSource,
         });
-      }
-      // Register in content-hash index after successful write.
-      // Thread 3 fix: canonicalize by stripping any pre-existing citation so
-      // the stored hash matches what the dedup check computes via
-      // stripCitationForTemplate before calling contentHashIndex.has().
-      if (this.contentHashIndex) {
-        const canonicalFactContent =
-          citationEnabled &&
-          hasCitationForTemplate(fact.content, citationTemplate)
-            ? stripCitationForTemplate(fact.content, citationTemplate)
-            : fact.content;
-        const hashRegisterKey =
-          writeCategory === "procedure"
-            ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
-            : canonicalFactContent;
-        this.contentHashIndex.add(hashRegisterKey);
+        // v8.2: graph edge building (fail-open — errors caught inside GraphIndex)
+        if (this.config.multiGraphMemoryEnabled) {
+          try {
+            const graphContext = await ensureGraphContext(targetStorage);
+            const entityRef =
+              typeof (fact as any).entityRef === "string"
+                ? (fact as any).entityRef
+                : undefined;
+            const memoryRelPath = resolvePersistedMemoryRelativePath({
+              memoryId,
+              pathById: graphContext.memoryPathById,
+              category: writeCategory,
+            });
+            graphContext.memoryPathById.set(memoryId, memoryRelPath);
+            appendMemoryToGraphContext({
+              allMemsForGraph: graphContext.allMemsForGraph,
+              storageDir: targetStorage.dir,
+              memoryRelPath: memoryRelPath,
+              memoryId,
+              category: writeCategory,
+              content: fact.content ?? "",
+              entityRef,
+            });
+            await this.buildGraphEdge(
+              targetStorage,
+              memoryRelPath,
+              entityRef,
+              memoryId,
+              fact.content ?? "",
+              graphContext.allMemsForGraph,
+              graphContext.memoryPathById,
+              threadIdForExtraction ?? undefined,
+              threadEpisodeIdsForGraph,
+              graphContext.previousPersistedRelPath,
+            );
+            graphContext.previousPersistedRelPath = memoryRelPath;
+          } catch {
+            /* fail-open */
+          }
+        }
+        if (
+          this.config.verbatimArtifactsEnabled &&
+          this.config.verbatimArtifactCategories.includes(writeCategory) &&
+          fact.confidence >= this.config.verbatimArtifactsMinConfidence
+        ) {
+          // Reuse citedFactContent so the artifact carries the same citation
+          // timestamp as the memory write above (Fix #3 — duplicate-citation).
+          await targetStorage.writeArtifact(citedFactContent, {
+            confidence: fact.confidence,
+            tags: [...fact.tags, "artifact"],
+            artifactType: this.artifactTypeForCategory(writeCategory),
+            sourceMemoryId: memoryId,
+            intentGoal: inferredIntent?.goal,
+            intentActionType: inferredIntent?.actionType,
+            intentEntityTypes: inferredIntent?.entityTypes,
+          });
+        }
+        // Register in content-hash index after successful write.
+        // Thread 3 fix: canonicalize by stripping any pre-existing citation so
+        // the stored hash matches what the dedup check computes via
+        // stripCitationForTemplate before calling contentHashIndex.has().
+        if (this.contentHashIndex) {
+          const canonicalFactContent =
+            citationEnabled &&
+            hasCitationForTemplate(fact.content, citationTemplate)
+              ? stripCitationForTemplate(fact.content, citationTemplate)
+              : fact.content;
+          const hashRegisterKey =
+            writeCategory === "procedure"
+              ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
+              : canonicalFactContent;
+          this.contentHashIndex.add(hashRegisterKey);
+        }
+      } finally {
+        // Catalog touch (issue #1499): record AFTER every synchronous
+        // source-namespace mutation in the non-chunked path: writeMemory,
+        // temporal supersession, graph edges, and optional verbatim artifacts.
+        // The `finally` preserves the write touch when post-write indexing or
+        // promotion fails after the canonical memory is already durable. Use the
+        // KNOWN routed name, not a dir-decoded guess (NCQI0).
+        this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
       }
     }
 

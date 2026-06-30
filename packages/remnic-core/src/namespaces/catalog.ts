@@ -227,7 +227,7 @@ async function isLiveMemoryDataMarker(rootDir: string, child: string): Promise<b
   }
 }
 
-async function hasMemoryData(rootDir: string): Promise<boolean> {
+export async function hasMemoryData(rootDir: string): Promise<boolean> {
   for (const child of MEMORY_DATA_CHILDREN) {
     if (await isLiveMemoryDataMarker(rootDir, child)) return true;
   }

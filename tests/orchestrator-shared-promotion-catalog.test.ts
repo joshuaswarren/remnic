@@ -850,3 +850,135 @@ test("semantic consolidation records a catalog write when archival fails after c
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── codex P2 (NZYYR): the non-chunked extraction path writes graph edges and
+// optional verbatim artifacts after the primary memory write. The source
+// namespace catalog touch must run after those later mutations, not between the
+// primary memory and the derived writes.
+test("persistExtraction records non-chunked source catalog touch after graph and artifact writes", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-nonchunk-touch-order-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      chunkingEnabled: false,
+      multiGraphMemoryEnabled: true,
+      verbatimArtifactsEnabled: true,
+      verbatimArtifactCategories: ["fact"],
+      verbatimArtifactsMinConfidence: 0,
+      memoryLinkingEnabled: false,
+      inlineSourceAttributionEnabled: false,
+    });
+
+    const orchestrator = new Orchestrator(config) as any;
+    const ns = "project-origin-nonchunk-order";
+    const storage = await orchestrator.getStorage(ns);
+    await storage.ensureDirectories();
+
+    const events: string[] = [];
+    orchestrator.buildGraphEdge = async () => {
+      events.push("graph");
+    };
+    const originalWriteArtifact = storage.writeArtifact.bind(storage);
+    storage.writeArtifact = async (...args: Parameters<typeof storage.writeArtifact>) => {
+      const id = await originalWriteArtifact(...args);
+      events.push("artifact");
+      return id;
+    };
+    orchestrator.markCatalogWrite = () => {
+      events.push("touch");
+    };
+
+    await orchestrator.persistExtraction(
+      {
+        facts: [
+          {
+            content: "The non-chunked catalog ordering fact is short.",
+            category: "fact",
+            confidence: 0.95,
+            tags: ["catalog-order"],
+          },
+        ],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      },
+      storage,
+      null,
+      undefined,
+      ns,
+    );
+
+    const graphIndex = events.indexOf("graph");
+    const artifactIndex = events.indexOf("artifact");
+    const touchIndex = events.indexOf("touch");
+    assert.notEqual(graphIndex, -1, "precondition: graph edge write was attempted");
+    assert.notEqual(artifactIndex, -1, "precondition: artifact write completed");
+    assert.notEqual(touchIndex, -1, "precondition: source catalog touch was recorded");
+    assert.ok(
+      touchIndex > graphIndex && touchIndex > artifactIndex,
+      `source catalog touch must follow graph and artifact writes; saw ${events.join(" -> ")}`,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── codex P2 (NZYYT): a dynamic namespace created only by a read touch has no
+// durable memory data. Maintenance must not create or keep QMD collections for
+// those absent catalog-only rows, while still including real data roots that lack
+// a historical write touch.
+test("maintenanceNamespaces skips absent catalog-only read rows but includes existing data roots", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-maintenance-catalog-read-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+
+    const orchestrator = new Orchestrator(config) as any;
+    const ns = "project-origin-empty-read";
+    await orchestrator.namespaceCatalog.markRead(ns, { discoveredBy: "read" });
+
+    const before = await orchestrator.maintenanceNamespaces();
+    assert.ok(
+      !before.includes(ns),
+      "catalog-only read rows without storage data must not enter maintenance fanout",
+    );
+
+    const storage = await orchestrator.getStorage(ns);
+    await storage.ensureDirectories();
+    await storage.writeMemory("fact", "A real dynamic namespace memory exists.", {
+      source: "test",
+      confidence: 0.9,
+      tags: ["maintenance"],
+    });
+    await orchestrator.namespaceCatalog.markRead(ns, {
+      discoveredBy: "read",
+      storageDir: storage.dir,
+    });
+
+    const record = await orchestrator.namespaceCatalog.getNamespaceRecord(ns);
+    assert.ok(record, "precondition: namespace remains cataloged");
+    assert.ok(!record?.lastWriteAt, "precondition: this is still a read-only catalog row");
+
+    const after = await orchestrator.maintenanceNamespaces();
+    assert.ok(
+      after.includes(ns),
+      "read-only catalog rows with an existing data root must still enter maintenance fanout",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
