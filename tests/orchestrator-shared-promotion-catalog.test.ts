@@ -632,6 +632,68 @@ test("namespaceFromStorageDir ignores catalog hints whose storageDir belongs to 
   }
 });
 
+test("namespaceFromStorageDir compacts catalog hints before choosing token-root owner", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-hint-compact-"));
+  try {
+    const tokenize = (name: string) => `ns-${Buffer.from(name, "utf8").toString("hex")}`;
+    const literalTokenName = tokenize("alpha");
+    const alphaRoot = path.join(memoryDir, "namespaces", literalTokenName);
+    await mkdir(path.join(alphaRoot, "facts"), { recursive: true });
+    await mkdir(path.join(memoryDir, "state"), { recursive: true });
+
+    const now = new Date().toISOString();
+    await writeFile(
+      path.join(memoryDir, "state", "namespaces.jsonl"),
+      `${JSON.stringify({
+        version: 1,
+        namespace: literalTokenName,
+        identityToken: tokenize(literalTokenName),
+        kind: "project",
+        createdAt: now,
+        updatedAt: now,
+        storageDir: alphaRoot,
+        discoveredBy: "write",
+      })}\n${JSON.stringify({
+        version: 1,
+        namespace: "alpha",
+        identityToken: literalTokenName,
+        kind: "explicit",
+        createdAt: now,
+        updatedAt: now,
+        storageDir: alphaRoot,
+        discoveredBy: "write",
+      })}\n`,
+      "utf8",
+    );
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [
+        {
+          name: "alpha",
+          readPrincipals: [],
+          writePrincipals: [],
+        },
+      ],
+    });
+    const freshOrchestrator = new Orchestrator(config) as any;
+
+    assert.equal(
+      freshOrchestrator.namespaceFromStorageDir(alphaRoot),
+      "alpha",
+      "configured namespace alpha must own its tokenized root over a stale literal ns-* alias",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 7 (codex P2 — NDXHa): an already-ABORTED recall must not record catalog
 // read touches. The abort check runs later (Phase 1 retrieval), so without the
 // gate an already-aborted recall would still set `lastReadAt` for every recall

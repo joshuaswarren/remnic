@@ -2297,6 +2297,52 @@ export class Orchestrator {
     return resolvedStorageDir === rawRoot || resolvedStorageDir === tokenRoot;
   }
 
+  private namespaceStorageDirHintOwnershipRank(
+    record: { namespace: string },
+    resolvedStorageDir: string,
+    configured: Set<string>,
+  ): number {
+    if (resolvedStorageDir === path.resolve(this.config.memoryDir)) {
+      return record.namespace === normalizeNamespaceIdentity(this.config.defaultNamespace)
+        ? 0
+        : 3;
+    }
+
+    const leaf = path.basename(resolvedStorageDir);
+    const tokenOwnsRoot = namespaceIdentityToken(record.namespace) === leaf;
+    if (tokenOwnsRoot && configured.has(record.namespace)) return 0;
+    if (record.namespace === leaf) return 1;
+    if (tokenOwnsRoot) return 2;
+    return 3;
+  }
+
+  private preferNamespaceStorageDirHintOwner(
+    current: { namespace: string; identityToken: string; storageDir: string },
+    candidate: { namespace: string; identityToken: string; storageDir: string },
+    resolvedStorageDir: string,
+    configured: Set<string>,
+  ): { namespace: string; identityToken: string; storageDir: string } {
+    const currentRank = this.namespaceStorageDirHintOwnershipRank(
+      current,
+      resolvedStorageDir,
+      configured,
+    );
+    const candidateRank = this.namespaceStorageDirHintOwnershipRank(
+      candidate,
+      resolvedStorageDir,
+      configured,
+    );
+    if (candidateRank < currentRank) return candidate;
+    if (candidateRank > currentRank) return current;
+
+    const byName = candidate.namespace.localeCompare(current.namespace);
+    if (byName < 0) return candidate;
+    if (byName > 0) return current;
+    return candidate.identityToken.localeCompare(current.identityToken) < 0
+      ? candidate
+      : current;
+  }
+
   private loadNamespaceStorageDirHintsFromCatalog(): void {
     if (this.namespaceStorageDirHintsLoaded || !this.namespaceCatalog.enabled) return;
     this.namespaceStorageDirHintsLoaded = true;
@@ -2310,6 +2356,10 @@ export class Orchestrator {
       return;
     }
 
+    const compactedByNamespace = new Map<
+      string,
+      { namespace: string; identityToken: string; storageDir: string }
+    >();
     for (const line of body.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -2326,10 +2376,43 @@ export class Orchestrator {
         }
         const namespace = normalizeNamespaceIdentity(record.namespace);
         if (!namespace || record.identityToken !== namespaceIdentityToken(namespace)) continue;
-        this.rememberNamespaceStorageDirHint(namespace, record.storageDir);
+        compactedByNamespace.set(namespace, {
+          namespace,
+          identityToken: record.identityToken,
+          storageDir: record.storageDir,
+        });
       } catch {
         // Catalog hints are best-effort. The catalog reader still owns full recovery.
       }
+    }
+
+    const configured = new Set(
+      this.configuredNamespaces().map((namespace) => normalizeNamespaceIdentity(namespace)),
+    );
+    const preferredByStorageDir = new Map<
+      string,
+      { namespace: string; identityToken: string; storageDir: string }
+    >();
+    for (const record of compactedByNamespace.values()) {
+      if (!this.storageDirMatchesNamespaceHint(record.namespace, record.storageDir)) {
+        continue;
+      }
+      const resolvedStorageDir = path.resolve(record.storageDir);
+      const current = preferredByStorageDir.get(resolvedStorageDir);
+      preferredByStorageDir.set(
+        resolvedStorageDir,
+        current
+          ? this.preferNamespaceStorageDirHintOwner(
+              current,
+              record,
+              resolvedStorageDir,
+              configured,
+            )
+          : record,
+      );
+    }
+    for (const record of preferredByStorageDir.values()) {
+      this.rememberNamespaceStorageDirHint(record.namespace, record.storageDir);
     }
   }
 
@@ -14617,55 +14700,55 @@ export class Orchestrator {
                 intentEntityTypes: inferredIntent?.entityTypes,
               });
             }
+            // v8.2: graph edge building for chunked memories
+            if (this.config.multiGraphMemoryEnabled) {
+              try {
+                const graphContext = await ensureGraphContext(targetStorage);
+                const entityRef =
+                  typeof (fact as any).entityRef === "string"
+                    ? (fact as any).entityRef
+                    : undefined;
+                const parentRelPath = resolvePersistedMemoryRelativePath({
+                  memoryId: parentId,
+                  pathById: graphContext.memoryPathById,
+                  category: writeCategory,
+                });
+                graphContext.memoryPathById.set(parentId, parentRelPath);
+                appendMemoryToGraphContext({
+                  allMemsForGraph: graphContext.allMemsForGraph,
+                  storageDir: targetStorage.dir,
+                  memoryRelPath: parentRelPath,
+                  memoryId: parentId,
+                  category: writeCategory,
+                  content: fact.content ?? "",
+                  entityRef,
+                });
+                await this.buildGraphEdge(
+                  targetStorage,
+                  parentRelPath,
+                  entityRef,
+                  parentId,
+                  fact.content ?? "",
+                  graphContext.allMemsForGraph,
+                  graphContext.memoryPathById,
+                  threadIdForExtraction ?? undefined,
+                  threadEpisodeIdsForGraph,
+                  graphContext.previousPersistedRelPath,
+                );
+                graphContext.previousPersistedRelPath = parentRelPath;
+              } catch {
+                /* fail-open */
+              }
+            }
           } finally {
             // Catalog touch (issue #1499): record AFTER all chunked source-namespace
-            // durable mutations — parent/chunk writes, temporal supersession, and
-            // optional artifact writes — so `lastWriteAt` cannot precede later file
-            // changes in the same extraction pass (codex NYsKb / cursor NY68M).
-            // The `finally` preserves a touch for already-written parent/chunk data
-            // if artifact persistence fails. Use the KNOWN routed name, not a
+            // durable mutations — parent/chunk writes, temporal supersession,
+            // optional artifact writes, and graph-edge writes — so `lastWriteAt`
+            // cannot precede later file changes in the same extraction pass. The
+            // `finally` preserves a touch for already-written parent/chunk data if
+            // artifact persistence fails. Use the KNOWN routed name, not a
             // dir-decoded guess.
             this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
-          }
-          // v8.2: graph edge building for chunked memories
-          if (this.config.multiGraphMemoryEnabled) {
-            try {
-              const graphContext = await ensureGraphContext(targetStorage);
-              const entityRef =
-                typeof (fact as any).entityRef === "string"
-                  ? (fact as any).entityRef
-                  : undefined;
-              const parentRelPath = resolvePersistedMemoryRelativePath({
-                memoryId: parentId,
-                pathById: graphContext.memoryPathById,
-                category: writeCategory,
-              });
-              graphContext.memoryPathById.set(parentId, parentRelPath);
-              appendMemoryToGraphContext({
-                allMemsForGraph: graphContext.allMemsForGraph,
-                storageDir: targetStorage.dir,
-                memoryRelPath: parentRelPath,
-                memoryId: parentId,
-                category: writeCategory,
-                content: fact.content ?? "",
-                entityRef,
-              });
-              await this.buildGraphEdge(
-                targetStorage,
-                parentRelPath,
-                entityRef,
-                parentId,
-                fact.content ?? "",
-                graphContext.allMemsForGraph,
-                graphContext.memoryPathById,
-                threadIdForExtraction ?? undefined,
-                threadEpisodeIdsForGraph,
-                graphContext.previousPersistedRelPath,
-              );
-              graphContext.previousPersistedRelPath = parentRelPath;
-            } catch {
-              /* fail-open */
-            }
           }
           trackBehaviorSignals(
             targetStorage,

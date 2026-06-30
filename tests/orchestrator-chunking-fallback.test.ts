@@ -184,7 +184,7 @@ test("chunking fallback: falls back to recursive chunking when fallbackToRecursi
   assert.ok(ids.length >= 1, "fact should be persisted via recursive fallback");
 });
 
-test("chunked extraction records catalog touch after supersession and artifact writes", async () => {
+test("chunked extraction records catalog touch after supersession, artifact, and graph writes", async () => {
   installCapturingLogger();
   const { orchestrator, storage } = await makeOrchestrator({
     semanticChunkingEnabled: false,
@@ -195,6 +195,7 @@ test("chunked extraction records catalog touch after supersession and artifact w
     verbatimArtifactsEnabled: true,
     verbatimArtifactCategories: ["fact"],
     verbatimArtifactsMinConfidence: 0,
+    multiGraphMemoryEnabled: true,
   });
 
   await storage.writeMemory("fact", "Person A lives in Austin.", {
@@ -228,6 +229,10 @@ test("chunked extraction records catalog touch after supersession and artifact w
     return id;
   };
 
+  orchestrator.buildGraphEdge = async () => {
+    events.push("graph");
+  };
+
   orchestrator.markCatalogWrite = () => {
     events.push("touch");
   };
@@ -258,14 +263,16 @@ test("chunked extraction records catalog touch after supersession and artifact w
   const firstChunkIndex = events.indexOf("chunk");
   const supersessionIndex = events.indexOf("supersession");
   const artifactIndex = events.indexOf("artifact");
+  const graphIndex = events.indexOf("graph");
   const touchIndex = events.indexOf("touch");
 
   assert.notEqual(firstChunkIndex, -1, "precondition: recursive chunking wrote chunks");
   assert.notEqual(supersessionIndex, -1, "precondition: temporal supersession rewrote old fact");
   assert.notEqual(artifactIndex, -1, "precondition: verbatim artifact was written");
+  assert.notEqual(graphIndex, -1, "precondition: graph edge write was attempted");
   assert.notEqual(touchIndex, -1, "precondition: catalog touch was recorded");
   assert.ok(
-    touchIndex > supersessionIndex && touchIndex > artifactIndex,
-    `catalog touch must follow supersession and artifact writes; saw ${events.join(" -> ")}`,
+    touchIndex > supersessionIndex && touchIndex > artifactIndex && touchIndex > graphIndex,
+    `catalog touch must follow supersession, artifact, and graph writes; saw ${events.join(" -> ")}`,
   );
 });
