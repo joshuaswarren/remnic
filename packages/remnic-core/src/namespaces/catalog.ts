@@ -350,11 +350,22 @@ export class NamespaceCatalog {
   // production.
   protected onBeforeBreakStaleUnlinkForTest?: () => Promise<void>;
 
+  // Normalized (trimmed) default namespace identity (NH-FH, cursor Medium).
+  // Catalog records key namespaces by their NORMALIZED identity
+  // (`normalizeNamespaceIdentity`), but several default-namespace exemptions and
+  // memoryDir-ownership checks compared against the RAW `config.defaultNamespace`.
+  // If the configured default name carries surrounding whitespace the record key
+  // is trimmed while the comparison string is not, so the default row is
+  // misclassified, dropped at read time, or given the wrong storage root. Compare
+  // against this normalized form everywhere instead.
+  private readonly defaultNamespaceIdentity: string;
+
   constructor(private readonly config: PluginConfig) {
     this.memoryDir = config.memoryDir;
     this.stateDir = path.join(this.memoryDir, STATE_DIR);
     this.catalogPath = path.join(this.stateDir, CATALOG_FILE);
     this.rebuildLockPath = path.join(this.stateDir, REBUILD_LOCK_FILE);
+    this.defaultNamespaceIdentity = normalizeNamespaceIdentity(config.defaultNamespace);
   }
 
   /** Whether the catalog is active (namespaces enabled and catalog not opted out). */
@@ -387,8 +398,10 @@ export class NamespaceCatalog {
    *     for that namespace (rule 42: read and write stay symmetric).
    */
   private async sanitizeRecordForRead(record: NamespaceRecord): Promise<NamespaceRecord | null> {
-    // Defense 1: drop an unsafe non-default namespace name entirely.
-    if (record.namespace !== this.config.defaultNamespace && !isSafeRouteNamespace(record.namespace)) {
+    // Defense 1: drop an unsafe non-default namespace name entirely. Compare
+    // against the NORMALIZED default identity — record keys are trimmed, so a raw
+    // whitespace-padded config default would never match the default row (NH-FH).
+    if (record.namespace !== this.defaultNamespaceIdentity && !isSafeRouteNamespace(record.namespace)) {
       return null;
     }
     // Defense 2: keep the record but substitute a safe storageDir when needed.
@@ -473,7 +486,11 @@ export class NamespaceCatalog {
       // this guard one bad name would abort registration of all the rest. The
       // default namespace is exempt (it may be a non-route literal). Each call is
       // also wrapped so a single failure never blocks the remaining names.
-      if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) continue;
+      // `names` carries RAW config values, so normalize before the default-exempt
+      // check — a whitespace-padded default must still be recognized (NH-FH).
+      if (normalizeNamespaceIdentity(ns) !== this.defaultNamespaceIdentity && !isSafeRouteNamespace(ns)) {
+        continue;
+      }
       try {
         await this.register(ns, { discoveredBy: "config" });
       } catch {
@@ -511,7 +528,7 @@ export class NamespaceCatalog {
     // The configured default namespace is exempt from isSafeRouteNamespace at
     // the routing layer; honor the same exemption here, but everything still
     // resolves through the contained storage-dir helper below.
-    if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) {
+    if (ns !== this.defaultNamespaceIdentity && !isSafeRouteNamespace(ns)) {
       throw new Error(`unsafe namespace: ${ns}`);
     }
     return ns;
@@ -524,7 +541,7 @@ export class NamespaceCatalog {
    * by rejecting separators/parent-refs in the token.
    */
   private resolveStorageDir(namespace: string): string {
-    if (namespace === this.config.defaultNamespace) {
+    if (normalizeNamespaceIdentity(namespace) === this.defaultNamespaceIdentity) {
       // Default may resolve to the legacy memoryDir root OR a tokenized dir; we
       // report memoryDir here as the canonical default root for the catalog.
       // rebuildFromDisk refines this when a tokenized default dir holds data.
@@ -735,7 +752,7 @@ export class NamespaceCatalog {
       // Router resolution failed; rely on the lexical/default roots below.
     }
     // memoryDir is a valid root ONLY for the default namespace.
-    if (namespace === this.config.defaultNamespace) {
+    if (normalizeNamespaceIdentity(namespace) === this.defaultNamespaceIdentity) {
       valid.add(path.resolve(this.memoryDir));
       try {
         valid.add(path.resolve(await resolveDefaultNamespaceRoot(this.config)));
@@ -807,7 +824,7 @@ export class NamespaceCatalog {
    *     namespace never reaches `memoryDir`.
    */
   private async safeFallbackStorageDir(namespace: string): Promise<string> {
-    if (namespace === this.config.defaultNamespace) return this.memoryDir;
+    if (normalizeNamespaceIdentity(namespace) === this.defaultNamespaceIdentity) return this.memoryDir;
     let tokenDir: string;
     try {
       tokenDir = this.namespaceTokenDir(namespaceIdentityToken(namespace));
@@ -867,7 +884,7 @@ export class NamespaceCatalog {
     // attest its liveness — so if a non-default namespace resolved to `memoryDir`,
     // it has no independent contained root and must be treated as absent (purge).
     if (
-      namespace !== this.config.defaultNamespace &&
+      normalizeNamespaceIdentity(namespace) !== this.defaultNamespaceIdentity &&
       path.resolve(root) === path.resolve(this.memoryDir)
     ) {
       return false;
@@ -1452,7 +1469,7 @@ export class NamespaceCatalog {
           // enumerate an unsafe namespace after a rebuild that appeared to skip it.
           // Apply the SAME default-exempt safety gate before the live-root recheck;
           // an unsafe row is dropped (fall through to purge), never kept.
-          if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) {
+          if (ns !== this.defaultNamespaceIdentity && !isSafeRouteNamespace(ns)) {
             continue;
           }
           if (await this.liveStorageRootExistsForRebuild(ns, memoryReal)) {

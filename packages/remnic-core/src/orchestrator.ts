@@ -15058,6 +15058,11 @@ export class Orchestrator {
     log.info("running consolidation pass");
     let merged = 0;
     let invalidated = 0;
+    // Tracks whether any consolidation memory-item action (UPDATE / MERGE /
+    // INVALIDATE) durably rewrote memory state. A consolidation pass that only
+    // mutates memory items (no profile/entity updates) still changes the default
+    // namespace's data, so its catalog `lastWriteAt` must refresh too (NIBOi).
+    let memoryItemMutated = false;
 
     // Flush access tracking buffer first
     if (this.accessTrackingBuffer.size > 0) {
@@ -15101,6 +15106,7 @@ export class Orchestrator {
             : null;
           if (await this.storage.invalidateMemory(item.existingId)) {
             invalidated += 1;
+            memoryItemMutated = true;
             await this.embeddingFallback.removeFromIndex(item.existingId);
             if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
               deindexMemory(
@@ -15122,6 +15128,7 @@ export class Orchestrator {
                 lineage: [item.existingId],
               },
             );
+            memoryItemMutated = true;
             await this.indexPersistedMemory(this.storage, item.existingId);
             // updateMemory() only changes content/updated/lineage — path, created, and tags
             // are preserved, so the temporal/tag index entry is already correct; no reindex needed.
@@ -15137,6 +15144,7 @@ export class Orchestrator {
                 lineage: [item.existingId, item.mergeWith],
               },
             );
+            memoryItemMutated = true;
             await this.indexPersistedMemory(this.storage, item.existingId);
             // updateMemory() only changes content/updated/supersedes/lineage — path, created, and tags
             // are preserved, so the temporal/tag index entry for the survivor is already correct.
@@ -15182,11 +15190,18 @@ export class Orchestrator {
     }
 
     // Catalog write touch (issue #1499 sweep): consolidation persists durable
-    // profile/entity updates directly to the default-namespace `this.storage`,
-    // bypassing the extraction write path. Record one write touch so the default
-    // namespace's `lastWriteAt` reflects this mutation. The default namespace is
-    // always configured/cataloged; this only refreshes its recency. Best-effort.
-    if (result.profileUpdates.length > 0 || result.entityUpdates.length > 0) {
+    // mutations directly to the default-namespace `this.storage`, bypassing the
+    // extraction write path. Record one write touch so the default namespace's
+    // `lastWriteAt` reflects this mutation. This covers BOTH profile/entity
+    // updates AND memory-item actions (UPDATE / MERGE / INVALIDATE) — a pass that
+    // only rewrites/invalidates memory items still changed durable state and must
+    // refresh recency (NIBOi). The default namespace is always configured/
+    // cataloged; this only refreshes its recency. Best-effort and failure-tolerant.
+    if (
+      memoryItemMutated ||
+      result.profileUpdates.length > 0 ||
+      result.entityUpdates.length > 0
+    ) {
       this.markCatalogWrite(
         this.namespaceFromStorageDir(this.storage.dir),
         this.storage.dir,

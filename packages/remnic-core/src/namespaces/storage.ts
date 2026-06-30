@@ -174,7 +174,10 @@ export async function resolveNamespaceStorageRoot(
   namespace: string,
 ): Promise<string> {
   if (!config.namespacesEnabled) return config.memoryDir;
-  if (namespace === config.defaultNamespace) {
+  // Compare on NORMALIZED identity so a whitespace-padded configured default name
+  // still routes to the default root rather than a tokenized non-default dir
+  // (NH-FH). The catalog keys records by the same normalized identity.
+  if (normalizeNamespaceIdentity(namespace) === normalizeNamespaceIdentity(config.defaultNamespace)) {
     return resolveDefaultNamespaceRoot(config);
   }
   const legacyRoot = resolveNamespaceDir(config.memoryDir, namespace);
@@ -213,10 +216,18 @@ export class NamespaceStorageRouter {
   // unbounded (one transient entry per concurrently-resolving namespace).
   private readonly inFlightResolved = new Map<string, string>();
 
+  // Normalized (trimmed) default namespace identity (NH-FH). `storageFor`
+  // normalizes its input, so default-namespace branches must compare against the
+  // normalized config default too — otherwise a whitespace-padded configured
+  // default name routes the default namespace to a tokenized non-default root.
+  private readonly defaultNamespaceIdentity: string;
+
   constructor(
     private readonly config: PluginConfig,
     private readonly hooks: NamespaceStorageRouterHooks = {},
-  ) {}
+  ) {
+    this.defaultNamespaceIdentity = normalizeNamespaceIdentity(config.defaultNamespace);
+  }
 
   private async defaultNamespaceRoot(): Promise<string> {
     this.defaultNsRootResolved = await resolveDefaultNamespaceRoot(this.config);
@@ -226,7 +237,7 @@ export class NamespaceStorageRouter {
   private async namespaceRoot(namespace: string): Promise<string> {
     // NOTE: only used after defaultNamespaceRoot() resolution.
     if (!this.config.namespacesEnabled) return this.config.memoryDir;
-    if (namespace === this.config.defaultNamespace) {
+    if (normalizeNamespaceIdentity(namespace) === this.defaultNamespaceIdentity) {
       return this.defaultNsRootResolved ?? this.config.memoryDir;
     }
     return resolveNamespaceStorageRoot(this.config, namespace);
@@ -234,7 +245,7 @@ export class NamespaceStorageRouter {
 
   async storageFor(namespace: string): Promise<StorageManager> {
     const ns = normalizeNamespaceIdentity(namespace || this.config.defaultNamespace);
-    if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) {
+    if (ns !== this.defaultNamespaceIdentity && !isSafeRouteNamespace(ns)) {
       throw new Error(`unsafe namespace: ${ns}`);
     }
     // Even when the default namespace is exempt from the check above, every
@@ -243,7 +254,7 @@ export class NamespaceStorageRouter {
     // <memoryDir>/namespaces (CodeQL js/path-injection).
 
     let root: string;
-    if (ns === this.config.defaultNamespace) {
+    if (ns === this.defaultNamespaceIdentity) {
       root = await this.defaultNamespaceRoot();
       const cached = this.cache.get(ns);
       if (cached && cached.dir === root) {

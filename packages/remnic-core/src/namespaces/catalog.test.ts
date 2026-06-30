@@ -1150,6 +1150,35 @@ test("rebuildFromDisk purges a stale namespace whose root was removed", async ()
   }
 });
 
+// NH-FH (cursor Medium): when the configured default name carries surrounding
+// whitespace, catalog records key it by its NORMALIZED (trimmed) identity, but
+// default-namespace exemptions and memoryDir-ownership checks must compare against
+// the SAME normalized form — otherwise the default row is misclassified, dropped
+// at read, or given the wrong storage root.
+test("a whitespace-padded default namespace is still recognized as the default row", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    // The configured default name has surrounding whitespace; records use the
+    // trimmed key "default".
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir, { defaultNamespace: "  default  " }));
+    await catalog.registerConfiguredNamespaces();
+
+    // The default row reads back (not dropped) under its normalized identity,
+    // classified as kind "default", and rooted at memoryDir — NOT a tokenized
+    // non-default route dir.
+    const record = await catalog.getNamespaceRecord("default");
+    assert.ok(record, "the default row must survive read sanitization despite a padded config name");
+    assert.equal(record?.kind, "default", "padded default config name must classify as the default row");
+    assert.equal(
+      path.resolve(record!.storageDir),
+      path.resolve(memoryDir),
+      "the default namespace must own the legacy memoryDir root, not a tokenized non-default dir",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // NH3Xy (codex P2): a fallback root must NOT prove a non-default namespace's
 // liveness during rebuild --apply. When a dynamic namespace's own token root is a
 // symlink/escape (skipped by the scan) but a stale touch row remains, the liveness
