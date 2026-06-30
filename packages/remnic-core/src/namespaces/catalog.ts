@@ -497,14 +497,62 @@ export class NamespaceCatalog {
     return { ...record, storageDir: safe };
   }
 
-  async listNamespaces(filter?: NamespaceCatalogFilter): Promise<NamespaceRecord[]> {
-    if (!this.enabled) return [];
+  private storageRootOwnershipRank(record: NamespaceRecord, resolvedStorageDir: string): number {
+    if (resolvedStorageDir === path.resolve(this.memoryDir)) {
+      return record.namespace === this.defaultNamespaceIdentity ? 0 : 3;
+    }
+
+    const leaf = path.basename(resolvedStorageDir);
+    if (record.namespace === leaf) return 0;
+    if (namespaceIdentityToken(record.namespace) === leaf) return 1;
+    return 2;
+  }
+
+  private preferStorageRootOwner(
+    current: NamespaceRecord,
+    candidate: NamespaceRecord,
+    resolvedStorageDir: string,
+  ): NamespaceRecord {
+    const currentRank = this.storageRootOwnershipRank(current, resolvedStorageDir);
+    const candidateRank = this.storageRootOwnershipRank(candidate, resolvedStorageDir);
+    if (candidateRank < currentRank) return candidate;
+    if (candidateRank > currentRank) return current;
+
+    const byName = candidate.namespace.localeCompare(current.namespace);
+    if (byName < 0) return candidate;
+    if (byName > 0) return current;
+    return candidate.identityToken.localeCompare(current.identityToken) < 0 ? candidate : current;
+  }
+
+  private dropDuplicateStorageRootAliases(records: NamespaceRecord[]): NamespaceRecord[] {
+    const byStorageDir = new Map<string, NamespaceRecord>();
+    for (const record of records) {
+      const resolvedStorageDir = path.resolve(record.storageDir);
+      const current = byStorageDir.get(resolvedStorageDir);
+      byStorageDir.set(
+        resolvedStorageDir,
+        current ? this.preferStorageRootOwner(current, record, resolvedStorageDir) : record,
+      );
+    }
+    return [...byStorageDir.values()];
+  }
+
+  private async loadSanitizedRecords(): Promise<NamespaceRecord[]> {
     const records = await this.loadCompacted();
     const sanitized = await Promise.all(
       [...records.values()].map((r) => this.sanitizeRecordForRead(r)),
     );
     // Drop unsafe-namespace rows (sanitizer returned null) at the read boundary.
-    let out = sanitized.filter((r): r is NamespaceRecord => r !== null);
+    // Then collapse duplicate root aliases so maintenance/QMD see exactly one
+    // namespace owner for a physical storage root, matching rebuild ownership.
+    return this.dropDuplicateStorageRootAliases(
+      sanitized.filter((r): r is NamespaceRecord => r !== null),
+    );
+  }
+
+  async listNamespaces(filter?: NamespaceCatalogFilter): Promise<NamespaceRecord[]> {
+    if (!this.enabled) return [];
+    let out = await this.loadSanitizedRecords();
     if (filter?.kind) out = out.filter((r) => r.kind === filter.kind);
     if (filter?.discoveredBy) out = out.filter((r) => r.discoveredBy === filter.discoveredBy);
     if (filter?.writtenSince) {
@@ -527,9 +575,7 @@ export class NamespaceCatalog {
   async getNamespaceRecord(namespace: string): Promise<NamespaceRecord | null> {
     if (!this.enabled) return null;
     const ns = normalizeNamespaceIdentity(namespace);
-    const records = await this.loadCompacted();
-    const record = records.get(ns);
-    return record ? await this.sanitizeRecordForRead(record) : null;
+    return (await this.loadSanitizedRecords()).find((record) => record.namespace === ns) ?? null;
   }
 
   // ── Touch API (cheap, failure-tolerant) ─────────────────────────────────

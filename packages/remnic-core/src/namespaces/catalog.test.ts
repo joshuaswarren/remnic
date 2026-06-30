@@ -3163,3 +3163,33 @@ test("rebuildFromDisk still decodes a tokenized root with no literal owner (NRcC
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("listNamespaces drops stale decoded aliases for catalog-owned token-shaped roots", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const literalNs = namespaceIdentityToken("alpha");
+    const rawRoot = path.join(memoryDir, "namespaces", literalNs);
+    await mkdir(path.join(rawRoot, "facts"), { recursive: true });
+    await writeFile(path.join(rawRoot, "facts", "f1.md"), "# synthetic\n", "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite(literalNs, { discoveredBy: "write", storageDir: rawRoot });
+    await catalog.markRead("alpha", { discoveredBy: "read", storageDir: rawRoot });
+
+    const atRawRoot = (await catalog.listNamespaces()).filter(
+      (record) => path.resolve(record.storageDir) === path.resolve(rawRoot),
+    );
+    assert.deepEqual(
+      atRawRoot.map((record) => record.namespace),
+      [literalNs],
+      "the read API must expose only the catalog-owned literal namespace for a shared root",
+    );
+    assert.equal(
+      await catalog.getNamespaceRecord("alpha"),
+      null,
+      "status lookup must not report a stale alias that listNamespaces drops",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
