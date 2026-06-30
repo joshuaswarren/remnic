@@ -32,6 +32,7 @@ class FakeBackend implements SearchBackend {
       check?: CollectionState;
       ensure?: CollectionState;
     } = {},
+    private readonly daemonMode = false,
   ) {}
 
   private limitedResults(maxResults: number | undefined): QmdSearchResult[] {
@@ -56,6 +57,10 @@ class FakeBackend implements SearchBackend {
 
   debugStatus(): string {
     return "fake";
+  }
+
+  isDaemonMode(): boolean {
+    return this.daemonMode;
   }
 
   async dispose(): Promise<void> {
@@ -346,6 +351,42 @@ test("healthForNamespace checks namespace collection without auto-creating or ca
   assert.equal(ensured, "present");
   assert.equal(created.length, 2);
   assert.deepEqual(created[1]?.ensureCollections, ["openclaw-engram--ns-736861726564"]);
+});
+
+test("healthForNamespace reports daemon mode from live cached namespace backend", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = created.length === 0
+        ? new FakeBackend(false, [
+          {
+            path: "facts/a.md",
+            docid: "a",
+            score: 1,
+            snippet: "a",
+          },
+        ], { ensure: "present" }, true)
+        : new FakeBackend(false, [], { check: "present" }, false);
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  await router.searchAcrossNamespaces({
+    query: "a",
+    namespaces: ["shared"],
+    maxResults: 1,
+  });
+  const health = await router.healthForNamespace("shared");
+
+  assert.equal(health.daemonMode, true);
+  assert.equal(health.collectionState, "present");
+  assert.equal(created.length, 2);
+  assert.equal(created[0]?.disposed, 0);
+  assert.equal(created[1]?.disposed, 1);
+  assert.deepEqual(created[1]?.checkCollections, ["openclaw-engram--ns-736861726564"]);
 });
 
 test("healthForNamespace stops waiting when namespace availability probe aborts", async () => {

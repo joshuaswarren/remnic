@@ -208,8 +208,9 @@ export class NamespaceSearchRouter {
     namespace: string,
     execution?: SearchExecutionOptions,
   ): Promise<NamespaceSearchHealth> {
+    const key = namespace.trim() || this.config.defaultNamespace;
     const record = await this.createBackendRecordFor(
-      namespace.trim() || this.config.defaultNamespace,
+      key,
       execution,
       {
         autoCreateCollection: false,
@@ -223,11 +224,8 @@ export class NamespaceSearchRouter {
         typeof record.backend.getVersionStatus === "function"
           ? record.backend.getVersionStatus()
           : null;
-      const daemonMode =
-        "isDaemonMode" in record.backend &&
-        typeof record.backend.isDaemonMode === "function"
-          ? record.backend.isDaemonMode() === true
-          : null;
+      const liveRecord = await this.liveCachedRecordForHealth(key, record, execution);
+      const daemonMode = daemonModeForBackend(liveRecord?.backend ?? record.backend);
 
       return {
         collection: record.collection,
@@ -246,6 +244,20 @@ export class NamespaceSearchRouter {
       const dispose = (record.backend as { dispose?: () => void | Promise<void> }).dispose;
       await dispose?.call(record.backend);
     }
+  }
+
+  private async liveCachedRecordForHealth(
+    key: string,
+    disposableRecord: NamespaceBackendRecord,
+    execution?: SearchExecutionOptions,
+  ): Promise<NamespaceBackendRecord | null> {
+    const pending = this.cache.get(key);
+    if (!pending) return null;
+    const cachedRecord = await awaitWithAbort(pending, execution?.signal).catch(() => null);
+    if (!cachedRecord) return null;
+    if (cachedRecord.collection !== disposableRecord.collection) return null;
+    if (cachedRecord.memoryDir !== disposableRecord.memoryDir) return null;
+    return cachedRecord;
   }
 
   /** Clear cached backend records so the next access re-probes availability. */
@@ -423,6 +435,12 @@ function backendSearchLimit(
     maxResults * NESTED_NAMESPACE_FILTER_OVERFETCH_FACTOR,
     NESTED_NAMESPACE_FILTER_OVERFETCH_MIN,
   );
+}
+
+function daemonModeForBackend(backend: SearchBackend): boolean | null {
+  return "isDaemonMode" in backend && typeof backend.isDaemonMode === "function"
+    ? backend.isDaemonMode() === true
+    : null;
 }
 
 function pathIsInsideNamespaceSubtree(
