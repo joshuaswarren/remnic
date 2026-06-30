@@ -1527,6 +1527,22 @@ export class NamespaceCatalog {
             // the safe (router-aligned, contained) root so we never persist a
             // touch's stale/escaping `storageDir`.
             const safeDir = await this.resolveSafeStorageDir(ns);
+            // DUAL-ROOT GUARD (codex NR-td): if another rebuilt row already OWNS
+            // this exact storageDir (e.g. the decoded/configured owner of a
+            // token-shaped root that the disk scan resolved), do NOT also resurrect
+            // this stale alias from the untrusted log — that leaves TWO catalog rows
+            // pointing at one root and fans maintenance/QMD out over the wrong
+            // namespace. Enforce at most one row per storageDir: the scan's owner
+            // wins, the alias is dropped (falls through to purge).
+            const resolvedSafe = path.resolve(safeDir);
+            let ownedByOther = false;
+            for (const [otherNs, otherRec] of rebuilt) {
+              if (otherNs !== ns && path.resolve(otherRec.storageDir) === resolvedSafe) {
+                ownedByOther = true;
+                break;
+              }
+            }
+            if (ownedByOther) continue;
             rebuilt.set(ns, {
               ...fresh,
               storageDir: safeDir,

@@ -15296,7 +15296,12 @@ export class Orchestrator {
       try {
         const lightSleepStartedAt = new Date().toISOString();
         const lifecycleCorpus = await this.storage.readAllMemories();
-        await this.runLifecyclePolicyPass(lifecycleCorpus);
+        // Lifecycle frontmatter writes count as durable mutations for the catalog
+        // touch below (codex NR-tS), even when no other consolidation step set
+        // memoryItemMutated.
+        if ((await this.runLifecyclePolicyPass(lifecycleCorpus)) > 0) {
+          memoryItemMutated = true;
+        }
         await this.recordScheduledDreamsPhaseRun(
           "lightSleep",
           lifecycleCorpus.length,
@@ -15994,14 +15999,17 @@ export class Orchestrator {
 
   async runLifecyclePolicyNow(storage: StorageManager = this.storage): Promise<{ memoriesAssessed: number }> {
     const lifecycleCorpus = await storage.readAllMemories();
-    await this.runLifecyclePolicyPass(lifecycleCorpus, storage);
+    // Record the catalog write when the pass rewrote any frontmatter (codex NR-tS).
+    if ((await this.runLifecyclePolicyPass(lifecycleCorpus, storage)) > 0) {
+      this.markCatalogWrite(this.namespaceFromStorageDir(storage.dir), storage.dir);
+    }
     return { memoriesAssessed: lifecycleCorpus.length };
   }
 
   private async runLifecyclePolicyPass(
     allMemories: MemoryFile[],
     storage: StorageManager = this.storage,
-  ): Promise<void> {
+  ): Promise<number> {
     const now = new Date();
     const nowIso = now.toISOString();
     const countsByState: Record<LifecycleState, number> = {
@@ -16078,7 +16086,9 @@ export class Orchestrator {
       if (wrote) updatedCount += 1;
     }
 
-    if (!this.config.lifecycleMetricsEnabled) return;
+    // Report how many memories had frontmatter rewritten so callers can record a
+    // catalog write touch for lifecycle-only passes (codex NR-tS).
+    if (!this.config.lifecycleMetricsEnabled) return updatedCount;
 
     const total = evaluatedCount;
     const metrics = {
@@ -16103,6 +16113,7 @@ export class Orchestrator {
     );
     await mkdir(path.dirname(metricsPath), { recursive: true });
     await writeFile(metricsPath, JSON.stringify(metrics, null, 2), "utf-8");
+    return updatedCount;
   }
 
   /**
