@@ -4118,17 +4118,6 @@ export class Orchestrator {
           },
         );
 
-        // Catalog write touch (issue #1499 sweep): semantic consolidation writes a
-        // new canonical memory directly to `targetStorage`, bypassing the
-        // extraction write path. Record the write so the namespace's `lastWriteAt`
-        // reflects this durable mutation. Best-effort and failure-tolerant; the
-        // namespace is decoded from the storage dir since this path has no routed
-        // namespace name.
-        this.markCatalogWrite(
-          this.namespaceFromStorageDir(targetStorage.dir),
-          targetStorage.dir,
-        );
-
         result.memoriesConsolidated++;
 
         // Archive originals
@@ -4177,6 +4166,16 @@ export class Orchestrator {
             result.memoriesArchived++;
           }
         }
+
+        // Catalog write touch (issue #1499 sweep): record AFTER the canonical
+        // write AND the archival of the superseded cluster memories, so
+        // lastWriteAt reflects every durable mutation in this consolidation, not
+        // just the merge write (cursor NUtCK). Best-effort; namespace decoded from
+        // the storage dir since this path has no routed namespace name.
+        this.markCatalogWrite(
+          this.namespaceFromStorageDir(targetStorage.dir),
+          targetStorage.dir,
+        );
 
         log.info(
           `[semantic-consolidation] consolidated ${cluster.memories.length} memories → ${canonicalId}`,
@@ -14297,15 +14296,6 @@ export class Orchestrator {
               contentHashSource: rawChunkedContent,
             },
           );
-          // Catalog touch (issue #1499): the chunked write path persists the
-          // parent memory then `continue`s past the non-chunked write below, so
-          // it must record its own write touch here or chunked writes would
-          // never update lastWriteAt. Best-effort and failure-tolerant; the
-          // non-chunked path records its touch separately, so this fires exactly
-          // once per write (no double-count). Use the KNOWN routed name, not a
-          // dir-decoded guess (NCQI0).
-          this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
-
           // Write individual chunks with parent reference
           for (const chunk of chunkResult.chunks) {
             // Score each chunk's importance separately
@@ -14341,6 +14331,13 @@ export class Orchestrator {
               },
             );
           }
+
+          // Catalog touch (issue #1499): record AFTER all chunk writes so a
+          // partial chunked write (a failed `writeChunk`) does not mark a
+          // completed namespace write (cursor NUtB_). The chunked path `continue`s
+          // past the non-chunked touch below, so this fires exactly once per
+          // chunked write. Use the KNOWN routed name, not a dir-decoded guess.
+          this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
 
           if (routedRuleId) {
             log.debug(
@@ -14552,10 +14549,6 @@ export class Orchestrator {
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
         },
       );
-      // Catalog touch (issue #1499): record the write so dynamic namespaces are
-      // discoverable after hot-path writes. Best-effort and failure-tolerant.
-      // Use the KNOWN routed name, not a dir-decoded guess (NCQI0).
-      this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
       if (routedRuleId) {
         log.debug(
           `routing applied for memory ${memoryId}: rule=${routedRuleId} category=${writeCategory} storage=${targetStorage.dir}`,
@@ -14580,6 +14573,11 @@ export class Orchestrator {
       } catch (err) {
         log.warn(`temporal-supersession: unexpected error: ${err}`);
       }
+      // Catalog touch (issue #1499): record AFTER the write AND temporal
+      // supersession, so lastWriteAt reflects every durable mutation in this
+      // extraction pass — not just the initial writeMemory (cursor NUtCT).
+      // Best-effort; uses the KNOWN routed name, not a dir-decoded guess (NCQI0).
+      this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
       trackBehaviorSignals(
         targetStorage,
         buildBehaviorSignalsForMemory({
