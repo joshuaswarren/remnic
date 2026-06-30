@@ -156,9 +156,14 @@ test("persistExtraction includes written question IDs in persistedIds", () => {
     resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
     "utf-8",
   );
+  // The question loop tracks each written id via trackPersistedId so the thread
+  // batch append can include them. The id-tracking call lives inside the
+  // `if (id) { ... }` block alongside the durable-write catalog flag (NHZEZ
+  // sweep), so the assertion matches the tracking call within that block rather
+  // than a brittle single-line form.
   assert.match(
     source,
-    /const id = await storage\.writeQuestion\(q\.question,\s*q\.context,\s*q\.priority\);\s*if \(id\) trackPersistedId\(storage,\s*id\);/m,
+    /const id = await storage\.writeQuestion\(q\.question,\s*q\.context,\s*q\.priority\);\s*if \(id\) \{[\s\S]*?trackPersistedId\(storage,\s*id\);/m,
     "question IDs should be added to persistedIds so thread batch append can include them",
   );
 });
