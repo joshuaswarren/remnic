@@ -2265,22 +2265,32 @@ export class Orchestrator {
     const defaultNs = normalizeNamespaceIdentity(this.config.defaultNamespace);
     if (ns !== defaultNs && !isSafeRouteNamespace(ns)) return;
 
-    const resolvedStorageDir = path.resolve(storageDir);
-    const resolvedMemoryDir = path.resolve(this.config.memoryDir);
-    const resolvedNamespacesDir = path.join(resolvedMemoryDir, "namespaces");
-    if (
-      resolvedStorageDir !== resolvedMemoryDir &&
-      !isPathInsideStorageRoot(resolvedNamespacesDir, resolvedStorageDir)
-    ) {
-      return;
-    }
+    if (!this.storageDirMatchesNamespaceHint(ns, storageDir)) return;
 
+    const resolvedStorageDir = path.resolve(storageDir);
     let hints = this.namespaceStorageDirHints.get(resolvedStorageDir);
     if (!hints) {
       hints = new Set<string>();
       this.namespaceStorageDirHints.set(resolvedStorageDir, hints);
     }
     hints.add(ns);
+  }
+
+  private storageDirMatchesNamespaceHint(namespace: string, storageDir: string): boolean {
+    const ns = normalizeNamespaceIdentity(namespace);
+    if (!ns) return false;
+
+    const resolvedStorageDir = path.resolve(storageDir);
+    const resolvedMemoryDir = path.resolve(this.config.memoryDir);
+    const defaultNs = normalizeNamespaceIdentity(this.config.defaultNamespace);
+    if (resolvedStorageDir === resolvedMemoryDir) return ns === defaultNs;
+
+    const resolvedNamespacesDir = path.join(resolvedMemoryDir, "namespaces");
+    if (!isPathInsideStorageRoot(resolvedNamespacesDir, resolvedStorageDir)) return false;
+
+    const rawRoot = path.resolve(resolvedNamespacesDir, ns);
+    const tokenRoot = path.resolve(resolvedNamespacesDir, namespaceIdentityToken(ns));
+    return resolvedStorageDir === rawRoot || resolvedStorageDir === tokenRoot;
   }
 
   private loadNamespaceStorageDirHintsFromCatalog(): void {
@@ -16412,9 +16422,10 @@ export class Orchestrator {
         new Date(b.frontmatter.created).getTime(),
     );
 
-    // Keep recent memories
-    const toKeep = sorted.slice(-this.config.summarizationRecentToKeep);
-    const toSummarize = sorted.slice(0, -this.config.summarizationRecentToKeep);
+    // Keep recent memories, with explicit zero handling so `slice(-0)` does not
+    // accidentally keep every memory out of the summarization candidate set.
+    const recentToKeep = Math.max(0, this.config.summarizationRecentToKeep);
+    const toSummarize = recentToKeep > 0 ? sorted.slice(0, -recentToKeep) : sorted;
 
     // Filter candidates for summarization
     const candidates = toSummarize.filter((m) => {
@@ -16469,19 +16480,19 @@ export class Orchestrator {
 
       await this.storage.writeSummary(summary);
 
-      // Catalog write touch (issue #1499 sweep): summarization writes a durable
-      // summary memory directly to the default-namespace `this.storage`, bypassing
-      // the extraction write path. Record the write so the namespace's
-      // `lastWriteAt` reflects this mutation. Best-effort and failure-tolerant.
-      this.markCatalogWrite(
-        this.namespaceFromStorageDir(this.storage.dir),
-        this.storage.dir,
-      );
-
       // Archive source memories
       const archived = await this.storage.archiveMemories(
         batch.map((m) => m.frontmatter.id),
         summary.id,
+      );
+
+      // Catalog write touch (issue #1499 sweep): summarization writes a durable
+      // summary and then rewrites source-memory archive status, bypassing the
+      // extraction write path. Record the touch after both mutations complete so
+      // `lastWriteAt` covers the final archived-state write.
+      this.markCatalogWrite(
+        this.namespaceFromStorageDir(this.storage.dir),
+        this.storage.dir,
       );
 
       log.info(

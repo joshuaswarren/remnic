@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 
@@ -581,6 +581,51 @@ test("namespaceFromStorageDir preserves a CATALOGED dynamic namespace named like
       freshOrchestrator.namespaceFromStorageDir(path.join(memoryDir, "namespaces", tokenize("beta"))),
       "beta",
       "an uncataloged genuine tokenized dir still decodes to its identity",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("namespaceFromStorageDir ignores catalog hints whose storageDir belongs to another namespace", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-hint-owner-"));
+  try {
+    const tokenize = (name: string) => `ns-${Buffer.from(name, "utf8").toString("hex")}`;
+    const betaRoot = path.join(memoryDir, "namespaces", tokenize("beta"));
+    await mkdir(path.join(betaRoot, "facts"), { recursive: true });
+    await mkdir(path.join(memoryDir, "state"), { recursive: true });
+
+    const now = new Date().toISOString();
+    await writeFile(
+      path.join(memoryDir, "state", "namespaces.jsonl"),
+      `${JSON.stringify({
+        version: 1,
+        namespace: "alpha",
+        identityToken: tokenize("alpha"),
+        kind: "project",
+        createdAt: now,
+        updatedAt: now,
+        storageDir: betaRoot,
+        discoveredBy: "write",
+      })}\n`,
+      "utf8",
+    );
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+    const freshOrchestrator = new Orchestrator(config) as any;
+
+    assert.equal(
+      freshOrchestrator.namespaceFromStorageDir(betaRoot),
+      "beta",
+      "a catalog row for alpha must not claim beta's tokenized storage root",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

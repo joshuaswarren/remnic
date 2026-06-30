@@ -137,3 +137,68 @@ test("cleanup-only consolidation (TTL expiry, no LLM outputs) records a catalog 
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
+
+test("summarization records the catalog write touch after source memories are archived", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-summary-touch-order-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      summarizationTriggerCount: 50,
+      summarizationRecentToKeep: 0,
+      summarizationProtectedTags: [],
+      summarizationImportanceThreshold: 1,
+    });
+
+    const orchestrator = Object.create(Orchestrator.prototype) as any;
+    const events: string[] = [];
+    orchestrator.config = config;
+    orchestrator.storage = {
+      dir: memoryDir,
+      writeSummary: async () => {
+        events.push("summary");
+      },
+      archiveMemories: async () => {
+        events.push("archive");
+        return 50;
+      },
+    };
+    orchestrator.extraction = {
+      summarizeMemories: async () => ({
+        summaryText: "compressed memory summary",
+        keyFacts: ["fact"],
+        keyEntities: ["entity"],
+      }),
+    };
+    orchestrator.namespaceFromStorageDir = () => config.defaultNamespace;
+    orchestrator.markCatalogWrite = () => {
+      events.push("touch");
+    };
+
+    const memories = Array.from({ length: 50 }, (_, index) => ({
+      path: path.join(memoryDir, `memory-${index}.md`),
+      content: `summarizable fact ${index}`,
+      frontmatter: {
+        id: `memory-${index}`,
+        category: "fact",
+        created: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        tags: [],
+        status: "active",
+        importance: { score: 0.1, level: "low", reasons: [], keywords: [] },
+      },
+    }));
+
+    await orchestrator.runSummarization(memories);
+
+    assert.deepEqual(
+      events,
+      ["summary", "archive", "touch"],
+      "catalog lastWriteAt touch must happen after archiveMemories rewrites source memories",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
