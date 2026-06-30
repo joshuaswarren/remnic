@@ -853,6 +853,10 @@ export class EngramMcpServer {
           type: "object",
           properties: {
             namespace: { type: "string" },
+            sessionKey: {
+              type: "string",
+              description: "Optional session key used to derive namespace principal when no trusted transport principal is present.",
+            },
             ...MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED,
           },
           additionalProperties: false,

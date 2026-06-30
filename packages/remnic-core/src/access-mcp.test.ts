@@ -438,6 +438,13 @@ test("MCP session override is injected only into tools that accept sessionKey", 
   let observeArgs: Record<string, unknown> | undefined;
   const service = {
     ...makeMockService(),
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-mcp-session-override-test",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      principalFromSessionKeyMode: "map",
+      principalFromSessionKeyRules: [{ match: "adapter-session", principal: "adapter-agent" }],
+    }),
     capsuleList: async (args: Record<string, unknown>) => {
       capsuleListArgs = args;
       return { capsules: [] };
@@ -462,7 +469,7 @@ test("MCP session override is injected only into tools that accept sessionKey", 
 
   assert.deepEqual(capsuleListArgs, {
     namespace: undefined,
-    principal: undefined,
+    principal: "adapter-agent",
   });
   assert.deepEqual(observeArgs, {
     sessionKey: "adapter-session",
