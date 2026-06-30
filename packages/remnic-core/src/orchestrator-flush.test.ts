@@ -1789,6 +1789,7 @@ test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)"
     "namespaces",
     namespaceIdentityToken(dynamicNamespace),
   );
+  await mkdir(path.join(dynamicStorageDir, "facts"), { recursive: true });
 
   orchestrator.config = {
     memoryDir,
@@ -1971,6 +1972,7 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
     "namespaces",
     namespaceIdentityToken(dynamicNamespace),
   );
+  await mkdir(path.join(dynamicStorageDir, "facts"), { recursive: true });
 
   orchestrator.config = {
     memoryDir,

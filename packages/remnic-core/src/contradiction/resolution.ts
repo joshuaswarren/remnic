@@ -5,11 +5,11 @@
  * reimplement supersession logic here (rule 22: deduplicate resolution).
  */
 
+import { log } from "../logger.js";
 import type { StorageManager } from "../storage.js";
 import type { MemoryCategory, MemoryFile } from "../types.js";
 import type { ResolutionVerb } from "./contradiction-review.js";
-import { resolvePair, readPair } from "./contradiction-review.js";
-import { log } from "../logger.js";
+import { readPair, resolvePair } from "./contradiction-review.js";
 
 export interface ResolutionResult {
   pairId: string;
@@ -30,19 +30,19 @@ export interface ExecuteResolutionOptions {
   /** Resolve storage for the pair namespace, or the default namespace for legacy unscoped pairs. */
   storageForNamespace?: (namespace: string | undefined) => StorageManager | Promise<StorageManager>;
   /**
-   * Best-effort hook invoked after a contradiction resolution that MUTATED the
-   * namespace's memory files has DURABLY committed (issue #1499 sweep, NH1dX /
-   * NH3X3). Every mutating verb — `merge` (creates a new memory and supersedes
-   * both sources), `keep-a`, and `keep-b` (supersede the losing source + rewrite
+   * Best-effort hook invoked after a contradiction resolution leaves a durable
+   * mutation in the namespace's memory files (issue #1499 sweep, NH1dX / NH3X3).
+   * Every mutating verb — `merge` (creates a new memory and supersedes both
+   * sources), `keep-a`, and `keep-b` (supersede the losing source + rewrite
    * frontmatter) — writes directly to the pair's (possibly DYNAMIC) namespace
    * storage, bypassing the extraction write path that records catalog writes. So
    * without this the namespace's `lastWriteAt` stays stale and QMD maintenance /
    * `writtenSince` can skip a namespace whose only post-write mutation is
-   * resolving a contradiction. It fires ONLY after `resolvePair` persists the
-   * resolution past the rollback point: if the resolution fails and the memory
-   * changes are rolled back, this is never called, so the catalog never records a
-   * write that did not survive (rule #25). Non-mutating verbs (`both-valid`,
-   * `needs-more-context`) never trigger it. Callers wire this to
+   * resolving a contradiction. It fires after the resolution commits, or after a
+   * failed resolution/rollback path when durable memory changes are still left on
+   * disk. If a failure rolls back cleanly, this is never called, so the catalog
+   * never records a write that did not survive (rule #25). Non-mutating verbs
+   * (`both-valid`, `needs-more-context`) never trigger it. Callers wire this to
    * `Orchestrator.recordCatalogWrite(namespace, storageDir)`. Must be
    * failure-tolerant: it is fire-and-forget and must never affect resolution.
    */
@@ -99,17 +99,12 @@ export async function executeResolution(
   let message = "";
   let supersedeFailed = false;
   let rollbackAfterResolveFailure: (() => Promise<boolean>) | null = null;
-  // Deferred catalog-write touch for any resolution that MUTATES this namespace's
-  // memory files (issue #1499 sweep, NH1dX / NH3X3). Rule #25: never record a
-  // success marker / catalog touch before the new state is durably committed past
-  // the rollback point. Every mutating verb (merge, keep-a, keep-b) supersedes a
-  // source and/or writes a fresh merged memory, but the resolution is not durable
-  // until `resolvePair` persists below. If that persistence FAILS and
-  // `rollbackAfterResolveFailure` restores the changes, no catalog write actually
-  // survived — so the touch must fire ONLY after the whole resolution durably
-  // succeeds. We arm it in each mutating branch and invoke it exactly once at the
-  // post-commit point. Non-mutating verbs (both-valid, needs-more-context) leave
-  // it null.
+  // Deferred catalog-write touch for any resolution that leaves durable namespace
+  // memory mutations (issue #1499 sweep, NH1dX / NH3X3). Rule #25: never record a
+  // catalog touch for a write that is fully rolled back. Successful mutating
+  // resolutions invoke it after `resolvePair` persists. Failed paths invoke it
+  // only when rollback inspection shows the namespace still differs from the
+  // pre-mutation snapshot.
   let recordCatalogWriteTouch: (() => void) | null = null;
   // Returns the deferred touch fn for a mutating verb (or null when the caller
   // wired no catalog hook), so each branch assigns `recordCatalogWriteTouch`
@@ -121,6 +116,30 @@ export async function executeResolution(
     const namespace = pair.namespace;
     const storageDir = resolutionStorage.dir;
     return () => onMergedMemoryWritten(namespace, storageDir);
+  };
+  const catalogWriteTouch = buildCatalogTouch();
+  const recordCatalogWriteTouchSafely = (context: string, touch = catalogWriteTouch): void => {
+    if (!touch) return;
+    try {
+      touch();
+    } catch (err) {
+      log.warn(
+        "[contradiction-resolution] catalog write touch failed for pair=%s context=%s: %s",
+        pairId,
+        context,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  };
+  const touchCatalogIfRollbackLeftChange = async (
+    context: string,
+    snapshots: MemoryFile[],
+    replacement?: Extract<MergeReplacement, { ok: true }>,
+  ): Promise<void> => {
+    if (!catalogWriteTouch) return;
+    if (await rollbackLeftDurableMutation(resolutionStorage, snapshots, replacement)) {
+      recordCatalogWriteTouchSafely(context);
+    }
   };
 
   switch (verb) {
@@ -141,7 +160,7 @@ export async function executeResolution(
           restoreMemorySnapshot(resolutionStorage, sourceB!, "contradiction-resolution:keep-a-rollback");
         // keep-a superseded idB in this namespace — record a catalog touch once
         // the resolution durably commits (NH3X3).
-        recordCatalogWriteTouch = buildCatalogTouch();
+        recordCatalogWriteTouch = catalogWriteTouch;
         message = `Kept ${idA}, superseded ${idB}`;
       }
       else {
@@ -149,6 +168,9 @@ export async function executeResolution(
         const rolledBack = sourceB
           ? await restoreMemorySnapshot(resolutionStorage, sourceB, "contradiction-resolution:keep-a-rollback")
           : false;
+        if (sourceB && !rolledBack) {
+          await touchCatalogIfRollbackLeftChange("keep-a-rollback-incomplete", [sourceB]);
+        }
         message = rolledBack
           ? `Supersede failed for ${idB}; restored ${idB} and did not resolve`
           : `Supersede failed for ${idB}; rollback incomplete for ${idB} and pair is not resolved`;
@@ -172,7 +194,7 @@ export async function executeResolution(
           restoreMemorySnapshot(resolutionStorage, sourceA!, "contradiction-resolution:keep-b-rollback");
         // keep-b superseded idA in this namespace — record a catalog touch once
         // the resolution durably commits (NH3X3).
-        recordCatalogWriteTouch = buildCatalogTouch();
+        recordCatalogWriteTouch = catalogWriteTouch;
         message = `Kept ${idB}, superseded ${idA}`;
       }
       else {
@@ -180,6 +202,9 @@ export async function executeResolution(
         const rolledBack = sourceA
           ? await restoreMemorySnapshot(resolutionStorage, sourceA, "contradiction-resolution:keep-b-rollback")
           : false;
+        if (sourceA && !rolledBack) {
+          await touchCatalogIfRollbackLeftChange("keep-b-rollback-incomplete", [sourceA]);
+        }
         message = rolledBack
           ? `Supersede failed for ${idA}; restored ${idA} and did not resolve`
           : `Supersede failed for ${idA}; rollback incomplete for ${idA} and pair is not resolved`;
@@ -204,6 +229,9 @@ export async function executeResolution(
         if (rolledBackA) {
           await cleanupCreatedReplacement(resolutionStorage, replacement);
         }
+        else {
+          await touchCatalogIfRollbackLeftChange("merge-first-rollback-incomplete", [replacement.sourceA], replacement);
+        }
         break;
       }
 
@@ -220,6 +248,13 @@ export async function executeResolution(
           ].filter(Boolean).join(", ")} and pair is not resolved`;
         if (rolledBackA && rolledBackB) {
           await cleanupCreatedReplacement(resolutionStorage, replacement);
+        }
+        else {
+          await touchCatalogIfRollbackLeftChange(
+            "merge-second-rollback-incomplete",
+            [replacement.sourceA, replacement.sourceB],
+            replacement,
+          );
         }
         break;
       }
@@ -243,7 +278,7 @@ export async function executeResolution(
       // that must refresh `lastWriteAt` (NH3X3). Otherwise a dynamic namespace
       // whose only durable mutation is a contradiction merge stays invisible to
       // QMD maintenance / `writtenSince`. Best-effort on the caller side.
-      recordCatalogWriteTouch = buildCatalogTouch();
+      recordCatalogWriteTouch = catalogWriteTouch;
       message = `Both memories superseded by merged ${replacement.mergedId}`;
       break;
     }
@@ -275,9 +310,12 @@ export async function executeResolution(
         affectedIds.length = 0;
         message = rolledBack
           ? `Resolution persistence failed; rolled back memory changes and did not resolve ${pairId}`
-          : `Resolution persistence failed; rollback incomplete and pair is not resolved`;
+          : "Resolution persistence failed; rollback incomplete and pair is not resolved";
+        if (!rolledBack && recordCatalogWriteTouch) {
+          recordCatalogWriteTouchSafely("resolve-persistence-rollback-incomplete", recordCatalogWriteTouch);
+        }
       } else {
-        message = `Resolution persistence failed; pair is not resolved`;
+        message = "Resolution persistence failed; pair is not resolved";
       }
     } else if (recordCatalogWriteTouch) {
       // The resolution durably committed (memory mutated AND the resolution
@@ -285,15 +323,7 @@ export async function executeResolution(
       // catalog write for the namespace mutation (NH1dX / NH3X3, rule #25).
       // Best-effort: the caller's callback swallows errors; guard here so a
       // throwing callback never derails a successful resolution.
-      try {
-        recordCatalogWriteTouch();
-      } catch (err) {
-        log.warn(
-          "[contradiction-resolution] catalog write touch failed for pair=%s: %s",
-          pairId,
-          err instanceof Error ? err.message : err,
-        );
-      }
+      recordCatalogWriteTouchSafely("resolved", recordCatalogWriteTouch);
     }
   }
   log.info("[contradiction-resolution] pair=%s verb=%s affected=%d", pairId, verb, affectedIds.length);
@@ -447,6 +477,50 @@ async function restoreMemorySnapshot(
     );
     return false;
   }
+}
+
+async function rollbackLeftDurableMutation(
+  storage: StorageManager,
+  snapshots: MemoryFile[],
+  replacement?: Extract<MergeReplacement, { ok: true }>,
+): Promise<boolean> {
+  for (const snapshot of snapshots) {
+    try {
+      const current = await storage.getMemoryById(snapshot.frontmatter.id);
+      if (!current) return true;
+      if (supersessionStateChanged(current, snapshot)) return true;
+    } catch (err) {
+      log.warn(
+        "[contradiction-resolution] rollback inspection failed for %s: %s",
+        snapshot.frontmatter.id,
+        err instanceof Error ? err.message : err,
+      );
+      return true;
+    }
+  }
+
+  if (replacement?.created) {
+    try {
+      return (await storage.getMemoryById(replacement.mergedId)) !== null;
+    } catch (err) {
+      log.warn(
+        "[contradiction-resolution] rollback replacement inspection failed for %s: %s",
+        replacement.mergedId,
+        err instanceof Error ? err.message : err,
+      );
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function supersessionStateChanged(current: MemoryFile, snapshot: MemoryFile): boolean {
+  return (
+    current.frontmatter.status !== snapshot.frontmatter.status ||
+    current.frontmatter.supersededBy !== snapshot.frontmatter.supersededBy ||
+    current.frontmatter.supersededAt !== snapshot.frontmatter.supersededAt
+  );
 }
 
 async function cleanupCreatedReplacement(storage: StorageManager, replacement: Extract<MergeReplacement, { ok: true }>): Promise<void> {

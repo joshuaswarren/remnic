@@ -1972,6 +1972,39 @@ test("executeResolution keep-a records NO catalog write touch when resolution pe
   }
 });
 
+test("executeResolution keep-a records a catalog write touch when resolution persistence fails and rollback is incomplete", async () => {
+  const { dir, cleanup } = await makeTempDir();
+  try {
+    const written = writePair(dir, makePair({ namespace: "work" }));
+    const pairFile = path.join(dir, ".review", "contradictions", `${written.pairId}.json`);
+    const storage = makeResolutionStorage({
+      dir: "/tmp/work-namespace-storage",
+      failRollbackFor: "mem-b-002",
+      onSupersede: () => {
+        fs.rmSync(pairFile, { force: true });
+      },
+    });
+    const catalogTouches: Array<{ namespace: string | undefined; storageDir: string }> = [];
+
+    const result = await executeResolution(dir, storage, written.pairId, "keep-a", {
+      storageForNamespace: () => storage,
+      onMergedMemoryWritten: (namespace, storageDir) => {
+        catalogTouches.push({ namespace, storageDir });
+      },
+    });
+
+    assert.match(result.message, /Resolution persistence failed; rollback incomplete/);
+    assert.equal(storage.memories.get("mem-b-002")?.frontmatter.status, "superseded");
+    assert.equal(storage.memories.get("mem-b-002")?.frontmatter.supersededBy, "mem-a-001");
+    assert.deepEqual(catalogTouches, [
+      { namespace: "work", storageDir: "/tmp/work-namespace-storage" },
+    ]);
+    assert.equal(readPair(dir, written.pairId), null);
+  } finally {
+    await cleanup();
+  }
+});
+
 // Non-mutating verbs never touch the catalog (no namespace memory changed).
 test("executeResolution both-valid records no catalog write touch", async () => {
   const { dir, cleanup } = await makeTempDir();
@@ -2124,9 +2157,13 @@ test("executeResolution merge keeps created replacement when rollback fails", as
       failSupersedeFor: "mem-b-002",
       failRollbackFor: "mem-a-001",
     });
+    const catalogTouches: Array<{ namespace: string | undefined; storageDir: string }> = [];
 
     const result = await executeResolution(dir, storage, written.pairId, "merge", {
       mergedContent: "merged canonical fact",
+      onMergedMemoryWritten: (namespace, storageDir) => {
+        catalogTouches.push({ namespace, storageDir });
+      },
     });
 
     const mergedId = storage.supersedeCalls[0]?.newId;
@@ -2136,6 +2173,9 @@ test("executeResolution merge keeps created replacement when rollback fails", as
     assert.equal(storage.memories.get("mem-a-001")?.frontmatter.supersededBy, mergedId);
     assert.equal(storage.memories.get(mergedId)?.content, "merged canonical fact");
     assert.deepEqual(storage.removedFactHashIds, []);
+    assert.deepEqual(catalogTouches, [
+      { namespace: undefined, storageDir: "/tmp/contradiction-namespace-storage" },
+    ]);
     assert.equal(readPair(dir, written.pairId)?.resolution, undefined);
   } finally {
     await cleanup();
