@@ -57,6 +57,7 @@ test("health reports active QMD version and collection state", async () => {
       qmdCollection: "remnic-memory",
     });
     const qmd = makeQmd({
+      probe: async () => true,
       isAvailable: () => true,
       debugStatus: () => "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
       checkCollection: async (collection, execution) => {
@@ -145,6 +146,7 @@ test("health marks QMD as degraded when the checked collection is missing", asyn
     const service = new EngramAccessService({
       config,
       qmd: makeQmd({
+        probe: async () => true,
         isAvailable: () => true,
         debugStatus: () => "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
         checkCollection: async () => "missing",
@@ -161,6 +163,40 @@ test("health marks QMD as degraded when the checked collection is missing", asyn
     assert.equal(health.qmd.active, false);
     assert.equal(health.qmd.degraded, true);
     assert.equal(health.qmd.mode, "fallback");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health re-probes root QMD before reporting it active", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-stale-probe-"));
+  try {
+    const config = parseConfig({
+      memoryDir,
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      qmdCollection: "remnic-memory",
+    });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({
+        probe: async () => false,
+        isAvailable: () => true,
+        debugStatus: () => "cli=true daemon=false cliPath=qmd cliVersion=qmd 2.5.3",
+        checkCollection: async () => "present",
+        isDaemonMode: () => false,
+      }),
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+
+    assert.equal(health.qmd.active, false);
+    assert.equal(health.qmd.degraded, true);
+    assert.equal(health.qmd.mode, "fallback");
+    assert.equal(health.qmd.collectionState, "unknown");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

@@ -2521,8 +2521,10 @@ export class EngramAccessService {
         debugStatus: "backend=unavailable",
       };
     }
-    const collectionState = await this.qmdCollectionState(searchBackend, qmdEnabled, collection);
-    const binaryAvailable = searchBackend === "qmd" && qmdEnabled && qmd.isAvailable();
+    const binaryAvailable = await this.qmdProbeAvailable(searchBackend, qmdEnabled);
+    const collectionState = binaryAvailable
+      ? await this.qmdCollectionState(searchBackend, qmdEnabled, collection)
+      : "unknown";
     const active = binaryAvailable && collectionState !== "missing";
     const debugStatus = qmd.debugStatus();
     const versionStatus =
@@ -2643,6 +2645,35 @@ export class EngramAccessService {
       });
     } catch {
       return "unknown";
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async qmdProbeAvailable(
+    searchBackend: string,
+    qmdEnabled: boolean,
+  ): Promise<boolean> {
+    if (searchBackend !== "qmd" || !qmdEnabled) return false;
+    const qmd = this.orchestrator.qmd;
+    if (!qmd) return false;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2_000);
+    timer.unref?.();
+    try {
+      return await new Promise<boolean>((resolve) => {
+        const onAbort = () => {
+          controller.signal.removeEventListener("abort", onAbort);
+          resolve(false);
+        };
+        controller.signal.addEventListener("abort", onAbort, { once: true });
+        qmd.probe()
+          .then(resolve, () => resolve(false))
+          .finally(() => {
+            controller.signal.removeEventListener("abort", onAbort);
+          });
+      });
     } finally {
       clearTimeout(timer);
     }
