@@ -6,6 +6,7 @@ import type {
   SearchExecutionOptions,
   SearchQueryOptions,
 } from "../search/port.js";
+import type { QmdCapabilities, QmdVersionStatus } from "../qmd.js";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
 
 type CollectionState = "present" | "missing" | "unknown" | "skipped";
@@ -34,6 +35,10 @@ class FakeBackend implements SearchBackend {
       ensure?: CollectionState;
     } = {},
     private readonly daemonMode = false,
+    private readonly diagnostics: {
+      debugStatus?: string;
+      versionStatus?: QmdVersionStatus;
+    } = {},
   ) {}
 
   private limitedResults(maxResults: number | undefined): QmdSearchResult[] {
@@ -57,11 +62,15 @@ class FakeBackend implements SearchBackend {
   }
 
   debugStatus(): string {
-    return "fake";
+    return this.diagnostics.debugStatus ?? "fake";
   }
 
   isDaemonMode(): boolean {
     return this.daemonMode;
+  }
+
+  getVersionStatus(): QmdVersionStatus | null {
+    return this.diagnostics.versionStatus ?? null;
   }
 
   async dispose(): Promise<void> {
@@ -171,6 +180,41 @@ function config(): PluginConfig {
     defaultNamespace: "main",
     qmdMaxResults: 10,
   } as PluginConfig;
+}
+
+function qmdCapabilities(enabled: boolean): QmdCapabilities {
+  return {
+    version: enabled ? "2.5.3" : null,
+    parsedVersion: enabled ? [2, 5, 3] : null,
+    stableSdk: enabled,
+    unifiedSearch: enabled,
+    getDocumentBody: enabled,
+    maintenanceApi: enabled,
+    legacySkillInstall: enabled,
+    intentHints: enabled,
+    explainTraces: enabled,
+    candidateLimit: enabled,
+    v2McpQueryTool: enabled,
+    structuredSearches: enabled,
+    queryRerankToggle: enabled,
+    chunkStrategy: enabled,
+    qmdBench: enabled,
+    perCollectionModels: enabled,
+    jsonLineNumbers: enabled,
+    editorLinks: enabled,
+    doctor: enabled,
+    versionedSkills: enabled,
+    absoluteSnippetLines: enabled,
+    fullQueryOutput: enabled,
+    forceCpu: enabled,
+    gpuBackendOverride: enabled,
+    embedParallelism: enabled,
+    modelEnvConsistency: enabled,
+    scopedEmbed: enabled,
+    safeStatusDeviceProbe: enabled,
+    mcpIndexSelection: enabled,
+    outputFormatFlag: enabled,
+  };
 }
 
 test("updateNamespaces runs a global-update backend only once", async () => {
@@ -368,8 +412,28 @@ test("healthForNamespace reports daemon mode from live cached namespace backend"
             score: 1,
             snippet: "a",
           },
-        ], { ensure: "present" }, true)
-        : new FakeBackend(false, [], { check: "present" }, false);
+        ], { ensure: "present" }, true, {
+          debugStatus: "live-daemon",
+          versionStatus: {
+            installedVersion: "qmd 2.5.3",
+            supportedVersion: "2.5.3",
+            supported: true,
+            newerThanSupported: false,
+            upgradeAvailable: false,
+            capabilities: qmdCapabilities(true),
+          },
+        })
+        : new FakeBackend(false, [], { check: "present" }, false, {
+          debugStatus: "probe-unavailable",
+          versionStatus: {
+            installedVersion: null,
+            supportedVersion: "2.5.3",
+            supported: false,
+            newerThanSupported: false,
+            upgradeAvailable: false,
+            capabilities: qmdCapabilities(false),
+          },
+        });
       if (created.length === 1) {
         backend.available = false;
       }
@@ -387,6 +451,12 @@ test("healthForNamespace reports daemon mode from live cached namespace backend"
 
   assert.equal(health.available, true);
   assert.equal(health.daemonMode, true);
+  assert.equal(health.debugStatus, "live-daemon");
+  assert.equal(health.installedVersion, "qmd 2.5.3");
+  assert.equal(health.supportedVersion, "2.5.3");
+  assert.equal(health.supported, true);
+  assert.equal(health.upgradeAvailable, false);
+  assert.equal(health.doctorAvailable, true);
   assert.equal(health.collectionState, "unknown");
   assert.equal(created.length, 2);
   assert.equal(created[0]?.disposed, 0);

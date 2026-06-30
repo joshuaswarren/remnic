@@ -219,13 +219,14 @@ export class NamespaceSearchRouter {
       },
     );
     try {
-      const versionStatus =
-        "getVersionStatus" in record.backend &&
-        typeof record.backend.getVersionStatus === "function"
-          ? record.backend.getVersionStatus()
-          : null;
       const liveRecord = await this.liveCachedRecordForHealth(key, record, execution);
-      const daemonMode = daemonModeForBackend(liveRecord?.backend ?? record.backend);
+      const diagnosticBackend = liveRecord?.backend ?? record.backend;
+      const versionStatus =
+        "getVersionStatus" in diagnosticBackend &&
+        typeof diagnosticBackend.getVersionStatus === "function"
+          ? diagnosticBackend.getVersionStatus()
+          : null;
+      const daemonMode = daemonModeForBackend(diagnosticBackend);
       const collectionState =
         liveRecord?.collectionState === "missing"
           ? "missing"
@@ -236,7 +237,7 @@ export class NamespaceSearchRouter {
         memoryDir: record.memoryDir,
         available: liveRecord?.available ?? record.available,
         collectionState,
-        debugStatus: record.backend.debugStatus(),
+        debugStatus: diagnosticBackend.debugStatus(),
         installedVersion: versionStatus?.installedVersion ?? null,
         supportedVersion: versionStatus?.supportedVersion ?? null,
         supported: versionStatus?.supported ?? null,
