@@ -995,6 +995,35 @@ test("rebuildFromDisk skips non-canonical raw namespace roots", async () => {
   }
 });
 
+test("rebuildFromDisk preserves a raw ns-default namespace root", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const rawNs = "ns-default";
+    const rawDir = path.join(memoryDir, "namespaces", rawNs);
+    await mkdir(path.join(rawDir, "facts"), { recursive: true });
+    await writeFile(path.join(rawDir, "facts", "f1.md"), "# synthetic\n", "utf8");
+
+    assert.equal(
+      namespaceIdentityFromToken(rawNs),
+      "",
+      "precondition: ns-default is the reserved empty/default identity token",
+    );
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const result = await catalog.rebuildFromDisk();
+    const rec = result.records.find((r) => r.namespace === rawNs);
+
+    assert.ok(rec, "rebuild must preserve a routeable raw namespace named ns-default");
+    assert.equal(path.resolve(rec.storageDir), path.resolve(rawDir));
+    assert.ok(
+      !result.skipped.some((s) => s.token === rawNs && s.reason === "unsafe"),
+      "the reserved-token decode must fall back to the raw namespace before unsafe checks",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 5, Issue #2 (cursor Medium): reads must not surface an out-of-root
 // storageDir. A tampered/pre-fix jsonl record with an absolute path outside
 // memoryDir must be sanitized to the resolved safe root on enumeration.

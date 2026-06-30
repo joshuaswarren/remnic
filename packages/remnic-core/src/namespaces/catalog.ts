@@ -1537,7 +1537,8 @@ export class NamespaceCatalog {
       // Match `storageFor()`'s canonical namespace identity. A raw root whose
       // spelling trims to another namespace (for example `namespaces/shared `)
       // is not a routeable live root and must not be catalogued from disk.
-      const rawDecoded = literalOwnsRoot ? token : namespaceIdentityFromToken(token) ?? token;
+      const tokenDecoded = literalOwnsRoot ? null : namespaceIdentityFromToken(token);
+      const rawDecoded = tokenDecoded && tokenDecoded.length > 0 ? tokenDecoded : token;
       const decoded = normalizeNamespaceIdentity(rawDecoded);
       if (decoded.length === 0 || rawDecoded !== decoded) {
         skipped.push({ token, reason: "unsafe", detail: rawDecoded });
