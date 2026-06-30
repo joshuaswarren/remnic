@@ -2521,11 +2521,16 @@ export class EngramAccessService {
         debugStatus: "backend=unavailable",
       };
     }
-    const binaryAvailable = await this.qmdProbeAvailable(searchBackend, qmdEnabled);
-    const collectionState = binaryAvailable
+    const diagnosticAvailable = await this.qmdProbeAvailable(searchBackend, qmdEnabled);
+    const operationalAvailable = diagnosticAvailable || qmd.isAvailable();
+    const collectionState = diagnosticAvailable
       ? await this.qmdCollectionState(searchBackend, qmdEnabled, collection)
       : "unknown";
-    const active = binaryAvailable && collectionState !== "missing";
+    const active = operationalAvailable && collectionState !== "missing";
+    const degraded =
+      searchBackend === "qmd" &&
+      qmdEnabled &&
+      (!active || !diagnosticAvailable || collectionState === "unknown");
     const debugStatus = qmd.debugStatus();
     const versionStatus =
       "getVersionStatus" in qmd && typeof qmd.getVersionStatus === "function"
@@ -2549,7 +2554,7 @@ export class EngramAccessService {
     return {
       enabled: qmdEnabled,
       active,
-      degraded: searchBackend === "qmd" && qmdEnabled && !active,
+      degraded,
       mode,
       collection,
       collectionState,

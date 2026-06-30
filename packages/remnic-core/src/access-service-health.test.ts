@@ -168,7 +168,7 @@ test("health marks QMD as degraded when the checked collection is missing", asyn
   }
 });
 
-test("health re-probes root QMD before reporting it active", async () => {
+test("health reports degraded diagnostics when read-only root QMD probe fails", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-stale-probe-"));
   try {
     const config = parseConfig({
@@ -193,9 +193,9 @@ test("health re-probes root QMD before reporting it active", async () => {
 
     const health = await service.health();
 
-    assert.equal(health.qmd.active, false);
+    assert.equal(health.qmd.active, true);
     assert.equal(health.qmd.degraded, true);
-    assert.equal(health.qmd.mode, "fallback");
+    assert.equal(health.qmd.mode, "cli");
     assert.equal(health.qmd.collectionState, "unknown");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
