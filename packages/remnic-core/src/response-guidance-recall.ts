@@ -1,9 +1,19 @@
 import { buildEvidencePack, type EvidencePackItem } from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
+import {
+  gatherAcrossReadSessions,
+  resolveLcmReadSessionIds,
+} from "./lcm-fallback-read.js";
 
 export interface ResponseGuidanceRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   sessionId?: string;
+  /**
+   * Ordered, read-authorized LCM read key set (primary overlay → project/root
+   * fallbacks). When present, evidence is gathered across EVERY key and merged
+   * under this section's budget (#1505 codex P2). Falls back to `sessionId`.
+   */
+  sessionIds?: readonly (string | undefined)[];
   query: string;
   maxChars: number;
   maxItemChars?: number;
@@ -157,7 +167,17 @@ export async function buildResponseGuidanceRecallSection(
   ) {
     return "";
   }
-  const items = await collectGuidanceItems(options, intents);
+  // #1505 codex P2: gather candidates across the ordered LCM read key set
+  // (primary overlay → project/root fallbacks) and UNION them into the existing
+  // rank/dedupe/budget pass, so stronger project-fallback guidance is not masked
+  // by a weak primary-key hit. `gatherAcrossReadSessions` isolates a per-key read
+  // failure so a corrupt/locked fallback index can't discard the primary key's
+  // guidance; the single-key path collects exactly once and propagates a failure
+  // as before — byte-for-byte the pre-#1505 behavior.
+  const items: EvidencePackItem[] = [];
+  await gatherAcrossReadSessions(resolveLcmReadSessionIds(options), async (sessionId) => {
+    items.push(...(await collectGuidanceItems({ ...options, sessionId }, intents)));
+  });
   const ranked = rankAndDedupeGuidanceItems(items, options.query, intents)
     .slice(0, maxResults);
   if (ranked.length === 0) {

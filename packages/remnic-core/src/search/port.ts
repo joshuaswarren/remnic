@@ -42,6 +42,12 @@ export function resolveEnsureCollectionArgs(
 export interface SearchBackend {
   // ── Lifecycle ──
   probe(): Promise<boolean>;
+  /**
+   * Optional non-mutating availability probe for health/readiness checks.
+   * Implementations must avoid auto-upgrades, collection creation, daemon
+   * startup, or any other runtime-modifying side effects.
+   */
+  checkAvailability?(execution?: SearchExecutionOptions): Promise<boolean>;
   isAvailable(): boolean;
   debugStatus(): string;
 

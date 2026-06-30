@@ -3,6 +3,11 @@ import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
 
 export interface EventOrderRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
+  // event-order reads a SINGLE LCM session key. Unlike the relevance-ranked
+  // sections, its evidence must not be merged across the #1505 fallback key set:
+  // `turn_index` is local to each LCM `session_id`, so interleaving keys would
+  // misstate chronology. The orchestrator reads the ordered key set via
+  // first-non-empty instead (see the event-order call site).
   sessionId?: string;
   query: string;
   maxChars: number;
@@ -42,6 +47,9 @@ export async function buildEventOrderRecallSection(
 ): Promise<string> {
   const budget = normalizePositiveInteger(options.maxChars);
   const maxItems = normalizePositiveInteger(options.maxItems ?? DEFAULT_MAX_ITEMS);
+  // event-order reads a SINGLE session key (`turn_index` is local to each LCM
+  // `session_id`, so chronology can't be merged across the #1505 fallback set —
+  // the orchestrator drives the ordered key set via first-non-empty instead).
   if (!options.engine || !options.sessionId || budget <= 0) {
     return "";
   }

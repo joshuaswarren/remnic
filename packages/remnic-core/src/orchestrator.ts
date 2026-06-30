@@ -312,7 +312,10 @@ import {
   resolveCodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
 import type { CodingContext } from "./types.js";
-import { NamespaceSearchRouter } from "./namespaces/search.js";
+import {
+  NamespaceSearchRouter,
+  type NamespaceSearchHealth,
+} from "./namespaces/search.js";
 import { SharedContextManager } from "./shared-context/manager.js";
 import {
   CompoundingEngine,
@@ -2354,6 +2357,13 @@ export class Orchestrator {
       searchOptions: options.searchOptions,
       execution: options.execution,
     });
+  }
+
+  async searchHealthForNamespace(
+    namespace: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<NamespaceSearchHealth> {
+    return await this.namespaceSearchRouter.healthForNamespace(namespace, execution);
   }
 
   private isSearchAvailableForNamespaceRouting(): boolean {
@@ -7349,16 +7359,24 @@ export class Orchestrator {
     );
     // Query an LCM-backed read across the ordered read key set and return the
     // FIRST non-empty result (#1505 fallback-namespace unification). The primary
-    // overlay key is tried first; if a branch-scoped session has no rows under
-    // its branch key, the project / root fallback keys are tried in order. Each
-    // builder applies its own per-session budget/limit, so taking the first hit
-    // (rather than concatenating across keys) preserves existing budgets while
-    // recovering fallback evidence. When the set is a single key (single-user /
-    // no-overlay / explicit-namespace), this is exactly one call — unchanged.
-    // `lcmSessionId` is `string | undefined`: a SESSIONLESS recall yields the
-    // single `undefined` key so the LCM builders run ONE archive-wide read with
-    // no `session_id` filter (pre-#1505 behavior; the builders accept an optional
-    // `sessionId`). NEVER the literal "default" session id (codex P2).
+    // overlay key is tried first; if a branch-scoped session has no rows under its
+    // branch key, the project / root fallback keys are tried in order.
+    //
+    // #1505 codex P2 ("Merge LCM fallback reads instead of short-circuiting"): the
+    // query-SCORED sections (explicit-cue, targeted-facts, focused-list,
+    // response-guidance, event-order, structured message-parts) no longer use this
+    // helper — they MERGE candidates across EVERY authorized key under their single
+    // budget (a weak primary-key hit must not mask stronger fallback evidence; the
+    // section builders take `sessionIds`, structured-parts merges inline below).
+    // This first-non-empty helper now serves ONLY the compressed-history section,
+    // which is a per-session HOLISTIC DAG narrative with no per-item id to merge or
+    // dedupe on — see its call site for the rationale.
+    //
+    // When the set is a single key (single-user / no-overlay / explicit-namespace),
+    // this is exactly one call — unchanged. `lcmSessionId` is `string | undefined`:
+    // a SESSIONLESS recall yields the single `undefined` key so the read runs ONE
+    // archive-wide read with no `session_id` filter (pre-#1505 behavior). NEVER the
+    // literal "default" session id (codex P2).
     const firstNonEmptyLcmRead = async <T>(
       read: (lcmSessionId: string | undefined) => Promise<T>,
       isEmpty: (value: T) => boolean,
@@ -9634,24 +9652,21 @@ export class Orchestrator {
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
       try {
-        const explicitCueSection = await firstNonEmptyLcmRead(
-          (lcmSessionId) =>
-            buildExplicitCueRecallSection({
-              engine: this.lcmEngine,
-              // #1495 thread 3 + #1505 fallback unification: read across the
-              // ordered LCM read key set (primary overlay → coding fallbacks)
-              // so a branch-scoped session finds its own explicit-cue evidence
-              // even when archived at project/root scope (rule 39).
-              sessionId: lcmSessionId,
-              query: retrievalQuery,
-              maxChars: explicitCueMaxChars,
-              maxReferences:
-                this.getRecallSectionNumber("explicit-cue", "maxResults") ??
-                this.config.explicitCueRecallMaxReferences,
-            }),
-          (s) => !s,
-          "",
-        );
+        const explicitCueSection = await buildExplicitCueRecallSection({
+          engine: this.lcmEngine,
+          // #1495 thread 3 + #1505 fallback unification: read across the ordered
+          // LCM read key set (primary overlay → coding fallbacks) so a
+          // branch-scoped session finds its own explicit-cue evidence even when
+          // archived at project/root scope (rule 39). #1505 codex P2: the builder
+          // MERGES candidates across every key under its single budget instead of
+          // short-circuiting on the first non-empty key.
+          sessionIds: lcmReadSessionIds,
+          query: retrievalQuery,
+          maxChars: explicitCueMaxChars,
+          maxReferences:
+            this.getRecallSectionNumber("explicit-cue", "maxResults") ??
+            this.config.explicitCueRecallMaxReferences,
+        });
         if (explicitCueSection) {
           this.appendRecallSection(
             sectionBuckets,
@@ -9681,29 +9696,25 @@ export class Orchestrator {
       shouldRecallTargetedFactEvidence(retrievalQuery)
     ) {
       try {
-        const targetedFactSection = await firstNonEmptyLcmRead(
-          (lcmSessionId) =>
-            buildTargetedFactRecallSection({
-              engine: this.lcmEngine,
-              // #1495 + #1505 fallback unification: read across the ordered LCM
-              // read key set so a branch-scoped session finds its own
-              // targeted-fact evidence even when archived at project/root scope.
-              sessionId: lcmSessionId,
-              query: retrievalQuery,
-              maxChars: targetedFactMaxChars,
-              maxSearchResults:
-                this.getRecallSectionNumber("targeted-facts", "maxResults") ??
-                this.config.targetedFactRecallMaxResults,
-              maxScanWindowTurns:
-                this.getRecallSectionNumber("targeted-facts", "maxTurns") ??
-                this.config.targetedFactRecallScanWindowTurns,
-              maxScanWindowTokens:
-                this.getRecallSectionNumber("targeted-facts", "maxTokens") ??
-                this.config.targetedFactRecallScanWindowTokens,
-            }),
-          (s) => !s,
-          "",
-        );
+        const targetedFactSection = await buildTargetedFactRecallSection({
+          engine: this.lcmEngine,
+          // #1495 + #1505 fallback unification: read across the ordered LCM read
+          // key set so a branch-scoped session finds its own targeted-fact
+          // evidence even when archived at project/root scope. #1505 codex P2: the
+          // builder MERGES candidates across every key under its single budget.
+          sessionIds: lcmReadSessionIds,
+          query: retrievalQuery,
+          maxChars: targetedFactMaxChars,
+          maxSearchResults:
+            this.getRecallSectionNumber("targeted-facts", "maxResults") ??
+            this.config.targetedFactRecallMaxResults,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("targeted-facts", "maxTurns") ??
+            this.config.targetedFactRecallScanWindowTurns,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("targeted-facts", "maxTokens") ??
+            this.config.targetedFactRecallScanWindowTokens,
+        });
         if (targetedFactSection) {
           this.appendRecallSection(
             sectionBuckets,
@@ -9734,29 +9745,26 @@ export class Orchestrator {
       shouldRecallFocusedListEvidence(retrievalQuery)
     ) {
       try {
-        const focusedListSection = await firstNonEmptyLcmRead(
-          (lcmSessionId) =>
-            buildFocusedListRecallSection({
-              engine: this.lcmEngine,
-              // #1495 thread 3 + #1505 fallback unification: read across the
-              // ordered LCM read key set so a branch-scoped session reads its own
-              // focused-list/count evidence even at project/root scope (rule 39).
-              sessionId: lcmSessionId,
-              query: retrievalQuery,
-              maxChars: focusedListMaxChars,
-              maxSearchResults:
-                this.getRecallSectionNumber("focused-list", "maxResults") ??
-                this.config.focusedListRecallMaxResults,
-              maxScanWindowTurns:
-                this.getRecallSectionNumber("focused-list", "maxTurns") ??
-                this.config.focusedListRecallScanWindowTurns,
-              maxScanWindowTokens:
-                this.getRecallSectionNumber("focused-list", "maxTokens") ??
-                this.config.focusedListRecallScanWindowTokens,
-            }),
-          (s) => !s,
-          "",
-        );
+        const focusedListSection = await buildFocusedListRecallSection({
+          engine: this.lcmEngine,
+          // #1495 thread 3 + #1505 fallback unification: read across the ordered
+          // LCM read key set so a branch-scoped session reads its own
+          // focused-list/count evidence even at project/root scope (rule 39).
+          // #1505 codex P2: the builder MERGES candidates across every key under
+          // its single budget.
+          sessionIds: lcmReadSessionIds,
+          query: retrievalQuery,
+          maxChars: focusedListMaxChars,
+          maxSearchResults:
+            this.getRecallSectionNumber("focused-list", "maxResults") ??
+            this.config.focusedListRecallMaxResults,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("focused-list", "maxTurns") ??
+            this.config.focusedListRecallScanWindowTurns,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("focused-list", "maxTokens") ??
+            this.config.focusedListRecallScanWindowTokens,
+        });
         if (focusedListSection) {
           this.appendRecallSection(
             sectionBuckets,
@@ -9791,30 +9799,27 @@ export class Orchestrator {
       (responseGuidanceMatchesQuery || responseGuidanceForcedByPipeline)
     ) {
       try {
-        const responseGuidanceSection = await firstNonEmptyLcmRead(
-          (lcmSessionId) =>
-            buildResponseGuidanceRecallSection({
-              engine: this.lcmEngine,
-              // #1495 thread 3 + #1505 fallback unification: read across the
-              // ordered LCM read key set so a branch-scoped session reads its own
-              // response-guidance evidence even at project/root scope (rule 39).
-              sessionId: lcmSessionId,
-              query: retrievalQuery,
-              maxChars: responseGuidanceMaxChars,
-              maxSearchResults:
-                this.getRecallSectionNumber("response-guidance", "maxResults") ??
-                this.config.responseGuidanceRecallMaxResults,
-              maxScanWindowTurns:
-                this.getRecallSectionNumber("response-guidance", "maxTurns") ??
-                this.config.responseGuidanceRecallScanWindowTurns,
-              maxScanWindowTokens:
-                this.getRecallSectionNumber("response-guidance", "maxTokens") ??
-                this.config.responseGuidanceRecallScanWindowTokens,
-              forceGeneric: responseGuidanceForcedByPipeline,
-            }),
-          (s) => !s,
-          "",
-        );
+        const responseGuidanceSection = await buildResponseGuidanceRecallSection({
+          engine: this.lcmEngine,
+          // #1495 thread 3 + #1505 fallback unification: read across the ordered
+          // LCM read key set so a branch-scoped session reads its own
+          // response-guidance evidence even at project/root scope (rule 39).
+          // #1505 codex P2: the builder MERGES candidates across every key under
+          // its single budget.
+          sessionIds: lcmReadSessionIds,
+          query: retrievalQuery,
+          maxChars: responseGuidanceMaxChars,
+          maxSearchResults:
+            this.getRecallSectionNumber("response-guidance", "maxResults") ??
+            this.config.responseGuidanceRecallMaxResults,
+          maxScanWindowTurns:
+            this.getRecallSectionNumber("response-guidance", "maxTurns") ??
+            this.config.responseGuidanceRecallScanWindowTurns,
+          maxScanWindowTokens:
+            this.getRecallSectionNumber("response-guidance", "maxTokens") ??
+            this.config.responseGuidanceRecallScanWindowTokens,
+          forceGeneric: responseGuidanceForcedByPipeline,
+        });
         if (responseGuidanceSection) {
           this.appendRecallSection(
             sectionBuckets,
@@ -9843,13 +9848,22 @@ export class Orchestrator {
       shouldRecallEventOrderEvidence(retrievalQuery)
     ) {
       try {
+        // #1495 thread 3 + #1505 fallback unification: read across the ordered LCM
+        // read key set so a branch-scoped session reads its own chronological
+        // event-order evidence even at project/root scope. UNLIKE the relevance-
+        // ranked sections, event-order must NOT merge across keys: `turn_index` is
+        // LOCAL to each LCM `session_id` (`observe` numbers turns per session via
+        // `getMaxTurnIndex`), so interleaving two keys and sorting by `turn_index`
+        // would place an older project-scope turn after a newer branch-scope turn
+        // and misstate the chronology (#1505 codex P2). Like compressed-history,
+        // event-order is an inherently per-session ORDERED artifact, so it takes
+        // the highest-priority authorized key (primary overlay → project/root)
+        // that actually has chronological evidence — each key's timeline is
+        // internally consistent.
         const eventOrderSection = await firstNonEmptyLcmRead(
           (lcmSessionId) =>
             buildEventOrderRecallSection({
               engine: this.lcmEngine,
-              // #1495 thread 3 + #1505 fallback unification: read across the
-              // ordered LCM read key set so a branch-scoped session reads its own
-              // chronological event-order evidence even at project/root scope.
               sessionId: lcmSessionId,
               query: retrievalQuery,
               maxChars: eventOrderMaxChars,
@@ -10039,21 +10053,59 @@ export class Orchestrator {
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
       try {
-        const structuredMatches = await firstNonEmptyLcmRead(
-          (lcmSessionId) =>
-            this.lcmEngine!.searchStructuredParts(
-              // #1495 + #1505 fallback unification: read across the ordered LCM
-              // read key set so a branch-scoped session reads its own structured
-              // message-part evidence even when archived at project/root scope.
-              // Structured parts are inherently per-session (the DAG is keyed by
-              // session_id), so a SESSIONLESS read (`undefined`) normalizes to
-              // empty → no section, the correct pre-#1505 behavior (codex P2).
-              lcmSessionId ?? "",
-              retrievalQuery,
-            ),
-          (matches) => matches.length === 0,
-          [],
+        // #1495 + #1505 fallback unification: read across the ordered LCM read
+        // key set so a branch-scoped session reads its own structured
+        // message-part evidence even when archived at project/root scope.
+        // #1505 codex P2: structured matches are query-SCORED evidence, so MERGE
+        // across EVERY key (primary overlay → project/root fallbacks) instead of
+        // short-circuiting on the first non-empty key — a weak branch-key hit must
+        // not mask stronger project-fallback parts. Keys are queried in priority
+        // order; dedupe by session_id+turn_index+part_id keeps the primary key's
+        // row on collision. `formatStructuredRecall` applies the single budget
+        // below. A sessionless key (`undefined`) normalizes to "" → no matches
+        // (structured parts are inherently per-session; pre-#1505 behavior, codex
+        // P2).
+        // FAULT ISOLATION (allSettled, not all): the pre-#1505 first-non-empty read
+        // short-circuited, so a fallback key was often never queried and its latent
+        // search failure never surfaced. Querying every key eagerly must NOT let one
+        // key's failure (e.g. a SqliteError from a corrupt/locked fallback index)
+        // reject the batch and discard the OTHER keys' parts — or, since this and
+        // the compressed-history read below share one try block, silently drop the
+        // compressed-history section a healthy primary key would still produce. So
+        // read each key independently and keep the fulfilled batches.
+        const structuredSettled = await Promise.allSettled(
+          lcmReadSessionIds.map((lcmSessionId) =>
+            this.lcmEngine!.searchStructuredParts(lcmSessionId ?? "", retrievalQuery),
+          ),
         );
+        for (const settled of structuredSettled) {
+          if (settled.status === "rejected") {
+            log.debug(
+              `LCM structured-parts read failed for one key: ${settled.reason}`,
+            );
+          }
+        }
+        const seenStructuredParts = new Set<string>();
+        const structuredMatches = structuredSettled
+          .flatMap((settled) => (settled.status === "fulfilled" ? settled.value : []))
+          .filter((match) => {
+            const key = `${match.session_id} ${match.turn_index} ${match.part_id}`;
+            if (seenStructuredParts.has(key)) return false;
+            seenStructuredParts.add(key);
+            return true;
+          })
+          // Restore the archive's per-key ordering (score DESC, then turn DESC)
+          // across the MERGED set so the strongest parts win the shared budget in
+          // `formatStructuredRecall` — otherwise weak primary-key parts could crowd
+          // out stronger fallback parts. Stable sort: a single key is already in
+          // this order, so it stays byte-for-byte the pre-#1505 behavior.
+          // `?? 0` is defensive: `LcmStructuredRecallMatch.score` is always a
+          // number here, but a bare `b.score - a.score` would yield NaN (falsy)
+          // for any future unscored match and silently fall through to turn order.
+          .sort(
+            (a, b) =>
+              (b.score ?? 0) - (a.score ?? 0) || b.turn_index - a.turn_index,
+          );
         const structuredSection = this.lcmEngine.formatStructuredRecall(
           structuredMatches,
           Math.ceil(this.config.recallBudgetChars * 0.08),
@@ -10076,15 +10128,20 @@ export class Orchestrator {
             }
           }
         }
+        // #1495 + #1505 fallback unification: read across the ordered LCM read key
+        // set so a branch-scoped session reads its own compressed-history evidence
+        // even at project/root scope. UNLIKE the query-scored sections above, the
+        // compressed history is a per-session HOLISTIC DAG narrative, not a set of
+        // independently-rankable evidence items — concatenating two sessions'
+        // summaries would double-count the conversation and blow the budget, and
+        // there is no per-item id to dedupe on. So this section deliberately keeps
+        // first-non-empty semantics (#1505 codex P2 scope: "merge the query-matched
+        // sections"): the highest-priority authorized key (primary overlay →
+        // project/root) that actually has a compressed history wins. A sessionless
+        // key (`undefined`) normalizes to empty → no section (pre-#1505 behavior).
         const lcmSection = await firstNonEmptyLcmRead(
           (lcmSessionId) =>
             this.lcmEngine!.assembleRecall(
-              // #1495 + #1505 fallback unification: read across the ordered LCM
-              // read key set so a branch-scoped session reads its own
-              // compressed-history evidence even at project/root scope.
-              // Compressed history is inherently per-session (a per-session DAG),
-              // so a SESSIONLESS read (`undefined`) normalizes to empty → no
-              // section, the correct pre-#1505 behavior (codex P2).
               lcmSessionId ?? "",
               this.config.recallBudgetChars,
             ),
