@@ -311,13 +311,13 @@ test("queueExplicitCaptureForReview records a catalog write for the DEFAULT name
   );
 });
 
-// NIhUg (cursor Medium): the catalog write touch must fire only AFTER the queued
-// review memory reaches its intended durable `pending_review` state. If the
-// frontmatter update fails, no catalog write may be recorded (rule #25).
-test("queueExplicitCaptureForReview records NO catalog write when the pending_review frontmatter update fails", async () => {
+// NIhUg follow-up: once writeMemory returns an id, the queued review memory is
+// durable even if the pending_review frontmatter update later fails. The catalog
+// must still record the write so writtenSince/QMD maintenance can find the root.
+test("queueExplicitCaptureForReview records a catalog write when a post-write frontmatter update fails", async () => {
   const memories: Array<{ frontmatter: { id: string; status?: string }; content: string; path: string }> = [];
   const storage = {
-    dir: "/synthetic/memory",
+    dir: "/synthetic/team",
     readAllMemories: async () => memories,
     writeMemory: async (_category: string, content: string) => {
       const id = `fact-${memories.length + 1}`;
@@ -325,8 +325,8 @@ test("queueExplicitCaptureForReview records NO catalog write when the pending_re
       return id;
     },
     getMemoryById: async (id: string) => memories.find((m) => m.frontmatter.id === id) ?? null,
-    // The pending_review frontmatter update fails — the memory never reaches its
-    // intended durable state, so no catalog touch may be recorded.
+    // The pending_review frontmatter update fails after writeMemory has already
+    // created a durable memory.
     writeMemoryFrontmatter: async () => {
       throw new Error("frontmatter write failed");
     },
@@ -337,8 +337,8 @@ test("queueExplicitCaptureForReview records NO catalog write when the pending_re
     config: {
       defaultNamespace: "default",
       sharedNamespace: "shared",
-      namespacesEnabled: false,
-      namespacePolicies: [],
+      namespacesEnabled: true,
+      namespacePolicies: [{ name: "team" }],
     },
     getStorage: async () => storage,
     recordCatalogWrite(namespace?: string, storageDir?: string) {
@@ -351,8 +351,9 @@ test("queueExplicitCaptureForReview records NO catalog write when the pending_re
       queueExplicitCaptureForReview(
         orchestrator as never,
         {
-          content: "A queued review capture whose pending_review update fails must not touch the catalog.",
+          content: "A queued review capture whose pending_review update fails must still touch the catalog.",
           category: "fact",
+          namespace: "team",
           tags: ["operator-review"],
         },
         "inline",
@@ -363,9 +364,11 @@ test("queueExplicitCaptureForReview records NO catalog write when the pending_re
 
   assert.equal(
     recorded.length,
-    0,
-    "a failed pending_review frontmatter update must not record a catalog write touch",
+    1,
+    "a failed post-write frontmatter update must still record one catalog write touch",
   );
+  assert.deepEqual(recorded[0], { namespace: "team", storageDir: "/synthetic/team" });
+  assert.equal(memories.length, 1, "precondition: writeMemory created a durable memory before the failure");
 });
 
 test("persistExplicitCapture rejects namespaces outside the configured policy", async () => {
