@@ -166,10 +166,43 @@ function isCatalogEnabled(config: PluginConfig): boolean {
   return (config as { namespaceCatalogEnabled?: boolean }).namespaceCatalogEnabled !== false;
 }
 
-async function pathExists(p: string): Promise<boolean> {
+// Marker children that MUST be a regular file rather than a directory. Everything
+// else in MEMORY_DATA_CHILDREN is a category/data DIRECTORY that downstream
+// indexers (`scanMemoryDir`) read — and which they reject when it is a symlink or
+// a non-directory. `profile.md` is the sole file marker.
+const FILE_MEMORY_DATA_CHILDREN = new Set<string>(["profile.md"]);
+
+/**
+ * Whether `child` under `rootDir` is a VALID, live memory-data marker (NIw0F,
+ * codex P2). Existence alone is not enough: a bogus marker — e.g. `facts` as a
+ * symlink or a regular file instead of a real directory — passes `lstat` but
+ * makes `scanMemoryDir` throw on the symlinked/non-directory category root, so a
+ * `rebuild --apply` that cataloged the namespace would then make catalog-driven
+ * QMD maintenance fail repeatedly on a root with no usable data. Validate the
+ * child's TYPE (and, for directories, that its realpath stays inside the root, so
+ * a symlink escaping the memory tree is never treated as live).
+ */
+async function isLiveMemoryDataMarker(rootDir: string, child: string): Promise<boolean> {
+  const childPath = path.join(rootDir, child);
+  let entry;
   try {
-    await lstat(p);
-    return true;
+    entry = await lstat(childPath);
+  } catch {
+    return false;
+  }
+  // Reject symlinked markers outright (scan parity — never follow them).
+  if (entry.isSymbolicLink()) return false;
+  if (FILE_MEMORY_DATA_CHILDREN.has(child)) {
+    // `profile.md` must be a regular file.
+    return entry.isFile();
+  }
+  // Category/data markers must be real directories whose realpath stays inside
+  // the namespace root (no escape via a symlinked ancestor).
+  if (!entry.isDirectory()) return false;
+  try {
+    const rootReal = await realpath(rootDir);
+    const childReal = await realpath(childPath);
+    return isPathInside(rootReal, childReal);
   } catch {
     return false;
   }
@@ -177,7 +210,7 @@ async function pathExists(p: string): Promise<boolean> {
 
 async function hasMemoryData(rootDir: string): Promise<boolean> {
   for (const child of MEMORY_DATA_CHILDREN) {
-    if (await pathExists(path.join(rootDir, child))) return true;
+    if (await isLiveMemoryDataMarker(rootDir, child)) return true;
   }
   return false;
 }

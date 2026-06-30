@@ -1150,6 +1150,48 @@ test("rebuildFromDisk purges a stale namespace whose root was removed", async ()
   }
 });
 
+// NIw0F (codex P2): a scanned namespace root whose only marker child is BOGUS —
+// e.g. `facts` is a regular file (or symlink) instead of a real directory —
+// must NOT be treated as live. Downstream `scanMemoryDir` throws on a
+// symlinked/non-directory category root, so cataloging it would make
+// catalog-driven QMD maintenance fail repeatedly on a root with no usable data.
+test("rebuildFromDisk does not catalog a namespace whose only marker child is a non-directory file", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-bogus";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(tokenDir, { recursive: true });
+    // `facts` exists but is a regular FILE, not a category directory — bogus.
+    await writeFile(path.join(tokenDir, "facts"), "not a directory\n", "utf8");
+
+    const result = await new NamespaceCatalog(makeConfig(memoryDir)).rebuildFromDisk();
+    assert.ok(
+      !result.records.some((r) => r.namespace === ns),
+      "a namespace whose only marker is a non-directory file must not be cataloged as live",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// Companion to NIw0F: a real category DIRECTORY marker still makes the root live.
+test("rebuildFromDisk catalogs a namespace whose facts marker is a real directory", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-realfacts";
+    const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
+    await mkdir(path.join(tokenDir, "facts"), { recursive: true });
+
+    const result = await new NamespaceCatalog(makeConfig(memoryDir)).rebuildFromDisk();
+    assert.ok(
+      result.records.some((r) => r.namespace === ns),
+      "a namespace with a real facts directory must be cataloged as live",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // NH-FH (cursor Medium): when the configured default name carries surrounding
 // whitespace, catalog records key it by its NORMALIZED (trimmed) identity, but
 // default-namespace exemptions and memoryDir-ownership checks must compare against
