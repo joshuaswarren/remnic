@@ -11,7 +11,7 @@ test("runLifecyclePolicyPass uses path-based frontmatter writes (no per-item cor
 
   assert.match(
     source,
-    /private async runLifecyclePolicyPass\(\s*allMemories: MemoryFile\[\],\s*storage: StorageManager = this\.storage,?\s*\): Promise<void> \{/m,
+    /private async runLifecyclePolicyPass\(\s*allMemories: MemoryFile\[\],\s*storage: StorageManager = this\.storage,?\s*\): Promise<number> \{/m,
     "expected runLifecyclePolicyPass helper",
   );
   assert.match(

@@ -4151,6 +4151,11 @@
         "default": false,
         "description": "Enable multi-agent namespaces (v3.0). Default off."
       },
+      "namespaceCatalogEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable the rebuildable namespace catalog (issue #1499). Records cheap, failure-tolerant namespace touches in <memoryDir>/state/namespaces.jsonl for enumeration by maintenance, QMD indexing, dashboard, and doctor. Inert unless namespacesEnabled is also true; filesystem memory stays the source of truth and the catalog is rebuildable via `remnic namespaces rebuild`. Default on; set false to opt out."
+      },
       "defaultNamespace": {
         "type": "string",
         "default": "default",

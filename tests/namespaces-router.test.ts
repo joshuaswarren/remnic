@@ -253,3 +253,100 @@ test("v3 namespaces router propagates custom entity schemas to routed storage ma
     },
   ]);
 });
+
+// ── Round 7 (cursor Medium — NCNL2): the resolve hook must fire only ONCE per
+// (namespace, storageDir). Recall/extraction call `storageFor` repeatedly; firing
+// onResolve (→ catalog loadCompacted + append) on every cache hit grows the log
+// without bound between rebuilds. A steady-state cache hit must be a hook no-op.
+test("storageFor fires the resolve hook once per (namespace, dir), not on every cache hit", async () => {
+  const memoryDir = tmpDir("ns-router-resolve-dedup");
+  const cfg = baseConfig(memoryDir);
+  const resolves: Array<{ ns: string; dir: string }> = [];
+  const router = new NamespaceStorageRouter(cfg, {
+    onResolve: (ns, dir) => {
+      resolves.push({ ns, dir });
+    },
+  });
+
+  // First resolve fires the hook; subsequent cache hits for the same dir do not.
+  const a = await router.storageFor("default");
+  const b = await router.storageFor("default");
+  const c = await router.storageFor("default");
+  assert.equal(a, b, "cache hit returns the same StorageManager");
+  assert.equal(b, c, "cache hit returns the same StorageManager");
+  assert.equal(
+    resolves.filter((r) => r.ns === "default").length,
+    1,
+    "onResolve must fire exactly once for repeated cache hits on the same namespace/dir",
+  );
+});
+
+// ── Round 7 (cursor Medium — ND3EJ): a FAILED resolve-hook registration must not
+// be permanently suppressed by the dedup. If the first hook invocation rejects
+// (e.g. catalog append dropped on a rebuild-lock timeout), a later cache hit must
+// RETRY the hook rather than skip it forever.
+test("storageFor retries the resolve hook after a failed registration", async () => {
+  const memoryDir = tmpDir("ns-router-resolve-retry");
+  const cfg = baseConfig(memoryDir);
+  let calls = 0;
+  const router = new NamespaceStorageRouter(cfg, {
+    onResolve: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("first registration dropped");
+      // Subsequent calls succeed.
+    },
+  });
+
+  // First resolve fires the hook, which REJECTS — dedup must not be recorded.
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10)); // let the rejection settle
+  // A later cache hit must RE-FIRE the hook (retry) since the first failed.
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(calls >= 2, "a failed registration must be retried on the next resolve");
+
+  // Once a hook succeeds, further cache hits are deduped (no unbounded growth).
+  const callsAfterSuccess = calls;
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(
+    calls,
+    callsAfterSuccess,
+    "after a successful registration, further cache hits are deduped",
+  );
+});
+
+// ── Round 7 (codex P2 — NEFoX): a resolve hook that RESOLVES TO `false` (a
+// dropped/no-op registration — e.g. the catalog touch returned without appending
+// under a rebuild-lock timeout) must NOT be marked notified, so a later cache hit
+// retries it. A `false` result is distinct from a thrown/rejected failure.
+test("storageFor retries a resolve hook that resolves to false (dropped registration)", async () => {
+  const memoryDir = tmpDir("ns-router-resolve-false");
+  const cfg = baseConfig(memoryDir);
+  let calls = 0;
+  const router = new NamespaceStorageRouter(cfg, {
+    onResolve: async () => {
+      calls += 1;
+      // First two registrations are DROPPED (false); the third persists (true).
+      return calls >= 3;
+    },
+  });
+
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(calls >= 3, "a registration resolving to false must be retried, not suppressed");
+
+  // After the persisted (true) result, further cache hits are deduped.
+  const callsAfterPersist = calls;
+  await router.storageFor("default");
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(
+    calls,
+    callsAfterPersist,
+    "after a persisted registration (true), further cache hits are deduped",
+  );
+});

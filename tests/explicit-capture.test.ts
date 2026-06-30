@@ -209,6 +209,168 @@ test("persistExplicitCapture writes lifecycle events and dedupes active duplicat
   assert.equal(lifecycleEvents.length, 1);
 });
 
+// ── Round 6 (codex P2 — NAUf4): a DEFAULT explicit capture (no `namespace`)
+// resolves `undefined` → writes to the default root, but must STILL record a
+// catalog WRITE so the default namespace's `lastWriteAt` is updated for
+// `writtenSince`/maintenance consumers. recordCatalogWrite resolves an
+// undefined/empty namespace to `config.defaultNamespace`.
+test("persistExplicitCapture records a catalog write for the DEFAULT namespace", async () => {
+  const storage = {
+    dir: "/synthetic/memory",
+    hasFactContentHash: async () => false,
+    isFactContentHashAuthoritative: async () => true,
+    readAllMemories: async () => [],
+    writeMemory: async () => "fact-default",
+    appendMemoryLifecycleEvents: async () => 1,
+  };
+  const recorded: Array<{ namespace?: string; storageDir?: string }> = [];
+  const orchestrator = {
+    config: {
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacesEnabled: false,
+      namespacePolicies: [],
+    },
+    getStorage: async () => storage,
+    // Mirror the real method's default-resolution so the test exercises NAUf4.
+    recordCatalogWrite(namespace?: string, storageDir?: string) {
+      const ns = namespace && namespace.trim().length > 0 ? namespace : this.config.defaultNamespace;
+      recorded.push({ namespace: ns, storageDir });
+    },
+  };
+
+  await persistExplicitCapture(
+    orchestrator as never,
+    validateExplicitCaptureInput({
+      content: "A default-namespace explicit capture must still touch the catalog.",
+      category: "fact",
+    }),
+    "memory_capture",
+  );
+
+  assert.equal(recorded.length, 1, "default explicit capture must record exactly one catalog write");
+  assert.equal(
+    recorded[0]?.namespace,
+    "default",
+    "an undefined capture namespace must record the configured default in the catalog",
+  );
+  assert.equal(recorded[0]?.storageDir, "/synthetic/memory");
+});
+
+// ── Round 6 (codex P2 — NAUf4): the review-queue path has the same default-write
+// gap — a queued review capture without a namespace writes to the default root,
+// so it must also record a catalog write for the default namespace.
+test("queueExplicitCaptureForReview records a catalog write for the DEFAULT namespace", async () => {
+  const memories: Array<{ frontmatter: { id: string; status?: string }; content: string; path: string }> = [];
+  const storage = {
+    dir: "/synthetic/memory",
+    readAllMemories: async () => memories,
+    writeMemory: async (category: string, content: string) => {
+      const id = `fact-${memories.length + 1}`;
+      memories.push({ frontmatter: { id, status: "active" }, content, path: `/tmp/${id}.md` });
+      return id;
+    },
+    getMemoryById: async (id: string) => memories.find((m) => m.frontmatter.id === id) ?? null,
+    writeMemoryFrontmatter: async (memory: { frontmatter: { status?: string } }, patch: { status: string }) => {
+      memory.frontmatter.status = patch.status;
+      return memory;
+    },
+    appendMemoryLifecycleEvents: async () => 1,
+  };
+  const recorded: Array<{ namespace?: string; storageDir?: string }> = [];
+  const orchestrator = {
+    config: {
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacesEnabled: false,
+      namespacePolicies: [],
+    },
+    getStorage: async () => storage,
+    recordCatalogWrite(namespace?: string, storageDir?: string) {
+      const ns = namespace && namespace.trim().length > 0 ? namespace : this.config.defaultNamespace;
+      recorded.push({ namespace: ns, storageDir });
+    },
+  };
+
+  await queueExplicitCaptureForReview(
+    orchestrator as never,
+    {
+      content: "A queued default-namespace review capture must touch the catalog too.",
+      category: "fact",
+      tags: ["operator-review"],
+    },
+    "inline",
+    new Error("queued for review"),
+  );
+
+  assert.equal(recorded.length, 1, "queued default review capture must record exactly one catalog write");
+  assert.equal(
+    recorded[0]?.namespace,
+    "default",
+    "an undefined review-queue namespace must record the configured default in the catalog",
+  );
+});
+
+// NIhUg follow-up: once writeMemory returns an id, the queued review memory is
+// durable even if the pending_review frontmatter update later fails. The catalog
+// must still record the write so writtenSince/QMD maintenance can find the root.
+test("queueExplicitCaptureForReview records a catalog write when a post-write frontmatter update fails", async () => {
+  const memories: Array<{ frontmatter: { id: string; status?: string }; content: string; path: string }> = [];
+  const storage = {
+    dir: "/synthetic/team",
+    readAllMemories: async () => memories,
+    writeMemory: async (_category: string, content: string) => {
+      const id = `fact-${memories.length + 1}`;
+      memories.push({ frontmatter: { id, status: "active" }, content, path: `/tmp/${id}.md` });
+      return id;
+    },
+    getMemoryById: async (id: string) => memories.find((m) => m.frontmatter.id === id) ?? null,
+    // The pending_review frontmatter update fails after writeMemory has already
+    // created a durable memory.
+    writeMemoryFrontmatter: async () => {
+      throw new Error("frontmatter write failed");
+    },
+    appendMemoryLifecycleEvents: async () => 1,
+  };
+  const recorded: Array<{ namespace?: string; storageDir?: string }> = [];
+  const orchestrator = {
+    config: {
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacesEnabled: true,
+      namespacePolicies: [{ name: "team" }],
+    },
+    getStorage: async () => storage,
+    recordCatalogWrite(namespace?: string, storageDir?: string) {
+      recorded.push({ namespace, storageDir });
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      queueExplicitCaptureForReview(
+        orchestrator as never,
+        {
+          content: "A queued review capture whose pending_review update fails must still touch the catalog.",
+          category: "fact",
+          namespace: "team",
+          tags: ["operator-review"],
+        },
+        "inline",
+        new Error("queued for review"),
+      ),
+    /frontmatter write failed/,
+  );
+
+  assert.equal(
+    recorded.length,
+    1,
+    "a failed post-write frontmatter update must still record one catalog write touch",
+  );
+  assert.deepEqual(recorded[0], { namespace: "team", storageDir: "/synthetic/team" });
+  assert.equal(memories.length, 1, "precondition: writeMemory created a durable memory before the failure");
+});
+
 test("persistExplicitCapture rejects namespaces outside the configured policy", async () => {
   const storage = {
     hasFactContentHash: async () => false,

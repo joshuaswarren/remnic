@@ -1292,6 +1292,17 @@ export interface PluginConfig {
 
   // v3.0 Multi-agent memory (namespaces)
   namespacesEnabled: boolean;
+  /**
+   * Enable the rebuildable namespace catalog (issue #1499). When enabled and
+   * `namespacesEnabled` is also true, storage resolution and read/write paths
+   * record cheap, failure-tolerant namespace touches in
+   * `<memoryDir>/state/namespaces.jsonl`. The catalog is downstream metadata —
+   * filesystem memory remains the source of truth, and the catalog is fully
+   * rebuildable from disk via `remnic namespaces rebuild`. The catalog is inert
+   * (a no-op that enumerates nothing) whenever `namespacesEnabled` is false, so
+   * existing single-namespace behavior is unchanged. Default on.
+   */
+  namespaceCatalogEnabled: boolean;
   defaultNamespace: string;
   sharedNamespace: string;
   principalFromSessionKeyMode: PrincipalFromSessionKeyMode;

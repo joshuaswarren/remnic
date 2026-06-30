@@ -1692,6 +1692,13 @@ export class EngramAccessHttpServer {
           const resolved = await this.service.getWritableStorageForNamespace(namespace, principal);
           return resolved.storage;
         },
+        // Catalog write touch (issue #1499 sweep): a contradiction merge writes a
+        // new memory directly to the resolved namespace storage, bypassing the
+        // extraction write path. Record it so QMD maintenance / writtenSince
+        // don't miss the write. Best-effort and failure-tolerant.
+        onMergedMemoryWritten: (namespace, storageDir) => {
+          this.service.recordCatalogWrite(namespace, storageDir);
+        },
       });
       this.respondJson(res, 200, result);
       return;

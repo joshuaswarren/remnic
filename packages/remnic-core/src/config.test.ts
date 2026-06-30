@@ -1291,3 +1291,43 @@ test("parseConfig rejects connectors.gmail.pollIntervalMs above maximum (25h)", 
     /pollIntervalMs/,
   );
 });
+
+// ── issue #1499 / CLAUDE.md rule #36: namespaceCatalogEnabled opt-out coercion.
+// A string "false"/"0"/"no"/"off" from CLI/env/JSON config must disable the
+// catalog, not stay truthy. Defaults to enabled when absent/unrecognized.
+test("parseConfig namespaceCatalogEnabled defaults to true when absent", () => {
+  assert.equal(parseConfig({}).namespaceCatalogEnabled, true);
+});
+
+test('parseConfig namespaceCatalogEnabled="false" (string) → false (rule #36)', () => {
+  assert.equal(parseConfig({ namespaceCatalogEnabled: "false" }).namespaceCatalogEnabled, false);
+});
+
+test('parseConfig namespaceCatalogEnabled="0" (string) → false', () => {
+  assert.equal(parseConfig({ namespaceCatalogEnabled: "0" }).namespaceCatalogEnabled, false);
+});
+
+test('parseConfig namespaceCatalogEnabled="no"/"off" (strings) → false', () => {
+  assert.equal(parseConfig({ namespaceCatalogEnabled: "no" }).namespaceCatalogEnabled, false);
+  assert.equal(parseConfig({ namespaceCatalogEnabled: "off" }).namespaceCatalogEnabled, false);
+});
+
+test("parseConfig namespaceCatalogEnabled=false (boolean) → false", () => {
+  assert.equal(parseConfig({ namespaceCatalogEnabled: false }).namespaceCatalogEnabled, false);
+});
+
+test('parseConfig namespaceCatalogEnabled="true" (string) → true', () => {
+  assert.equal(parseConfig({ namespaceCatalogEnabled: "true" }).namespaceCatalogEnabled, true);
+});
+
+test("parseConfig namespaceCatalogEnabled present-but-unrecognized → throws (rule #51, codex NI42R)", () => {
+  // A PRESENT but unrecognized value is rejected, not silently defaulted to
+  // enabled — mirrors resolveEmitLegacyTools (CLAUDE.md rule #51: reject invalid
+  // input instead of silently defaulting). Absent still defaults to true.
+  assert.throws(
+    () => parseConfig({ namespaceCatalogEnabled: "maybe" }),
+    /namespaceCatalogEnabled must be a boolean-like value/,
+  );
+  assert.throws(() => parseConfig({ namespaceCatalogEnabled: "flase" }), /boolean-like value/);
+  assert.throws(() => parseConfig({ namespaceCatalogEnabled: 2 }), /boolean-like value/);
+});

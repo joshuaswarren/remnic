@@ -323,6 +323,16 @@ export { MeilisearchBackend } from "./search/meilisearch-backend.js";
 
 export { buildEntityRecallSection } from "./entity-retrieval.js";
 export { resolvePrincipal } from "./namespaces/principal.js";
+export {
+  NamespaceCatalog,
+  type NamespaceRecord,
+  type NamespaceKind,
+  type NamespaceDiscoverySource,
+  type NamespaceCatalogFilter,
+  type NamespaceTouchMetadata,
+  type NamespaceCatalogRebuildResult,
+  type NamespaceCatalogSkippedRoot,
+} from "./namespaces/catalog.js";
 
 // ---------------------------------------------------------------------------
 // Session identity / transcript pathing (issue #1496)

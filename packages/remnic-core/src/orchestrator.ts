@@ -6,7 +6,7 @@ import {
 import path from "node:path";
 import os from "node:os";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   mkdir,
   readdir,
@@ -297,8 +297,20 @@ import {
   type ConversationIndexBackendInspection,
   type ConversationQmdRuntime,
 } from "./conversation-index/backend.js";
-import { NamespaceStorageRouter } from "./namespaces/storage.js";
-import { namespaceIdentityFromToken } from "./namespaces/identity.js";
+import {
+  NamespaceStorageRouter,
+  resolveNamespaceStorageRoot,
+} from "./namespaces/storage.js";
+import {
+  NamespaceCatalog,
+  hasMemoryData,
+  type NamespaceRecord,
+} from "./namespaces/catalog.js";
+import {
+  namespaceIdentityFromToken,
+  namespaceIdentityToken,
+  normalizeNamespaceIdentity,
+} from "./namespaces/identity.js";
 import {
   canReadNamespace,
   defaultNamespaceForPrincipal,
@@ -327,6 +339,7 @@ import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { TierMigrationExecutor } from "./tier-migration.js";
 import { decideTierTransition, type MemoryTier } from "./tier-routing.js";
 import {
+  isSafeRouteNamespace,
   selectRouteRule,
   type RouteRule,
   type RoutingEngineOptions,
@@ -1757,6 +1770,10 @@ export function resolvePersistedMemoryRelativePath(options: {
 export class Orchestrator {
   readonly storage: StorageManager;
   private readonly storageRouter: NamespaceStorageRouter;
+  /** Rebuildable namespace catalog (issue #1499). Inert unless namespaces enabled. */
+  readonly namespaceCatalog: NamespaceCatalog;
+  private readonly namespaceStorageDirHints = new Map<string, Set<string>>();
+  private namespaceStorageDirHintsLoaded = false;
   private readonly namespaceSearchRouter: NamespaceSearchRouter;
   qmd: SearchBackend;
   private readonly conversationQmd?: ConversationQmdRuntime;
@@ -2245,6 +2262,220 @@ export class Orchestrator {
     );
   }
 
+  private rememberNamespaceStorageDirHint(namespace: string, storageDir?: string): void {
+    if (!this.config.namespacesEnabled || !storageDir) return;
+    const ns = normalizeNamespaceIdentity(namespace);
+    if (!ns) return;
+    const defaultNs = normalizeNamespaceIdentity(this.config.defaultNamespace);
+    if (ns !== defaultNs && !isSafeRouteNamespace(ns)) return;
+
+    if (!this.storageDirMatchesNamespaceHint(ns, storageDir)) return;
+
+    const resolvedStorageDir = path.resolve(storageDir);
+    let hints = this.namespaceStorageDirHints.get(resolvedStorageDir);
+    if (!hints) {
+      hints = new Set<string>();
+      this.namespaceStorageDirHints.set(resolvedStorageDir, hints);
+    }
+    hints.add(ns);
+  }
+
+  private storageDirMatchesNamespaceHint(namespace: string, storageDir: string): boolean {
+    const ns = normalizeNamespaceIdentity(namespace);
+    if (!ns) return false;
+
+    const resolvedStorageDir = path.resolve(storageDir);
+    const resolvedMemoryDir = path.resolve(this.config.memoryDir);
+    const defaultNs = normalizeNamespaceIdentity(this.config.defaultNamespace);
+    if (resolvedStorageDir === resolvedMemoryDir) return ns === defaultNs;
+
+    const resolvedNamespacesDir = path.join(resolvedMemoryDir, "namespaces");
+    if (!isPathInsideStorageRoot(resolvedNamespacesDir, resolvedStorageDir)) return false;
+
+    const rawRoot = path.resolve(resolvedNamespacesDir, ns);
+    const tokenRoot = path.resolve(resolvedNamespacesDir, namespaceIdentityToken(ns));
+    return resolvedStorageDir === rawRoot || resolvedStorageDir === tokenRoot;
+  }
+
+  private namespaceStorageDirHintOwnershipRank(
+    record: { namespace: string },
+    resolvedStorageDir: string,
+    configured: Set<string>,
+  ): number {
+    if (resolvedStorageDir === path.resolve(this.config.memoryDir)) {
+      return record.namespace === normalizeNamespaceIdentity(this.config.defaultNamespace)
+        ? 0
+        : 3;
+    }
+
+    const leaf = path.basename(resolvedStorageDir);
+    const tokenOwnsRoot = namespaceIdentityToken(record.namespace) === leaf;
+    if (tokenOwnsRoot && configured.has(record.namespace)) return 0;
+    if (record.namespace === leaf) return 1;
+    if (tokenOwnsRoot) return 2;
+    return 3;
+  }
+
+  private preferNamespaceStorageDirHintOwner(
+    current: { namespace: string; identityToken: string; storageDir: string },
+    candidate: { namespace: string; identityToken: string; storageDir: string },
+    resolvedStorageDir: string,
+    configured: Set<string>,
+  ): { namespace: string; identityToken: string; storageDir: string } {
+    const currentRank = this.namespaceStorageDirHintOwnershipRank(
+      current,
+      resolvedStorageDir,
+      configured,
+    );
+    const candidateRank = this.namespaceStorageDirHintOwnershipRank(
+      candidate,
+      resolvedStorageDir,
+      configured,
+    );
+    if (candidateRank < currentRank) return candidate;
+    if (candidateRank > currentRank) return current;
+
+    const byName = candidate.namespace.localeCompare(current.namespace);
+    if (byName < 0) return candidate;
+    if (byName > 0) return current;
+    return candidate.identityToken.localeCompare(current.identityToken) < 0
+      ? candidate
+      : current;
+  }
+
+  private loadNamespaceStorageDirHintsFromCatalog(): void {
+    if (this.namespaceStorageDirHintsLoaded || !this.namespaceCatalog.enabled) return;
+    this.namespaceStorageDirHintsLoaded = true;
+    const catalogPath = path.join(this.config.memoryDir, "state", "namespaces.jsonl");
+    if (!existsSync(catalogPath)) return;
+
+    let body: string;
+    try {
+      body = readFileSync(catalogPath, "utf8");
+    } catch {
+      return;
+    }
+
+    const compactedByNamespace = new Map<
+      string,
+      { namespace: string; identityToken: string; storageDir: string }
+    >();
+    for (const line of body.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+        const record = parsed as Record<string, unknown>;
+        if (
+          typeof record.namespace !== "string" ||
+          typeof record.storageDir !== "string" ||
+          typeof record.identityToken !== "string"
+        ) {
+          continue;
+        }
+        const namespace = normalizeNamespaceIdentity(record.namespace);
+        if (!namespace || record.identityToken !== namespaceIdentityToken(namespace)) continue;
+        compactedByNamespace.set(namespace, {
+          namespace,
+          identityToken: record.identityToken,
+          storageDir: record.storageDir,
+        });
+      } catch {
+        // Catalog hints are best-effort. The catalog reader still owns full recovery.
+      }
+    }
+
+    const configured = new Set(
+      this.configuredNamespaces().map((namespace) => normalizeNamespaceIdentity(namespace)),
+    );
+    const preferredByStorageDir = new Map<
+      string,
+      { namespace: string; identityToken: string; storageDir: string }
+    >();
+    for (const record of compactedByNamespace.values()) {
+      if (!this.storageDirMatchesNamespaceHint(record.namespace, record.storageDir)) {
+        continue;
+      }
+      const resolvedStorageDir = path.resolve(record.storageDir);
+      const current = preferredByStorageDir.get(resolvedStorageDir);
+      preferredByStorageDir.set(
+        resolvedStorageDir,
+        current
+          ? this.preferNamespaceStorageDirHintOwner(
+              current,
+              record,
+              resolvedStorageDir,
+              configured,
+            )
+          : record,
+      );
+    }
+    for (const record of preferredByStorageDir.values()) {
+      this.rememberNamespaceStorageDirHint(record.namespace, record.storageDir);
+    }
+  }
+
+  /**
+   * Namespaces that QMD maintenance (update/embed) must cover: the CONFIGURED set
+   * PLUS every dynamic namespace recorded in the catalog (NGnei, codex P2). An
+   * extraction that writes to a coding-scoped/dynamic namespace (not in
+   * defaultNamespace/sharedNamespace/namespacePolicies) is only made discoverable
+   * via the catalog; if maintenance embeds only `configuredNamespaces()`, that
+   * namespace's QMD collection is never updated/embedded after writes and
+   * recall/search stays stale or empty until it is manually configured. We union in
+   * the catalog's namespaces so maintenance keeps dynamic namespaces fresh.
+   * `updateNamespaces`/`embedNamespaces` already trim, dedup, and skip
+   * unavailable/missing collections, so extra names are filtered safely. A catalog
+   * read failure must never break maintenance — fall back to the configured set.
+   */
+  private async maintenanceNamespaces(): Promise<string[]> {
+    const configured = this.configuredNamespaces();
+    if (!this.namespaceCatalog.enabled) return configured;
+    const configuredSet = new Set(configured);
+    let cataloged: string[] = [];
+    try {
+      const records = await this.namespaceCatalog.listNamespaces();
+      const safeRecords = await Promise.all(
+        records.map(async (record) => {
+          const namespace = record.namespace.trim();
+          if (!namespace || configuredSet.has(namespace)) return null;
+          return (await this.isCatalogedMaintenanceRootLive(record))
+            ? namespace
+            : null;
+        }),
+      );
+      cataloged = safeRecords.filter(
+        (namespace): namespace is string => namespace !== null,
+      );
+    } catch {
+      // Best-effort: a catalog read failure must not break QMD maintenance.
+      cataloged = [];
+    }
+    return Array.from(
+      new Set(
+        [...configured, ...cataloged].map((value) => value.trim()).filter(Boolean),
+      ),
+    );
+  }
+
+  private async isCatalogedMaintenanceRootLive(
+    record: NamespaceRecord,
+  ): Promise<boolean> {
+    if (typeof record.storageDir !== "string" || record.storageDir.length === 0) {
+      return false;
+    }
+    try {
+      const liveRoot = await resolveNamespaceStorageRoot(this.config, record.namespace);
+      if (path.resolve(liveRoot) !== path.resolve(record.storageDir)) {
+        return false;
+      }
+      return hasMemoryData(liveRoot);
+    } catch {
+      return false;
+    }
+  }
+
   private buildConfiguredQmdSearchOptions(
     queryText: string,
   ): SearchQueryOptions | undefined {
@@ -2350,7 +2581,21 @@ export class Orchestrator {
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),
       maxTraces: config.profilingMaxTraces,
     });
-    this.storageRouter = new NamespaceStorageRouter(config);
+    // Namespace catalog (issue #1499): downstream, rebuildable metadata index.
+    // Inert unless namespacesEnabled is true. Storage resolution registers
+    // namespaces via the router's onResolve hook; the touch is best-effort and
+    // a catalog write failure never affects storage resolution.
+    this.namespaceCatalog = new NamespaceCatalog(config);
+    this.storageRouter = new NamespaceStorageRouter(config, {
+      // Return the registration promise (round 6, codex P2 — NEFoX) so the
+      // router's resolve-hook dedup only marks a namespace notified when the
+      // catalog actually APPENDED. A dropped append (rebuild-lock timeout) or a
+      // failure resolves to `false`/rejects, so the next `storageFor` retries.
+      onResolve: (namespace, storageDir) => {
+        this.rememberNamespaceStorageDirHint(namespace, storageDir);
+        return this.namespaceCatalog.registerResolved(namespace, storageDir);
+      },
+    });
     this.namespaceSearchRouter = new NamespaceSearchRouter(
       config,
       this.storageRouter,
@@ -2839,6 +3084,14 @@ export class Orchestrator {
           await sm.ensureDirectories();
           await sm.loadAliases().catch(() => undefined);
         }
+        // Explicitly seed the catalog with all configured namespaces at startup
+        // (round 6, cursor Medium — NBLlR). The storageFor loop above fires the
+        // router's onResolve hook, but a warm router cache (reused instance
+        // across stop/start) can skip onResolve, leaving policy namespaces absent
+        // from the live catalog until an operator runs `rebuild --apply`. This
+        // call is cheap, idempotent, and best-effort: a catalog failure must
+        // never break initialization (rule #13, #40).
+        await this.namespaceCatalog.registerConfiguredNamespaces().catch(() => undefined);
       }
       await this.relevance.load();
       await this.negatives.load();
@@ -2907,8 +3160,15 @@ export class Orchestrator {
         const available = await this.qmd.probe();
         if (available) {
           log.info(`Search backend: available ${this.qmd.debugStatus()}`);
+          // Ensure collections at startup for the catalog-union namespace set, not
+          // just the configured set (issue #1499 sweep, same class as NHZEV): a
+          // dynamic namespace that exists only in the persisted catalog must have
+          // its QMD collection checked/ensured on boot so recall against it works
+          // after a restart. `registerConfiguredNamespaces()` already seeded the
+          // catalog above, so `maintenanceNamespaces()` is readable here; it falls
+          // back to the configured set on any catalog read failure.
           const namespaces = this.config.namespacesEnabled
-            ? this.configuredNamespaces()
+            ? await this.maintenanceNamespaces()
             : [this.config.defaultNamespace];
           const states = await Promise.all(
             namespaces.map(async (namespace) => {
@@ -3031,8 +3291,12 @@ export class Orchestrator {
       try {
         log.info("QMD startup sync: updating index to match current disk state");
         if (this.config.namespacesEnabled) {
+          // Cover cataloged dynamic namespaces at startup too (NHZEV, codex P2):
+          // a dynamic namespace written before a daemon restart must be synced on
+          // boot, not only by the debounced runQmdMaintenance() path. Same union +
+          // catalog-read-failure fallback as runQmdMaintenance.
           await this.namespaceSearchRouter.updateNamespaces(
-            this.configuredNamespaces(),
+            await this.maintenanceNamespaces(),
             { signal },
           );
         } else {
@@ -3310,9 +3574,16 @@ export class Orchestrator {
       this.namespaceSearchRouter.clearCache();
     }
 
-    // Ensure collections — namespace-aware when enabled
+    // Ensure collections — namespace-aware when enabled.
+    // Use the catalog-union namespace set (issue #1499 sweep, same class as
+    // NHZEV): this is the QMD startup-recovery sync that ensures collections AND
+    // runs `updateNamespaces(...)` below over the SAME `namespaces` set. A dynamic
+    // namespace that exists only in the persisted catalog must be ensured and
+    // re-synced here too, otherwise after a backend-was-unavailable-at-boot
+    // recovery its collection stays stale. Falls back to the configured set on any
+    // catalog read failure.
     const namespaces = this.config.namespacesEnabled
-      ? this.configuredNamespaces()
+      ? await this.maintenanceNamespaces()
       : [this.config.defaultNamespace];
 
     const states = await Promise.all(
@@ -3934,6 +4205,7 @@ export class Orchestrator {
     }
 
     for (const cluster of clusters) {
+      let canonicalWriteCompleted = false;
       try {
         // Operator-aware prompt (issue #561 PR 3): ask the LLM to pick the
         // SPLIT/MERGE/UPDATE operator alongside the canonical output.  Falls
@@ -4057,6 +4329,7 @@ export class Orchestrator {
             derivedVia: operator,
           },
         );
+        canonicalWriteCompleted = true;
 
         result.memoriesConsolidated++;
 
@@ -4090,17 +4363,27 @@ export class Orchestrator {
                 this.contentHashIndex.remove(m.content);
               }
             }
-            await this.embeddingFallback.removeFromIndex(m.frontmatter.id);
-            if (
-              this.config.queryAwareIndexingEnabled &&
-              m.path &&
-              m.frontmatter?.created
-            ) {
-              deindexMemory(
-                targetStorage.dir,
-                m.path,
-                m.frontmatter.created,
-                m.frontmatter.tags ?? [],
+            // Best-effort index cleanup: a failure here (e.g. on-disk index save
+            // under disk-full) must NOT abort the archival loop and thereby skip
+            // the catalog write touch below for an already-durable canonical write
+            // (kilo NV0mh).
+            try {
+              await this.embeddingFallback.removeFromIndex(m.frontmatter.id);
+              if (
+                this.config.queryAwareIndexingEnabled &&
+                m.path &&
+                m.frontmatter?.created
+              ) {
+                deindexMemory(
+                  targetStorage.dir,
+                  m.path,
+                  m.frontmatter.created,
+                  m.frontmatter.tags ?? [],
+                );
+              }
+            } catch (cleanupErr) {
+              log.warn(
+                `[semantic-consolidation] index cleanup failed (non-fatal): ${cleanupErr}`,
               );
             }
             result.memoriesArchived++;
@@ -4115,6 +4398,21 @@ export class Orchestrator {
           `[semantic-consolidation] cluster processing failed: ${err instanceof Error ? err.message : String(err)}`,
         );
         result.errors++;
+      } finally {
+        if (canonicalWriteCompleted) {
+          // Catalog write touch (issue #1499 sweep): record after the canonical
+          // write and, on the happy path, after archival of superseded cluster
+          // memories, so `lastWriteAt` reflects every durable mutation in this
+          // consolidation (cursor NUtCK). The `finally` also covers partial
+          // failures where the canonical memory was written but a later archive
+          // step throws and the cluster catch continues (codex NY-dK).
+          // Best-effort; namespace decoded from the storage dir since this path
+          // has no routed namespace name.
+          this.markCatalogWrite(
+            this.namespaceFromStorageDir(targetStorage.dir),
+            targetStorage.dir,
+          );
+        }
       }
     }
 
@@ -7194,6 +7492,22 @@ export class Orchestrator {
     } else {
       recallNamespaces = readableRecallNamespaces;
     }
+    // Catalog touch (issue #1499): record reads against the recalled namespaces
+    // so the catalog reflects active read scopes. Best-effort, failure-tolerant.
+    // Round 3 (codex P2): gate behind the no_recall guard — when the planner
+    // selects `no_recall` retrieval is skipped entirely (see the early return at
+    // `recallMode === "no_recall"` below), so marking every readable namespace as
+    // read would falsely inflate `lastReadAt` / catalog recency.
+    // Round 4 (codex P2): also skip when the effective memory result limit is
+    // zero (`topK: 0`, a disabled/zero `memories` recall section, etc.). The QMD
+    // path explicitly returns before searching when `recallResultLimit <= 0`, so
+    // no namespace is actually read and the touch would be spurious.
+    // NOTE: the catalog read touch is recorded LATER, immediately after the
+    // Phase 1 `throwIfRecallAborted` gate (round 6, codex P2 / cursor Medium —
+    // NDXHa/NDmle), so it fires only once retrieval is actually about to run.
+    // Recording it here (recall entry) would set `lastReadAt` for recalls that
+    // are aborted, error out, or short-circuit before any QMD/filesystem read.
+
     // Effective LCM read NAMESPACE SET (#1505 thread "Include coding fallback
     // namespaces in LCM reads"). `observe` archives LCM / structured history
     // under `${effectiveNamespace}:${sessionKey}` for whichever namespace was
@@ -7472,6 +7786,21 @@ export class Orchestrator {
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
     throwIfRecallAborted(options.abortSignal);
+
+    // Catalog read touch (issue #1499): record reads against the recalled
+    // namespaces HERE — after the abort gate, immediately before retrieval
+    // actually runs — so `lastReadAt` reflects a real read, not a recall that was
+    // aborted/errored/short-circuited before reaching this point (round 3/4/6,
+    // codex/cursor — no_recall, zero-limit, aborted, and pre-read-error cases).
+    // `no_recall` already returned earlier, so it cannot reach here. Best-effort
+    // and failure-tolerant.
+    if (
+      this.namespaceCatalog.enabled &&
+      recallResultLimit > 0 &&
+      !options.abortSignal?.aborted
+    ) {
+      for (const ns of recallNamespaces) this.markCatalogRead(ns);
+    }
 
     // 0. Shared context (v4.0, optional)
     const sharedContextPromise = (async (): Promise<string | null> => {
@@ -12523,6 +12852,9 @@ export class Orchestrator {
       storage,
       threadIdForExtraction,
       { sessionKey, principal, validAt: sourceValidAt },
+      // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
+      // real namespace rather than a guess decoded from the storage dir.
+      selfNamespace,
     );
     let postPersistMetadataFailed = false;
     meta ??= await storage.loadMeta();
@@ -13004,25 +13336,28 @@ export class Orchestrator {
 
     try {
       if (this.config.namespacesEnabled) {
-        await this.namespaceSearchRouter.updateNamespaces(
-          this.configuredNamespaces(),
-        );
+        // Include cataloged dynamic namespaces, not just the configured set
+        // (NGnei) — resolve once and reuse for both update and embed.
+        const maintenanceNamespaces = await this.maintenanceNamespaces();
+        await this.namespaceSearchRouter.updateNamespaces(maintenanceNamespaces);
+        const now = Date.now();
+        if (
+          this.config.qmdAutoEmbedEnabled &&
+          now - this.lastQmdEmbedAtMs >= this.config.qmdEmbedMinIntervalMs
+        ) {
+          await this.namespaceSearchRouter.embedNamespaces(maintenanceNamespaces);
+          this.lastQmdEmbedAtMs = now;
+        }
       } else {
         await this.qmd.update();
-      }
-      const now = Date.now();
-      if (
-        this.config.qmdAutoEmbedEnabled &&
-        now - this.lastQmdEmbedAtMs >= this.config.qmdEmbedMinIntervalMs
-      ) {
-        if (this.config.namespacesEnabled) {
-          await this.namespaceSearchRouter.embedNamespaces(
-            this.configuredNamespaces(),
-          );
-        } else {
+        const now = Date.now();
+        if (
+          this.config.qmdAutoEmbedEnabled &&
+          now - this.lastQmdEmbedAtMs >= this.config.qmdEmbedMinIntervalMs
+        ) {
           await this.qmd.embed();
+          this.lastQmdEmbedAtMs = now;
         }
-        this.lastQmdEmbedAtMs = now;
       }
     } finally {
       this.qmdMaintenanceInFlight = false;
@@ -13037,6 +13372,7 @@ export class Orchestrator {
     storage: StorageManager,
     threadIdForExtraction?: string | null,
     sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
+    baseNamespace?: string,
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
@@ -13315,7 +13651,7 @@ export class Orchestrator {
                 // `createdAt` as the ordering anchor instead of the old fact's
                 // timestamp, ensuring supersession fires correctly even when
                 // the matching fact predates conflicting candidates.
-                await applyTemporalSupersession({
+                const hashDedupSupersession = await applyTemporalSupersession({
                   storage: sharedStorage,
                   newMemoryId: hashDedupMatchingFact.frontmatter.id,
                   entityRef: options.entityRef,
@@ -13324,6 +13660,19 @@ export class Orchestrator {
                   enabled: true,
                   useCallerTimestamp: true,
                 });
+                // Catalog touch (issue #1499 — codex P2 NElSf): this dedup branch
+                // returns WITHOUT reaching the post-write `markCatalogWrite` below,
+                // but `applyTemporalSupersession` mutated the shared namespace
+                // (it rewrote frontmatter to retire stale shared facts). When any
+                // ids were actually superseded, the shared namespace changed, so we
+                // must record the write — otherwise the shared record's
+                // `lastWriteAt` stays stale and `writtenSince` maintenance / QMD
+                // fanout skips the namespace after a supersession-only update.
+                // Best-effort and failure-tolerant (markCatalogWrite swallows
+                // errors); only touch when work happened to avoid spurious writes.
+                if (hashDedupSupersession.supersededIds.length > 0) {
+                  this.markCatalogWrite(this.config.sharedNamespace, sharedStorage.dir);
+                }
                 // Active matching fact exists — normal short-circuit is safe.
                 return;
               }
@@ -13418,6 +13767,16 @@ export class Orchestrator {
             );
           }
         }
+        // Catalog touch (issue #1499, Issue B + ordering sweep): a shared-
+        // namespace promotion is the ONLY write the shared namespace receives on
+        // this path, so without this the shared record's lastWriteAt stays stale
+        // and `writtenSince` filters / maintenance fanout skip it. Record AFTER
+        // the promoted write and the shared temporal-supersession attempt so the
+        // catalog timestamp never precedes a later durable frontmatter mutation in
+        // the same promotion pass. The hot-path source-namespace touch uses a
+        // different storage dir, so this does not double-count the source.
+        // Best-effort and failure-tolerant — it must never crash the promotion.
+        this.markCatalogWrite(this.config.sharedNamespace, sharedStorage.dir);
         trackPersistedId(sharedStorage, promotedId, {
           includeReturnedIds: false,
         });
@@ -13778,6 +14137,19 @@ export class Orchestrator {
       // affect both the dedup fingerprint and importance (issue #519 procedure routing).
       let writeCategory = fact.category;
       let targetStorage = storage;
+      // Track the KNOWN target namespace NAME alongside targetStorage (round 6,
+      // codex P2 — NCQI0). Re-deriving it from `targetStorage.dir` mangles a raw
+      // namespace literally named like a canonical token (e.g. `ns-616c706861`
+      // served from its legacy raw dir decodes to `alpha`). We seed it from the
+      // EXPLICIT base namespace the caller used to obtain `storage` (NHIdx, codex
+      // P2) — `selfNamespace`/`writeNamespaceOverride` — so the catalog write touch
+      // records the real namespace, not a guess decoded from the directory. We only
+      // fall back to decoding the dir when no base namespace was passed (legacy
+      // callers). The EXPLICIT routed name (below) still overrides this verbatim.
+      let targetNamespaceName =
+        baseNamespace && baseNamespace.length > 0
+          ? baseNamespace
+          : this.namespaceFromStorageDir(targetStorage.dir);
       let routedRuleId: string | undefined;
       let routedNamespaceExplicit = false;
       if (routeRules.length > 0) {
@@ -13794,6 +14166,7 @@ export class Orchestrator {
               targetStorage = await this.storageRouter.storageFor(
                 selected.target.namespace,
               );
+              targetNamespaceName = selected.target.namespace;
             }
           }
         } catch (err) {
@@ -13823,6 +14196,7 @@ export class Orchestrator {
             targetStorage = await this.storageRouter.storageFor(
               this.config.sharedNamespace,
             );
+            targetNamespaceName = this.config.sharedNamespace;
             log.debug(
               `scope-routing: fact "${fact.content.slice(0, 60)}…" routed to shared namespace (scope=global)`,
             );
@@ -14198,41 +14572,49 @@ export class Orchestrator {
               contentHashSource: rawChunkedContent,
             },
           );
+          try {
+            // Write individual chunks with parent reference
+            for (const chunk of chunkResult.chunks) {
+              // Score each chunk's importance separately
+              const chunkImportance = scoreImportance(
+                chunk.content,
+                writeCategory,
+                fact.tags,
+              );
+              const chunkWriteSource =
+                (fact as any).source === "proactive"
+                  ? "chunking-proactive"
+                  : "chunking";
 
-          // Write individual chunks with parent reference
-          for (const chunk of chunkResult.chunks) {
-            // Score each chunk's importance separately
-            const chunkImportance = scoreImportance(
-              chunk.content,
-              writeCategory,
-              fact.tags,
-            );
-            const chunkWriteSource =
-              (fact as any).source === "proactive"
-                ? "chunking-proactive"
-                : "chunking";
-
-            await targetStorage.writeChunk(
-              parentId,
-              chunk.index,
-              chunkResult.chunks.length,
-              writeCategory,
-              // Each chunk carries its own inline citation so provenance
-              // survives when a single chunk is quoted in isolation.
-              applyInlineCitation(chunk.content),
-              {
-                confidence: fact.confidence,
-                tags: fact.tags,
-                entityRef: fact.entityRef,
-                source: chunkWriteSource,
-                importance: chunkImportance,
-                intentGoal: inferredIntent?.goal,
-                intentActionType: inferredIntent?.actionType,
-                intentEntityTypes: inferredIntent?.entityTypes,
-                memoryKind,
-                validAt: sourceContext?.validAt,
-              },
-            );
+              await targetStorage.writeChunk(
+                parentId,
+                chunk.index,
+                chunkResult.chunks.length,
+                writeCategory,
+                // Each chunk carries its own inline citation so provenance
+                // survives when a single chunk is quoted in isolation.
+                applyInlineCitation(chunk.content),
+                {
+                  confidence: fact.confidence,
+                  tags: fact.tags,
+                  entityRef: fact.entityRef,
+                  source: chunkWriteSource,
+                  importance: chunkImportance,
+                  intentGoal: inferredIntent?.goal,
+                  intentActionType: inferredIntent?.actionType,
+                  intentEntityTypes: inferredIntent?.entityTypes,
+                  memoryKind,
+                  validAt: sourceContext?.validAt,
+                },
+              );
+            }
+          } finally {
+            // The parent memory is durable once writeMemory returns `parentId`.
+            // Touch immediately around the chunk-write loop so a later chunk
+            // failure still surfaces the partially durable parent/chunk files to
+            // catalog-driven `writtenSince` maintenance. The final touch below
+            // still refreshes `lastWriteAt` after later durable writes on success.
+            this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
           }
 
           if (routedRuleId) {
@@ -14308,62 +14690,71 @@ export class Orchestrator {
             // directly for embedding-fallback sync of each chunk document.
             await this.indexPersistedMemory(targetStorage, chunkId);
           }
-          if (
-            this.config.verbatimArtifactsEnabled &&
-            this.config.verbatimArtifactCategories.includes(writeCategory) &&
-            fact.confidence >= this.config.verbatimArtifactsMinConfidence
-          ) {
-            // Reuse citedChunkedContent so the artifact carries the same citation
-            // timestamp as the parent memory write above (Fix #3 — duplicate-citation).
-            await targetStorage.writeArtifact(citedChunkedContent, {
-              confidence: fact.confidence,
-              tags: [...fact.tags, "artifact", "chunked-parent"],
-              artifactType: this.artifactTypeForCategory(writeCategory),
-              sourceMemoryId: parentId,
-              intentGoal: inferredIntent?.goal,
-              intentActionType: inferredIntent?.actionType,
-              intentEntityTypes: inferredIntent?.entityTypes,
-            });
-          }
-          // v8.2: graph edge building for chunked memories
-          if (this.config.multiGraphMemoryEnabled) {
-            try {
-              const graphContext = await ensureGraphContext(targetStorage);
-              const entityRef =
-                typeof (fact as any).entityRef === "string"
-                  ? (fact as any).entityRef
-                  : undefined;
-              const parentRelPath = resolvePersistedMemoryRelativePath({
-                memoryId: parentId,
-                pathById: graphContext.memoryPathById,
-                category: writeCategory,
+          try {
+            if (
+              this.config.verbatimArtifactsEnabled &&
+              this.config.verbatimArtifactCategories.includes(writeCategory) &&
+              fact.confidence >= this.config.verbatimArtifactsMinConfidence
+            ) {
+              // Reuse citedChunkedContent so the artifact carries the same citation
+              // timestamp as the parent memory write above (Fix #3 — duplicate-citation).
+              await targetStorage.writeArtifact(citedChunkedContent, {
+                confidence: fact.confidence,
+                tags: [...fact.tags, "artifact", "chunked-parent"],
+                artifactType: this.artifactTypeForCategory(writeCategory),
+                sourceMemoryId: parentId,
+                intentGoal: inferredIntent?.goal,
+                intentActionType: inferredIntent?.actionType,
+                intentEntityTypes: inferredIntent?.entityTypes,
               });
-              graphContext.memoryPathById.set(parentId, parentRelPath);
-              appendMemoryToGraphContext({
-                allMemsForGraph: graphContext.allMemsForGraph,
-                storageDir: targetStorage.dir,
-                memoryRelPath: parentRelPath,
-                memoryId: parentId,
-                category: writeCategory,
-                content: fact.content ?? "",
-                entityRef,
-              });
-              await this.buildGraphEdge(
-                targetStorage,
-                parentRelPath,
-                entityRef,
-                parentId,
-                fact.content ?? "",
-                graphContext.allMemsForGraph,
-                graphContext.memoryPathById,
-                threadIdForExtraction ?? undefined,
-                threadEpisodeIdsForGraph,
-                graphContext.previousPersistedRelPath,
-              );
-              graphContext.previousPersistedRelPath = parentRelPath;
-            } catch {
-              /* fail-open */
             }
+            // v8.2: graph edge building for chunked memories
+            if (this.config.multiGraphMemoryEnabled) {
+              try {
+                const graphContext = await ensureGraphContext(targetStorage);
+                const entityRef =
+                  typeof (fact as any).entityRef === "string"
+                    ? (fact as any).entityRef
+                    : undefined;
+                const parentRelPath = resolvePersistedMemoryRelativePath({
+                  memoryId: parentId,
+                  pathById: graphContext.memoryPathById,
+                  category: writeCategory,
+                });
+                graphContext.memoryPathById.set(parentId, parentRelPath);
+                appendMemoryToGraphContext({
+                  allMemsForGraph: graphContext.allMemsForGraph,
+                  storageDir: targetStorage.dir,
+                  memoryRelPath: parentRelPath,
+                  memoryId: parentId,
+                  category: writeCategory,
+                  content: fact.content ?? "",
+                  entityRef,
+                });
+                await this.buildGraphEdge(
+                  targetStorage,
+                  parentRelPath,
+                  entityRef,
+                  parentId,
+                  fact.content ?? "",
+                  graphContext.allMemsForGraph,
+                  graphContext.memoryPathById,
+                  threadIdForExtraction ?? undefined,
+                  threadEpisodeIdsForGraph,
+                  graphContext.previousPersistedRelPath,
+                );
+                graphContext.previousPersistedRelPath = parentRelPath;
+              } catch {
+                /* fail-open */
+              }
+            }
+          } finally {
+            // Catalog touch (issue #1499): refresh AFTER later chunked
+            // source-namespace durable mutations — temporal supersession, shared
+            // promotion, optional artifact writes, and graph-edge writes — so
+            // `lastWriteAt` cannot precede later file changes on successful
+            // completion. Use the KNOWN routed name, not a dir-decoded guess.
+            this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
           }
           trackBehaviorSignals(
             targetStorage,
@@ -14469,120 +14860,150 @@ export class Orchestrator {
       } catch (err) {
         log.warn(`temporal-supersession: unexpected error: ${err}`);
       }
-      trackBehaviorSignals(
-        targetStorage,
-        buildBehaviorSignalsForMemory({
-          memoryId,
+      try {
+        trackBehaviorSignals(
+          targetStorage,
+          buildBehaviorSignalsForMemory({
+            memoryId,
+            category: writeCategory,
+            content: fact.content,
+            namespace: this.namespaceFromStorageDir(targetStorage.dir),
+            confidence: fact.confidence,
+            source: "extraction",
+          }),
+        );
+        trackPersistedId(targetStorage, memoryId);
+        if (
+          threadEpisodeIdsForGraph &&
+          !threadEpisodeIdsForGraph.includes(memoryId)
+        ) {
+          threadEpisodeIdsForGraph.push(memoryId);
+        }
+        await this.indexPersistedMemory(targetStorage, memoryId);
+        await promoteMemoryToShared({
+          sourceStorage: targetStorage,
           category: writeCategory,
           content: fact.content,
-          namespace: this.namespaceFromStorageDir(targetStorage.dir),
           confidence: fact.confidence,
-          source: "extraction",
-        }),
-      );
-      trackPersistedId(targetStorage, memoryId);
-      if (
-        threadEpisodeIdsForGraph &&
-        !threadEpisodeIdsForGraph.includes(memoryId)
-      ) {
-        threadEpisodeIdsForGraph.push(memoryId);
-      }
-      await this.indexPersistedMemory(targetStorage, memoryId);
-      await promoteMemoryToShared({
-        sourceStorage: targetStorage,
-        category: writeCategory,
-        content: fact.content,
-        confidence: fact.confidence,
-        tags: fact.tags,
-        entityRef:
-          typeof (fact as any).entityRef === "string"
-            ? (fact as any).entityRef
-            : undefined,
-        structuredAttributes: fact.structuredAttributes,
-        sourceMemoryId: memoryId,
-        importance,
-        intentGoal: inferredIntent?.goal,
-        intentActionType: inferredIntent?.actionType,
-        intentEntityTypes: inferredIntent?.entityTypes,
-        memoryKind,
-        validAt: sourceContext?.validAt,
-        source: extractionWriteSource,
-      });
-      // v8.2: graph edge building (fail-open — errors caught inside GraphIndex)
-      if (this.config.multiGraphMemoryEnabled) {
-        try {
-          const graphContext = await ensureGraphContext(targetStorage);
-          const entityRef =
+          tags: fact.tags,
+          entityRef:
             typeof (fact as any).entityRef === "string"
               ? (fact as any).entityRef
-              : undefined;
-          const memoryRelPath = resolvePersistedMemoryRelativePath({
-            memoryId,
-            pathById: graphContext.memoryPathById,
-            category: writeCategory,
-          });
-          graphContext.memoryPathById.set(memoryId, memoryRelPath);
-          appendMemoryToGraphContext({
-            allMemsForGraph: graphContext.allMemsForGraph,
-            storageDir: targetStorage.dir,
-            memoryRelPath: memoryRelPath,
-            memoryId,
-            category: writeCategory,
-            content: fact.content ?? "",
-            entityRef,
-          });
-          await this.buildGraphEdge(
-            targetStorage,
-            memoryRelPath,
-            entityRef,
-            memoryId,
-            fact.content ?? "",
-            graphContext.allMemsForGraph,
-            graphContext.memoryPathById,
-            threadIdForExtraction ?? undefined,
-            threadEpisodeIdsForGraph,
-            graphContext.previousPersistedRelPath,
-          );
-          graphContext.previousPersistedRelPath = memoryRelPath;
-        } catch {
-          /* fail-open */
-        }
-      }
-      if (
-        this.config.verbatimArtifactsEnabled &&
-        this.config.verbatimArtifactCategories.includes(writeCategory) &&
-        fact.confidence >= this.config.verbatimArtifactsMinConfidence
-      ) {
-        // Reuse citedFactContent so the artifact carries the same citation
-        // timestamp as the memory write above (Fix #3 — duplicate-citation).
-        await targetStorage.writeArtifact(citedFactContent, {
-          confidence: fact.confidence,
-          tags: [...fact.tags, "artifact"],
-          artifactType: this.artifactTypeForCategory(writeCategory),
+              : undefined,
+          structuredAttributes: fact.structuredAttributes,
           sourceMemoryId: memoryId,
+          importance,
           intentGoal: inferredIntent?.goal,
           intentActionType: inferredIntent?.actionType,
           intentEntityTypes: inferredIntent?.entityTypes,
+          memoryKind,
+          validAt: sourceContext?.validAt,
+          source: extractionWriteSource,
         });
-      }
-      // Register in content-hash index after successful write.
-      // Thread 3 fix: canonicalize by stripping any pre-existing citation so
-      // the stored hash matches what the dedup check computes via
-      // stripCitationForTemplate before calling contentHashIndex.has().
-      if (this.contentHashIndex) {
-        const canonicalFactContent =
-          citationEnabled &&
-          hasCitationForTemplate(fact.content, citationTemplate)
-            ? stripCitationForTemplate(fact.content, citationTemplate)
-            : fact.content;
-        const hashRegisterKey =
-          writeCategory === "procedure"
-            ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
-            : canonicalFactContent;
-        this.contentHashIndex.add(hashRegisterKey);
+        // v8.2: graph edge building (fail-open — errors caught inside GraphIndex)
+        if (this.config.multiGraphMemoryEnabled) {
+          try {
+            const graphContext = await ensureGraphContext(targetStorage);
+            const entityRef =
+              typeof (fact as any).entityRef === "string"
+                ? (fact as any).entityRef
+                : undefined;
+            const memoryRelPath = resolvePersistedMemoryRelativePath({
+              memoryId,
+              pathById: graphContext.memoryPathById,
+              category: writeCategory,
+            });
+            graphContext.memoryPathById.set(memoryId, memoryRelPath);
+            appendMemoryToGraphContext({
+              allMemsForGraph: graphContext.allMemsForGraph,
+              storageDir: targetStorage.dir,
+              memoryRelPath: memoryRelPath,
+              memoryId,
+              category: writeCategory,
+              content: fact.content ?? "",
+              entityRef,
+            });
+            await this.buildGraphEdge(
+              targetStorage,
+              memoryRelPath,
+              entityRef,
+              memoryId,
+              fact.content ?? "",
+              graphContext.allMemsForGraph,
+              graphContext.memoryPathById,
+              threadIdForExtraction ?? undefined,
+              threadEpisodeIdsForGraph,
+              graphContext.previousPersistedRelPath,
+            );
+            graphContext.previousPersistedRelPath = memoryRelPath;
+          } catch {
+            /* fail-open */
+          }
+        }
+        if (
+          this.config.verbatimArtifactsEnabled &&
+          this.config.verbatimArtifactCategories.includes(writeCategory) &&
+          fact.confidence >= this.config.verbatimArtifactsMinConfidence
+        ) {
+          // Reuse citedFactContent so the artifact carries the same citation
+          // timestamp as the memory write above (Fix #3 — duplicate-citation).
+          await targetStorage.writeArtifact(citedFactContent, {
+            confidence: fact.confidence,
+            tags: [...fact.tags, "artifact"],
+            artifactType: this.artifactTypeForCategory(writeCategory),
+            sourceMemoryId: memoryId,
+            intentGoal: inferredIntent?.goal,
+            intentActionType: inferredIntent?.actionType,
+            intentEntityTypes: inferredIntent?.entityTypes,
+          });
+        }
+        // Register in content-hash index after successful write.
+        // Thread 3 fix: canonicalize by stripping any pre-existing citation so
+        // the stored hash matches what the dedup check computes via
+        // stripCitationForTemplate before calling contentHashIndex.has().
+        if (this.contentHashIndex) {
+          const canonicalFactContent =
+            citationEnabled &&
+            hasCitationForTemplate(fact.content, citationTemplate)
+              ? stripCitationForTemplate(fact.content, citationTemplate)
+              : fact.content;
+          const hashRegisterKey =
+            writeCategory === "procedure"
+              ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
+              : canonicalFactContent;
+          this.contentHashIndex.add(hashRegisterKey);
+        }
+      } finally {
+        // Catalog touch (issue #1499): record AFTER every synchronous
+        // source-namespace mutation in the non-chunked path: writeMemory,
+        // temporal supersession, graph edges, and optional verbatim artifacts.
+        // The `finally` preserves the write touch when post-write indexing or
+        // promotion fails after the canonical memory is already durable. Use the
+        // KNOWN routed name, not a dir-decoded guess (NCQI0).
+        this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
       }
     }
 
+    // Tracks whether THIS extraction persisted any durable, non-fact output to the
+    // BASE namespace's storage (entity / relationship / profile / question). The
+    // per-fact `markCatalogWrite` only fires inside the fact write loop, so a
+    // fact-less extraction that still persists durable data must record exactly one
+    // base-namespace catalog touch after all writes complete (NHZEZ, codex P2).
+    let durableNonFactWritten = false;
+    let durableNonFactTouchRecorded = false;
+    const touchBaseNonFactNamespace = () => {
+      const baseTouchNamespace =
+        baseNamespace && baseNamespace.length > 0
+          ? baseNamespace
+          : this.namespaceFromStorageDir(storage.dir);
+      this.markCatalogWrite(baseTouchNamespace, storage.dir);
+    };
+    const recordDurableNonFactWrite = () => {
+      durableNonFactWritten = true;
+      if (durableNonFactTouchRecorded) return;
+      durableNonFactTouchRecorded = true;
+      touchBaseNonFactNamespace();
+    };
     for (const entity of entities) {
       try {
         const name = (entity as any)?.name;
@@ -14607,7 +15028,10 @@ export class Orchestrator {
             ? (entity as any).structuredSections
             : undefined,
         });
-        if (id) trackPersistedId(storage, id);
+        if (id) {
+          trackPersistedId(storage, id);
+          recordDurableNonFactWrite();
+        }
       } catch (err) {
         log.warn(`persistExtraction: entity write failed: ${err}`);
       }
@@ -14626,10 +15050,12 @@ export class Orchestrator {
             target: rel.target,
             label: rel.label,
           });
+          recordDurableNonFactWrite();
           await storage.addEntityRelationship(rel.target, {
             target: rel.source,
             label: `${rel.label} (reverse)`,
           });
+          recordDurableNonFactWrite();
         } catch (err) {
           log.debug(`relationship persist failed: ${err}`);
         }
@@ -14658,21 +15084,47 @@ export class Orchestrator {
 
     if (profileUpdates.length > 0) {
       await storage.appendToProfile(profileUpdates);
+      recordDurableNonFactWrite();
     }
 
     // Persist questions
     for (const q of questions) {
       const id = await storage.writeQuestion(q.question, q.context, q.priority);
-      if (id) trackPersistedId(storage, id);
+      if (id) {
+        trackPersistedId(storage, id);
+        recordDurableNonFactWrite();
+      }
     }
 
-    // Persist identity reflection
+    // Persist identity reflection. This writes durable namespace-local state, so
+    // an identity-ONLY extraction (no facts/entities/profile/questions) still
+    // counts as a durable non-fact write for the catalog touch below (NIIly).
+    // Only count it when the write actually succeeds (best-effort write); the
+    // touch is recorded AFTER this so a rolled-back/failed write never touches.
     if (this.config.identityEnabled && result.identityReflection) {
       try {
         await storage.appendIdentityReflection(result.identityReflection);
+        recordDurableNonFactWrite();
       } catch (err) {
         log.debug(`identity reflection write failed: ${err}`);
       }
+    }
+
+    // Catalog touch for durable NON-FACT outputs (NHZEZ / NIIly, codex P2). The
+    // per-fact `markCatalogWrite` above only fires inside the fact write loop, so
+    // an extraction that persists ONLY entities, relationships, profile updates,
+    // questions, or an identity reflection (no facts) would record durable data to
+    // the BASE namespace's storage without ever touching the catalog — leaving that
+    // namespace's `lastWriteAt` stale so `listNamespaces({writtenSince})` /
+    // write-recency QMD maintenance miss the write. All of these are written to the
+    // BASE `storage` (not the per-fact routed `targetStorage`), so we record ONE
+    // base-namespace touch here, AFTER every non-fact write completes. Use the
+    // KNOWN base namespace name, not a dir-decoded guess (NCQI0). One touch per
+    // namespace per extraction — `markWrite` is idempotent, so if the fact path
+    // already touched the base namespace this only refreshes `lastWriteAt`.
+    // Best-effort and failure-tolerant (markCatalogWrite swallows errors).
+    if (durableNonFactWritten) {
+      touchBaseNonFactNamespace();
     }
 
     // Save content-hash index after batch
@@ -14912,6 +15364,11 @@ export class Orchestrator {
     log.info("running consolidation pass");
     let merged = 0;
     let invalidated = 0;
+    // Tracks whether any consolidation memory-item action (UPDATE / MERGE /
+    // INVALIDATE) durably rewrote memory state. A consolidation pass that only
+    // mutates memory items (no profile/entity updates) still changes the default
+    // namespace's data, so its catalog `lastWriteAt` must refresh too (NIBOi).
+    let memoryItemMutated = false;
 
     // Flush access tracking buffer first
     if (this.accessTrackingBuffer.size > 0) {
@@ -14955,6 +15412,7 @@ export class Orchestrator {
             : null;
           if (await this.storage.invalidateMemory(item.existingId)) {
             invalidated += 1;
+            memoryItemMutated = true;
             await this.embeddingFallback.removeFromIndex(item.existingId);
             if (toInvalidate?.path && toInvalidate.frontmatter?.created) {
               deindexMemory(
@@ -14976,6 +15434,7 @@ export class Orchestrator {
                 lineage: [item.existingId],
               },
             );
+            memoryItemMutated = true;
             await this.indexPersistedMemory(this.storage, item.existingId);
             // updateMemory() only changes content/updated/lineage — path, created, and tags
             // are preserved, so the temporal/tag index entry is already correct; no reindex needed.
@@ -14991,6 +15450,7 @@ export class Orchestrator {
                 lineage: [item.existingId, item.mergeWith],
               },
             );
+            memoryItemMutated = true;
             await this.indexPersistedMemory(this.storage, item.existingId);
             // updateMemory() only changes content/updated/supersedes/lineage — path, created, and tags
             // are preserved, so the temporal/tag index entry for the survivor is already correct.
@@ -15035,9 +15495,24 @@ export class Orchestrator {
       });
     }
 
+    // Catalog write touch accounting (issue #1499 sweep): consolidation persists
+    // durable mutations directly to the default-namespace `this.storage`, bypassing
+    // the extraction write path. We do NOT touch here — later maintenance steps in
+    // this same function (entity-file merges, expired-commitment / TTL cleanup,
+    // fact archival) can ALSO mutate the namespace on a run with no LLM outputs
+    // (NIjwl). So we accumulate every durable mutation into `memoryItemMutated` and
+    // record ONE consolidated touch AFTER all mutation-producing steps complete,
+    // just before returning (rule #25: touch after the write commits). LLM
+    // profile/entity updates and memory-item actions (UPDATE / MERGE / INVALIDATE)
+    // count here (NIBOi).
+    if (result.profileUpdates.length > 0 || result.entityUpdates.length > 0) {
+      memoryItemMutated = true;
+    }
+
     // Merge fragmented entity files
     const entitiesMerged = await this.storage.mergeFragmentedEntities();
     if (entitiesMerged > 0) {
+      memoryItemMutated = true;
       log.info(`merged ${entitiesMerged} fragmented entity files`);
     }
 
@@ -15048,6 +15523,10 @@ export class Orchestrator {
           5,
         );
         if (synthesized > 0) {
+          // Entity synthesis rewrites entity files — a durable namespace mutation,
+          // so record it for the catalog touch even when it is the only change in
+          // the pass (codex). Otherwise lastWriteAt goes stale.
+          memoryItemMutated = true;
           log.info(`refreshed ${synthesized} entity syntheses`);
         }
       } catch (err) {
@@ -15060,6 +15539,7 @@ export class Orchestrator {
       this.config.commitmentDecayDays,
     );
     if (deletedCommitments.length > 0) {
+      memoryItemMutated = true;
       log.info(`cleaned ${deletedCommitments.length} expired commitments`);
       if (this.config.queryAwareIndexingEnabled) {
         for (const m of deletedCommitments) {
@@ -15089,6 +15569,7 @@ export class Orchestrator {
           lifecycle.transitionedToExpired.length > 0 ||
           lifecycle.deletedResolved.length > 0
         ) {
+          memoryItemMutated = true;
           log.info(
             `commitment ledger lifecycle: expired ${lifecycle.transitionedToExpired.length}, cleaned ${lifecycle.deletedResolved.length}`,
           );
@@ -15101,6 +15582,7 @@ export class Orchestrator {
     // Clean memories past their TTL (speculative memories auto-expire)
     const deletedTTL = await this.storage.cleanExpiredTTL();
     if (deletedTTL.length > 0) {
+      memoryItemMutated = true;
       log.info(`cleaned ${deletedTTL.length} TTL-expired memories`);
       if (this.config.queryAwareIndexingEnabled) {
         for (const m of deletedTTL) {
@@ -15119,7 +15601,12 @@ export class Orchestrator {
       try {
         const lightSleepStartedAt = new Date().toISOString();
         const lifecycleCorpus = await this.storage.readAllMemories();
-        await this.runLifecyclePolicyPass(lifecycleCorpus);
+        // Lifecycle frontmatter writes count as durable mutations for the catalog
+        // touch below (codex NR-tS), even when no other consolidation step set
+        // memoryItemMutated.
+        if ((await this.runLifecyclePolicyPass(lifecycleCorpus)) > 0) {
+          memoryItemMutated = true;
+        }
         await this.recordScheduledDreamsPhaseRun(
           "lightSleep",
           lifecycleCorpus.length,
@@ -15139,13 +15626,17 @@ export class Orchestrator {
 
     try {
       const deepSleepStartedAt = new Date().toISOString();
-      await this.runTierMigrationCycle(this.storage, "maintenance");
+      // Tier migrations move/rewrite memory files; count them as durable
+      // mutations for the catalog touch below (codex NThSW).
+      const tierMigration = await this.runTierMigrationCycle(this.storage, "maintenance");
+      if (tierMigration.migrated > 0) memoryItemMutated = true;
       allMemories = await this.storage.readAllMemories();
 
       // Fact archival pass (v6.0) — move old, low-importance, rarely-accessed facts to archive/
       if (this.config.factArchivalEnabled) {
         const archived = await this.runFactArchival(allMemories);
         if (archived > 0) {
+          memoryItemMutated = true;
           log.info(`archived ${archived} old low-importance facts`);
         }
       }
@@ -15268,6 +15759,10 @@ export class Orchestrator {
         );
         if (profileResult) {
           await this.storage.writeProfile(profileResult.consolidatedProfile);
+          // Profile consolidation rewrites profile.md — a durable namespace
+          // mutation; record it for the catalog touch even when it is the only
+          // change in the pass (codex). Otherwise lastWriteAt goes stale.
+          memoryItemMutated = true;
           log.info(
             `profile.md consolidated: removed ${profileResult.removedCount} items — ${profileResult.summary}`,
           );
@@ -15350,6 +15845,21 @@ export class Orchestrator {
           log.warn(`consolidation observer failed (ignored): ${err}`);
         }
       }
+    }
+
+    // Consolidated catalog write touch (issue #1499 sweep; NIBOi + NIjwl). One
+    // touch covering EVERY durable namespace mutation this pass made — LLM
+    // profile/entity/memory-item actions AND cleanup-only maintenance (entity-file
+    // merges, expired-commitment / ledger-lifecycle / TTL cleanup, fact archival).
+    // Recorded here, after all mutation-producing steps, so a cleanup-only run that
+    // rewrote the store still refreshes `lastWriteAt` (rule #25). The default
+    // namespace is always configured/cataloged; `markWrite` is idempotent so this
+    // only refreshes recency. Best-effort and failure-tolerant.
+    if (memoryItemMutated) {
+      this.markCatalogWrite(
+        this.namespaceFromStorageDir(this.storage.dir),
+        this.storage.dir,
+      );
     }
 
     log.info("consolidation complete");
@@ -15801,14 +16311,17 @@ export class Orchestrator {
 
   async runLifecyclePolicyNow(storage: StorageManager = this.storage): Promise<{ memoriesAssessed: number }> {
     const lifecycleCorpus = await storage.readAllMemories();
-    await this.runLifecyclePolicyPass(lifecycleCorpus, storage);
+    // Record the catalog write when the pass rewrote any frontmatter (codex NR-tS).
+    if ((await this.runLifecyclePolicyPass(lifecycleCorpus, storage)) > 0) {
+      this.markCatalogWrite(this.namespaceFromStorageDir(storage.dir), storage.dir);
+    }
     return { memoriesAssessed: lifecycleCorpus.length };
   }
 
   private async runLifecyclePolicyPass(
     allMemories: MemoryFile[],
     storage: StorageManager = this.storage,
-  ): Promise<void> {
+  ): Promise<number> {
     const now = new Date();
     const nowIso = now.toISOString();
     const countsByState: Record<LifecycleState, number> = {
@@ -15885,7 +16398,9 @@ export class Orchestrator {
       if (wrote) updatedCount += 1;
     }
 
-    if (!this.config.lifecycleMetricsEnabled) return;
+    // Report how many memories had frontmatter rewritten so callers can record a
+    // catalog write touch for lifecycle-only passes (codex NR-tS).
+    if (!this.config.lifecycleMetricsEnabled) return updatedCount;
 
     const total = evaluatedCount;
     const metrics = {
@@ -15910,6 +16425,7 @@ export class Orchestrator {
     );
     await mkdir(path.dirname(metricsPath), { recursive: true });
     await writeFile(metricsPath, JSON.stringify(metrics, null, 2), "utf-8");
+    return updatedCount;
   }
 
   /**
@@ -16030,9 +16546,10 @@ export class Orchestrator {
         new Date(b.frontmatter.created).getTime(),
     );
 
-    // Keep recent memories
-    const toKeep = sorted.slice(-this.config.summarizationRecentToKeep);
-    const toSummarize = sorted.slice(0, -this.config.summarizationRecentToKeep);
+    // Keep recent memories, with explicit zero handling so `slice(-0)` does not
+    // accidentally keep every memory out of the summarization candidate set.
+    const recentToKeep = Math.max(0, this.config.summarizationRecentToKeep);
+    const toSummarize = recentToKeep > 0 ? sorted.slice(0, -recentToKeep) : sorted;
 
     // Filter candidates for summarization
     const candidates = toSummarize.filter((m) => {
@@ -16093,6 +16610,15 @@ export class Orchestrator {
         summary.id,
       );
 
+      // Catalog write touch (issue #1499 sweep): summarization writes a durable
+      // summary and then rewrites source-memory archive status, bypassing the
+      // extraction write path. Record the touch after both mutations complete so
+      // `lastWriteAt` covers the final archived-state write.
+      this.markCatalogWrite(
+        this.namespaceFromStorageDir(this.storage.dir),
+        this.storage.dir,
+      );
+
       log.info(
         `created summary ${summary.id} from ${batch.length} memories, archived ${archived}`,
       );
@@ -16127,8 +16653,12 @@ export class Orchestrator {
   private static readonly IDENTITY_CONSOLIDATE_THRESHOLD = 8_000;
 
   private async autoConsolidateIdentity(): Promise<void> {
+    // Fan out over the catalog-union namespace set (issue #1499 sweep): a dynamic
+    // namespace that accumulated IDENTITY.md reflections must also be eligible for
+    // auto-consolidation, otherwise its identity file grows unbounded and is never
+    // consolidated. Falls back to the configured set on any catalog read failure.
     const namespaces = this.config.namespacesEnabled
-      ? this.configuredNamespaces()
+      ? await this.maintenanceNamespaces()
       : [this.config.defaultNamespace];
 
     for (const namespace of namespaces) {
@@ -16190,6 +16720,19 @@ export class Orchestrator {
         identityNamespace,
       );
       await storage.writeIdentityReflections("");
+      // NRcCL (codex P2): record a per-namespace catalog write for THIS namespace
+      // after the identity files are updated. This fan-out can mutate a dynamic
+      // namespace via `writeIdentity`/`writeIdentityReflections`, but the
+      // consolidation pass's only consolidated touch covers `this.storage` (the
+      // default) and only fires when `memoryItemMutated` was set by OTHER work — so
+      // a namespace whose sole mutation in the pass is identity consolidation would
+      // otherwise keep a stale `lastWriteAt`, making `listNamespaces({ writtenSince })`
+      // and catalog-recency consumers miss the write. Best-effort and
+      // failure-tolerant (`markCatalogWrite` swallows errors, never crashing the
+      // consolidation; gotcha #13, rule #40). No double-count with the consolidated
+      // touch above: that one is gated on `memoryItemMutated` (which identity
+      // consolidation does not set), and `markWrite` is idempotent regardless.
+      this.markCatalogWrite(namespace, storage.dir);
       log.info(
         `IDENTITY(${namespace}) consolidated: ${identityContent.length} → ${newContent.length} chars, ${result.learnedPatterns.length} patterns`,
       );
@@ -18538,7 +19081,75 @@ export class Orchestrator {
       return this.config.defaultNamespace;
     const m = resolvedStorageDir.match(/[\\/]namespaces[\\/]([^\\/]+)$/);
     if (!m?.[1]) return this.config.defaultNamespace;
-    return namespaceIdentityFromToken(m[1]) ?? m[1];
+    const dirName = m[1];
+    // Token-shaped raw names (round 6, codex P2 — NBsFz): a dir name might be a
+    // tokenized identity OR a literal raw namespace name that merely LOOKS like a
+    // token (e.g. a configured or dynamic name `ns-616c706861`). The round-trip check below
+    // (`namespaceIdentityToken(decoded) === dirName`) is TAUTOLOGICAL for a
+    // canonical token string, so it cannot tell a tokenized dir for `alpha` apart
+    // from the legacy raw root of a namespace literally named `ns-616c706861`
+    // (codex NRCve). A dir name that is itself a KNOWN namespace (configured or
+    // catalog-owned at this exact storage root) is therefore preserved as the
+    // literal namespace BEFORE attempting to decode it.
+    if (this.configuredNamespaces().includes(dirName)) {
+      return dirName;
+    }
+    this.loadNamespaceStorageDirHintsFromCatalog();
+    const hintedNamespaces = this.namespaceStorageDirHints.get(resolvedStorageDir);
+    if (hintedNamespaces?.has(dirName)) {
+      return dirName;
+    }
+    if (hintedNamespaces?.size === 1) {
+      const [hintedNamespace] = hintedNamespaces;
+      if (hintedNamespace) return hintedNamespace;
+    }
+    const decoded = namespaceIdentityFromToken(dirName);
+    if (decoded && namespaceIdentityToken(decoded) === dirName) {
+      return decoded;
+    }
+    return dirName;
+  }
+
+  /**
+   * Record a namespace write in the catalog (issue #1499). Best-effort and
+   * failure-tolerant: a catalog write error MUST NOT crash the primary memory
+   * write (CLAUDE.md gotcha #13, rule #40). Fire-and-forget by design.
+   */
+  private markCatalogWrite(namespace: string, storageDir?: string): void {
+    if (!this.namespaceCatalog.enabled) return;
+    this.rememberNamespaceStorageDirHint(namespace, storageDir);
+    void this.namespaceCatalog
+      .markWrite(namespace, { discoveredBy: "write", storageDir })
+      .catch(() => undefined);
+  }
+
+  /**
+   * Public best-effort catalog write touch (issue #1499). User-facing explicit
+   * captures (`memory_store`) and review-queue approvals persist via
+   * `persistExplicitCapture()` → `storage.writeMemory()`, which bypasses the
+   * extraction write path that calls `markCatalogWrite`. Without this their
+   * namespaces never record `lastWriteAt`, so the catalog under-reports write
+   * recency (round 5, codex P2). Fire-and-forget and failure-tolerant — a
+   * catalog error must never affect the explicit write (gotcha #13, rule #40).
+   *
+   * An undefined/empty `namespace` means the write targeted the DEFAULT namespace
+   * (`getStorage(undefined)` routes there), so we record it under the configured
+   * default rather than skipping it (round 6, codex P2 — default `memory_store`
+   * and inline-note writes were missing from `writtenSince`/maintenance).
+   */
+  recordCatalogWrite(namespace?: string, storageDir?: string): void {
+    const ns = namespace && namespace.trim().length > 0 ? namespace : this.config.defaultNamespace;
+    if (!ns) return;
+    this.markCatalogWrite(ns, storageDir);
+  }
+
+  /** Record a namespace read in the catalog. Best-effort, failure-tolerant. */
+  private markCatalogRead(namespace: string, storageDir?: string): void {
+    if (!this.namespaceCatalog.enabled) return;
+    this.rememberNamespaceStorageDirHint(namespace, storageDir);
+    void this.namespaceCatalog
+      .markRead(namespace, { discoveredBy: "read", storageDir })
+      .catch(() => undefined);
   }
 
   private async readAllMemoriesForNamespaces(

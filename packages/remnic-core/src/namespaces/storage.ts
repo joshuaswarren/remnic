@@ -104,52 +104,156 @@ async function hasAnyNamespaceStorageMarker(
  * This avoids surprising "lost memories" when an install flips namespaces on without
  * migrating existing data.
  */
+/**
+ * Optional hooks for the storage router. `onResolve` fires whenever a namespace's
+ * storage is resolved/created, so a downstream consumer (e.g. the namespace
+ * catalog, issue #1499) can register the namespace. The hook MUST NOT throw into
+ * the router; the router invokes it defensively and a hook failure never affects
+ * storage resolution.
+ *
+ * The hook MAY return (or resolve to) a boolean indicating whether the
+ * registration actually PERSISTED (round 6, codex P2 — NEFoX). When it resolves
+ * to `false` (a dropped/no-op registration), the router does NOT mark the
+ * (namespace, storageDir) pair as notified, so the next resolve RETRIES it
+ * instead of suppressing it forever. A `void`/`undefined` result is treated as
+ * success (legacy hooks).
+ */
+export interface NamespaceStorageRouterHooks {
+  onResolve?: (
+    namespace: string,
+    storageDir: string,
+  ) => void | boolean | Promise<void | boolean>;
+}
+
+/**
+ * Resolve the runtime storage root for the configured DEFAULT namespace.
+ *
+ * Shared between the live router (`NamespaceStorageRouter.defaultNamespaceRoot`)
+ * and the rebuildable catalog (`NamespaceCatalog.rebuildFromDisk`) so the two
+ * can never diverge (CLAUDE.md rule #22/#42 — read & write paths resolve through
+ * the same logic). The contract is: while legacy memory data still lives
+ * directly under `memoryDir`, the default root stays `memoryDir`; only once the
+ * legacy root is empty and a `namespaces/<default|token>` dir holds data does
+ * the default migrate into that tokenized/legacy-named dir.
+ */
+export async function resolveDefaultNamespaceRoot(config: PluginConfig): Promise<string> {
+  if (!config.namespacesEnabled) {
+    return config.memoryDir;
+  }
+
+  // Build the legacy default root from the NORMALIZED (trimmed) name so a
+  // whitespace-padded `defaultNamespace` still finds the live `namespaces/default`
+  // root (NIabe). `storageFor()` classifies the trimmed value as the default, and
+  // the on-disk legacy dir is created under the trimmed name; using the raw spaced
+  // name here would look for `namespaces/<spaced>` and miss the real root, falling
+  // back to memoryDir/tokenized. `namespaceIdentityToken` already normalizes
+  // internally, so the tokenized path is unaffected.
+  const defaultIdentity = normalizeNamespaceIdentity(config.defaultNamespace);
+  const legacyNsDir = resolveNamespaceDir(config.memoryDir, defaultIdentity);
+  const tokenizedNsDir = resolveNamespaceDir(
+    config.memoryDir,
+    namespaceIdentityToken(config.defaultNamespace),
+  );
+  const tokenizedHasData =
+    (await exists(tokenizedNsDir)) &&
+    (await hasAnyNamespaceStorageMarker(tokenizedNsDir, { includeRuntimeState: true }));
+  const nsDir = tokenizedHasData
+    ? tokenizedNsDir
+    : (await exists(legacyNsDir))
+      ? legacyNsDir
+      : tokenizedNsDir;
+  return (await exists(nsDir)) && !(await hasAnyLegacyData(config.memoryDir))
+    ? nsDir
+    : config.memoryDir;
+}
+
+/**
+ * Resolve the runtime storage root for ANY namespace exactly as the live router
+ * would (`NamespaceStorageRouter.namespaceRoot`). Shared so the rebuildable
+ * catalog records the SAME on-disk root the router routes to — a recall/read
+ * touch must not guess `namespaces/<token>` when the router actually serves a
+ * legacy raw-name dir or a migrated default root (CLAUDE.md rule #22/#42; round
+ * 4, cursor Medium). The default namespace delegates to `resolveDefaultNamespaceRoot`;
+ * every other namespace prefers the tokenized root when it has a storage marker,
+ * else a legacy raw-name dir when present, else the tokenized root.
+ */
+export async function resolveNamespaceStorageRoot(
+  config: PluginConfig,
+  namespace: string,
+): Promise<string> {
+  if (!config.namespacesEnabled) return config.memoryDir;
+  // Compare on NORMALIZED identity so a whitespace-padded configured default name
+  // still routes to the default root rather than a tokenized non-default dir
+  // (NH-FH). The catalog keys records by the same normalized identity.
+  if (normalizeNamespaceIdentity(namespace) === normalizeNamespaceIdentity(config.defaultNamespace)) {
+    return resolveDefaultNamespaceRoot(config);
+  }
+  const legacyRoot = resolveNamespaceDir(config.memoryDir, namespace);
+  const tokenizedRoot = resolveNamespaceDir(config.memoryDir, namespaceIdentityToken(namespace));
+  if (
+    (await exists(tokenizedRoot)) &&
+    (await hasAnyNamespaceStorageMarker(tokenizedRoot, { includeRuntimeState: true }))
+  ) {
+    return tokenizedRoot;
+  }
+  return (await exists(legacyRoot)) ? legacyRoot : tokenizedRoot;
+}
+
 export class NamespaceStorageRouter {
   private readonly cache = new Map<string, StorageManager>();
   private defaultNsRootResolved: string | null = null;
+  // Dedup the resolve hook (round 6, cursor Medium — NCNL2). Recall/extraction
+  // call `storageFor` repeatedly; firing `onResolve` (→ catalog loadCompacted +
+  // append) on every cache hit grows `namespaces.jsonl` without bound between
+  // rebuilds. We fire the hook only when the (namespace, storageDir) pair is new
+  // or its dir changed, so a steady-state cache hit is a no-op for the catalog.
+  private readonly notifiedResolved = new Map<string, string>();
+  // In-flight resolve-hook dedup (NFJV-, codex P2). The catalog's `onResolve`
+  // hook is ASYNC (it returns `registerResolved(...)`), so `notifiedResolved` is
+  // only set after the hook's promise SETTLES. Without tracking the in-flight
+  // window, a burst of `storageFor()` cache hits for the SAME namespace before
+  // the first registration finishes would each pass the `notifiedResolved` guard
+  // and fire their OWN `onResolve` — queueing N duplicate catalog touches + lock
+  // acquisitions despite the once-per-namespace intent. We therefore record the
+  // (namespace → storageDir) being registered BEFORE awaiting the hook so a
+  // concurrent call for the same pair skips firing. On SUCCESS the pair is
+  // promoted to `notifiedResolved` (future calls skip permanently); on `false`
+  // (dropped touch — e.g. rebuild-lock timeout) OR rejection the in-flight marker
+  // is CLEARED so a later `storageFor()` can RETRY the dropped registration. The
+  // entry is always removed when the promise settles, so the map cannot grow
+  // unbounded (one transient entry per concurrently-resolving namespace).
+  private readonly inFlightResolved = new Map<string, string>();
 
-  constructor(private readonly config: PluginConfig) {}
+  // Normalized (trimmed) default namespace identity (NH-FH). `storageFor`
+  // normalizes its input, so default-namespace branches must compare against the
+  // normalized config default too — otherwise a whitespace-padded configured
+  // default name routes the default namespace to a tokenized non-default root.
+  private readonly defaultNamespaceIdentity: string;
+
+  constructor(
+    private readonly config: PluginConfig,
+    private readonly hooks: NamespaceStorageRouterHooks = {},
+  ) {
+    this.defaultNamespaceIdentity = normalizeNamespaceIdentity(config.defaultNamespace);
+  }
 
   private async defaultNamespaceRoot(): Promise<string> {
-    if (!this.config.namespacesEnabled) {
-      this.defaultNsRootResolved = this.config.memoryDir;
-      return this.defaultNsRootResolved;
-    }
-
-    const legacyNsDir = resolveNamespaceDir(this.config.memoryDir, this.config.defaultNamespace);
-    const tokenizedNsDir = resolveNamespaceDir(
-      this.config.memoryDir,
-      namespaceIdentityToken(this.config.defaultNamespace),
-    );
-    const tokenizedHasData =
-      (await exists(tokenizedNsDir)) && (await hasAnyNamespaceStorageMarker(tokenizedNsDir, { includeRuntimeState: true }));
-    const nsDir = tokenizedHasData
-      ? tokenizedNsDir
-      : (await exists(legacyNsDir)) ? legacyNsDir : tokenizedNsDir;
-    this.defaultNsRootResolved =
-      (await exists(nsDir)) && !(await hasAnyLegacyData(this.config.memoryDir))
-        ? nsDir
-        : this.config.memoryDir;
+    this.defaultNsRootResolved = await resolveDefaultNamespaceRoot(this.config);
     return this.defaultNsRootResolved;
   }
 
   private async namespaceRoot(namespace: string): Promise<string> {
     // NOTE: only used after defaultNamespaceRoot() resolution.
     if (!this.config.namespacesEnabled) return this.config.memoryDir;
-    if (namespace === this.config.defaultNamespace) {
+    if (normalizeNamespaceIdentity(namespace) === this.defaultNamespaceIdentity) {
       return this.defaultNsRootResolved ?? this.config.memoryDir;
     }
-    const legacyRoot = resolveNamespaceDir(this.config.memoryDir, namespace);
-    const tokenizedRoot = resolveNamespaceDir(this.config.memoryDir, namespaceIdentityToken(namespace));
-    if ((await exists(tokenizedRoot)) && (await hasAnyNamespaceStorageMarker(tokenizedRoot, { includeRuntimeState: true }))) {
-      return tokenizedRoot;
-    }
-    return (await exists(legacyRoot)) ? legacyRoot : tokenizedRoot;
+    return resolveNamespaceStorageRoot(this.config, namespace);
   }
 
   async storageFor(namespace: string): Promise<StorageManager> {
     const ns = normalizeNamespaceIdentity(namespace || this.config.defaultNamespace);
-    if (ns !== this.config.defaultNamespace && !isSafeRouteNamespace(ns)) {
+    if (ns !== this.defaultNamespaceIdentity && !isSafeRouteNamespace(ns)) {
       throw new Error(`unsafe namespace: ${ns}`);
     }
     // Even when the default namespace is exempt from the check above, every
@@ -158,16 +262,20 @@ export class NamespaceStorageRouter {
     // <memoryDir>/namespaces (CodeQL js/path-injection).
 
     let root: string;
-    if (ns === this.config.defaultNamespace) {
+    if (ns === this.defaultNamespaceIdentity) {
       root = await this.defaultNamespaceRoot();
       const cached = this.cache.get(ns);
       if (cached && cached.dir === root) {
+        this.notifyResolved(ns, root);
         return cached;
       }
     } else {
       const cached = this.cache.get(ns);
       root = await this.namespaceRoot(ns);
-      if (cached && cached.dir === root) return cached;
+      if (cached && cached.dir === root) {
+        this.notifyResolved(ns, root);
+        return cached;
+      }
     }
 
     const sm = new StorageManager(root, this.config.entitySchemas);
@@ -176,6 +284,78 @@ export class NamespaceStorageRouter {
     // matching the behaviour of the primary this.storage instance in the orchestrator.
     sm.citationTemplate = this.config.inlineSourceAttributionFormat;
     this.cache.set(ns, sm);
+    this.notifyResolved(ns, root);
     return sm;
+  }
+
+  /**
+   * Fire the resolve hook defensively. A hook failure (e.g. a catalog write
+   * error) MUST NOT crash storage resolution — see CLAUDE.md gotcha #13.
+   */
+  private notifyResolved(namespace: string, storageDir: string): void {
+    const hook = this.hooks.onResolve;
+    if (!hook) return;
+    // Skip when we've already SUCCESSFULLY notified this exact (namespace,
+    // storageDir) — a steady-state cache hit must not re-append to the catalog
+    // log (NCNL2). A changed dir (rare: migration/realignment) still re-fires
+    // once. We mark the pair as notified ONLY AFTER the hook succeeds, and CLEAR
+    // it on failure, so a dropped registration (e.g. rebuild-lock timeout) is
+    // RETRIED on the next cache hit instead of being suppressed forever (round 6,
+    // cursor Medium — ND3EJ).
+    if (this.notifiedResolved.get(namespace) === storageDir) return;
+    // In-flight dedup (NFJV-, codex P2): if a registration for this exact
+    // (namespace, storageDir) is already AWAITING its async hook, do not fire a
+    // second one. Without this, concurrent cache-hit bursts before the first
+    // append settles each pass the `notifiedResolved` guard above and queue
+    // duplicate catalog touches/lock acquisitions. A pair with a DIFFERENT
+    // in-flight dir (rare mid-migration realignment) still fires once.
+    if (this.inFlightResolved.get(namespace) === storageDir) return;
+    try {
+      // Handle BOTH synchronous throws and asynchronous rejections (round 6,
+      // codex P2 — NDo8C). The hook may be `async`; its rejected promise would
+      // bypass this try/catch and, where unhandled rejections are fatal, crash
+      // storage resolution. Mark the dedup pair as notified ONLY when the hook
+      // resolves to a PERSISTED result (round 6, codex P2 — NEFoX): a result of
+      // `false` means the registration was dropped/no-op (e.g. rebuild-lock
+      // timeout), so we must NOT suppress its retry. `void`/`undefined` is treated
+      // as success for legacy hooks. On rejection we leave it un-notified to retry.
+      //
+      // Record the in-flight marker BEFORE awaiting so concurrent calls for the
+      // same pair skip (NFJV-). It is always cleared once the promise settles, so
+      // the map holds at most one transient entry per concurrently-resolving
+      // namespace and cannot grow unbounded.
+      this.inFlightResolved.set(namespace, storageDir);
+      Promise.resolve(hook(namespace, storageDir)).then(
+        (persisted) => {
+          // Clear the in-flight marker ONLY if it is still ours (a newer resolve
+          // for a different dir may have replaced it).
+          if (this.inFlightResolved.get(namespace) === storageDir) {
+            this.inFlightResolved.delete(namespace);
+          }
+          if (persisted !== false) {
+            this.notifiedResolved.set(namespace, storageDir);
+          }
+          // On `false` (dropped touch) we intentionally do NOT mark notified, so
+          // a later `storageFor()` retries the registration. Clearing the
+          // in-flight marker above is what re-enables that retry.
+        },
+        () => {
+          // Registration failed — clear in-flight AND do NOT mark as notified, so
+          // it is retried on the next cache hit.
+          if (this.inFlightResolved.get(namespace) === storageDir) {
+            this.inFlightResolved.delete(namespace);
+          }
+          if (this.notifiedResolved.get(namespace) === storageDir) {
+            this.notifiedResolved.delete(namespace);
+          }
+        },
+      );
+    } catch {
+      // Synchronous throw: clear any in-flight marker we just set and leave the
+      // pair un-notified so a later resolve retries.
+      if (this.inFlightResolved.get(namespace) === storageDir) {
+        this.inFlightResolved.delete(namespace);
+      }
+    }
   }
 }

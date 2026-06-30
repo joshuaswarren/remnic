@@ -183,3 +183,204 @@ test("chunking fallback: falls back to recursive chunking when fallbackToRecursi
   const ids = await orchestrator.persistExtraction(extraction, storage, null);
   assert.ok(ids.length >= 1, "fact should be persisted via recursive fallback");
 });
+
+test("chunked extraction records catalog touch after supersession, artifact, and graph writes", async () => {
+  installCapturingLogger();
+  const { orchestrator, storage } = await makeOrchestrator({
+    semanticChunkingEnabled: false,
+    chunkingTargetTokens: 12,
+    chunkingMinTokens: 6,
+    chunkingOverlapSentences: 0,
+    temporalSupersessionEnabled: true,
+    verbatimArtifactsEnabled: true,
+    verbatimArtifactCategories: ["fact"],
+    verbatimArtifactsMinConfidence: 0,
+    multiGraphMemoryEnabled: true,
+  });
+
+  await storage.writeMemory("fact", "Person A lives in Austin.", {
+    source: "test",
+    entityRef: "person-a",
+    structuredAttributes: { city: "Austin" },
+    validAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  const events: string[] = [];
+  const originalWriteChunk = storage.writeChunk.bind(storage);
+  storage.writeChunk = async (...args: Parameters<typeof storage.writeChunk>) => {
+    const id = await originalWriteChunk(...args);
+    events.push("chunk");
+    return id;
+  };
+
+  const originalWriteMemoryFrontmatter = storage.writeMemoryFrontmatter.bind(storage);
+  storage.writeMemoryFrontmatter = async (
+    ...args: Parameters<typeof storage.writeMemoryFrontmatter>
+  ) => {
+    const result = await originalWriteMemoryFrontmatter(...args);
+    events.push("supersession");
+    return result;
+  };
+
+  const originalWriteArtifact = storage.writeArtifact.bind(storage);
+  storage.writeArtifact = async (...args: Parameters<typeof storage.writeArtifact>) => {
+    const id = await originalWriteArtifact(...args);
+    events.push("artifact");
+    return id;
+  };
+
+  orchestrator.buildGraphEdge = async () => {
+    events.push("graph");
+  };
+
+  orchestrator.markCatalogWrite = () => {
+    events.push("touch");
+  };
+
+  const longContent = Array.from(
+    { length: 20 },
+    (_, i) => `Person A now lives in NYC and this detailed sentence ${i} keeps the memory chunkable.`,
+  ).join(" ");
+
+  const extraction: ExtractionResult = {
+    facts: [
+      {
+        ...fact(longContent),
+        entityRef: "person-a",
+        structuredAttributes: { city: "NYC" },
+      },
+    ],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+
+  await orchestrator.persistExtraction(extraction, storage, null, {
+    validAt: "2026-01-02T00:00:00.000Z",
+  });
+
+  const firstChunkIndex = events.indexOf("chunk");
+  const supersessionIndex = events.indexOf("supersession");
+  const artifactIndex = events.indexOf("artifact");
+  const graphIndex = events.indexOf("graph");
+  const touchIndex = events.lastIndexOf("touch");
+
+  assert.notEqual(firstChunkIndex, -1, "precondition: recursive chunking wrote chunks");
+  assert.notEqual(supersessionIndex, -1, "precondition: temporal supersession rewrote old fact");
+  assert.notEqual(artifactIndex, -1, "precondition: verbatim artifact was written");
+  assert.notEqual(graphIndex, -1, "precondition: graph edge write was attempted");
+  assert.notEqual(touchIndex, -1, "precondition: final catalog touch was recorded");
+  assert.ok(
+    touchIndex > supersessionIndex && touchIndex > artifactIndex && touchIndex > graphIndex,
+    `catalog touch must follow supersession, artifact, and graph writes; saw ${events.join(" -> ")}`,
+  );
+});
+
+test("chunked extraction records catalog touch when post-parent indexing fails", async () => {
+  installCapturingLogger();
+  const { orchestrator, storage } = await makeOrchestrator({
+    semanticChunkingEnabled: false,
+    chunkingTargetTokens: 12,
+    chunkingMinTokens: 6,
+    chunkingOverlapSentences: 0,
+  });
+
+  const events: string[] = [];
+  const originalWriteChunk = storage.writeChunk.bind(storage);
+  storage.writeChunk = async (...args: Parameters<typeof storage.writeChunk>) => {
+    const id = await originalWriteChunk(...args);
+    events.push("chunk");
+    return id;
+  };
+  orchestrator.indexPersistedMemory = async () => {
+    events.push("index");
+    throw new Error("index boom");
+  };
+  orchestrator.markCatalogWrite = () => {
+    events.push("touch");
+  };
+
+  const longContent = Array.from(
+    { length: 20 },
+    (_, i) => `The namespace catalog failure regression sentence ${i} keeps this fact chunkable.`,
+  ).join(" ");
+
+  const extraction: ExtractionResult = {
+    facts: [fact(longContent)],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+
+  await assert.rejects(
+    () => orchestrator.persistExtraction(extraction, storage, null),
+    /index boom/,
+  );
+
+  const firstChunkIndex = events.indexOf("chunk");
+  const touchIndex = events.indexOf("touch");
+  assert.notEqual(firstChunkIndex, -1, "precondition: chunk files were written");
+  assert.notEqual(touchIndex, -1, "catalog touch must run before the indexing error escapes");
+  assert.ok(
+    touchIndex > firstChunkIndex,
+    `catalog touch must follow durable chunk writes on failure; saw ${events.join(" -> ")}`,
+  );
+});
+
+test("chunked extraction records catalog touch when a later chunk write fails", async () => {
+  installCapturingLogger();
+  const { orchestrator, storage } = await makeOrchestrator({
+    semanticChunkingEnabled: false,
+    chunkingTargetTokens: 12,
+    chunkingMinTokens: 6,
+    chunkingOverlapSentences: 0,
+  });
+
+  const events: string[] = [];
+  const originalWriteChunk = storage.writeChunk.bind(storage);
+  let writeChunkCalls = 0;
+  storage.writeChunk = async (...args: Parameters<typeof storage.writeChunk>) => {
+    writeChunkCalls++;
+    if (writeChunkCalls === 1) {
+      const id = await originalWriteChunk(...args);
+      events.push("chunk");
+      return id;
+    }
+    events.push("chunk-fail");
+    throw new Error("later chunk failed");
+  };
+  orchestrator.markCatalogWrite = () => {
+    events.push("touch");
+  };
+
+  const longContent = Array.from(
+    { length: 20 },
+    (_, i) => `The later chunk failure regression sentence ${i} keeps this fact chunkable.`,
+  ).join(" ");
+
+  const extraction: ExtractionResult = {
+    facts: [fact(longContent)],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+
+  await assert.rejects(
+    () => orchestrator.persistExtraction(extraction, storage, null),
+    /later chunk failed/,
+  );
+
+  const chunkIndex = events.indexOf("chunk");
+  const failureIndex = events.indexOf("chunk-fail");
+  const touchIndex = events.indexOf("touch");
+  assert.notEqual(chunkIndex, -1, "precondition: at least one chunk was durable");
+  assert.notEqual(failureIndex, -1, "precondition: a later chunk write failed");
+  assert.notEqual(touchIndex, -1, "partial chunk failure must still touch the catalog");
+  assert.ok(
+    touchIndex > failureIndex,
+    `catalog touch must run from the chunk-write finally after the failure; saw ${events.join(" -> ")}`,
+  );
+});

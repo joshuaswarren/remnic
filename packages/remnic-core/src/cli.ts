@@ -4155,6 +4155,103 @@ export function registerCli(
           console.log("\nOK");
         });
 
+      namespacesCmd
+        .command("rebuild")
+        .description(
+          "Rebuild the namespace catalog from disk (issue #1499). Scans configured + dynamic namespace roots safely and rewrites <memoryDir>/state/namespaces.jsonl",
+        )
+        .option("--dry-run", "Show the rebuilt catalog without writing it")
+        .option("--apply", "Write the rebuilt catalog to disk")
+        .option("--json", "Emit the rebuild result as JSON")
+        .action(async (optionsRaw: unknown) => {
+          const options =
+            optionsRaw && typeof optionsRaw === "object"
+              ? (optionsRaw as { dryRun?: boolean; apply?: boolean; json?: boolean })
+              : {};
+          // Default to a non-destructive dry run unless --apply is given.
+          // Reject contradictory flags rather than silently choosing one.
+          if (options.dryRun === true && options.apply === true) {
+            throw new Error("Pass only one of --dry-run or --apply, not both.");
+          }
+          const dryRun = options.apply !== true;
+
+          if (!orchestrator.namespaceCatalog.enabled) {
+            const note =
+              "Namespace catalog is inert: it only runs when namespacesEnabled is true and namespaceCatalogEnabled is not false.";
+            if (options.json === true) {
+              // Include `applied: false` so the inert JSON payload carries the SAME
+              // shape as the enabled path (cursor Low — NFDBM). An inert catalog
+              // rewrote nothing, so a `--apply` did NOT apply; automation that keys
+              // on `applied` must not misread a missing field as a completed rebuild.
+              console.log(
+                JSON.stringify(
+                  { dryRun, enabled: false, applied: false, records: [], skipped: [], note },
+                  null,
+                  2,
+                ),
+              );
+            } else {
+              console.log(note);
+            }
+            // Exit-code parity with the enabled path (cursor Medium — NFb5W): an
+            // inert catalog rewrote NOTHING, so a `--apply` (dryRun=false) did NOT
+            // apply. The enabled path sets `exitCode = 1` whenever a non-dry-run
+            // rebuild reports `applied: false`; an inert `--apply` is exactly that
+            // case, so exit-code-only automation must see a non-zero exit rather
+            // than read a no-op apply as a completed rebuild. A `--dry-run` (or the
+            // default dry run) inert call stays exit 0 — it never promised to write.
+            if (!dryRun) {
+              process.exitCode = 1;
+            }
+            return;
+          }
+
+          const result = await orchestrator.namespaceCatalog.rebuildFromDisk({ dryRun });
+
+          if (options.json === true) {
+            console.log(JSON.stringify({ enabled: true, ...result }, null, 2));
+            // Mirror the non-JSON failure signal (round 6, codex P2 — NEFoa): an
+            // `--apply` that could not acquire the lock returns `applied: false`
+            // and rewrote nothing, so automation must see a non-zero exit even in
+            // JSON mode rather than treating a no-op apply as a successful rebuild.
+            if (!dryRun && result.applied === false) {
+              process.exitCode = 1;
+            }
+            return;
+          }
+
+          console.log("=== Namespace Catalog Rebuild ===\n");
+          console.log(`mode: ${dryRun ? "dry-run" : "apply"}`);
+          console.log(`namespaces: ${result.records.length}`);
+          for (const record of result.records) {
+            console.log(
+              `${record.namespace}\n  kind: ${record.kind}\n  storage: ${record.storageDir}\n  discovered-by: ${record.discoveredBy}`,
+            );
+          }
+
+          if (result.skipped.length > 0) {
+            console.log("\nSkipped / ambiguous roots:");
+            for (const skip of result.skipped) {
+              console.log(`- ${skip.token} (${skip.reason})${skip.detail ? `: ${skip.detail}` : ""}`);
+            }
+          }
+
+          if (dryRun) {
+            console.log("\nDRY RUN");
+          } else if (result.applied) {
+            console.log("\nOK");
+          } else {
+            // An --apply that could not acquire the cross-process rebuild lock
+            // ran compute-only and did NOT rewrite the catalog (NBn3n/NBsGG).
+            // Report the non-mutation explicitly and exit non-zero so scripts
+            // and operators retry rather than assume the rebuild persisted.
+            console.log(
+              "\nNOT APPLIED: another rebuild holds the lock; the catalog was NOT rewritten. Retry shortly.",
+            );
+            process.exitCode = 1;
+          }
+        });
+
       cmd
         .command("export")
         .description("Export Remnic memory to JSON, Markdown bundle, or SQLite")
@@ -8857,6 +8954,13 @@ export function registerCli(
                 return orchestrator.storage;
               }
               return orchestrator.getStorageForNamespace(requested || orchestrator.config.defaultNamespace);
+            },
+            // Catalog write touch (issue #1499 sweep): a contradiction merge can
+            // write a new memory to a dynamic namespace via the CLI resolve path,
+            // bypassing the extraction write path. Record it so QMD maintenance /
+            // writtenSince don't miss the write. Best-effort and failure-tolerant.
+            onMergedMemoryWritten: (namespace, storageDir) => {
+              orchestrator.recordCatalogWrite(namespace, storageDir);
             },
           });
           console.log(result.message);
