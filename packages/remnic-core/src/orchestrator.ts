@@ -297,8 +297,11 @@ import {
   type ConversationIndexBackendInspection,
   type ConversationQmdRuntime,
 } from "./conversation-index/backend.js";
-import { NamespaceStorageRouter } from "./namespaces/storage.js";
-import { NamespaceCatalog } from "./namespaces/catalog.js";
+import {
+  NamespaceStorageRouter,
+  resolveNamespaceStorageRoot,
+} from "./namespaces/storage.js";
+import { NamespaceCatalog, type NamespaceRecord } from "./namespaces/catalog.js";
 import {
   namespaceIdentityFromToken,
   namespaceIdentityToken,
@@ -2332,17 +2335,45 @@ export class Orchestrator {
   private async maintenanceNamespaces(): Promise<string[]> {
     const configured = this.configuredNamespaces();
     if (!this.namespaceCatalog.enabled) return configured;
+    const configuredSet = new Set(configured);
     let cataloged: string[] = [];
     try {
       const records = await this.namespaceCatalog.listNamespaces();
-      cataloged = records.map((record) => record.namespace);
+      const safeRecords = await Promise.all(
+        records.map(async (record) => {
+          const namespace = record.namespace.trim();
+          if (!namespace || configuredSet.has(namespace)) return null;
+          return (await this.isCatalogedMaintenanceRootLive(record))
+            ? namespace
+            : null;
+        }),
+      );
+      cataloged = safeRecords.filter(
+        (namespace): namespace is string => namespace !== null,
+      );
     } catch {
       // Best-effort: a catalog read failure must not break QMD maintenance.
       cataloged = [];
     }
     return Array.from(
-      new Set([...configured, ...cataloged].map((value) => value.trim()).filter(Boolean)),
+      new Set(
+        [...configured, ...cataloged].map((value) => value.trim()).filter(Boolean),
+      ),
     );
+  }
+
+  private async isCatalogedMaintenanceRootLive(
+    record: NamespaceRecord,
+  ): Promise<boolean> {
+    if (typeof record.storageDir !== "string" || record.storageDir.length === 0) {
+      return false;
+    }
+    try {
+      const liveRoot = await resolveNamespaceStorageRoot(this.config, record.namespace);
+      return path.resolve(liveRoot) === path.resolve(record.storageDir);
+    } catch {
+      return false;
+    }
   }
 
   private buildConfiguredQmdSearchOptions(

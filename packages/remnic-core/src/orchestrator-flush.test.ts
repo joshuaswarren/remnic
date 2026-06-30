@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import {
   BulkImportBatchPartialFailureError,
   Orchestrator,
@@ -7,6 +10,7 @@ import {
 import { parseConfig } from "./config.js";
 import type { BufferTurn } from "./types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
+import { namespaceIdentityToken } from "./namespaces/identity.js";
 
 function makeTurn(sessionKey: string, content: string): BufferTurn {
   return {
@@ -1778,8 +1782,16 @@ test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)"
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let updateArg: string[] | undefined;
   let embedArg: string[] | undefined;
+  const memoryDir = path.join(os.tmpdir(), "remnic-qmd-maintenance-ngnei");
+  const dynamicNamespace = "project-origin-dynamic";
+  const dynamicStorageDir = path.join(
+    memoryDir,
+    "namespaces",
+    namespaceIdentityToken(dynamicNamespace),
+  );
 
   orchestrator.config = {
+    memoryDir,
     namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
@@ -1795,7 +1807,14 @@ test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)"
     async listNamespaces() {
       return [
         { namespace: "default" },
-        { namespace: "project-origin-dynamic" }, // dynamic, NOT configured
+        {
+          namespace: dynamicNamespace,
+          identityToken: namespaceIdentityToken(dynamicNamespace),
+          kind: "project",
+          createdAt: "2026-04-12T12:00:00.000Z",
+          storageDir: dynamicStorageDir,
+          discoveredBy: "write",
+        }, // dynamic, NOT configured
       ];
     },
   };
@@ -1813,14 +1832,82 @@ test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)"
 
   assert.ok(updateArg, "updateNamespaces must be called");
   assert.ok(
-    updateArg!.includes("project-origin-dynamic"),
+    updateArg!.includes(dynamicNamespace),
     "QMD update must cover the cataloged dynamic namespace, not just configured ones",
   );
-  assert.ok(updateArg!.includes("default") && updateArg!.includes("shared"), "configured namespaces remain covered");
   assert.ok(
-    embedArg && embedArg.includes("project-origin-dynamic"),
+    updateArg!.includes("default") && updateArg!.includes("shared"),
+    "configured namespaces remain covered",
+  );
+  assert.ok(
+    embedArg && embedArg.includes(dynamicNamespace),
     "QMD embed must cover the cataloged dynamic namespace",
   );
+});
+
+test("runQmdMaintenance skips cataloged dynamic namespaces whose live root is unsafe", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  let updateArg: string[] | undefined;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-unsafe-root-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-unsafe-target-"));
+  try {
+    const dynamicNamespace = "project-origin-symlinked";
+    const liveLegacyRoot = path.join(memoryDir, "namespaces", dynamicNamespace);
+    const catalogSafeRoot = path.join(
+      memoryDir,
+      "namespaces",
+      namespaceIdentityToken(dynamicNamespace),
+    );
+    await mkdir(path.dirname(liveLegacyRoot), { recursive: true });
+    await symlink(outsideDir, liveLegacyRoot, "dir");
+
+    orchestrator.config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      qmdAutoEmbedEnabled: false,
+      qmdEmbedMinIntervalMs: 0,
+    };
+    orchestrator.qmdMaintenanceInFlight = false;
+    orchestrator.qmdMaintenancePending = true;
+    orchestrator.lastQmdEmbedAtMs = 0;
+    orchestrator.namespaceCatalog = {
+      enabled: true,
+      async listNamespaces() {
+        return [
+          {
+            namespace: dynamicNamespace,
+            identityToken: namespaceIdentityToken(dynamicNamespace),
+            kind: "project",
+            createdAt: "2026-04-12T12:00:00.000Z",
+            storageDir: catalogSafeRoot,
+            discoveredBy: "write",
+          },
+        ];
+      },
+    };
+    orchestrator.namespaceSearchRouter = {
+      async updateNamespaces(ns: string[]) {
+        updateArg = ns;
+        return ns.length;
+      },
+      async embedNamespaces() {},
+    };
+
+    await orchestrator.runQmdMaintenance();
+
+    assert.ok(updateArg, "updateNamespaces must be called");
+    assert.deepEqual(
+      [...updateArg!].sort(),
+      ["default", "shared"],
+      "cataloged dynamic namespaces are skipped when the live router root differs from the catalog-sanitized root",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
 });
 
 // NGnei fallback: when the catalog is disabled, maintenance covers exactly the
@@ -1877,8 +1964,16 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let updateArg: string[] | undefined;
   const abortController = new AbortController();
+  const memoryDir = path.join(os.tmpdir(), "remnic-startup-maintenance-nhzev");
+  const dynamicNamespace = "project-origin-dynamic";
+  const dynamicStorageDir = path.join(
+    memoryDir,
+    "namespaces",
+    namespaceIdentityToken(dynamicNamespace),
+  );
 
   orchestrator.config = {
+    memoryDir,
     namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
@@ -1894,7 +1989,14 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
     async listNamespaces() {
       return [
         { namespace: "default" },
-        { namespace: "project-origin-dynamic" }, // dynamic, catalog-ONLY, NOT configured
+        {
+          namespace: dynamicNamespace,
+          identityToken: namespaceIdentityToken(dynamicNamespace),
+          kind: "project",
+          createdAt: "2026-04-12T12:00:00.000Z",
+          storageDir: dynamicStorageDir,
+          discoveredBy: "write",
+        }, // dynamic, catalog-ONLY, NOT configured
       ];
     },
   };
@@ -1912,7 +2014,7 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
 
   assert.ok(updateArg, "startup updateNamespaces must be called");
   assert.ok(
-    updateArg!.includes("project-origin-dynamic"),
+    updateArg!.includes(dynamicNamespace),
     "startup sync must cover the cataloged dynamic namespace (NHZEV), not just configured ones",
   );
   assert.ok(

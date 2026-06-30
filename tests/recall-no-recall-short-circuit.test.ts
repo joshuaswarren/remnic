@@ -179,25 +179,35 @@ test("recallInternal no_recall records last recall without blocking the response
   const cfg = baseConfig(memoryDir);
   const orchestrator = new Orchestrator(cfg);
 
-  let settled = false;
-  (orchestrator.lastRecall as any).record = () =>
-    new Promise<void>((resolve) => {
-      setTimeout(() => {
-        settled = true;
-        resolve();
-      }, 50);
-    });
+  let recordStarted = false;
+  let releaseRecord!: () => void;
+  const recordPromise = new Promise<void>((resolve) => {
+    releaseRecord = resolve;
+  });
+  (orchestrator.lastRecall as any).record = () => {
+    recordStarted = true;
+    return recordPromise;
+  };
 
-  const startedAt = Date.now();
-  const out = await (orchestrator as any).recallInternal("ok", "user:test:no-recall-record");
-  const elapsedMs = Date.now() - startedAt;
+  const recallPromise = (orchestrator as any).recallInternal(
+    "ok",
+    "user:test:no-recall-record",
+  );
+  const result = await Promise.race([
+    recallPromise.then((value: string) => ({
+      status: "returned" as const,
+      value,
+    })),
+    new Promise<{ status: "blocked" }>((resolve) =>
+      setTimeout(() => resolve({ status: "blocked" }), 250),
+    ),
+  ]);
 
-  assert.equal(out, "");
-  assert.equal(settled, false);
-  assert.ok(elapsedMs < 50);
+  releaseRecord();
+  await recordPromise;
 
-  await new Promise((resolve) => setTimeout(resolve, 70));
-  assert.equal(settled, true);
+  assert.deepEqual(result, { status: "returned", value: "" });
+  assert.equal(recordStarted, true);
 });
 
 test("artifact recall searches all readable namespaces", async () => {
