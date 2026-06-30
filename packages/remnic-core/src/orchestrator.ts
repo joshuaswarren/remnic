@@ -4150,17 +4150,27 @@ export class Orchestrator {
                 this.contentHashIndex.remove(m.content);
               }
             }
-            await this.embeddingFallback.removeFromIndex(m.frontmatter.id);
-            if (
-              this.config.queryAwareIndexingEnabled &&
-              m.path &&
-              m.frontmatter?.created
-            ) {
-              deindexMemory(
-                targetStorage.dir,
-                m.path,
-                m.frontmatter.created,
-                m.frontmatter.tags ?? [],
+            // Best-effort index cleanup: a failure here (e.g. on-disk index save
+            // under disk-full) must NOT abort the archival loop and thereby skip
+            // the catalog write touch below for an already-durable canonical write
+            // (kilo NV0mh).
+            try {
+              await this.embeddingFallback.removeFromIndex(m.frontmatter.id);
+              if (
+                this.config.queryAwareIndexingEnabled &&
+                m.path &&
+                m.frontmatter?.created
+              ) {
+                deindexMemory(
+                  targetStorage.dir,
+                  m.path,
+                  m.frontmatter.created,
+                  m.frontmatter.tags ?? [],
+                );
+              }
+            } catch (cleanupErr) {
+              log.warn(
+                `[semantic-consolidation] index cleanup failed (non-fatal): ${cleanupErr}`,
               );
             }
             result.memoriesArchived++;

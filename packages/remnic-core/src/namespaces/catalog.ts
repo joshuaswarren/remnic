@@ -634,6 +634,13 @@ export class NamespaceCatalog {
     } catch {
       memoryReal = path.resolve(this.memoryDir);
     }
+    // Reject a candidate beneath any SYMLINKED ancestor (codex NVuq5): even when
+    // the symlink currently resolves back inside memoryDir, the disk scanner
+    // rejects such a root, and a later retarget of the link would let
+    // maintenance/QMD follow the persisted path outside memoryDir. Mirror the
+    // scanner so touch/config seeding cannot persist a root under a symlinked
+    // namespace ancestor (the leaf itself is symlink-checked below).
+    if (await this.hasSymlinkedAncestor(candidate)) return false;
     try {
       const stat = await lstat(candidate);
       if (stat.isSymbolicLink()) return false;
@@ -660,6 +667,29 @@ export class NamespaceCatalog {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Reject a candidate whose path crosses a SYMLINKED ancestor strictly between
+   * memoryDir and the leaf (codex NVuq5). `realpath`-based containment accepts a
+   * symlinked `<memoryDir>/namespaces` that currently resolves back inside
+   * memoryDir, but the disk scanner rejects such a root and a later retarget would
+   * escape the memory tree — so refuse it here too. The leaf itself is
+   * symlink-checked by the caller; this walks only the intermediate ancestors.
+   */
+  private async hasSymlinkedAncestor(candidate: string): Promise<boolean> {
+    const stopAt = path.resolve(this.memoryDir);
+    let dir = path.dirname(path.resolve(candidate));
+    const root = path.parse(dir).root;
+    while (dir !== stopAt && dir !== root && dir !== path.dirname(dir)) {
+      try {
+        if ((await lstat(dir)).isSymbolicLink()) return true;
+      } catch {
+        // Ancestor does not exist yet — it cannot be a symlink; keep walking up.
+      }
+      dir = path.dirname(dir);
+    }
+    return false;
   }
 
   /**
