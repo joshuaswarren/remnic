@@ -1368,7 +1368,13 @@ export class QmdClient implements SearchBackend {
       preserveStateOnFailure: true,
       signal: execution?.signal,
     });
-    return cliAvailable || this.daemonAvailable;
+    if (this.daemonAvailable && this.daemonSession?.isActive()) {
+      return true;
+    }
+    if (this.daemonAvailable) {
+      this.daemonAvailable = false;
+    }
+    return cliAvailable;
   }
 
   private async probeDaemon(): Promise<boolean> {

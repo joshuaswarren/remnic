@@ -2603,6 +2603,7 @@ export class EngramAccessService {
         signal: controller.signal,
       });
       const active = health.available && health.collectionState !== "missing";
+      const degraded = !active || health.collectionState === "unknown";
       const mode =
         !active
           ? "fallback"
@@ -2613,7 +2614,7 @@ export class EngramAccessService {
       return {
         enabled: true,
         active,
-        degraded: !active,
+        degraded,
         mode,
         collection: health.collection || fallbackCollection,
         collectionState: health.collectionState,

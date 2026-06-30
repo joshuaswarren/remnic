@@ -299,6 +299,59 @@ test("health reports namespace-scoped QMD backend state", async () => {
   }
 });
 
+test("health marks namespace QMD unknown collection state degraded", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-ns-unknown-"));
+  try {
+    const teamDir = path.join(rootDir, "namespaces", "team");
+    const config = parseConfig({
+      memoryDir: rootDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      qmdCollection: "remnic-memory",
+      namespacePolicies: [{ name: "team", readPrincipals: [], writePrincipals: [] }],
+    });
+    const expectedCollection = namespaceCollectionName("remnic-memory", "team", {
+      defaultNamespace: "default",
+    });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      async getStorage(namespace: string) {
+        return { dir: namespace === "team" ? teamDir : rootDir };
+      },
+      async searchHealthForNamespace(namespace: string, execution?: { signal?: AbortSignal }) {
+        assert.equal(namespace, "team");
+        assert.ok(execution?.signal instanceof AbortSignal);
+        return {
+          collection: expectedCollection,
+          available: true,
+          collectionState: "unknown",
+          debugStatus: "cli=true collection=unknown",
+          installedVersion: "qmd 2.5.3",
+          supportedVersion: "2.5.3",
+          supported: true,
+          upgradeAvailable: false,
+          doctorAvailable: true,
+          daemonMode: false,
+        };
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health("team");
+
+    assert.equal(health.memoryDir, teamDir);
+    assert.equal(health.qmd.active, true);
+    assert.equal(health.qmd.degraded, true);
+    assert.equal(health.qmd.collection, expectedCollection);
+    assert.equal(health.qmd.collectionState, "unknown");
+    assert.equal(health.qmd.mode, "cli");
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("health keeps namespace QMD failures scoped to the namespace", async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-ns-fail-"));
   try {
