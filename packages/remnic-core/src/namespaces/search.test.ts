@@ -363,6 +363,42 @@ test("healthForNamespace stops waiting when namespace backend probe aborts", asy
   assert.equal(backend.disposed, 1);
 });
 
+test("ensureNamespaceCollection does not cache aborted namespace backend probes", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = created.length === 0
+        ? new class extends FakeBackend {
+          override async probe(): Promise<boolean> {
+            return await new Promise<boolean>(() => {});
+          }
+        }(false)
+        : new FakeBackend(false, [], { ensure: "present" });
+      created.push(backend);
+      return backend;
+    },
+  );
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    () => router.ensureNamespaceCollection("shared", { signal: controller.signal }),
+    /operation aborted/,
+  );
+
+  assert.equal(created[0]?.disposed, 1);
+  assert.deepEqual(created[0]?.checkCollections, []);
+  assert.deepEqual(created[0]?.ensureCollections, []);
+
+  const ensured = await router.ensureNamespaceCollection("shared");
+
+  assert.equal(ensured, "present");
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1]?.ensureCollections, ["openclaw-engram--ns-736861726564"]);
+});
+
 test("legacy default namespace root filters nested namespace search results", async () => {
   const router = new NamespaceSearchRouter(
     config(),

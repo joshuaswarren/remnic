@@ -66,6 +66,7 @@ type NamespaceScopedSearchConfig = PluginConfig & {
 
 type BackendRecordOptions = {
   autoCreateCollection: boolean;
+  abortAsUnavailable: boolean;
   failOpenMissingGuardedCollection: boolean;
 };
 
@@ -212,6 +213,7 @@ export class NamespaceSearchRouter {
       execution,
       {
         autoCreateCollection: false,
+        abortAsUnavailable: true,
         failOpenMissingGuardedCollection: false,
       },
     );
@@ -275,7 +277,11 @@ export class NamespaceSearchRouter {
 
     const pending = this.createBackendRecordFor(key, execution, {
       autoCreateCollection: true,
+      abortAsUnavailable: false,
       failOpenMissingGuardedCollection: true,
+    }).catch((error) => {
+      this.cache.delete(key);
+      throw error;
     });
 
     this.cache.set(key, pending);
@@ -307,26 +313,44 @@ export class NamespaceSearchRouter {
     };
 
     const backend = this.createBackend(scopedConfig);
-    const available = await awaitWithAbort(backend.probe(), execution?.signal).catch(() => false);
-    const collectionState = available
-      ? await awaitWithAbort(
-        this.collectionStateForBackend(backend, storage.dir, scopedConfig.qmdCollection, {
-          autoCreate: options.autoCreateCollection,
-          failOpenMissingGuardedCollection: options.failOpenMissingGuardedCollection,
-          skipAutoCreate: filtersNestedNamespaces,
-          execution,
-        }),
-        execution?.signal,
-      ).catch(() => "unknown" as const)
-      : "unknown";
-    return {
-      backend,
-      collection: scopedConfig.qmdCollection,
-      memoryDir: storage.dir,
-      available,
-      collectionState,
-      filtersNestedNamespaces,
-    };
+    try {
+      const available = await awaitWithAbort(backend.probe(), execution?.signal).catch((error) => {
+        if (error instanceof NamespaceSearchAbortError && !options.abortAsUnavailable) {
+          throw error;
+        }
+        return false;
+      });
+      const collectionState = available
+        ? await awaitWithAbort(
+          this.collectionStateForBackend(backend, storage.dir, scopedConfig.qmdCollection, {
+            autoCreate: options.autoCreateCollection,
+            failOpenMissingGuardedCollection: options.failOpenMissingGuardedCollection,
+            skipAutoCreate: filtersNestedNamespaces,
+            execution,
+          }),
+          execution?.signal,
+        ).catch((error) => {
+          if (error instanceof NamespaceSearchAbortError && !options.abortAsUnavailable) {
+            throw error;
+          }
+          return "unknown" as const;
+        })
+        : "unknown";
+      return {
+        backend,
+        collection: scopedConfig.qmdCollection,
+        memoryDir: storage.dir,
+        available,
+        collectionState,
+        filtersNestedNamespaces,
+      };
+    } catch (error) {
+      const dispose = (backend as { dispose?: () => void | Promise<void> }).dispose;
+      if (dispose) {
+        await Promise.resolve(dispose.call(backend)).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   private async collectionStateForBackend(
@@ -353,12 +377,21 @@ export class NamespaceSearchRouter {
   }
 }
 
+class NamespaceSearchAbortError extends Error {
+  constructor() {
+    super("operation aborted");
+  }
+}
+
 function awaitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return operation;
-  if (signal.aborted) return Promise.reject(new Error("operation aborted"));
+  if (signal.aborted) return Promise.reject(new NamespaceSearchAbortError());
 
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new Error("operation aborted"));
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new NamespaceSearchAbortError());
+    };
     signal.addEventListener("abort", onAbort, { once: true });
     operation.then(resolve, reject).finally(() => {
       signal.removeEventListener("abort", onAbort);
