@@ -20,6 +20,7 @@ import { validateBriefingFormat } from "./briefing.js";
 import { buildCitationGuidance, type CitationMetadata } from "./citations.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { expandTildePath } from "./utils/path.js";
+import { resolvePrincipal } from "./namespaces/principal.js";
 import {
   REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
@@ -155,7 +156,7 @@ const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
     "projectTag",
   ],
   capsuleImport: ["archivePath", "namespace", "mode", "passphrase", "cwd", "projectTag"],
-  capsuleList: ["namespace", "cwd", "projectTag"],
+  capsuleList: ["namespace", "sessionKey", "cwd", "projectTag"],
 };
 
 // Shared JSON-schema fragments for the client-injected git/project context
@@ -852,6 +853,10 @@ export class EngramMcpServer {
           type: "object",
           properties: {
             namespace: { type: "string" },
+            sessionKey: {
+              type: "string",
+              description: "Optional session key used to derive namespace principal when no trusted transport principal is present.",
+            },
             ...MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED,
           },
           additionalProperties: false,
@@ -2694,9 +2699,14 @@ export class EngramMcpServer {
       }
       case "engram.capsule_list": {
         const body: CapsuleListRequest = parseMcpRequest("capsuleList", args);
+        const requestPrincipal =
+          effectivePrincipal ??
+          (body.sessionKey && this.service.configRef
+            ? resolvePrincipal(body.sessionKey, this.service.configRef)
+            : undefined);
         return this.service.capsuleList({
           namespace: body.namespace,
-          principal: effectivePrincipal,
+          principal: requestPrincipal,
         });
       }
       case "engram.memory_governance_run":

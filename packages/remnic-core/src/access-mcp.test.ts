@@ -371,11 +371,80 @@ test("MCP capsule tools tolerate client-injected cwd/projectTag (#1434)", async 
   }
 });
 
+test("MCP capsule list tolerates client-injected sessionKey (#1513)", async () => {
+  let received: Record<string, unknown> | undefined;
+  const service = {
+    ...makeMockService(),
+    capsuleList: async (args: Record<string, unknown>) => {
+      received = args;
+      return { capsules: [] };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest(
+    makeToolRequest("engram.capsule_list", {
+      namespace: "team",
+      sessionKey: "pi-injected-session",
+      cwd: "/x",
+      projectTag: "t",
+    }),
+  );
+
+  assert.deepEqual(received, {
+    namespace: "team",
+    principal: undefined,
+  });
+  assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+});
+
+test("MCP capsule list derives namespace principal from client-injected sessionKey (#1513)", async () => {
+  let received: Record<string, unknown> | undefined;
+  const service = {
+    ...makeMockService(),
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-mcp-capsule-list-session-principal",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      principalFromSessionKeyMode: "map",
+      principalFromSessionKeyRules: [{ match: "pi-session", principal: "pi-agent" }],
+      namespacePolicies: [
+        { name: "team", readPrincipals: ["pi-agent"], writePrincipals: [] },
+      ],
+    }),
+    capsuleList: async (args: Record<string, unknown>) => {
+      received = args;
+      return { capsules: [] };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest(
+    makeToolRequest("engram.capsule_list", {
+      namespace: "team",
+      sessionKey: "pi-session",
+    }),
+  );
+
+  assert.deepEqual(received, {
+    namespace: "team",
+    principal: "pi-agent",
+  });
+  assert.equal((response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
+});
+
 test("MCP session override is injected only into tools that accept sessionKey", async () => {
   let capsuleListArgs: Record<string, unknown> | undefined;
   let observeArgs: Record<string, unknown> | undefined;
   const service = {
     ...makeMockService(),
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-mcp-session-override-test",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      principalFromSessionKeyMode: "map",
+      principalFromSessionKeyRules: [{ match: "adapter-session", principal: "adapter-agent" }],
+    }),
     capsuleList: async (args: Record<string, unknown>) => {
       capsuleListArgs = args;
       return { capsules: [] };
@@ -400,7 +469,7 @@ test("MCP session override is injected only into tools that accept sessionKey", 
 
   assert.deepEqual(capsuleListArgs, {
     namespace: undefined,
-    principal: undefined,
+    principal: "adapter-agent",
   });
   assert.deepEqual(observeArgs, {
     sessionKey: "adapter-session",
