@@ -14511,13 +14511,6 @@ export class Orchestrator {
             );
           }
 
-          // Catalog touch (issue #1499): record AFTER all chunk writes so a
-          // partial chunked write (a failed `writeChunk`) does not mark a
-          // completed namespace write (cursor NUtB_). The chunked path `continue`s
-          // past the non-chunked touch below, so this fires exactly once per
-          // chunked write. Use the KNOWN routed name, not a dir-decoded guess.
-          this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
-
           if (routedRuleId) {
             log.debug(
               `routing applied for chunked memory ${parentId}: rule=${routedRuleId} category=${writeCategory} storage=${targetStorage.dir}`,
@@ -14591,22 +14584,33 @@ export class Orchestrator {
             // directly for embedding-fallback sync of each chunk document.
             await this.indexPersistedMemory(targetStorage, chunkId);
           }
-          if (
-            this.config.verbatimArtifactsEnabled &&
-            this.config.verbatimArtifactCategories.includes(writeCategory) &&
-            fact.confidence >= this.config.verbatimArtifactsMinConfidence
-          ) {
-            // Reuse citedChunkedContent so the artifact carries the same citation
-            // timestamp as the parent memory write above (Fix #3 — duplicate-citation).
-            await targetStorage.writeArtifact(citedChunkedContent, {
-              confidence: fact.confidence,
-              tags: [...fact.tags, "artifact", "chunked-parent"],
-              artifactType: this.artifactTypeForCategory(writeCategory),
-              sourceMemoryId: parentId,
-              intentGoal: inferredIntent?.goal,
-              intentActionType: inferredIntent?.actionType,
-              intentEntityTypes: inferredIntent?.entityTypes,
-            });
+          try {
+            if (
+              this.config.verbatimArtifactsEnabled &&
+              this.config.verbatimArtifactCategories.includes(writeCategory) &&
+              fact.confidence >= this.config.verbatimArtifactsMinConfidence
+            ) {
+              // Reuse citedChunkedContent so the artifact carries the same citation
+              // timestamp as the parent memory write above (Fix #3 — duplicate-citation).
+              await targetStorage.writeArtifact(citedChunkedContent, {
+                confidence: fact.confidence,
+                tags: [...fact.tags, "artifact", "chunked-parent"],
+                artifactType: this.artifactTypeForCategory(writeCategory),
+                sourceMemoryId: parentId,
+                intentGoal: inferredIntent?.goal,
+                intentActionType: inferredIntent?.actionType,
+                intentEntityTypes: inferredIntent?.entityTypes,
+              });
+            }
+          } finally {
+            // Catalog touch (issue #1499): record AFTER all chunked source-namespace
+            // durable mutations — parent/chunk writes, temporal supersession, and
+            // optional artifact writes — so `lastWriteAt` cannot precede later file
+            // changes in the same extraction pass (codex NYsKb / cursor NY68M).
+            // The `finally` preserves a touch for already-written parent/chunk data
+            // if artifact persistence fails. Use the KNOWN routed name, not a
+            // dir-decoded guess.
+            this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
           }
           // v8.2: graph edge building for chunked memories
           if (this.config.multiGraphMemoryEnabled) {

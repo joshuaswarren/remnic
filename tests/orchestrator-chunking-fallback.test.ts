@@ -183,3 +183,89 @@ test("chunking fallback: falls back to recursive chunking when fallbackToRecursi
   const ids = await orchestrator.persistExtraction(extraction, storage, null);
   assert.ok(ids.length >= 1, "fact should be persisted via recursive fallback");
 });
+
+test("chunked extraction records catalog touch after supersession and artifact writes", async () => {
+  installCapturingLogger();
+  const { orchestrator, storage } = await makeOrchestrator({
+    semanticChunkingEnabled: false,
+    chunkingTargetTokens: 12,
+    chunkingMinTokens: 6,
+    chunkingOverlapSentences: 0,
+    temporalSupersessionEnabled: true,
+    verbatimArtifactsEnabled: true,
+    verbatimArtifactCategories: ["fact"],
+    verbatimArtifactsMinConfidence: 0,
+  });
+
+  await storage.writeMemory("fact", "Person A lives in Austin.", {
+    source: "test",
+    entityRef: "person-a",
+    structuredAttributes: { city: "Austin" },
+    validAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  const events: string[] = [];
+  const originalWriteChunk = storage.writeChunk.bind(storage);
+  storage.writeChunk = async (...args: Parameters<typeof storage.writeChunk>) => {
+    const id = await originalWriteChunk(...args);
+    events.push("chunk");
+    return id;
+  };
+
+  const originalWriteMemoryFrontmatter = storage.writeMemoryFrontmatter.bind(storage);
+  storage.writeMemoryFrontmatter = async (
+    ...args: Parameters<typeof storage.writeMemoryFrontmatter>
+  ) => {
+    const result = await originalWriteMemoryFrontmatter(...args);
+    events.push("supersession");
+    return result;
+  };
+
+  const originalWriteArtifact = storage.writeArtifact.bind(storage);
+  storage.writeArtifact = async (...args: Parameters<typeof storage.writeArtifact>) => {
+    const id = await originalWriteArtifact(...args);
+    events.push("artifact");
+    return id;
+  };
+
+  orchestrator.markCatalogWrite = () => {
+    events.push("touch");
+  };
+
+  const longContent = Array.from(
+    { length: 20 },
+    (_, i) => `Person A now lives in NYC and this detailed sentence ${i} keeps the memory chunkable.`,
+  ).join(" ");
+
+  const extraction: ExtractionResult = {
+    facts: [
+      {
+        ...fact(longContent),
+        entityRef: "person-a",
+        structuredAttributes: { city: "NYC" },
+      },
+    ],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+
+  await orchestrator.persistExtraction(extraction, storage, null, {
+    validAt: "2026-01-02T00:00:00.000Z",
+  });
+
+  const firstChunkIndex = events.indexOf("chunk");
+  const supersessionIndex = events.indexOf("supersession");
+  const artifactIndex = events.indexOf("artifact");
+  const touchIndex = events.indexOf("touch");
+
+  assert.notEqual(firstChunkIndex, -1, "precondition: recursive chunking wrote chunks");
+  assert.notEqual(supersessionIndex, -1, "precondition: temporal supersession rewrote old fact");
+  assert.notEqual(artifactIndex, -1, "precondition: verbatim artifact was written");
+  assert.notEqual(touchIndex, -1, "precondition: catalog touch was recorded");
+  assert.ok(
+    touchIndex > supersessionIndex && touchIndex > artifactIndex,
+    `catalog touch must follow supersession and artifact writes; saw ${events.join(" -> ")}`,
+  );
+});
