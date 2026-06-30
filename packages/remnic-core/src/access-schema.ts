@@ -410,6 +410,7 @@ export const capsuleImportRequestSchema = z
 export const capsuleListRequestSchema = z
   .object({
     namespace: namespaceSchema,
+    sessionKey: sessionKeySchema,
   });
 
 // ---------------------------------------------------------------------------

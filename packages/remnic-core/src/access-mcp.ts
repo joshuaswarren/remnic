@@ -20,6 +20,7 @@ import { validateBriefingFormat } from "./briefing.js";
 import { buildCitationGuidance, type CitationMetadata } from "./citations.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { expandTildePath } from "./utils/path.js";
+import { resolvePrincipal } from "./namespaces/principal.js";
 import {
   REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
@@ -2694,9 +2695,14 @@ export class EngramMcpServer {
       }
       case "engram.capsule_list": {
         const body: CapsuleListRequest = parseMcpRequest("capsuleList", args);
+        const requestPrincipal =
+          effectivePrincipal ??
+          (body.sessionKey && this.service.configRef
+            ? resolvePrincipal(body.sessionKey, this.service.configRef)
+            : undefined);
         return this.service.capsuleList({
           namespace: body.namespace,
-          principal: effectivePrincipal,
+          principal: requestPrincipal,
         });
       }
       case "engram.memory_governance_run":
