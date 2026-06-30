@@ -694,6 +694,74 @@ test("namespaceFromStorageDir compacts catalog hints before choosing token-root 
   }
 });
 
+test("persistExtraction records non-fact catalog touch when a later non-fact write fails", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-nonfact-finally-catalog-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      memoryLinkingEnabled: false,
+      inlineSourceAttributionEnabled: false,
+    });
+    const orchestrator = new Orchestrator(config) as any;
+    const storage = await orchestrator.getStorage("default");
+    await storage.ensureDirectories();
+
+    const events: string[] = [];
+    const originalWriteEntity = storage.writeEntity.bind(storage);
+    storage.writeEntity = async (...args: Parameters<typeof storage.writeEntity>) => {
+      const id = await originalWriteEntity(...args);
+      events.push("entity");
+      return id;
+    };
+    storage.appendToProfile = async () => {
+      events.push("profile");
+      throw new Error("profile boom");
+    };
+    orchestrator.markCatalogWrite = () => {
+      events.push("touch");
+    };
+
+    await assert.rejects(
+      () =>
+        orchestrator.persistExtraction(
+          {
+            facts: [],
+            entities: [
+              {
+                name: "Namespace Catalog",
+                type: "system",
+                facts: ["tracks durable non-fact writes"],
+              },
+            ],
+            relationships: [],
+            questions: [],
+            profileUpdates: ["User cares about catalog recency."],
+          },
+          storage,
+          null,
+        ),
+      /profile boom/,
+    );
+
+    const entityIndex = events.indexOf("entity");
+    const touchIndex = events.indexOf("touch");
+    assert.notEqual(entityIndex, -1, "precondition: entity write succeeded");
+    assert.notEqual(touchIndex, -1, "catalog touch must run before the later write error escapes");
+    assert.ok(
+      touchIndex > entityIndex,
+      `catalog touch must follow the durable non-fact write on failure; saw ${events.join(" -> ")}`,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 7 (codex P2 — NDXHa): an already-ABORTED recall must not record catalog
 // read touches. The abort check runs later (Phase 1 retrieval), so without the
 // gate an already-aborted recall would still set `lastReadAt` for every recall

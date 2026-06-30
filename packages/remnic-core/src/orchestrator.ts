@@ -14608,6 +14608,11 @@ export class Orchestrator {
               },
             );
           }
+          // Parent/chunk files are durable at this point. Record a write now so
+          // later indexing or promotion failures cannot leave the namespace out
+          // of catalog-driven `writtenSince` maintenance; the final touch below
+          // refreshes `lastWriteAt` after later durable writes on success.
+          this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
 
           if (routedRuleId) {
             log.debug(
@@ -14741,13 +14746,11 @@ export class Orchestrator {
               }
             }
           } finally {
-            // Catalog touch (issue #1499): record AFTER all chunked source-namespace
-            // durable mutations — parent/chunk writes, temporal supersession,
-            // optional artifact writes, and graph-edge writes — so `lastWriteAt`
-            // cannot precede later file changes in the same extraction pass. The
-            // `finally` preserves a touch for already-written parent/chunk data if
-            // artifact persistence fails. Use the KNOWN routed name, not a
-            // dir-decoded guess.
+            // Catalog touch (issue #1499): refresh AFTER later chunked
+            // source-namespace durable mutations — temporal supersession, shared
+            // promotion, optional artifact writes, and graph-edge writes — so
+            // `lastWriteAt` cannot precede later file changes on successful
+            // completion. Use the KNOWN routed name, not a dir-decoded guess.
             this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
           }
           trackBehaviorSignals(
@@ -14984,6 +14987,20 @@ export class Orchestrator {
     // fact-less extraction that still persists durable data must record exactly one
     // base-namespace catalog touch after all writes complete (NHZEZ, codex P2).
     let durableNonFactWritten = false;
+    let durableNonFactTouchRecorded = false;
+    const touchBaseNonFactNamespace = () => {
+      const baseTouchNamespace =
+        baseNamespace && baseNamespace.length > 0
+          ? baseNamespace
+          : this.namespaceFromStorageDir(storage.dir);
+      this.markCatalogWrite(baseTouchNamespace, storage.dir);
+    };
+    const recordDurableNonFactWrite = () => {
+      durableNonFactWritten = true;
+      if (durableNonFactTouchRecorded) return;
+      durableNonFactTouchRecorded = true;
+      touchBaseNonFactNamespace();
+    };
     for (const entity of entities) {
       try {
         const name = (entity as any)?.name;
@@ -15010,7 +15027,7 @@ export class Orchestrator {
         });
         if (id) {
           trackPersistedId(storage, id);
-          durableNonFactWritten = true;
+          recordDurableNonFactWrite();
         }
       } catch (err) {
         log.warn(`persistExtraction: entity write failed: ${err}`);
@@ -15030,11 +15047,12 @@ export class Orchestrator {
             target: rel.target,
             label: rel.label,
           });
+          recordDurableNonFactWrite();
           await storage.addEntityRelationship(rel.target, {
             target: rel.source,
             label: `${rel.label} (reverse)`,
           });
-          durableNonFactWritten = true;
+          recordDurableNonFactWrite();
         } catch (err) {
           log.debug(`relationship persist failed: ${err}`);
         }
@@ -15063,7 +15081,7 @@ export class Orchestrator {
 
     if (profileUpdates.length > 0) {
       await storage.appendToProfile(profileUpdates);
-      durableNonFactWritten = true;
+      recordDurableNonFactWrite();
     }
 
     // Persist questions
@@ -15071,7 +15089,7 @@ export class Orchestrator {
       const id = await storage.writeQuestion(q.question, q.context, q.priority);
       if (id) {
         trackPersistedId(storage, id);
-        durableNonFactWritten = true;
+        recordDurableNonFactWrite();
       }
     }
 
@@ -15083,7 +15101,7 @@ export class Orchestrator {
     if (this.config.identityEnabled && result.identityReflection) {
       try {
         await storage.appendIdentityReflection(result.identityReflection);
-        durableNonFactWritten = true;
+        recordDurableNonFactWrite();
       } catch (err) {
         log.debug(`identity reflection write failed: ${err}`);
       }
@@ -15103,11 +15121,7 @@ export class Orchestrator {
     // already touched the base namespace this only refreshes `lastWriteAt`.
     // Best-effort and failure-tolerant (markCatalogWrite swallows errors).
     if (durableNonFactWritten) {
-      const baseTouchNamespace =
-        baseNamespace && baseNamespace.length > 0
-          ? baseNamespace
-          : this.namespaceFromStorageDir(storage.dir);
-      this.markCatalogWrite(baseTouchNamespace, storage.dir);
+      touchBaseNonFactNamespace();
     }
 
     // Save content-hash index after batch
