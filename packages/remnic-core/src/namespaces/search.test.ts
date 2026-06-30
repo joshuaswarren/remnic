@@ -18,6 +18,8 @@ class FakeBackend implements SearchBackend {
     collection: string | undefined;
     maxResults: number | undefined;
   }> = [];
+  availabilitySignals: Array<AbortSignal | undefined> = [];
+  probeCalls = 0;
   ensureSignals: Array<AbortSignal | undefined> = [];
   ensureCollections: Array<string | undefined> = [];
   checkSignals: Array<AbortSignal | undefined> = [];
@@ -39,6 +41,12 @@ class FakeBackend implements SearchBackend {
   }
 
   async probe(): Promise<boolean> {
+    this.probeCalls += 1;
+    return true;
+  }
+
+  async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {
+    this.availabilitySignals.push(execution?.signal);
     return true;
   }
 
@@ -329,6 +337,8 @@ test("healthForNamespace checks namespace collection without auto-creating or ca
   assert.equal(health.collection, "openclaw-engram--ns-736861726564");
   assert.deepEqual(created[0]?.checkCollections, ["openclaw-engram--ns-736861726564"]);
   assert.deepEqual(created[0]?.ensureCollections, []);
+  assert.equal(created[0]?.probeCalls, 0);
+  assert.equal(created[0]?.availabilitySignals.length, 1);
   assert.equal(created[0]?.disposed, 1);
 
   const ensured = await router.ensureNamespaceCollection("shared");
@@ -338,9 +348,10 @@ test("healthForNamespace checks namespace collection without auto-creating or ca
   assert.deepEqual(created[1]?.ensureCollections, ["openclaw-engram--ns-736861726564"]);
 });
 
-test("healthForNamespace stops waiting when namespace backend probe aborts", async () => {
+test("healthForNamespace stops waiting when namespace availability probe aborts", async () => {
   const backend = new class extends FakeBackend {
-    override async probe(): Promise<boolean> {
+    override async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {
+      this.availabilitySignals.push(execution?.signal);
       return await new Promise<boolean>(() => {});
     }
   }(false);
@@ -358,6 +369,8 @@ test("healthForNamespace stops waiting when namespace backend probe aborts", asy
 
   assert.equal(health.available, false);
   assert.equal(health.collectionState, "unknown");
+  assert.equal(backend.probeCalls, 0);
+  assert.equal(backend.availabilitySignals[0], controller.signal);
   assert.deepEqual(backend.checkCollections, []);
   assert.deepEqual(backend.ensureCollections, []);
   assert.equal(backend.disposed, 1);

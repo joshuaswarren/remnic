@@ -314,7 +314,11 @@ export class NamespaceSearchRouter {
 
     const backend = this.createBackend(scopedConfig);
     try {
-      const available = await awaitWithAbort(backend.probe(), execution?.signal).catch((error) => {
+      const availabilityProbe =
+        options.autoCreateCollection || typeof backend.checkAvailability !== "function"
+          ? backend.probe()
+          : backend.checkAvailability({ signal: execution?.signal });
+      const available = await awaitWithAbort(availabilityProbe, execution?.signal).catch((error) => {
         if (error instanceof NamespaceSearchAbortError && !options.abortAsUnavailable) {
           throw error;
         }

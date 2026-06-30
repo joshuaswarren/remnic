@@ -183,6 +183,45 @@ test("QmdClient preserves configured qmdPath diagnostics when all probes fail", 
   }
 });
 
+test("QmdClient read-only availability failures preserve operational state", async () => {
+  const { QmdClient } = await import("./qmd.js");
+  const originalPath = process.env.PATH;
+  const originalWindowsPath = process.env.Path;
+  const missingQmdPath = path.join(
+    os.tmpdir(),
+    `remnic-missing-readonly-qmd-${process.pid}-${Date.now()}`,
+    "qmd.cmd",
+  );
+
+  process.env.PATH = "";
+  process.env.Path = "";
+  try {
+    const client = new QmdClient("test-collection", 10, {
+      qmdPath: missingQmdPath,
+      qmdFallbackPaths: [],
+    });
+    (client as any).available = true;
+    (client as any).qmdPath = "qmd";
+    (client as any).qmdPathSource = "auto-path";
+    (client as any).cliVersion = "qmd 2.5.3";
+    (client as any).qmdCapabilities = resolveQmdCapabilities("qmd 2.5.3");
+    (client as any).lastCliProbeError = null;
+
+    assert.equal(await client.checkAvailability(), false);
+
+    assert.equal(client.isAvailable(), true);
+    assert.equal((client as any).qmdPath, "qmd");
+    assert.equal((client as any).qmdPathSource, "auto-path");
+    assert.equal((client as any).cliVersion, "qmd 2.5.3");
+    assert.equal((client as any).lastCliProbeError, null);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    if (originalWindowsPath === undefined) delete process.env.Path;
+    else process.env.Path = originalWindowsPath;
+  }
+});
+
 test("QmdClient applies chunk strategy to normal and forced embed args", async () => {
   const { QmdClient } = await import("./qmd.js");
   const client = new QmdClient("test", 5, {

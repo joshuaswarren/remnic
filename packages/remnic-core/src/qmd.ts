@@ -1365,6 +1365,7 @@ export class QmdClient implements SearchBackend {
   async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {
     return this.probeCli({
       allowAutoUpgrade: false,
+      preserveStateOnFailure: true,
       signal: execution?.signal,
     });
   }
@@ -1416,7 +1417,32 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  private async probeCli(options: { allowAutoUpgrade?: boolean; signal?: AbortSignal } = {}): Promise<boolean> {
+  private async probeCli(
+    options: {
+      allowAutoUpgrade?: boolean;
+      preserveStateOnFailure?: boolean;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<boolean> {
+    const priorState = options.preserveStateOnFailure === true
+      ? {
+        available: this.available,
+        qmdPath: this.qmdPath,
+        qmdPathSource: this.qmdPathSource,
+        cliVersion: this.cliVersion,
+        lastCliProbeError: this.lastCliProbeError,
+        qmdCapabilities: this.qmdCapabilities,
+      }
+      : null;
+    const restorePriorState = (): void => {
+      if (!priorState) return;
+      this.available = priorState.available;
+      this.qmdPath = priorState.qmdPath;
+      this.qmdPathSource = priorState.qmdPathSource;
+      this.cliVersion = priorState.cliVersion;
+      this.lastCliProbeError = priorState.lastCliProbeError;
+      this.qmdCapabilities = priorState.qmdCapabilities;
+    };
     let configuredProbeFailure: string | null = null;
     const markProbeFailure = (err: unknown): void => {
       this.lastCliProbeError = err instanceof Error ? err.message : String(err);
@@ -1478,8 +1504,12 @@ export class QmdClient implements SearchBackend {
           // Continue to next fallback
         }
       }
-      this.available = false;
-      restoreConfiguredProbeFailure();
+      if (priorState) {
+        restorePriorState();
+      } else {
+        this.available = false;
+        restoreConfiguredProbeFailure();
+      }
       return false;
     }
   }
