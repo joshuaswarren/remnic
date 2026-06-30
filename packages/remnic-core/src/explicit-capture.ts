@@ -540,13 +540,6 @@ export async function queueExplicitCaptureForReview(
     entityRef: sanitizeReviewMetadata(input.entityRef),
     source: source === "inline" ? "explicit-inline-review" : "explicit-review",
   });
-  // Record the catalog write touch (issue #1499, round 5/6 codex P2): a queued
-  // review capture still writes memory to the namespace's root (the DEFAULT root
-  // when undefined), so its `lastWriteAt` must reflect the write. Guarded
-  // optional hook (rule #33). Best-effort and failure-tolerant.
-  if (typeof orchestrator.recordCatalogWrite === "function") {
-    orchestrator.recordCatalogWrite(queueNamespace, storage.dir);
-  }
   const created = await storage.getMemoryById(id);
   if (created) {
     await storage.writeMemoryFrontmatter(created, {
@@ -557,6 +550,16 @@ export async function queueExplicitCaptureForReview(
       reasonCode: reason,
       ruleVersion: "explicit-capture.v1",
     });
+  }
+  // Record the catalog write touch (issue #1499, round 5/6 codex P2; NIhUg). A
+  // queued review capture writes memory to the namespace's root (the DEFAULT root
+  // when undefined), so its `lastWriteAt` must reflect the write — but only AFTER
+  // the memory reaches its intended durable `pending_review` state. Recording the
+  // touch before the frontmatter update (rule #25) would mark a write that may not
+  // have reached its intended state if `writeMemoryFrontmatter` failed. Guarded
+  // optional hook (rule #33). Best-effort and failure-tolerant.
+  if (typeof orchestrator.recordCatalogWrite === "function") {
+    orchestrator.recordCatalogWrite(queueNamespace, storage.dir);
   }
   const event: MemoryLifecycleEvent = {
     eventId: `mle-${randomUUID()}`,

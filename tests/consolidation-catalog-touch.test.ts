@@ -78,3 +78,62 @@ test("consolidation with only an INVALIDATE memory-item action records a catalog
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
+
+// NIjwl (codex P2): a consolidation pass with NO LLM outputs (empty items /
+// profile / entity) can still mutate the namespace via cleanup maintenance —
+// e.g. cleanExpiredTTL deleting an expired memory. Those cleanup-only mutations
+// run after the LLM-action block, so the catalog touch must be recorded after all
+// mutation-producing maintenance steps, or lastWriteAt stays stale.
+test("cleanup-only consolidation (TTL expiry, no LLM outputs) records a catalog write touch", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-consolidate-cleanup-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-consolidate-cleanup-ws-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir,
+      qmdEnabled: false,
+      topicExtractionEnabled: false,
+      summarizationEnabled: false,
+      identityEnabled: false,
+      entitySummaryEnabled: false,
+      semanticConsolidationEnabled: false,
+      factArchivalEnabled: false,
+      lifecyclePolicyEnabled: false,
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+    });
+
+    const orchestrator = new Orchestrator(config) as any;
+    const storage = orchestrator.storage;
+
+    // Seed 5 memories (the consolidation floor); one is already TTL-expired so the
+    // cleanup step deletes it — a durable namespace mutation with NO LLM outputs.
+    for (let i = 0; i < 4; i += 1) {
+      await storage.writeMemory("fact", `keeper fact ${i}`, { source: "test" });
+    }
+    await storage.writeMemory("fact", "expired speculative fact", {
+      source: "test",
+      expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    // No LLM outputs at all — only cleanup will mutate the namespace.
+    orchestrator.extraction = {
+      consolidate: async () => ({ items: [], profileUpdates: [], entityUpdates: [] }),
+    };
+
+    await orchestrator.namespaceCatalog.registerConfiguredNamespaces();
+    await orchestrator.runConsolidationNow();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const record = await orchestrator.namespaceCatalog.getNamespaceRecord(config.defaultNamespace);
+    assert.ok(record, "default namespace record must exist after cleanup-only consolidation");
+    assert.ok(
+      record!.lastWriteAt,
+      "a cleanup-only consolidation (TTL expiry) must record a catalog write touch",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});

@@ -15194,28 +15194,24 @@ export class Orchestrator {
       });
     }
 
-    // Catalog write touch (issue #1499 sweep): consolidation persists durable
-    // mutations directly to the default-namespace `this.storage`, bypassing the
-    // extraction write path. Record one write touch so the default namespace's
-    // `lastWriteAt` reflects this mutation. This covers BOTH profile/entity
-    // updates AND memory-item actions (UPDATE / MERGE / INVALIDATE) — a pass that
-    // only rewrites/invalidates memory items still changed durable state and must
-    // refresh recency (NIBOi). The default namespace is always configured/
-    // cataloged; this only refreshes its recency. Best-effort and failure-tolerant.
-    if (
-      memoryItemMutated ||
-      result.profileUpdates.length > 0 ||
-      result.entityUpdates.length > 0
-    ) {
-      this.markCatalogWrite(
-        this.namespaceFromStorageDir(this.storage.dir),
-        this.storage.dir,
-      );
+    // Catalog write touch accounting (issue #1499 sweep): consolidation persists
+    // durable mutations directly to the default-namespace `this.storage`, bypassing
+    // the extraction write path. We do NOT touch here — later maintenance steps in
+    // this same function (entity-file merges, expired-commitment / TTL cleanup,
+    // fact archival) can ALSO mutate the namespace on a run with no LLM outputs
+    // (NIjwl). So we accumulate every durable mutation into `memoryItemMutated` and
+    // record ONE consolidated touch AFTER all mutation-producing steps complete,
+    // just before returning (rule #25: touch after the write commits). LLM
+    // profile/entity updates and memory-item actions (UPDATE / MERGE / INVALIDATE)
+    // count here (NIBOi).
+    if (result.profileUpdates.length > 0 || result.entityUpdates.length > 0) {
+      memoryItemMutated = true;
     }
 
     // Merge fragmented entity files
     const entitiesMerged = await this.storage.mergeFragmentedEntities();
     if (entitiesMerged > 0) {
+      memoryItemMutated = true;
       log.info(`merged ${entitiesMerged} fragmented entity files`);
     }
 
@@ -15238,6 +15234,7 @@ export class Orchestrator {
       this.config.commitmentDecayDays,
     );
     if (deletedCommitments.length > 0) {
+      memoryItemMutated = true;
       log.info(`cleaned ${deletedCommitments.length} expired commitments`);
       if (this.config.queryAwareIndexingEnabled) {
         for (const m of deletedCommitments) {
@@ -15267,6 +15264,7 @@ export class Orchestrator {
           lifecycle.transitionedToExpired.length > 0 ||
           lifecycle.deletedResolved.length > 0
         ) {
+          memoryItemMutated = true;
           log.info(
             `commitment ledger lifecycle: expired ${lifecycle.transitionedToExpired.length}, cleaned ${lifecycle.deletedResolved.length}`,
           );
@@ -15279,6 +15277,7 @@ export class Orchestrator {
     // Clean memories past their TTL (speculative memories auto-expire)
     const deletedTTL = await this.storage.cleanExpiredTTL();
     if (deletedTTL.length > 0) {
+      memoryItemMutated = true;
       log.info(`cleaned ${deletedTTL.length} TTL-expired memories`);
       if (this.config.queryAwareIndexingEnabled) {
         for (const m of deletedTTL) {
@@ -15324,6 +15323,7 @@ export class Orchestrator {
       if (this.config.factArchivalEnabled) {
         const archived = await this.runFactArchival(allMemories);
         if (archived > 0) {
+          memoryItemMutated = true;
           log.info(`archived ${archived} old low-importance facts`);
         }
       }
@@ -15528,6 +15528,21 @@ export class Orchestrator {
           log.warn(`consolidation observer failed (ignored): ${err}`);
         }
       }
+    }
+
+    // Consolidated catalog write touch (issue #1499 sweep; NIBOi + NIjwl). One
+    // touch covering EVERY durable namespace mutation this pass made — LLM
+    // profile/entity/memory-item actions AND cleanup-only maintenance (entity-file
+    // merges, expired-commitment / ledger-lifecycle / TTL cleanup, fact archival).
+    // Recorded here, after all mutation-producing steps, so a cleanup-only run that
+    // rewrote the store still refreshes `lastWriteAt` (rule #25). The default
+    // namespace is always configured/cataloged; `markWrite` is idempotent so this
+    // only refreshes recency. Best-effort and failure-tolerant.
+    if (memoryItemMutated) {
+      this.markCatalogWrite(
+        this.namespaceFromStorageDir(this.storage.dir),
+        this.storage.dir,
+      );
     }
 
     log.info("consolidation complete");
