@@ -38,6 +38,7 @@ import {
   runMemoryGovernance,
 } from "./maintenance/memory-governance.js";
 import { runProcedureMining } from "./procedural/procedure-miner.js";
+import { displayErrorDetail } from "./runtime/better-sqlite.js";
 import type { PatternReinforcementResult } from "./maintenance/pattern-reinforcement.js";
 import type { LiveConnectorsRunSummary } from "./live-connectors-runner.js";
 import type { WearablesService } from "./wearables/service.js";
@@ -2626,7 +2627,7 @@ export class EngramAccessService {
         debugStatus: health.debugStatus,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const detail = displayErrorDetail(error) || "unknown";
       return {
         enabled: true,
         active: false,
@@ -2639,7 +2640,7 @@ export class EngramAccessService {
         supported: null,
         upgradeAvailable: null,
         doctorAvailable: null,
-        debugStatus: `backend=namespace-unavailable error=${message.slice(0, 160)}`,
+        debugStatus: `backend=namespace-unavailable error=${detail}`,
       };
     } finally {
       clearTimeout(timer);

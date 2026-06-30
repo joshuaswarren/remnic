@@ -380,7 +380,7 @@ test("health keeps namespace QMD failures scoped to the namespace", async () => 
         return { dir: namespace === "team" ? teamDir : rootDir };
       },
       async searchHealthForNamespace() {
-        throw new Error("namespace probe timed out");
+        throw new Error(`namespace probe timed out at ${teamDir}/qmd/index.sqlite`);
       },
     } as unknown as Orchestrator);
 
@@ -392,8 +392,10 @@ test("health keeps namespace QMD failures scoped to the namespace", async () => 
     assert.equal(health.qmd.degraded, true);
     assert.equal(health.qmd.collectionState, "unknown");
     assert.equal(health.qmd.mode, "fallback");
-    assert.match(health.qmd.debugStatus, /backend=namespace-unavailable/);
+    assert.equal(health.qmd.debugStatus, "backend=namespace-unavailable error=Error");
     assert.doesNotMatch(health.qmd.debugStatus, /root-qmd-should-not-leak/);
+    assert.doesNotMatch(health.qmd.debugStatus, /index\.sqlite/);
+    assert.doesNotMatch(health.qmd.debugStatus, /remnic-health-qmd-ns-fail/);
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
