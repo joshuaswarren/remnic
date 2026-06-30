@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.3.652] — 2026-06-30
+
 ### Added
 
 - Health responses now include structured QMD diagnostics (`qmd.active`,
