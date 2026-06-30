@@ -18747,10 +18747,15 @@ export class Orchestrator {
     const dirName = m[1];
     // Token-shaped raw names (round 6, codex P2 — NBsFz): a dir name might be a
     // tokenized identity OR a literal raw namespace name that merely LOOKS like a
-    // token (e.g. a configured name `ns-616c706861`). Decode ONLY when the dir is
-    // a genuine tokenized dir — i.e. the decoded identity round-trips back to the
-    // same dir name via `namespaceIdentityToken`. Otherwise the dir name IS the
-    // literal namespace and must be preserved, not decoded into a different name.
+    // token (e.g. a configured name `ns-616c706861`). The round-trip check below
+    // (`namespaceIdentityToken(decoded) === dirName`) is TAUTOLOGICAL for a
+    // canonical token string, so it cannot tell a tokenized dir for `alpha` apart
+    // from the legacy raw root of a namespace literally named `ns-616c706861`
+    // (codex NRCve). A dir name that is itself a KNOWN (configured) namespace is
+    // therefore preserved as the literal namespace BEFORE attempting to decode it.
+    if (this.configuredNamespaces().includes(dirName)) {
+      return dirName;
+    }
     const decoded = namespaceIdentityFromToken(dirName);
     if (decoded && namespaceIdentityToken(decoded) === dirName) {
       return decoded;

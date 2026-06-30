@@ -407,6 +407,55 @@ test("namespaceFromStorageDir preserves a token-shaped literal raw namespace nam
   }
 });
 
+// ── codex P2 (NRCve): the round-trip guard is TAUTOLOGICAL for a canonical token
+// string, so a namespace literally named like a token (e.g. `ns-616c706861`,
+// the token of "alpha") served from its legacy raw root would decode to "alpha".
+// A dir name that is itself a KNOWN (configured) namespace must take precedence
+// over decoding, so routing (contradiction/QMD ownership) uses the literal name.
+test("namespaceFromStorageDir preserves a CONFIGURED namespace named like a canonical token (NRCve)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-token-config-"));
+  try {
+    // Mirrors `namespaceIdentityToken`: ns-<lowercase hex of UTF-8>.
+    const tokenize = (name: string) => `ns-${Buffer.from(name, "utf8").toString("hex")}`;
+    const literalTokenName = tokenize("alpha"); // "ns-616c706861" — decodes to "alpha"
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: literalTokenName, // configured under this literal token-shaped name
+    });
+    const orchestrator = new Orchestrator(config) as any;
+    assert.equal(
+      orchestrator.namespaceFromStorageDir(path.join(memoryDir, "namespaces", literalTokenName)),
+      literalTokenName,
+      "a configured namespace named like a canonical token must resolve to the literal name, not its decoded identity",
+    );
+
+    // Control: the identical byte-shape, but NOT configured, still decodes.
+    const otherConfig = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+    const otherOrch = new Orchestrator(otherConfig) as any;
+    assert.equal(
+      otherOrch.namespaceFromStorageDir(path.join(memoryDir, "namespaces", tokenize("beta"))),
+      "beta",
+      "an unconfigured genuine tokenized dir still decodes to its identity",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 7 (codex P2 — NDXHa): an already-ABORTED recall must not record catalog
 // read touches. The abort check runs later (Phase 1 retrieval), so without the
 // gate an already-aborted recall would still set `lastReadAt` for every recall
