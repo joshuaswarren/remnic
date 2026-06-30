@@ -1112,3 +1112,51 @@ test("maintenanceNamespaces skips absent catalog-only read rows but includes exi
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── codex P2 (Na71-): `lastWriteAt` proves a namespace was written sometime in
+// the past, not that its storage root is still live. If a dynamic tokenized root
+// is deleted before maintenance runs, the catalog row must not keep feeding that
+// stale namespace into QMD maintenance.
+test("maintenanceNamespaces skips catalog write rows whose storage root was deleted", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-maintenance-deleted-write-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+
+    const orchestrator = new Orchestrator(config) as any;
+    const ns = "project-origin-deleted-write";
+    const storage = await orchestrator.getStorage(ns);
+    await storage.ensureDirectories();
+    await storage.writeMemory("fact", "This dynamic namespace root will be deleted.", {
+      source: "test",
+      confidence: 0.9,
+      tags: ["maintenance"],
+    });
+    await orchestrator.namespaceCatalog.markWrite(ns, {
+      discoveredBy: "write",
+      storageDir: storage.dir,
+    });
+
+    const before = await orchestrator.maintenanceNamespaces();
+    assert.ok(before.includes(ns), "precondition: live write root enters maintenance fanout");
+
+    await rm(storage.dir, { recursive: true, force: true });
+    const record = await orchestrator.namespaceCatalog.getNamespaceRecord(ns);
+    assert.ok(record?.lastWriteAt, "precondition: stale catalog row still carries lastWriteAt");
+
+    const after = await orchestrator.maintenanceNamespaces();
+    assert.ok(
+      !after.includes(ns),
+      "a deleted dynamic write root must not enter maintenance fanout just because lastWriteAt is set",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

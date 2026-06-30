@@ -2470,7 +2470,6 @@ export class Orchestrator {
       if (path.resolve(liveRoot) !== path.resolve(record.storageDir)) {
         return false;
       }
-      if (record.lastWriteAt) return true;
       return hasMemoryData(liveRoot);
     } catch {
       return false;
