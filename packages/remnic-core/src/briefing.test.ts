@@ -1011,6 +1011,41 @@ test("buildChainFollowupGenerator accepts markdown-fenced followup JSON", async 
   ]);
 });
 
+test("buildChainFollowupGenerator skips parseable non-followup JSON candidates", async () => {
+  const generator = buildChainFollowupGenerator({
+    chatCompletion: async () => ({
+      content: [
+        '{ "metadata": "not followups" }',
+        "```json",
+        "{",
+        '  "followups": [',
+        '    { "text": "Review the launch plan", "rationale": "Actual follow-up block" }',
+        "  ]",
+        "}",
+        "```",
+      ].join("\n"),
+    }),
+  });
+
+  const followups = await generator({
+    sections: {
+      activeThreads: [],
+      recentEntities: [],
+      openCommitments: [{ id: "commit-1", kind: "commitment", text: "Finish launch plan" }],
+      suggestedFollowups: [],
+    },
+    windowLabel: "today",
+    maxFollowups: 3,
+  });
+
+  assert.deepEqual(followups, [
+    {
+      text: "Review the launch plan",
+      rationale: "Actual follow-up block",
+    },
+  ]);
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // Round 8 Finding UXE4: buildActiveThreads must recompute reason from newer memory
 // ──────────────────────────────────────────────────────────────────────────

@@ -1299,41 +1299,36 @@ function parseFollowupResponse(raw: string, max: number): BriefingFollowup[] {
   // try/catch in buildBriefing can set followupsUnavailableReason rather than
   // silently returning an empty array that masks the parse failure.
   const candidates = extractJsonCandidates(raw);
-  let parsed: unknown;
   let lastError: unknown;
   for (const candidate of candidates) {
     try {
-      parsed = JSON.parse(candidate) as unknown;
-      lastError = undefined;
-      break;
+      const parsed = JSON.parse(candidate) as unknown;
+      if (!parsed || typeof parsed !== "object") {
+        throw new Error(`LLM returned non-object JSON: ${typeof parsed}`);
+      }
+      const arr = (parsed as { followups?: unknown }).followups;
+      if (!Array.isArray(arr)) {
+        throw new Error(`LLM response missing "followups" array`);
+      }
+      const out: BriefingFollowup[] = [];
+      for (const entry of arr) {
+        if (!entry || typeof entry !== "object") continue;
+        const text = (entry as Record<string, unknown>).text;
+        if (typeof text !== "string" || text.trim().length === 0) continue;
+        const rationale = (entry as Record<string, unknown>).rationale;
+        out.push({
+          text: text.trim(),
+          rationale: typeof rationale === "string" ? rationale.trim() : undefined,
+        });
+        if (out.length >= max) break;
+      }
+      return out;
     } catch (err) {
       lastError = err;
     }
   }
   if (lastError) throw lastError;
-  if (parsed === undefined) {
-    throw new Error("LLM response contained no JSON candidates");
-  }
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error(`LLM returned non-object JSON: ${typeof parsed}`);
-  }
-  const arr = (parsed as { followups?: unknown }).followups;
-  if (!Array.isArray(arr)) {
-    throw new Error(`LLM response missing "followups" array`);
-  }
-  const out: BriefingFollowup[] = [];
-  for (const entry of arr) {
-    if (!entry || typeof entry !== "object") continue;
-    const text = (entry as Record<string, unknown>).text;
-    if (typeof text !== "string" || text.trim().length === 0) continue;
-    const rationale = (entry as Record<string, unknown>).rationale;
-    out.push({
-      text: text.trim(),
-      rationale: typeof rationale === "string" ? rationale.trim() : undefined,
-    });
-    if (out.length >= max) break;
-  }
-  return out;
+  throw new Error("LLM response contained no JSON candidates");
 }
 
 function stringifyError(err: unknown): string {
