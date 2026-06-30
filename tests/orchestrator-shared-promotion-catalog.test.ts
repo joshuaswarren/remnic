@@ -758,3 +758,95 @@ test("autoConsolidateIdentity records a catalog write for a dynamic namespace wh
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── codex P2 (NY-dK): semantic consolidation writes the canonical memory before
+// archiving the source cluster. If archival throws, the cluster catch swallows the
+// failure and continues, but the canonical write is already durable. The catalog
+// touch must still run so writtenSince/QMD maintenance sees the namespace.
+test("semantic consolidation records a catalog write when archival fails after canonical write", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-semantic-partial-catalog-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      semanticConsolidationEnabled: true,
+      semanticConsolidationModel: "fast",
+      semanticConsolidationThreshold: 0,
+      semanticConsolidationMinClusterSize: 2,
+      semanticConsolidationMaxPerRun: 10,
+      semanticConsolidationExcludeCategories: [],
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      memoryLinkingEnabled: false,
+      inlineSourceAttributionEnabled: false,
+    });
+
+    const dynamicNs = "project-origin-semantic-partial";
+    const orchestrator = new Orchestrator(config) as any;
+    const dynamicStorage = await orchestrator.getStorage(dynamicNs);
+    await dynamicStorage.ensureDirectories();
+
+    for (let i = 0; i < 10; i++) {
+      await dynamicStorage.writeMemory(
+        "fact",
+        `Partial consolidation source ${i} repeats the same stable project namespace catalog detail.`,
+        {
+          source: "test",
+          confidence: 0.9,
+          tags: ["semantic-partial"],
+          created: new Date(Date.now() - i * 1000).toISOString(),
+        },
+      );
+    }
+
+    await orchestrator.namespaceCatalog.markRead(dynamicNs, {
+      discoveredBy: "read",
+      storageDir: dynamicStorage.dir,
+    });
+    const before = await orchestrator.namespaceCatalog.getNamespaceRecord(dynamicNs);
+    assert.ok(before, "precondition: dynamic namespace is cataloged before consolidation");
+    assert.ok(!before?.lastWriteAt, "precondition: lastWriteAt is unset before consolidation");
+
+    orchestrator.fastLlm = {
+      async chatCompletion() {
+        return { content: "Canonical partial consolidation memory." };
+      },
+    };
+
+    let archiveCalls = 0;
+    dynamicStorage.archiveMemory = async () => {
+      archiveCalls++;
+      throw new Error("synthetic archive failure after canonical write");
+    };
+
+    const result = await orchestrator.runSemanticConsolidation({
+      force: true,
+      storage: dynamicStorage,
+      thresholdOverride: 0,
+    });
+
+    assert.equal(result.memoriesConsolidated, 1, "precondition: canonical write completed");
+    assert.equal(result.errors, 1, "precondition: archival failure was swallowed as a cluster error");
+    assert.equal(archiveCalls, 1, "precondition: archival was attempted after the canonical write");
+
+    await orchestrator.namespaceCatalog.markRead(dynamicNs);
+
+    const after = await orchestrator.namespaceCatalog.getNamespaceRecord(dynamicNs);
+    assert.ok(
+      after?.lastWriteAt,
+      "partial semantic consolidation must record a catalog write for the durable canonical memory",
+    );
+
+    const since = new Date(Date.parse(after!.lastWriteAt!) - 1000);
+    const written = await orchestrator.namespaceCatalog.listNamespaces({ writtenSince: since });
+    assert.ok(
+      written.some((r: { namespace: string }) => r.namespace === dynamicNs),
+      "writtenSince must surface the namespace after a partial semantic consolidation write",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

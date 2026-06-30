@@ -4115,6 +4115,7 @@ export class Orchestrator {
     }
 
     for (const cluster of clusters) {
+      let canonicalWriteCompleted = false;
       try {
         // Operator-aware prompt (issue #561 PR 3): ask the LLM to pick the
         // SPLIT/MERGE/UPDATE operator alongside the canonical output.  Falls
@@ -4238,6 +4239,7 @@ export class Orchestrator {
             derivedVia: operator,
           },
         );
+        canonicalWriteCompleted = true;
 
         result.memoriesConsolidated++;
 
@@ -4298,16 +4300,6 @@ export class Orchestrator {
           }
         }
 
-        // Catalog write touch (issue #1499 sweep): record AFTER the canonical
-        // write AND the archival of the superseded cluster memories, so
-        // lastWriteAt reflects every durable mutation in this consolidation, not
-        // just the merge write (cursor NUtCK). Best-effort; namespace decoded from
-        // the storage dir since this path has no routed namespace name.
-        this.markCatalogWrite(
-          this.namespaceFromStorageDir(targetStorage.dir),
-          targetStorage.dir,
-        );
-
         log.info(
           `[semantic-consolidation] consolidated ${cluster.memories.length} memories → ${canonicalId}`,
         );
@@ -4316,6 +4308,21 @@ export class Orchestrator {
           `[semantic-consolidation] cluster processing failed: ${err instanceof Error ? err.message : String(err)}`,
         );
         result.errors++;
+      } finally {
+        if (canonicalWriteCompleted) {
+          // Catalog write touch (issue #1499 sweep): record after the canonical
+          // write and, on the happy path, after archival of superseded cluster
+          // memories, so `lastWriteAt` reflects every durable mutation in this
+          // consolidation (cursor NUtCK). The `finally` also covers partial
+          // failures where the canonical memory was written but a later archive
+          // step throws and the cluster catch continues (codex NY-dK).
+          // Best-effort; namespace decoded from the storage dir since this path
+          // has no routed namespace name.
+          this.markCatalogWrite(
+            this.namespaceFromStorageDir(targetStorage.dir),
+            targetStorage.dir,
+          );
+        }
       }
     }
 
