@@ -141,7 +141,15 @@ export async function resolveDefaultNamespaceRoot(config: PluginConfig): Promise
     return config.memoryDir;
   }
 
-  const legacyNsDir = resolveNamespaceDir(config.memoryDir, config.defaultNamespace);
+  // Build the legacy default root from the NORMALIZED (trimmed) name so a
+  // whitespace-padded `defaultNamespace` still finds the live `namespaces/default`
+  // root (NIabe). `storageFor()` classifies the trimmed value as the default, and
+  // the on-disk legacy dir is created under the trimmed name; using the raw spaced
+  // name here would look for `namespaces/<spaced>` and miss the real root, falling
+  // back to memoryDir/tokenized. `namespaceIdentityToken` already normalizes
+  // internally, so the tokenized path is unaffected.
+  const defaultIdentity = normalizeNamespaceIdentity(config.defaultNamespace);
+  const legacyNsDir = resolveNamespaceDir(config.memoryDir, defaultIdentity);
   const tokenizedNsDir = resolveNamespaceDir(
     config.memoryDir,
     namespaceIdentityToken(config.defaultNamespace),

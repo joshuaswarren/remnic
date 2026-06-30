@@ -1179,6 +1179,34 @@ test("a whitespace-padded default namespace is still recognized as the default r
   }
 });
 
+// NIabe (codex P2): when `defaultNamespace` carries surrounding whitespace,
+// `resolveDefaultNamespaceRoot` must build the LEGACY default root from the
+// NORMALIZED name so it still finds a live `namespaces/default` root. Building it
+// from the raw spaced name would look for `namespaces/<spaced>`, miss the real
+// root, and fall back to memoryDir/tokenized — pointing reads/writes/rebuild at
+// an empty root even though the router classifies the trimmed value as default.
+test("resolveDefaultNamespaceRoot finds the legacy default root under a whitespace-padded default name", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const config = makeConfig(memoryDir, { defaultNamespace: "  default  " });
+    // The live legacy default root is `namespaces/default` (the TRIMMED name) with
+    // data; memoryDir itself holds NO legacy data, so the resolver would otherwise
+    // fall back to memoryDir.
+    const legacyDefaultDir = path.join(memoryDir, "namespaces", "default");
+    await mkdir(path.join(legacyDefaultDir, "facts"), { recursive: true });
+    await writeFile(path.join(legacyDefaultDir, "facts", "live.md"), "# live\n", "utf8");
+
+    const root = await resolveDefaultNamespaceRoot(config);
+    assert.equal(
+      path.resolve(root),
+      path.resolve(legacyDefaultDir),
+      "the resolver must find the live namespaces/default root, not fall back to memoryDir",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // NH3Xy (codex P2): a fallback root must NOT prove a non-default namespace's
 // liveness during rebuild --apply. When a dynamic namespace's own token root is a
 // symlink/escape (skipped by the scan) but a stale touch row remains, the liveness
