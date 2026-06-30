@@ -1466,7 +1466,15 @@ export class NamespaceCatalog {
         configured.has(token) ||
         (literalRecord !== undefined &&
           path.resolve(literalRecord.storageDir) === path.resolve(fullPath));
-      const decoded = literalOwnsRoot ? token : namespaceIdentityFromToken(token) ?? token;
+      // Match `storageFor()`'s canonical namespace identity. A raw root whose
+      // spelling trims to another namespace (for example `namespaces/shared `)
+      // is not a routeable live root and must not be catalogued from disk.
+      const rawDecoded = literalOwnsRoot ? token : namespaceIdentityFromToken(token) ?? token;
+      const decoded = normalizeNamespaceIdentity(rawDecoded);
+      if (decoded.length === 0 || rawDecoded !== decoded) {
+        skipped.push({ token, reason: "unsafe", detail: rawDecoded });
+        continue;
+      }
       if (decoded !== defaultNs && !isSafeRouteNamespace(decoded)) {
         skipped.push({ token, reason: "unsafe", detail: decoded });
         continue;

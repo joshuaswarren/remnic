@@ -966,6 +966,35 @@ test("rebuildFromDisk prefers the tokenized root over a legacy dual root", async
   }
 });
 
+test("rebuildFromDisk skips non-canonical raw namespace roots", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-spaced";
+    const rawDir = path.join(memoryDir, "namespaces", `${ns} `);
+    await mkdir(path.join(rawDir, "facts"), { recursive: true });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const result = await catalog.rebuildFromDisk();
+
+    assert.equal(
+      result.records.some((r) => r.namespace === ns && path.resolve(r.storageDir) === path.resolve(rawDir)),
+      false,
+      "rebuild must not attach the canonical namespace to a non-canonical raw root",
+    );
+    assert.equal(
+      result.records.some((r) => path.resolve(r.storageDir) === path.resolve(rawDir)),
+      false,
+      "no catalog record may point at a raw root the router cannot resolve",
+    );
+    assert.ok(
+      result.skipped.some((s) => s.token === `${ns} ` && s.reason === "unsafe" && s.detail === `${ns} `),
+      "the non-canonical raw root should be reported as an unsafe skip",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 5, Issue #2 (cursor Medium): reads must not surface an out-of-root
 // storageDir. A tampered/pre-fix jsonl record with an absolute path outside
 // memoryDir must be sanitized to the resolved safe root on enumeration.
