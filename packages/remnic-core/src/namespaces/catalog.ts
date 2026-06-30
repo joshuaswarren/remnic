@@ -497,24 +497,45 @@ export class NamespaceCatalog {
     return { ...record, storageDir: safe };
   }
 
-  private storageRootOwnershipRank(record: NamespaceRecord, resolvedStorageDir: string): number {
+  private storageRootOwnershipRank(
+    record: NamespaceRecord,
+    resolvedStorageDir: string,
+    configured: Set<string>,
+  ): number {
     if (resolvedStorageDir === path.resolve(this.memoryDir)) {
       return record.namespace === this.defaultNamespaceIdentity ? 0 : 3;
     }
 
     const leaf = path.basename(resolvedStorageDir);
-    if (record.namespace === leaf) return 0;
-    if (namespaceIdentityToken(record.namespace) === leaf) return 1;
-    return 2;
+    const tokenOwnsRoot = namespaceIdentityToken(record.namespace) === leaf;
+    if (tokenOwnsRoot && configured.has(record.namespace)) {
+      return 0;
+    }
+    if (record.namespace === leaf) return 1;
+    if (tokenOwnsRoot) return 2;
+    return 3;
+  }
+
+  private configuredNamespaceIdentities(): Set<string> {
+    return new Set(
+      [
+        this.config.defaultNamespace,
+        this.config.sharedNamespace,
+        ...this.config.namespacePolicies.map((p) => p.name),
+      ]
+        .map((n) => normalizeNamespaceIdentity(n))
+        .filter((n) => n.length > 0),
+    );
   }
 
   private preferStorageRootOwner(
     current: NamespaceRecord,
     candidate: NamespaceRecord,
     resolvedStorageDir: string,
+    configured: Set<string>,
   ): NamespaceRecord {
-    const currentRank = this.storageRootOwnershipRank(current, resolvedStorageDir);
-    const candidateRank = this.storageRootOwnershipRank(candidate, resolvedStorageDir);
+    const currentRank = this.storageRootOwnershipRank(current, resolvedStorageDir, configured);
+    const candidateRank = this.storageRootOwnershipRank(candidate, resolvedStorageDir, configured);
     if (candidateRank < currentRank) return candidate;
     if (candidateRank > currentRank) return current;
 
@@ -526,12 +547,13 @@ export class NamespaceCatalog {
 
   private dropDuplicateStorageRootAliases(records: NamespaceRecord[]): NamespaceRecord[] {
     const byStorageDir = new Map<string, NamespaceRecord>();
+    const configured = this.configuredNamespaceIdentities();
     for (const record of records) {
       const resolvedStorageDir = path.resolve(record.storageDir);
       const current = byStorageDir.get(resolvedStorageDir);
       byStorageDir.set(
         resolvedStorageDir,
-        current ? this.preferStorageRootOwner(current, record, resolvedStorageDir) : record,
+        current ? this.preferStorageRootOwner(current, record, resolvedStorageDir, configured) : record,
       );
     }
     return [...byStorageDir.values()];

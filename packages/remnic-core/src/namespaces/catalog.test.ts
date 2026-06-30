@@ -3193,3 +3193,42 @@ test("listNamespaces drops stale decoded aliases for catalog-owned token-shaped 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("listNamespaces prefers configured token owners over stale literal token aliases", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const literalNs = namespaceIdentityToken("alpha");
+    const tokenRoot = path.join(memoryDir, "namespaces", literalNs);
+    await mkdir(path.join(tokenRoot, "facts"), { recursive: true });
+    await writeFile(path.join(tokenRoot, "facts", "f1.md"), "# synthetic\n", "utf8");
+
+    const config = makeConfig(memoryDir, {
+      namespacePolicies: [
+        {
+          name: "alpha",
+          readPrincipals: [],
+          writePrincipals: [],
+        },
+      ],
+    });
+    const catalog = new NamespaceCatalog(config);
+    await catalog.markWrite(literalNs, { discoveredBy: "write", storageDir: tokenRoot });
+    await catalog.markWrite("alpha", { discoveredBy: "write", storageDir: tokenRoot });
+
+    const atTokenRoot = (await catalog.listNamespaces()).filter(
+      (record) => path.resolve(record.storageDir) === path.resolve(tokenRoot),
+    );
+    assert.deepEqual(
+      atTokenRoot.map((record) => record.namespace),
+      ["alpha"],
+      "configured namespaces must own their tokenized root over a stale literal alias",
+    );
+    assert.equal(
+      await catalog.getNamespaceRecord(literalNs),
+      null,
+      "status lookup must not report the stale literal alias that listNamespaces drops",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
