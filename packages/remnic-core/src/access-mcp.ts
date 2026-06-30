@@ -155,7 +155,7 @@ const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
     "projectTag",
   ],
   capsuleImport: ["archivePath", "namespace", "mode", "passphrase", "cwd", "projectTag"],
-  capsuleList: ["namespace", "cwd", "projectTag"],
+  capsuleList: ["namespace", "sessionKey", "cwd", "projectTag"],
 };
 
 // Shared JSON-schema fragments for the client-injected git/project context
