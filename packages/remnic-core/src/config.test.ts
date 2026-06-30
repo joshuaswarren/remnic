@@ -1320,8 +1320,14 @@ test('parseConfig namespaceCatalogEnabled="true" (string) → true', () => {
   assert.equal(parseConfig({ namespaceCatalogEnabled: "true" }).namespaceCatalogEnabled, true);
 });
 
-test("parseConfig namespaceCatalogEnabled unrecognized value → defaults to true", () => {
-  // An unrecognized string is treated as absent (default on), not silently
-  // coerced to false — matching coerceBooleanLike(...) ?? true semantics.
-  assert.equal(parseConfig({ namespaceCatalogEnabled: "maybe" }).namespaceCatalogEnabled, true);
+test("parseConfig namespaceCatalogEnabled present-but-unrecognized → throws (rule #51, codex NI42R)", () => {
+  // A PRESENT but unrecognized value is rejected, not silently defaulted to
+  // enabled — mirrors resolveEmitLegacyTools (CLAUDE.md rule #51: reject invalid
+  // input instead of silently defaulting). Absent still defaults to true.
+  assert.throws(
+    () => parseConfig({ namespaceCatalogEnabled: "maybe" }),
+    /namespaceCatalogEnabled must be a boolean-like value/,
+  );
+  assert.throws(() => parseConfig({ namespaceCatalogEnabled: "flase" }), /boolean-like value/);
+  assert.throws(() => parseConfig({ namespaceCatalogEnabled: 2 }), /boolean-like value/);
 });

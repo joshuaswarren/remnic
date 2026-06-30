@@ -384,6 +384,27 @@ function resolveEmitLegacyTools(configValue: unknown): boolean {
   return true;
 }
 
+/**
+ * Resolve the `namespaceCatalogEnabled` opt-out (issue #1499). A boolean-like
+ * value ("false"/"0"/"no"/"off" etc.) is honored; a PRESENT but unrecognized
+ * value ("flase", 2) is REJECTED rather than silently defaulting to enabled
+ * (CLAUDE.md rule #51 — reject invalid input instead of silently defaulting),
+ * mirroring `resolveEmitLegacyTools`. Defaults to enabled only when absent.
+ */
+function resolveNamespaceCatalogEnabled(configValue: unknown): boolean {
+  const ACCEPTED = "true/false/1/0/yes/no/on/off";
+  if (configValue !== undefined && configValue !== null) {
+    const coerced = coerceBooleanLike(configValue);
+    if (coerced === undefined) {
+      throw new Error(
+        `namespaceCatalogEnabled must be a boolean-like value (${ACCEPTED}); got ${JSON.stringify(configValue)}`,
+      );
+    }
+    return coerced;
+  }
+  return true;
+}
+
 export function isOpenaiApiKeyDisabled(value: unknown): boolean {
   return value === false || (typeof value === "string" && value.trim().toLowerCase() === "false");
 }
@@ -2590,11 +2611,12 @@ export function parseConfig(raw: unknown): PluginConfig {
     namespacesEnabled: cfg.namespacesEnabled === true,
     // Namespace catalog (issue #1499): default ON, but only does anything when
     // namespacesEnabled is also true (the catalog is inert otherwise). Operators
-    // opt out with namespaceCatalogEnabled: false. Parse via coerceBooleanLike
-    // so string/number opt-outs from CLI/env/JSON ("false", "0", "no", "off")
-    // are honored rather than staying truthy (CLAUDE.md rule #36); default to
-    // enabled only when the value is absent or unrecognized.
-    namespaceCatalogEnabled: coerceBooleanLike(cfg.namespaceCatalogEnabled) ?? true,
+    // opt out with namespaceCatalogEnabled: false. Boolean-like opt-outs from
+    // CLI/env/JSON ("false", "0", "no", "off") are honored (CLAUDE.md rule #36);
+    // a PRESENT but unrecognized value ("flase", 2) is REJECTED rather than
+    // silently defaulting to enabled (CLAUDE.md rule #51); default to enabled
+    // only when the value is absent.
+    namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled),
     // NOTE: namespace identifiers are intentionally NOT sanitized here — the
     // codebase rejects unsafe namespaces at the point of use (see
     // codex-materialize-runner and NamespaceStorageRouter / resolveNamespaceDir),
