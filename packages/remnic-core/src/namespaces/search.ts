@@ -230,7 +230,7 @@ export class NamespaceSearchRouter {
       return {
         collection: record.collection,
         memoryDir: record.memoryDir,
-        available: record.available,
+        available: liveRecord?.available ?? record.available,
         collectionState: record.collectionState,
         debugStatus: record.backend.debugStatus(),
         installedVersion: versionStatus?.installedVersion ?? null,

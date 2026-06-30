@@ -1373,6 +1373,7 @@ export class QmdClient implements SearchBackend {
     }
     if (this.daemonAvailable) {
       this.daemonAvailable = false;
+      this.lastDaemonCheckAtMs = 0;
     }
     return cliAvailable;
   }

@@ -271,10 +271,12 @@ test("QmdClient read-only availability clears stale daemon availability", async 
     });
     (client as any).daemonAvailable = true;
     (client as any).daemonSession = { isActive: () => false };
+    (client as any).lastDaemonCheckAtMs = Date.now();
 
     assert.equal(await client.checkAvailability(), false);
     assert.equal(client.isAvailable(), false);
     assert.equal((client as any).daemonAvailable, false);
+    assert.equal((client as any).lastDaemonCheckAtMs, 0);
   } finally {
     if (originalPath === undefined) delete process.env.PATH;
     else process.env.PATH = originalPath;

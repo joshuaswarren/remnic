@@ -13,6 +13,7 @@ type CollectionState = "present" | "missing" | "unknown" | "skipped";
 class FakeBackend implements SearchBackend {
   updates = 0;
   disposed = 0;
+  available = true;
   calls: Array<{
     method: string;
     collection: string | undefined;
@@ -43,16 +44,16 @@ class FakeBackend implements SearchBackend {
 
   async probe(): Promise<boolean> {
     this.probeCalls += 1;
-    return true;
+    return this.available;
   }
 
   async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {
     this.availabilitySignals.push(execution?.signal);
-    return true;
+    return this.available;
   }
 
   isAvailable(): boolean {
-    return true;
+    return this.available;
   }
 
   debugStatus(): string {
@@ -369,6 +370,9 @@ test("healthForNamespace reports daemon mode from live cached namespace backend"
           },
         ], { ensure: "present" }, true)
         : new FakeBackend(false, [], { check: "present" }, false);
+      if (created.length === 1) {
+        backend.available = false;
+      }
       created.push(backend);
       return backend;
     },
@@ -381,12 +385,13 @@ test("healthForNamespace reports daemon mode from live cached namespace backend"
   });
   const health = await router.healthForNamespace("shared");
 
+  assert.equal(health.available, true);
   assert.equal(health.daemonMode, true);
-  assert.equal(health.collectionState, "present");
+  assert.equal(health.collectionState, "unknown");
   assert.equal(created.length, 2);
   assert.equal(created[0]?.disposed, 0);
   assert.equal(created[1]?.disposed, 1);
-  assert.deepEqual(created[1]?.checkCollections, ["openclaw-engram--ns-736861726564"]);
+  assert.deepEqual(created[1]?.checkCollections, []);
 });
 
 test("healthForNamespace stops waiting when namespace availability probe aborts", async () => {
