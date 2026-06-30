@@ -298,3 +298,50 @@ test("health reports namespace-scoped QMD backend state", async () => {
     await rm(rootDir, { recursive: true, force: true });
   }
 });
+
+test("health keeps namespace QMD failures scoped to the namespace", async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-qmd-ns-fail-"));
+  try {
+    const teamDir = path.join(rootDir, "namespaces", "team");
+    const config = parseConfig({
+      memoryDir: rootDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      qmdCollection: "remnic-memory",
+      namespacePolicies: [{ name: "team", readPrincipals: [], writePrincipals: [] }],
+    });
+    const expectedCollection = namespaceCollectionName("remnic-memory", "team", {
+      defaultNamespace: "default",
+    });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({
+        probe: async () => true,
+        isAvailable: () => true,
+        debugStatus: () => "root-qmd-should-not-leak",
+        checkCollection: async () => "present",
+      }),
+      async getStorage(namespace: string) {
+        return { dir: namespace === "team" ? teamDir : rootDir };
+      },
+      async searchHealthForNamespace() {
+        throw new Error("namespace probe timed out");
+      },
+    } as unknown as Orchestrator);
+
+    const health = await service.health("team");
+
+    assert.equal(health.memoryDir, teamDir);
+    assert.equal(health.qmd.collection, expectedCollection);
+    assert.equal(health.qmd.active, false);
+    assert.equal(health.qmd.degraded, true);
+    assert.equal(health.qmd.collectionState, "unknown");
+    assert.equal(health.qmd.mode, "fallback");
+    assert.match(health.qmd.debugStatus, /backend=namespace-unavailable/);
+    assert.doesNotMatch(health.qmd.debugStatus, /root-qmd-should-not-leak/);
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});

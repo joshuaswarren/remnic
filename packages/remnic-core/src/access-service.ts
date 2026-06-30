@@ -2624,8 +2624,22 @@ export class EngramAccessService {
         doctorAvailable: health.doctorAvailable,
         debugStatus: health.debugStatus,
       };
-    } catch {
-      return null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        enabled: true,
+        active: false,
+        degraded: true,
+        mode: "fallback",
+        collection: fallbackCollection,
+        collectionState: "unknown",
+        installedVersion: null,
+        supportedVersion: null,
+        supported: null,
+        upgradeAvailable: null,
+        doctorAvailable: null,
+        debugStatus: `backend=namespace-unavailable error=${message.slice(0, 160)}`,
+      };
     } finally {
       clearTimeout(timer);
     }
