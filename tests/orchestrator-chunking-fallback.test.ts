@@ -328,3 +328,59 @@ test("chunked extraction records catalog touch when post-parent indexing fails",
     `catalog touch must follow durable chunk writes on failure; saw ${events.join(" -> ")}`,
   );
 });
+
+test("chunked extraction records catalog touch when a later chunk write fails", async () => {
+  installCapturingLogger();
+  const { orchestrator, storage } = await makeOrchestrator({
+    semanticChunkingEnabled: false,
+    chunkingTargetTokens: 12,
+    chunkingMinTokens: 6,
+    chunkingOverlapSentences: 0,
+  });
+
+  const events: string[] = [];
+  const originalWriteChunk = storage.writeChunk.bind(storage);
+  let writeChunkCalls = 0;
+  storage.writeChunk = async (...args: Parameters<typeof storage.writeChunk>) => {
+    writeChunkCalls++;
+    if (writeChunkCalls === 1) {
+      const id = await originalWriteChunk(...args);
+      events.push("chunk");
+      return id;
+    }
+    events.push("chunk-fail");
+    throw new Error("later chunk failed");
+  };
+  orchestrator.markCatalogWrite = () => {
+    events.push("touch");
+  };
+
+  const longContent = Array.from(
+    { length: 20 },
+    (_, i) => `The later chunk failure regression sentence ${i} keeps this fact chunkable.`,
+  ).join(" ");
+
+  const extraction: ExtractionResult = {
+    facts: [fact(longContent)],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as ExtractionResult;
+
+  await assert.rejects(
+    () => orchestrator.persistExtraction(extraction, storage, null),
+    /later chunk failed/,
+  );
+
+  const chunkIndex = events.indexOf("chunk");
+  const failureIndex = events.indexOf("chunk-fail");
+  const touchIndex = events.indexOf("touch");
+  assert.notEqual(chunkIndex, -1, "precondition: at least one chunk was durable");
+  assert.notEqual(failureIndex, -1, "precondition: a later chunk write failed");
+  assert.notEqual(touchIndex, -1, "partial chunk failure must still touch the catalog");
+  assert.ok(
+    touchIndex > failureIndex,
+    `catalog touch must run from the chunk-write finally after the failure; saw ${events.join(" -> ")}`,
+  );
+});

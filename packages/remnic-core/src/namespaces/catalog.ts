@@ -191,47 +191,81 @@ function isCatalogEnabled(config: PluginConfig): boolean {
 // a non-directory. `profile.md` is the sole file marker.
 const FILE_MEMORY_DATA_CHILDREN = new Set<string>(["profile.md"]);
 
+type MemoryDataMarkerStatus =
+  | { state: "absent" }
+  | { state: "valid" }
+  | { state: "invalid"; detail: string };
+
+type MemoryDataRootStatus = {
+  hasData: boolean;
+  invalidMarker?: string;
+};
+
+function isNotFoundError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: string }).code === "ENOENT"
+  );
+}
+
 /**
- * Whether `child` under `rootDir` is a VALID, live memory-data marker (NIw0F,
- * codex P2). Existence alone is not enough: a bogus marker — e.g. `facts` as a
- * symlink or a regular file instead of a real directory — passes `lstat` but
- * makes `scanMemoryDir` throw on the symlinked/non-directory category root, so a
- * `rebuild --apply` that cataloged the namespace would then make catalog-driven
- * QMD maintenance fail repeatedly on a root with no usable data. Validate the
- * child's TYPE (and, for directories, that its realpath stays inside the root, so
- * a symlink escaping the memory tree is never treated as live).
+ * Inspect `child` under `rootDir` as a memory-data marker (NIw0F / PR #1506).
+ * Existence alone is not enough: a bogus marker — e.g. `facts` as a symlink or a
+ * regular file instead of a real directory — passes `lstat` but makes
+ * `scanMemoryDir` throw on the symlinked/non-directory category root. Returning
+ * a distinct `invalid` status lets root scans reject a namespace when ANY known
+ * marker is malformed, even if a sibling marker such as `state/` is valid.
  */
-async function isLiveMemoryDataMarker(rootDir: string, child: string): Promise<boolean> {
+async function inspectMemoryDataMarker(rootDir: string, child: string): Promise<MemoryDataMarkerStatus> {
   const childPath = path.join(rootDir, child);
   let entry;
   try {
     entry = await lstat(childPath);
-  } catch {
-    return false;
+  } catch (err) {
+    return isNotFoundError(err)
+      ? { state: "absent" }
+      : { state: "invalid", detail: `${child}: ${err instanceof Error ? err.message : String(err)}` };
   }
   // Reject symlinked markers outright (scan parity — never follow them).
-  if (entry.isSymbolicLink()) return false;
+  if (entry.isSymbolicLink()) return { state: "invalid", detail: `${child}: symlink` };
   if (FILE_MEMORY_DATA_CHILDREN.has(child)) {
     // `profile.md` must be a regular file.
-    return entry.isFile();
+    return entry.isFile()
+      ? { state: "valid" }
+      : { state: "invalid", detail: `${child}: expected file` };
   }
   // Category/data markers must be real directories whose realpath stays inside
   // the namespace root (no escape via a symlinked ancestor).
-  if (!entry.isDirectory()) return false;
+  if (!entry.isDirectory()) return { state: "invalid", detail: `${child}: expected directory` };
   try {
     const rootReal = await realpath(rootDir);
     const childReal = await realpath(childPath);
-    return isPathInside(rootReal, childReal);
-  } catch {
-    return false;
+    return isPathInside(rootReal, childReal)
+      ? { state: "valid" }
+      : { state: "invalid", detail: `${child}: escapes namespace root` };
+  } catch (err) {
+    return { state: "invalid", detail: `${child}: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
-export async function hasMemoryData(rootDir: string): Promise<boolean> {
+async function inspectMemoryDataRoot(rootDir: string): Promise<MemoryDataRootStatus> {
+  let hasData = false;
   for (const child of MEMORY_DATA_CHILDREN) {
-    if (await isLiveMemoryDataMarker(rootDir, child)) return true;
+    const marker = await inspectMemoryDataMarker(rootDir, child);
+    if (marker.state === "invalid") {
+      return { hasData: false, invalidMarker: marker.detail };
+    }
+    if (marker.state === "valid") {
+      hasData = true;
+    }
   }
-  return false;
+  return { hasData };
+}
+
+export async function hasMemoryData(rootDir: string): Promise<boolean> {
+  return (await inspectMemoryDataRoot(rootDir)).hasData;
 }
 
 function isValidIsoTimestamp(value: string): boolean {
@@ -1553,7 +1587,20 @@ export class NamespaceCatalog {
         continue;
       }
       // Only catalog roots that actually hold memory data (skip empty shells).
-      if (!(await hasMemoryData(fullPath))) continue;
+      // A malformed PRESENT marker is different from an absent marker: if
+      // `facts/` is a file/symlink but `state/` is valid, cataloging the root
+      // would later make catalog-driven QMD scan the bad category directory and
+      // throw. Reject the whole root on the first malformed known marker.
+      const memoryData = await inspectMemoryDataRoot(fullPath);
+      if (memoryData.invalidMarker) {
+        skipped.push({
+          token,
+          reason: "unsafe",
+          detail: `invalid memory marker: ${memoryData.invalidMarker}`,
+        });
+        continue;
+      }
+      if (!memoryData.hasData) continue;
 
       // Default-root alignment (Issue C): never let a tokenized default dir
       // overwrite the configured default's storageDir with `fullPath`. The

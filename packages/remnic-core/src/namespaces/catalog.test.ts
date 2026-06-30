@@ -161,6 +161,37 @@ test("rebuildFromDisk reports symlinked namespace roots instead of trusting them
   }
 });
 
+test("rebuildFromDisk rejects roots with malformed category markers even when a sibling marker is valid", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const ns = "project-origin-bad-category-marker";
+    const token = namespaceIdentityToken(ns);
+    const tokenDir = path.join(memoryDir, "namespaces", token);
+    await mkdir(tokenDir, { recursive: true });
+    await writeFile(path.join(tokenDir, "facts"), "not a directory", "utf8");
+    await mkdir(path.join(tokenDir, "state"), { recursive: true });
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const result = await catalog.rebuildFromDisk();
+
+    assert.ok(
+      !result.records.some((r) => r.namespace === ns),
+      "a root with a malformed scan category marker must not be catalogued",
+    );
+    assert.ok(
+      result.skipped.some(
+        (s) =>
+          s.token === token &&
+          s.reason === "unsafe" &&
+          s.detail?.includes("facts: expected directory"),
+      ),
+      "the malformed category marker must be reported as an unsafe skipped root",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 8 (codex P2 — NE9K_): the `namespaces` SCAN ROOT itself must be
 // containment-checked BEFORE `readdir` follows it. If `<memoryDir>/namespaces` is
 // a symlink to an outside tree, readdir would enumerate that arbitrary tree

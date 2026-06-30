@@ -14573,46 +14573,50 @@ export class Orchestrator {
               contentHashSource: rawChunkedContent,
             },
           );
-          // Write individual chunks with parent reference
-          for (const chunk of chunkResult.chunks) {
-            // Score each chunk's importance separately
-            const chunkImportance = scoreImportance(
-              chunk.content,
-              writeCategory,
-              fact.tags,
-            );
-            const chunkWriteSource =
-              (fact as any).source === "proactive"
-                ? "chunking-proactive"
-                : "chunking";
+          try {
+            // Write individual chunks with parent reference
+            for (const chunk of chunkResult.chunks) {
+              // Score each chunk's importance separately
+              const chunkImportance = scoreImportance(
+                chunk.content,
+                writeCategory,
+                fact.tags,
+              );
+              const chunkWriteSource =
+                (fact as any).source === "proactive"
+                  ? "chunking-proactive"
+                  : "chunking";
 
-            await targetStorage.writeChunk(
-              parentId,
-              chunk.index,
-              chunkResult.chunks.length,
-              writeCategory,
-              // Each chunk carries its own inline citation so provenance
-              // survives when a single chunk is quoted in isolation.
-              applyInlineCitation(chunk.content),
-              {
-                confidence: fact.confidence,
-                tags: fact.tags,
-                entityRef: fact.entityRef,
-                source: chunkWriteSource,
-                importance: chunkImportance,
-                intentGoal: inferredIntent?.goal,
-                intentActionType: inferredIntent?.actionType,
-                intentEntityTypes: inferredIntent?.entityTypes,
-                memoryKind,
-                validAt: sourceContext?.validAt,
-              },
-            );
+              await targetStorage.writeChunk(
+                parentId,
+                chunk.index,
+                chunkResult.chunks.length,
+                writeCategory,
+                // Each chunk carries its own inline citation so provenance
+                // survives when a single chunk is quoted in isolation.
+                applyInlineCitation(chunk.content),
+                {
+                  confidence: fact.confidence,
+                  tags: fact.tags,
+                  entityRef: fact.entityRef,
+                  source: chunkWriteSource,
+                  importance: chunkImportance,
+                  intentGoal: inferredIntent?.goal,
+                  intentActionType: inferredIntent?.actionType,
+                  intentEntityTypes: inferredIntent?.entityTypes,
+                  memoryKind,
+                  validAt: sourceContext?.validAt,
+                },
+              );
+            }
+          } finally {
+            // The parent memory is durable once writeMemory returns `parentId`.
+            // Touch immediately around the chunk-write loop so a later chunk
+            // failure still surfaces the partially durable parent/chunk files to
+            // catalog-driven `writtenSince` maintenance. The final touch below
+            // still refreshes `lastWriteAt` after later durable writes on success.
+            this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
           }
-          // Parent/chunk files are durable at this point. Record a write now so
-          // later indexing or promotion failures cannot leave the namespace out
-          // of catalog-driven `writtenSince` maintenance; the final touch below
-          // refreshes `lastWriteAt` after later durable writes on success.
-          this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
 
           if (routedRuleId) {
             log.debug(
