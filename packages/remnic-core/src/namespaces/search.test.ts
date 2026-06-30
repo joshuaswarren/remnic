@@ -6,17 +6,22 @@ import type {
   SearchExecutionOptions,
   SearchQueryOptions,
 } from "../search/port.js";
+import type { QmdCapabilities, QmdVersionStatus } from "../qmd.js";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
 
 type CollectionState = "present" | "missing" | "unknown" | "skipped";
 
 class FakeBackend implements SearchBackend {
   updates = 0;
+  disposed = 0;
+  available = true;
   calls: Array<{
     method: string;
     collection: string | undefined;
     maxResults: number | undefined;
   }> = [];
+  availabilitySignals: Array<AbortSignal | undefined> = [];
+  probeCalls = 0;
   ensureSignals: Array<AbortSignal | undefined> = [];
   ensureCollections: Array<string | undefined> = [];
   checkSignals: Array<AbortSignal | undefined> = [];
@@ -29,6 +34,11 @@ class FakeBackend implements SearchBackend {
       check?: CollectionState;
       ensure?: CollectionState;
     } = {},
+    private readonly daemonMode = false,
+    private readonly diagnostics: {
+      debugStatus?: string;
+      versionStatus?: QmdVersionStatus;
+    } = {},
   ) {}
 
   private limitedResults(maxResults: number | undefined): QmdSearchResult[] {
@@ -38,15 +48,33 @@ class FakeBackend implements SearchBackend {
   }
 
   async probe(): Promise<boolean> {
-    return true;
+    this.probeCalls += 1;
+    return this.available;
+  }
+
+  async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {
+    this.availabilitySignals.push(execution?.signal);
+    return this.available;
   }
 
   isAvailable(): boolean {
-    return true;
+    return this.available;
   }
 
   debugStatus(): string {
-    return "fake";
+    return this.diagnostics.debugStatus ?? "fake";
+  }
+
+  isDaemonMode(): boolean {
+    return this.daemonMode;
+  }
+
+  getVersionStatus(): QmdVersionStatus | null {
+    return this.diagnostics.versionStatus ?? null;
+  }
+
+  async dispose(): Promise<void> {
+    this.disposed += 1;
   }
 
   async search(
@@ -152,6 +180,41 @@ function config(): PluginConfig {
     defaultNamespace: "main",
     qmdMaxResults: 10,
   } as PluginConfig;
+}
+
+function qmdCapabilities(enabled: boolean): QmdCapabilities {
+  return {
+    version: enabled ? "2.5.3" : null,
+    parsedVersion: enabled ? [2, 5, 3] : null,
+    stableSdk: enabled,
+    unifiedSearch: enabled,
+    getDocumentBody: enabled,
+    maintenanceApi: enabled,
+    legacySkillInstall: enabled,
+    intentHints: enabled,
+    explainTraces: enabled,
+    candidateLimit: enabled,
+    v2McpQueryTool: enabled,
+    structuredSearches: enabled,
+    queryRerankToggle: enabled,
+    chunkStrategy: enabled,
+    qmdBench: enabled,
+    perCollectionModels: enabled,
+    jsonLineNumbers: enabled,
+    editorLinks: enabled,
+    doctor: enabled,
+    versionedSkills: enabled,
+    absoluteSnippetLines: enabled,
+    fullQueryOutput: enabled,
+    forceCpu: enabled,
+    gpuBackendOverride: enabled,
+    embedParallelism: enabled,
+    modelEnvConsistency: enabled,
+    scopedEmbed: enabled,
+    safeStatusDeviceProbe: enabled,
+    mcpIndexSelection: enabled,
+    outputFormatFlag: enabled,
+  };
 }
 
 test("updateNamespaces runs a global-update backend only once", async () => {
@@ -302,6 +365,198 @@ test("legacy default namespace root fail-opens missing guarded collections", asy
   assert.equal(state, "unknown");
   assert.deepEqual(backend.checkCollections, ["openclaw-engram"]);
   assert.deepEqual(backend.ensureCollections, []);
+});
+
+test("healthForNamespace checks namespace collection without auto-creating or caching state", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], created.length === 0
+        ? { check: "missing" }
+        : { ensure: "present" });
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const health = await router.healthForNamespace("shared");
+
+  assert.equal(health.collectionState, "missing");
+  assert.equal(health.collection, "openclaw-engram--ns-736861726564");
+  assert.deepEqual(created[0]?.checkCollections, ["openclaw-engram--ns-736861726564"]);
+  assert.deepEqual(created[0]?.ensureCollections, []);
+  assert.equal(created[0]?.probeCalls, 0);
+  assert.equal(created[0]?.availabilitySignals.length, 1);
+  assert.equal(created[0]?.disposed, 1);
+
+  const ensured = await router.ensureNamespaceCollection("shared");
+
+  assert.equal(ensured, "present");
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1]?.ensureCollections, ["openclaw-engram--ns-736861726564"]);
+});
+
+test("healthForNamespace reports daemon mode from live cached namespace backend", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = created.length === 0
+        ? new FakeBackend(false, [
+          {
+            path: "facts/a.md",
+            docid: "a",
+            score: 1,
+            snippet: "a",
+          },
+        ], { ensure: "present" }, true, {
+          debugStatus: "live-daemon",
+          versionStatus: {
+            installedVersion: "qmd 2.5.3",
+            supportedVersion: "2.5.3",
+            supported: true,
+            newerThanSupported: false,
+            upgradeAvailable: false,
+            capabilities: qmdCapabilities(true),
+          },
+        })
+        : new FakeBackend(false, [], { check: "present" }, false, {
+          debugStatus: "probe-unavailable",
+          versionStatus: {
+            installedVersion: null,
+            supportedVersion: "2.5.3",
+            supported: false,
+            newerThanSupported: false,
+            upgradeAvailable: false,
+            capabilities: qmdCapabilities(false),
+          },
+        });
+      if (created.length === 1) {
+        backend.available = false;
+      }
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  await router.searchAcrossNamespaces({
+    query: "a",
+    namespaces: ["shared"],
+    maxResults: 1,
+  });
+  const health = await router.healthForNamespace("shared");
+
+  assert.equal(health.available, true);
+  assert.equal(health.daemonMode, true);
+  assert.equal(health.debugStatus, "live-daemon");
+  assert.equal(health.installedVersion, "qmd 2.5.3");
+  assert.equal(health.supportedVersion, "2.5.3");
+  assert.equal(health.supported, true);
+  assert.equal(health.upgradeAvailable, false);
+  assert.equal(health.doctorAvailable, true);
+  assert.equal(health.collectionState, "unknown");
+  assert.equal(created.length, 2);
+  assert.equal(created[0]?.disposed, 0);
+  assert.equal(created[1]?.disposed, 1);
+  assert.deepEqual(created[1]?.checkCollections, []);
+});
+
+test("healthForNamespace preserves cached missing collection state", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = created.length === 0
+        ? new FakeBackend(false, [], { ensure: "missing" }, true)
+        : new FakeBackend(false, [], { check: "present" }, false);
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  assert.deepEqual(
+    await router.searchAcrossNamespaces({
+      query: "a",
+      namespaces: ["shared"],
+      maxResults: 1,
+    }),
+    [],
+  );
+  const health = await router.healthForNamespace("shared");
+
+  assert.equal(health.available, true);
+  assert.equal(health.daemonMode, true);
+  assert.equal(health.collectionState, "missing");
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1]?.checkCollections, ["openclaw-engram--ns-736861726564"]);
+});
+
+test("healthForNamespace stops waiting when namespace availability probe aborts", async () => {
+  const backend = new class extends FakeBackend {
+    override async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {
+      this.availabilitySignals.push(execution?.signal);
+      return await new Promise<boolean>(() => {});
+    }
+  }(false);
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => backend,
+  );
+  const controller = new AbortController();
+  controller.abort();
+
+  const health = await router.healthForNamespace("shared", {
+    signal: controller.signal,
+  });
+
+  assert.equal(health.available, false);
+  assert.equal(health.collectionState, "unknown");
+  assert.equal(backend.probeCalls, 0);
+  assert.equal(backend.availabilitySignals[0], controller.signal);
+  assert.deepEqual(backend.checkCollections, []);
+  assert.deepEqual(backend.ensureCollections, []);
+  assert.equal(backend.disposed, 1);
+});
+
+test("ensureNamespaceCollection does not cache aborted namespace backend probes", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = created.length === 0
+        ? new class extends FakeBackend {
+          override async probe(): Promise<boolean> {
+            return await new Promise<boolean>(() => {});
+          }
+        }(false)
+        : new FakeBackend(false, [], { ensure: "present" });
+      created.push(backend);
+      return backend;
+    },
+  );
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    () => router.ensureNamespaceCollection("shared", { signal: controller.signal }),
+    /operation aborted/,
+  );
+
+  assert.equal(created[0]?.disposed, 1);
+  assert.deepEqual(created[0]?.checkCollections, []);
+  assert.deepEqual(created[0]?.ensureCollections, []);
+
+  const ensured = await router.ensureNamespaceCollection("shared");
+
+  assert.equal(ensured, "present");
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1]?.ensureCollections, ["openclaw-engram--ns-736861726564"]);
 });
 
 test("legacy default namespace root filters nested namespace search results", async () => {

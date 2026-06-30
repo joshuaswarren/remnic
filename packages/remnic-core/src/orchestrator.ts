@@ -311,7 +311,10 @@ import {
   resolveCodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
 import type { CodingContext } from "./types.js";
-import { NamespaceSearchRouter } from "./namespaces/search.js";
+import {
+  NamespaceSearchRouter,
+  type NamespaceSearchHealth,
+} from "./namespaces/search.js";
 import { SharedContextManager } from "./shared-context/manager.js";
 import {
   CompoundingEngine,
@@ -2322,6 +2325,13 @@ export class Orchestrator {
       searchOptions: options.searchOptions,
       execution: options.execution,
     });
+  }
+
+  async searchHealthForNamespace(
+    namespace: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<NamespaceSearchHealth> {
+    return await this.namespaceSearchRouter.healthForNamespace(namespace, execution);
   }
 
   private isSearchAvailableForNamespaceRouting(): boolean {

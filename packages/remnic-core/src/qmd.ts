@@ -1362,6 +1362,22 @@ export class QmdClient implements SearchBackend {
     return cliOk || this.daemonAvailable;
   }
 
+  async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {
+    const cliAvailable = await this.probeCli({
+      allowAutoUpgrade: false,
+      preserveStateOnFailure: true,
+      signal: execution?.signal,
+    });
+    if (this.daemonAvailable && this.daemonSession?.isActive()) {
+      return true;
+    }
+    if (this.daemonAvailable) {
+      this.daemonAvailable = false;
+      this.lastDaemonCheckAtMs = 0;
+    }
+    return cliAvailable;
+  }
+
   private async probeDaemon(): Promise<boolean> {
     this.lastDaemonCheckAtMs = Date.now();
     const normalizedPath = this.qmdPath.trim() || "qmd";
@@ -1409,7 +1425,32 @@ export class QmdClient implements SearchBackend {
     }
   }
 
-  private async probeCli(): Promise<boolean> {
+  private async probeCli(
+    options: {
+      allowAutoUpgrade?: boolean;
+      preserveStateOnFailure?: boolean;
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<boolean> {
+    const priorState = options.preserveStateOnFailure === true
+      ? {
+        available: this.available,
+        qmdPath: this.qmdPath,
+        qmdPathSource: this.qmdPathSource,
+        cliVersion: this.cliVersion,
+        lastCliProbeError: this.lastCliProbeError,
+        qmdCapabilities: this.qmdCapabilities,
+      }
+      : null;
+    const restorePriorState = (): void => {
+      if (!priorState) return;
+      this.available = priorState.available;
+      this.qmdPath = priorState.qmdPath;
+      this.qmdPathSource = priorState.qmdPathSource;
+      this.cliVersion = priorState.cliVersion;
+      this.lastCliProbeError = priorState.lastCliProbeError;
+      this.qmdCapabilities = priorState.qmdCapabilities;
+    };
     let configuredProbeFailure: string | null = null;
     const markProbeFailure = (err: unknown): void => {
       this.lastCliProbeError = err instanceof Error ? err.message : String(err);
@@ -1431,12 +1472,14 @@ export class QmdClient implements SearchBackend {
       this.cliVersion = parseQmdVersionOutput(result.stdout, result.stderr);
       this.qmdCapabilities = resolveQmdCapabilities(this.cliVersion);
       this.lastCliProbeError = null;
-      await this.maybeAutoUpgradeQmd();
+      if (options.allowAutoUpgrade !== false) {
+        await this.maybeAutoUpgradeQmd();
+      }
     };
 
     if (this.configuredQmdPath) {
       try {
-        const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, this.configuredQmdPath, undefined, this.qmdRuntimeEnv);
+        const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, this.configuredQmdPath, options.signal, this.qmdRuntimeEnv);
         await recordProbeSuccess(result, this.configuredQmdPath, "configured");
         return true;
       } catch (err) {
@@ -1452,7 +1495,7 @@ export class QmdClient implements SearchBackend {
 
     // Try PATH first
     try {
-      const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, "qmd", undefined, this.qmdRuntimeEnv);
+      const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, "qmd", options.signal, this.qmdRuntimeEnv);
       await recordProbeSuccess(result, "qmd", "auto-path");
       return true;
     } catch (err) {
@@ -1460,7 +1503,7 @@ export class QmdClient implements SearchBackend {
       // Try fallback paths
       for (const fallbackPath of this.qmdFallbackPaths) {
         try {
-          const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, fallbackPath, undefined, this.qmdRuntimeEnv);
+          const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, fallbackPath, options.signal, this.qmdRuntimeEnv);
           await recordProbeSuccess(result, fallbackPath, "auto-fallback");
           log.info(`QMD: found at ${fallbackPath}`);
           return true;
@@ -1469,8 +1512,12 @@ export class QmdClient implements SearchBackend {
           // Continue to next fallback
         }
       }
-      this.available = false;
-      restoreConfiguredProbeFailure();
+      if (priorState) {
+        restorePriorState();
+      } else {
+        this.available = false;
+        restoreConfiguredProbeFailure();
+      }
       return false;
     }
   }
