@@ -1298,7 +1298,22 @@ function parseFollowupResponse(raw: string, max: number): BriefingFollowup[] {
   // JSON.parse throws on invalid JSON — let the caller catch it so the outer
   // try/catch in buildBriefing can set followupsUnavailableReason rather than
   // silently returning an empty array that masks the parse failure.
-  const parsed = JSON.parse(raw) as unknown;
+  const candidates = extractJsonCandidates(raw);
+  let parsed: unknown;
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      parsed = JSON.parse(candidate) as unknown;
+      lastError = undefined;
+      break;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (lastError) throw lastError;
+  if (parsed === undefined) {
+    throw new Error("LLM response contained no JSON candidates");
+  }
   if (!parsed || typeof parsed !== "object") {
     throw new Error(`LLM returned non-object JSON: ${typeof parsed}`);
   }
