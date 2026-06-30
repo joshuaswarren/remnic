@@ -16396,6 +16396,19 @@ export class Orchestrator {
         identityNamespace,
       );
       await storage.writeIdentityReflections("");
+      // NRcCL (codex P2): record a per-namespace catalog write for THIS namespace
+      // after the identity files are updated. This fan-out can mutate a dynamic
+      // namespace via `writeIdentity`/`writeIdentityReflections`, but the
+      // consolidation pass's only consolidated touch covers `this.storage` (the
+      // default) and only fires when `memoryItemMutated` was set by OTHER work — so
+      // a namespace whose sole mutation in the pass is identity consolidation would
+      // otherwise keep a stale `lastWriteAt`, making `listNamespaces({ writtenSince })`
+      // and catalog-recency consumers miss the write. Best-effort and
+      // failure-tolerant (`markCatalogWrite` swallows errors, never crashing the
+      // consolidation; gotcha #13, rule #40). No double-count with the consolidated
+      // touch above: that one is gated on `memoryItemMutated` (which identity
+      // consolidation does not set), and `markWrite` is idempotent regardless.
+      this.markCatalogWrite(namespace, storage.dir);
       log.info(
         `IDENTITY(${namespace}) consolidated: ${identityContent.length} → ${newContent.length} chars, ${result.learnedPatterns.length} patterns`,
       );

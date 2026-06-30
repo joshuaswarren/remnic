@@ -1358,7 +1358,24 @@ export class NamespaceCatalog {
       // unambiguous fix lives on the WRITE path, where the caller knows the true
       // namespace and records it verbatim (NCQI0); the scanner cannot recover a
       // name the encoding cannot distinguish, so we keep the canonical decode.
-      const decoded = configured.has(token) ? token : namespaceIdentityFromToken(token) ?? token;
+      //
+      // NRcCD (round 9, codex P2 — same class as namespaceFromStorageDir/NRCve):
+      // the canonical decode is WRONG when a namespace LITERALLY named like the
+      // token already OWNS this root. A dynamic namespace served from a legacy raw
+      // root `namespaces/ns-616c706861` (named verbatim `ns-616c706861`) records a
+      // catalog row from the write path; that row is in `existing` (the prior
+      // load) here. If we still decoded to `alpha`, this scan would emit an `alpha`
+      // row at `fullPath`, and the final live-row remerge in `finishRebuild` would
+      // re-add the literal `ns-616c706861` row (its root still has data) — leaving
+      // TWO catalog rows at the SAME `storageDir`, fanning QMD/maintenance out under
+      // the wrong namespace. So, mirroring `namespaceFromStorageDir`'s "config/catalog
+      // match before decode" rule, prefer the LITERAL dir name when it is already a
+      // KNOWN namespace — configured OR present as a live/cataloged row in `existing`
+      // — and DO NOT also emit the decoded alias for that same root. A genuine
+      // tokenized dir with no literal owner (no `existing` row keyed by the raw
+      // token) still decodes as before.
+      const literalIsKnown = configured.has(token) || existing.has(token);
+      const decoded = literalIsKnown ? token : namespaceIdentityFromToken(token) ?? token;
       if (decoded !== defaultNs && !isSafeRouteNamespace(decoded)) {
         skipped.push({ token, reason: "unsafe", detail: decoded });
         continue;

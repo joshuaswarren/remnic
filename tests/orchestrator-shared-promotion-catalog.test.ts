@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 
@@ -497,6 +497,87 @@ test("an already-aborted recall records no catalog read touches", async () => {
         `an aborted recall must not record a read touch (namespace ${r.namespace} has lastReadAt)`,
       );
     }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── codex P2 (NRcCL): touch dynamic namespaces after identity consolidation.
+// `autoConsolidateIdentity` fans out over the catalog-union namespace set. When a
+// DYNAMIC namespace's ONLY mutation in the consolidation pass is identity
+// consolidation (it rewrites IDENTITY and clears reflections via
+// `storage.writeIdentity`/`writeIdentityReflections`), nothing recorded a catalog
+// write for it: the pass's consolidated touch only covers the DEFAULT
+// `this.storage` and only when `memoryItemMutated` was set by other work. So the
+// namespace kept a stale `lastWriteAt`, and `listNamespaces({ writtenSince })`
+// missed the write. The fix records a per-namespace `markCatalogWrite` right after
+// the identity files are updated.
+test("autoConsolidateIdentity records a catalog write for a dynamic namespace whose only mutation is consolidation (NRcCL)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-identity-consolidate-catalog-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      identityEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+
+    const dynamicNs = "project-origin-consolidate-only";
+    const orchestrator = new Orchestrator(config) as any;
+    assert.equal(orchestrator.namespaceCatalog.enabled, true, "catalog must be enabled");
+
+    // IDENTITY.<ns>.md is written under workspaceDir; it must exist for the
+    // consolidation write to land.
+    await mkdir(config.workspaceDir, { recursive: true });
+
+    // Seed the dynamic namespace's storage with enough reflections to cross the
+    // IDENTITY_CONSOLIDATE_THRESHOLD, so consolidation actually runs for it.
+    const dynamicStorage = await orchestrator.getStorage(dynamicNs);
+    await dynamicStorage.ensureDirectories();
+    const bigReflections =
+      "## Reflection\n\n" + "- synthetic reflection line filling the identity file\n".repeat(400);
+    assert.ok(bigReflections.length > 8_000, "precondition: reflections exceed the consolidate threshold");
+    await dynamicStorage.writeIdentityReflections(bigReflections);
+
+    // Register the dynamic namespace in the catalog WITHOUT a write touch (a read
+    // registration), so the catalog-union loop includes it but its lastWriteAt is
+    // unset before consolidation — isolating consolidation as the sole mutation.
+    await orchestrator.namespaceCatalog.markRead(dynamicNs, { discoveredBy: "read", storageDir: dynamicStorage.dir });
+    const before = await orchestrator.namespaceCatalog.getNamespaceRecord(dynamicNs);
+    assert.ok(before, "precondition: dynamic namespace is cataloged before consolidation");
+    assert.ok(!before?.lastWriteAt, "precondition: lastWriteAt is unset before consolidation");
+
+    // Stub the LLM consolidation so the pass produces patterns deterministically.
+    orchestrator.extraction = {
+      ...orchestrator.extraction,
+      consolidateIdentity: async () => ({
+        learnedPatterns: ["synthetic consolidated pattern"],
+        summary: "",
+      }),
+    };
+
+    await orchestrator.autoConsolidateIdentity();
+
+    // markCatalogWrite is fire-and-forget; serialize after it before reading.
+    await orchestrator.namespaceCatalog.markRead(dynamicNs);
+
+    const after = await orchestrator.namespaceCatalog.getNamespaceRecord(dynamicNs);
+    assert.ok(
+      after?.lastWriteAt,
+      "identity consolidation must record a catalog write (lastWriteAt) for the dynamic namespace",
+    );
+
+    // The consumer the bug cited now surfaces the namespace.
+    const since = new Date(Date.parse(after!.lastWriteAt!) - 1000);
+    const written = await orchestrator.namespaceCatalog.listNamespaces({ writtenSince: since });
+    assert.ok(
+      written.some((r: { namespace: string }) => r.namespace === dynamicNs),
+      "writtenSince must surface a namespace mutated only by identity consolidation",
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import type { PluginConfig } from "../types.js";
-import { namespaceIdentityToken } from "./identity.js";
+import { namespaceIdentityFromToken, namespaceIdentityToken } from "./identity.js";
 import { NamespaceCatalog } from "./catalog.js";
 import {
   NamespaceStorageRouter,
@@ -2967,6 +2967,93 @@ test("inert rebuild --apply exits non-zero; inert --dry-run stays zero (NFb5W)",
     );
   } finally {
     process.exitCode = savedExitCode;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── NRcCD (codex P2): preserve cataloged token-shaped raw roots during rebuild ──
+// A DYNAMIC namespace literally named `ns-616c706861` (= the canonical token of
+// `alpha`) is served from a legacy raw root `namespaces/ns-616c706861` and already
+// owns a catalog row from the write path. Before the fix, the rebuild scanner
+// decoded that dir to `alpha`, emitting an `alpha` row at the raw root, while the
+// final live-row remerge kept the real `ns-616c706861` row too — TWO rows at the
+// SAME storageDir, fanning QMD/maintenance out under the wrong namespace. The fix
+// prefers the LITERAL dir name when it is already a KNOWN (cataloged) namespace.
+test("rebuildFromDisk keeps a cataloged token-shaped raw root as the literal namespace (NRcCD)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    // The raw root is literally named like alpha's canonical token.
+    const literalNs = namespaceIdentityToken("alpha"); // "ns-616c706861"
+    assert.equal(
+      namespaceIdentityFromToken(literalNs),
+      "alpha",
+      "precondition: the dir name decodes to alpha — the ambiguity this test exercises",
+    );
+    const rawRoot = path.join(memoryDir, "namespaces", literalNs);
+    // Legacy raw root holding memory data.
+    await mkdir(path.join(rawRoot, "facts"), { recursive: true });
+    await writeFile(path.join(rawRoot, "facts", "f1.md"), "# synthetic\n", "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // Write-path row: the dynamic namespace is cataloged at its raw root verbatim.
+    await catalog.markWrite(literalNs, { discoveredBy: "write", storageDir: rawRoot });
+    const seeded = await catalog.getNamespaceRecord(literalNs);
+    assert.ok(seeded, "precondition: literal namespace has a catalog row before rebuild");
+    assert.equal(path.resolve(seeded!.storageDir), path.resolve(rawRoot));
+
+    const result = await catalog.rebuildFromDisk();
+
+    // EXACTLY ONE row points at the raw root, and it is the LITERAL namespace.
+    const atRawRoot = result.records.filter(
+      (r) => path.resolve(r.storageDir) === path.resolve(rawRoot),
+    );
+    assert.equal(
+      atRawRoot.length,
+      1,
+      `rebuild must produce exactly one catalog row for ${rawRoot}, got: ${atRawRoot
+        .map((r) => r.namespace)
+        .join(", ")}`,
+    );
+    assert.equal(
+      atRawRoot[0]?.namespace,
+      literalNs,
+      "the surviving row must be the literal namespace, not the decoded alias",
+    );
+    assert.ok(
+      !result.records.some((r) => r.namespace === "alpha"),
+      "rebuild must NOT emit a decoded `alpha` alias row when the literal owner exists",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// Control: a genuine tokenized dir with NO literal owner (no cataloged row keyed
+// by the raw token) still decodes back to its identity, exactly as before. This
+// guards against the NRcCD fix over-suppressing the canonical decode.
+test("rebuildFromDisk still decodes a tokenized root with no literal owner (NRcCD control)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const token = namespaceIdentityToken("alpha"); // tokenized dir for `alpha`
+    await mkdir(path.join(memoryDir, "namespaces", token, "facts"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "namespaces", token, "facts", "f1.md"),
+      "# synthetic\n",
+      "utf8",
+    );
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const result = await catalog.rebuildFromDisk();
+
+    assert.ok(
+      result.records.some((r) => r.namespace === "alpha"),
+      "with no literal owner, a tokenized dir still decodes to its identity",
+    );
+    assert.ok(
+      !result.records.some((r) => r.namespace === token),
+      "the literal token form must NOT appear when nothing owns it",
+    );
+  } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
