@@ -3223,6 +3223,68 @@ test("listNamespaces drops stale decoded aliases for catalog-owned token-shaped 
   }
 });
 
+test("rebuildFromDisk merges touch fields from dropped root aliases", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const literalNs = namespaceIdentityToken("alpha");
+    const rawRoot = path.join(memoryDir, "namespaces", literalNs);
+    await mkdir(path.join(rawRoot, "facts"), { recursive: true });
+    await writeFile(path.join(rawRoot, "facts", "f1.md"), "# synthetic\n", "utf8");
+
+    const literalWrite = new Date("2026-01-01T00:00:00.000Z");
+    const literalMaintenance = new Date("2026-01-01T01:00:00.000Z");
+    const aliasWrite = new Date("2026-01-02T00:00:00.000Z");
+    const aliasMaintenance = new Date("2026-01-02T01:00:00.000Z");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite(literalNs, {
+      discoveredBy: "write",
+      storageDir: rawRoot,
+      at: literalWrite,
+    });
+    await catalog.markMaintenance(literalNs, "qmd", literalMaintenance);
+    await catalog.markWrite("alpha", {
+      discoveredBy: "write",
+      storageDir: rawRoot,
+      at: aliasWrite,
+    });
+    await catalog.markMaintenance("alpha", "qmd", aliasMaintenance);
+
+    const result = await catalog.rebuildFromDisk();
+    const atRawRoot = result.records.filter(
+      (record) => path.resolve(record.storageDir) === path.resolve(rawRoot),
+    );
+
+    assert.equal(atRawRoot.length, 1, "rebuild must keep only one owner for a storage root");
+    assert.equal(atRawRoot[0]?.namespace, literalNs, "the literal root owner must survive");
+    assert.equal(
+      atRawRoot[0]?.lastWriteAt,
+      aliasWrite.toISOString(),
+      "the surviving owner must inherit the newer write touch from the dropped alias",
+    );
+    assert.equal(
+      atRawRoot[0]?.lastMaintenanceAt?.qmd,
+      aliasMaintenance.toISOString(),
+      "the surviving owner must inherit the newer maintenance touch from the dropped alias",
+    );
+
+    const writtenSince = await catalog.listNamespaces({
+      writtenSince: new Date("2026-01-01T12:00:00.000Z"),
+    });
+    assert.ok(
+      writtenSince.some((record) => record.namespace === literalNs),
+      "writtenSince must still include the root after the alias row is collapsed",
+    );
+    assert.equal(
+      await catalog.getNamespaceRecord("alpha"),
+      null,
+      "the decoded alias must stay collapsed after preserving its touch fields",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("listNamespaces prefers configured token owners over stale literal token aliases", async () => {
   const memoryDir = await mkMemoryDir();
   try {

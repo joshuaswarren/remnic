@@ -551,10 +551,13 @@ export class NamespaceCatalog {
     for (const record of records) {
       const resolvedStorageDir = path.resolve(record.storageDir);
       const current = byStorageDir.get(resolvedStorageDir);
-      byStorageDir.set(
-        resolvedStorageDir,
-        current ? this.preferStorageRootOwner(current, record, resolvedStorageDir, configured) : record,
-      );
+      if (!current) {
+        byStorageDir.set(resolvedStorageDir, record);
+        continue;
+      }
+      const owner = this.preferStorageRootOwner(current, record, resolvedStorageDir, configured);
+      const alias = owner === current ? record : current;
+      byStorageDir.set(resolvedStorageDir, mergeNewerTouchFields(owner, alias));
     }
     return [...byStorageDir.values()];
   }
@@ -566,7 +569,8 @@ export class NamespaceCatalog {
     );
     // Drop unsafe-namespace rows (sanitizer returned null) at the read boundary.
     // Then collapse duplicate root aliases so maintenance/QMD see exactly one
-    // namespace owner for a physical storage root, matching rebuild ownership.
+    // namespace owner for a physical storage root, matching rebuild ownership,
+    // while preserving touch recency from every alias row.
     return this.dropDuplicateStorageRootAliases(
       sanitized.filter((r): r is NamespaceRecord => r !== null),
     );
@@ -1701,16 +1705,22 @@ export class NamespaceCatalog {
             // this stale alias from the untrusted log — that leaves TWO catalog rows
             // pointing at one root and fans maintenance/QMD out over the wrong
             // namespace. Enforce at most one row per storageDir: the scan's owner
-            // wins, the alias is dropped (falls through to purge).
+            // wins, the alias is dropped (falls through to purge) after folding
+            // its touch fields into the owner so recency filters/maintenance do
+            // not miss a real write.
             const resolvedSafe = path.resolve(safeDir);
-            let ownedByOther = false;
+            let owningNamespace: string | null = null;
             for (const [otherNs, otherRec] of rebuilt) {
               if (otherNs !== ns && path.resolve(otherRec.storageDir) === resolvedSafe) {
-                ownedByOther = true;
+                owningNamespace = otherNs;
                 break;
               }
             }
-            if (ownedByOther) continue;
+            if (owningNamespace) {
+              const owner = rebuilt.get(owningNamespace);
+              if (owner) rebuilt.set(owningNamespace, mergeNewerTouchFields(owner, fresh));
+              continue;
+            }
             rebuilt.set(ns, {
               ...fresh,
               storageDir: safeDir,
