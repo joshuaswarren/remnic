@@ -6,7 +6,7 @@ import {
 import path from "node:path";
 import os from "node:os";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   mkdir,
   readdir,
@@ -299,7 +299,11 @@ import {
 } from "./conversation-index/backend.js";
 import { NamespaceStorageRouter } from "./namespaces/storage.js";
 import { NamespaceCatalog } from "./namespaces/catalog.js";
-import { namespaceIdentityFromToken, namespaceIdentityToken } from "./namespaces/identity.js";
+import {
+  namespaceIdentityFromToken,
+  namespaceIdentityToken,
+  normalizeNamespaceIdentity,
+} from "./namespaces/identity.js";
 import {
   canReadNamespace,
   defaultNamespaceForPrincipal,
@@ -328,6 +332,7 @@ import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { TierMigrationExecutor } from "./tier-migration.js";
 import { decideTierTransition, type MemoryTier } from "./tier-routing.js";
 import {
+  isSafeRouteNamespace,
   selectRouteRule,
   type RouteRule,
   type RoutingEngineOptions,
@@ -1760,6 +1765,8 @@ export class Orchestrator {
   private readonly storageRouter: NamespaceStorageRouter;
   /** Rebuildable namespace catalog (issue #1499). Inert unless namespaces enabled. */
   readonly namespaceCatalog: NamespaceCatalog;
+  private readonly namespaceStorageDirHints = new Map<string, Set<string>>();
+  private namespaceStorageDirHintsLoaded = false;
   private readonly namespaceSearchRouter: NamespaceSearchRouter;
   qmd: SearchBackend;
   private readonly conversationQmd?: ConversationQmdRuntime;
@@ -2248,6 +2255,67 @@ export class Orchestrator {
     );
   }
 
+  private rememberNamespaceStorageDirHint(namespace: string, storageDir?: string): void {
+    if (!this.config.namespacesEnabled || !storageDir) return;
+    const ns = normalizeNamespaceIdentity(namespace);
+    if (!ns) return;
+    const defaultNs = normalizeNamespaceIdentity(this.config.defaultNamespace);
+    if (ns !== defaultNs && !isSafeRouteNamespace(ns)) return;
+
+    const resolvedStorageDir = path.resolve(storageDir);
+    const resolvedMemoryDir = path.resolve(this.config.memoryDir);
+    const resolvedNamespacesDir = path.join(resolvedMemoryDir, "namespaces");
+    if (
+      resolvedStorageDir !== resolvedMemoryDir &&
+      !isPathInsideStorageRoot(resolvedNamespacesDir, resolvedStorageDir)
+    ) {
+      return;
+    }
+
+    let hints = this.namespaceStorageDirHints.get(resolvedStorageDir);
+    if (!hints) {
+      hints = new Set<string>();
+      this.namespaceStorageDirHints.set(resolvedStorageDir, hints);
+    }
+    hints.add(ns);
+  }
+
+  private loadNamespaceStorageDirHintsFromCatalog(): void {
+    if (this.namespaceStorageDirHintsLoaded || !this.namespaceCatalog.enabled) return;
+    this.namespaceStorageDirHintsLoaded = true;
+    const catalogPath = path.join(this.config.memoryDir, "state", "namespaces.jsonl");
+    if (!existsSync(catalogPath)) return;
+
+    let body: string;
+    try {
+      body = readFileSync(catalogPath, "utf8");
+    } catch {
+      return;
+    }
+
+    for (const line of body.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+        const record = parsed as Record<string, unknown>;
+        if (
+          typeof record.namespace !== "string" ||
+          typeof record.storageDir !== "string" ||
+          typeof record.identityToken !== "string"
+        ) {
+          continue;
+        }
+        const namespace = normalizeNamespaceIdentity(record.namespace);
+        if (!namespace || record.identityToken !== namespaceIdentityToken(namespace)) continue;
+        this.rememberNamespaceStorageDirHint(namespace, record.storageDir);
+      } catch {
+        // Catalog hints are best-effort. The catalog reader still owns full recovery.
+      }
+    }
+  }
+
   /**
    * Namespaces that QMD maintenance (update/embed) must cover: the CONFIGURED set
    * PLUS every dynamic namespace recorded in the catalog (NGnei, codex P2). An
@@ -2392,8 +2460,10 @@ export class Orchestrator {
       // router's resolve-hook dedup only marks a namespace notified when the
       // catalog actually APPENDED. A dropped append (rebuild-lock timeout) or a
       // failure resolves to `false`/rejects, so the next `storageFor` retries.
-      onResolve: (namespace, storageDir) =>
-        this.namespaceCatalog.registerResolved(namespace, storageDir),
+      onResolve: (namespace, storageDir) => {
+        this.rememberNamespaceStorageDirHint(namespace, storageDir);
+        return this.namespaceCatalog.registerResolved(namespace, storageDir);
+      },
     });
     this.namespaceSearchRouter = new NamespaceSearchRouter(
       config,
@@ -18848,14 +18918,24 @@ export class Orchestrator {
     const dirName = m[1];
     // Token-shaped raw names (round 6, codex P2 — NBsFz): a dir name might be a
     // tokenized identity OR a literal raw namespace name that merely LOOKS like a
-    // token (e.g. a configured name `ns-616c706861`). The round-trip check below
+    // token (e.g. a configured or dynamic name `ns-616c706861`). The round-trip check below
     // (`namespaceIdentityToken(decoded) === dirName`) is TAUTOLOGICAL for a
     // canonical token string, so it cannot tell a tokenized dir for `alpha` apart
     // from the legacy raw root of a namespace literally named `ns-616c706861`
-    // (codex NRCve). A dir name that is itself a KNOWN (configured) namespace is
-    // therefore preserved as the literal namespace BEFORE attempting to decode it.
+    // (codex NRCve). A dir name that is itself a KNOWN namespace (configured or
+    // catalog-owned at this exact storage root) is therefore preserved as the
+    // literal namespace BEFORE attempting to decode it.
     if (this.configuredNamespaces().includes(dirName)) {
       return dirName;
+    }
+    this.loadNamespaceStorageDirHintsFromCatalog();
+    const hintedNamespaces = this.namespaceStorageDirHints.get(resolvedStorageDir);
+    if (hintedNamespaces?.has(dirName)) {
+      return dirName;
+    }
+    if (hintedNamespaces?.size === 1) {
+      const [hintedNamespace] = hintedNamespaces;
+      if (hintedNamespace) return hintedNamespace;
     }
     const decoded = namespaceIdentityFromToken(dirName);
     if (decoded && namespaceIdentityToken(decoded) === dirName) {
@@ -18871,6 +18951,7 @@ export class Orchestrator {
    */
   private markCatalogWrite(namespace: string, storageDir?: string): void {
     if (!this.namespaceCatalog.enabled) return;
+    this.rememberNamespaceStorageDirHint(namespace, storageDir);
     void this.namespaceCatalog
       .markWrite(namespace, { discoveredBy: "write", storageDir })
       .catch(() => undefined);
@@ -18899,6 +18980,7 @@ export class Orchestrator {
   /** Record a namespace read in the catalog. Best-effort, failure-tolerant. */
   private markCatalogRead(namespace: string, storageDir?: string): void {
     if (!this.namespaceCatalog.enabled) return;
+    this.rememberNamespaceStorageDirHint(namespace, storageDir);
     void this.namespaceCatalog
       .markRead(namespace, { discoveredBy: "read", storageDir })
       .catch(() => undefined);

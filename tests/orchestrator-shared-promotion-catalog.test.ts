@@ -547,6 +547,46 @@ test("namespaceFromStorageDir preserves a CONFIGURED namespace named like a cano
   }
 });
 
+test("namespaceFromStorageDir preserves a CATALOGED dynamic namespace named like a canonical token", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-token-catalog-"));
+  try {
+    const tokenize = (name: string) => `ns-${Buffer.from(name, "utf8").toString("hex")}`;
+    const literalTokenName = tokenize("alpha");
+    const rawDir = path.join(memoryDir, "namespaces", literalTokenName);
+    await mkdir(path.join(rawDir, "facts"), { recursive: true });
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    });
+    const seedOrchestrator = new Orchestrator(config) as any;
+    await seedOrchestrator.namespaceCatalog.markRead(literalTokenName, {
+      discoveredBy: "read",
+      storageDir: rawDir,
+    });
+
+    const freshOrchestrator = new Orchestrator(config) as any;
+    assert.equal(
+      freshOrchestrator.namespaceFromStorageDir(rawDir),
+      literalTokenName,
+      "a cataloged dynamic namespace named like a canonical token must resolve to the literal name, not its decoded identity",
+    );
+
+    assert.equal(
+      freshOrchestrator.namespaceFromStorageDir(path.join(memoryDir, "namespaces", tokenize("beta"))),
+      "beta",
+      "an uncataloged genuine tokenized dir still decodes to its identity",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 7 (codex P2 — NDXHa): an already-ABORTED recall must not record catalog
 // read touches. The abort check runs later (Phase 1 retrieval), so without the
 // gate an already-aborted recall would still set `lastReadAt` for every recall
