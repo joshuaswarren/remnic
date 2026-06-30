@@ -149,6 +149,97 @@ test("persistExtraction shared promotion records a shared-namespace catalog writ
   }
 });
 
+test("shared promotion records catalog write after shared temporal supersession", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-shared-promo-order-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      autoPromoteToSharedEnabled: true,
+      autoPromoteToSharedCategories: ["fact"],
+      autoPromoteMinConfidenceTier: "implied",
+      temporalSupersessionEnabled: true,
+      memoryLinkingEnabled: false,
+      inlineSourceAttributionEnabled: false,
+    });
+
+    const orchestrator = new Orchestrator(config) as any;
+    orchestrator.qmd = { isAvailable: () => false };
+
+    const sourceStorage = await orchestrator.getStorage("default");
+    await sourceStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorage("shared");
+    await sharedStorage.ensureDirectories();
+
+    const entity = "user-shared-promotion-order";
+    const oldId = await sharedStorage.writeMemory("fact", "Lives in NYC.", {
+      entityRef: entity,
+      structuredAttributes: { city: "NYC" },
+      source: "seed",
+      confidence: 0.9,
+      tags: ["shared-promotion"],
+      validAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    const sharedMutationOrder: string[] = [];
+    const originalMarkCatalogWrite = orchestrator.markCatalogWrite.bind(orchestrator);
+    orchestrator.markCatalogWrite = (namespace: string, storageDir?: string) => {
+      if (namespace === config.sharedNamespace) sharedMutationOrder.push("catalog");
+      return originalMarkCatalogWrite(namespace, storageDir);
+    };
+    const originalWriteMemoryFrontmatter = sharedStorage.writeMemoryFrontmatter.bind(sharedStorage);
+    sharedStorage.writeMemoryFrontmatter = async (...args: any[]) => {
+      sharedMutationOrder.push("frontmatter");
+      return originalWriteMemoryFrontmatter(...(args as Parameters<typeof originalWriteMemoryFrontmatter>));
+    };
+
+    const result = {
+      facts: [
+        {
+          content: "Lives in Austin.",
+          category: "fact",
+          confidence: 0.95,
+          tags: ["shared-promotion"],
+          entityRef: entity,
+          structuredAttributes: { city: "Austin" },
+        },
+      ],
+      entities: [],
+      questions: [],
+      profileUpdates: [],
+    };
+
+    await orchestrator.persistExtraction(result, sourceStorage, null, {
+      sessionKey: "s1",
+      principal: "default",
+    });
+
+    await orchestrator.namespaceCatalog.markRead("shared");
+    const oldMemory = await sharedStorage.getMemoryById(oldId);
+    const sharedRecord = await orchestrator.namespaceCatalog.getNamespaceRecord("shared");
+
+    assert.equal(oldMemory?.frontmatter.status, "superseded", "precondition: shared supersession ran");
+    assert.ok(oldMemory?.frontmatter.supersededAt, "supersession must write supersededAt");
+    assert.ok(sharedRecord?.lastWriteAt, "shared promotion must record a catalog write");
+    assert.deepEqual(
+      sharedMutationOrder,
+      ["frontmatter", "catalog"],
+      "the shared catalog touch must run after shared supersession frontmatter is written",
+    );
+    assert.ok(
+      Date.parse(sharedRecord!.lastWriteAt!) >= Date.parse(oldMemory!.frontmatter.supersededAt!),
+      "shared catalog lastWriteAt must not precede supersession frontmatter mutation",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 8 (codex P2 — NElSf): the shared-promotion HASH-DEDUP branch returns
 // early (an active matching shared fact already exists, so no NEW write happens),
 // but it first runs `applyTemporalSupersession`, which REWRITES shared-namespace

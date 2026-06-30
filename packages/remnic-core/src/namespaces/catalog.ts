@@ -125,6 +125,25 @@ export interface NamespaceCatalogRebuildResult {
   applied: boolean;
 }
 
+const NAMESPACE_KINDS: readonly NamespaceKind[] = [
+  "default",
+  "self",
+  "shared",
+  "project",
+  "branch",
+  "team-project",
+  "explicit",
+  "legacy",
+];
+
+const NAMESPACE_DISCOVERY_SOURCES: readonly NamespaceDiscoverySource[] = [
+  "config",
+  "write",
+  "read",
+  "scan",
+  "migration",
+];
+
 const CATALOG_FILE = "namespaces.jsonl";
 const STATE_DIR = "state";
 const REBUILD_LOCK_FILE = "namespaces.rebuild.lock";
@@ -215,23 +234,49 @@ async function hasMemoryData(rootDir: string): Promise<boolean> {
   return false;
 }
 
+function isValidIsoTimestamp(value: string): boolean {
+  const ms = Date.parse(value);
+  return Number.isFinite(ms);
+}
+
+function isNamespaceKind(value: unknown): value is NamespaceKind {
+  return typeof value === "string" && (NAMESPACE_KINDS as readonly string[]).includes(value);
+}
+
+function isNamespaceDiscoverySource(value: unknown): value is NamespaceDiscoverySource {
+  return typeof value === "string" && (NAMESPACE_DISCOVERY_SOURCES as readonly string[]).includes(value);
+}
+
 /**
  * Validate a JSONL line parsed value as a usable NamespaceRecord.
  * Rejects null / non-object / missing-field records (CLAUDE.md rule #18).
+ * Persisted enum and timestamp fields are also validated here so a syntactically
+ * valid but tampered/pre-fix line cannot surface impossible record states.
  */
 function coerceRecord(value: unknown): NamespaceRecord | null {
   if (typeof value !== "object" || value === null) return null;
   const v = value as Record<string, unknown>;
-  if (typeof v.namespace !== "string" || v.namespace.length === 0) return null;
+  if (typeof v.namespace !== "string") return null;
+  const namespace = normalizeNamespaceIdentity(v.namespace);
+  if (namespace.length === 0) return null;
   if (typeof v.identityToken !== "string" || v.identityToken.length === 0) return null;
+  const expectedIdentityToken = namespaceIdentityToken(namespace);
+  if (v.identityToken !== expectedIdentityToken) return null;
   if (typeof v.storageDir !== "string" || v.storageDir.length === 0) return null;
   if (typeof v.createdAt !== "string" || v.createdAt.length === 0) return null;
-  const kind = typeof v.kind === "string" ? (v.kind as NamespaceKind) : "explicit";
+  if (!isValidIsoTimestamp(v.createdAt)) return null;
+  const kind = v.kind === undefined ? "explicit" : isNamespaceKind(v.kind) ? v.kind : null;
+  if (!kind) return null;
   const discoveredBy =
-    typeof v.discoveredBy === "string" ? (v.discoveredBy as NamespaceDiscoverySource) : "scan";
+    v.discoveredBy === undefined
+      ? "scan"
+      : isNamespaceDiscoverySource(v.discoveredBy)
+        ? v.discoveredBy
+        : null;
+  if (!discoveredBy) return null;
   const record: NamespaceRecord = {
-    namespace: v.namespace,
-    identityToken: v.identityToken,
+    namespace,
+    identityToken: expectedIdentityToken,
     kind,
     createdAt: v.createdAt,
     storageDir: v.storageDir,
@@ -241,12 +286,16 @@ function coerceRecord(value: unknown): NamespaceRecord | null {
   if (typeof v.projectId === "string") record.projectId = v.projectId;
   if (typeof v.branch === "string") record.branch = v.branch;
   if (typeof v.parentNamespace === "string") record.parentNamespace = v.parentNamespace;
-  if (typeof v.lastReadAt === "string") record.lastReadAt = v.lastReadAt;
-  if (typeof v.lastWriteAt === "string") record.lastWriteAt = v.lastWriteAt;
+  if (typeof v.lastReadAt === "string" && isValidIsoTimestamp(v.lastReadAt)) {
+    record.lastReadAt = v.lastReadAt;
+  }
+  if (typeof v.lastWriteAt === "string" && isValidIsoTimestamp(v.lastWriteAt)) {
+    record.lastWriteAt = v.lastWriteAt;
+  }
   if (v.lastMaintenanceAt && typeof v.lastMaintenanceAt === "object") {
     const out: Record<string, string> = {};
     for (const [k, val] of Object.entries(v.lastMaintenanceAt as Record<string, unknown>)) {
-      if (typeof val === "string") out[k] = val;
+      if (typeof val === "string" && isValidIsoTimestamp(val)) out[k] = val;
     }
     if (Object.keys(out).length > 0) record.lastMaintenanceAt = out;
   }

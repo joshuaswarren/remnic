@@ -373,6 +373,83 @@ test("catalog tolerates corrupt / non-object JSONL lines on read", async () => {
   }
 });
 
+test("catalog quarantines malformed JSONL record fields at the parse boundary", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const stateDir = path.join(memoryDir, "state");
+    await mkdir(stateDir, { recursive: true });
+    const file = path.join(stateDir, "namespaces.jsonl");
+    const now = new Date().toISOString();
+    const validToken = namespaceIdentityToken("valid");
+    const lines = [
+      JSON.stringify({
+        namespace: "bad-kind",
+        identityToken: namespaceIdentityToken("bad-kind"),
+        kind: "bogus",
+        createdAt: now,
+        storageDir: path.join(memoryDir, "namespaces", namespaceIdentityToken("bad-kind")),
+        discoveredBy: "write",
+      }),
+      JSON.stringify({
+        namespace: "bad-source",
+        identityToken: namespaceIdentityToken("bad-source"),
+        kind: "explicit",
+        createdAt: now,
+        storageDir: path.join(memoryDir, "namespaces", namespaceIdentityToken("bad-source")),
+        discoveredBy: "telepathy",
+      }),
+      JSON.stringify({
+        namespace: "bad-token",
+        identityToken: namespaceIdentityToken("other"),
+        kind: "explicit",
+        createdAt: now,
+        storageDir: path.join(memoryDir, "namespaces", namespaceIdentityToken("bad-token")),
+        discoveredBy: "write",
+      }),
+      JSON.stringify({
+        namespace: "bad-created",
+        identityToken: namespaceIdentityToken("bad-created"),
+        kind: "explicit",
+        createdAt: "not-a-date",
+        storageDir: path.join(memoryDir, "namespaces", namespaceIdentityToken("bad-created")),
+        discoveredBy: "write",
+      }),
+      JSON.stringify({
+        namespace: " valid ",
+        identityToken: validToken,
+        kind: "project",
+        createdAt: now,
+        storageDir: path.join(memoryDir, "namespaces", validToken),
+        discoveredBy: "write",
+        lastReadAt: "not-a-date",
+        lastWriteAt: "not-a-date",
+        lastMaintenanceAt: {
+          bad: "not-a-date",
+          ok: now,
+        },
+      }),
+    ];
+    await writeFile(file, lines.join("\n") + "\n", "utf8");
+
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const list = await catalog.listNamespaces();
+
+    assert.deepEqual(
+      list.map((r) => r.namespace),
+      ["valid"],
+      "invalid enum/token/timestamp records must not surface",
+    );
+    assert.equal(list[0]?.identityToken, validToken);
+    assert.equal(list[0]?.kind, "project");
+    assert.equal(list[0]?.discoveredBy, "write");
+    assert.equal(list[0]?.lastReadAt, undefined);
+    assert.equal(list[0]?.lastWriteAt, undefined);
+    assert.deepEqual(list[0]?.lastMaintenanceAt, { ok: now });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("StorageRouter integration: catalog registers namespace on storageFor", async () => {
   const memoryDir = await mkMemoryDir();
   try {
