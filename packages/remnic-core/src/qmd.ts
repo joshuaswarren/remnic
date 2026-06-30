@@ -1363,11 +1363,12 @@ export class QmdClient implements SearchBackend {
   }
 
   async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {
-    return this.probeCli({
+    const cliAvailable = await this.probeCli({
       allowAutoUpgrade: false,
       preserveStateOnFailure: true,
       signal: execution?.signal,
     });
+    return cliAvailable || this.daemonAvailable;
   }
 
   private async probeDaemon(): Promise<boolean> {
