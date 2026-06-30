@@ -338,6 +338,31 @@ test("healthForNamespace checks namespace collection without auto-creating or ca
   assert.deepEqual(created[1]?.ensureCollections, ["openclaw-engram--ns-736861726564"]);
 });
 
+test("healthForNamespace stops waiting when namespace backend probe aborts", async () => {
+  const backend = new class extends FakeBackend {
+    override async probe(): Promise<boolean> {
+      return await new Promise<boolean>(() => {});
+    }
+  }(false);
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => backend,
+  );
+  const controller = new AbortController();
+  controller.abort();
+
+  const health = await router.healthForNamespace("shared", {
+    signal: controller.signal,
+  });
+
+  assert.equal(health.available, false);
+  assert.equal(health.collectionState, "unknown");
+  assert.deepEqual(backend.checkCollections, []);
+  assert.deepEqual(backend.ensureCollections, []);
+  assert.equal(backend.disposed, 1);
+});
+
 test("legacy default namespace root filters nested namespace search results", async () => {
   const router = new NamespaceSearchRouter(
     config(),

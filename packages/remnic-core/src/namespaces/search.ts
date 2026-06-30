@@ -307,14 +307,17 @@ export class NamespaceSearchRouter {
     };
 
     const backend = this.createBackend(scopedConfig);
-    const available = await backend.probe().catch(() => false);
+    const available = await awaitWithAbort(backend.probe(), execution?.signal).catch(() => false);
     const collectionState = available
-      ? await this.collectionStateForBackend(backend, storage.dir, scopedConfig.qmdCollection, {
-        autoCreate: options.autoCreateCollection,
-        failOpenMissingGuardedCollection: options.failOpenMissingGuardedCollection,
-        skipAutoCreate: filtersNestedNamespaces,
-        execution,
-      })
+      ? await awaitWithAbort(
+        this.collectionStateForBackend(backend, storage.dir, scopedConfig.qmdCollection, {
+          autoCreate: options.autoCreateCollection,
+          failOpenMissingGuardedCollection: options.failOpenMissingGuardedCollection,
+          skipAutoCreate: filtersNestedNamespaces,
+          execution,
+        }),
+        execution?.signal,
+      ).catch(() => "unknown" as const)
       : "unknown";
     return {
       backend,
@@ -348,6 +351,19 @@ export class NamespaceSearchRouter {
     }
     return await backend.ensureCollection(memoryDir, collection, options.execution).catch(() => "unknown" as const);
   }
+}
+
+function awaitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) return Promise.reject(new Error("operation aborted"));
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("operation aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
 }
 
 function filterNamespaceSubtreeResults(
