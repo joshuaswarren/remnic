@@ -14791,17 +14791,31 @@ export class Orchestrator {
       }
     }
 
-    // Catalog touch for durable NON-FACT outputs (NHZEZ, codex P2). The per-fact
-    // `markCatalogWrite` above only fires inside the fact write loop, so an
-    // extraction that persists ONLY entities, relationships, profile updates, or
-    // questions (no facts) would record durable data to the BASE namespace's
-    // storage without ever touching the catalog — leaving that namespace's
-    // `lastWriteAt` stale so `listNamespaces({writtenSince})` / write-recency QMD
-    // maintenance miss the write. Entities/relationships/profile/questions are all
-    // written to the BASE `storage` (not the per-fact routed `targetStorage`), so
-    // we record ONE base-namespace touch here, after all non-fact writes complete.
-    // Use the KNOWN base namespace name, not a dir-decoded guess (NCQI0). One touch
-    // per namespace per extraction — `markWrite` is idempotent, so if the fact path
+    // Persist identity reflection. This writes durable namespace-local state, so
+    // an identity-ONLY extraction (no facts/entities/profile/questions) still
+    // counts as a durable non-fact write for the catalog touch below (NIIly).
+    // Only count it when the write actually succeeds (best-effort write); the
+    // touch is recorded AFTER this so a rolled-back/failed write never touches.
+    if (this.config.identityEnabled && result.identityReflection) {
+      try {
+        await storage.appendIdentityReflection(result.identityReflection);
+        durableNonFactWritten = true;
+      } catch (err) {
+        log.debug(`identity reflection write failed: ${err}`);
+      }
+    }
+
+    // Catalog touch for durable NON-FACT outputs (NHZEZ / NIIly, codex P2). The
+    // per-fact `markCatalogWrite` above only fires inside the fact write loop, so
+    // an extraction that persists ONLY entities, relationships, profile updates,
+    // questions, or an identity reflection (no facts) would record durable data to
+    // the BASE namespace's storage without ever touching the catalog — leaving that
+    // namespace's `lastWriteAt` stale so `listNamespaces({writtenSince})` /
+    // write-recency QMD maintenance miss the write. All of these are written to the
+    // BASE `storage` (not the per-fact routed `targetStorage`), so we record ONE
+    // base-namespace touch here, AFTER every non-fact write completes. Use the
+    // KNOWN base namespace name, not a dir-decoded guess (NCQI0). One touch per
+    // namespace per extraction — `markWrite` is idempotent, so if the fact path
     // already touched the base namespace this only refreshes `lastWriteAt`.
     // Best-effort and failure-tolerant (markCatalogWrite swallows errors).
     if (durableNonFactWritten) {
@@ -14810,15 +14824,6 @@ export class Orchestrator {
           ? baseNamespace
           : this.namespaceFromStorageDir(storage.dir);
       this.markCatalogWrite(baseTouchNamespace, storage.dir);
-    }
-
-    // Persist identity reflection
-    if (this.config.identityEnabled && result.identityReflection) {
-      try {
-        await storage.appendIdentityReflection(result.identityReflection);
-      } catch (err) {
-        log.debug(`identity reflection write failed: ${err}`);
-      }
     }
 
     // Save content-hash index after batch

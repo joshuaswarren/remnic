@@ -317,3 +317,46 @@ test("persistExtraction touches the catalog for a question-only (fact-less) extr
     "a question-only extraction must record a catalog write touch (lastWriteAt)",
   );
 });
+
+// ── NIIly (codex P2): an extraction that persists ONLY an identity reflection (no
+// facts, entities, profile updates, or questions) still writes durable
+// namespace-local state via appendIdentityReflection(). The durable-non-fact
+// catalog touch must therefore include identity reflection writes — otherwise an
+// identity-only extraction leaves lastWriteAt stale.
+test("persistExtraction touches the catalog for an identity-reflection-only extraction (NIIly)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-niily-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    identityEnabled: true,
+    namespacesEnabled: true,
+    namespaceCatalogEnabled: true,
+  });
+
+  const orchestrator = new Orchestrator(config) as any;
+  const ns = "project-origin-identityonly";
+  const storage = await orchestrator.storageRouter.storageFor(ns);
+  await storage.ensureDirectories();
+
+  const result: ExtractionResult = {
+    facts: [],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+    identityReflection: "I tend to ask clarifying questions before committing.",
+  };
+
+  await orchestrator.persistExtraction(result, storage, null, undefined, ns);
+  await new Promise((r) => setTimeout(r, 50));
+
+  const record = await orchestrator.namespaceCatalog.getNamespaceRecord(ns);
+  assert.ok(record, "the base namespace is catalogued for an identity-only extraction");
+  assert.ok(
+    record.lastWriteAt,
+    "an identity-reflection-only extraction must record a catalog write touch (lastWriteAt)",
+  );
+});
