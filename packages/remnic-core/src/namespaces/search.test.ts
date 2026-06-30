@@ -394,6 +394,37 @@ test("healthForNamespace reports daemon mode from live cached namespace backend"
   assert.deepEqual(created[1]?.checkCollections, []);
 });
 
+test("healthForNamespace preserves cached missing collection state", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = created.length === 0
+        ? new FakeBackend(false, [], { ensure: "missing" }, true)
+        : new FakeBackend(false, [], { check: "present" }, false);
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  assert.deepEqual(
+    await router.searchAcrossNamespaces({
+      query: "a",
+      namespaces: ["shared"],
+      maxResults: 1,
+    }),
+    [],
+  );
+  const health = await router.healthForNamespace("shared");
+
+  assert.equal(health.available, true);
+  assert.equal(health.daemonMode, true);
+  assert.equal(health.collectionState, "missing");
+  assert.equal(created.length, 2);
+  assert.deepEqual(created[1]?.checkCollections, ["openclaw-engram--ns-736861726564"]);
+});
+
 test("healthForNamespace stops waiting when namespace availability probe aborts", async () => {
   const backend = new class extends FakeBackend {
     override async checkAvailability(execution?: SearchExecutionOptions): Promise<boolean> {

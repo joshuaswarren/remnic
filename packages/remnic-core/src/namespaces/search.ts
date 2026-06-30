@@ -226,12 +226,16 @@ export class NamespaceSearchRouter {
           : null;
       const liveRecord = await this.liveCachedRecordForHealth(key, record, execution);
       const daemonMode = daemonModeForBackend(liveRecord?.backend ?? record.backend);
+      const collectionState =
+        liveRecord?.collectionState === "missing"
+          ? "missing"
+          : record.collectionState;
 
       return {
         collection: record.collection,
         memoryDir: record.memoryDir,
         available: liveRecord?.available ?? record.available,
-        collectionState: record.collectionState,
+        collectionState,
         debugStatus: record.backend.debugStatus(),
         installedVersion: versionStatus?.installedVersion ?? null,
         supportedVersion: versionStatus?.supportedVersion ?? null,
