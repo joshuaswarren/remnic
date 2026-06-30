@@ -15321,7 +15321,10 @@ export class Orchestrator {
 
     try {
       const deepSleepStartedAt = new Date().toISOString();
-      await this.runTierMigrationCycle(this.storage, "maintenance");
+      // Tier migrations move/rewrite memory files; count them as durable
+      // mutations for the catalog touch below (codex NThSW).
+      const tierMigration = await this.runTierMigrationCycle(this.storage, "maintenance");
+      if (tierMigration.migrated > 0) memoryItemMutated = true;
       allMemories = await this.storage.readAllMemories();
 
       // Fact archival pass (v6.0) — move old, low-importance, rarely-accessed facts to archive/
