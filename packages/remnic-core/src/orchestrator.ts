@@ -15220,6 +15220,10 @@ export class Orchestrator {
           5,
         );
         if (synthesized > 0) {
+          // Entity synthesis rewrites entity files — a durable namespace mutation,
+          // so record it for the catalog touch even when it is the only change in
+          // the pass (codex). Otherwise lastWriteAt goes stale.
+          memoryItemMutated = true;
           log.info(`refreshed ${synthesized} entity syntheses`);
         }
       } catch (err) {
@@ -15452,6 +15456,10 @@ export class Orchestrator {
         );
         if (profileResult) {
           await this.storage.writeProfile(profileResult.consolidatedProfile);
+          // Profile consolidation rewrites profile.md — a durable namespace
+          // mutation; record it for the catalog touch even when it is the only
+          // change in the pass (codex). Otherwise lastWriteAt goes stale.
+          memoryItemMutated = true;
           log.info(
             `profile.md consolidated: removed ${profileResult.removedCount} items — ${profileResult.summary}`,
           );

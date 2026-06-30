@@ -1374,8 +1374,20 @@ export class NamespaceCatalog {
       // — and DO NOT also emit the decoded alias for that same root. A genuine
       // tokenized dir with no literal owner (no `existing` row keyed by the raw
       // token) still decodes as before.
-      const literalIsKnown = configured.has(token) || existing.has(token);
-      const decoded = literalIsKnown ? token : namespaceIdentityFromToken(token) ?? token;
+      // Root ownership (codex r3499938974): preserving the literal must be
+      // ROOT-based, not just key-based. A STALE cataloged row merely NAMED like
+      // the token (but whose storageDir is NOT this `fullPath`) must NOT win — a
+      // real dynamic `alpha` write served from this tokenized root would then be
+      // rebuilt under the stale literal name and the fresh `alpha` row dropped by
+      // the owned-by-other guard. So only prefer the literal when a CONFIGURED
+      // name matches OR an existing cataloged row named `token` actually OWNS this
+      // `fullPath`. A genuine tokenized root with no literal owner decodes.
+      const literalRecord = existing.get(token);
+      const literalOwnsRoot =
+        configured.has(token) ||
+        (literalRecord !== undefined &&
+          path.resolve(literalRecord.storageDir) === path.resolve(fullPath));
+      const decoded = literalOwnsRoot ? token : namespaceIdentityFromToken(token) ?? token;
       if (decoded !== defaultNs && !isSafeRouteNamespace(decoded)) {
         skipped.push({ token, reason: "unsafe", detail: decoded });
         continue;
