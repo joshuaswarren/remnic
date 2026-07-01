@@ -296,17 +296,18 @@ export function resolveScopeProfilePlan(
   }
 
   const preferredWriteLayer = layerMap.get(active.profile.writeDefault);
-  const userGlobalWriteLayer = layerMap.get("userGlobal");
+  const readableWriteLayers = active.profile.readOrder
+    .map((id) => layerMap.get(id))
+    .filter(
+      (layer): layer is ScopeProfileLayerResolution =>
+        Boolean(layer?.writable && layer.namespace && readNamespaces.includes(layer.namespace)),
+    );
   const fallbackWriteLayer =
     preferredWriteLayer?.writable &&
     preferredWriteLayer.namespace &&
     readNamespaces.includes(preferredWriteLayer.namespace)
       ? preferredWriteLayer
-      : userGlobalWriteLayer?.writable &&
-          userGlobalWriteLayer.namespace &&
-          readNamespaces.includes(userGlobalWriteLayer.namespace)
-        ? userGlobalWriteLayer
-        : undefined;
+      : readableWriteLayers[0];
   const warnings: string[] = [];
   if (!fallbackWriteLayer?.namespace) {
     warnings.push(`scope profile ${active.profileId} has no writable layer inside the profile read stack; writes disabled`);

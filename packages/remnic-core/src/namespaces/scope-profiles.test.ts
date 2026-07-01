@@ -343,7 +343,7 @@ test("scope profile missing project context falls back without inventing project
   assert.ok(plan.warnings.some((warning) => warning.includes("writeDefault userProject unavailable")));
 });
 
-test("scope profile unavailable write default does not fall back to shared writes", () => {
+test("scope profile unavailable write default uses next readable writable layer", () => {
   const config = parseConfig({
     namespacesEnabled: true,
     defaultNamespace: "default",
@@ -369,9 +369,9 @@ test("scope profile unavailable write default does not fall back to shared write
   });
 
   assert.ok(plan);
-  assert.equal(plan.writeLayer, "userProject");
-  assert.equal(plan.writeNamespace, "");
-  assert.ok(plan.warnings.some((warning) => warning.includes("has no writable layer")));
+  assert.equal(plan.writeLayer, "serverShared");
+  assert.equal(plan.writeNamespace, "shared");
+  assert.ok(plan.warnings.some((warning) => warning.includes("writeDefault userProject unavailable")));
   assert.deepEqual(plan.readNamespaces, ["shared"]);
 });
 
@@ -401,10 +401,10 @@ test("scope profile missing project context does not write outside readable laye
   });
 
   assert.ok(plan);
-  assert.equal(plan.writeLayer, "userProject");
-  assert.equal(plan.writeNamespace, "");
+  assert.equal(plan.writeLayer, "serverShared");
+  assert.equal(plan.writeNamespace, "shared");
   assert.deepEqual(plan.readNamespaces, ["shared"]);
-  assert.ok(plan.warnings.some((warning) => warning.includes("has no writable layer")));
+  assert.ok(plan.warnings.some((warning) => warning.includes("writeDefault userProject unavailable")));
 });
 
 test("scope profile rejects unknown team-project namespace template placeholders", () => {
