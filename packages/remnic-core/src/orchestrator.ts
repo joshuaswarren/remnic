@@ -13868,6 +13868,20 @@ export class Orchestrator {
           sharedProfileLayer?.readable &&
           sharedProfileLayer.writable,
       );
+    const profileAllowsSharedAutoPromotion = (
+      category: string,
+      confidence: number,
+    ): boolean => {
+      if (!scopeProfileWritePlan) return true;
+      const autoPromote = scopeProfileWritePlan.profile.autoPromote;
+      if (!autoPromote.enabled) return false;
+      if (!autoPromote.targets.includes("serverShared")) return false;
+      if (!autoPromote.categories.includes(category as any)) return false;
+      const actualTier = confidenceTier(confidence);
+      const actualRank = confidenceTierOrder.indexOf(actualTier);
+      const minimumRank = confidenceTierOrder.indexOf(autoPromote.minConfidenceTier);
+      return actualRank !== -1 && minimumRank !== -1 && actualRank <= minimumRank;
+    };
     const shouldPromoteToShared = (
       targetStorage: StorageManager,
       category: string,
@@ -13876,7 +13890,8 @@ export class Orchestrator {
       if (
         !this.config.namespacesEnabled ||
         !this.config.autoPromoteToSharedEnabled ||
-        !profileAllowsSharedWrites
+        !profileAllowsSharedWrites ||
+        !profileAllowsSharedAutoPromotion(category, confidence)
       )
         return false;
       if (
@@ -13884,7 +13899,7 @@ export class Orchestrator {
         this.config.sharedNamespace
       )
         return false;
-      if (!this.config.autoPromoteToSharedCategories.includes(category as any))
+      if (!scopeProfileWritePlan && !this.config.autoPromoteToSharedCategories.includes(category as any))
         return false;
       const actualTier = confidenceTier(confidence);
       const actualRank = confidenceTierOrder.indexOf(actualTier);
