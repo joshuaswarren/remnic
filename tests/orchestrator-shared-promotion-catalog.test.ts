@@ -219,6 +219,79 @@ test("scope profile shared reads do not imply automatic shared promotion", async
   }
 });
 
+test("scope profile auto-promotion does not require legacy global promotion", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-scope-profile-promo-enabled-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [
+        { name: "default", read: ["default"], write: ["default"] },
+        { name: "shared", read: ["default"], write: ["default"] },
+      ],
+      defaultScopeProfile: "hosted",
+      scopeProfiles: {
+        hosted: {
+          readOrder: ["userGlobal", "serverShared"],
+          writeDefault: "userGlobal",
+          promotionTargets: ["serverShared"],
+          autoPromote: {
+            enabled: true,
+            targets: ["serverShared"],
+            categories: ["fact"],
+            minConfidenceTier: "implied",
+          },
+        },
+      },
+      memoryLinkingEnabled: false,
+      inlineSourceAttributionEnabled: false,
+    });
+    assert.equal(config.autoPromoteToSharedEnabled, false, "legacy promotion remains disabled");
+
+    const orchestrator = new Orchestrator(config) as any;
+    orchestrator.qmd = { isAvailable: () => false };
+
+    const sourceStorage = await orchestrator.getStorage("default");
+    await sourceStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorage("shared");
+    await sharedStorage.ensureDirectories();
+
+    await orchestrator.persistExtraction(
+      {
+        facts: [
+          {
+            content: "Profile-native promotion should reach shared.",
+            category: "fact",
+            confidence: 0.95,
+            tags: ["scope-profile"],
+          },
+        ],
+        entities: [],
+        questions: [],
+        profileUpdates: [],
+      },
+      sourceStorage,
+      null,
+      { sessionKey: "s1", principal: "default" },
+    );
+
+    await orchestrator.namespaceCatalog.markRead("shared");
+
+    const sharedRecord = await orchestrator.namespaceCatalog.getNamespaceRecord("shared");
+    assert.ok(
+      sharedRecord?.lastWriteAt,
+      "active scope profile autoPromote.enabled should promote without the legacy global flag",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("shared promotion records catalog write after shared temporal supersession", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-shared-promo-order-"));
   try {
