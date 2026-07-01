@@ -70,6 +70,65 @@ function captureSubprocessArgs(client: QmdClient): string[][] {
   return calls;
 }
 
+test("updateStrict respects QMD update min-interval throttles", async () => {
+  const client = new QmdClient("memories", 3, { updateMinIntervalMs: 60_000 });
+  client.resetUpdateThrottles();
+  const calls = captureSubprocessArgs(client);
+
+  try {
+    await client.updateStrict();
+    await assert.rejects(
+      () => client.updateStrict(),
+      /QMD update skipped by min-interval gate|QMD update skipped by global min-interval gate/,
+    );
+  } finally {
+    client.resetUpdateThrottles();
+  }
+
+  assert.equal(calls.length, 1);
+});
+
+test("embedCollectionStrict rejects QMD embed subprocess failures", async () => {
+  const client = new QmdClient("memories", 3, { updateMinIntervalMs: 60_000 });
+  client.resetUpdateThrottles();
+  const internals = client as unknown as SubprocessInternals;
+  const calls: string[][] = [];
+  internals.available = true;
+  internals.runQmdCommand = async (args: string[]) => {
+    calls.push(args);
+    throw new Error("embed subprocess failed");
+  };
+
+  try {
+    await assert.rejects(
+      () => client.embedCollectionStrict("memories--project"),
+      /embed subprocess failed/,
+    );
+  } finally {
+    client.resetUpdateThrottles();
+  }
+
+  assert.deepEqual(calls, [["embed", "-c", "memories--project"]]);
+});
+
+test("embedCollectionStrict respects QMD embed min-interval throttles", async () => {
+  const client = new QmdClient("memories", 3, { updateMinIntervalMs: 60_000 });
+  client.resetUpdateThrottles();
+  const calls = captureSubprocessArgs(client);
+
+  try {
+    await client.embedCollectionStrict("memories--project");
+    await assert.rejects(
+      () => client.embedCollectionStrict("memories--project"),
+      /QMD embed skipped by per-collection min-interval gate/,
+    );
+  } finally {
+    client.resetUpdateThrottles();
+  }
+
+  assert.equal(calls.length, 1);
+});
+
 test("ensureCollection treats cancelled auto-create as unknown", async () => {
   const client = new QmdClient("memories", 3, {});
   const internals = client as unknown as SubprocessInternals & {

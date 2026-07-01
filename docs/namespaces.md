@@ -216,6 +216,47 @@ Rebuild preserves known metadata (timestamps, principal hints) where safe,
 preserves the legacy/default-root compatibility case, and reports ambiguous
 roots instead of silently misclassifying them.
 
+## Namespace-Aware Maintenance Fanout (issue #1500)
+
+When `namespacesEnabled: true`, background maintenance can use the namespace
+catalog to process dynamic project and team-project namespaces that were created
+by hot writes. The first shared fanout path is QMD maintenance: update/embed runs
+per namespace through a common planner instead of only updating the configured
+default/shared/policy namespaces.
+
+The planner keeps the catalog as downstream metadata:
+
+- configured `defaultNamespace`, `sharedNamespace`, and `namespacePolicies`
+  remain eligible even if the catalog is disabled or unreadable;
+- dynamic catalog rows are eligible only when the live router root still matches
+  the catalog root and contains Remnic memory data;
+- branch namespaces are skipped by default;
+- each job+namespace gets a lock at
+  `<memoryDir>/state/maintenance-locks/<job>/<namespace-token>.lock`, so two
+  workers do not process the same namespace concurrently;
+- per-namespace status is written to
+  `<memoryDir>/state/namespace-maintenance-status/<job>/<namespace-token>.json`
+  for doctor/dashboard surfaces without rewriting other namespaces' status.
+
+Configuration:
+
+```json
+{
+  "maintenanceNamespaceFanoutEnabled": true,
+  "maintenanceMaxNamespacesPerCycle": 20,
+  "maintenanceIncludeProjectNamespaces": true,
+  "maintenanceIncludeBranchNamespaces": false,
+  "maintenanceIncludeTeamProjectNamespaces": true,
+  "maintenanceNamespaceLockStaleMs": 600000
+}
+```
+
+These flat keys are accepted by OpenClaw plugin config validation. Standalone
+Remnic config also accepts the equivalent nested `maintenance.*` shape. Default
+and shared namespaces keep priority inside the cycle budget; dynamic project/team
+namespaces are then selected deterministically by maintenance age, recent writes,
+and name.
+
 ## CLI
 
 First-class namespace commands:

@@ -3670,6 +3670,38 @@
         "default": 900000,
         "description": "Minimum interval between QMD update executions (ms). Useful because current QMD update runs globally across collections."
       },
+      "maintenanceNamespaceFanoutEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "When namespaces are enabled, let background maintenance enumerate live catalog namespaces in addition to configured default/shared/policy namespaces."
+      },
+      "maintenanceMaxNamespacesPerCycle": {
+        "type": "number",
+        "default": 20,
+        "minimum": 1,
+        "description": "Maximum namespaces a single maintenance job cycle may process. Default and shared namespaces keep priority inside this budget."
+      },
+      "maintenanceIncludeProjectNamespaces": {
+        "type": "boolean",
+        "default": true,
+        "description": "Include dynamic project namespaces from the namespace catalog in background maintenance fanout."
+      },
+      "maintenanceIncludeBranchNamespaces": {
+        "type": "boolean",
+        "default": false,
+        "description": "Include dynamic branch namespaces from the namespace catalog in background maintenance fanout. Defaults off to avoid high-cardinality branch churn."
+      },
+      "maintenanceIncludeTeamProjectNamespaces": {
+        "type": "boolean",
+        "default": true,
+        "description": "Include dynamic team-project namespaces from the namespace catalog in background maintenance fanout."
+      },
+      "maintenanceNamespaceLockStaleMs": {
+        "type": "number",
+        "default": 600000,
+        "minimum": 1,
+        "description": "Stale threshold for per-job/per-namespace maintenance locks under state/maintenance-locks/."
+      },
       "localLlmRetry5xxCount": {
         "type": "number",
         "default": 1,

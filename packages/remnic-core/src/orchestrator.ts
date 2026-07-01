@@ -299,13 +299,16 @@ import {
 } from "./conversation-index/backend.js";
 import {
   NamespaceStorageRouter,
-  resolveNamespaceStorageRoot,
 } from "./namespaces/storage.js";
 import {
   NamespaceCatalog,
-  hasMemoryData,
-  type NamespaceRecord,
 } from "./namespaces/catalog.js";
+import {
+  planNamespaceMaintenance,
+  runNamespaceMaintenanceBatchPlan,
+  type NamespaceMaintenancePlan,
+  type NamespaceMaintenanceSkipReason,
+} from "./maintenance/namespace-planner.js";
 import {
   namespaceIdentityFromToken,
   namespaceIdentityToken,
@@ -1767,6 +1770,13 @@ export function resolvePersistedMemoryRelativePath(options: {
   return path.join(subtree, `${options.memoryId}.md`);
 }
 
+function qmdMaintenanceSkipReasonForError(error: unknown): NamespaceMaintenanceSkipReason | null {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^QMD (?:update|embed) skipped by .*min-interval gate$/.test(message)
+    ? "throttled"
+    : null;
+}
+
 export class Orchestrator {
   readonly storage: StorageManager;
   private readonly storageRouter: NamespaceStorageRouter;
@@ -1914,6 +1924,7 @@ export class Orchestrator {
   private qmdMaintenancePending = false;
   private qmdMaintenanceInFlight = false;
   private lastQmdEmbedAtMs = 0;
+  private lastQmdEmbedAtMsByNamespace = new Map<string, number>();
   private lastQmdReprobeAtMs = 0;
   private tierMigrationInFlight = false;
   private lastTierMigrationRunAtMs = 0;
@@ -2417,63 +2428,31 @@ export class Orchestrator {
   }
 
   /**
-   * Namespaces that QMD maintenance (update/embed) must cover: the CONFIGURED set
-   * PLUS every dynamic namespace recorded in the catalog (NGnei, codex P2). An
-   * extraction that writes to a coding-scoped/dynamic namespace (not in
-   * defaultNamespace/sharedNamespace/namespacePolicies) is only made discoverable
-   * via the catalog; if maintenance embeds only `configuredNamespaces()`, that
-   * namespace's QMD collection is never updated/embedded after writes and
-   * recall/search stays stale or empty until it is manually configured. We union in
-   * the catalog's namespaces so maintenance keeps dynamic namespaces fresh.
-   * `updateNamespaces`/`embedNamespaces` already trim, dedup, and skip
-   * unavailable/missing collections, so extra names are filtered safely. A catalog
-   * read failure must never break maintenance — fall back to the configured set.
+   * Shared namespace maintenance planner (issue #1500). This extends the
+   * #1499 catalog-union QMD helper into a reusable contract: configured
+   * namespaces are always considered, dynamic catalog namespaces are admitted
+   * only when their live router root still matches real memory data, and branch
+   * namespaces are opt-in. Recurring jobs use the per-cycle budget; startup and
+   * recovery discovery paths use the same safety filters without that cycle
+   * budget so every live namespace is ensured/synced.
    */
-  private async maintenanceNamespaces(): Promise<string[]> {
-    const configured = this.configuredNamespaces();
-    if (!this.namespaceCatalog.enabled) return configured;
-    const configuredSet = new Set(configured);
-    let cataloged: string[] = [];
-    try {
-      const records = await this.namespaceCatalog.listNamespaces();
-      const safeRecords = await Promise.all(
-        records.map(async (record) => {
-          const namespace = record.namespace.trim();
-          if (!namespace || configuredSet.has(namespace)) return null;
-          return (await this.isCatalogedMaintenanceRootLive(record))
-            ? namespace
-            : null;
-        }),
-      );
-      cataloged = safeRecords.filter(
-        (namespace): namespace is string => namespace !== null,
-      );
-    } catch {
-      // Best-effort: a catalog read failure must not break QMD maintenance.
-      cataloged = [];
-    }
-    return Array.from(
-      new Set(
-        [...configured, ...cataloged].map((value) => value.trim()).filter(Boolean),
-      ),
-    );
+  private async namespaceMaintenancePlan(jobName: string): Promise<NamespaceMaintenancePlan> {
+    return planNamespaceMaintenance(this.config, {
+      jobName,
+      catalog: this.namespaceCatalog,
+    });
   }
 
-  private async isCatalogedMaintenanceRootLive(
-    record: NamespaceRecord,
-  ): Promise<boolean> {
-    if (typeof record.storageDir !== "string" || record.storageDir.length === 0) {
-      return false;
-    }
-    try {
-      const liveRoot = await resolveNamespaceStorageRoot(this.config, record.namespace);
-      if (path.resolve(liveRoot) !== path.resolve(record.storageDir)) {
-        return false;
-      }
-      return hasMemoryData(liveRoot);
-    } catch {
-      return false;
-    }
+  private async maintenanceNamespaces(
+    jobName = "qmd",
+    budgetMode: "cycle" | "unbounded" = "unbounded",
+  ): Promise<string[]> {
+    const plan = await planNamespaceMaintenance(this.config, {
+      jobName,
+      catalog: this.namespaceCatalog,
+      budgetMode,
+    });
+    return plan.namespaces.map((candidate) => candidate.namespace);
   }
 
   private buildConfiguredQmdSearchOptions(
@@ -13337,17 +13316,69 @@ export class Orchestrator {
     try {
       if (this.config.namespacesEnabled) {
         // Include cataloged dynamic namespaces, not just the configured set
-        // (NGnei) — resolve once and reuse for both update and embed.
-        const maintenanceNamespaces = await this.maintenanceNamespaces();
-        await this.namespaceSearchRouter.updateNamespaces(maintenanceNamespaces);
+        // (NGnei), but run through the namespace-aware maintenance planner so
+        // each namespace is budgeted, lock-protected, and status-recorded
+        // independently (issue #1500).
+        const plan = await this.namespaceMaintenancePlan("qmd");
         const now = Date.now();
-        if (
-          this.config.qmdAutoEmbedEnabled &&
-          now - this.lastQmdEmbedAtMs >= this.config.qmdEmbedMinIntervalMs
-        ) {
-          await this.namespaceSearchRouter.embedNamespaces(maintenanceNamespaces);
+        const lastEmbedAtByNamespace =
+          this.lastQmdEmbedAtMsByNamespace ?? (this.lastQmdEmbedAtMsByNamespace = new Map());
+        const dueEmbedNamespaces = (namespaces: string[]): string[] => {
+          if (!this.config.qmdAutoEmbedEnabled) return [];
+          return namespaces.filter(
+            (namespace) =>
+              now - (lastEmbedAtByNamespace.get(namespace) ?? 0) >= this.config.qmdEmbedMinIntervalMs,
+          );
+        };
+        const markEmbedded = (namespaces: string[]): void => {
+          if (namespaces.length === 0) return;
+          for (const namespace of namespaces) {
+            lastEmbedAtByNamespace.set(namespace, now);
+          }
           this.lastQmdEmbedAtMs = now;
-        }
+        };
+        await runNamespaceMaintenanceBatchPlan(
+          this.config,
+          plan,
+          async (candidates) => {
+            const namespaces = candidates.map((candidate) => candidate.namespace);
+            const embedNamespaces = dueEmbedNamespaces(namespaces);
+            let result: Awaited<ReturnType<NamespaceSearchRouter["updateNamespacesDetailed"]>>;
+            try {
+              result = await this.namespaceSearchRouter.updateNamespacesDetailed(
+                namespaces,
+                undefined,
+                { strict: true },
+              );
+            } catch (error) {
+              if (
+                embedNamespaces.length > 0 &&
+                qmdMaintenanceSkipReasonForError(error) === "throttled"
+              ) {
+                await this.namespaceSearchRouter.embedNamespaces(embedNamespaces, { strict: true });
+                markEmbedded(embedNamespaces);
+              }
+              throw error;
+            }
+            if (result.backendCount <= 0) {
+              throw new Error("no eligible QMD backend for selected namespaces");
+            }
+            if (result.eligibleNamespaces.length !== namespaces.length) {
+              const eligible = new Set(result.eligibleNamespaces);
+              const missing = namespaces.filter((namespace) => !eligible.has(namespace));
+              throw new Error(`QMD backend ineligible for selected namespaces (${missing.length})`);
+            }
+            if (embedNamespaces.length > 0) {
+              await this.namespaceSearchRouter.embedNamespaces(embedNamespaces, { strict: true });
+              markEmbedded(embedNamespaces);
+            }
+            return { itemCount: result.backendCount };
+          },
+          this.namespaceCatalog,
+          {
+            skipReasonForError: qmdMaintenanceSkipReasonForError,
+          },
+        );
       } else {
         await this.qmd.update();
         const now = Date.now();

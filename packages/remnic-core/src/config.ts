@@ -405,6 +405,74 @@ function resolveNamespaceCatalogEnabled(configValue: unknown): boolean {
   return true;
 }
 
+function readNestedConfig(
+  cfg: Record<string, unknown>,
+  blockName: string,
+  key: string,
+): unknown {
+  const block = validateNestedConfigBlock(cfg, blockName);
+  if (!block) return undefined;
+  return block[key];
+}
+
+function validateNestedConfigBlock(
+  cfg: Record<string, unknown>,
+  blockName: string,
+): Record<string, unknown> | undefined {
+  const block = cfg[blockName];
+  if (block === undefined || block === null) return undefined;
+  if (typeof block !== "object" || Array.isArray(block)) {
+    throw new Error(`${blockName} must be a plain object`);
+  }
+  return block as Record<string, unknown>;
+}
+
+function readFlatOrNestedConfig(
+  cfg: Record<string, unknown>,
+  flatKey: string,
+  blockName: string,
+  nestedKey: string,
+): unknown {
+  return cfg[flatKey] !== undefined
+    ? cfg[flatKey]
+    : readNestedConfig(cfg, blockName, nestedKey);
+}
+
+function resolveBooleanConfig(
+  value: unknown,
+  defaultValue: boolean,
+  keyName: string,
+): boolean {
+  if (value === undefined || value === null) return defaultValue;
+  const coerced = coerceBool(value);
+  if (coerced === undefined) {
+    throw new Error(
+      `${keyName} must be a boolean-like value (true/false/1/0/yes/no/on/off); got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
+}
+
+function resolvePositiveIntegerConfig(
+  value: unknown,
+  defaultValue: number,
+  keyName: string,
+): number {
+  if (value === undefined || value === null) return defaultValue;
+  const coerced = coerceNumber(value);
+  if (
+    coerced === undefined ||
+    !Number.isFinite(coerced) ||
+    !Number.isInteger(coerced) ||
+    coerced < 1
+  ) {
+    throw new Error(
+      `${keyName} must be a positive integer; got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
+}
+
 export function isOpenaiApiKeyDisabled(value: unknown): boolean {
   return value === false || (typeof value === "string" && value.trim().toLowerCase() === "false");
 }
@@ -768,6 +836,7 @@ export function parseConfig(raw: unknown): PluginConfig {
   } else {
     cfg = baseCfg;
   }
+  validateNestedConfigBlock(cfg, "maintenance");
 
   const modelSource =
     cfg.modelSource === "gateway" ? "gateway" : "plugin";
@@ -1482,6 +1551,66 @@ export function parseConfig(raw: unknown): PluginConfig {
         ? Math.max(1, Math.floor(cfg.crossSignalsSemanticTimeoutMs))
         : 4000;
   const recallPipelineConfig = buildRecallPipelineConfig(cfg);
+  const maintenanceNamespaceFanoutEnabled = resolveBooleanConfig(
+    readFlatOrNestedConfig(
+      cfg,
+      "maintenanceNamespaceFanoutEnabled",
+      "maintenance",
+      "namespaceFanoutEnabled",
+    ),
+    true,
+    "maintenance.namespaceFanoutEnabled",
+  );
+  const maintenanceMaxNamespacesPerCycle = resolvePositiveIntegerConfig(
+    readFlatOrNestedConfig(
+      cfg,
+      "maintenanceMaxNamespacesPerCycle",
+      "maintenance",
+      "maxNamespacesPerCycle",
+    ),
+    20,
+    "maintenance.maxNamespacesPerCycle",
+  );
+  const maintenanceIncludeProjectNamespaces = resolveBooleanConfig(
+    readFlatOrNestedConfig(
+      cfg,
+      "maintenanceIncludeProjectNamespaces",
+      "maintenance",
+      "includeProjectNamespaces",
+    ),
+    true,
+    "maintenance.includeProjectNamespaces",
+  );
+  const maintenanceIncludeBranchNamespaces = resolveBooleanConfig(
+    readFlatOrNestedConfig(
+      cfg,
+      "maintenanceIncludeBranchNamespaces",
+      "maintenance",
+      "includeBranchNamespaces",
+    ),
+    false,
+    "maintenance.includeBranchNamespaces",
+  );
+  const maintenanceIncludeTeamProjectNamespaces = resolveBooleanConfig(
+    readFlatOrNestedConfig(
+      cfg,
+      "maintenanceIncludeTeamProjectNamespaces",
+      "maintenance",
+      "includeTeamProjectNamespaces",
+    ),
+    true,
+    "maintenance.includeTeamProjectNamespaces",
+  );
+  const maintenanceNamespaceLockStaleMs = resolvePositiveIntegerConfig(
+    readFlatOrNestedConfig(
+      cfg,
+      "maintenanceNamespaceLockStaleMs",
+      "maintenance",
+      "namespaceLockStaleMs",
+    ),
+    10 * 60_000,
+    "maintenance.namespaceLockStaleMs",
+  );
 
   return {
     openaiApiKey: apiKey,
@@ -2546,6 +2675,12 @@ export function parseConfig(raw: unknown): PluginConfig {
     qmdMaintenanceEnabled: cfg.qmdMaintenanceEnabled !== false,
     qmdMaintenanceDebounceMs:
       typeof cfg.qmdMaintenanceDebounceMs === "number" ? cfg.qmdMaintenanceDebounceMs : 30_000,
+    maintenanceNamespaceFanoutEnabled,
+    maintenanceMaxNamespacesPerCycle,
+    maintenanceIncludeProjectNamespaces,
+    maintenanceIncludeBranchNamespaces,
+    maintenanceIncludeTeamProjectNamespaces,
+    maintenanceNamespaceLockStaleMs,
     qmdAutoEmbedEnabled: cfg.qmdAutoEmbedEnabled === true,
     qmdEmbedMinIntervalMs:
       typeof cfg.qmdEmbedMinIntervalMs === "number" ? cfg.qmdEmbedMinIntervalMs : 60 * 60_000,

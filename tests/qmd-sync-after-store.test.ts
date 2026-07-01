@@ -35,11 +35,17 @@ test("QmdClient.update() passes collection flag to qmd subprocess", async () => 
     "runUpdateForCollection() should pass -c name to scope updates to the target collection",
   );
 
-  // embed() must pass -c collection
+  // embed() must route through the collection-aware helper.
   assert.match(
     qmdSource,
-    /runQmd(?:Command)?\(this\.buildEmbedArgs\(this\.collection\)/,
-    "embed() should pass -c this.collection to scope embedding to the remnic collection",
+    /async embed\(\): Promise<void>\s*\{\s*await this\.runEmbedForCollection\(this\.collection,\s*\{\s*perCollectionThrottle:\s*false\s*\}\);/s,
+    "embed() should route through runEmbedForCollection(this.collection)",
+  );
+
+  assert.match(
+    qmdSource,
+    /await this\.runQmdCommand\(this\.buildEmbedArgs\(name\),\s*300_000\);/,
+    "runEmbedForCollection() should build embed args from the target collection name",
   );
 
   assert.match(

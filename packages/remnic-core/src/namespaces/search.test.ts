@@ -13,6 +13,12 @@ type CollectionState = "present" | "missing" | "unknown" | "skipped";
 
 class FakeBackend implements SearchBackend {
   updates = 0;
+  strictUpdates = 0;
+  strictCollectionUpdates: string[] = [];
+  embeds = 0;
+  collectionEmbeds: string[] = [];
+  strictEmbeds = 0;
+  strictCollectionEmbeds: string[] = [];
   disposed = 0;
   available = true;
   calls: Array<{
@@ -130,15 +136,35 @@ class FakeBackend implements SearchBackend {
     this.updates += 1;
   }
 
+  async updateStrict(): Promise<void> {
+    this.strictUpdates += 1;
+  }
+
   async updateCollection(): Promise<void> {}
+
+  async updateCollectionStrict(collection: string): Promise<void> {
+    this.strictCollectionUpdates.push(collection);
+  }
 
   updatesAllCollections(): boolean {
     return this.globalUpdate;
   }
 
-  async embed(): Promise<void> {}
+  async embed(): Promise<void> {
+    this.embeds += 1;
+  }
 
-  async embedCollection(): Promise<void> {}
+  async embedStrict(): Promise<void> {
+    this.strictEmbeds += 1;
+  }
+
+  async embedCollection(collection: string): Promise<void> {
+    this.collectionEmbeds.push(collection);
+  }
+
+  async embedCollectionStrict(collection: string): Promise<void> {
+    this.strictCollectionEmbeds.push(collection);
+  }
 
   async ensureCollection(
     _memoryDir?: string,
@@ -251,6 +277,108 @@ test("updateNamespaces still updates every namespace for scoped backends", async
 
   assert.equal(updated, 3);
   assert.equal(created.reduce((sum, backend) => sum + backend.updates, 0), 3);
+});
+
+test("updateNamespaces uses strict global update when requested", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(true);
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const updated = await router.updateNamespaces(
+    ["main", "shared", "main", "project"],
+    undefined,
+    { strict: true },
+  );
+
+  assert.equal(updated, 1);
+  assert.equal(created.reduce((sum, backend) => sum + backend.strictUpdates, 0), 1);
+  assert.equal(created.reduce((sum, backend) => sum + backend.updates, 0), 0);
+});
+
+test("updateNamespaces uses strict collection updates for scoped backends when requested", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false);
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const updated = await router.updateNamespaces(
+    ["main", "shared", "main", "project"],
+    undefined,
+    { strict: true },
+  );
+
+  assert.equal(updated, 3);
+  assert.equal(created.reduce((sum, backend) => sum + backend.strictCollectionUpdates.length, 0), 3);
+  assert.equal(created.reduce((sum, backend) => sum + backend.updates, 0), 0);
+});
+
+test("embedNamespaces uses strict collection embeds when requested", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false);
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  await router.embedNamespaces(["main", "shared", "main", "project"], { strict: true });
+
+  assert.equal(created.reduce((sum, backend) => sum + backend.strictCollectionEmbeds.length, 0), 3);
+  assert.equal(created.reduce((sum, backend) => sum + backend.collectionEmbeds.length, 0), 0);
+  assert.equal(created.reduce((sum, backend) => sum + backend.embeds, 0), 0);
+});
+
+test("embedNamespaces propagates strict embed failures", async () => {
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false);
+      backend.embedCollectionStrict = async () => {
+        throw new Error("embed failed");
+      };
+      return backend;
+    },
+  );
+
+  await assert.rejects(
+    () => router.embedNamespaces(["main"], { strict: true }),
+    /embed failed/,
+  );
+});
+
+test("updateNamespacesDetailed reports only eligible namespaces", async () => {
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    (scopedConfig) => {
+      const backend = new FakeBackend(false, [], {
+        ensure: scopedConfig.memoryDir.endsWith("/missing") ? "missing" : "present",
+      });
+      return backend;
+    },
+  );
+
+  const result = await router.updateNamespacesDetailed(["main", "missing", "shared"]);
+
+  assert.equal(result.backendCount, 2);
+  assert.deepEqual(result.eligibleNamespaces.sort(), ["main", "shared"]);
 });
 
 test("searchAcrossNamespaces preserves same path results from distinct namespaces", async () => {

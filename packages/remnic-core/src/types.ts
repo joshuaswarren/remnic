@@ -1216,6 +1216,18 @@ export interface PluginConfig {
   // QMD maintenance (debounced singleflight)
   qmdMaintenanceEnabled: boolean;
   qmdMaintenanceDebounceMs: number;
+  /**
+   * Namespace-aware maintenance fanout (issue #1500). When namespaces are
+   * enabled, background maintenance jobs use the rebuildable namespace catalog
+   * to discover dynamic project/team namespaces rather than only processing the
+   * configured default/shared/policy set.
+   */
+  maintenanceNamespaceFanoutEnabled: boolean;
+  maintenanceMaxNamespacesPerCycle: number;
+  maintenanceIncludeProjectNamespaces: boolean;
+  maintenanceIncludeBranchNamespaces: boolean;
+  maintenanceIncludeTeamProjectNamespaces: boolean;
+  maintenanceNamespaceLockStaleMs: number;
   qmdAutoEmbedEnabled: boolean;
   qmdEmbedMinIntervalMs: number;
   qmdUpdateTimeoutMs: number;

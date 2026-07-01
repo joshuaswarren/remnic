@@ -510,7 +510,7 @@ test("NamespaceSearchRouter runs maintenance only for present namespace collecti
   await router.updateNamespaces(["default", "shared"]);
   await router.embedNamespaces(["default", "shared"]);
 
-  assert.deepEqual(backends.get("openclaw-engram")?.calls, ["update", "embed"]);
+  assert.deepEqual(backends.get("openclaw-engram")?.calls, ["update", "embedCollection"]);
   assert.deepEqual(backends.get("openclaw-engram--ns-736861726564")?.calls ?? [], []);
 });
 
