@@ -1641,9 +1641,13 @@ export class EngramAccessService {
         legacyRecallNamespaces,
       });
       const readNamespaces = expandedReadNamespaces;
+      const profileCodingOverlayApplied = Boolean(
+        codingOverlay &&
+          profilePlan.layers.some((layer) => layer.id === "userProject" && layer.readable && layer.namespace),
+      );
       return {
         principal,
-        baseNamespace,
+        baseNamespace: profilePlan.baseNamespace,
         writeNamespace: profilePlan.writeNamespace,
         objectiveStateNamespace: profilePlan.writeNamespace,
         readNamespaces,
@@ -1651,7 +1655,7 @@ export class EngramAccessService {
         writeLayer: profilePlan.writeLayer,
         layers: profilePlan.layers,
         promotionTargets: profilePlan.promotionTargets,
-        codingOverlayApplied,
+        codingOverlayApplied: profileCodingOverlayApplied,
         warnings: [...warnings, ...profilePlan.warnings],
       };
     }
