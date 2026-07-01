@@ -1,6 +1,6 @@
 {
   "name": "@remnic/import-weclone",
-  "version": "9.3.655",
+  "version": "9.3.656",
   "description": "Import WeClone-preprocessed chat exports to bootstrap Remnic memory",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^9.3.655"
+    "@remnic/core": "^9.3.656"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
