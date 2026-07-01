@@ -5804,10 +5804,21 @@ export class EngramAccessService {
         "read",
       );
     }
-    // IMPLICIT raw recall: derive the read fallback from the ALREADY
-    // read-authorized recall namespace set — NEVER pre-authorize `default`
-    // (#1505 thread NBHWz). When namespaces are disabled the default store is the
-    // only namespace and is always readable (byte-for-byte single-user path).
+    // IMPLICIT raw recall: an active scope profile owns the same LCM read
+    // namespace set used by recall and lcmSearch. Return the first profile
+    // namespace as the legacy raw-excerpt namespace hint; the concrete ordered
+    // key set is still produced by resolveLcmReadSessionIds(), which also treats
+    // an empty profile read set as authoritative.
+    const profileReadNamespaces = this.resolveScopeProfileLcmReadNamespaces(
+      sessionKey,
+      authenticatedPrincipal,
+    );
+    if (profileReadNamespaces !== null) return profileReadNamespaces[0];
+
+    // Otherwise derive the read fallback from the ALREADY read-authorized recall
+    // namespace set — NEVER pre-authorize `default` (#1505 thread NBHWz). When
+    // namespaces are disabled the default store is the only namespace and is
+    // always readable (byte-for-byte single-user path).
     const fallbackNamespace =
       this.resolveImplicitLcmReadFallbackNamespace(principal);
     // No readable LCM namespace at all ⇒ no excerpts (caller short-circuits).
