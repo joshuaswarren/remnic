@@ -8289,10 +8289,9 @@ export class Orchestrator {
       if (!this.config.knowledgeIndexEnabled) return null;
       const t0 = Date.now();
       try {
-        const knowledgeIndexMaxChars = this.getRecallSectionNumber(
-          "knowledge-index",
-          "maxChars",
-        );
+        const knowledgeIndexMaxChars =
+          this.getRecallSectionNumber("knowledge-index", "maxChars") ??
+          this.config.knowledgeIndexMaxChars;
         const knowledgeIndexOptions = {
           maxEntities: this.getRecallSectionNumber(
             "knowledge-index",
