@@ -224,9 +224,19 @@ function resolveLayer(params: {
   const teamReadable = principalListed(team.team.read, principal) || principalListed(team.team.principals, principal);
   const teamWritable = principalListed(team.team.write, principal);
   const teamPromotable = principalListed(team.team.promote, principal) || principalListed(team.team.write, principal);
+  const userProjectSuffix = `-${codingOverlay.namespace}`;
+  const userProjectBase = namespace.endsWith(userProjectSuffix)
+    ? namespace.slice(0, -userProjectSuffix.length)
+    : "";
+  const dynamicUserProjectCollision =
+    userProjectBase.length > 0 &&
+    (userProjectBase === config.defaultNamespace ||
+      userProjectBase === config.sharedNamespace ||
+      (config.namespacePolicies ?? []).some((policy) => policy.name === userProjectBase));
   const protectedNamespace =
     namespace === config.defaultNamespace ||
     namespace === config.sharedNamespace ||
+    dynamicUserProjectCollision ||
     (config.namespacePolicies ?? []).some((policy) => policy.name === namespace);
   const policyReadable = !protectedNamespace || canReadNamespace(principal, namespace, config);
   const policyWritable = !protectedNamespace || canWriteNamespace(principal, namespace, config);
