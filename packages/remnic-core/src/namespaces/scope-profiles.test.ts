@@ -862,6 +862,17 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
   assert.throws(
     () =>
       parseConfig({
+        scopeProfiles: {
+          bad: {
+            autoPromote: { categories: "rule" },
+          },
+        },
+      }),
+    /autoPromote.categories must be an array/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
         teams: {
           core: {
             read: "alice",

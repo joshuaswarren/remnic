@@ -1831,8 +1831,27 @@ export class EngramAccessService {
       );
     }
 
-    return recallNamespacesForPrincipal(principal, this.orchestrator.config)
-      .filter((ns) => canReadNamespace(principal, ns, this.orchestrator.config));
+    const legacyRecallNamespaces = recallNamespacesForPrincipal(
+      principal,
+      this.orchestrator.config,
+    );
+    const profilePlan = resolveScopeProfilePlan({
+      config: this.orchestrator.config,
+      principal,
+      codingContext: null,
+      codingOverlay: null,
+    });
+    const namespaces = profilePlan
+      ? expandScopeProfileReadNamespaces({
+          profilePlan,
+          principalSelfNamespace: profilePlan.baseNamespace,
+          codingOverlay: null,
+          legacyRecallNamespaces,
+        })
+      : legacyRecallNamespaces;
+    return namespaces.filter((ns) =>
+      canReadNamespace(principal, ns, this.orchestrator.config),
+    );
   }
 
   private resolveAllReadableConfiguredNamespaces(principal: string): string[] {

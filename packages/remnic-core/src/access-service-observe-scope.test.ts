@@ -777,3 +777,53 @@ test("#1495 skipExtraction does not enqueue extraction but still archives LCM un
   assert.equal(probe.extractionCalls.length, 0);
   assert.equal(probe.lcmCalls[0].sessionKey, encodeNs(expected, "pi-geek:abc123"));
 });
+
+test("#1501 implicit memorySearch honors active scope profile readOrder", async () => {
+  let searchedNamespaces: string[] | null = null;
+  const config = {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "shared", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    defaultRecallNamespaces: ["self", "shared"],
+    defaultScopeProfile: "projectOnly",
+    scopeProfiles: {
+      projectOnly: {
+        readOrder: ["userProject"],
+        writeDefault: "userProject",
+        promotionTargets: [],
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    codingMode: { projectScope: true },
+  } as unknown as PluginConfig;
+  const orch = {
+    config,
+    qmd: { isAvailable: () => true },
+    searchAcrossNamespaces: async (options: { namespaces: string[] }) => {
+      searchedNamespaces = options.namespaces;
+      return [];
+    },
+  } as unknown as Orchestrator;
+  const service = new EngramAccessService(orch);
+
+  const result = await service.memorySearch({
+    query: "deployment",
+    principal: "pi-geek",
+  });
+
+  assert.equal(result.count, 0);
+  assert.equal(
+    searchedNamespaces,
+    null,
+    "userProject-only profiles without project context must not fall back to shared/global search",
+  );
+});

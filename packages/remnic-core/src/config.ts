@@ -235,8 +235,13 @@ function parseScopeProfiles(value: unknown): Record<string, ScopeProfileConfig> 
       return rawTier as typeof CONFIDENCE_TIERS[number];
     })();
     const autoPromoteCategories: Array<typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number]> = (() => {
-      if (!Array.isArray(rawAutoPromote.categories)) {
+      if (rawAutoPromote.categories === undefined || rawAutoPromote.categories === null) {
         return ["fact", "correction", "decision", "preference"];
+      }
+      if (!Array.isArray(rawAutoPromote.categories)) {
+        throw new Error(
+          `scopeProfiles.${profileId}.autoPromote.categories must be an array`,
+        );
       }
       const categories: Array<typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number]> = [];
       for (const entry of rawAutoPromote.categories) {
