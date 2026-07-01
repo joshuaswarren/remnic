@@ -7869,7 +7869,7 @@ export class Orchestrator {
               if (prop === "readEntity" || prop === "readMemoryByPath") {
                 return async (...args: any[]) => {
                   for (const storage of profileStorages) {
-                    const value = await storage[prop](...args);
+                    const value = await (storage as any)[prop](...args);
                     if (value) return value;
                   }
                   return null;
