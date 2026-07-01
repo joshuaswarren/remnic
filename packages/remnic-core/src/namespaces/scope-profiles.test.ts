@@ -323,6 +323,82 @@ test("scope profile missing project context prefers user-global over shared fall
   assert.ok(plan.warnings.some((warning) => warning.includes("writeDefault userProject unavailable")));
 });
 
+test("scope profile rejects unknown team-project namespace template placeholders", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["teamProject"],
+        writeDefault: "teamProject",
+        promotionTargets: ["teamProject"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projecthash}" },
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+    teams: {
+      pi: {
+        principals: ["pi-geek"],
+        read: ["pi-geek"],
+        write: ["pi-geek"],
+        promote: ["pi-geek"],
+      },
+    },
+  });
+  const overlay = resolveCodingNamespaceOverlay(codingContext, config.codingMode, config.defaultNamespace);
+  const plan = resolveScopeProfilePlan({ config, principal: "pi-geek", codingContext, codingOverlay: overlay });
+  assert.ok(plan);
+  const teamProject = plan.layers.find((layer) => layer.id === "teamProject");
+
+  assert.equal(teamProject?.readable, false);
+  assert.equal(teamProject?.writable, false);
+  assert.deepEqual(plan.readNamespaces, []);
+  assert.match(teamProject?.reason ?? "", /unknown team-project namespace template placeholder(s): projecthash/);
+});
+
+test("scope profile requires namespace policy access when team-project templates collide with protected namespaces", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "shared", readPrincipals: ["pi-maintainer"], writePrincipals: ["pi-maintainer"] },
+    ],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["teamProject"],
+        writeDefault: "teamProject",
+        promotionTargets: ["teamProject"],
+        teamProject: { namespaceTemplate: "shared" },
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+    teams: {
+      pi: {
+        principals: ["pi-geek"],
+        read: ["pi-geek"],
+        write: ["pi-geek"],
+        promote: ["pi-geek"],
+      },
+    },
+  });
+  const overlay = resolveCodingNamespaceOverlay(codingContext, config.codingMode, config.defaultNamespace);
+  const plan = resolveScopeProfilePlan({ config, principal: "pi-geek", codingContext, codingOverlay: overlay });
+  assert.ok(plan);
+  const teamProject = plan.layers.find((layer) => layer.id === "teamProject");
+
+  assert.equal(teamProject?.namespace, "shared");
+  assert.equal(teamProject?.readable, false);
+  assert.equal(teamProject?.writable, false);
+  assert.deepEqual(plan.readNamespaces, []);
+  assert.match(teamProject?.reason ?? "", /team-project namespace collides with a protected namespace policy/);
+});
+
 test("scope profile auto-promotion is disabled by default", () => {
   const config = parseConfig({
     scopeProfiles: {

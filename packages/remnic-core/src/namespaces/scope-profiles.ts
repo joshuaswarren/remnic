@@ -90,7 +90,7 @@ function renderTeamProjectNamespace(params: {
   principal: string | undefined;
   codingContext: CodingContext;
   codingOverlay: ScopeProfileCodingOverlay;
-}): string {
+}): { namespace: string; unknownPlaceholders: string[] } {
   const replacements: Record<string, string> = {
     teamId: params.teamId,
     principal: params.principal ?? "anonymous",
@@ -98,9 +98,14 @@ function renderTeamProjectNamespace(params: {
     projectHash: stableHash(params.codingContext.projectId),
     projectNamespace: params.codingOverlay.namespace,
   };
-  return params.template.replace(/\{([A-Za-z][A-Za-z0-9]*)\}/g, (_match, key: string) =>
-    replacements[key] ?? "",
-  );
+  const unknownPlaceholders: string[] = [];
+  const namespace = params.template.replace(/\{([A-Za-z][A-Za-z0-9]*)\}/g, (match, key: string) => {
+    const replacement = replacements[key];
+    if (replacement !== undefined) return replacement;
+    if (!unknownPlaceholders.includes(key)) unknownPlaceholders.push(key);
+    return match;
+  });
+  return { namespace, unknownPlaceholders };
 }
 
 function resolveLayer(params: {
@@ -186,13 +191,25 @@ function resolveLayer(params: {
     profile.teamProject?.namespaceTemplate ??
     team.team.projectNamespaceTemplate ??
     "team-{teamId}-project-{projectHash}";
-  const namespace = renderTeamProjectNamespace({
+  const renderedNamespace = renderTeamProjectNamespace({
     template,
     teamId: team.teamId,
     principal,
     codingContext,
     codingOverlay,
-  }).trim();
+  });
+  const namespace = renderedNamespace.namespace.trim();
+  if (renderedNamespace.unknownPlaceholders.length > 0) {
+    return {
+      id,
+      kind: "team-project",
+      namespace,
+      readable: false,
+      writable: false,
+      promotable: false,
+      reason: `unknown team-project namespace template placeholder(s): ${renderedNamespace.unknownPlaceholders.join(", ")}`,
+    };
+  }
   if (!namespace || !isSafeRouteNamespace(namespace)) {
     return {
       id,
@@ -204,14 +221,26 @@ function resolveLayer(params: {
       reason: "team-project namespace template resolved to an unsafe namespace",
     };
   }
+  const teamReadable = principalListed(team.team.read, principal) || principalListed(team.team.principals, principal);
+  const teamWritable = principalListed(team.team.write, principal);
+  const teamPromotable = principalListed(team.team.promote, principal) || principalListed(team.team.write, principal);
+  const protectedNamespace =
+    namespace === config.defaultNamespace ||
+    namespace === config.sharedNamespace ||
+    (config.namespacePolicies ?? []).some((policy) => policy.name === namespace);
+  const policyReadable = !protectedNamespace || canReadNamespace(principal, namespace, config);
+  const policyWritable = !protectedNamespace || canWriteNamespace(principal, namespace, config);
+  const policyBlocked = protectedNamespace && (!policyReadable || !policyWritable);
   return {
     id,
     kind: "team-project",
     namespace,
-    readable: principalListed(team.team.read, principal) || principalListed(team.team.principals, principal),
-    writable: principalListed(team.team.write, principal),
-    promotable: principalListed(team.team.promote, principal) || principalListed(team.team.write, principal),
-    reason: "trusted team-project namespace derived from team and project config",
+    readable: teamReadable && policyReadable,
+    writable: teamWritable && policyWritable,
+    promotable: teamPromotable && policyWritable,
+    reason: policyBlocked
+      ? "team-project namespace collides with a protected namespace policy"
+      : "trusted team-project namespace derived from team and project config",
   };
 }
 
@@ -309,6 +338,9 @@ export function expandScopeProfileReadNamespaces(options: {
   codingOverlay?: ScopeProfileCodingOverlay | null;
   legacyRecallNamespaces?: string[];
 }): string[] {
+  if (options.profilePlan.readNamespaces.length === 0) {
+    return [];
+  }
   const out = [...options.profilePlan.readNamespaces];
   const add = (namespace: string | undefined): void => {
     if (namespace && !out.includes(namespace)) out.push(namespace);

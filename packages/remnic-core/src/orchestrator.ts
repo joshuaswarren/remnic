@@ -5848,7 +5848,7 @@ export class Orchestrator {
     let observationNamespaces: string[];
     if (namespaceOverride && canReadNamespace(principal, namespaceOverride, this.config)) {
       observationNamespaces = [namespaceOverride];
-    } else if (observationScopeProfilePlan?.readNamespaces.length) {
+    } else if (observationScopeProfilePlan) {
       observationNamespaces = expandScopeProfileReadNamespaces({
         profilePlan: observationScopeProfilePlan,
         principalSelfNamespace: observationPrincipalSelf,
@@ -7488,7 +7488,7 @@ export class Orchestrator {
     let recallNamespaces: string[];
     if (namespaceOverride) {
       recallNamespaces = [namespaceOverride];
-    } else if (scopeProfilePlan?.readNamespaces.length) {
+    } else if (scopeProfilePlan) {
       recallNamespaces = expandScopeProfileReadNamespaces({
         profilePlan: scopeProfilePlan,
         principalSelfNamespace,
@@ -7561,7 +7561,7 @@ export class Orchestrator {
     if (namespaceOverride) {
       // Explicit namespace already read-authorized above (canReadNamespace gate).
       lcmReadNamespaces = [namespaceOverride];
-    } else if (scopeProfilePlan?.readNamespaces.length) {
+    } else if (scopeProfilePlan) {
       // Scope profiles define a layered read stack; LCM-backed evidence uses the
       // same namespace set as QMD/file recall so team/global/shared observations
       // are not silently skipped.

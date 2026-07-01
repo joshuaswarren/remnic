@@ -38,7 +38,7 @@ import {
   projectNamespaceName,
   projectTagProjectId,
 } from "./coding/coding-namespace.js";
-import { resolveGitContext } from "./coding/git-context.js";
+import { resolveGitContext, stableHash } from "./coding/git-context.js";
 import { defaultNamespaceForPrincipal } from "./namespaces/principal.js";
 import type { CodingContext, PluginConfig } from "./types.js";
 
@@ -649,6 +649,48 @@ test("#1505 thread 2 compaction regression: flush/record overlay-derived key mat
     probe.compactionFlushKeys[0],
     observedWriteKey,
     "compaction flush must target the overlay key, not the base",
+  );
+});
+
+test("#1501 scope profile lcmSearch reads the team-project profile key", async () => {
+  const probe = makeParityProbe({
+    ...withSelfPolicyPrefix("pi-observer"),
+    defaultScopeProfile: "teamCoding",
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["teamProject"],
+        writeDefault: "teamProject",
+        promotionTargets: ["teamProject"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+      },
+    },
+    teams: {
+      pi: {
+        principals: ["pi-observer"],
+        read: ["pi-observer"],
+        write: ["pi-observer"],
+        promote: ["pi-observer"],
+      },
+    },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  await service.observe(
+    observeRequest({ sessionKey: "pi-observer:abc123", projectTag: "Remnic" }),
+  );
+  const expectedTeamProject = `team-pi-project-${stableHash(projectTagProjectId("Remnic"))}`;
+  const expectedKey = encodeNs(expectedTeamProject, "pi-observer:abc123");
+  assert.equal(probe.lcmWriteKeys[0], expectedKey);
+
+  await service.lcmSearch({
+    query: "what database are we using?",
+    sessionKey: "pi-observer:abc123",
+  });
+
+  assert.equal(
+    probe.searchSessionIds[0],
+    expectedKey,
+    "lcmSearch must read the same team-project key the scope-profile observe wrote",
   );
 });
 
