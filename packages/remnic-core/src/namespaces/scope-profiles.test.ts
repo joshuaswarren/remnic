@@ -515,7 +515,7 @@ test("scope profile rejects unknown team-project namespace template placeholders
   assert.equal(teamProject?.readable, false);
   assert.equal(teamProject?.writable, false);
   assert.deepEqual(plan.readNamespaces, []);
-  assert.match(teamProject?.reason ?? "", /unknown team-project namespace template placeholder(s): projecthash/);
+  assert.equal(teamProject?.reason, "unknown team-project namespace template placeholder(s): projecthash");
 });
 
 test("scope profile requires namespace policy access when team-project templates collide with protected namespaces", () => {
@@ -713,6 +713,17 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
         },
       }),
     /teams.core.read must contain only non-empty strings/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        teams: {
+          core: {
+            projectNamespaceTemplate: 42,
+          },
+        },
+      }),
+    /teams.core.projectNamespaceTemplate must be a non-empty string/,
   );
   assert.throws(
     () =>

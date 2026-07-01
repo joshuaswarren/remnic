@@ -325,6 +325,7 @@ import {
 import {
   expandScopeProfileReadNamespaces,
   resolveScopeProfilePlan,
+  type ResolvedScopeProfilePlan,
 } from "./namespaces/scope-profiles.js";
 import {
   combineNamespaces,
@@ -13127,6 +13128,7 @@ export class Orchestrator {
       // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,
+      scopeProfileWritePlan,
     );
     let postPersistMetadataFailed = false;
     meta ??= await storage.loadMeta();
@@ -13697,6 +13699,7 @@ export class Orchestrator {
     threadIdForExtraction?: string | null,
     sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
     baseNamespace?: string,
+    scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
@@ -14514,8 +14517,21 @@ export class Orchestrator {
         fact.scope === "global" &&
         !routedNamespaceExplicit
       ) {
+        const sharedProfileLayer = scopeProfileWritePlan?.layers.find(
+          (layer) =>
+            layer.id === "serverShared" &&
+            layer.namespace === this.config.sharedNamespace,
+        );
+        const profileAllowsSharedScopeRouting =
+          !scopeProfileWritePlan ||
+          Boolean(
+            scopeProfileWritePlan.profile.readOrder.includes("serverShared") &&
+              scopeProfileWritePlan.readNamespaces.includes(this.config.sharedNamespace) &&
+              sharedProfileLayer?.readable &&
+              sharedProfileLayer.writable,
+          );
         const currentNs = this.namespaceFromStorageDir(targetStorage.dir);
-        if (currentNs !== this.config.sharedNamespace) {
+        if (currentNs !== this.config.sharedNamespace && profileAllowsSharedScopeRouting) {
           try {
             targetStorage = await this.storageRouter.storageFor(
               this.config.sharedNamespace,
@@ -14529,6 +14545,10 @@ export class Orchestrator {
               `scope-routing: failed to resolve shared namespace storage; writing to session namespace (fail-open): ${scopeRouteErr}`,
             );
           }
+        } else if (currentNs !== this.config.sharedNamespace) {
+          log.debug(
+            `scope-routing: skipped shared namespace for global fact because active scope profile ${scopeProfileWritePlan?.profileId ?? "none"} does not authorize serverShared writes`,
+          );
         }
       }
 

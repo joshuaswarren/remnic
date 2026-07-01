@@ -269,12 +269,15 @@ function parseScopeTeams(value: unknown): Record<string, ScopeTeamConfig> {
     if (!isRecord(rawTeam)) {
       throw new Error(`teams.${teamId} must be an object`);
     }
+    const projectNamespaceTemplate = rawTeam.projectNamespaceTemplate;
+    if (projectNamespaceTemplate !== undefined) {
+      if (typeof projectNamespaceTemplate !== "string" || projectNamespaceTemplate.length === 0) {
+        throw new Error(`teams.${teamId}.projectNamespaceTemplate must be a non-empty string`);
+      }
+    }
     teams[teamId] = {
       principals: parseStringList(rawTeam.principals, `teams.${teamId}.principals`),
-      ...(typeof rawTeam.projectNamespaceTemplate === "string" &&
-      rawTeam.projectNamespaceTemplate.length > 0
-        ? { projectNamespaceTemplate: rawTeam.projectNamespaceTemplate }
-        : {}),
+      ...(projectNamespaceTemplate !== undefined ? { projectNamespaceTemplate } : {}),
       read: parseStringList(rawTeam.read, `teams.${teamId}.read`),
       write: parseStringList(rawTeam.write, `teams.${teamId}.write`),
       promote: parseStringList(rawTeam.promote, `teams.${teamId}.promote`),
