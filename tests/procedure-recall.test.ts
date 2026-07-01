@@ -115,6 +115,6 @@ test("scope profile procedure recall merges procedures from later readable layer
     assert.match(context, /## Relevant procedures/);
     assert.match(context, new RegExp(id));
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });

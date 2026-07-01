@@ -269,6 +269,8 @@ test("scope profile effective reads retain coding fallbacks without omitted lega
     expandScopeProfileReadNamespaces({
       profilePlan: plan,
       principalSelfNamespace: "pi-geek",
+      config,
+      principal: "pi-geek",
       codingOverlay: overlay,
       legacyRecallNamespaces: ["pi-geek", "shared", "team-extra"],
     }),
@@ -278,6 +280,58 @@ test("scope profile effective reads retain coding fallbacks without omitted lega
       combineNamespaces("pi-geek", overlay.readFallbacks[0]!),
     ],
   );
+});
+
+test("scope profile expansion respects explicit policies on user-project fallbacks", () => {
+  const branchContext: CodingContext = {
+    projectId: "origin:aaaa0000",
+    branch: "feat/x",
+    rootPath: "origin:aaaa0000",
+    defaultBranch: "main",
+  };
+  const initialConfig = parseConfig({
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    codingMode: { projectScope: true, branchScope: true },
+  });
+  const overlay = resolveCodingNamespaceOverlay(branchContext, initialConfig.codingMode, initialConfig.defaultNamespace);
+  assert.ok(overlay);
+  const deniedProjectFallback = combineNamespaces("pi-geek", overlay.readFallbacks[0]!);
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    codingMode: { projectScope: true, branchScope: true },
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: deniedProjectFallback, readPrincipals: [], writePrincipals: [] },
+    ],
+    scopeProfiles: {
+      projectOnly: {
+        readOrder: ["userProject"],
+        writeDefault: "userProject",
+      },
+    },
+    defaultScopeProfile: "projectOnly",
+  });
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "pi-geek",
+    codingContext: branchContext,
+    codingOverlay: overlay,
+  });
+  assert.ok(plan);
+
+  const expanded = expandScopeProfileReadNamespaces({
+    profilePlan: plan,
+    principalSelfNamespace: "pi-geek",
+    config,
+    principal: "pi-geek",
+    codingOverlay: overlay,
+    legacyRecallNamespaces: ["pi-geek"],
+  });
+
+  assert.ok(!expanded.includes(deniedProjectFallback));
 });
 
 test("scope profile expansion does not add user-project fallbacks when userProject is omitted from readOrder", () => {
@@ -328,6 +382,8 @@ test("scope profile expansion does not add user-project fallbacks when userProje
     expandScopeProfileReadNamespaces({
       profilePlan: plan,
       principalSelfNamespace: "pi-geek",
+      config,
+      principal: "pi-geek",
       codingOverlay: overlay,
       legacyRecallNamespaces: ["pi-geek", "shared"],
     }),
@@ -371,6 +427,8 @@ test("scope profile expansion does not add global fallback when userGlobal is om
   const expanded = expandScopeProfileReadNamespaces({
     profilePlan: plan,
     principalSelfNamespace: "pi-geek",
+    config,
+    principal: "pi-geek",
     codingOverlay: overlay,
     legacyRecallNamespaces: ["pi-geek", "shared"],
   });

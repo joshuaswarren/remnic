@@ -418,6 +418,8 @@ export function resolveScopeProfilePlan(
 export function expandScopeProfileReadNamespaces(options: {
   profilePlan: ResolvedScopeProfilePlan;
   principalSelfNamespace: string;
+  config: PluginConfig;
+  principal?: string;
   codingOverlay?: ScopeProfileCodingOverlay | null;
   legacyRecallNamespaces?: string[];
 }): string[] {
@@ -441,7 +443,10 @@ export function expandScopeProfileReadNamespaces(options: {
   if (userProjectReadable) {
     for (const fallback of options.codingOverlay?.readFallbacks ?? []) {
       if (fallback === "" && !userGlobalReadable) continue;
-      add(combineNamespaces(options.principalSelfNamespace, fallback));
+      const fallbackNamespace = combineNamespaces(options.principalSelfNamespace, fallback);
+      if (canReadScopeProfileNamespace(options.principal, fallbackNamespace, options.config)) {
+        add(fallbackNamespace);
+      }
     }
   }
   return out;

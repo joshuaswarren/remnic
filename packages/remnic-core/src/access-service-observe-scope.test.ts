@@ -42,6 +42,7 @@ import {
   projectTagProjectId,
 } from "./coding/coding-namespace.js";
 import { resolveGitContext, stableHash } from "./coding/git-context.js";
+import { namespaceCollectionName } from "./namespaces/search.js";
 import type { CodingContext, PluginConfig } from "./types.js";
 
 /**
@@ -784,6 +785,7 @@ test("#1501 implicit memorySearch honors active scope profile readOrder", async 
     namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
+    memoryDir: "/synthetic/remnic-memory-search",
     namespacePolicies: [
       { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
       { name: "shared", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
@@ -826,4 +828,54 @@ test("#1501 implicit memorySearch honors active scope profile readOrder", async 
     null,
     "userProject-only profiles without project context must not fall back to shared/global search",
   );
+});
+
+test("#1501 memorySearch collection names stay constrained to active scope profile namespaces", async () => {
+  let searchedNamespaces: string[] | null = null;
+  const config = {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    memoryDir: "/synthetic/remnic-memory-search-collection",
+    qmdCollection: "memories",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "shared", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    defaultRecallNamespaces: ["self", "shared"],
+    defaultScopeProfile: "privateOnly",
+    scopeProfiles: {
+      privateOnly: {
+        readOrder: ["userGlobal"],
+        writeDefault: "userGlobal",
+        promotionTargets: [],
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    codingMode: { projectScope: true },
+  } as unknown as PluginConfig;
+  const orch = {
+    config,
+    qmd: { isAvailable: () => true },
+    searchAcrossNamespaces: async (options: { namespaces: string[] }) => {
+      searchedNamespaces = options.namespaces;
+      return [];
+    },
+  } as unknown as Orchestrator;
+  const service = new EngramAccessService(orch);
+  const sharedCollection = namespaceCollectionName(config.qmdCollection, "shared", {
+    defaultNamespace: config.defaultNamespace,
+    useLegacyDefaultCollection: false,
+  });
+
+  await assert.rejects(
+    () => service.memorySearch({ query: "deployment", principal: "pi-geek", collection: sharedCollection }),
+    /collection is not namespace-scoped/,
+  );
+  assert.equal(searchedNamespaces, null);
 });

@@ -1637,6 +1637,8 @@ export class EngramAccessService {
       const expandedReadNamespaces = expandScopeProfileReadNamespaces({
         profilePlan,
         principalSelfNamespace: profilePlan.baseNamespace,
+        config: this.orchestrator.config,
+        principal,
         codingOverlay,
         legacyRecallNamespaces,
       });
@@ -1845,6 +1847,8 @@ export class EngramAccessService {
       ? expandScopeProfileReadNamespaces({
           profilePlan,
           principalSelfNamespace: profilePlan.baseNamespace,
+          config: this.orchestrator.config,
+          principal,
           codingOverlay: null,
           legacyRecallNamespaces,
         })
@@ -1880,8 +1884,9 @@ export class EngramAccessService {
       return namespaces;
     }
 
+    const allowedNamespaces = new Set(namespaces);
     const candidates = collectionPrincipal
-      ? this.resolveAllReadableConfiguredNamespaces(collectionPrincipal)
+      ? this.resolveAllReadableConfiguredNamespaces(collectionPrincipal).filter((ns) => allowedNamespaces.has(ns))
       : namespaces;
     const matchedNamespaces = candidates.filter((namespace) => {
       const canonical = namespaceCollectionName(baseCollection, namespace, {
@@ -3217,6 +3222,8 @@ export class EngramAccessService {
         ? expandScopeProfileReadNamespaces({
             profilePlan,
             principalSelfNamespace: profilePlan.baseNamespace,
+            config: this.orchestrator.config,
+            principal,
             codingOverlay: profileCodingOverlay,
             legacyRecallNamespaces,
           })
@@ -6045,6 +6052,8 @@ export class EngramAccessService {
     return expandScopeProfileReadNamespaces({
       profilePlan,
       principalSelfNamespace: profilePlan.baseNamespace,
+      config,
+      principal,
       codingOverlay,
       legacyRecallNamespaces,
     });

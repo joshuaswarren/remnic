@@ -165,8 +165,8 @@ test("scope profile shared reads do not imply automatic shared promotion", async
       autoPromoteToSharedCategories: ["fact"],
       autoPromoteMinConfidenceTier: "implied",
       namespacePolicies: [
-        { name: "default", read: ["default"], write: ["default"] },
-        { name: "shared", read: ["default"], write: ["default"] },
+        { name: "default", readPrincipals: ["default"], writePrincipals: ["default"] },
+        { name: "shared", readPrincipals: ["default"], writePrincipals: ["default"] },
       ],
       defaultScopeProfile: "hosted",
       scopeProfiles: {
@@ -242,8 +242,8 @@ test("scope profile auto-promotion does not require legacy global promotion", as
       defaultNamespace: "default",
       sharedNamespace: "shared",
       namespacePolicies: [
-        { name: "default", read: ["default"], write: ["default"] },
-        { name: "shared", read: ["default"], write: ["default"] },
+        { name: "default", readPrincipals: ["default"], writePrincipals: ["default"] },
+        { name: "shared", readPrincipals: ["default"], writePrincipals: ["default"] },
       ],
       defaultScopeProfile: "hosted",
       scopeProfiles: {
