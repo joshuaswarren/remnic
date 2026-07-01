@@ -353,8 +353,5 @@ export function expandScopeProfileReadNamespaces(options: {
       add(combineNamespaces(options.principalSelfNamespace, fallback));
     }
   }
-  for (const namespace of options.legacyRecallNamespaces ?? []) {
-    add(namespace);
-  }
   return out;
 }

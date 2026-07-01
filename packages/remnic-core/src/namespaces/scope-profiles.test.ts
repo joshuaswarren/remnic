@@ -134,7 +134,7 @@ test("teamCoding profile resolves user-project, team-project, user-global, and s
   );
 });
 
-test("scope profile effective reads retain coding fallbacks and legacy policy namespaces", () => {
+test("scope profile effective reads retain coding fallbacks without omitted legacy namespaces", () => {
   const config = parseConfig({
     namespacesEnabled: true,
     defaultNamespace: "default",
@@ -206,9 +206,6 @@ test("scope profile effective reads retain coding fallbacks and legacy policy na
       combineNamespaces("pi-geek", overlay.namespace),
       teamProjectNamespace,
       combineNamespaces("pi-geek", overlay.readFallbacks[0]!),
-      "pi-geek",
-      "shared",
-      "team-extra",
     ],
   );
 });

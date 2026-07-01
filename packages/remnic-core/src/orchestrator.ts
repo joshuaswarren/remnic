@@ -12709,18 +12709,39 @@ export class Orchestrator {
       options.principalOverride.length > 0
         ? options.principalOverride
         : resolvePrincipal(sessionKey, this.config);
-    // Write path — overlay the coding-agent namespace (issue #569) when the
-    // session has a codingContext and `codingMode.projectScope` is true.
-    // Explicit `writeNamespaceOverride` from callers still wins, matching
-    // pre-#569 semantics.
-    const selfNamespace =
+    // Write path — explicit callers still win. Otherwise, an active hosted
+    // scope profile owns the extraction write target so hook-captured turns land
+    // in the same layer that profile recall searches. Without a profile, preserve
+    // the existing coding-agent overlay behavior (issue #569).
+    const explicitWriteNamespace =
       typeof options.writeNamespaceOverride === "string" &&
       options.writeNamespaceOverride.length > 0
         ? options.writeNamespaceOverride
-        : this.applyCodingNamespaceOverlay(
-            sessionKey,
-            defaultNamespaceForPrincipal(principal, this.config),
-          );
+        : undefined;
+    const codingOverlayForWrite = explicitWriteNamespace
+      ? null
+      : resolveCodingNamespaceOverlay(
+          this.getCodingContextForSession(sessionKey),
+          this.config.codingMode,
+          this.config.defaultNamespace,
+        );
+    const scopeProfileWritePlan = explicitWriteNamespace
+      ? null
+      : resolveScopeProfilePlan({
+          config: this.config,
+          principal,
+          codingContext: sessionKey
+            ? this.getCodingContextForSession(sessionKey)
+            : null,
+          codingOverlay: codingOverlayForWrite,
+        });
+    const selfNamespace =
+      explicitWriteNamespace ??
+      scopeProfileWritePlan?.writeNamespace ??
+      this.applyCodingNamespaceOverlay(
+        sessionKey,
+        defaultNamespaceForPrincipal(principal, this.config),
+      );
     const storage = await this.storageRouter.storageFor(selfNamespace);
     const shouldPersistProcessedFingerprint = targetTurns.some(
       (turn) => turn.persistProcessedFingerprint === true,
