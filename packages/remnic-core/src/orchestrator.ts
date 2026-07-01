@@ -8717,15 +8717,36 @@ export class Orchestrator {
           return null;
         }
 
-        const results = await searchHarmonicRetrieval({
-          memoryDir: this.config.memoryDir,
-          abstractionNodeStoreDir: this.config.abstractionNodeStoreDir,
-          query: retrievalQuery,
-          maxResults,
-          sessionKey,
-          anchorsEnabled: this.config.abstractionAnchorsEnabled,
-          abortSignal: harmonicRetrievalAbort.signal,
-        });
+        const harmonicSearchDirs = scopeProfilePlan ? profileStorageDirs : [this.config.memoryDir];
+        const harmonicResultsByDir = await Promise.all(
+          harmonicSearchDirs.map((memoryDir) =>
+            searchHarmonicRetrieval({
+              memoryDir,
+              abstractionNodeStoreDir: scopeProfilePlan ? undefined : this.config.abstractionNodeStoreDir,
+              query: retrievalQuery,
+              maxResults,
+              sessionKey,
+              anchorsEnabled: this.config.abstractionAnchorsEnabled,
+              abortSignal: harmonicRetrievalAbort.signal,
+            }),
+          ),
+        );
+        const harmonicByNodeId = new Map<string, HarmonicRetrievalResult>();
+        for (const result of harmonicResultsByDir.flat()) {
+          const existing = harmonicByNodeId.get(result.node.nodeId);
+          if (!existing || result.score > existing.score) {
+            harmonicByNodeId.set(result.node.nodeId, result);
+          }
+        }
+        const results = [...harmonicByNodeId.values()]
+          .sort(
+            (left, right) =>
+              right.score - left.score ||
+              right.anchorScore - left.anchorScore ||
+              right.node.recordedAt.localeCompare(left.node.recordedAt) ||
+              left.node.nodeId.localeCompare(right.node.nodeId),
+          )
+          .slice(0, maxResults);
 
         recordRecallSectionMetric({
           section: "harmonicRetrieval",
@@ -8962,13 +8983,33 @@ export class Orchestrator {
         return null;
       }
 
-      const results = await searchWorkProductLedgerEntries({
-        memoryDir: this.config.memoryDir,
-        workProductLedgerDir: this.config.workProductLedgerDir,
-        query: retrievalQuery,
-        maxResults,
-        sessionKey,
-      });
+      const workProductSearchDirs = scopeProfilePlan ? profileStorageDirs : [this.config.memoryDir];
+      const workProductResultsByDir = await Promise.all(
+        workProductSearchDirs.map((memoryDir) =>
+          searchWorkProductLedgerEntries({
+            memoryDir,
+            workProductLedgerDir: scopeProfilePlan ? undefined : this.config.workProductLedgerDir,
+            query: retrievalQuery,
+            maxResults,
+            sessionKey,
+          }),
+        ),
+      );
+      const workProductByEntryId = new Map<string, WorkProductLedgerSearchResult>();
+      for (const result of workProductResultsByDir.flat()) {
+        const existing = workProductByEntryId.get(result.entry.entryId);
+        if (!existing || result.score > existing.score) {
+          workProductByEntryId.set(result.entry.entryId, result);
+        }
+      }
+      const results = [...workProductByEntryId.values()]
+        .sort(
+          (left, right) =>
+            right.score - left.score ||
+            right.entry.recordedAt.localeCompare(left.entry.recordedAt) ||
+            left.entry.entryId.localeCompare(right.entry.entryId),
+        )
+        .slice(0, maxResults);
 
       recordRecallSectionMetric({
         section: "workProducts",

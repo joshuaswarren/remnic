@@ -122,12 +122,7 @@ function resolveTeam(
     return configured ? { teamId: configuredTeamId, team: configured } : null;
   }
   for (const [teamId, team] of Object.entries(config.teams ?? {})) {
-    if (
-      principalListed(team.principals, principal) ||
-      principalListed(team.read, principal) ||
-      principalListed(team.write, principal) ||
-      principalListed(team.promote, principal)
-    ) {
+    if (principalListed(team.principals, principal) || principalListed(team.read, principal)) {
       return { teamId, team };
     }
   }
