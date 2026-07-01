@@ -7846,7 +7846,7 @@ export class Orchestrator {
                   const merged: any[] = [];
                   const seen = new Set<string>();
                   for (const storage of profileStorages) {
-                    const questions = await storage.readQuestions(...args);
+                    const questions = await (storage.readQuestions as any)(...args);
                     for (const question of questions) {
                       const key = typeof question === "string" ? question : JSON.stringify(question);
                       if (seen.has(key)) continue;
@@ -7861,7 +7861,7 @@ export class Orchestrator {
                 return async (...args: any[]) => {
                   const names = new Set<string>();
                   for (const storage of profileStorages) {
-                    for (const name of await storage.listEntityNames(...args)) names.add(name);
+                    for (const name of await (storage.listEntityNames as any)(...args)) names.add(name);
                   }
                   return [...names];
                 };
