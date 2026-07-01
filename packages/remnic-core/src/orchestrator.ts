@@ -8289,13 +8289,29 @@ export class Orchestrator {
       if (!this.config.knowledgeIndexEnabled) return null;
       const t0 = Date.now();
       try {
-        const ki = await this.storage.buildKnowledgeIndex(this.config, {
+        const knowledgeIndexOptions = {
           maxEntities: this.getRecallSectionNumber(
             "knowledge-index",
             "maxEntities",
           ),
           maxChars: this.getRecallSectionNumber("knowledge-index", "maxChars"),
-        });
+        };
+        const ki = scopeProfilePlan
+          ? await (async () => {
+              const results = await Promise.all(
+                profileStorages.map((storage) =>
+                  storage.buildKnowledgeIndex(this.config, knowledgeIndexOptions),
+                ),
+              );
+              const sections = results
+                .map((result) => result.result.trim())
+                .filter((section) => section.length > 0);
+              return {
+                result: sections.join("\n\n"),
+                cached: results.every((result) => result.cached),
+              };
+            })()
+          : await this.storage.buildKnowledgeIndex(this.config, knowledgeIndexOptions);
         recordRecallSectionMetric({
           section: "ki",
           priority: "core",
@@ -12972,23 +12988,21 @@ export class Orchestrator {
       options.writeNamespaceOverride.length > 0
         ? options.writeNamespaceOverride
         : undefined;
-    const codingOverlayForWrite = explicitWriteNamespace
-      ? null
-      : resolveCodingNamespaceOverlay(
-          this.getCodingContextForSession(sessionKey),
-          this.config.codingMode,
-          this.config.defaultNamespace,
-        );
-    const scopeProfileWritePlan = explicitWriteNamespace
-      ? null
-      : resolveScopeProfilePlan({
-          config: this.config,
-          principal,
-          codingContext: sessionKey
-            ? this.getCodingContextForSession(sessionKey)
-            : null,
-          codingOverlay: codingOverlayForWrite,
-        });
+    const codingContextForWrite = sessionKey
+      ? this.getCodingContextForSession(sessionKey)
+      : null;
+    const codingOverlayForWrite = resolveCodingNamespaceOverlay(
+      codingContextForWrite,
+      this.config.codingMode,
+      this.config.defaultNamespace,
+    );
+    const scopeProfileGatePlan = resolveScopeProfilePlan({
+      config: this.config,
+      principal,
+      codingContext: codingContextForWrite,
+      codingOverlay: codingOverlayForWrite,
+    });
+    const scopeProfileWritePlan = explicitWriteNamespace ? null : scopeProfileGatePlan;
     if (scopeProfileWritePlan) {
       const selectedLayer = scopeProfileWritePlan.layers.find(
         (layer) => layer.id === scopeProfileWritePlan.writeLayer,
@@ -13175,7 +13189,7 @@ export class Orchestrator {
       // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,
-      scopeProfileWritePlan,
+      scopeProfileGatePlan,
     );
     let postPersistMetadataFailed = false;
     meta ??= await storage.loadMeta();
