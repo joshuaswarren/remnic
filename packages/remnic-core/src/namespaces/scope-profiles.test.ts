@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { combineNamespaces, resolveCodingNamespaceOverlay } from "../coding/coding-namespace.js";
+import { stableHash } from "../coding/git-context.js";
 import { parseConfig } from "../config.js";
 import type { CodingContext } from "../types.js";
-import { resolveScopeProfilePlan } from "./scope-profiles.js";
+import {
+  expandScopeProfileReadNamespaces,
+  resolveScopeProfilePlan,
+} from "./scope-profiles.js";
 
 function teamCodingConfig() {
   return parseConfig({
@@ -126,6 +130,85 @@ test("teamCoding profile resolves user-project, team-project, user-global, and s
     [
       ["teamProject", "team-pi-project-2d7ea3c1", true],
       ["serverShared", "shared", true],
+    ],
+  );
+});
+
+test("scope profile effective reads retain coding fallbacks and legacy policy namespaces", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    defaultRecallNamespaces: ["self", "shared"],
+    codingMode: { projectScope: true, branchScope: true },
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "shared", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      {
+        name: "team-extra",
+        readPrincipals: ["pi-geek"],
+        writePrincipals: [],
+        includeInRecallByDefault: true,
+      },
+    ],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["userProject", "teamProject"],
+        writeDefault: "userProject",
+        teamProject: {
+          namespaceTemplate: "team-{teamId}-project-{projectHash}",
+        },
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+    teams: {
+      pi: {
+        principals: ["pi-geek"],
+        read: ["pi-geek"],
+        write: ["pi-geek"],
+        promote: ["pi-geek"],
+      },
+    },
+  });
+  const branchContext: CodingContext = {
+    projectId: "origin:aaaa0000",
+    branch: "feat/x",
+    rootPath: "origin:aaaa0000",
+    defaultBranch: "main",
+  };
+  const overlay = resolveCodingNamespaceOverlay(
+    branchContext,
+    config.codingMode,
+    config.defaultNamespace,
+  );
+  assert.ok(overlay);
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "pi-geek",
+    codingContext: branchContext,
+    codingOverlay: overlay,
+  });
+  assert.ok(plan);
+  const teamProjectNamespace = `team-pi-project-${stableHash(branchContext.projectId)}`;
+
+  assert.deepEqual(plan.readNamespaces, [
+    combineNamespaces("pi-geek", overlay.namespace),
+    teamProjectNamespace,
+  ]);
+  assert.deepEqual(
+    expandScopeProfileReadNamespaces({
+      profilePlan: plan,
+      principalSelfNamespace: "pi-geek",
+      codingOverlay: overlay,
+      legacyRecallNamespaces: ["pi-geek", "shared", "team-extra"],
+    }),
+    [
+      combineNamespaces("pi-geek", overlay.namespace),
+      teamProjectNamespace,
+      combineNamespaces("pi-geek", overlay.readFallbacks[0]!),
+      "pi-geek",
+      "shared",
+      "team-extra",
     ],
   );
 });

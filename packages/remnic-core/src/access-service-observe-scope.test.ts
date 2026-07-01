@@ -643,6 +643,64 @@ test("#1495 the scope plan's writeNamespace matches resolveCodingScopedWriteName
   }
 });
 
+test("#1501 profile write auth rejects memory_store when no profile layer is writable", async () => {
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      { name: "pi-observer", readPrincipals: ["pi-observer"], writePrincipals: [] },
+      { name: "shared", readPrincipals: ["pi-observer"], writePrincipals: [] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-observer:", principal: "pi-observer" }],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["userProject", "teamProject", "serverShared"],
+        writeDefault: "userProject",
+        promotionTargets: ["teamProject", "serverShared"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+    teams: {
+      pi: {
+        principals: ["pi-observer"],
+        read: ["pi-observer"],
+        write: [],
+        promote: [],
+      },
+    },
+  } as Partial<PluginConfig>);
+  probe.contexts.set("pi-observer:abc123", {
+    projectId: projectTagProjectId("Remnic"),
+    branch: null,
+    rootPath: projectTagProjectId("Remnic"),
+    defaultBranch: null,
+  });
+  const service = new EngramAccessService(probe.orch);
+  const internals = service as unknown as {
+    resolveMemoryScopePlan: (r: unknown) => Promise<{ writeNamespace: string }>;
+    resolveCodingScopedWriteNamespace: (r: unknown) => Promise<string>;
+  };
+  const req = {
+    sessionKey: "pi-observer:abc123",
+    authenticatedPrincipal: "pi-observer",
+  };
+
+  await assert.rejects(
+    () => internals.resolveMemoryScopePlan.call(service, req),
+    /scope profile teamCoding has no writable layer/,
+  );
+  await assert.rejects(
+    () => internals.resolveCodingScopedWriteNamespace.call(service, req),
+    /scope profile teamCoding has no writable layer/,
+  );
+});
+
 test("#1495 skipExtraction does not enqueue extraction but still archives LCM under the effective namespace", async () => {
   const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);

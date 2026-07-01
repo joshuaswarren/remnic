@@ -302,3 +302,27 @@ export function resolveScopeProfilePlan(
     warnings,
   };
 }
+
+export function expandScopeProfileReadNamespaces(options: {
+  profilePlan: ResolvedScopeProfilePlan;
+  principalSelfNamespace: string;
+  codingOverlay?: ScopeProfileCodingOverlay | null;
+  legacyRecallNamespaces?: string[];
+}): string[] {
+  const out = [...options.profilePlan.readNamespaces];
+  const add = (namespace: string | undefined): void => {
+    if (namespace && !out.includes(namespace)) out.push(namespace);
+  };
+  const userProjectReadable = options.profilePlan.layers.some(
+    (layer) => layer.id === "userProject" && layer.readable && layer.namespace,
+  );
+  if (userProjectReadable) {
+    for (const fallback of options.codingOverlay?.readFallbacks ?? []) {
+      add(combineNamespaces(options.principalSelfNamespace, fallback));
+    }
+  }
+  for (const namespace of options.legacyRecallNamespaces ?? []) {
+    add(namespace);
+  }
+  return out;
+}

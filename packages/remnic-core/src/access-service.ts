@@ -56,7 +56,12 @@ import {
 } from "./memory-lifecycle-ledger-utils.js";
 import { getMemoryProjectionPath } from "./memory-projection-store.js";
 import { canReadNamespace, canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
-import { resolveScopeProfilePlan, type ScopeProfileLayerResolution, type ScopeProfilePromotionResolution } from "./namespaces/scope-profiles.js";
+import {
+  expandScopeProfileReadNamespaces,
+  resolveScopeProfilePlan,
+  type ScopeProfileLayerResolution,
+  type ScopeProfilePromotionResolution,
+} from "./namespaces/scope-profiles.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
@@ -1439,6 +1444,12 @@ export class EngramAccessService {
       codingOverlay: overlay,
     });
     if (profilePlan) {
+      const selectedLayer = profilePlan.layers.find((layer) => layer.id === profilePlan.writeLayer);
+      if (!selectedLayer?.writable) {
+        throw new EngramAccessInputError(
+          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`,
+        );
+      }
       return profilePlan.writeNamespace;
     }
     if (!overlay) {
@@ -1614,8 +1625,17 @@ export class EngramAccessService {
           `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`,
         );
       }
-      const readNamespaces = profilePlan.readNamespaces.length > 0
-        ? profilePlan.readNamespaces
+      const legacyRecallNamespaces = Array.isArray(this.orchestrator.config.defaultRecallNamespaces)
+        ? recallNamespacesForPrincipal(principal, this.orchestrator.config)
+        : [];
+      const expandedReadNamespaces = expandScopeProfileReadNamespaces({
+        profilePlan,
+        principalSelfNamespace: baseNamespace,
+        codingOverlay,
+        legacyRecallNamespaces,
+      });
+      const readNamespaces = expandedReadNamespaces.length > 0
+        ? expandedReadNamespaces
         : [profilePlan.writeNamespace];
       return {
         principal,
@@ -3139,11 +3159,19 @@ export class EngramAccessService {
     // against every cross-namespace entry in the effective set so that omitting
     // `namespace` cannot bypass the limiter (Cursor/Codex review feedback).
     //
+    const legacyRecallNamespaces = Array.isArray(this.orchestrator.config.defaultRecallNamespaces)
+      ? recallNamespacesForPrincipal(principal, this.orchestrator.config)
+      : [];
     const effectiveNamespaces = namespaceOverride
       ? [namespaceOverride]
       : profilePlan?.readNamespaces.length
-        ? profilePlan.readNamespaces
-        : recallNamespacesForPrincipal(principal, this.orchestrator.config);
+        ? expandScopeProfileReadNamespaces({
+            profilePlan,
+            principalSelfNamespace: principalNamespace,
+            codingOverlay: profileCodingOverlay,
+            legacyRecallNamespaces,
+          })
+        : legacyRecallNamespaces;
     let budgetDecision: BudgetDecision;
     let recordBudgetAfterSuccess = false;
     if (modeSkipsBudget) {

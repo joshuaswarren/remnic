@@ -320,7 +320,10 @@ import {
   recallNamespacesForPrincipal,
   resolvePrincipal,
 } from "./namespaces/principal.js";
-import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
+import {
+  expandScopeProfileReadNamespaces,
+  resolveScopeProfilePlan,
+} from "./namespaces/scope-profiles.js";
 import {
   combineNamespaces,
   lcmReadSessionIdsForNamespaces,
@@ -5846,7 +5849,12 @@ export class Orchestrator {
     if (namespaceOverride && canReadNamespace(principal, namespaceOverride, this.config)) {
       observationNamespaces = [namespaceOverride];
     } else if (observationScopeProfilePlan?.readNamespaces.length) {
-      observationNamespaces = observationScopeProfilePlan.readNamespaces;
+      observationNamespaces = expandScopeProfileReadNamespaces({
+        profilePlan: observationScopeProfilePlan,
+        principalSelfNamespace: observationPrincipalSelf,
+        codingOverlay: observationCodingOverlay,
+        legacyRecallNamespaces: recallNamespacesForPrincipal(principal, this.config),
+      });
     } else if (observationCodingOverlay && observationCodingSelf) {
       // Rule 42 / parity with the main recall path: substitute the self
       // namespace within the principal's recall list rather than
@@ -7481,7 +7489,12 @@ export class Orchestrator {
     if (namespaceOverride) {
       recallNamespaces = [namespaceOverride];
     } else if (scopeProfilePlan?.readNamespaces.length) {
-      recallNamespaces = scopeProfilePlan.readNamespaces;
+      recallNamespaces = expandScopeProfileReadNamespaces({
+        profilePlan: scopeProfilePlan,
+        principalSelfNamespace,
+        codingOverlay,
+        legacyRecallNamespaces: readableRecallNamespaces,
+      });
     } else if (codingOverlay && codingSelfNamespace) {
       // Substitute the principal's self namespace with the coding-scoped
       // one, and append any read fallbacks (branch→project, PR 3) combined
@@ -7548,6 +7561,11 @@ export class Orchestrator {
     if (namespaceOverride) {
       // Explicit namespace already read-authorized above (canReadNamespace gate).
       lcmReadNamespaces = [namespaceOverride];
+    } else if (scopeProfilePlan?.readNamespaces.length) {
+      // Scope profiles define a layered read stack; LCM-backed evidence uses the
+      // same namespace set as QMD/file recall so team/global/shared observations
+      // are not silently skipped.
+      lcmReadNamespaces = recallNamespaces;
     } else if (codingOverlay && codingSelfNamespace && codingOverlaySelfReadable) {
       // Self base readable → overlay rows authorized. Read the primary overlay
       // key first, then each coding read fallback (project → root), combined with
