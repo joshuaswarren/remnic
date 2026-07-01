@@ -576,8 +576,5 @@ export function lcmReadSessionIdsForNamespaces(
       out.push(key);
     }
   }
-  if (out.length === 0) {
-    out.push(sessionKey);
-  }
   return out;
 }

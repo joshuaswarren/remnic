@@ -2484,6 +2484,13 @@ export class Orchestrator {
     searchOptions?: SearchQueryOptions;
     execution?: SearchExecutionOptions;
   }): Promise<QmdSearchResult[]> {
+    if (
+      this.config.namespacesEnabled &&
+      options.namespaces !== undefined &&
+      options.namespaces.length === 0
+    ) {
+      return [];
+    }
     const namespaces = this.config.namespacesEnabled
       ? Array.from(
           new Set(
