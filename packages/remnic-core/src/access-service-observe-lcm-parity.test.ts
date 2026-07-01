@@ -652,6 +652,43 @@ test("#1505 thread 2 compaction regression: flush/record overlay-derived key mat
   );
 });
 
+test("#1501 scope profile lcmSearch fans out prefix-only reads across profile namespaces", async () => {
+  const probe = makeParityProbe({
+    ...withSelfPolicyPrefix("pi-observer"),
+    namespacePolicies: [
+      { name: "pi-observer", readPrincipals: ["pi-observer"], writePrincipals: ["pi-observer"] },
+      { name: "shared", readPrincipals: ["pi-observer"], writePrincipals: [] },
+    ],
+    defaultScopeProfile: "profilePrefix",
+    scopeProfiles: {
+      profilePrefix: {
+        readOrder: ["userGlobal", "serverShared"],
+        writeDefault: "userGlobal",
+        promotionTargets: [],
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  await service.lcmSearch({
+    query: "database",
+    sessionPrefix: "pi-observer:",
+    authenticatedPrincipal: "pi-observer",
+  });
+
+  assert.deepEqual(probe.searchSessionIds, [undefined, undefined]);
+  assert.deepEqual(probe.searchSessionPrefixes, [
+    encodeNs("pi-observer", "pi-observer:"),
+    encodeNs("shared", "pi-observer:"),
+  ]);
+});
+
 test("#1501 scope profile lcmSearch reads the team-project profile key", async () => {
   const probe = makeParityProbe({
     ...withSelfPolicyPrefix("pi-observer"),

@@ -5568,13 +5568,20 @@ export class EngramAccessService {
             request.authenticatedPrincipal,
           )
       : [undefined];
-    const lcmSessionPrefix = request.sessionPrefix
-      ? lcmSessionKeyForNamespace(
-          lcmReadNamespace,
-          request.sessionPrefix,
-          this.orchestrator.config.defaultNamespace,
-        ) ?? request.sessionPrefix
-      : request.sessionPrefix;
+    const lcmSessionPrefixes = request.sessionPrefix
+      ? profileLcmReadNamespaces !== null && !request.sessionKey
+        ? this.lcmSessionIdsForNamespaces(
+            profileLcmReadNamespaces,
+            request.sessionPrefix,
+          )
+        : [
+            lcmSessionKeyForNamespace(
+              lcmReadNamespace,
+              request.sessionPrefix,
+              this.orchestrator.config.defaultNamespace,
+            ) ?? request.sessionPrefix,
+          ]
+      : [undefined];
     // SECURITY (#1495 P1 + codex P1 r2 "Require a scoped LCM filter before
     // archive searches"): a sessionless, prefixless `lcmSearch` issues
     // `searchContextFull(query, limit, undefined, undefined)`, an archive-wide
@@ -5596,7 +5603,7 @@ export class EngramAccessService {
     const hasScopedSession =
       (typeof request.sessionKey === "string" &&
         request.sessionKey.length > 0) ||
-      (typeof lcmSessionPrefix === "string" && lcmSessionPrefix.length > 0);
+      lcmSessionPrefixes.some((prefix) => typeof prefix === "string" && prefix.length > 0);
     if (!hasScopedSession && this.orchestrator.config.namespacesEnabled === true) {
       return {
         query: request.query,
@@ -5612,22 +5619,25 @@ export class EngramAccessService {
     const results: Array<{ sessionId: string; content: string; turnIndex: number }> = [];
     for (const lcmSessionKey of lcmSessionKeyIds) {
       if (results.length >= limit) break;
-      const rawResults = await this.orchestrator.lcmEngine.searchContextFull(
-        request.query,
-        limit,
-        lcmSessionKey,
-        lcmSessionPrefix,
-      );
-      for (const r of rawResults as Array<{ session_id: string; content: string; turn_index: number }>) {
-        const dedupeKey = `${r.session_id} ${r.turn_index}`;
-        if (seenRows.has(dedupeKey)) continue;
-        seenRows.add(dedupeKey);
-        results.push({
-          sessionId: r.session_id,
-          content: r.content,
-          turnIndex: r.turn_index,
-        });
+      for (const lcmSessionPrefix of lcmSessionPrefixes) {
         if (results.length >= limit) break;
+        const rawResults = await this.orchestrator.lcmEngine.searchContextFull(
+          request.query,
+          limit,
+          lcmSessionKey,
+          lcmSessionPrefix,
+        );
+        for (const r of rawResults as Array<{ session_id: string; content: string; turn_index: number }>) {
+          const dedupeKey = `${r.session_id} ${r.turn_index}`;
+          if (seenRows.has(dedupeKey)) continue;
+          seenRows.add(dedupeKey);
+          results.push({
+            sessionId: r.session_id,
+            content: r.content,
+            turnIndex: r.turn_index,
+          });
+          if (results.length >= limit) break;
+        }
       }
     }
 

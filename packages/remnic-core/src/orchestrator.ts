@@ -7807,6 +7807,8 @@ export class Orchestrator {
       return "";
     }
 
+    const selfNamespaceReadableForProfileSections =
+      !scopeProfilePlan || recallNamespaces.includes(selfNamespace);
     const profileStorage = await this.storageRouter.storageFor(selfNamespace);
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
@@ -7905,6 +7907,7 @@ export class Orchestrator {
     // 1. Profile
     const profilePromise = (async (): Promise<string | null> => {
       if (!this.isRecallSectionEnabled("profile")) return null;
+      if (!selfNamespaceReadableForProfileSections) return null;
       const t0 = Date.now();
       const profile = await profileStorage.readProfile();
       recordRecallSectionMetric({
