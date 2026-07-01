@@ -61,6 +61,50 @@ function principalListed(list: string[], principal: string | undefined): boolean
   return list.includes(principal) || list.includes("*");
 }
 
+function scopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string {
+  const existing = defaultNamespaceForPrincipal(principal, config);
+  if (existing !== config.defaultNamespace) return existing;
+  if (
+    principal &&
+    principal !== config.defaultNamespace &&
+    principal !== config.sharedNamespace &&
+    isSafeRouteNamespace(principal)
+  ) {
+    return principal;
+  }
+  return existing;
+}
+
+function isScopeProfileImplicitSelfNamespace(
+  principal: string | undefined,
+  namespace: string,
+  config: PluginConfig,
+): boolean {
+  return Boolean(
+    principal &&
+      namespace === principal &&
+      namespace !== config.defaultNamespace &&
+      namespace !== config.sharedNamespace &&
+      isSafeRouteNamespace(namespace),
+  );
+}
+
+function canReadScopeProfileNamespace(
+  principal: string | undefined,
+  namespace: string,
+  config: PluginConfig,
+): boolean {
+  return isScopeProfileImplicitSelfNamespace(principal, namespace, config) || canReadNamespace(principal, namespace, config);
+}
+
+function canWriteScopeProfileNamespace(
+  principal: string | undefined,
+  namespace: string,
+  config: PluginConfig,
+): boolean {
+  return isScopeProfileImplicitSelfNamespace(principal, namespace, config) || canWriteNamespace(principal, namespace, config);
+}
+
 function resolveTeam(
   config: PluginConfig,
   profile: ScopeProfileConfig,
@@ -123,9 +167,9 @@ function resolveLayer(params: {
       id,
       kind: "user-global",
       namespace: baseNamespace,
-      readable: canReadNamespace(principal, baseNamespace, config),
-      writable: canWriteNamespace(principal, baseNamespace, config),
-      promotable: canWriteNamespace(principal, baseNamespace, config),
+      readable: canReadScopeProfileNamespace(principal, baseNamespace, config),
+      writable: canWriteScopeProfileNamespace(principal, baseNamespace, config),
+      promotable: canWriteScopeProfileNamespace(principal, baseNamespace, config),
       reason: "principal self/global namespace",
     };
   }
@@ -152,8 +196,8 @@ function resolveLayer(params: {
       };
     }
     const namespace = combineNamespaces(baseNamespace, codingOverlay.namespace);
-    const baseReadable = canReadNamespace(principal, baseNamespace, config);
-    const baseWritable = canWriteNamespace(principal, baseNamespace, config);
+    const baseReadable = canReadScopeProfileNamespace(principal, baseNamespace, config);
+    const baseWritable = canWriteScopeProfileNamespace(principal, baseNamespace, config);
     return {
       id,
       kind: "user-project",
@@ -260,7 +304,7 @@ export function resolveScopeProfilePlan(
   const active = activeScopeProfile(options.config);
   if (!active || !options.config.namespacesEnabled) return null;
 
-  const baseNamespace = defaultNamespaceForPrincipal(options.principal, options.config);
+  const baseNamespace = scopeProfileSelfNamespace(options.principal, options.config);
   const layerIds = Array.from(
     new Set<ScopeProfileLayerId>([
       ...active.profile.readOrder,

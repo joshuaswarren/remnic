@@ -134,6 +134,33 @@ test("teamCoding profile resolves user-project, team-project, user-global, and s
   );
 });
 
+test("userProject profile namespaces stay principal-specific without namespace policies", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    codingMode: { projectScope: true },
+    scopeProfiles: {
+      hosted: {
+        readOrder: ["userProject"],
+        writeDefault: "userProject",
+      },
+    },
+    defaultScopeProfile: "hosted",
+  });
+  const overlay = resolveCodingNamespaceOverlay(codingContext, config.codingMode, config.defaultNamespace);
+  assert.ok(overlay);
+
+  const geek = resolveScopeProfilePlan({ config, principal: "pi-geek", codingContext, codingOverlay: overlay });
+  const friend = resolveScopeProfilePlan({ config, principal: "pi-friend", codingContext, codingOverlay: overlay });
+
+  assert.ok(geek);
+  assert.ok(friend);
+  assert.equal(geek.writeNamespace, combineNamespaces("pi-geek", overlay.namespace));
+  assert.equal(friend.writeNamespace, combineNamespaces("pi-friend", overlay.namespace));
+  assert.notEqual(geek.writeNamespace, friend.writeNamespace);
+});
+
 test("scope profile effective reads retain coding fallbacks without omitted legacy namespaces", () => {
   const config = parseConfig({
     namespacesEnabled: true,
