@@ -1849,6 +1849,7 @@ export class EngramAccessService {
           legacyRecallNamespaces,
         })
       : legacyRecallNamespaces;
+    if (profilePlan) return namespaces;
     return namespaces.filter((ns) =>
       canReadNamespace(principal, ns, this.orchestrator.config),
     );
