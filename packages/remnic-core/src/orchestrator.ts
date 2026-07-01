@@ -13992,13 +13992,19 @@ export class Orchestrator {
         layer.id === "serverShared" &&
         layer.namespace === this.config.sharedNamespace,
     );
+    const sharedPromotionTarget = scopeProfileWritePlan?.promotionTargets.find(
+      (target) =>
+        target.target === "serverShared" &&
+        target.namespace === this.config.sharedNamespace,
+    );
     const profileAllowsSharedWrites =
       !scopeProfileWritePlan ||
       Boolean(
         scopeProfileWritePlan.profile.readOrder.includes("serverShared") &&
           scopeProfileWritePlan.readNamespaces.includes(this.config.sharedNamespace) &&
           sharedProfileLayer?.readable &&
-          sharedProfileLayer.writable,
+          sharedProfileLayer.writable &&
+          sharedPromotionTarget?.authorized,
       );
     const profileAutoPromotionAllows = (
       category: string,
@@ -14124,9 +14130,31 @@ export class Orchestrator {
               intentEntityTypes: options.intentEntityTypes,
               memoryKind: options.memoryKind,
               validAt: options.validAt,
-              contentHashSource: rawContent,
+              contentHashSource: options.category === "fact" ? dedupContent : rawContent,
             },
           );
+          if (
+            this.config.temporalSupersessionEnabled &&
+            options.category === "fact" &&
+            options.entityRef &&
+            options.structuredAttributes &&
+            Object.keys(options.structuredAttributes).length > 0
+          ) {
+            try {
+              await applyTemporalSupersession({
+                storage: targetStorage,
+                newMemoryId: promotedId,
+                entityRef: options.entityRef,
+                structuredAttributes: options.structuredAttributes,
+                createdAt: supersessionOrderingAt(options.validAt),
+                enabled: true,
+              });
+            } catch (profileSupersessionErr) {
+              log.warn(
+                `persistExtraction: ${target.target} promotion temporal supersession failed open for promoted ${promotedId}: ${profileSupersessionErr}`,
+              );
+            }
+          }
           this.markCatalogWrite(target.namespace, targetStorage.dir);
           trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false });
           await this.indexPersistedMemory(targetStorage, promotedId);
@@ -14390,11 +14418,10 @@ export class Orchestrator {
             intentEntityTypes: options.intentEntityTypes,
             memoryKind: options.memoryKind,
             validAt: options.validAt,
-            // Index the RAW content hash so hasFactContentHash(rawContent)
-            // returns true on subsequent extractions. Without this, the index
-            // would record the hash of citedContent (which changes every call
-            // due to an updated timestamp), causing duplicate promotions.
-            contentHashSource: rawContent,
+            // Index the same canonical body used by hasFactContentHash above.
+            // For structured facts this includes the normalized Attributes
+            // suffix, matching StorageManager.writeMemory enrichment.
+            contentHashSource: options.category === "fact" ? dedupContent : rawContent,
           },
         );
         // PR #402 Finding 3 fix: run temporal supersession against the shared
