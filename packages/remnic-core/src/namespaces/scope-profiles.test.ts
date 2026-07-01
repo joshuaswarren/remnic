@@ -685,6 +685,32 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
           bad: {
             readOrder: ["teamProject", "userGlobal"],
             writeDefault: "teamProject",
+            teamProject: { teamId: 42 },
+          },
+        },
+      }),
+    /scopeProfiles.bad.teamProject.teamId must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        scopeProfiles: {
+          bad: {
+            readOrder: ["teamProject", "userGlobal"],
+            writeDefault: "teamProject",
+            teamProject: { namespaceTemplate: "" },
+          },
+        },
+      }),
+    /scopeProfiles.bad.teamProject.namespaceTemplate must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        scopeProfiles: {
+          bad: {
+            readOrder: ["teamProject", "userGlobal"],
+            writeDefault: "teamProject",
             teamProject: { teamId: "missing" },
           },
         },

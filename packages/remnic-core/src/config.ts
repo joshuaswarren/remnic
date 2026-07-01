@@ -179,18 +179,33 @@ function parseScopeProfiles(value: unknown): Record<string, ScopeProfileConfig> 
     ) {
       throw new Error("scopeProfiles." + profileId + ".teamProject must be an object");
     }
-    const teamProject = isRecord(rawProfile.teamProject)
-      ? {
-          ...(typeof rawProfile.teamProject.namespaceTemplate === "string" &&
-          rawProfile.teamProject.namespaceTemplate.length > 0
-            ? { namespaceTemplate: rawProfile.teamProject.namespaceTemplate }
-            : {}),
-          ...(typeof rawProfile.teamProject.teamId === "string" &&
-          rawProfile.teamProject.teamId.length > 0
-            ? { teamId: rawProfile.teamProject.teamId }
-            : {}),
+    const teamProject = (() => {
+      if (!isRecord(rawProfile.teamProject)) return undefined;
+      const out: NonNullable<ScopeProfileConfig["teamProject"]> = {};
+      if (rawProfile.teamProject.namespaceTemplate !== undefined) {
+        if (
+          typeof rawProfile.teamProject.namespaceTemplate !== "string" ||
+          rawProfile.teamProject.namespaceTemplate.length === 0
+        ) {
+          throw new Error(
+            `scopeProfiles.${profileId}.teamProject.namespaceTemplate must be a non-empty string`,
+          );
         }
-      : undefined;
+        out.namespaceTemplate = rawProfile.teamProject.namespaceTemplate;
+      }
+      if (rawProfile.teamProject.teamId !== undefined) {
+        if (
+          typeof rawProfile.teamProject.teamId !== "string" ||
+          rawProfile.teamProject.teamId.length === 0
+        ) {
+          throw new Error(
+            `scopeProfiles.${profileId}.teamProject.teamId must be a non-empty string`,
+          );
+        }
+        out.teamId = rawProfile.teamProject.teamId;
+      }
+      return out;
+    })();
     const rawAutoPromote = isRecord(rawProfile.autoPromote) ? rawProfile.autoPromote : {};
     const autoPromoteEnabled = coerceBool(rawAutoPromote.enabled);
     const minConfidenceTier = (() => {
