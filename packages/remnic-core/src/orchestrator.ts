@@ -1896,6 +1896,7 @@ export class Orchestrator {
   private readonly _peerIdBySession = new Map<string, string>();
   private routingRulesStore: RoutingRulesStore | null = null;
   private contentHashIndex: ContentHashIndex | null = null;
+  private readonly contentHashIndexesByStorageDir = new Map<string, ContentHashIndex>();
   private readonly artifactSourceStatusCache = new WeakMap<
     StorageManager,
     {
@@ -2565,6 +2566,79 @@ export class Orchestrator {
 
   invalidateLiveContentHashIndex(): void {
     this.contentHashIndex = null;
+    this.contentHashIndexesByStorageDir.clear();
+  }
+
+  private async contentHashIndexForStorage(
+    targetStorage: StorageManager,
+  ): Promise<ContentHashIndex | null> {
+    if (!this.config.factDeduplicationEnabled) return null;
+
+    if (targetStorage.dir === this.storage.dir) {
+      if (!this.contentHashIndex) {
+        this.contentHashIndex = this.storage.createContentHashIndex();
+        await this.contentHashIndex.load();
+      }
+      return this.contentHashIndex;
+    }
+
+    const cached = this.contentHashIndexesByStorageDir.get(targetStorage.dir);
+    if (cached) return cached;
+
+    const index = targetStorage.createContentHashIndex();
+    await index.load();
+    this.contentHashIndexesByStorageDir.set(targetStorage.dir, index);
+    log.info(
+      `content-hash dedup: loaded ${index.size} hashes for storage ${targetStorage.dir}`,
+    );
+    return index;
+  }
+
+  private async hasContentHashDedup(
+    targetStorage: StorageManager,
+    content: string,
+  ): Promise<boolean> {
+    const index = await this.contentHashIndexForStorage(targetStorage);
+    return index ? index.has(content) : false;
+  }
+
+  private async addContentHashDedup(
+    targetStorage: StorageManager,
+    content: string,
+  ): Promise<void> {
+    const index = await this.contentHashIndexForStorage(targetStorage);
+    if (!index) return;
+    index.add(content);
+  }
+
+  private async removeContentHashForMemory(
+    targetStorage: StorageManager,
+    memory: MemoryFile,
+    context: string,
+  ): Promise<void> {
+    const index = await this.contentHashIndexForStorage(targetStorage);
+    if (!index) return;
+
+    if (memory.frontmatter.contentHash) {
+      index.removeByHash(memory.frontmatter.contentHash);
+      return;
+    }
+
+    log.warn(
+      `[${context}] removing hash for legacy memory ${memory.frontmatter.id ?? "(unknown)"} via content fallback - no contentHash in frontmatter`,
+    );
+    index.remove(memory.content);
+  }
+
+  private async saveContentHashIndexes(): Promise<void> {
+    const indexes = new Set<ContentHashIndex>();
+    if (this.contentHashIndex) indexes.add(this.contentHashIndex);
+    for (const index of this.contentHashIndexesByStorageDir.values()) {
+      indexes.add(index);
+    }
+    for (const index of indexes) {
+      await index.save();
+    }
   }
 
   constructor(config: PluginConfig) {
@@ -4334,28 +4408,13 @@ export class Orchestrator {
             relatedMemoryIds: [canonicalId],
           });
           if (archiveResult) {
-            // Remove from content-hash index.
-            // Use the raw-content hash stored on the frontmatter at write
-            // time (contentHash) — it is format-agnostic and survives any
-            // citation template.  Legacy memories without contentHash are
-            // skipped (see Finding 2 — Urgw).
-            if (this.contentHashIndex) {
-              if (m.frontmatter.contentHash) {
-                // Modern memory: frontmatter.contentHash is already a SHA-256
-                // hex string — use removeByHash to avoid double-hashing.
-                this.contentHashIndex.removeByHash(m.frontmatter.contentHash);
-              } else {
-                // Legacy memory written before contentHash was stored on the
-                // frontmatter.  Pre-#369 facts were stored without inline
-                // citations, so m.content is the raw fact text and we can
-                // remove the hash directly from the content.  This clears
-                // stale dedup entries so the fact can be re-extracted.
-                log.warn(
-                  `[semantic-consolidation] removing hash for legacy memory ${m.frontmatter.id ?? "(unknown)"} via content fallback — no contentHash in frontmatter`,
-                );
-                this.contentHashIndex.remove(m.content);
-              }
-            }
+            // Remove from the same storage-scoped content-hash index that
+            // originally deduped this memory.
+            await this.removeContentHashForMemory(
+              targetStorage,
+              m,
+              "semantic-consolidation",
+            );
             // Best-effort index cleanup: a failure here (e.g. on-disk index save
             // under disk-full) must NOT abort the archival loop and thereby skip
             // the catalog write touch below for an already-durable canonical write
@@ -4409,15 +4468,13 @@ export class Orchestrator {
       }
     }
 
-    // Save hash index if we modified it
-    if (result.memoriesArchived > 0 && this.contentHashIndex) {
-      await this.contentHashIndex
-        .save()
-        .catch((err) =>
-          log.warn(
-            `[semantic-consolidation] content-hash index save failed: ${err}`,
-          ),
-        );
+    // Save hash indexes if we modified them.
+    if (result.memoriesArchived > 0) {
+      await this.saveContentHashIndexes().catch((err) =>
+        log.warn(
+          `[semantic-consolidation] content-hash index save failed: ${err}`,
+        ),
+      );
     }
 
     log.info(
@@ -14823,9 +14880,20 @@ export class Orchestrator {
         writeCategory === "procedure"
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : canonicalContentForHash;
-      if (this.contentHashIndex && this.contentHashIndex.has(contentHashDedupKey)) {
+      let exactDuplicate = false;
+      try {
+        exactDuplicate = await this.hasContentHashDedup(
+          targetStorage,
+          contentHashDedupKey,
+        );
+      } catch (err) {
+        log.warn(
+          `content-hash dedup lookup failed for storage ${targetStorage.dir}; writing fact fail-open: ${err}`,
+        );
+      }
+      if (exactDuplicate) {
         log.debug(
-          `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…"`,
+          `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…" in storage ${targetStorage.dir}`,
         );
         dedupedCount++;
         continue;
@@ -15273,17 +15341,20 @@ export class Orchestrator {
             validAt: sourceContext?.validAt,
             source: extractionWriteSource,
           });
-          // Register chunked content in hash index too.
+          // Register chunked content in the target storage hash index too.
           // Thread 3 fix: canonicalize by stripping any pre-existing citation
-          // so the stored hash matches what the dedup check computes via
-          // stripCitationForTemplate before calling contentHashIndex.has().
-          if (this.contentHashIndex) {
+          // so the stored hash matches what the dedup check computes.
+          try {
             const canonicalChunkedContent =
               citationEnabled &&
               hasCitationForTemplate(fact.content, citationTemplate)
                 ? stripCitationForTemplate(fact.content, citationTemplate)
                 : fact.content;
-            this.contentHashIndex.add(canonicalChunkedContent);
+            await this.addContentHashDedup(targetStorage, canonicalChunkedContent);
+          } catch (err) {
+            log.warn(
+              `content-hash dedup registration failed for chunked memory ${parentId}: ${err}`,
+            );
           }
 
           for (const chunk of chunkResult.chunks) {
@@ -15561,11 +15632,10 @@ export class Orchestrator {
             intentEntityTypes: inferredIntent?.entityTypes,
           });
         }
-        // Register in content-hash index after successful write.
-        // Thread 3 fix: canonicalize by stripping any pre-existing citation so
-        // the stored hash matches what the dedup check computes via
-        // stripCitationForTemplate before calling contentHashIndex.has().
-        if (this.contentHashIndex) {
+        // Register in the target storage content-hash index after successful
+        // write. Thread 3 fix: canonicalize by stripping any pre-existing
+        // citation so the stored hash matches what the dedup check computes.
+        try {
           const canonicalFactContent =
             citationEnabled &&
             hasCitationForTemplate(fact.content, citationTemplate)
@@ -15575,7 +15645,11 @@ export class Orchestrator {
             writeCategory === "procedure"
               ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
               : canonicalFactContent;
-          this.contentHashIndex.add(hashRegisterKey);
+          await this.addContentHashDedup(targetStorage, hashRegisterKey);
+        } catch (err) {
+          log.warn(
+            `content-hash dedup registration failed for memory ${memoryId}: ${err}`,
+          );
         }
       } finally {
         // Catalog touch (issue #1499): record AFTER every synchronous
@@ -15731,12 +15805,10 @@ export class Orchestrator {
       touchBaseNonFactNamespace();
     }
 
-    // Save content-hash index after batch
-    if (this.contentHashIndex) {
-      await this.contentHashIndex
-        .save()
-        .catch((err) => log.warn(`content-hash index save failed: ${err}`));
-    }
+    // Save any content-hash indexes touched during the batch.
+    await this.saveContentHashIndexes().catch((err) =>
+      log.warn(`content-hash index save failed: ${err}`),
+    );
 
     for (const {
       storage: targetStorage,
@@ -17074,27 +17146,13 @@ export class Orchestrator {
       // All criteria met — archive
       const result = await this.storage.archiveMemory(memory);
       if (result) {
-        // Remove from content-hash index since it's no longer in hot search.
-        // Prefer the raw-content hash stored on the frontmatter at write
-        // time (contentHash) — it is format-agnostic and survives any
-        // citation template.
-        if (this.contentHashIndex) {
-          if (memory.frontmatter.contentHash) {
-            // Modern memory: frontmatter.contentHash is already a SHA-256
-            // hex string — use removeByHash to avoid double-hashing.
-            this.contentHashIndex.removeByHash(memory.frontmatter.contentHash);
-          } else {
-            // Legacy memory written before contentHash was stored on the
-            // frontmatter.  Pre-#369 facts were stored without inline
-            // citations, so memory.content is the raw fact text and we can
-            // remove the hash directly from the content.  This clears
-            // stale dedup entries so the fact can be re-extracted.
-            log.warn(
-              `[fact-archival] removing hash for legacy memory ${memory.frontmatter.id ?? "(unknown)"} via content fallback — no contentHash in frontmatter`,
-            );
-            this.contentHashIndex.remove(memory.content);
-          }
-        }
+        // Remove from the same storage-scoped content-hash index since it is
+        // no longer in hot search.
+        await this.removeContentHashForMemory(
+          this.storage,
+          memory,
+          "fact-archival",
+        );
         await this.embeddingFallback.removeFromIndex(memory.frontmatter.id);
         if (
           this.config.queryAwareIndexingEnabled &&
@@ -17112,13 +17170,11 @@ export class Orchestrator {
       }
     }
 
-    // Save hash index if we removed any entries
-    if (archivedCount > 0 && this.contentHashIndex) {
-      await this.contentHashIndex
-        .save()
-        .catch((err) =>
-          log.warn(`content-hash index save failed during archival: ${err}`),
-        );
+    // Save hash indexes if we removed any entries.
+    if (archivedCount > 0) {
+      await this.saveContentHashIndexes().catch((err) =>
+        log.warn(`content-hash index save failed during archival: ${err}`),
+      );
     }
 
     return archivedCount;

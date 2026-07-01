@@ -699,3 +699,76 @@ test("dedup: pre-tagged fact is not re-persisted when canonical body is already 
     "only one copy of the fact must be stored",
   );
 });
+
+
+test("dedup: exact matches are scoped to the target namespace storage", async () => {
+  const { orchestrator, storage, memoryDir } = await makeOrchestrator({
+    factDeduplicationEnabled: true,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+  });
+
+  const stateDir = path.join(memoryDir, "state");
+  await mkdir(stateDir, { recursive: true });
+  const hashIndex = new ContentHashIndex(stateDir);
+  await hashIndex.load();
+  (orchestrator as any).contentHashIndex = hashIndex;
+
+  const tenantStorage = await orchestrator.getStorage("alice-project");
+  await tenantStorage.ensureDirectories();
+
+  const rawBody = "The Helios tenant keeps staging feature flags isolated.";
+  const firstIds = await orchestrator.persistExtraction(
+    {
+      facts: [makeFact(rawBody)],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    } as ExtractionResult,
+    storage,
+    null,
+    { sessionKey: "agent:alice:default", principal: "alice" },
+  );
+  assert.equal(firstIds.length, 1, "default namespace write must succeed");
+
+  const tenantIds = await orchestrator.persistExtraction(
+    {
+      facts: [makeFact(rawBody)],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    } as ExtractionResult,
+    tenantStorage,
+    null,
+    { sessionKey: "agent:alice:project", principal: "alice" },
+  );
+  assert.equal(
+    tenantIds.length,
+    1,
+    "a duplicate in another namespace must not be suppressed by the default hash index",
+  );
+
+  const tenantDuplicateIds = await orchestrator.persistExtraction(
+    {
+      facts: [makeFact(rawBody)],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    } as ExtractionResult,
+    tenantStorage,
+    null,
+    { sessionKey: "agent:alice:project", principal: "alice" },
+  );
+  assert.equal(
+    tenantDuplicateIds.length,
+    0,
+    "the same namespace storage must still exact-dedup repeated facts",
+  );
+
+  assert.equal((await storage.readAllMemories()).length, 1);
+  assert.equal((await tenantStorage.readAllMemories()).length, 1);
+});
