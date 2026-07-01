@@ -5864,6 +5864,8 @@ export class Orchestrator {
       observationNamespaces = expandScopeProfileReadNamespaces({
         profilePlan: observationScopeProfilePlan,
         principalSelfNamespace: observationScopeProfilePlan.baseNamespace,
+        config: this.config,
+        principal,
         codingOverlay: observationCodingOverlay,
         legacyRecallNamespaces: recallNamespacesForPrincipal(principal, this.config),
       });
@@ -7506,6 +7508,8 @@ export class Orchestrator {
       recallNamespaces = expandScopeProfileReadNamespaces({
         profilePlan: scopeProfilePlan,
         principalSelfNamespace: scopeProfilePlan.baseNamespace,
+        config: this.config,
+        principal,
         codingOverlay,
         legacyRecallNamespaces: readableRecallNamespaces,
       });
