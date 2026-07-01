@@ -7824,7 +7824,8 @@ export class Orchestrator {
       get(target, prop: string | symbol) {
         if (prop in target) return target[prop];
         if (prop === "readProfile") return async () => "";
-        if (prop === "readQuestions" || prop === "listEntityNames") return async () => [];
+        if (prop === "readQuestions" || prop === "listEntityNames" || prop === "readContinuityIncidents") return async () => [];
+        if (prop === "readIdentityAnchor" || prop === "readIdentityImprovementLoops") return async () => "";
         if (prop === "readEntity" || prop === "readMemoryByPath") return async () => null;
         return async () => [];
       },
@@ -7857,6 +7858,44 @@ export class Orchestrator {
                     }
                   }
                   return merged;
+                };
+              }
+              if (prop === "readIdentityAnchor") {
+                return async () => {
+                  for (const storage of profileStorages) {
+                    const anchor = await storage.readIdentityAnchor();
+                    if (anchor.trim().length > 0) return anchor;
+                  }
+                  return "";
+                };
+              }
+              if (prop === "readIdentityImprovementLoops") {
+                return async () => {
+                  const sections: string[] = [];
+                  const seen = new Set<string>();
+                  for (const storage of profileStorages) {
+                    const loops = (await storage.readIdentityImprovementLoops()).trim();
+                    if (!loops || seen.has(loops)) continue;
+                    seen.add(loops);
+                    sections.push(loops);
+                  }
+                  return sections.join("\n\n");
+                };
+              }
+              if (prop === "readContinuityIncidents") {
+                return async (...args: any[]) => {
+                  const limit = typeof args[0] === "number" && Number.isFinite(args[0]) ? Math.max(0, args[0]) : undefined;
+                  const incidents: any[] = [];
+                  const seen = new Set<string>();
+                  for (const storage of profileStorages) {
+                    for (const incident of await (storage.readContinuityIncidents as any)(...args)) {
+                      const key = JSON.stringify(incident);
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      incidents.push(incident);
+                    }
+                  }
+                  return limit === undefined ? incidents : incidents.slice(0, limit);
                 };
               }
               if (prop === "listEntityNames") {
