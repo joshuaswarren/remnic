@@ -9396,14 +9396,30 @@ export class Orchestrator {
                     })
                   : Promise.resolve([] as ParallelSearchResult[]),
                 shouldRunAgent("temporal", retrievalQuery, 0)
-                  ? runTemporalAgent(
-                      retrievalQuery,
-                      this.config.memoryDir,
-                      maxPerAgent,
-                      queryAwarePrefilter.candidatePaths,
-                    ).catch((err) => {
-                      log.debug(`TemporalAgent pre-start failed: ${err}`);
-                      return [] as ParallelSearchResult[];
+                  ? Promise.all(
+                      profileStorageDirs.map((memoryDir) =>
+                        runTemporalAgent(
+                          retrievalQuery,
+                          memoryDir,
+                          maxPerAgent,
+                          queryAwarePrefilter.candidatePaths,
+                        ).catch((err) => {
+                          log.debug(`TemporalAgent pre-start failed for ${memoryDir}: ${err}`);
+                          return [] as ParallelSearchResult[];
+                        }),
+                      ),
+                    ).then((groups) => {
+                      const merged: ParallelSearchResult[] = [];
+                      const seen = new Set<string>();
+                      for (const result of groups.flat()) {
+                        const key = (result as any).path ?? JSON.stringify(result);
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        merged.push(result);
+                      }
+                      return merged
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, maxPerAgent);
                     })
                   : Promise.resolve([] as ParallelSearchResult[]),
               ])
