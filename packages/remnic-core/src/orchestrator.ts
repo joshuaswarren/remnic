@@ -7958,6 +7958,21 @@ export class Orchestrator {
                   return null;
                 };
               }
+              if (prop === "readAllMemories") {
+                return async (...args: any[]) => {
+                  const memories: any[] = [];
+                  const seen = new Set<string>();
+                  for (const storage of profileStorages) {
+                    for (const memory of await (storage.readAllMemories as any)(...args)) {
+                      const key = String(memory?.path ?? memory?.frontmatter?.id ?? JSON.stringify(memory));
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      memories.push(memory);
+                    }
+                  }
+                  return memories;
+                };
+              }
               return target[prop];
             },
           });
