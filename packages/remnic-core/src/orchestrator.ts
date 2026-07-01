@@ -5829,7 +5829,7 @@ export class Orchestrator {
     if (expectedSnapshot === null) return;
     if (expectedSnapshot.plannerMode === "no_recall") return;
 
-    const principal = resolvePrincipal(sessionKey, this.config);
+    const principal = principalOverride ?? resolvePrincipal(sessionKey, this.config);
     // Coding-agent overlay (issue #569) is applied when the session has a
     // coding context and there is no explicit namespaceOverride — mirrors
     // the main recall path above.
@@ -9720,9 +9720,23 @@ export class Orchestrator {
       ) &&
         this.config.memoryBoxesEnabled &&
         this.config.boxRecallDays > 0
-        ? this.boxBuilderFor(profileStorage)
-            .readRecentBoxes(this.config.boxRecallDays)
-            .catch(() => [] as BoxFrontmatter[])
+        ? Promise.all(
+            profileStorages.map((storage) =>
+              this.boxBuilderFor(storage)
+                .readRecentBoxes(this.config.boxRecallDays)
+                .catch(() => [] as BoxFrontmatter[]),
+            ),
+          ).then((groups) => {
+            const boxes: BoxFrontmatter[] = [];
+            const seen = new Set<string>();
+            for (const box of groups.flat()) {
+              const key = JSON.stringify(box);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              boxes.push(box);
+            }
+            return boxes;
+          })
         : Promise.resolve([] as BoxFrontmatter[]),
     );
 
