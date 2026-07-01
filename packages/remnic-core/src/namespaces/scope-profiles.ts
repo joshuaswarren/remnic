@@ -66,7 +66,7 @@ function principalListed(list: string[], principal: string | undefined): boolean
 function derivedScopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string | null {
   if (!principal || principal === config.defaultNamespace || principal === config.sharedNamespace) return null;
   if (isSafeRouteNamespace(principal)) return principal;
-  return "principal-" + createHash("sha256").update(principal).digest("hex");
+  return "principal-" + createHash("sha256").update(principal).digest("hex").slice(0, 54);
 }
 
 function scopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string {

@@ -537,7 +537,8 @@ test("scope profile derives isolated safe namespace for unsafe principal ids", (
   });
 
   assert.ok(plan);
-  assert.match(plan.baseNamespace, /^principal-[a-f0-9]{64}$/);
+  assert.match(plan.baseNamespace, /^principal-[a-f0-9]{54}$/);
+  assert.equal(plan.baseNamespace.length, 64);
   assert.notEqual(plan.baseNamespace, "principal-" + stableHash("alice@example.com"));
   const expected = plan.baseNamespace;
   assert.deepEqual(plan.readNamespaces, [expected]);
