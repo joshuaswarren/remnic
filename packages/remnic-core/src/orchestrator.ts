@@ -13841,6 +13841,19 @@ export class Orchestrator {
       "inferred",
       "speculative",
     ] as const;
+    const sharedProfileLayer = scopeProfileWritePlan?.layers.find(
+      (layer) =>
+        layer.id === "serverShared" &&
+        layer.namespace === this.config.sharedNamespace,
+    );
+    const profileAllowsSharedWrites =
+      !scopeProfileWritePlan ||
+      Boolean(
+        scopeProfileWritePlan.profile.readOrder.includes("serverShared") &&
+          scopeProfileWritePlan.readNamespaces.includes(this.config.sharedNamespace) &&
+          sharedProfileLayer?.readable &&
+          sharedProfileLayer.writable,
+      );
     const shouldPromoteToShared = (
       targetStorage: StorageManager,
       category: string,
@@ -13848,7 +13861,8 @@ export class Orchestrator {
     ): boolean => {
       if (
         !this.config.namespacesEnabled ||
-        !this.config.autoPromoteToSharedEnabled
+        !this.config.autoPromoteToSharedEnabled ||
+        !profileAllowsSharedWrites
       )
         return false;
       if (
@@ -14564,21 +14578,8 @@ export class Orchestrator {
         fact.scope === "global" &&
         !routedNamespaceExplicit
       ) {
-        const sharedProfileLayer = scopeProfileWritePlan?.layers.find(
-          (layer) =>
-            layer.id === "serverShared" &&
-            layer.namespace === this.config.sharedNamespace,
-        );
-        const profileAllowsSharedScopeRouting =
-          !scopeProfileWritePlan ||
-          Boolean(
-            scopeProfileWritePlan.profile.readOrder.includes("serverShared") &&
-              scopeProfileWritePlan.readNamespaces.includes(this.config.sharedNamespace) &&
-              sharedProfileLayer?.readable &&
-              sharedProfileLayer.writable,
-          );
         const currentNs = this.namespaceFromStorageDir(targetStorage.dir);
-        if (currentNs !== this.config.sharedNamespace && profileAllowsSharedScopeRouting) {
+        if (currentNs !== this.config.sharedNamespace && profileAllowsSharedWrites) {
           try {
             targetStorage = await this.storageRouter.storageFor(
               this.config.sharedNamespace,

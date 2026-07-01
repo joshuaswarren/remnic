@@ -121,12 +121,17 @@ function resolveTeam(
     const configured = (config.teams ?? {})[configuredTeamId];
     return configured ? { teamId: configuredTeamId, team: configured } : null;
   }
-  for (const [teamId, team] of Object.entries(config.teams ?? {})) {
-    if (principalListed(team.principals, principal) || principalListed(team.read, principal)) {
-      return { teamId, team };
-    }
+  const readableTeams = Object.entries(config.teams ?? {}).filter(([, team]) =>
+    principalListed(team.principals, principal) || principalListed(team.read, principal),
+  );
+  if (profile.writeDefault === "teamProject") {
+    const writableTeam = readableTeams.find(([, team]) => principalListed(team.write, principal));
+    if (writableTeam) return { teamId: writableTeam[0], team: writableTeam[1] };
   }
-  return null;
+  const firstReadableTeam = readableTeams[0];
+  return firstReadableTeam
+    ? { teamId: firstReadableTeam[0], team: firstReadableTeam[1] }
+    : null;
 }
 
 function renderTeamProjectNamespace(params: {

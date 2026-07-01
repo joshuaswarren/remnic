@@ -339,6 +339,52 @@ test("scope profile expansion does not add global fallback when userGlobal is om
   assert.ok(!expanded.includes("pi-geek"));
 });
 
+test("scope profile prefers writable implicit team mapping when teamProject is the write layer", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    scopeProfiles: {
+      hosted: {
+        readOrder: ["teamProject"],
+        writeDefault: "teamProject",
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+      },
+    },
+    defaultScopeProfile: "hosted",
+    teams: {
+      ops: {
+        principals: ["alice"],
+        read: ["alice"],
+        write: [],
+        promote: [],
+      },
+      core: {
+        principals: ["alice"],
+        read: ["alice"],
+        write: ["alice"],
+        promote: ["alice"],
+      },
+    },
+  });
+  const overlay = resolveCodingNamespaceOverlay(codingContext, config.codingMode, config.defaultNamespace);
+  assert.ok(overlay);
+
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "alice",
+    codingContext,
+    codingOverlay: overlay,
+  });
+
+  assert.ok(plan);
+  assert.equal(plan.writeNamespace, "team-core-project-2d7ea3c1");
+  assert.deepEqual(plan.readNamespaces, ["team-core-project-2d7ea3c1"]);
+});
+
 test("scope profile chooses a readable implicit team mapping before promote-only memberships", () => {
   const config = parseConfig({
     namespacesEnabled: true,
@@ -725,6 +771,17 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
         },
       }),
     /defaultScopeProfile must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        scopeProfiles: {
+          bad: {
+            autoPromote: true,
+          },
+        },
+      }),
+    /scopeProfiles.bad.autoPromote must be an object/,
   );
   assert.throws(
     () =>

@@ -206,6 +206,13 @@ function parseScopeProfiles(value: unknown): Record<string, ScopeProfileConfig> 
       }
       return out;
     })();
+    if (
+      rawProfile.autoPromote !== undefined &&
+      rawProfile.autoPromote !== null &&
+      !isRecord(rawProfile.autoPromote)
+    ) {
+      throw new Error(`scopeProfiles.${profileId}.autoPromote must be an object`);
+    }
     const rawAutoPromote = isRecord(rawProfile.autoPromote) ? rawProfile.autoPromote : {};
     const autoPromoteEnabled = coerceBool(rawAutoPromote.enabled);
     const minConfidenceTier = (() => {
