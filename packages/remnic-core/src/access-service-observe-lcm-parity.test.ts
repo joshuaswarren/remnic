@@ -661,6 +661,7 @@ test("#1501 scope profile lcmSearch reads the team-project profile key", async (
         readOrder: ["teamProject"],
         writeDefault: "teamProject",
         promotionTargets: ["teamProject"],
+        autoPromote: false,
         teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
       },
     },
