@@ -636,6 +636,68 @@ test("flushSession drains every discovered buffer for the session", async () => 
   ]);
 });
 
+test("runExtraction skips active scope profile writes when no layer is writable", async () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    defaultScopeProfile: "teamCoding",
+    codingMode: { projectScope: true },
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-observer:", principal: "pi-observer" }],
+    namespacePolicies: [
+      { name: "pi-observer", readPrincipals: ["pi-observer"], writePrincipals: [] },
+    ],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["teamProject"],
+        writeDefault: "teamProject",
+        promotionTargets: ["teamProject"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+      },
+    },
+    teams: {
+      pi: {
+        principals: ["pi-observer"],
+        read: ["pi-observer"],
+        write: [],
+        promote: [],
+      },
+    },
+  });
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+
+  let clearCalls = 0;
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = {
+    clearAfterExtraction: async () => {
+      clearCalls += 1;
+    },
+  };
+  orchestrator.getCodingContextForSession = () => ({
+    projectId: "tag:remnic",
+    branch: null,
+    rootPath: "tag:remnic",
+    defaultBranch: "main",
+  });
+  orchestrator.storageRouter = {
+    storageFor: async () => {
+      throw new Error("unauthorized profile write must not choose fallback storage");
+    },
+  };
+
+  const result = await orchestrator.runExtraction(
+    [makeTurn("pi-observer:abc123", "remember unauthorized profile target")],
+    { bufferKey: "pi-observer:abc123" },
+  );
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "scope_profile_no_writable_layer");
+  assert.equal(clearCalls, 1);
+});
+
 test("runExtraction writes buffered turns to active scope profile write layer", async () => {
   const config = parseConfig({
     namespacesEnabled: true,

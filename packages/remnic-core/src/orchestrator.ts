@@ -12735,6 +12735,23 @@ export class Orchestrator {
             : null,
           codingOverlay: codingOverlayForWrite,
         });
+    if (scopeProfileWritePlan) {
+      const selectedLayer = scopeProfileWritePlan.layers.find(
+        (layer) => layer.id === scopeProfileWritePlan.writeLayer,
+      );
+      if (!selectedLayer?.writable) {
+        log.warn(
+          `runExtraction: skipping scope profile ${scopeProfileWritePlan.profileId} because write layer ${scopeProfileWritePlan.writeLayer} is not writable`,
+        );
+        await clearBuffer();
+        return {
+          status: "skipped",
+          reason: "scope_profile_no_writable_layer",
+          persistedCount: 0,
+          durableOutputCount: 0,
+        };
+      }
+    }
     const selfNamespace =
       explicitWriteNamespace ??
       scopeProfileWritePlan?.writeNamespace ??
