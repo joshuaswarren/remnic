@@ -7863,7 +7863,7 @@ export class Orchestrator {
               if (prop === "readIdentityAnchor") {
                 return async () => {
                   for (const storage of profileStorages) {
-                    const anchor = await storage.readIdentityAnchor();
+                    const anchor = (await storage.readIdentityAnchor()) ?? "";
                     if (anchor.trim().length > 0) return anchor;
                   }
                   return "";
@@ -7874,7 +7874,7 @@ export class Orchestrator {
                   const sections: string[] = [];
                   const seen = new Set<string>();
                   for (const storage of profileStorages) {
-                    const loops = (await storage.readIdentityImprovementLoops()).trim();
+                    const loops = ((await storage.readIdentityImprovementLoops()) ?? "").trim();
                     if (!loops || seen.has(loops)) continue;
                     seen.add(loops);
                     sections.push(loops);
