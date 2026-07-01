@@ -7814,23 +7814,70 @@ export class Orchestrator {
       return "";
     }
 
-    const selfNamespaceReadableForProfileSections =
-      !scopeProfilePlan || recallNamespaces.includes(selfNamespace);
-    const profileStorageNamespace = selfNamespaceReadableForProfileSections
-      ? selfNamespace
-      : recallNamespaces[0];
+    const profileStorageNamespaces = scopeProfilePlan ? recallNamespaces : [selfNamespace];
+    const profileStorages = await Promise.all(
+      profileStorageNamespaces.map((namespace) => this.storageRouter.storageFor(namespace)),
+    );
     const emptyProfileStorage = new Proxy({ dir: "" } as any, {
       get(target, prop: string | symbol) {
-        if (prop in target) return target[prop as keyof typeof target];
+        if (prop in target) return target[prop];
         if (prop === "readProfile") return async () => "";
         if (prop === "readQuestions" || prop === "listEntityNames") return async () => [];
         if (prop === "readEntity" || prop === "readMemoryByPath") return async () => null;
         return async () => [];
       },
     });
-    const profileStorage = profileStorageNamespace
-      ? await this.storageRouter.storageFor(profileStorageNamespace)
-      : emptyProfileStorage;
+    const profileStorage =
+      profileStorages.length <= 1
+        ? profileStorages[0] ?? emptyProfileStorage
+        : new Proxy(profileStorages[0] as any, {
+            get(target, prop: string | symbol) {
+              if (prop === "readProfile") {
+                return async () => {
+                  for (const storage of profileStorages) {
+                    const profile = await storage.readProfile();
+                    if (profile.trim().length > 0) return profile;
+                  }
+                  return "";
+                };
+              }
+              if (prop === "readQuestions") {
+                return async (...args: any[]) => {
+                  const merged: any[] = [];
+                  const seen = new Set<string>();
+                  for (const storage of profileStorages) {
+                    const questions = await storage.readQuestions(...args);
+                    for (const question of questions) {
+                      const key = typeof question === "string" ? question : JSON.stringify(question);
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      merged.push(question);
+                    }
+                  }
+                  return merged;
+                };
+              }
+              if (prop === "listEntityNames") {
+                return async (...args: any[]) => {
+                  const names = new Set<string>();
+                  for (const storage of profileStorages) {
+                    for (const name of await storage.listEntityNames(...args)) names.add(name);
+                  }
+                  return [...names];
+                };
+              }
+              if (prop === "readEntity" || prop === "readMemoryByPath") {
+                return async (...args: any[]) => {
+                  for (const storage of profileStorages) {
+                    const value = await storage[prop](...args);
+                    if (value) return value;
+                  }
+                  return null;
+                };
+              }
+              return target[prop];
+            },
+          });
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
     throwIfRecallAborted(options.abortSignal);

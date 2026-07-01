@@ -3140,9 +3140,10 @@ export class EngramAccessService {
     }
     const principal = maybePrincipal ?? "default";
     const principalNamespace = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
-    const profileCodingContext = request.sessionKey
-      ? this.orchestrator.getCodingContextForSession(request.sessionKey)
-      : null;
+    const profileCodingContext =
+      request.sessionKey && typeof this.orchestrator.getCodingContextForSession === "function"
+        ? this.orchestrator.getCodingContextForSession(request.sessionKey)
+        : null;
     const profileCodingOverlay =
       !namespaceOverride &&
       profileCodingContext &&
