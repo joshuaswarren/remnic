@@ -53,6 +53,7 @@ run npm run check-types
 run npm run check-config-contract
 run npm run plugin:inspect
 run bash scripts/check-review-patterns.sh
+run node scripts/check-ratchets.mjs
 run pnpm exec turbo --version
 run_quiet pnpm exec turbo run check-types --dry=json
 
