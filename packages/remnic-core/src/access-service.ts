@@ -2380,14 +2380,15 @@ export class EngramAccessService {
       const limit = 5;
       const seenRows = new Set<string>();
       const excerpts: NonNullable<EngramAccessMemorySummary["rawExcerpts"]> = [];
-      for (const lcmSessionKey of lcmSessionIds) {
+      const settledRows = await Promise.allSettled(
+        lcmSessionIds.map(async (lcmSessionKey) =>
+          lcm.searchContextFull(context.query, limit, lcmSessionKey),
+        ),
+      );
+      for (const result of settledRows) {
         if (excerpts.length >= limit) break;
-        const rows = await lcm.searchContextFull(
-          context.query,
-          limit,
-          lcmSessionKey,
-        );
-        for (const r of rows) {
+        if (result.status !== "fulfilled") continue;
+        for (const r of result.value) {
           const dedupeKey = `${r.session_id} ${r.turn_index}`;
           if (seenRows.has(dedupeKey)) continue;
           seenRows.add(dedupeKey);
