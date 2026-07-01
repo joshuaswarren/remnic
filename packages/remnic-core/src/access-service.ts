@@ -1445,9 +1445,12 @@ export class EngramAccessService {
     });
     if (profilePlan) {
       const selectedLayer = profilePlan.layers.find((layer) => layer.id === profilePlan.writeLayer);
-      if (!selectedLayer?.writable) {
+      const writeNamespaceReadable =
+        profilePlan.writeNamespace.length > 0 &&
+        profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
+      if (!selectedLayer?.writable || !writeNamespaceReadable) {
         throw new EngramAccessInputError(
-          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`,
+          `scope profile ${profilePlan.profileId} has no writable layer inside the profile read stack for principal ${principal ?? "anonymous"}`,
         );
       }
       return profilePlan.writeNamespace;
@@ -1619,10 +1622,13 @@ export class EngramAccessService {
     });
     if (profilePlan) {
       const selectedLayer = profilePlan.layers.find((layer) => layer.id === profilePlan.writeLayer);
-      if (!selectedLayer?.writable) {
+      const writeNamespaceReadable =
+        profilePlan.writeNamespace.length > 0 &&
+        profilePlan.readNamespaces.includes(profilePlan.writeNamespace);
+      if (!selectedLayer?.writable || !writeNamespaceReadable) {
         clearSeededContext();
         throw new EngramAccessInputError(
-          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`,
+          `scope profile ${profilePlan.profileId} has no writable layer inside the profile read stack for principal ${principal ?? "anonymous"}`,
         );
       }
       const legacyRecallNamespaces = Array.isArray(this.orchestrator.config.defaultRecallNamespaces)
