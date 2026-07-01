@@ -172,6 +172,13 @@ function parseScopeProfiles(value: unknown): Record<string, ScopeProfileConfig> 
     if (!SCOPE_PROFILE_LAYER_IDS.includes(writeDefault as ScopeProfileLayerId)) {
       throw new Error(`scopeProfiles.${profileId}.writeDefault contains unsupported layer: ${String(writeDefault)}`);
     }
+    if (
+      rawProfile.teamProject !== undefined &&
+      rawProfile.teamProject !== null &&
+      !isRecord(rawProfile.teamProject)
+    ) {
+      throw new Error("scopeProfiles." + profileId + ".teamProject must be an object");
+    }
     const teamProject = isRecord(rawProfile.teamProject)
       ? {
           ...(typeof rawProfile.teamProject.namespaceTemplate === "string" &&

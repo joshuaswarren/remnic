@@ -667,4 +667,15 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
       }),
     /teams.core.read must contain only non-empty strings/,
   );
+  assert.throws(
+    () =>
+      parseConfig({
+        scopeProfiles: {
+          bad: {
+            teamProject: "pi",
+          },
+        },
+      }),
+    /scopeProfiles.bad.teamProject must be an object/,
+  );
 });
