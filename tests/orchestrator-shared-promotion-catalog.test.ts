@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { resolveScopeProfilePlan } from "../src/namespaces/scope-profiles.js";
 
 // ── Round 2, Issue B (cursor[bot] Medium): a shared-namespace promotion writes
 // to the shared namespace via `sharedStorage.writeMemory`, but round 1 only
@@ -188,6 +189,14 @@ test("scope profile shared reads do not imply automatic shared promotion", async
     const sharedStorage = await orchestrator.getStorage("shared");
     await sharedStorage.ensureDirectories();
 
+    const scopeProfileWritePlan = resolveScopeProfilePlan({
+      config,
+      principal: "default",
+      codingContext: null,
+      codingOverlay: null,
+    });
+    assert.ok(scopeProfileWritePlan);
+
     await orchestrator.persistExtraction(
       {
         facts: [
@@ -205,6 +214,8 @@ test("scope profile shared reads do not imply automatic shared promotion", async
       sourceStorage,
       null,
       { sessionKey: "s1", principal: "default" },
+      scopeProfileWritePlan.baseNamespace,
+      scopeProfileWritePlan,
     );
 
     await orchestrator.namespaceCatalog.markRead("shared");
@@ -261,6 +272,14 @@ test("scope profile auto-promotion does not require legacy global promotion", as
     const sharedStorage = await orchestrator.getStorage("shared");
     await sharedStorage.ensureDirectories();
 
+    const scopeProfileWritePlan = resolveScopeProfilePlan({
+      config,
+      principal: "default",
+      codingContext: null,
+      codingOverlay: null,
+    });
+    assert.ok(scopeProfileWritePlan);
+
     await orchestrator.persistExtraction(
       {
         facts: [
@@ -278,6 +297,8 @@ test("scope profile auto-promotion does not require legacy global promotion", as
       sourceStorage,
       null,
       { sessionKey: "s1", principal: "default" },
+      scopeProfileWritePlan.baseNamespace,
+      scopeProfileWritePlan,
     );
 
     await orchestrator.namespaceCatalog.markRead("shared");
