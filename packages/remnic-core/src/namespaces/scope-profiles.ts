@@ -61,18 +61,16 @@ function principalListed(list: string[], principal: string | undefined): boolean
   return list.includes(principal) || list.includes("*");
 }
 
+function derivedScopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string | null {
+  if (!principal || principal === config.defaultNamespace || principal === config.sharedNamespace) return null;
+  if (isSafeRouteNamespace(principal)) return principal;
+  return "principal-" + stableHash(principal);
+}
+
 function scopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string {
   const existing = defaultNamespaceForPrincipal(principal, config);
   if (existing !== config.defaultNamespace) return existing;
-  if (
-    principal &&
-    principal !== config.defaultNamespace &&
-    principal !== config.sharedNamespace &&
-    isSafeRouteNamespace(principal)
-  ) {
-    return principal;
-  }
-  return existing;
+  return derivedScopeProfileSelfNamespace(principal, config) ?? existing;
 }
 
 function hasExplicitNamespacePolicy(namespace: string, config: PluginConfig): boolean {
@@ -84,9 +82,10 @@ function isScopeProfileImplicitSelfNamespace(
   namespace: string,
   config: PluginConfig,
 ): boolean {
+  const derived = derivedScopeProfileSelfNamespace(principal, config);
   return Boolean(
-    principal &&
-      namespace === principal &&
+    derived &&
+      namespace === derived &&
       namespace !== config.defaultNamespace &&
       namespace !== config.sharedNamespace &&
       isSafeRouteNamespace(namespace) &&

@@ -7851,6 +7851,10 @@ export class Orchestrator {
                 return async (...args: any[]) => {
                   const merged: any[] = [];
                   const seen = new Set<string>();
+                  const priorityOf = (question: any): number => {
+                    const priority = Number(question?.priority ?? 0);
+                    return Number.isFinite(priority) ? priority : 0;
+                  };
                   for (const storage of profileStorages) {
                     const questions = await (storage.readQuestions as any)(...args);
                     for (const question of questions) {
@@ -7860,7 +7864,11 @@ export class Orchestrator {
                       merged.push(question);
                     }
                   }
-                  return merged;
+                  return merged.sort(
+                    (left, right) =>
+                      priorityOf(right) - priorityOf(left) ||
+                      String(left?.id ?? "").localeCompare(String(right?.id ?? "")),
+                  );
                 };
               }
               if (prop === "readIdentityAnchor") {

@@ -512,6 +512,37 @@ test("scope profile requires namespace policy access when team-project templates
 
 
 
+
+
+test("scope profile derives isolated safe namespace for unsafe principal ids", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    scopeProfiles: {
+      hosted: {
+        readOrder: ["userGlobal"],
+        writeDefault: "userGlobal",
+      },
+    },
+    defaultScopeProfile: "hosted",
+  });
+
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "alice@example.com",
+    codingContext: null,
+    codingOverlay: null,
+  });
+
+  const expected = "principal-" + stableHash("alice@example.com");
+  assert.ok(plan);
+  assert.equal(plan.baseNamespace, expected);
+  assert.deepEqual(plan.readNamespaces, [expected]);
+  assert.equal(plan.writeNamespace, expected);
+});
+
 test("scope profile explicit self namespace policy overrides implicit self access", () => {
   const config = parseConfig({
     namespacesEnabled: true,
