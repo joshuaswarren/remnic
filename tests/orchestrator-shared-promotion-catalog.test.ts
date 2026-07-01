@@ -5,7 +5,7 @@ import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
-import { resolveScopeProfilePlan } from "../src/namespaces/scope-profiles.js";
+import { resolveScopeProfilePlan } from "../packages/remnic-core/src/namespaces/scope-profiles.js";
 
 // ── Round 2, Issue B (cursor[bot] Medium): a shared-namespace promotion writes
 // to the shared namespace via `sharedStorage.writeMemory`, but round 1 only
