@@ -1643,7 +1643,13 @@ export class EngramAccessService {
       const readNamespaces = expandedReadNamespaces;
       const profileCodingOverlayApplied = Boolean(
         codingOverlay &&
-          profilePlan.layers.some((layer) => layer.id === "userProject" && layer.readable && layer.namespace),
+          profilePlan.layers.some(
+            (layer) =>
+              (layer.id === "userProject" || layer.id === "teamProject") &&
+              layer.readable &&
+              layer.namespace &&
+              readNamespaces.includes(layer.namespace),
+          ),
       );
       return {
         principal,
