@@ -1884,9 +1884,19 @@ export class EngramAccessService {
       return namespaces;
     }
 
+    const activeScopeProfilePlan = collectionPrincipal
+      ? resolveScopeProfilePlan({
+          config: this.orchestrator.config,
+          principal: collectionPrincipal,
+          codingContext: null,
+          codingOverlay: null,
+        })
+      : null;
     const allowedNamespaces = new Set(namespaces);
     const candidates = collectionPrincipal
-      ? this.resolveAllReadableConfiguredNamespaces(collectionPrincipal).filter((ns) => allowedNamespaces.has(ns))
+      ? this.resolveAllReadableConfiguredNamespaces(collectionPrincipal).filter((ns) =>
+          activeScopeProfilePlan ? allowedNamespaces.has(ns) : true,
+        )
       : namespaces;
     const matchedNamespaces = candidates.filter((namespace) => {
       const canonical = namespaceCollectionName(baseCollection, namespace, {
