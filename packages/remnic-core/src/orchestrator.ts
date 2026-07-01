@@ -5757,6 +5757,7 @@ export class Orchestrator {
             prompt,
             sessionKey,
             options.namespace?.trim() || undefined,
+            options.principalOverride,
           );
         } catch (err) {
           log.debug(`direct-answer observation setup failed: ${err}`);
@@ -5824,6 +5825,7 @@ export class Orchestrator {
     prompt: string,
     sessionKey: string,
     namespaceOverride: string | undefined,
+    principalOverride: string | undefined,
   ): void {
     const expectedSnapshot = this.lastRecall.get(sessionKey);
     if (expectedSnapshot === null) return;
