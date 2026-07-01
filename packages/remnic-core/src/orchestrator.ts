@@ -12809,9 +12809,12 @@ export class Orchestrator {
       const selectedLayer = scopeProfileWritePlan.layers.find(
         (layer) => layer.id === scopeProfileWritePlan.writeLayer,
       );
-      if (!selectedLayer?.writable) {
+      const writeNamespaceReadable = scopeProfileWritePlan.readNamespaces.includes(
+        scopeProfileWritePlan.writeNamespace,
+      );
+      if (!selectedLayer?.writable || !writeNamespaceReadable) {
         log.warn(
-          `runExtraction: skipping scope profile ${scopeProfileWritePlan.profileId} because write layer ${scopeProfileWritePlan.writeLayer} is not writable`,
+          `runExtraction: skipping scope profile ${scopeProfileWritePlan.profileId} because write layer ${scopeProfileWritePlan.writeLayer} is not writable inside the profile read stack`,
         );
         await clearBuffer();
         return {

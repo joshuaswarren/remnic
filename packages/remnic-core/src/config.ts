@@ -177,11 +177,16 @@ function parseScopeProfiles(value: unknown): Record<string, ScopeProfileConfig> 
       : undefined;
     const rawAutoPromote = isRecord(rawProfile.autoPromote) ? rawProfile.autoPromote : {};
     const autoPromoteEnabled = coerceBool(rawAutoPromote.enabled);
-    const minConfidenceTier =
-      typeof rawAutoPromote.minConfidenceTier === "string" &&
-      CONFIDENCE_TIERS.includes(rawAutoPromote.minConfidenceTier as any)
-        ? (rawAutoPromote.minConfidenceTier as typeof CONFIDENCE_TIERS[number])
-        : "explicit";
+    const minConfidenceTier = (() => {
+      const rawTier = rawAutoPromote.minConfidenceTier;
+      if (rawTier === undefined || rawTier === null) return "explicit";
+      if (typeof rawTier !== "string" || !CONFIDENCE_TIERS.includes(rawTier as any)) {
+        throw new Error(
+          `scopeProfiles.${profileId}.autoPromote.minConfidenceTier must be one of: ${CONFIDENCE_TIERS.join(", ")}`,
+        );
+      }
+      return rawTier as typeof CONFIDENCE_TIERS[number];
+    })();
     const autoPromoteCategories: Array<typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number]> = Array.isArray(rawAutoPromote.categories)
       ? rawAutoPromote.categories.filter((entry): entry is typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number] =>
           SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES.includes(entry as any),
