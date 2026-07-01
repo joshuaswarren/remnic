@@ -9116,9 +9116,10 @@ export class Orchestrator {
                         if (seen.has(key)) continue;
                         seen.add(key);
                         merged.push(result);
-                        if (merged.length >= maxPerAgent) break;
                       }
-                      return merged;
+                      return merged
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, maxPerAgent);
                     })
                   : Promise.resolve([] as ParallelSearchResult[]),
                 shouldRunAgent("temporal", retrievalQuery, 0)
@@ -9737,7 +9738,13 @@ export class Orchestrator {
               seen.add(key);
               boxes.push(box);
             }
-            return boxes;
+            return boxes.sort((a, b) => {
+              const aTime = Date.parse(a.sealedAt ?? "");
+              const bTime = Date.parse(b.sealedAt ?? "");
+              const aRank = Number.isFinite(aTime) ? aTime : 0;
+              const bRank = Number.isFinite(bTime) ? bTime : 0;
+              return bRank - aRank;
+            });
           })
         : Promise.resolve([] as BoxFrontmatter[]),
     );
