@@ -8289,25 +8289,37 @@ export class Orchestrator {
       if (!this.config.knowledgeIndexEnabled) return null;
       const t0 = Date.now();
       try {
+        const knowledgeIndexMaxChars = this.getRecallSectionNumber(
+          "knowledge-index",
+          "maxChars",
+        );
         const knowledgeIndexOptions = {
           maxEntities: this.getRecallSectionNumber(
             "knowledge-index",
             "maxEntities",
           ),
-          maxChars: this.getRecallSectionNumber("knowledge-index", "maxChars"),
+          maxChars: knowledgeIndexMaxChars,
         };
         const ki = scopeProfilePlan
           ? await (async () => {
+              const perLayerOptions = {
+                ...knowledgeIndexOptions,
+                maxChars: Number.MAX_SAFE_INTEGER,
+              };
               const results = await Promise.all(
                 profileStorages.map((storage) =>
-                  storage.buildKnowledgeIndex(this.config, knowledgeIndexOptions),
+                  storage.buildKnowledgeIndex(this.config, perLayerOptions),
                 ),
               );
               const sections = results
                 .map((result) => result.result.trim())
                 .filter((section) => section.length > 0);
+              const merged = sections.join("\n\n");
               return {
-                result: sections.join("\n\n"),
+                result: this.truncateRecallSectionToBudget(
+                  merged,
+                  knowledgeIndexMaxChars,
+                ),
                 cached: results.every((result) => result.cached),
               };
             })()

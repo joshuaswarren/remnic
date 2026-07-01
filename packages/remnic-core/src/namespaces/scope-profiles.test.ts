@@ -831,6 +831,17 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
       parseConfig({
         scopeProfiles: {
           bad: {
+            autoPromote: { enabled: "treu" },
+          },
+        },
+      }),
+    /autoPromote.enabled must be a boolean or boolean-like string/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        scopeProfiles: {
+          bad: {
             autoPromote: { minConfidenceTier: "implide" },
           },
         },

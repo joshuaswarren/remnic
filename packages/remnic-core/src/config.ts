@@ -214,7 +214,16 @@ function parseScopeProfiles(value: unknown): Record<string, ScopeProfileConfig> 
       throw new Error(`scopeProfiles.${profileId}.autoPromote must be an object`);
     }
     const rawAutoPromote = isRecord(rawProfile.autoPromote) ? rawProfile.autoPromote : {};
+    const hasAutoPromoteEnabled = Object.prototype.hasOwnProperty.call(
+      rawAutoPromote,
+      "enabled",
+    );
     const autoPromoteEnabled = coerceBool(rawAutoPromote.enabled);
+    if (hasAutoPromoteEnabled && autoPromoteEnabled === undefined) {
+      throw new Error(
+        `scopeProfiles.${profileId}.autoPromote.enabled must be a boolean or boolean-like string`,
+      );
+    }
     const minConfidenceTier = (() => {
       const rawTier = rawAutoPromote.minConfidenceTier;
       if (rawTier === undefined || rawTier === null) return "explicit";
