@@ -3231,6 +3231,10 @@ export class StorageManager {
    */
   async loadAliases(): Promise<void> {
     const aliasPath = path.join(this.baseDir, "config", "aliases.json");
+    // Re-derive from the file on every call: initialize() can run repeatedly
+    // on the same instance, and a reload after the file was fixed, emptied,
+    // or removed must never leave a previous table active.
+    this.userAliases = {};
     try {
       const raw = await readFile(aliasPath, "utf-8");
       const parsed = JSON.parse(raw);
@@ -3243,6 +3247,10 @@ export class StorageManager {
         }
         this.userAliases = cleaned;
         log.debug(`loaded ${Object.keys(cleaned).length} entity aliases from ${aliasPath}`);
+      } else {
+        log.warn(
+          `ignoring ${aliasPath}: payload must be a JSON object mapping variant → canonical strings`,
+        );
       }
     } catch {
       // No aliases file — that's fine, use built-in only

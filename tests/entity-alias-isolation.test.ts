@@ -71,6 +71,34 @@ test("loadAliases drops non-string and empty alias values", async () => {
   }
 });
 
+test("reloading re-derives the table — stale aliases never survive a changed file", async () => {
+  const store = await makeStoreWithAliases({ bobby: "robert-smith" });
+  try {
+    assert.equal(store.storage.normalizeEntityName("Bobby", "person"), "person-robert-smith");
+
+    // File becomes an invalid payload: previous table must clear, not linger.
+    await writeFile(path.join(store.dir, "config", "aliases.json"), "[]", "utf-8");
+    await store.storage.loadAliases();
+    assert.equal(store.storage.normalizeEntityName("Bobby", "person"), "person-bobby");
+
+    // File restored with a different mapping: new table applies.
+    await writeFile(
+      path.join(store.dir, "config", "aliases.json"),
+      JSON.stringify({ bobby: "bob-jones" }),
+      "utf-8",
+    );
+    await store.storage.loadAliases();
+    assert.equal(store.storage.normalizeEntityName("Bobby", "person"), "person-bob-jones");
+
+    // File removed entirely: back to built-in-only behavior.
+    await rm(path.join(store.dir, "config", "aliases.json"), { force: true });
+    await store.storage.loadAliases();
+    assert.equal(store.storage.normalizeEntityName("Bobby", "person"), "person-bobby");
+  } finally {
+    await rm(store.dir, { recursive: true, force: true });
+  }
+});
+
 test("loadAliases tolerates non-object payloads and missing files", async () => {
   for (const payload of ["null", "[1,2]", '"str"']) {
     const dir = await mkdtemp(path.join(os.tmpdir(), "engram-alias-"));
