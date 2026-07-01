@@ -8,6 +8,7 @@ import {
   Orchestrator,
 } from "./orchestrator.js";
 import { parseConfig } from "./config.js";
+import { stableHash } from "./coding/git-context.js";
 import type { BufferTurn } from "./types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
 import { namespaceIdentityToken } from "./namespaces/identity.js";
@@ -633,6 +634,147 @@ test("flushSession drains every discovered buffer for the session", async () => 
     "session-z",
     "codex-thread:thread-11::principal:cli",
   ]);
+});
+
+test("runExtraction skips active scope profile writes when no layer is writable", async () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    defaultScopeProfile: "teamCoding",
+    codingMode: { projectScope: true },
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-observer:", principal: "pi-observer" }],
+    namespacePolicies: [
+      { name: "pi-observer", readPrincipals: ["pi-observer"], writePrincipals: [] },
+    ],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["teamProject"],
+        writeDefault: "teamProject",
+        promotionTargets: ["teamProject"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+      },
+    },
+    teams: {
+      pi: {
+        principals: ["pi-observer"],
+        read: ["pi-observer"],
+        write: [],
+        promote: [],
+      },
+    },
+  });
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+
+  let clearCalls = 0;
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = {
+    clearAfterExtraction: async () => {
+      clearCalls += 1;
+    },
+  };
+  orchestrator.getCodingContextForSession = () => ({
+    projectId: "tag:remnic",
+    branch: null,
+    rootPath: "tag:remnic",
+    defaultBranch: "main",
+  });
+  orchestrator.storageRouter = {
+    storageFor: async () => {
+      throw new Error("unauthorized profile write must not choose fallback storage");
+    },
+  };
+
+  const result = await orchestrator.runExtraction(
+    [makeTurn("pi-observer:abc123", "remember unauthorized profile target")],
+    { bufferKey: "pi-observer:abc123" },
+  );
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "scope_profile_no_writable_layer");
+  assert.equal(clearCalls, 1);
+});
+
+test("runExtraction writes buffered turns to active scope profile write layer", async () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    defaultScopeProfile: "teamCoding",
+    codingMode: { projectScope: true },
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-observer:", principal: "pi-observer" }],
+    namespacePolicies: [
+      { name: "pi-observer", readPrincipals: ["pi-observer"], writePrincipals: ["pi-observer"] },
+    ],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["teamProject"],
+        writeDefault: "teamProject",
+        promotionTargets: ["teamProject"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+      },
+    },
+    teams: {
+      pi: {
+        principals: ["pi-observer"],
+        read: ["pi-observer"],
+        write: ["pi-observer"],
+        promote: ["pi-observer"],
+      },
+    },
+  });
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+
+  const turn = {
+    ...makeTurn("pi-observer:abc123", "remember the team profile target"),
+    persistProcessedFingerprint: true,
+  };
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = { clearAfterExtraction: async () => undefined };
+  orchestrator.getCodingContextForSession = () => ({
+    projectId: "tag:remnic",
+    branch: null,
+    rootPath: "tag:remnic",
+    defaultBranch: "main",
+  });
+  let requestedNamespace: string | undefined;
+  orchestrator.storageRouter = {
+    storageFor: async (namespace: string) => {
+      requestedNamespace = namespace;
+      return {
+        listEntityNames: async () => [],
+        loadMeta: async () => ({
+          extractionCount: 0,
+          lastExtractionAt: null,
+          lastConsolidationAt: null,
+          totalMemories: 0,
+          totalEntities: 0,
+          processedExtractionFingerprints: [
+            {
+              fingerprint: orchestrator.buildExtractionFingerprint([turn], "pi-observer:abc123"),
+              observedAt: "2026-04-15T00:00:00.000Z",
+            },
+          ],
+        }),
+        saveMeta: async () => undefined,
+      };
+    },
+  };
+  orchestrator.extraction = {
+    extract: async () => {
+      throw new Error("extraction should be skipped by processed fingerprint");
+    },
+  };
+
+  await orchestrator.runExtraction([turn], { bufferKey: "pi-observer:abc123" });
+
+  assert.equal(requestedNamespace, `team-pi-project-${stableHash("tag:remnic")}`);
 });
 
 test("runExtraction skips batches whose persisted fingerprint already exists in storage meta", async () => {

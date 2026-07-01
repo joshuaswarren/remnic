@@ -249,10 +249,12 @@ import {
   type HarmonicRetrievalResult,
 } from "./harmonic-retrieval.js";
 import {
+  compareVerifiedEpisodeResults,
   searchVerifiedEpisodes,
   type VerifiedEpisodeResult,
 } from "./verified-recall.js";
 import {
+  compareVerifiedSemanticRuleResults,
   searchVerifiedSemanticRules,
   type VerifiedSemanticRuleResult,
 } from "./semantic-rule-verifier.js";
@@ -320,6 +322,11 @@ import {
   recallNamespacesForPrincipal,
   resolvePrincipal,
 } from "./namespaces/principal.js";
+import {
+  expandScopeProfileReadNamespaces,
+  resolveScopeProfilePlan,
+  type ResolvedScopeProfilePlan,
+} from "./namespaces/scope-profiles.js";
 import {
   combineNamespaces,
   lcmReadSessionIdsForNamespaces,
@@ -1889,6 +1896,7 @@ export class Orchestrator {
   private readonly _peerIdBySession = new Map<string, string>();
   private routingRulesStore: RoutingRulesStore | null = null;
   private contentHashIndex: ContentHashIndex | null = null;
+  private readonly contentHashIndexesByStorageDir = new Map<string, ContentHashIndex>();
   private readonly artifactSourceStatusCache = new WeakMap<
     StorageManager,
     {
@@ -2480,6 +2488,13 @@ export class Orchestrator {
     searchOptions?: SearchQueryOptions;
     execution?: SearchExecutionOptions;
   }): Promise<QmdSearchResult[]> {
+    if (
+      this.config.namespacesEnabled &&
+      options.namespaces !== undefined &&
+      options.namespaces.length === 0
+    ) {
+      return [];
+    }
     const namespaces = this.config.namespacesEnabled
       ? Array.from(
           new Set(
@@ -2551,6 +2566,79 @@ export class Orchestrator {
 
   invalidateLiveContentHashIndex(): void {
     this.contentHashIndex = null;
+    this.contentHashIndexesByStorageDir.clear();
+  }
+
+  private async contentHashIndexForStorage(
+    targetStorage: StorageManager,
+  ): Promise<ContentHashIndex | null> {
+    if (!this.config.factDeduplicationEnabled) return null;
+
+    if (targetStorage.dir === this.storage.dir) {
+      if (!this.contentHashIndex) {
+        this.contentHashIndex = this.storage.createContentHashIndex();
+        await this.contentHashIndex.load();
+      }
+      return this.contentHashIndex;
+    }
+
+    const cached = this.contentHashIndexesByStorageDir.get(targetStorage.dir);
+    if (cached) return cached;
+
+    const index = targetStorage.createContentHashIndex();
+    await index.load();
+    this.contentHashIndexesByStorageDir.set(targetStorage.dir, index);
+    log.info(
+      `content-hash dedup: loaded ${index.size} hashes for storage ${targetStorage.dir}`,
+    );
+    return index;
+  }
+
+  private async hasContentHashDedup(
+    targetStorage: StorageManager,
+    content: string,
+  ): Promise<boolean> {
+    const index = await this.contentHashIndexForStorage(targetStorage);
+    return index ? index.has(content) : false;
+  }
+
+  private async addContentHashDedup(
+    targetStorage: StorageManager,
+    content: string,
+  ): Promise<void> {
+    const index = await this.contentHashIndexForStorage(targetStorage);
+    if (!index) return;
+    index.add(content);
+  }
+
+  private async removeContentHashForMemory(
+    targetStorage: StorageManager,
+    memory: MemoryFile,
+    context: string,
+  ): Promise<void> {
+    const index = await this.contentHashIndexForStorage(targetStorage);
+    if (!index) return;
+
+    if (memory.frontmatter.contentHash) {
+      index.removeByHash(memory.frontmatter.contentHash);
+      return;
+    }
+
+    log.warn(
+      `[${context}] removing hash for legacy memory ${memory.frontmatter.id ?? "(unknown)"} via content fallback - no contentHash in frontmatter`,
+    );
+    index.remove(memory.content);
+  }
+
+  private async saveContentHashIndexes(): Promise<void> {
+    const indexes = new Set<ContentHashIndex>();
+    if (this.contentHashIndex) indexes.add(this.contentHashIndex);
+    for (const index of this.contentHashIndexesByStorageDir.values()) {
+      indexes.add(index);
+    }
+    for (const index of indexes) {
+      await index.save();
+    }
   }
 
   constructor(config: PluginConfig) {
@@ -4320,28 +4408,13 @@ export class Orchestrator {
             relatedMemoryIds: [canonicalId],
           });
           if (archiveResult) {
-            // Remove from content-hash index.
-            // Use the raw-content hash stored on the frontmatter at write
-            // time (contentHash) — it is format-agnostic and survives any
-            // citation template.  Legacy memories without contentHash are
-            // skipped (see Finding 2 — Urgw).
-            if (this.contentHashIndex) {
-              if (m.frontmatter.contentHash) {
-                // Modern memory: frontmatter.contentHash is already a SHA-256
-                // hex string — use removeByHash to avoid double-hashing.
-                this.contentHashIndex.removeByHash(m.frontmatter.contentHash);
-              } else {
-                // Legacy memory written before contentHash was stored on the
-                // frontmatter.  Pre-#369 facts were stored without inline
-                // citations, so m.content is the raw fact text and we can
-                // remove the hash directly from the content.  This clears
-                // stale dedup entries so the fact can be re-extracted.
-                log.warn(
-                  `[semantic-consolidation] removing hash for legacy memory ${m.frontmatter.id ?? "(unknown)"} via content fallback — no contentHash in frontmatter`,
-                );
-                this.contentHashIndex.remove(m.content);
-              }
-            }
+            // Remove from the same storage-scoped content-hash index that
+            // originally deduped this memory.
+            await this.removeContentHashForMemory(
+              targetStorage,
+              m,
+              "semantic-consolidation",
+            );
             // Best-effort index cleanup: a failure here (e.g. on-disk index save
             // under disk-full) must NOT abort the archival loop and thereby skip
             // the catalog write touch below for an already-durable canonical write
@@ -4395,15 +4468,13 @@ export class Orchestrator {
       }
     }
 
-    // Save hash index if we modified it
-    if (result.memoriesArchived > 0 && this.contentHashIndex) {
-      await this.contentHashIndex
-        .save()
-        .catch((err) =>
-          log.warn(
-            `[semantic-consolidation] content-hash index save failed: ${err}`,
-          ),
-        );
+    // Save hash indexes if we modified them.
+    if (result.memoriesArchived > 0) {
+      await this.saveContentHashIndexes().catch((err) =>
+        log.warn(
+          `[semantic-consolidation] content-hash index save failed: ${err}`,
+        ),
+      );
     }
 
     log.info(
@@ -5746,6 +5817,7 @@ export class Orchestrator {
             prompt,
             sessionKey,
             options.namespace?.trim() || undefined,
+            options.principalOverride,
           );
         } catch (err) {
           log.debug(`direct-answer observation setup failed: ${err}`);
@@ -5813,12 +5885,13 @@ export class Orchestrator {
     prompt: string,
     sessionKey: string,
     namespaceOverride: string | undefined,
+    principalOverride: string | undefined,
   ): void {
     const expectedSnapshot = this.lastRecall.get(sessionKey);
     if (expectedSnapshot === null) return;
     if (expectedSnapshot.plannerMode === "no_recall") return;
 
-    const principal = resolvePrincipal(sessionKey, this.config);
+    const principal = principalOverride ?? resolvePrincipal(sessionKey, this.config);
     // Coding-agent overlay (issue #569) is applied when the session has a
     // coding context and there is no explicit namespaceOverride — mirrors
     // the main recall path above.
@@ -5830,9 +5903,29 @@ export class Orchestrator {
     const observationCodingSelf = observationCodingOverlay
       ? combineNamespaces(observationPrincipalSelf, observationCodingOverlay.namespace)
       : null;
+    const observationScopeProfilePlan =
+      namespaceOverride && canReadNamespace(principal, namespaceOverride, this.config)
+        ? null
+        : resolveScopeProfilePlan({
+            config: this.config,
+            principal,
+            codingContext: sessionKey
+              ? this.getCodingContextForSession(sessionKey)
+              : null,
+            codingOverlay: observationCodingOverlay,
+          });
     let observationNamespaces: string[];
     if (namespaceOverride && canReadNamespace(principal, namespaceOverride, this.config)) {
       observationNamespaces = [namespaceOverride];
+    } else if (observationScopeProfilePlan) {
+      observationNamespaces = expandScopeProfileReadNamespaces({
+        profilePlan: observationScopeProfilePlan,
+        principalSelfNamespace: observationScopeProfilePlan.baseNamespace,
+        config: this.config,
+        principal,
+        codingOverlay: observationCodingOverlay,
+        legacyRecallNamespaces: recallNamespacesForPrincipal(principal, this.config),
+      });
     } else if (observationCodingOverlay && observationCodingSelf) {
       // Rule 42 / parity with the main recall path: substitute the self
       // namespace within the principal's recall list rather than
@@ -7449,13 +7542,34 @@ export class Orchestrator {
     const codingSelfNamespace = codingOverlay
       ? combineNamespaces(principalSelfNamespace, codingOverlay.namespace)
       : null;
+    const scopeProfilePlan = namespaceOverride
+      ? null
+      : resolveScopeProfilePlan({
+          config: this.config,
+          principal,
+          codingContext: sessionKey
+            ? this.getCodingContextForSession(sessionKey)
+            : null,
+          codingOverlay,
+        });
+    const profileEffectiveNamespace = scopeProfilePlan?.writeNamespace || scopeProfilePlan?.readNamespaces[0];
     const selfNamespace =
       namespaceOverride ??
+      profileEffectiveNamespace ??
       codingSelfNamespace ??
       principalSelfNamespace;
     let recallNamespaces: string[];
     if (namespaceOverride) {
       recallNamespaces = [namespaceOverride];
+    } else if (scopeProfilePlan) {
+      recallNamespaces = expandScopeProfileReadNamespaces({
+        profilePlan: scopeProfilePlan,
+        principalSelfNamespace: scopeProfilePlan.baseNamespace,
+        config: this.config,
+        principal,
+        codingOverlay,
+        legacyRecallNamespaces: readableRecallNamespaces,
+      });
     } else if (codingOverlay && codingSelfNamespace) {
       // Substitute the principal's self namespace with the coding-scoped
       // one, and append any read fallbacks (branch→project, PR 3) combined
@@ -7515,11 +7629,18 @@ export class Orchestrator {
     // so the prior round's authorization invariant is preserved.
     const codingOverlaySelfReadable =
       codingOverlay !== null &&
-      readableRecallNamespaces.includes(principalSelfNamespace);
+      (scopeProfilePlan
+        ? scopeProfilePlan.layers.some((layer) => layer.id === "userProject" && layer.readable)
+        : readableRecallNamespaces.includes(principalSelfNamespace));
     let lcmReadNamespaces: string[];
     if (namespaceOverride) {
       // Explicit namespace already read-authorized above (canReadNamespace gate).
       lcmReadNamespaces = [namespaceOverride];
+    } else if (scopeProfilePlan) {
+      // Scope profiles define a layered read stack; LCM-backed evidence uses the
+      // same namespace set as QMD/file recall so team/global/shared observations
+      // are not silently skipped.
+      lcmReadNamespaces = recallNamespaces;
     } else if (codingOverlay && codingSelfNamespace && codingOverlaySelfReadable) {
       // Self base readable → overlay rows authorized. Read the primary overlay
       // key first, then each coding read fallback (project → root), combined with
@@ -7539,11 +7660,14 @@ export class Orchestrator {
     // session_id set. Single-user / no-overlay recall passes a single-namespace
     // set that collapses to the raw `sessionKey`, so this is `[sessionKey]` —
     // byte-for-byte the pre-#1495 single-key behavior.
-    const lcmReadSessionIds = lcmReadSessionIdsForNamespaces(
-      lcmReadNamespaces,
-      sessionKey,
-      this.config.defaultNamespace,
-    );
+    const lcmReadSessionIds =
+      scopeProfilePlan && !sessionKey
+        ? []
+        : lcmReadSessionIdsForNamespaces(
+            lcmReadNamespaces,
+            sessionKey,
+            this.config.defaultNamespace,
+          );
     // Query an LCM-backed read across the ordered read key set and return the
     // FIRST non-empty result (#1505 fallback-namespace unification). The primary
     // overlay key is tried first; if a branch-scoped session has no rows under its
@@ -7561,9 +7685,12 @@ export class Orchestrator {
     //
     // When the set is a single key (single-user / no-overlay / explicit-namespace),
     // this is exactly one call — unchanged. `lcmSessionId` is `string | undefined`:
-    // a SESSIONLESS recall yields the single `undefined` key so the read runs ONE
-    // archive-wide read with no `session_id` filter (pre-#1505 behavior). NEVER the
-    // literal "default" session id (codex P2).
+    // a legacy SESSIONLESS recall yields the single `undefined` key so the read
+    // runs ONE archive-wide read with no `session_id` filter (pre-#1505 behavior).
+    // Hosted scope profiles are stricter: without a session key there is no
+    // namespace-scoped LCM key to query, so the key set stays empty and LCM cannot
+    // bypass the profile read stack via an archive-wide read. NEVER the literal
+    // "default" session id (codex P2).
     const firstNonEmptyLcmRead = async <T>(
       read: (lcmSessionId: string | undefined) => Promise<T>,
       isEmpty: (value: T) => boolean,
@@ -7761,7 +7888,158 @@ export class Orchestrator {
       return "";
     }
 
-    const profileStorage = await this.storageRouter.storageFor(selfNamespace);
+    const profileStorageNamespaces = scopeProfilePlan ? recallNamespaces : [selfNamespace];
+    const profileStorages = await Promise.all(
+      profileStorageNamespaces.map((namespace) => this.storageRouter.storageFor(namespace)),
+    );
+    const emptyProfileStorage = new Proxy(
+      { dir: path.join(this.config.memoryDir, ".empty-scope-profile") } as any,
+      {
+        get(target, prop: string | symbol) {
+          if (prop in target) return target[prop];
+          if (prop === "readProfile") return async () => "";
+          if (
+            prop === "readQuestions" ||
+            prop === "listEntityNames" ||
+            prop === "readContinuityIncidents"
+          )
+            return async () => [];
+          if (
+            prop === "readIdentityAnchor" ||
+            prop === "readIdentityImprovementLoops"
+          )
+            return async () => "";
+          if (prop === "readEntity" || prop === "readMemoryByPath")
+            return async () => null;
+          return async () => [];
+        },
+      },
+    );
+    const profileStorage =
+      profileStorages.length <= 1
+        ? profileStorages[0] ?? emptyProfileStorage
+        : new Proxy(profileStorages[0] as any, {
+            get(target, prop: string | symbol) {
+              if (prop === "readProfile") {
+                return async () => {
+                  for (const storage of profileStorages) {
+                    const profile = await storage.readProfile();
+                    if (profile.trim().length > 0) return profile;
+                  }
+                  return "";
+                };
+              }
+              if (prop === "readQuestions") {
+                return async (...args: any[]) => {
+                  const merged: any[] = [];
+                  const seen = new Set<string>();
+                  const priorityOf = (question: any): number => {
+                    const priority = Number(question?.priority ?? 0);
+                    return Number.isFinite(priority) ? priority : 0;
+                  };
+                  for (const storage of profileStorages) {
+                    const questions = await (storage.readQuestions as any)(...args);
+                    for (const question of questions) {
+                      const key = typeof question === "string" ? question : JSON.stringify(question);
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      merged.push(question);
+                    }
+                  }
+                  return merged.sort(
+                    (left, right) =>
+                      priorityOf(right) - priorityOf(left) ||
+                      String(left?.id ?? "").localeCompare(String(right?.id ?? "")),
+                  );
+                };
+              }
+              if (prop === "readIdentityAnchor") {
+                return async () => {
+                  for (const storage of profileStorages) {
+                    const anchor = (await storage.readIdentityAnchor()) ?? "";
+                    if (anchor.trim().length > 0) return anchor;
+                  }
+                  return "";
+                };
+              }
+              if (prop === "readIdentityImprovementLoops") {
+                return async () => {
+                  const sections: string[] = [];
+                  const seen = new Set<string>();
+                  for (const storage of profileStorages) {
+                    const loops = ((await storage.readIdentityImprovementLoops()) ?? "").trim();
+                    if (!loops || seen.has(loops)) continue;
+                    seen.add(loops);
+                    sections.push(loops);
+                  }
+                  return sections.join("\n\n");
+                };
+              }
+              if (prop === "readContinuityIncidents") {
+                return async (...args: any[]) => {
+                  const limit = typeof args[0] === "number" && Number.isFinite(args[0]) ? Math.max(0, args[0]) : undefined;
+                  const incidents: any[] = [];
+                  const seen = new Set<string>();
+                  const incidentTime = (incident: any): number => {
+                    const raw = incident?.updatedAt ?? incident?.openedAt ?? incident?.createdAt;
+                    const parsed = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
+                    return Number.isFinite(parsed) ? parsed : 0;
+                  };
+                  for (const storage of profileStorages) {
+                    for (const incident of await (storage.readContinuityIncidents as any)(...args)) {
+                      const key = JSON.stringify(incident);
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      incidents.push(incident);
+                    }
+                  }
+                  incidents.sort(
+                    (left, right) =>
+                      incidentTime(right) - incidentTime(left) ||
+                      String(left?.id ?? "").localeCompare(String(right?.id ?? "")),
+                  );
+                  return limit === undefined ? incidents : incidents.slice(0, limit);
+                };
+              }
+              if (prop === "listEntityNames") {
+                return async (...args: any[]) => {
+                  const names = new Set<string>();
+                  for (const storage of profileStorages) {
+                    for (const name of await (storage.listEntityNames as any)(...args)) names.add(name);
+                  }
+                  return [...names];
+                };
+              }
+              if (prop === "readEntity" || prop === "readMemoryByPath") {
+                return async (...args: any[]) => {
+                  for (const storage of profileStorages) {
+                    const value = await (storage as any)[prop](...args);
+                    if (value) return value;
+                  }
+                  return null;
+                };
+              }
+              if (prop === "readAllMemories") {
+                return async (...args: any[]) => {
+                  const memories: any[] = [];
+                  const seen = new Set<string>();
+                  for (const storage of profileStorages) {
+                    for (const memory of await (storage.readAllMemories as any)(...args)) {
+                      const key = String(memory?.path ?? memory?.frontmatter?.id ?? JSON.stringify(memory));
+                      if (seen.has(key)) continue;
+                      seen.add(key);
+                      memories.push(memory);
+                    }
+                  }
+                  return memories;
+                };
+              }
+              return target[prop];
+            },
+          });
+    const profileStorageDirs = Array.from(
+      new Set(profileStorages.map((storage) => storage.dir).filter((dir): dir is string => typeof dir === "string" && dir.length > 0)),
+    );
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
     throwIfRecallAborted(options.abortSignal);
@@ -7791,6 +8069,14 @@ export class Orchestrator {
       )
         return null;
       if (!this.sharedContext) return null;
+      if (
+        scopeProfilePlan &&
+        !(
+          scopeProfilePlan.profile.readOrder.includes("serverShared") &&
+          scopeProfilePlan.readNamespaces.includes(this.config.sharedNamespace)
+        )
+      )
+        return null;
       const t0 = Date.now();
       const [priorities, roundtable, crossSignals] = await Promise.all([
         this.sharedContext.readPriorities(),
@@ -8100,13 +8386,64 @@ export class Orchestrator {
       if (!this.config.knowledgeIndexEnabled) return null;
       const t0 = Date.now();
       try {
-        const ki = await this.storage.buildKnowledgeIndex(this.config, {
-          maxEntities: this.getRecallSectionNumber(
-            "knowledge-index",
-            "maxEntities",
-          ),
-          maxChars: this.getRecallSectionNumber("knowledge-index", "maxChars"),
-        });
+        const knowledgeIndexMaxChars =
+          this.getRecallSectionNumber("knowledge-index", "maxChars") ??
+          this.config.knowledgeIndexMaxChars;
+        const knowledgeIndexMaxEntities =
+          this.getRecallSectionNumber("knowledge-index", "maxEntities") ??
+          this.config.knowledgeIndexMaxEntities;
+        const knowledgeIndexOptions = {
+          maxEntities: knowledgeIndexMaxEntities,
+          maxChars: knowledgeIndexMaxChars,
+        };
+        const ki = scopeProfilePlan
+          ? await (async () => {
+              const perLayerOptions = {
+                ...knowledgeIndexOptions,
+                maxEntities: Number.MAX_SAFE_INTEGER,
+                maxChars: Number.MAX_SAFE_INTEGER,
+              };
+              const results = await Promise.all(
+                profileStorages.map((storage) =>
+                  storage.buildKnowledgeIndex(this.config, perLayerOptions),
+                ),
+              );
+              const sections = results
+                .map((result) => result.result.trim())
+                .filter((section) => section.length > 0);
+              const maxRows = Math.max(0, Math.floor(knowledgeIndexMaxEntities));
+              const rows: string[] = [];
+              let header: string[] | null = null;
+              for (const section of sections) {
+                const lines = section
+                  .split("\n")
+                  .map((line) => line.trimEnd())
+                  .filter((line) => line.length > 0);
+                const tableHeaderIndex = lines.findIndex((line) =>
+                  line.startsWith("| Entity |"),
+                );
+                if (tableHeaderIndex === -1) continue;
+                header ??= lines.slice(0, tableHeaderIndex + 2);
+                for (const row of lines.slice(tableHeaderIndex + 2)) {
+                  if (!row.startsWith("|")) continue;
+                  if (rows.length >= maxRows) break;
+                  rows.push(row);
+                }
+                if (rows.length >= maxRows) break;
+              }
+              const merged =
+                header && rows.length > 0
+                  ? `${header.join("\n")}\n${rows.join("\n")}\n`
+                  : "";
+              return {
+                result: this.truncateRecallSectionToBudget(
+                  merged,
+                  knowledgeIndexMaxChars,
+                ),
+                cached: results.every((result) => result.cached),
+              };
+            })()
+          : await this.storage.buildKnowledgeIndex(this.config, knowledgeIndexOptions);
         recordRecallSectionMetric({
           section: "ki",
           priority: "core",
@@ -8528,15 +8865,36 @@ export class Orchestrator {
           return null;
         }
 
-        const results = await searchHarmonicRetrieval({
-          memoryDir: this.config.memoryDir,
-          abstractionNodeStoreDir: this.config.abstractionNodeStoreDir,
-          query: retrievalQuery,
-          maxResults,
-          sessionKey,
-          anchorsEnabled: this.config.abstractionAnchorsEnabled,
-          abortSignal: harmonicRetrievalAbort.signal,
-        });
+        const harmonicSearchDirs = scopeProfilePlan ? profileStorageDirs : [this.config.memoryDir];
+        const harmonicResultsByDir = await Promise.all(
+          harmonicSearchDirs.map((memoryDir) =>
+            searchHarmonicRetrieval({
+              memoryDir,
+              abstractionNodeStoreDir: scopeProfilePlan ? undefined : this.config.abstractionNodeStoreDir,
+              query: retrievalQuery,
+              maxResults,
+              sessionKey,
+              anchorsEnabled: this.config.abstractionAnchorsEnabled,
+              abortSignal: harmonicRetrievalAbort.signal,
+            }),
+          ),
+        );
+        const harmonicByNodeId = new Map<string, HarmonicRetrievalResult>();
+        for (const result of harmonicResultsByDir.flat()) {
+          const existing = harmonicByNodeId.get(result.node.nodeId);
+          if (!existing || result.score > existing.score) {
+            harmonicByNodeId.set(result.node.nodeId, result);
+          }
+        }
+        const results = [...harmonicByNodeId.values()]
+          .sort(
+            (left, right) =>
+              right.score - left.score ||
+              right.anchorScore - left.anchorScore ||
+              right.node.recordedAt.localeCompare(left.node.recordedAt) ||
+              left.node.nodeId.localeCompare(right.node.nodeId),
+          )
+          .slice(0, maxResults);
 
         recordRecallSectionMetric({
           section: "harmonicRetrieval",
@@ -8598,11 +8956,28 @@ export class Orchestrator {
       const VERIFIED_RECALL_TIMEOUT_MS = 15_000;
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const results = await Promise.race([
-        searchVerifiedEpisodes({
-          memoryDir: profileStorage.dir,
-          query: retrievalQuery,
-          maxResults,
-          boxRecallDays: this.config.boxRecallDays,
+        Promise.all(
+          profileStorageDirs.map((memoryDir) =>
+            searchVerifiedEpisodes({
+              memoryDir,
+              query: retrievalQuery,
+              maxResults,
+              boxRecallDays: this.config.boxRecallDays,
+            }).catch((err) => {
+              log.debug(`verified recall directory scan failed: ${err}`);
+              return [] as VerifiedEpisodeResult[];
+            }),
+          ),
+        ).then((groups) => {
+          const merged: VerifiedEpisodeResult[] = [];
+          const seen = new Set<string>();
+          for (const result of groups.flat()) {
+            const key = result.box.id || JSON.stringify(result);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push(result);
+          }
+          return merged.sort(compareVerifiedEpisodeResults).slice(0, maxResults);
         }),
         new Promise<[]>((resolve) => {
           timeoutHandle = setTimeout(
@@ -8670,10 +9045,27 @@ export class Orchestrator {
       const VERIFIED_RULES_TIMEOUT_MS = 15_000;
       let rulesTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const results = await Promise.race([
-        searchVerifiedSemanticRules({
-          memoryDir: this.config.memoryDir,
-          query: retrievalQuery,
-          maxResults,
+        Promise.all(
+          profileStorageDirs.map((memoryDir) =>
+            searchVerifiedSemanticRules({
+              memoryDir,
+              query: retrievalQuery,
+              maxResults,
+            }).catch((err) => {
+              log.debug(`verified rules directory scan failed: ${err}`);
+              return [] as VerifiedSemanticRuleResult[];
+            }),
+          ),
+        ).then((groups) => {
+          const merged: VerifiedSemanticRuleResult[] = [];
+          const seen = new Set<string>();
+          for (const result of groups.flat()) {
+            const key = result.rule.frontmatter.id || result.rule.path || JSON.stringify(result);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push(result);
+          }
+          return merged.sort(compareVerifiedSemanticRuleResults).slice(0, maxResults);
         }),
         new Promise<[]>((resolve) => {
           rulesTimeoutHandle = setTimeout(
@@ -8739,13 +9131,33 @@ export class Orchestrator {
         return null;
       }
 
-      const results = await searchWorkProductLedgerEntries({
-        memoryDir: this.config.memoryDir,
-        workProductLedgerDir: this.config.workProductLedgerDir,
-        query: retrievalQuery,
-        maxResults,
-        sessionKey,
-      });
+      const workProductSearchDirs = scopeProfilePlan ? profileStorageDirs : [this.config.memoryDir];
+      const workProductResultsByDir = await Promise.all(
+        workProductSearchDirs.map((memoryDir) =>
+          searchWorkProductLedgerEntries({
+            memoryDir,
+            workProductLedgerDir: scopeProfilePlan ? undefined : this.config.workProductLedgerDir,
+            query: retrievalQuery,
+            maxResults,
+            sessionKey,
+          }),
+        ),
+      );
+      const workProductByEntryId = new Map<string, WorkProductLedgerSearchResult>();
+      for (const result of workProductResultsByDir.flat()) {
+        const existing = workProductByEntryId.get(result.entry.entryId);
+        if (!existing || result.score > existing.score) {
+          workProductByEntryId.set(result.entry.entryId, result);
+        }
+      }
+      const results = [...workProductByEntryId.values()]
+        .sort(
+          (left, right) =>
+            right.score - left.score ||
+            right.entry.recordedAt.localeCompare(left.entry.recordedAt) ||
+            left.entry.entryId.localeCompare(right.entry.entryId),
+        )
+        .slice(0, maxResults);
 
       recordRecallSectionMetric({
         section: "workProducts",
@@ -8958,24 +9370,56 @@ export class Orchestrator {
           this.config.parallelRetrievalEnabled && maxPerAgent > 0
             ? Promise.all([
                 shouldRunAgent("direct", retrievalQuery, 0)
-                  ? runDirectAgent(
-                      retrievalQuery,
-                      profileStorage.dir,
-                      maxPerAgent,
-                    ).catch((err) => {
-                      log.debug(`DirectAgent pre-start failed: ${err}`);
-                      return [] as ParallelSearchResult[];
+                  ? Promise.all(
+                      profileStorageDirs.map((memoryDir) =>
+                        runDirectAgent(
+                          retrievalQuery,
+                          memoryDir,
+                          maxPerAgent,
+                        ).catch((err) => {
+                          log.debug(`DirectAgent pre-start failed: ${err}`);
+                          return [] as ParallelSearchResult[];
+                        }),
+                      ),
+                    ).then((groups) => {
+                      const merged: ParallelSearchResult[] = [];
+                      const seen = new Set<string>();
+                      for (const result of groups.flat()) {
+                        const key = (result as any).path ?? JSON.stringify(result);
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        merged.push(result);
+                      }
+                      return merged
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, maxPerAgent);
                     })
                   : Promise.resolve([] as ParallelSearchResult[]),
                 shouldRunAgent("temporal", retrievalQuery, 0)
-                  ? runTemporalAgent(
-                      retrievalQuery,
-                      this.config.memoryDir,
-                      maxPerAgent,
-                      queryAwarePrefilter.candidatePaths,
-                    ).catch((err) => {
-                      log.debug(`TemporalAgent pre-start failed: ${err}`);
-                      return [] as ParallelSearchResult[];
+                  ? Promise.all(
+                      profileStorageDirs.map((memoryDir) =>
+                        runTemporalAgent(
+                          retrievalQuery,
+                          memoryDir,
+                          maxPerAgent,
+                          queryAwarePrefilter.candidatePaths,
+                        ).catch((err) => {
+                          log.debug(`TemporalAgent pre-start failed for ${memoryDir}: ${err}`);
+                          return [] as ParallelSearchResult[];
+                        }),
+                      ),
+                    ).then((groups) => {
+                      const merged: ParallelSearchResult[] = [];
+                      const seen = new Set<string>();
+                      for (const result of groups.flat()) {
+                        const key = (result as any).path ?? JSON.stringify(result);
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        merged.push(result);
+                      }
+                      return merged
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, maxPerAgent);
                     })
                   : Promise.resolve([] as ParallelSearchResult[]),
               ])
@@ -9568,9 +10012,29 @@ export class Orchestrator {
       ) &&
         this.config.memoryBoxesEnabled &&
         this.config.boxRecallDays > 0
-        ? this.boxBuilderFor(profileStorage)
-            .readRecentBoxes(this.config.boxRecallDays)
-            .catch(() => [] as BoxFrontmatter[])
+        ? Promise.all(
+            profileStorages.map((storage) =>
+              this.boxBuilderFor(storage)
+                .readRecentBoxes(this.config.boxRecallDays)
+                .catch(() => [] as BoxFrontmatter[]),
+            ),
+          ).then((groups) => {
+            const boxes: BoxFrontmatter[] = [];
+            const seen = new Set<string>();
+            for (const box of groups.flat()) {
+              const key = JSON.stringify(box);
+              if (seen.has(key)) continue;
+              seen.add(key);
+              boxes.push(box);
+            }
+            return boxes.sort((a, b) => {
+              const aTime = Date.parse(a.sealedAt ?? "");
+              const bTime = Date.parse(b.sealedAt ?? "");
+              const aRank = Number.isFinite(aTime) ? aTime : 0;
+              const bRank = Number.isFinite(bTime) ? bTime : 0;
+              return bRank - aRank;
+            });
+          })
         : Promise.resolve([] as BoxFrontmatter[]),
     );
 
@@ -12663,18 +13127,57 @@ export class Orchestrator {
       options.principalOverride.length > 0
         ? options.principalOverride
         : resolvePrincipal(sessionKey, this.config);
-    // Write path — overlay the coding-agent namespace (issue #569) when the
-    // session has a codingContext and `codingMode.projectScope` is true.
-    // Explicit `writeNamespaceOverride` from callers still wins, matching
-    // pre-#569 semantics.
-    const selfNamespace =
+    // Write path — explicit callers still win. Otherwise, an active hosted
+    // scope profile owns the extraction write target so hook-captured turns land
+    // in the same layer that profile recall searches. Without a profile, preserve
+    // the existing coding-agent overlay behavior (issue #569).
+    const explicitWriteNamespace =
       typeof options.writeNamespaceOverride === "string" &&
       options.writeNamespaceOverride.length > 0
         ? options.writeNamespaceOverride
-        : this.applyCodingNamespaceOverlay(
-            sessionKey,
-            defaultNamespaceForPrincipal(principal, this.config),
-          );
+        : undefined;
+    const codingContextForWrite = sessionKey
+      ? this.getCodingContextForSession(sessionKey)
+      : null;
+    const codingOverlayForWrite = resolveCodingNamespaceOverlay(
+      codingContextForWrite,
+      this.config.codingMode,
+      this.config.defaultNamespace,
+    );
+    const scopeProfileGatePlan = resolveScopeProfilePlan({
+      config: this.config,
+      principal,
+      codingContext: codingContextForWrite,
+      codingOverlay: codingOverlayForWrite,
+    });
+    const scopeProfileWritePlan = explicitWriteNamespace ? null : scopeProfileGatePlan;
+    if (scopeProfileWritePlan) {
+      const selectedLayer = scopeProfileWritePlan.layers.find(
+        (layer) => layer.id === scopeProfileWritePlan.writeLayer,
+      );
+      const writeNamespaceReadable = scopeProfileWritePlan.readNamespaces.includes(
+        scopeProfileWritePlan.writeNamespace,
+      );
+      if (!selectedLayer?.writable || !writeNamespaceReadable) {
+        log.warn(
+          `runExtraction: skipping scope profile ${scopeProfileWritePlan.profileId} because write layer ${scopeProfileWritePlan.writeLayer} is not writable inside the profile read stack`,
+        );
+        await clearBuffer();
+        return {
+          status: "skipped",
+          reason: "scope_profile_no_writable_layer",
+          persistedCount: 0,
+          durableOutputCount: 0,
+        };
+      }
+    }
+    const selfNamespace =
+      explicitWriteNamespace ??
+      scopeProfileWritePlan?.writeNamespace ??
+      this.applyCodingNamespaceOverlay(
+        sessionKey,
+        defaultNamespaceForPrincipal(principal, this.config),
+      );
     const storage = await this.storageRouter.storageFor(selfNamespace);
     const shouldPersistProcessedFingerprint = targetTurns.some(
       (turn) => turn.persistProcessedFingerprint === true,
@@ -12834,6 +13337,7 @@ export class Orchestrator {
       // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,
+      scopeProfileGatePlan,
     );
     let postPersistMetadataFailed = false;
     meta ??= await storage.loadMeta();
@@ -13404,6 +13908,7 @@ export class Orchestrator {
     threadIdForExtraction?: string | null,
     sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
     baseNamespace?: string,
+    scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
@@ -13498,6 +14003,60 @@ export class Orchestrator {
       "inferred",
       "speculative",
     ] as const;
+    const sharedProfileLayer = scopeProfileWritePlan?.layers.find(
+      (layer) =>
+        layer.id === "serverShared" &&
+        layer.namespace === this.config.sharedNamespace,
+    );
+    const sharedPromotionTarget = scopeProfileWritePlan?.promotionTargets.find(
+      (target) =>
+        target.target === "serverShared" &&
+        target.namespace === this.config.sharedNamespace,
+    );
+    const profileAllowsSharedWrites =
+      !scopeProfileWritePlan ||
+      Boolean(
+        scopeProfileWritePlan.profile.readOrder.includes("serverShared") &&
+          scopeProfileWritePlan.readNamespaces.includes(this.config.sharedNamespace) &&
+          sharedProfileLayer?.readable &&
+          sharedProfileLayer.writable &&
+          sharedPromotionTarget?.authorized,
+      );
+    const profileAutoPromotionAllows = (
+      category: string,
+      confidence: number,
+    ): boolean => {
+      if (!scopeProfileWritePlan) return false;
+      const actualTier = confidenceTier(confidence);
+      const actualRank = confidenceTierOrder.indexOf(actualTier);
+      if (actualRank === -1) return false;
+      const autoPromote = scopeProfileWritePlan.profile.autoPromote;
+      if (!autoPromote.enabled) return false;
+      if (!autoPromote.categories.includes(category as any)) return false;
+      const minimumRank = confidenceTierOrder.indexOf(autoPromote.minConfidenceTier);
+      return minimumRank !== -1 && actualRank <= minimumRank;
+    };
+    const sharedAutoPromotionAllows = (
+      category: string,
+      confidence: number,
+    ): boolean => {
+      if (!scopeProfileWritePlan) {
+        const actualTier = confidenceTier(confidence);
+        const actualRank = confidenceTierOrder.indexOf(actualTier);
+        if (actualRank === -1) return false;
+        if (!this.config.autoPromoteToSharedEnabled) return false;
+        if (!this.config.autoPromoteToSharedCategories.includes(category as any))
+          return false;
+        const minimumRank = confidenceTierOrder.indexOf(
+          this.config.autoPromoteMinConfidenceTier,
+        );
+        return minimumRank !== -1 && actualRank <= minimumRank;
+      }
+      return (
+        scopeProfileWritePlan.profile.autoPromote.targets.includes("serverShared") &&
+        profileAutoPromotionAllows(category, confidence)
+      );
+    };
     const shouldPromoteToShared = (
       targetStorage: StorageManager,
       category: string,
@@ -13505,7 +14064,8 @@ export class Orchestrator {
     ): boolean => {
       if (
         !this.config.namespacesEnabled ||
-        !this.config.autoPromoteToSharedEnabled
+        !profileAllowsSharedWrites ||
+        !sharedAutoPromotionAllows(category, confidence)
       )
         return false;
       if (
@@ -13513,15 +14073,124 @@ export class Orchestrator {
         this.config.sharedNamespace
       )
         return false;
-      if (!this.config.autoPromoteToSharedCategories.includes(category as any))
-        return false;
-      const actualTier = confidenceTier(confidence);
-      const actualRank = confidenceTierOrder.indexOf(actualTier);
-      const minimumRank = confidenceTierOrder.indexOf(
-        this.config.autoPromoteMinConfidenceTier,
+      return true;
+    };
+    const promoteMemoryToProfileTargets = async (options: {
+      sourceStorage: StorageManager;
+      category: string;
+      content: string;
+      confidence: number;
+      tags: string[];
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+      sourceMemoryId: string;
+      importance?: ReturnType<typeof scoreImportance>;
+      intentGoal?: string;
+      intentActionType?: string;
+      intentEntityTypes?: string[];
+      memoryKind?: MemoryFrontmatter["memoryKind"];
+      validAt?: string;
+      source: string;
+    }): Promise<void> => {
+      if (
+        !scopeProfileWritePlan ||
+        !profileAutoPromotionAllows(options.category, options.confidence)
+      )
+        return;
+      const autoTargets = new Set(scopeProfileWritePlan.profile.autoPromote.targets);
+      const targets = scopeProfileWritePlan.promotionTargets.filter(
+        (target) =>
+          target.target !== "serverShared" &&
+          autoTargets.has(target.target) &&
+          target.authorized &&
+          target.namespace,
       );
-      if (actualRank === -1 || minimumRank === -1) return false;
-      return actualRank <= minimumRank;
+      if (targets.length === 0) return;
+      const rawContent =
+        citationEnabled && hasCitationForTemplate(options.content, citationTemplate)
+          ? stripCitationForTemplate(options.content, citationTemplate)
+          : options.content;
+      const citedContent = applyInlineCitation(rawContent);
+      const sanitizedBase = sanitizeMemoryContent(rawContent);
+      const dedupContent =
+        options.category === "fact" &&
+        options.structuredAttributes &&
+        Object.keys(options.structuredAttributes).length > 0
+          ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs(options.structuredAttributes)}]`
+          : sanitizedBase.text;
+      for (const target of targets) {
+        if (!target.namespace) continue;
+        try {
+          const targetStorage = await this.storageRouter.storageFor(target.namespace);
+          if (targetStorage.dir === options.sourceStorage.dir) continue;
+          if (
+            options.category === "fact" &&
+            (await targetStorage.hasFactContentHash(dedupContent))
+          ) {
+            continue;
+          }
+          const promotedId = await targetStorage.writeMemory(
+            options.category as any,
+            citedContent,
+            {
+              confidence: options.confidence,
+              tags: [...options.tags, `${target.target}-promotion`],
+              entityRef: options.entityRef,
+              structuredAttributes: options.structuredAttributes,
+              source: `${options.source}-${target.target}-promotion`,
+              importance: options.importance,
+              lineage: [options.sourceMemoryId],
+              sourceMemoryId: options.sourceMemoryId,
+              intentGoal: options.intentGoal,
+              intentActionType: options.intentActionType,
+              intentEntityTypes: options.intentEntityTypes,
+              memoryKind: options.memoryKind,
+              validAt: options.validAt,
+              contentHashSource: options.category === "fact" ? dedupContent : rawContent,
+            },
+          );
+          if (
+            this.config.temporalSupersessionEnabled &&
+            options.category === "fact" &&
+            options.entityRef &&
+            options.structuredAttributes &&
+            Object.keys(options.structuredAttributes).length > 0
+          ) {
+            try {
+              await applyTemporalSupersession({
+                storage: targetStorage,
+                newMemoryId: promotedId,
+                entityRef: options.entityRef,
+                structuredAttributes: options.structuredAttributes,
+                createdAt: supersessionOrderingAt(options.validAt),
+                enabled: true,
+              });
+            } catch (profileSupersessionErr) {
+              log.warn(
+                `persistExtraction: ${target.target} promotion temporal supersession failed open for promoted ${promotedId}: ${profileSupersessionErr}`,
+              );
+            }
+          }
+          this.markCatalogWrite(target.namespace, targetStorage.dir);
+          trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false });
+          await this.indexPersistedMemory(targetStorage, promotedId);
+          trackBehaviorSignals(
+            targetStorage,
+            buildBehaviorSignalsForMemory({
+              memoryId: promotedId,
+              category: options.category as any,
+              content: options.content,
+              namespace: target.namespace,
+              confidence: options.confidence,
+              source: "extraction",
+            }),
+          );
+        } catch (err) {
+          log.warn(
+            `persistExtraction: ${target.target} promotion failed open for ${options.sourceMemoryId}: ${err}`,
+          );
+        }
+      }
     };
     const promoteMemoryToShared = async (options: {
       sourceStorage: StorageManager;
@@ -13540,6 +14209,7 @@ export class Orchestrator {
       validAt?: string;
       source: string;
     }): Promise<void> => {
+      await promoteMemoryToProfileTargets(options);
       if (
         !shouldPromoteToShared(
           options.sourceStorage,
@@ -13764,11 +14434,10 @@ export class Orchestrator {
             intentEntityTypes: options.intentEntityTypes,
             memoryKind: options.memoryKind,
             validAt: options.validAt,
-            // Index the RAW content hash so hasFactContentHash(rawContent)
-            // returns true on subsequent extractions. Without this, the index
-            // would record the hash of citedContent (which changes every call
-            // due to an updated timestamp), causing duplicate promotions.
-            contentHashSource: rawContent,
+            // Index the same canonical body used by hasFactContentHash above.
+            // For structured facts this includes the normalized Attributes
+            // suffix, matching StorageManager.writeMemory enrichment.
+            contentHashSource: options.category === "fact" ? dedupContent : rawContent,
           },
         );
         // PR #402 Finding 3 fix: run temporal supersession against the shared
@@ -14222,7 +14891,7 @@ export class Orchestrator {
         !routedNamespaceExplicit
       ) {
         const currentNs = this.namespaceFromStorageDir(targetStorage.dir);
-        if (currentNs !== this.config.sharedNamespace) {
+        if (currentNs !== this.config.sharedNamespace && profileAllowsSharedWrites) {
           try {
             targetStorage = await this.storageRouter.storageFor(
               this.config.sharedNamespace,
@@ -14236,6 +14905,10 @@ export class Orchestrator {
               `scope-routing: failed to resolve shared namespace storage; writing to session namespace (fail-open): ${scopeRouteErr}`,
             );
           }
+        } else if (currentNs !== this.config.sharedNamespace) {
+          log.debug(
+            `scope-routing: skipped shared namespace for global fact because active scope profile ${scopeProfileWritePlan?.profileId ?? "none"} does not authorize serverShared writes`,
+          );
         }
       }
 
@@ -14250,9 +14923,20 @@ export class Orchestrator {
         writeCategory === "procedure"
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : canonicalContentForHash;
-      if (this.contentHashIndex && this.contentHashIndex.has(contentHashDedupKey)) {
+      let exactDuplicate = false;
+      try {
+        exactDuplicate = await this.hasContentHashDedup(
+          targetStorage,
+          contentHashDedupKey,
+        );
+      } catch (err) {
+        log.warn(
+          `content-hash dedup lookup failed for storage ${targetStorage.dir}; writing fact fail-open: ${err}`,
+        );
+      }
+      if (exactDuplicate) {
         log.debug(
-          `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…"`,
+          `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…" in storage ${targetStorage.dir}`,
         );
         dedupedCount++;
         continue;
@@ -14700,17 +15384,20 @@ export class Orchestrator {
             validAt: sourceContext?.validAt,
             source: extractionWriteSource,
           });
-          // Register chunked content in hash index too.
+          // Register chunked content in the target storage hash index too.
           // Thread 3 fix: canonicalize by stripping any pre-existing citation
-          // so the stored hash matches what the dedup check computes via
-          // stripCitationForTemplate before calling contentHashIndex.has().
-          if (this.contentHashIndex) {
+          // so the stored hash matches what the dedup check computes.
+          try {
             const canonicalChunkedContent =
               citationEnabled &&
               hasCitationForTemplate(fact.content, citationTemplate)
                 ? stripCitationForTemplate(fact.content, citationTemplate)
                 : fact.content;
-            this.contentHashIndex.add(canonicalChunkedContent);
+            await this.addContentHashDedup(targetStorage, canonicalChunkedContent);
+          } catch (err) {
+            log.warn(
+              `content-hash dedup registration failed for chunked memory ${parentId}: ${err}`,
+            );
           }
 
           for (const chunk of chunkResult.chunks) {
@@ -14988,11 +15675,10 @@ export class Orchestrator {
             intentEntityTypes: inferredIntent?.entityTypes,
           });
         }
-        // Register in content-hash index after successful write.
-        // Thread 3 fix: canonicalize by stripping any pre-existing citation so
-        // the stored hash matches what the dedup check computes via
-        // stripCitationForTemplate before calling contentHashIndex.has().
-        if (this.contentHashIndex) {
+        // Register in the target storage content-hash index after successful
+        // write. Thread 3 fix: canonicalize by stripping any pre-existing
+        // citation so the stored hash matches what the dedup check computes.
+        try {
           const canonicalFactContent =
             citationEnabled &&
             hasCitationForTemplate(fact.content, citationTemplate)
@@ -15002,7 +15688,11 @@ export class Orchestrator {
             writeCategory === "procedure"
               ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
               : canonicalFactContent;
-          this.contentHashIndex.add(hashRegisterKey);
+          await this.addContentHashDedup(targetStorage, hashRegisterKey);
+        } catch (err) {
+          log.warn(
+            `content-hash dedup registration failed for memory ${memoryId}: ${err}`,
+          );
         }
       } finally {
         // Catalog touch (issue #1499): record AFTER every synchronous
@@ -15158,12 +15848,10 @@ export class Orchestrator {
       touchBaseNonFactNamespace();
     }
 
-    // Save content-hash index after batch
-    if (this.contentHashIndex) {
-      await this.contentHashIndex
-        .save()
-        .catch((err) => log.warn(`content-hash index save failed: ${err}`));
-    }
+    // Save any content-hash indexes touched during the batch.
+    await this.saveContentHashIndexes().catch((err) =>
+      log.warn(`content-hash index save failed: ${err}`),
+    );
 
     for (const {
       storage: targetStorage,
@@ -16501,27 +17189,13 @@ export class Orchestrator {
       // All criteria met — archive
       const result = await this.storage.archiveMemory(memory);
       if (result) {
-        // Remove from content-hash index since it's no longer in hot search.
-        // Prefer the raw-content hash stored on the frontmatter at write
-        // time (contentHash) — it is format-agnostic and survives any
-        // citation template.
-        if (this.contentHashIndex) {
-          if (memory.frontmatter.contentHash) {
-            // Modern memory: frontmatter.contentHash is already a SHA-256
-            // hex string — use removeByHash to avoid double-hashing.
-            this.contentHashIndex.removeByHash(memory.frontmatter.contentHash);
-          } else {
-            // Legacy memory written before contentHash was stored on the
-            // frontmatter.  Pre-#369 facts were stored without inline
-            // citations, so memory.content is the raw fact text and we can
-            // remove the hash directly from the content.  This clears
-            // stale dedup entries so the fact can be re-extracted.
-            log.warn(
-              `[fact-archival] removing hash for legacy memory ${memory.frontmatter.id ?? "(unknown)"} via content fallback — no contentHash in frontmatter`,
-            );
-            this.contentHashIndex.remove(memory.content);
-          }
-        }
+        // Remove from the same storage-scoped content-hash index since it is
+        // no longer in hot search.
+        await this.removeContentHashForMemory(
+          this.storage,
+          memory,
+          "fact-archival",
+        );
         await this.embeddingFallback.removeFromIndex(memory.frontmatter.id);
         if (
           this.config.queryAwareIndexingEnabled &&
@@ -16539,13 +17213,11 @@ export class Orchestrator {
       }
     }
 
-    // Save hash index if we removed any entries
-    if (archivedCount > 0 && this.contentHashIndex) {
-      await this.contentHashIndex
-        .save()
-        .catch((err) =>
-          log.warn(`content-hash index save failed during archival: ${err}`),
-        );
+    // Save hash indexes if we removed any entries.
+    if (archivedCount > 0) {
+      await this.saveContentHashIndexes().catch((err) =>
+        log.warn(`content-hash index save failed during archival: ${err}`),
+      );
     }
 
     return archivedCount;

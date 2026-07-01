@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { resolveScopeProfilePlan } from "../packages/remnic-core/src/namespaces/scope-profiles.js";
 
 // ── Round 2, Issue B (cursor[bot] Medium): a shared-namespace promotion writes
 // to the shared namespace via `sharedStorage.writeMemory`, but round 1 only
@@ -143,6 +144,169 @@ test("persistExtraction shared promotion records a shared-namespace catalog writ
     assert.ok(
       sharedRecord?.lastWriteAt,
       "the shared promotion must record a write touch on the shared namespace",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("scope profile shared reads do not imply automatic shared promotion", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-scope-profile-promo-gate-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      autoPromoteToSharedEnabled: true,
+      autoPromoteToSharedCategories: ["fact"],
+      autoPromoteMinConfidenceTier: "implied",
+      namespacePolicies: [
+        { name: "default", readPrincipals: ["default"], writePrincipals: ["default"] },
+        { name: "shared", readPrincipals: ["default"], writePrincipals: ["default"] },
+      ],
+      defaultScopeProfile: "hosted",
+      scopeProfiles: {
+        hosted: {
+          readOrder: ["userGlobal", "serverShared"],
+          writeDefault: "userGlobal",
+          promotionTargets: ["serverShared"],
+          autoPromote: { enabled: false, targets: ["serverShared"] },
+        },
+      },
+      memoryLinkingEnabled: false,
+      inlineSourceAttributionEnabled: false,
+    });
+
+    const orchestrator = new Orchestrator(config) as any;
+    orchestrator.qmd = { isAvailable: () => false };
+
+    const sourceStorage = await orchestrator.getStorage("default");
+    await sourceStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorage("shared");
+    await sharedStorage.ensureDirectories();
+
+    const scopeProfileWritePlan = resolveScopeProfilePlan({
+      config,
+      principal: "default",
+      codingContext: null,
+      codingOverlay: null,
+    });
+    assert.ok(scopeProfileWritePlan);
+
+    await orchestrator.persistExtraction(
+      {
+        facts: [
+          {
+            content: "Profile-gated promotion should stay private.",
+            category: "fact",
+            confidence: 0.95,
+            tags: ["scope-profile"],
+          },
+        ],
+        entities: [],
+        questions: [],
+        profileUpdates: [],
+      },
+      sourceStorage,
+      null,
+      { sessionKey: "s1", principal: "default" },
+      scopeProfileWritePlan.baseNamespace,
+      scopeProfileWritePlan,
+    );
+
+    await orchestrator.namespaceCatalog.markRead("shared");
+
+    const sharedRecord = await orchestrator.namespaceCatalog.getNamespaceRecord("shared");
+    assert.ok(
+      !sharedRecord?.lastWriteAt,
+      "shared read/write access must not bypass the active profile autoPromote gate",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("scope profile auto-promotion does not require legacy global promotion", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-scope-profile-promo-enabled-"));
+  try {
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [
+        { name: "default", readPrincipals: ["default"], writePrincipals: ["default"] },
+        { name: "shared", readPrincipals: ["default"], writePrincipals: ["default"] },
+      ],
+      defaultScopeProfile: "hosted",
+      scopeProfiles: {
+        hosted: {
+          readOrder: ["userGlobal", "serverShared"],
+          writeDefault: "userGlobal",
+          promotionTargets: ["serverShared"],
+          autoPromote: {
+            enabled: true,
+            targets: ["serverShared"],
+            categories: ["fact"],
+            minConfidenceTier: "implied",
+          },
+        },
+      },
+      memoryLinkingEnabled: false,
+      inlineSourceAttributionEnabled: false,
+    });
+    assert.equal(config.autoPromoteToSharedEnabled, false, "legacy promotion remains disabled");
+
+    const orchestrator = new Orchestrator(config) as any;
+    orchestrator.qmd = { isAvailable: () => false };
+
+    const sourceStorage = await orchestrator.getStorage("default");
+    await sourceStorage.ensureDirectories();
+    const sharedStorage = await orchestrator.getStorage("shared");
+    await sharedStorage.ensureDirectories();
+
+    const scopeProfileWritePlan = resolveScopeProfilePlan({
+      config,
+      principal: "default",
+      codingContext: null,
+      codingOverlay: null,
+    });
+    assert.ok(scopeProfileWritePlan);
+
+    await orchestrator.persistExtraction(
+      {
+        facts: [
+          {
+            content: "Profile-native promotion should reach shared.",
+            category: "fact",
+            confidence: 0.95,
+            tags: ["scope-profile"],
+          },
+        ],
+        entities: [],
+        questions: [],
+        profileUpdates: [],
+      },
+      sourceStorage,
+      null,
+      { sessionKey: "s1", principal: "default" },
+      scopeProfileWritePlan.baseNamespace,
+      scopeProfileWritePlan,
+    );
+
+    await orchestrator.namespaceCatalog.markRead("shared");
+
+    const sharedRecord = await orchestrator.namespaceCatalog.getNamespaceRecord("shared");
+    assert.ok(
+      sharedRecord?.lastWriteAt,
+      "active scope profile autoPromote.enabled should promote without the legacy global flag",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

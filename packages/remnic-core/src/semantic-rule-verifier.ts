@@ -99,6 +99,18 @@ function scoreVerifiedSemanticRuleCandidate(
   return { score, matchedFields };
 }
 
+export function compareVerifiedSemanticRuleResults(
+  left: VerifiedSemanticRuleResult,
+  right: VerifiedSemanticRuleResult,
+): number {
+  return (
+    right.score - left.score ||
+    right.effectiveConfidence - left.effectiveConfidence ||
+    right.rule.frontmatter.updated.localeCompare(left.rule.frontmatter.updated) ||
+    left.rule.frontmatter.id.localeCompare(right.rule.frontmatter.id)
+  );
+}
+
 export async function searchVerifiedSemanticRules(options: {
   memoryDir: string;
   query: string;
@@ -150,11 +162,6 @@ export async function searchVerifiedSemanticRules(options: {
   }
 
   return candidates
-    .sort(
-      (left, right) =>
-        right.score - left.score
-        || right.effectiveConfidence - left.effectiveConfidence
-        || right.rule.frontmatter.updated.localeCompare(left.rule.frontmatter.updated),
-    )
+    .sort(compareVerifiedSemanticRuleResults)
     .slice(0, options.maxResults);
 }

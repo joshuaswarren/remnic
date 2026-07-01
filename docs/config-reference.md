@@ -1492,6 +1492,9 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `namespacePolicies[].writePrincipals` | (unset) | (unset) |
 | `namespacePolicies[].includeInRecallByDefault` | (unset) | (unset) |
 | `defaultRecallNamespaces` | `["self","shared"]` | `["self","shared"]` |
+| `scopeProfiles` | `{}` | unset unless running a hosted multi-user/project-aware deployment |
+| `defaultScopeProfile` | (unset) | unset unless a `scopeProfiles` entry should control implicit reads/writes |
+| `teams` | `{}` | trusted team membership for `teamProject` scope profile layers |
 | `cronRecallMode` | `all` | `all` |
 | `cronRecallAllowlist` | `[]` | `[]` |
 | `cronRecallPolicyEnabled` | `true` | `true` |

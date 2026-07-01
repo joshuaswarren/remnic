@@ -41,7 +41,8 @@ import {
   projectNamespaceName,
   projectTagProjectId,
 } from "./coding/coding-namespace.js";
-import { resolveGitContext } from "./coding/git-context.js";
+import { resolveGitContext, stableHash } from "./coding/git-context.js";
+import { namespaceCollectionName } from "./namespaces/search.js";
 import type { CodingContext, PluginConfig } from "./types.js";
 
 /**
@@ -210,6 +211,72 @@ test("#1495 projectTag: LCM, extraction, objective-state, and response all agree
     probe.objectiveStateNamespaces.every((ns) => ns === expected),
     `objective-state target must be the effective namespace, got ${JSON.stringify(probe.objectiveStateNamespaces)}`,
   );
+});
+
+test("#1501 scope profile exposes layered read/write/promotion diagnostics without changing user-project write default", async () => {
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "shared", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["userProject", "teamProject", "userGlobal", "serverShared"],
+        writeDefault: "userProject",
+        promotionTargets: ["teamProject", "serverShared"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+    teams: {
+      pi: {
+        principals: ["pi-geek", "pi-friend"],
+        read: ["pi-geek", "pi-friend"],
+        write: ["pi-geek", "pi-friend"],
+        promote: ["pi-geek", "pi-friend"],
+      },
+    },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  const res = await service.observe(
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Remnic" }),
+  );
+  const expectedUserProject = combineNamespaces(
+    "pi-geek",
+    projectNamespaceName(projectTagProjectId("Remnic")),
+  );
+  const expectedTeamProject = `team-pi-project-${stableHash(projectTagProjectId("Remnic"))}`;
+
+  assert.equal(res.effectiveNamespace, expectedUserProject);
+  assert.equal(res.scopeDebug?.scopeProfile, "teamCoding");
+  assert.equal(res.scopeDebug?.writeLayer, "userProject");
+  assert.deepEqual(res.scopeDebug?.readNamespaces, [
+    expectedUserProject,
+    expectedTeamProject,
+    "pi-geek",
+    "shared",
+  ]);
+  assert.deepEqual(
+    res.scopeDebug?.promotionTargets?.map((target) => [
+      target.target,
+      target.namespace,
+      target.authorized,
+    ]),
+    [
+      ["teamProject", expectedTeamProject, true],
+      ["serverShared", "shared", true],
+    ],
+  );
+  assert.equal(probe.extractionCalls[0]?.writeNamespaceOverride, expectedUserProject);
 });
 
 test("#1495 cwd (git repo): every observe side effect agrees on the effective namespace", async () => {
@@ -577,6 +644,120 @@ test("#1495 the scope plan's writeNamespace matches resolveCodingScopedWriteName
   }
 });
 
+test("#1501 profile write auth rejects memory_store when no profile layer is writable", async () => {
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      { name: "pi-observer", readPrincipals: ["pi-observer"], writePrincipals: [] },
+      { name: "shared", readPrincipals: ["pi-observer"], writePrincipals: [] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-observer:", principal: "pi-observer" }],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["userProject", "teamProject", "serverShared"],
+        writeDefault: "userProject",
+        promotionTargets: ["teamProject", "serverShared"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+    teams: {
+      pi: {
+        principals: ["pi-observer"],
+        read: ["pi-observer"],
+        write: [],
+        promote: [],
+      },
+    },
+  } as Partial<PluginConfig>);
+  probe.contexts.set("pi-observer:abc123", {
+    projectId: projectTagProjectId("Remnic"),
+    branch: null,
+    rootPath: projectTagProjectId("Remnic"),
+    defaultBranch: null,
+  });
+  const service = new EngramAccessService(probe.orch);
+  const internals = service as unknown as {
+    resolveMemoryScopePlan: (r: unknown) => Promise<{ writeNamespace: string }>;
+    resolveCodingScopedWriteNamespace: (r: unknown) => Promise<string>;
+  };
+  const req = {
+    sessionKey: "pi-observer:abc123",
+    authenticatedPrincipal: "pi-observer",
+  };
+
+  await assert.rejects(
+    () => internals.resolveMemoryScopePlan.call(service, req),
+    /scope profile teamCoding has no writable layer/,
+  );
+  await assert.rejects(
+    () => internals.resolveCodingScopedWriteNamespace.call(service, req),
+    /scope profile teamCoding has no writable layer/,
+  );
+});
+
+test("#1501 team-project profile observe reports the profile write namespace as legacy namespace", async () => {
+  const projectId = projectTagProjectId("Remnic");
+  const expectedTeamProject = `team-pi-project-${stableHash(projectId)}`;
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      {
+        name: expectedTeamProject,
+        readPrincipals: ["pi-observer"],
+        writePrincipals: ["pi-observer"],
+      },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-observer:", principal: "pi-observer" }],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["teamProject", "serverShared"],
+        writeDefault: "teamProject",
+        promotionTargets: ["teamProject"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+    teams: {
+      pi: {
+        principals: ["pi-observer"],
+        read: ["pi-observer"],
+        write: ["pi-observer"],
+        promote: ["pi-observer"],
+      },
+    },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  const res = await service.observe(
+    observeRequest({
+      sessionKey: "pi-observer:abc123",
+      authenticatedPrincipal: "pi-observer",
+      projectTag: "Remnic",
+    }),
+  );
+
+  assert.equal(res.scopeDebug?.baseNamespace, "pi-observer");
+  assert.equal(res.scopeDebug?.writeLayer, "teamProject");
+  assert.equal(res.scopeDebug?.codingOverlayApplied, true);
+  assert.equal(res.namespace, expectedTeamProject);
+  assert.equal(res.effectiveNamespace, expectedTeamProject);
+  assert.equal(probe.lcmCalls[0]?.sessionKey, encodeNs(expectedTeamProject, "pi-observer:abc123"));
+  assert.equal(probe.extractionCalls[0]?.writeNamespaceOverride, expectedTeamProject);
+});
+
 test("#1495 skipExtraction does not enqueue extraction but still archives LCM under the effective namespace", async () => {
   const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);
@@ -596,4 +777,105 @@ test("#1495 skipExtraction does not enqueue extraction but still archives LCM un
   assert.equal(res.extractionQueued, false);
   assert.equal(probe.extractionCalls.length, 0);
   assert.equal(probe.lcmCalls[0].sessionKey, encodeNs(expected, "pi-geek:abc123"));
+});
+
+test("#1501 implicit memorySearch honors active scope profile readOrder", async () => {
+  let searchedNamespaces: string[] | null = null;
+  const config = {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    memoryDir: "/synthetic/remnic-memory-search",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "shared", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    defaultRecallNamespaces: ["self", "shared"],
+    defaultScopeProfile: "projectOnly",
+    scopeProfiles: {
+      projectOnly: {
+        readOrder: ["userProject"],
+        writeDefault: "userProject",
+        promotionTargets: [],
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    codingMode: { projectScope: true },
+  } as unknown as PluginConfig;
+  const orch = {
+    config,
+    qmd: { isAvailable: () => true },
+    searchAcrossNamespaces: async (options: { namespaces: string[] }) => {
+      searchedNamespaces = options.namespaces;
+      return [];
+    },
+  } as unknown as Orchestrator;
+  const service = new EngramAccessService(orch);
+
+  const result = await service.memorySearch({
+    query: "deployment",
+    principal: "pi-geek",
+  });
+
+  assert.equal(result.count, 0);
+  assert.equal(
+    searchedNamespaces,
+    null,
+    "userProject-only profiles without project context must not fall back to shared/global search",
+  );
+});
+
+test("#1501 memorySearch collection names stay constrained to active scope profile namespaces", async () => {
+  let searchedNamespaces: string[] | null = null;
+  const config = {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    memoryDir: "/synthetic/remnic-memory-search-collection",
+    qmdCollection: "memories",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "shared", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    defaultRecallNamespaces: ["self", "shared"],
+    defaultScopeProfile: "privateOnly",
+    scopeProfiles: {
+      privateOnly: {
+        readOrder: ["userGlobal"],
+        writeDefault: "userGlobal",
+        promotionTargets: [],
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    codingMode: { projectScope: true },
+  } as unknown as PluginConfig;
+  const orch = {
+    config,
+    qmd: { isAvailable: () => true },
+    searchAcrossNamespaces: async (options: { namespaces: string[] }) => {
+      searchedNamespaces = options.namespaces;
+      return [];
+    },
+  } as unknown as Orchestrator;
+  const service = new EngramAccessService(orch);
+  const sharedCollection = namespaceCollectionName(config.qmdCollection, "shared", {
+    defaultNamespace: config.defaultNamespace,
+    useLegacyDefaultCollection: false,
+  });
+
+  await assert.rejects(
+    () => service.memorySearch({ query: "deployment", principal: "pi-geek", collection: sharedCollection }),
+    /collection is not namespace-scoped/,
+  );
+  assert.equal(searchedNamespaces, null);
 });

@@ -165,6 +165,13 @@ type ExecuteRecallInternals = {
   executeRecall: (request: unknown) => Promise<unknown>;
 };
 
+type RawExcerptInternals = {
+  fetchRawExcerpts: (
+    disclosure: "raw",
+    context: { query: string; sessionKey: string; lcmSessionIds: string[] },
+  ) => Promise<Array<{ turnIndex: number; role: string; content: string; sessionId: string }> | null>;
+};
+
 const SESSION_KEY = "pi-geek:abc123";
 const PROJECT_TAG = "Blend/Supply";
 
@@ -440,4 +447,50 @@ test("#1505 thread 2f7 (single-store regression): namespaces disabled ⇒ raw ex
 
   assert.equal(probe.searchSessionIds.length, 1);
   assert.equal(probe.searchSessionIds[0], SESSION_KEY);
+});
+
+test("scope-profile raw excerpts preserve successful sibling LCM keys when one key fails", async () => {
+  const probe = makeRawExcerptProbe({
+    config: {},
+    snapshotNamespace: "default",
+    sessionKey: SESSION_KEY,
+  });
+  const orchestrator = (probe.service as unknown as { orchestrator: Orchestrator }).orchestrator as unknown as {
+    lcmEngine: {
+      enabled: boolean;
+      searchContextFull: (query: string, limit: number, sessionId?: string) => Promise<Array<{
+        session_id: string;
+        turn_index: number;
+        role: string;
+        content: string;
+      }>>;
+    };
+  };
+  orchestrator.lcmEngine.searchContextFull = async (_query, _limit, sessionId) => {
+    probe.searchSessionIds.push(sessionId);
+    if (sessionId === "bad") throw new Error("synthetic LCM failure");
+    return [
+      {
+        session_id: sessionId ?? "default",
+        turn_index: sessionId === "good" ? 1 : 2,
+        role: "user",
+        content: `raw row from ${sessionId}`,
+      },
+    ];
+  };
+
+  const excerpts = await (probe.service as unknown as RawExcerptInternals).fetchRawExcerpts("raw", {
+    query: "what happened?",
+    sessionKey: SESSION_KEY,
+    lcmSessionIds: ["good", "bad", "later"],
+  });
+
+  assert.deepEqual(probe.searchSessionIds, ["good", "bad", "later"]);
+  assert.deepEqual(
+    excerpts?.map((excerpt) => [excerpt.sessionId, excerpt.turnIndex, excerpt.content]),
+    [
+      ["good", 1, "raw row from good"],
+      ["later", 2, "raw row from later"],
+    ],
+  );
 });

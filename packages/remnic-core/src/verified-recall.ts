@@ -84,6 +84,15 @@ function resolveVerifiedEpisodeMemoriesFromMap(
   return verified;
 }
 
+export function compareVerifiedEpisodeResults(left: VerifiedEpisodeResult, right: VerifiedEpisodeResult): number {
+  return (
+    right.score - left.score ||
+    right.verifiedEpisodeCount - left.verifiedEpisodeCount ||
+    right.box.sealedAt.localeCompare(left.box.sealedAt) ||
+    left.box.id.localeCompare(right.box.id)
+  );
+}
+
 export async function searchVerifiedEpisodes(options: {
   memoryDir: string;
   query: string;
@@ -128,11 +137,6 @@ export async function searchVerifiedEpisodes(options: {
       verifiedMemoryIds: candidate.verifiedMemories.map((memory) => memory.frontmatter.id),
       matchedFields: [...candidate.matchedFields].sort(),
     }))
-    .sort(
-      (left, right) =>
-        right.score - left.score
-        || right.verifiedEpisodeCount - left.verifiedEpisodeCount
-        || right.box.sealedAt.localeCompare(left.box.sealedAt),
-    )
+    .sort(compareVerifiedEpisodeResults)
     .slice(0, options.maxResults);
 }

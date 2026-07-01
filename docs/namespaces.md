@@ -11,6 +11,8 @@ Namespaces allow multiple agents to share one Engram installation while keeping 
 - `namespacePolicies`: list of namespaces and read/write principals
 - `principalFromSessionKeyMode` + `principalFromSessionKeyRules`: derive a principal from `sessionKey`
 - `defaultRecallNamespaces`: typically `["self", "shared"]`
+- `scopeProfiles` + `defaultScopeProfile`: optional hosted-team layered scope profiles
+- `teams`: trusted team membership and team-project namespace templates used by scope profiles
 
 ## Cross-Agent Memory Access
 
@@ -29,6 +31,58 @@ If this directory is empty or missing, non-generalist agents may have limited cr
 **Categories eligible for promotion:** The `autoPromoteToSharedCategories` setting controls which memory categories are promoted. The default is `["fact", "correction", "decision", "preference"]`. The `"fact"` category was added in v9.0.67 — prior versions defaulted to `["correction", "decision", "preference"]` only.
 
 **Cross-agent recall:** The primary mechanism for cross-agent memory sharing is shared namespace promotion. When promotion is configured, memories extracted by any agent are copied to the shared namespace and become available to all agents during recall.
+
+## Scope Profiles
+
+`scopeProfiles` are optional. When absent, Remnic keeps the existing `defaultRecallNamespaces` behavior. When `defaultScopeProfile` points to a profile, implicit recall and write-producing access paths resolve the profile through the same core scope planner used for observe diagnostics.
+
+Example hosted coding profile:
+
+```json
+{
+  "namespacesEnabled": true,
+  "scopeProfiles": {
+    "teamCoding": {
+      "readOrder": ["userProject", "teamProject", "userGlobal", "serverShared"],
+      "writeDefault": "userProject",
+      "promotionTargets": ["teamProject", "serverShared"],
+      "teamProject": {
+        "namespaceTemplate": "team-{teamId}-project-{projectHash}"
+      },
+      "autoPromote": {
+        "enabled": false,
+        "targets": ["teamProject"],
+        "categories": ["decision", "rule", "procedure", "correction"],
+        "minConfidenceTier": "explicit"
+      }
+    }
+  },
+  "defaultScopeProfile": "teamCoding",
+  "teams": {
+    "pi": {
+      "principals": ["pi-geek", "pi-friend"],
+      "read": ["pi-geek", "pi-friend"],
+      "write": ["pi-geek", "pi-friend"],
+      "promote": ["pi-geek", "pi-friend"]
+    }
+  }
+}
+```
+
+Layer meanings:
+
+- `userProject`: the caller principal's self namespace overlaid with the resolved project or branch context.
+- `teamProject`: a trusted team/project namespace derived from `teams` plus the resolved project context.
+- `userGlobal`: the caller principal's self namespace without a project overlay.
+- `serverShared`: the configured `sharedNamespace`.
+
+Security rules:
+
+- Explicit `namespace` overrides still use the existing namespace policy checks.
+- Team-project namespaces are derived from trusted config, not accepted from caller-supplied namespace strings.
+- User-project namespaces remain principal-isolated by default; `pi-geek` and `pi-friend` in the same repo get different `userProject` namespaces.
+- Automatic profile promotion remains off unless `autoPromote.enabled` is true. The initial core contract exposes authorized promotion targets for surfaces; it does not make automatic cross-user sharing the default.
+- If project context is missing, Remnic skips project layers and falls back to the next authorized configured layer instead of inventing a project namespace.
 
 ## QMD Collections for Namespaces
 
