@@ -187,11 +187,22 @@ function parseScopeProfiles(value: unknown): Record<string, ScopeProfileConfig> 
       }
       return rawTier as typeof CONFIDENCE_TIERS[number];
     })();
-    const autoPromoteCategories: Array<typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number]> = Array.isArray(rawAutoPromote.categories)
-      ? rawAutoPromote.categories.filter((entry): entry is typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number] =>
-          SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES.includes(entry as any),
-        )
-      : ["fact", "correction", "decision", "preference"];
+    const autoPromoteCategories: Array<typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number]> = (() => {
+      if (!Array.isArray(rawAutoPromote.categories)) {
+        return ["fact", "correction", "decision", "preference"];
+      }
+      const categories: Array<typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number]> = [];
+      for (const entry of rawAutoPromote.categories) {
+        if (typeof entry !== "string" || !SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES.includes(entry as any)) {
+          throw new Error(
+            "scopeProfiles." + profileId + ".autoPromote.categories must contain only: " +
+              SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES.join(", "),
+          );
+        }
+        categories.push(entry as typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number]);
+      }
+      return categories;
+    })();
     profiles[profileId] = {
       readOrder,
       writeDefault: writeDefault as ScopeProfileLayerId,

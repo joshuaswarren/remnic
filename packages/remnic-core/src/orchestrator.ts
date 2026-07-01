@@ -7888,6 +7888,11 @@ export class Orchestrator {
                   const limit = typeof args[0] === "number" && Number.isFinite(args[0]) ? Math.max(0, args[0]) : undefined;
                   const incidents: any[] = [];
                   const seen = new Set<string>();
+                  const incidentTime = (incident: any): number => {
+                    const raw = incident?.updatedAt ?? incident?.openedAt ?? incident?.createdAt;
+                    const parsed = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
+                    return Number.isFinite(parsed) ? parsed : 0;
+                  };
                   for (const storage of profileStorages) {
                     for (const incident of await (storage.readContinuityIncidents as any)(...args)) {
                       const key = JSON.stringify(incident);
@@ -7896,6 +7901,11 @@ export class Orchestrator {
                       incidents.push(incident);
                     }
                   }
+                  incidents.sort(
+                    (left, right) =>
+                      incidentTime(right) - incidentTime(left) ||
+                      String(left?.id ?? "").localeCompare(String(right?.id ?? "")),
+                  );
                   return limit === undefined ? incidents : incidents.slice(0, limit);
                 };
               }

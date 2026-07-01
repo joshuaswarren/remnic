@@ -601,4 +601,15 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
       }),
     /minConfidenceTier must be one of/,
   );
+  assert.throws(
+    () =>
+      parseConfig({
+        scopeProfiles: {
+          bad: {
+            autoPromote: { categories: ["decison"] },
+          },
+        },
+      }),
+    /autoPromote.categories must contain only/,
+  );
 });
