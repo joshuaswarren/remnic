@@ -104,10 +104,20 @@ function walkSourceFiles(dir) {
 }
 
 function collectMetrics(oversizeThresholdLoc) {
+  // `null` marks a watchlist file that is missing on disk. That is never an
+  // improvement: a rename would otherwise evade the per-file ratchet while
+  // the debt lives on under a new name. Missing files fail the check (and
+  // block --update) until the WATCHLIST is deliberately edited.
   const watchlistLoc = {};
+  const missingWatchlistFiles = [];
   for (const relPath of WATCHLIST) {
     const abs = path.join(ROOT, ...relPath.split("/"));
-    watchlistLoc[relPath] = existsSync(abs) && statSync(abs).isFile() ? countLines(abs) : 0;
+    if (existsSync(abs) && statSync(abs).isFile()) {
+      watchlistLoc[relPath] = countLines(abs);
+    } else {
+      watchlistLoc[relPath] = null;
+      missingWatchlistFiles.push(relPath);
+    }
   }
 
   const sourceFiles = walkSourceFiles(CORE_SRC).sort();
@@ -130,6 +140,7 @@ function collectMetrics(oversizeThresholdLoc) {
 
   return {
     watchlistLoc,
+    missingWatchlistFiles,
     oversizedFiles,
     oversizedFileCount: oversizedFiles.length,
     scatteredConfigFlagReads,
@@ -161,6 +172,11 @@ function readBaseline() {
   }
   if (typeof metrics.watchlistLoc !== "object" || metrics.watchlistLoc === null) {
     fail("baseline metrics.watchlistLoc must be an object");
+  }
+  for (const [file, lines] of Object.entries(metrics.watchlistLoc)) {
+    if (!Number.isInteger(lines) || lines < 0) {
+      fail(`baseline metrics.watchlistLoc entry ${file} must be a non-negative integer`);
+    }
   }
   for (const key of ["oversizedFileCount", "scatteredConfigFlagReads"]) {
     if (!Number.isInteger(metrics[key]) || metrics[key] < 0) {
@@ -210,6 +226,12 @@ function main() {
 
   if (args.includes("--update")) {
     const metrics = collectMetrics(DEFAULT_OVERSIZE_THRESHOLD_LOC);
+    if (metrics.missingWatchlistFiles.length > 0) {
+      fail(
+        `cannot write baseline: watchlist file(s) missing on disk: ${metrics.missingWatchlistFiles.join(", ")}. ` +
+          "If a god file was deliberately split or renamed, remove it from WATCHLIST in this script first, then rerun --update.",
+      );
+    }
     writeBaseline(metrics, DEFAULT_OVERSIZE_THRESHOLD_LOC);
     console.log(`[ratchet] baseline written to ${BASELINE_PATH}`);
     for (const [file, lines] of Object.entries(metrics.watchlistLoc)) {
@@ -241,8 +263,13 @@ function main() {
       );
       continue;
     }
-    const currentLines = current.watchlistLoc[file] ?? 0;
-    if (currentLines > baseLines) {
+    const currentLines = current.watchlistLoc[file];
+    if (currentLines === null || currentLines === undefined) {
+      failures.push(
+        `${file} no longer exists but is still ratcheted — if this is a deliberate split/rename, ` +
+          "remove it from WATCHLIST and regenerate the baseline with --update in the same PR",
+      );
+    } else if (currentLines > baseLines) {
       failures.push(`${file} grew from ${baseLines} to ${currentLines} lines`);
     } else if (currentLines < baseLines) {
       improvements.push(`${file}: ${baseLines} -> ${currentLines} lines`);

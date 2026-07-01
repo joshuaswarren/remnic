@@ -28,7 +28,11 @@ function makeFixture() {
   const root = mkdtempSync(path.join(tmpdir(), "ratchet-test-"));
   const src = path.join(root, "packages", "remnic-core", "src");
   mkdirSync(src, { recursive: true });
+  // Every WATCHLIST file must exist — a missing one fails the check by design.
   writeFileSync(path.join(src, "orchestrator.ts"), "line\n".repeat(10));
+  writeFileSync(path.join(src, "cli.ts"), "export {};\n");
+  writeFileSync(path.join(src, "access-service.ts"), "export {};\n");
+  writeFileSync(path.join(src, "storage.ts"), "export {};\n");
   writeFileSync(path.join(src, "config.ts"), "export const parsed = { fooEnabled: true };\n");
   writeFileSync(
     path.join(src, "widget.ts"),
@@ -130,6 +134,35 @@ test("missing and invalid baselines are rejected with clear errors", () => {
     const invalid = runRatchets([], fixture);
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /not valid JSON/);
+  });
+});
+
+test("a missing watchlist file fails the check instead of counting as improvement", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    rmSync(path.join(fixture.src, "orchestrator.ts"));
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /orchestrator\.ts no longer exists but is still ratcheted/);
+
+    // --update must also refuse until WATCHLIST itself is edited.
+    const update = runRatchets(["--update"], fixture);
+    assert.equal(update.status, 1);
+    assert.match(update.stderr, /remove it from WATCHLIST in this script first/);
+  });
+});
+
+test("non-integer baseline watchlist entries are rejected", () => {
+  withFixture((fixture) => {
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    baseline.metrics.watchlistLoc["packages/remnic-core/src/orchestrator.ts"] = "many";
+    writeFileSync(fixture.baseline, JSON.stringify(baseline));
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /must be a non-negative integer/);
   });
 });
 
