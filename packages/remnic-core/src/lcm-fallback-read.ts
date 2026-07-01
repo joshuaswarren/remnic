@@ -57,10 +57,7 @@ const UNDEFINED_SESSION_SENTINEL = " <lcm-sessionless>";
 export function resolveLcmReadSessionIds(
   target: LcmReadSessionTarget,
 ): Array<string | undefined> {
-  const source =
-    target.sessionIds && target.sessionIds.length > 0
-      ? target.sessionIds
-      : [target.sessionId];
+  const source = target.sessionIds !== undefined ? target.sessionIds : [target.sessionId];
   const seen = new Set<string>();
   const out: Array<string | undefined> = [];
   for (const sessionId of source) {
@@ -69,8 +66,7 @@ export function resolveLcmReadSessionIds(
     seen.add(key);
     out.push(sessionId);
   }
-  // Defensive: an all-empty `sessionIds` still collapses to the single-key path.
-  return out.length > 0 ? out : [target.sessionId];
+  return out;
 }
 
 /**
