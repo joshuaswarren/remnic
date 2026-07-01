@@ -316,7 +316,7 @@ test("scope profile missing project context prefers user-global over shared fall
   assert.ok(plan);
   assert.equal(plan.writeLayer, "userGlobal");
   assert.equal(plan.writeNamespace, "pi-geek");
-  assert.deepEqual(plan.readNamespaces, ["shared"]);
+  assert.deepEqual(plan.readNamespaces, ["shared", "pi-geek"]);
   assert.ok(plan.warnings.some((warning) => warning.includes("writeDefault userProject unavailable")));
 });
 

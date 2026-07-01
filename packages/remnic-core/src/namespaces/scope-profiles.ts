@@ -293,6 +293,15 @@ export function resolveScopeProfilePlan(
       : userGlobalWriteLayer?.writable && userGlobalWriteLayer.namespace
         ? userGlobalWriteLayer
       : [...layerMap.values()].find((layer) => layer.writable && layer.namespace);
+  if (
+    fallbackWriteLayer?.id !== active.profile.writeDefault &&
+    fallbackWriteLayer?.readable &&
+    fallbackWriteLayer.namespace &&
+    !readNamespaces.includes(fallbackWriteLayer.namespace)
+  ) {
+    readNamespaces.push(fallbackWriteLayer.namespace);
+  }
+
   const warnings: string[] = [];
   if (!fallbackWriteLayer?.namespace) {
     warnings.push(`scope profile ${active.profileId} has no writable layer; falling back to ${baseNamespace}`);
