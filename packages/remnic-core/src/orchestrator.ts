@@ -7878,6 +7878,9 @@ export class Orchestrator {
               return target[prop];
             },
           });
+    const profileStorageDirs = Array.from(
+      new Set(profileStorages.map((storage) => storage.dir).filter((dir): dir is string => dir.length > 0)),
+    );
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
     throwIfRecallAborted(options.abortSignal);
@@ -8714,11 +8717,26 @@ export class Orchestrator {
       const VERIFIED_RECALL_TIMEOUT_MS = 15_000;
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const results = await Promise.race([
-        searchVerifiedEpisodes({
-          memoryDir: profileStorage.dir,
-          query: retrievalQuery,
-          maxResults,
-          boxRecallDays: this.config.boxRecallDays,
+        Promise.all(
+          profileStorageDirs.map((memoryDir) =>
+            searchVerifiedEpisodes({
+              memoryDir,
+              query: retrievalQuery,
+              maxResults,
+              boxRecallDays: this.config.boxRecallDays,
+            }),
+          ),
+        ).then((groups) => {
+          const merged: VerifiedEpisodeResult[] = [];
+          const seen = new Set<string>();
+          for (const result of groups.flat()) {
+            const key = JSON.stringify(result);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push(result);
+            if (merged.length >= maxResults) break;
+          }
+          return merged;
         }),
         new Promise<[]>((resolve) => {
           timeoutHandle = setTimeout(
@@ -9074,13 +9092,28 @@ export class Orchestrator {
           this.config.parallelRetrievalEnabled && maxPerAgent > 0
             ? Promise.all([
                 shouldRunAgent("direct", retrievalQuery, 0)
-                  ? runDirectAgent(
-                      retrievalQuery,
-                      profileStorage.dir,
-                      maxPerAgent,
-                    ).catch((err) => {
-                      log.debug(`DirectAgent pre-start failed: ${err}`);
-                      return [] as ParallelSearchResult[];
+                  ? Promise.all(
+                      profileStorageDirs.map((memoryDir) =>
+                        runDirectAgent(
+                          retrievalQuery,
+                          memoryDir,
+                          maxPerAgent,
+                        ).catch((err) => {
+                          log.debug(`DirectAgent pre-start failed: ${err}`);
+                          return [] as ParallelSearchResult[];
+                        }),
+                      ),
+                    ).then((groups) => {
+                      const merged: ParallelSearchResult[] = [];
+                      const seen = new Set<string>();
+                      for (const result of groups.flat()) {
+                        const key = result.path ?? JSON.stringify(result);
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        merged.push(result);
+                        if (merged.length >= maxPerAgent) break;
+                      }
+                      return merged;
                     })
                   : Promise.resolve([] as ParallelSearchResult[]),
                 shouldRunAgent("temporal", retrievalQuery, 0)
