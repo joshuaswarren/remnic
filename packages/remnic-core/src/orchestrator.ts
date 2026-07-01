@@ -7491,8 +7491,10 @@ export class Orchestrator {
             : null,
           codingOverlay,
         });
+    const profileEffectiveNamespace = scopeProfilePlan?.writeNamespace || scopeProfilePlan?.readNamespaces[0];
     const selfNamespace =
       namespaceOverride ??
+      profileEffectiveNamespace ??
       codingSelfNamespace ??
       principalSelfNamespace;
     let recallNamespaces: string[];
