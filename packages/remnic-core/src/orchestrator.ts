@@ -7818,8 +7818,19 @@ export class Orchestrator {
       !scopeProfilePlan || recallNamespaces.includes(selfNamespace);
     const profileStorageNamespace = selfNamespaceReadableForProfileSections
       ? selfNamespace
-      : recallNamespaces[0] ?? "scope-profile-no-readable-layer";
-    const profileStorage = await this.storageRouter.storageFor(profileStorageNamespace);
+      : recallNamespaces[0];
+    const emptyProfileStorage = new Proxy({ dir: "" } as any, {
+      get(target, prop: string | symbol) {
+        if (prop in target) return target[prop as keyof typeof target];
+        if (prop === "readProfile") return async () => "";
+        if (prop === "readQuestions" || prop === "listEntityNames") return async () => [];
+        if (prop === "readEntity" || prop === "readMemoryByPath") return async () => null;
+        return async () => [];
+      },
+    });
+    const profileStorage = profileStorageNamespace
+      ? await this.storageRouter.storageFor(profileStorageNamespace)
+      : emptyProfileStorage;
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
     throwIfRecallAborted(options.abortSignal);
