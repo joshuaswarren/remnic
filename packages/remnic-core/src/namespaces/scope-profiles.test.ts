@@ -292,6 +292,53 @@ test("scope profile expansion does not add user-project fallbacks when userProje
   );
 });
 
+test("scope profile expansion does not add global fallback when userGlobal is omitted from readOrder", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    codingMode: { projectScope: true, branchScope: true, globalFallback: true },
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    scopeProfiles: {
+      projectOnly: {
+        readOrder: ["userProject"],
+        writeDefault: "userProject",
+      },
+    },
+    defaultScopeProfile: "projectOnly",
+  });
+  const branchContext: CodingContext = {
+    projectId: "origin:aaaa0000",
+    branch: "feat/x",
+    rootPath: "origin:aaaa0000",
+    defaultBranch: "main",
+  };
+  const overlay = resolveCodingNamespaceOverlay(branchContext, config.codingMode, config.defaultNamespace);
+  assert.ok(overlay);
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "pi-geek",
+    codingContext: branchContext,
+    codingOverlay: overlay,
+  });
+  assert.ok(plan);
+
+  const expanded = expandScopeProfileReadNamespaces({
+    profilePlan: plan,
+    principalSelfNamespace: "pi-geek",
+    codingOverlay: overlay,
+    legacyRecallNamespaces: ["pi-geek", "shared"],
+  });
+
+  assert.deepEqual(expanded, [
+    combineNamespaces("pi-geek", overlay.namespace),
+    combineNamespaces("pi-geek", overlay.readFallbacks[0]!),
+  ]);
+  assert.ok(!expanded.includes("pi-geek"));
+});
+
 test("scope profile denies unauthorized team-project promotion while preserving readable layers", () => {
   const config = parseConfig({
     namespacesEnabled: true,

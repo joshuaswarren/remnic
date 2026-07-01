@@ -748,7 +748,7 @@ test("#1501 team-project profile observe reports the profile write namespace as 
     }),
   );
 
-  assert.equal(res.scopeDebug?.baseNamespace, "default");
+  assert.equal(res.scopeDebug?.baseNamespace, "pi-observer");
   assert.equal(res.scopeDebug?.writeLayer, "teamProject");
   assert.equal(res.scopeDebug?.codingOverlayApplied, true);
   assert.equal(res.namespace, expectedTeamProject);

@@ -221,39 +221,22 @@ for (const manifestPath of OPENCLAW_MANIFEST_PATHS) {
         openai: ["OPENAI_API_KEY"],
       },
     );
-    const expectedAuthChoice = manifest.id === "openclaw-engram"
-      ? {
-          provider: "openai",
-          method: "api-key",
-          choiceId: "remnic-openai-api-key",
-          choiceLabel: "OpenAI API key for Remnic memory extraction",
-          choiceHint:
-            "Remnic sends memory extraction, consolidation, and embedding requests to OpenAI or the configured OpenAI-compatible endpoint unless you route those tasks through OpenClaw gateway/local LLM settings.",
-          groupId: "remnic-memory",
-          groupLabel: "Remnic memory",
-          optionKey: "openaiApiKey",
-          cliFlag: "--openai-api-key",
-          cliOption: "--openai-api-key <key>",
-          cliDescription:
-            "OpenAI API key used by Remnic memory extraction, consolidation, and embedding flows.",
-          onboardingScopes: ["text-inference"],
-        }
-      : {
-          provider: "openai",
-          method: "api-key",
-          choiceId: "remnic-openai-api-key",
-          choiceLabel: "Optional OpenAI API key for Remnic plugin-mode extraction",
-          choiceHint:
-            "Not needed when Remnic uses the OpenClaw gateway model source. Set only if you intentionally use plugin mode with OpenAI or an OpenAI-compatible endpoint.",
-          groupId: "remnic-memory",
-          groupLabel: "Remnic memory",
-          optionKey: "openaiApiKey",
-          cliFlag: "--openai-api-key",
-          cliOption: "--openai-api-key <key>",
-          cliDescription:
-            "Optional OpenAI API key used by Remnic plugin-mode extraction, consolidation, and embedding flows.",
-          onboardingScopes: ["text-inference"],
-        };
+    const expectedAuthChoice = {
+      provider: "openai",
+      method: "api-key",
+      choiceId: "remnic-openai-api-key",
+      choiceLabel: "Optional OpenAI API key for Remnic plugin-mode extraction",
+      choiceHint:
+        "Not needed when Remnic uses the OpenClaw gateway model source. Set only if you intentionally use plugin mode with OpenAI or an OpenAI-compatible endpoint.",
+      groupId: "remnic-memory",
+      groupLabel: "Remnic memory",
+      optionKey: "openaiApiKey",
+      cliFlag: "--openai-api-key",
+      cliOption: "--openai-api-key <key>",
+      cliDescription:
+        "Optional OpenAI API key used by Remnic plugin-mode extraction, consolidation, and embedding flows.",
+      onboardingScopes: ["text-inference"],
+    };
     assert.deepEqual(manifest.providerAuthChoices, [
       expectedAuthChoice,
     ]);
