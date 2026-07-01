@@ -1647,7 +1647,7 @@ export class EngramAccessService {
         writeLayer: profilePlan.writeLayer,
         layers: profilePlan.layers,
         promotionTargets: profilePlan.promotionTargets,
-        codingOverlayApplied: codingOverlayApplied || profilePlan.writeLayer === "userProject" || profilePlan.writeLayer === "teamProject",
+        codingOverlayApplied,
         warnings: [...warnings, ...profilePlan.warnings],
       };
     }
@@ -1739,6 +1739,19 @@ export class EngramAccessService {
       codingOverlayApplied: true,
       warnings,
     };
+  }
+
+  private legacyResponseNamespaceForScope(scope: MemoryScopePlan): string {
+    if (scope.explicitNamespace) return scope.writeNamespace;
+    // Legacy overlay compatibility only applies to the principal-owned
+    // user-project layer. Hosted profile layers such as teamProject are not the
+    // old overlay response shape; reporting default there hides the real write.
+    if (scope.scopeProfile && scope.writeLayer !== "userProject") {
+      return scope.writeNamespace;
+    }
+    return scope.codingOverlayApplied
+      ? this.orchestrator.config.defaultNamespace
+      : scope.writeNamespace;
   }
 
   private async objectiveStateStoreLocationForNamespace(namespace: string): Promise<{
@@ -5273,15 +5286,11 @@ export class EngramAccessService {
     // the single authorization point (rule 22 / 39); the legacy field must reuse it
     // and never re-authorize. Pre-#1495 semantics were exactly
     // `resolveWritableNamespace(request.namespace)` (overlay-agnostic): the explicit
-    // namespace when supplied, else `config.defaultNamespace`. `scope.explicitNamespace`
-    // carries the authorized explicit value; the no-overlay implicit
-    // `scope.writeNamespace` IS `config.defaultNamespace`, so an unqualified observe
-    // stays byte-for-byte identical to the legacy response.
-    const namespace = scope.explicitNamespace
-      ? scope.writeNamespace
-      : scope.codingOverlayApplied
-        ? this.orchestrator.config.defaultNamespace
-        : scope.writeNamespace;
+    // namespace when supplied, else `config.defaultNamespace` for user-project
+    // coding overlays. Hosted scope-profile layers such as `teamProject` report
+    // their effective profile write namespace because there is no legacy
+    // overlay-compatible base namespace for those writes.
+    const namespace = this.legacyResponseNamespaceForScope(scope);
     const shouldWriteObjectiveState =
       this.orchestrator.config.objectiveStateMemoryEnabled === true &&
       this.orchestrator.config.objectiveStateSnapshotWritesEnabled === true;
@@ -5995,13 +6004,10 @@ export class EngramAccessService {
     // `resolveWritableNamespace(request.namespace)` (overlay-agnostic) — the
     // authorized explicit namespace when supplied, else `config.defaultNamespace`.
     // DERIVED from the scope plan (NOT a second auth pass, #1505 thread jvO):
-    // explicit ⇒ writeNamespace; coding overlay ⇒ defaultNamespace; no overlay ⇒
-    // writeNamespace (== defaultNamespace). Identical to observe's legacy field.
-    const namespace = scope.explicitNamespace
-      ? scope.writeNamespace
-      : scope.codingOverlayApplied
-        ? this.orchestrator.config.defaultNamespace
-        : scope.writeNamespace;
+    // explicit ⇒ writeNamespace; user-project coding overlay ⇒ defaultNamespace;
+    // non-user scope-profile layer/no overlay ⇒ writeNamespace. Identical to
+    // observe's legacy field.
+    const namespace = this.legacyResponseNamespaceForScope(scope);
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
       return {
         enabled: false,
@@ -6060,11 +6066,7 @@ export class EngramAccessService {
     // overlay write and never throws `not writable: default` for a validly scoped
     // observe's queue.
     const scope = await this.resolveMemoryScopePlan(request);
-    const namespace = scope.explicitNamespace
-      ? scope.writeNamespace
-      : scope.codingOverlayApplied
-        ? this.orchestrator.config.defaultNamespace
-        : scope.writeNamespace;
+    const namespace = this.legacyResponseNamespaceForScope(scope);
     if (!this.orchestrator.lcmEngine || !this.orchestrator.lcmEngine.enabled) {
       return {
         enabled: false,

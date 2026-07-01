@@ -701,6 +701,62 @@ test("#1501 profile write auth rejects memory_store when no profile layer is wri
   );
 });
 
+test("#1501 team-project profile observe reports the profile write namespace as legacy namespace", async () => {
+  const projectId = projectTagProjectId("Remnic");
+  const expectedTeamProject = `team-pi-project-${stableHash(projectId)}`;
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      {
+        name: expectedTeamProject,
+        readPrincipals: ["pi-observer"],
+        writePrincipals: ["pi-observer"],
+      },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-observer:", principal: "pi-observer" }],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["teamProject", "serverShared"],
+        writeDefault: "teamProject",
+        promotionTargets: ["teamProject"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+    teams: {
+      pi: {
+        principals: ["pi-observer"],
+        read: ["pi-observer"],
+        write: ["pi-observer"],
+        promote: ["pi-observer"],
+      },
+    },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  const res = await service.observe(
+    observeRequest({
+      sessionKey: "pi-observer:abc123",
+      authenticatedPrincipal: "pi-observer",
+      projectTag: "Remnic",
+    }),
+  );
+
+  assert.equal(res.scopeDebug?.baseNamespace, "default");
+  assert.equal(res.scopeDebug?.writeLayer, "teamProject");
+  assert.equal(res.scopeDebug?.codingOverlayApplied, true);
+  assert.equal(res.namespace, expectedTeamProject);
+  assert.equal(res.effectiveNamespace, expectedTeamProject);
+  assert.equal(probe.lcmCalls[0]?.sessionKey, encodeNs(expectedTeamProject, "pi-observer:abc123"));
+  assert.equal(probe.extractionCalls[0]?.writeNamespaceOverride, expectedTeamProject);
+});
+
 test("#1495 skipExtraction does not enqueue extraction but still archives LCM under the effective namespace", async () => {
   const probe = makeObserveProbe(withSelfPolicyPrefix("pi-geek"));
   const service = new EngramAccessService(probe.orch);
