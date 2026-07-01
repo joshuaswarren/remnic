@@ -7831,16 +7831,19 @@ export class Orchestrator {
     const profileStorages = await Promise.all(
       profileStorageNamespaces.map((namespace) => this.storageRouter.storageFor(namespace)),
     );
-    const emptyProfileStorage = new Proxy({ dir: "" } as any, {
+    const emptyProfileStorage = new Proxy(
+      { dir: path.join(this.config.memoryDir, ".empty-scope-profile") } as any,
+      {
       get(target, prop: string | symbol) {
         if (prop in target) return target[prop];
         if (prop === "readProfile") return async () => "";
         if (prop === "readQuestions" || prop === "listEntityNames" || prop === "readContinuityIncidents") return async () => [];
         if (prop === "readIdentityAnchor" || prop === "readIdentityImprovementLoops") return async () => "";
         if (prop === "readEntity" || prop === "readMemoryByPath") return async () => null;
-        return async () => [];
+          return async () => [];
+        },
       },
-    });
+    );
     const profileStorage =
       profileStorages.length <= 1
         ? profileStorages[0] ?? emptyProfileStorage
@@ -8292,17 +8295,18 @@ export class Orchestrator {
         const knowledgeIndexMaxChars =
           this.getRecallSectionNumber("knowledge-index", "maxChars") ??
           this.config.knowledgeIndexMaxChars;
+        const knowledgeIndexMaxEntities =
+          this.getRecallSectionNumber("knowledge-index", "maxEntities") ??
+          this.config.knowledgeIndexMaxEntities;
         const knowledgeIndexOptions = {
-          maxEntities: this.getRecallSectionNumber(
-            "knowledge-index",
-            "maxEntities",
-          ),
+          maxEntities: knowledgeIndexMaxEntities,
           maxChars: knowledgeIndexMaxChars,
         };
         const ki = scopeProfilePlan
           ? await (async () => {
               const perLayerOptions = {
                 ...knowledgeIndexOptions,
+                maxEntities: Number.MAX_SAFE_INTEGER,
                 maxChars: Number.MAX_SAFE_INTEGER,
               };
               const results = await Promise.all(
@@ -8313,7 +8317,30 @@ export class Orchestrator {
               const sections = results
                 .map((result) => result.result.trim())
                 .filter((section) => section.length > 0);
-              const merged = sections.join("\n\n");
+              const maxRows = Math.max(0, Math.floor(knowledgeIndexMaxEntities));
+              const rows: string[] = [];
+              let header: string[] | null = null;
+              for (const section of sections) {
+                const lines = section
+                  .split("\n")
+                  .map((line) => line.trimEnd())
+                  .filter((line) => line.length > 0);
+                const tableHeaderIndex = lines.findIndex((line) =>
+                  line.startsWith("| Entity |"),
+                );
+                if (tableHeaderIndex === -1) continue;
+                header ??= lines.slice(0, tableHeaderIndex + 2);
+                for (const row of lines.slice(tableHeaderIndex + 2)) {
+                  if (!row.startsWith("|")) continue;
+                  if (rows.length >= maxRows) break;
+                  rows.push(row);
+                }
+                if (rows.length >= maxRows) break;
+              }
+              const merged =
+                header && rows.length > 0
+                  ? `${header.join("\n")}\n${rows.join("\n")}\n`
+                  : "";
               return {
                 result: this.truncateRecallSectionToBudget(
                   merged,
