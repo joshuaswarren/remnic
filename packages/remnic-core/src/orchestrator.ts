@@ -13916,14 +13916,28 @@ export class Orchestrator {
           sharedProfileLayer?.readable &&
           sharedProfileLayer.writable,
       );
+    const profileAutoPromotionAllows = (
+      category: string,
+      confidence: number,
+    ): boolean => {
+      if (!scopeProfileWritePlan) return false;
+      const actualTier = confidenceTier(confidence);
+      const actualRank = confidenceTierOrder.indexOf(actualTier);
+      if (actualRank === -1) return false;
+      const autoPromote = scopeProfileWritePlan.profile.autoPromote;
+      if (!autoPromote.enabled) return false;
+      if (!autoPromote.categories.includes(category as any)) return false;
+      const minimumRank = confidenceTierOrder.indexOf(autoPromote.minConfidenceTier);
+      return minimumRank !== -1 && actualRank <= minimumRank;
+    };
     const sharedAutoPromotionAllows = (
       category: string,
       confidence: number,
     ): boolean => {
-      const actualTier = confidenceTier(confidence);
-      const actualRank = confidenceTierOrder.indexOf(actualTier);
-      if (actualRank === -1) return false;
       if (!scopeProfileWritePlan) {
+        const actualTier = confidenceTier(confidence);
+        const actualRank = confidenceTierOrder.indexOf(actualTier);
+        if (actualRank === -1) return false;
         if (!this.config.autoPromoteToSharedEnabled) return false;
         if (!this.config.autoPromoteToSharedCategories.includes(category as any))
           return false;
@@ -13932,12 +13946,10 @@ export class Orchestrator {
         );
         return minimumRank !== -1 && actualRank <= minimumRank;
       }
-      const autoPromote = scopeProfileWritePlan.profile.autoPromote;
-      if (!autoPromote.enabled) return false;
-      if (!autoPromote.targets.includes("serverShared")) return false;
-      if (!autoPromote.categories.includes(category as any)) return false;
-      const minimumRank = confidenceTierOrder.indexOf(autoPromote.minConfidenceTier);
-      return minimumRank !== -1 && actualRank <= minimumRank;
+      return (
+        scopeProfileWritePlan.profile.autoPromote.targets.includes("serverShared") &&
+        profileAutoPromotionAllows(category, confidence)
+      );
     };
     const shouldPromoteToShared = (
       targetStorage: StorageManager,
@@ -13957,6 +13969,101 @@ export class Orchestrator {
         return false;
       return true;
     };
+    const promoteMemoryToProfileTargets = async (options: {
+      sourceStorage: StorageManager;
+      category: string;
+      content: string;
+      confidence: number;
+      tags: string[];
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+      sourceMemoryId: string;
+      importance?: ReturnType<typeof scoreImportance>;
+      intentGoal?: string;
+      intentActionType?: string;
+      intentEntityTypes?: string[];
+      memoryKind?: MemoryFrontmatter["memoryKind"];
+      validAt?: string;
+      source: string;
+    }): Promise<void> => {
+      if (
+        !scopeProfileWritePlan ||
+        !profileAutoPromotionAllows(options.category, options.confidence)
+      )
+        return;
+      const autoTargets = new Set(scopeProfileWritePlan.profile.autoPromote.targets);
+      const targets = scopeProfileWritePlan.promotionTargets.filter(
+        (target) =>
+          target.target !== "serverShared" &&
+          autoTargets.has(target.target) &&
+          target.authorized &&
+          target.namespace,
+      );
+      if (targets.length === 0) return;
+      const rawContent =
+        citationEnabled && hasCitationForTemplate(options.content, citationTemplate)
+          ? stripCitationForTemplate(options.content, citationTemplate)
+          : options.content;
+      const citedContent = applyInlineCitation(rawContent);
+      const sanitizedBase = sanitizeMemoryContent(rawContent);
+      const dedupContent =
+        options.category === "fact" &&
+        options.structuredAttributes &&
+        Object.keys(options.structuredAttributes).length > 0
+          ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs(options.structuredAttributes)}]`
+          : sanitizedBase.text;
+      for (const target of targets) {
+        if (!target.namespace) continue;
+        try {
+          const targetStorage = await this.storageRouter.storageFor(target.namespace);
+          if (targetStorage.dir === options.sourceStorage.dir) continue;
+          if (
+            options.category === "fact" &&
+            (await targetStorage.hasFactContentHash(dedupContent))
+          ) {
+            continue;
+          }
+          const promotedId = await targetStorage.writeMemory(
+            options.category as any,
+            citedContent,
+            {
+              confidence: options.confidence,
+              tags: [...options.tags, `${target.target}-promotion`],
+              entityRef: options.entityRef,
+              structuredAttributes: options.structuredAttributes,
+              source: `${options.source}-${target.target}-promotion`,
+              importance: options.importance,
+              lineage: [options.sourceMemoryId],
+              sourceMemoryId: options.sourceMemoryId,
+              intentGoal: options.intentGoal,
+              intentActionType: options.intentActionType,
+              intentEntityTypes: options.intentEntityTypes,
+              memoryKind: options.memoryKind,
+              validAt: options.validAt,
+              contentHashSource: rawContent,
+            },
+          );
+          this.markCatalogWrite(target.namespace, targetStorage.dir);
+          trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false });
+          await this.indexPersistedMemory(targetStorage, promotedId);
+          trackBehaviorSignals(
+            targetStorage,
+            buildBehaviorSignalsForMemory({
+              memoryId: promotedId,
+              category: options.category as any,
+              content: options.content,
+              namespace: target.namespace,
+              confidence: options.confidence,
+              source: "extraction",
+            }),
+          );
+        } catch (err) {
+          log.warn(
+            `persistExtraction: ${target.target} promotion failed open for ${options.sourceMemoryId}: ${err}`,
+          );
+        }
+      }
+    };
     const promoteMemoryToShared = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -13974,6 +14081,7 @@ export class Orchestrator {
       validAt?: string;
       source: string;
     }): Promise<void> => {
+      await promoteMemoryToProfileTargets(options);
       if (
         !shouldPromoteToShared(
           options.sourceStorage,
