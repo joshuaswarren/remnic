@@ -7599,11 +7599,14 @@ export class Orchestrator {
     // session_id set. Single-user / no-overlay recall passes a single-namespace
     // set that collapses to the raw `sessionKey`, so this is `[sessionKey]` —
     // byte-for-byte the pre-#1495 single-key behavior.
-    const lcmReadSessionIds = lcmReadSessionIdsForNamespaces(
-      lcmReadNamespaces,
-      sessionKey,
-      this.config.defaultNamespace,
-    );
+    const lcmReadSessionIds =
+      scopeProfilePlan && !sessionKey
+        ? []
+        : lcmReadSessionIdsForNamespaces(
+            lcmReadNamespaces,
+            sessionKey,
+            this.config.defaultNamespace,
+          );
     // Query an LCM-backed read across the ordered read key set and return the
     // FIRST non-empty result (#1505 fallback-namespace unification). The primary
     // overlay key is tried first; if a branch-scoped session has no rows under its
@@ -7621,9 +7624,12 @@ export class Orchestrator {
     //
     // When the set is a single key (single-user / no-overlay / explicit-namespace),
     // this is exactly one call — unchanged. `lcmSessionId` is `string | undefined`:
-    // a SESSIONLESS recall yields the single `undefined` key so the read runs ONE
-    // archive-wide read with no `session_id` filter (pre-#1505 behavior). NEVER the
-    // literal "default" session id (codex P2).
+    // a legacy SESSIONLESS recall yields the single `undefined` key so the read
+    // runs ONE archive-wide read with no `session_id` filter (pre-#1505 behavior).
+    // Hosted scope profiles are stricter: without a session key there is no
+    // namespace-scoped LCM key to query, so the key set stays empty and LCM cannot
+    // bypass the profile read stack via an archive-wide read. NEVER the literal
+    // "default" session id (codex P2).
     const firstNonEmptyLcmRead = async <T>(
       read: (lcmSessionId: string | undefined) => Promise<T>,
       isEmpty: (value: T) => boolean,

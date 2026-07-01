@@ -1524,10 +1524,15 @@ export function parseConfig(raw: unknown): PluginConfig {
   const scopeProfiles = parseScopeProfiles(cfg.scopeProfiles);
   const teams = parseScopeTeams(cfg.teams);
   validateScopeProfileTeamReferences(scopeProfiles, teams);
-  const defaultScopeProfile =
-    typeof cfg.defaultScopeProfile === "string" && cfg.defaultScopeProfile.trim().length > 0
-      ? cfg.defaultScopeProfile.trim()
-      : undefined;
+  const defaultScopeProfile = (() => {
+    if (cfg.defaultScopeProfile === undefined || cfg.defaultScopeProfile === null) {
+      return undefined;
+    }
+    if (typeof cfg.defaultScopeProfile !== "string" || cfg.defaultScopeProfile.trim().length === 0) {
+      throw new Error("defaultScopeProfile must be a non-empty string");
+    }
+    return cfg.defaultScopeProfile.trim();
+  })();
   if (
     defaultScopeProfile !== undefined &&
     scopeProfiles[defaultScopeProfile] === undefined

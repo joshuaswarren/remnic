@@ -673,6 +673,16 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
   assert.throws(
     () =>
       parseConfig({
+        defaultScopeProfile: 42,
+        scopeProfiles: {
+          hosted: { readOrder: ["userProject"], writeDefault: "userProject" },
+        },
+      }),
+    /defaultScopeProfile must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
         scopeProfiles: {
           bad: {
             autoPromote: { minConfidenceTier: "implide" },
