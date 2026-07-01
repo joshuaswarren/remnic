@@ -474,6 +474,58 @@ test("scope profile chooses a readable implicit team mapping before promote-only
   assert.deepEqual(plan.readNamespaces, ["team-core-project-2d7ea3c1"]);
 });
 
+test("scope profile prefers promotable implicit team mapping for promotion-only team targets", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+    scopeProfiles: {
+      hosted: {
+        readOrder: ["userGlobal"],
+        writeDefault: "userGlobal",
+        promotionTargets: ["teamProject"],
+        autoPromote: { enabled: true, targets: ["teamProject"] },
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+      },
+    },
+    defaultScopeProfile: "hosted",
+    teams: {
+      ops: {
+        principals: ["alice"],
+        read: ["alice"],
+        write: [],
+        promote: [],
+      },
+      core: {
+        principals: ["alice"],
+        read: ["alice"],
+        write: [],
+        promote: ["alice"],
+      },
+    },
+  });
+  const overlay = resolveCodingNamespaceOverlay(codingContext, config.codingMode, config.defaultNamespace);
+  assert.ok(overlay);
+
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "alice",
+    codingContext,
+    codingOverlay: overlay,
+  });
+
+  assert.ok(plan);
+  assert.equal(plan.writeNamespace, "alice");
+  assert.deepEqual(plan.readNamespaces, ["alice"]);
+  assert.deepEqual(
+    plan.promotionTargets.map((target) => [target.target, target.namespace, target.authorized]),
+    [["teamProject", "team-core-project-2d7ea3c1", true]],
+  );
+});
+
 test("scope profile denies unauthorized team-project promotion while preserving readable layers", () => {
   const config = parseConfig({
     namespacesEnabled: true,

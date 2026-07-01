@@ -71,3 +71,61 @@ test("shared context recall injects latest cross-signals summary when available"
     await rm(sharedDir, { recursive: true, force: true });
   }
 });
+
+test("scope profile recall omits shared context when serverShared is not readable", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-shared-recall-profile-memory-"));
+  const sharedDir = await mkdtemp(path.join(os.tmpdir(), "engram-shared-recall-profile-shared-"));
+
+  try {
+    const cfg = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [
+        { name: "default", readPrincipals: ["*"], writePrincipals: ["*"] },
+        { name: "shared", readPrincipals: ["*"], writePrincipals: ["*"] },
+      ],
+      defaultScopeProfile: "privateOnly",
+      scopeProfiles: {
+        privateOnly: {
+          readOrder: ["userGlobal"],
+          writeDefault: "userGlobal",
+        },
+      },
+      qmdEnabled: false,
+      sharedContextEnabled: true,
+      sharedContextDir: sharedDir,
+      sharedContextMaxInjectChars: 2400,
+      knowledgeIndexEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      injectQuestions: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+      recallPipeline: [
+        { id: "shared-context", enabled: true },
+      ],
+    });
+    const orchestrator = new Orchestrator(cfg);
+    assert.ok(orchestrator.sharedContext);
+    await orchestrator.sharedContext!.ensureStructure();
+    await orchestrator.sharedContext!.appendPrioritiesInbox({
+      agentId: "generalist",
+      text: "- Shared priority that a private-only profile must not inject.",
+    });
+
+    const context = await (orchestrator as any).recallInternal(
+      "What shared priority is active?",
+      "default",
+    );
+
+    assert.doesNotMatch(context, /## Shared Context/);
+    assert.doesNotMatch(context, /private-only profile must not inject/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(sharedDir, { recursive: true, force: true });
+  }
+});

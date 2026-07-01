@@ -78,7 +78,6 @@ function makeObserveProbe(overrides: Partial<PluginConfig> = {}): ObserveProbe {
 
   const config = {
     namespacesEnabled: true,
-    memoryDir: "/synthetic/remnic-memory-search",
     defaultNamespace: "default",
     sharedNamespace: "shared",
     namespacePolicies: [],

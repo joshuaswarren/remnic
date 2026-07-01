@@ -124,9 +124,18 @@ function resolveTeam(
   const readableTeams = Object.entries(config.teams ?? {}).filter(([, team]) =>
     principalListed(team.principals, principal) || principalListed(team.read, principal),
   );
-  if (profile.writeDefault === "teamProject" || profile.readOrder.includes("teamProject")) {
+  const needsWritableTeam = profile.writeDefault === "teamProject" || profile.readOrder.includes("teamProject");
+  if (needsWritableTeam) {
     const writableTeam = readableTeams.find(([, team]) => principalListed(team.write, principal));
     if (writableTeam) return { teamId: writableTeam[0], team: writableTeam[1] };
+  }
+  const needsPromotableTeam =
+    profile.promotionTargets.includes("teamProject") || profile.autoPromote.targets.includes("teamProject");
+  if (needsPromotableTeam) {
+    const promotableTeam = readableTeams.find(
+      ([, team]) => principalListed(team.promote, principal) || principalListed(team.write, principal),
+    );
+    if (promotableTeam) return { teamId: promotableTeam[0], team: promotableTeam[1] };
   }
   const firstReadableTeam = readableTeams[0];
   return firstReadableTeam

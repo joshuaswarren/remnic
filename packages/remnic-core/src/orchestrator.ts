@@ -7993,6 +7993,14 @@ export class Orchestrator {
       )
         return null;
       if (!this.sharedContext) return null;
+      if (
+        scopeProfilePlan &&
+        !(
+          scopeProfilePlan.profile.readOrder.includes("serverShared") &&
+          scopeProfilePlan.readNamespaces.includes(this.config.sharedNamespace)
+        )
+      )
+        return null;
       const t0 = Date.now();
       const [priorities, roundtable, crossSignals] = await Promise.all([
         this.sharedContext.readPriorities(),
