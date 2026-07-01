@@ -292,7 +292,7 @@ export function resolveScopeProfilePlan(
       ? preferredWriteLayer
       : userGlobalWriteLayer?.writable && userGlobalWriteLayer.namespace
         ? userGlobalWriteLayer
-      : [...layerMap.values()].find((layer) => layer.writable && layer.namespace);
+        : undefined;
   if (
     fallbackWriteLayer?.id !== active.profile.writeDefault &&
     fallbackWriteLayer?.readable &&

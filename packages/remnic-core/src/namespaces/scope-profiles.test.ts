@@ -343,6 +343,38 @@ test("scope profile missing project context falls back without inventing project
   assert.ok(plan.warnings.some((warning) => warning.includes("writeDefault userProject unavailable")));
 });
 
+test("scope profile unavailable write default does not fall back to shared writes", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: [] },
+      { name: "shared", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["userProject", "serverShared"],
+        writeDefault: "userProject",
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+  });
+
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "pi-geek",
+    codingContext: null,
+    codingOverlay: null,
+  });
+
+  assert.ok(plan);
+  assert.equal(plan.writeLayer, "userGlobal");
+  assert.equal(plan.writeNamespace, "pi-geek");
+  assert.ok(plan.warnings.some((warning) => warning.includes("has no writable layer")));
+  assert.deepEqual(plan.readNamespaces, ["shared"]);
+});
+
 test("scope profile missing project context prefers user-global over shared fallback", () => {
   const config = parseConfig({
     namespacesEnabled: true,
