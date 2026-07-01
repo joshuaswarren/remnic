@@ -354,9 +354,11 @@ export function expandScopeProfileReadNamespaces(options: {
   const add = (namespace: string | undefined): void => {
     if (namespace && !out.includes(namespace)) out.push(namespace);
   };
-  const userProjectReadable = options.profilePlan.layers.some(
-    (layer) => layer.id === "userProject" && layer.readable && layer.namespace,
-  );
+  const userProjectReadable =
+    options.profilePlan.profile.readOrder.includes("userProject") &&
+    options.profilePlan.layers.some(
+      (layer) => layer.id === "userProject" && layer.readable && layer.namespace,
+    );
   if (userProjectReadable) {
     for (const fallback of options.codingOverlay?.readFallbacks ?? []) {
       add(combineNamespaces(options.principalSelfNamespace, fallback));

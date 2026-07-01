@@ -210,6 +210,61 @@ test("scope profile effective reads retain coding fallbacks without omitted lega
   );
 });
 
+test("scope profile expansion does not add user-project fallbacks when userProject is omitted from readOrder", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    defaultRecallNamespaces: ["self", "shared"],
+    codingMode: { projectScope: true, branchScope: true },
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    scopeProfiles: {
+      teamOnly: {
+        readOrder: ["teamProject"],
+        writeDefault: "userProject",
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+      },
+    },
+    defaultScopeProfile: "teamOnly",
+    teams: {
+      pi: {
+        principals: ["pi-geek"],
+        read: ["pi-geek"],
+        write: ["pi-geek"],
+        promote: ["pi-geek"],
+      },
+    },
+  });
+  const branchContext: CodingContext = {
+    projectId: "origin:aaaa0000",
+    branch: "feat/x",
+    rootPath: "origin:aaaa0000",
+    defaultBranch: "main",
+  };
+  const overlay = resolveCodingNamespaceOverlay(branchContext, config.codingMode, config.defaultNamespace);
+  assert.ok(overlay);
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "pi-geek",
+    codingContext: branchContext,
+    codingOverlay: overlay,
+  });
+  assert.ok(plan);
+  const teamProjectNamespace = `team-pi-project-${stableHash(branchContext.projectId)}`;
+
+  assert.deepEqual(
+    expandScopeProfileReadNamespaces({
+      profilePlan: plan,
+      principalSelfNamespace: "pi-geek",
+      codingOverlay: overlay,
+      legacyRecallNamespaces: ["pi-geek", "shared"],
+    }),
+    [teamProjectNamespace],
+  );
+});
+
 test("scope profile denies unauthorized team-project promotion while preserving readable layers", () => {
   const config = parseConfig({
     namespacesEnabled: true,
