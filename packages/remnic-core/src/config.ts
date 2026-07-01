@@ -91,10 +91,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseStringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
-    : [];
+function parseStringList(value: unknown, keyName: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(keyName + " must be an array");
+  }
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.length === 0) {
+      throw new Error(keyName + " must contain only non-empty strings");
+    }
+    out.push(entry);
+  }
+  return out;
 }
 
 function parseScopeProfileLayerList(
@@ -239,14 +248,14 @@ function parseScopeTeams(value: unknown): Record<string, ScopeTeamConfig> {
       throw new Error(`teams.${teamId} must be an object`);
     }
     teams[teamId] = {
-      principals: parseStringList(rawTeam.principals),
+      principals: parseStringList(rawTeam.principals, `teams.${teamId}.principals`),
       ...(typeof rawTeam.projectNamespaceTemplate === "string" &&
       rawTeam.projectNamespaceTemplate.length > 0
         ? { projectNamespaceTemplate: rawTeam.projectNamespaceTemplate }
         : {}),
-      read: parseStringList(rawTeam.read),
-      write: parseStringList(rawTeam.write),
-      promote: parseStringList(rawTeam.promote),
+      read: parseStringList(rawTeam.read, `teams.${teamId}.read`),
+      write: parseStringList(rawTeam.write, `teams.${teamId}.write`),
+      promote: parseStringList(rawTeam.promote, `teams.${teamId}.promote`),
     };
   }
   return teams;

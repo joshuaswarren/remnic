@@ -254,6 +254,7 @@ import {
   type VerifiedEpisodeResult,
 } from "./verified-recall.js";
 import {
+  compareVerifiedSemanticRuleResults,
   searchVerifiedSemanticRules,
   type VerifiedSemanticRuleResult,
 } from "./semantic-rule-verifier.js";
@@ -8868,10 +8869,27 @@ export class Orchestrator {
       const VERIFIED_RULES_TIMEOUT_MS = 15_000;
       let rulesTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const results = await Promise.race([
-        searchVerifiedSemanticRules({
-          memoryDir: this.config.memoryDir,
-          query: retrievalQuery,
-          maxResults,
+        Promise.all(
+          profileStorageDirs.map((memoryDir) =>
+            searchVerifiedSemanticRules({
+              memoryDir,
+              query: retrievalQuery,
+              maxResults,
+            }).catch((err) => {
+              log.debug(`verified rules directory scan failed: ${err}`);
+              return [] as VerifiedSemanticRuleResult[];
+            }),
+          ),
+        ).then((groups) => {
+          const merged: VerifiedSemanticRuleResult[] = [];
+          const seen = new Set<string>();
+          for (const result of groups.flat()) {
+            const key = result.rule.frontmatter.id || result.rule.path || JSON.stringify(result);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push(result);
+          }
+          return merged.sort(compareVerifiedSemanticRuleResults).slice(0, maxResults);
         }),
         new Promise<[]>((resolve) => {
           rulesTimeoutHandle = setTimeout(

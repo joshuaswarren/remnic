@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { combineNamespaces, type CodingNamespaceOverlay } from "../coding/coding-namespace.js";
 import { stableHash } from "../coding/git-context.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
@@ -64,7 +66,7 @@ function principalListed(list: string[], principal: string | undefined): boolean
 function derivedScopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string | null {
   if (!principal || principal === config.defaultNamespace || principal === config.sharedNamespace) return null;
   if (isSafeRouteNamespace(principal)) return principal;
-  return "principal-" + stableHash(principal);
+  return "principal-" + createHash("sha256").update(principal).digest("hex");
 }
 
 function scopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string {

@@ -536,9 +536,10 @@ test("scope profile derives isolated safe namespace for unsafe principal ids", (
     codingOverlay: null,
   });
 
-  const expected = "principal-" + stableHash("alice@example.com");
   assert.ok(plan);
-  assert.equal(plan.baseNamespace, expected);
+  assert.match(plan.baseNamespace, /^principal-[a-f0-9]{64}$/);
+  assert.notEqual(plan.baseNamespace, "principal-" + stableHash("alice@example.com"));
+  const expected = plan.baseNamespace;
   assert.deepEqual(plan.readNamespaces, [expected]);
   assert.equal(plan.writeNamespace, expected);
 });
@@ -642,5 +643,27 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
         },
       }),
     /autoPromote.categories must contain only/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        teams: {
+          core: {
+            read: "alice",
+          },
+        },
+      }),
+    /teams.core.read must be an array/,
+  );
+  assert.throws(
+    () =>
+      parseConfig({
+        teams: {
+          core: {
+            read: ["alice", 42],
+          },
+        },
+      }),
+    /teams.core.read must contain only non-empty strings/,
   );
 });
