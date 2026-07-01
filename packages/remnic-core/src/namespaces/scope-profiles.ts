@@ -444,7 +444,10 @@ export function expandScopeProfileReadNamespaces(options: {
     for (const fallback of options.codingOverlay?.readFallbacks ?? []) {
       if (fallback === "" && !userGlobalReadable) continue;
       const fallbackNamespace = combineNamespaces(options.principalSelfNamespace, fallback);
-      if (canReadScopeProfileNamespace(options.principal, fallbackNamespace, options.config)) {
+      if (
+        !hasExplicitNamespacePolicy(fallbackNamespace, options.config) ||
+        canReadScopeProfileNamespace(options.principal, fallbackNamespace, options.config)
+      ) {
         add(fallbackNamespace);
       }
     }
