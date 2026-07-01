@@ -935,13 +935,6 @@ function inferCurrentStateStatus(
   return inferMemoryStatus(frontmatter, pathRel, fallbackStatus);
 }
 
-/**
- * Entity alias table loaded from the user's local config.
- * Populated by StorageManager.loadAliases() at startup.
- * Falls back to built-in structural aliases (e.g. "open-claw" → "openclaw").
- */
-let userAliases: Record<string, string> = {};
-
 /** Built-in aliases for common structural normalizations (no personal data) */
 const BUILTIN_ALIASES: Record<string, string> = {
   openclaw: "openclaw",
@@ -953,9 +946,17 @@ const BUILTIN_ALIASES: Record<string, string> = {
  * Strips non-alphanumeric chars, collapses hyphens, removes type prefix duplication.
  * e.g. "My Project" → "my-project"
  *
- * Checks user-defined aliases (from config/aliases.json) first, then built-in aliases.
+ * Checks caller-provided user aliases first, then built-in aliases. Alias
+ * tables are instance state on StorageManager (issue #1534) — use
+ * `storageManager.normalizeEntityName(raw, type)` when normalizing within a
+ * store, or pass `storageManager.entityAliases` explicitly. Without an
+ * aliases argument only the built-in structural aliases apply.
  */
-export function normalizeEntityName(raw: string, type: string): string {
+export function normalizeEntityName(
+  raw: string,
+  type: string,
+  aliases?: Readonly<Record<string, string>>,
+): string {
   // Strip type prefix if present (e.g. name="person-jane-doe", type="person")
   const rawStr = typeof raw === "string" ? raw : "";
   const typeStr = typeof type === "string" && type.trim().length > 0 ? type : "entity";
@@ -972,10 +973,14 @@ export function normalizeEntityName(raw: string, type: string): string {
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
 
-  // Check user aliases first, then built-in
-  if (userAliases[normalized]) {
-    normalized = userAliases[normalized];
-  } else if (BUILTIN_ALIASES[normalized]) {
+  // Check caller-provided user aliases first, then built-in. Own-property and
+  // string guards keep inherited object keys (e.g. an entity literally named
+  // "constructor") and malformed alias values from corrupting canonical ids.
+  const userAlias =
+    aliases !== undefined && Object.hasOwn(aliases, normalized) ? aliases[normalized] : undefined;
+  if (typeof userAlias === "string" && userAlias.length > 0) {
+    normalized = userAlias;
+  } else if (Object.hasOwn(BUILTIN_ALIASES, normalized)) {
     normalized = BUILTIN_ALIASES[normalized];
   }
 
@@ -3197,18 +3202,47 @@ export class StorageManager {
   }
 
   /**
+   * Entity alias table loaded from THIS store's config/aliases.json.
+   * Instance-scoped on purpose (issue #1534): multiple StorageManager
+   * instances in one process (namespaces, hosted profiles, tenants) must
+   * never share alias state — the previous module-level table let whichever
+   * store loaded last rewrite every other store's canonical entity ids.
+   */
+  private userAliases: Record<string, string> = {};
+
+  /** Normalize an entity name using this store's alias table. */
+  normalizeEntityName(raw: string, type: string): string {
+    return normalizeEntityName(raw, type, this.userAliases);
+  }
+
+  /**
+   * Read-only view of this store's user alias table, for call sites that
+   * normalize outside the manager (pass it to the free `normalizeEntityName`).
+   */
+  get entityAliases(): Readonly<Record<string, string>> {
+    return this.userAliases;
+  }
+
+  /**
    * Load user-defined entity aliases from config/aliases.json in the memory store.
    * File format: { "variant": "canonical", "variant2": "canonical", ... }
    * Call this once at startup (e.g. from orchestrator.initialize()).
+   * Non-object payloads and non-string or empty alias values are ignored.
    */
   async loadAliases(): Promise<void> {
     const aliasPath = path.join(this.baseDir, "config", "aliases.json");
     try {
       const raw = await readFile(aliasPath, "utf-8");
       const parsed = JSON.parse(raw);
-      if (typeof parsed === "object" && parsed !== null) {
-        userAliases = parsed as Record<string, string>;
-        log.debug(`loaded ${Object.keys(userAliases).length} entity aliases from ${aliasPath}`);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        const cleaned: Record<string, string> = {};
+        for (const [key, value] of Object.entries(parsed)) {
+          if (typeof value === "string" && value.trim().length > 0) {
+            cleaned[key] = value;
+          }
+        }
+        this.userAliases = cleaned;
+        log.debug(`loaded ${Object.keys(cleaned).length} entity aliases from ${aliasPath}`);
       }
     } catch {
       // No aliases file — that's fine, use built-in only
@@ -3679,7 +3713,7 @@ export class StorageManager {
           .filter((fact) => fact.length > 0),
       )]
       : [];
-    let normalized = normalizeEntityName(name, type);
+    let normalized = this.normalizeEntityName(name, type);
 
     // Check for fuzzy match against existing entities before creating a new file
     const match = await this.findMatchingEntity(name, type);
@@ -4648,7 +4682,7 @@ export class StorageManager {
 
     const typePrefix = `${type.toLowerCase()}-`;
     // Extract the name part from the proposed normalized name
-    const proposedFull = normalizeEntityName(proposedName, type);
+    const proposedFull = this.normalizeEntityName(proposedName, type);
     const proposedNamePart = proposedFull.startsWith(typePrefix)
       ? proposedFull.slice(typePrefix.length)
       : proposedFull;
@@ -6104,7 +6138,7 @@ export class StorageManager {
     entity.updated = entityUpdatedAt;
     await this.writeStorageSecureFile(filePath, serializeEntityFile(entity, this.entitySchemas));
     await this.removeEntitySynthesisQueueEntries([
-      ...new Set([name, normalizeEntityName(entity.name, entity.type)]),
+      ...new Set([name, this.normalizeEntityName(entity.name, entity.type)]),
     ]);
     this.invalidateKnowledgeIndexCache();
     this.bumpMemoryStatusVersion(); // invalidate entity cache
@@ -6425,7 +6459,7 @@ export class StorageManager {
         if (dashIdx === -1) continue;
         const type = baseName.slice(0, dashIdx);
         const restOfName = baseName.slice(dashIdx + 1);
-        const canonical = normalizeEntityName(restOfName, type);
+        const canonical = this.normalizeEntityName(restOfName, type);
 
         if (!groups.has(canonical)) groups.set(canonical, []);
         groups.get(canonical)!.push(file);
