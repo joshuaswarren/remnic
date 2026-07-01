@@ -8724,6 +8724,9 @@ export class Orchestrator {
               query: retrievalQuery,
               maxResults,
               boxRecallDays: this.config.boxRecallDays,
+            }).catch((err) => {
+              log.debug(`verified recall directory scan failed: ${err}`);
+              return [] as VerifiedEpisodeResult[];
             }),
           ),
         ).then((groups) => {
