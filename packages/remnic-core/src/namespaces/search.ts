@@ -44,6 +44,11 @@ type NamespaceBackendRecord = {
   filtersNestedNamespaces: boolean;
 };
 
+export interface NamespaceUpdateResult {
+  backendCount: number;
+  eligibleNamespaces: string[];
+}
+
 export type CollectionState = "present" | "missing" | "unknown" | "skipped";
 
 export interface NamespaceSearchHealth {
@@ -161,37 +166,51 @@ export class NamespaceSearchRouter {
   async updateNamespaces(
     namespaces: string[],
     execution?: SearchExecutionOptions,
+    options?: { strict?: boolean },
   ): Promise<number> {
+    return (await this.updateNamespacesDetailed(namespaces, execution, options)).backendCount;
+  }
+
+  async updateNamespacesDetailed(
+    namespaces: string[],
+    execution?: SearchExecutionOptions,
+    options?: { strict?: boolean },
+  ): Promise<NamespaceUpdateResult> {
     const unique = Array.from(new Set(namespaces.map((value) => value.trim()).filter(Boolean)));
     const eligible = (await Promise.all(
       unique.map(async (namespace) => {
         const record = await this.backendRecordFor(namespace);
         return record.available && record.collectionState !== "missing"
-          ? record
+          ? { namespace, record }
           : null;
       }),
-    )).filter((record): record is NamespaceBackendRecord => record !== null);
+    )).filter((entry): entry is { namespace: string; record: NamespaceBackendRecord } => entry !== null);
 
-    const globalRecord = eligible.find((record) => record.backend.updatesAllCollections?.() === true);
-    const scopedRecords = globalRecord
-      ? eligible.filter((record) => record.backend.updatesAllCollections?.() !== true)
+    const globalEntry = eligible.find(({ record }) => record.backend.updatesAllCollections?.() === true);
+    const scopedEntries = globalEntry
+      ? eligible.filter(({ record }) => record.backend.updatesAllCollections?.() !== true)
       : eligible;
 
     await Promise.all([
-      globalRecord ? globalRecord.backend.update(execution) : Promise.resolve(),
-      ...scopedRecords.map((record) => record.backend.update(execution)),
+      globalEntry
+        ? updateBackendRecord(globalEntry.record, execution, options)
+        : Promise.resolve(),
+      ...scopedEntries.map(({ record }) => updateBackendRecord(record, execution, options)),
     ]);
 
-    return (globalRecord ? 1 : 0) + scopedRecords.length;
+    return {
+      backendCount: (globalEntry ? 1 : 0) + scopedEntries.length,
+      eligibleNamespaces: eligible.map(({ namespace }) => namespace),
+    };
   }
 
-  async embedNamespaces(namespaces: string[]): Promise<void> {
+  async embedNamespaces(namespaces: string[], options?: { strict?: boolean }): Promise<void> {
     const unique = Array.from(new Set(namespaces.map((value) => value.trim()).filter(Boolean)));
     await Promise.all(
       unique.map(async (namespace) => {
         const record = await this.backendRecordFor(namespace);
         if (!record.available || record.collectionState === "missing") return;
-        await record.backend.embed();
+        await embedBackendRecord(record, options);
       }),
     );
   }
@@ -440,6 +459,48 @@ function backendSearchLimit(
     maxResults * NESTED_NAMESPACE_FILTER_OVERFETCH_FACTOR,
     NESTED_NAMESPACE_FILTER_OVERFETCH_MIN,
   );
+}
+
+async function updateBackendRecord(
+  record: NamespaceBackendRecord,
+  execution?: SearchExecutionOptions,
+  options?: { strict?: boolean },
+): Promise<void> {
+  if (options?.strict === true) {
+    if (
+      record.backend.updatesAllCollections?.() === true &&
+      typeof record.backend.updateStrict === "function"
+    ) {
+      await record.backend.updateStrict(execution);
+      return;
+    }
+    if (typeof record.backend.updateCollectionStrict === "function") {
+      await record.backend.updateCollectionStrict(record.collection, execution);
+      return;
+    }
+  }
+  await record.backend.update(execution);
+}
+
+async function embedBackendRecord(
+  record: NamespaceBackendRecord,
+  options?: { strict?: boolean },
+): Promise<void> {
+  if (options?.strict === true) {
+    if (typeof record.backend.embedCollectionStrict === "function") {
+      await record.backend.embedCollectionStrict(record.collection);
+      return;
+    }
+    if (typeof record.backend.embedStrict === "function") {
+      await record.backend.embedStrict();
+      return;
+    }
+  }
+  if (typeof record.backend.embedCollection === "function") {
+    await record.backend.embedCollection(record.collection);
+    return;
+  }
+  await record.backend.embed();
 }
 
 function daemonModeForBackend(backend: SearchBackend): boolean | null {

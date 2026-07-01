@@ -11,6 +11,7 @@ import { parseConfig } from "./config.js";
 import type { BufferTurn } from "./types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
 import { namespaceIdentityToken } from "./namespaces/identity.js";
+import { readNamespaceMaintenanceStatuses } from "./maintenance/namespace-planner.js";
 
 function makeTurn(sessionKey: string, content: string): BufferTurn {
   return {
@@ -1780,8 +1781,10 @@ test("runExtraction still clears the session buffer after persistence even if re
 // cataloged namespaces.
 test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
-  let updateArg: string[] | undefined;
-  let embedArg: string[] | undefined;
+  const updateArgs: string[] = [];
+  const updateCalls: Array<{ namespaces: string[]; strict: boolean | undefined }> = [];
+  const embedArgs: string[] = [];
+  const embedCalls: string[][] = [];
   const memoryDir = path.join(os.tmpdir(), "remnic-qmd-maintenance-ngnei");
   const dynamicNamespace = "project-origin-dynamic";
   const dynamicStorageDir = path.join(
@@ -1797,6 +1800,7 @@ test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)"
     defaultNamespace: "default",
     sharedNamespace: "shared",
     namespacePolicies: [],
+    maintenanceNamespaceLockStaleMs: 100,
     qmdAutoEmbedEnabled: true,
     qmdEmbedMinIntervalMs: 0,
   };
@@ -1820,35 +1824,98 @@ test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)"
     },
   };
   orchestrator.namespaceSearchRouter = {
-    async updateNamespaces(ns: string[]) {
-      updateArg = ns;
-      return ns.length;
+    async updateNamespacesDetailed(ns: string[], _execution?: unknown, options?: { strict?: boolean }) {
+      updateCalls.push({ namespaces: [...ns], strict: options?.strict });
+      updateArgs.push(...ns);
+      return { backendCount: ns.length, eligibleNamespaces: ns };
     },
     async embedNamespaces(ns: string[]) {
-      embedArg = ns;
+      embedCalls.push([...ns]);
+      embedArgs.push(...ns);
     },
   };
 
   await orchestrator.runQmdMaintenance();
 
-  assert.ok(updateArg, "updateNamespaces must be called");
+  assert.ok(updateArgs.length > 0, "updateNamespaces must be called");
+  assert.equal(updateCalls.length, 1, "global QMD maintenance must batch selected namespaces into one update call");
+  assert.equal(updateCalls[0]?.strict, true, "recurring QMD maintenance must use strict update semantics");
   assert.ok(
-    updateArg!.includes(dynamicNamespace),
+    updateArgs.includes(dynamicNamespace),
     "QMD update must cover the cataloged dynamic namespace, not just configured ones",
   );
   assert.ok(
-    updateArg!.includes("default") && updateArg!.includes("shared"),
+    updateArgs.includes("default") && updateArgs.includes("shared"),
     "configured namespaces remain covered",
   );
   assert.ok(
-    embedArg && embedArg.includes(dynamicNamespace),
+    embedArgs.includes(dynamicNamespace),
     "QMD embed must cover the cataloged dynamic namespace",
   );
+  assert.equal(embedCalls.length, 1, "QMD embed must batch all selected namespaces into one router call");
+  assert.deepEqual(new Set(embedCalls[0]), new Set(["default", "shared", dynamicNamespace]));
+});
+
+test("runQmdMaintenance tracks namespace embed cadence across budget rotation", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-namespace-embed-cadence-"));
+  const updateCalls: string[][] = [];
+  const embedCalls: string[][] = [];
+
+  try {
+    orchestrator.config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [{ name: "project-a" }, { name: "project-b" }],
+      maintenanceMaxNamespacesPerCycle: 3,
+      maintenanceNamespaceLockStaleMs: 100,
+      qmdAutoEmbedEnabled: true,
+      qmdEmbedMinIntervalMs: 60_000,
+    };
+    orchestrator.qmdMaintenanceInFlight = false;
+    orchestrator.qmdMaintenancePending = true;
+    orchestrator.lastQmdEmbedAtMs = 0;
+    orchestrator.lastQmdEmbedAtMsByNamespace = new Map();
+    orchestrator.namespaceCatalog = {
+      enabled: false,
+      async listNamespaces() {
+        throw new Error("catalog disabled - must not be read");
+      },
+    };
+    orchestrator.namespaceSearchRouter = {
+      async updateNamespacesDetailed(ns: string[]) {
+        updateCalls.push([...ns]);
+        return { backendCount: ns.length, eligibleNamespaces: ns };
+      },
+      async embedNamespaces(ns: string[]) {
+        embedCalls.push([...ns]);
+      },
+    };
+
+    await orchestrator.runQmdMaintenance();
+    orchestrator.qmdMaintenancePending = true;
+    await orchestrator.runQmdMaintenance();
+
+    assert.deepEqual(updateCalls, [
+      ["default", "shared", "project-a"],
+      ["default", "shared", "project-b"],
+    ]);
+    assert.deepEqual(
+      embedCalls,
+      [["default", "shared", "project-a"], ["project-b"]],
+      "a global embed timestamp must not suppress embeddings for newly budgeted namespaces",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 test("runQmdMaintenance skips cataloged dynamic namespaces whose live root is unsafe", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
-  let updateArg: string[] | undefined;
+  const updateArgs: string[] = [];
+  const updateCalls: string[][] = [];
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-unsafe-root-"));
   const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-unsafe-target-"));
   try {
@@ -1868,6 +1935,7 @@ test("runQmdMaintenance skips cataloged dynamic namespaces whose live root is un
       defaultNamespace: "default",
       sharedNamespace: "shared",
       namespacePolicies: [],
+      maintenanceNamespaceLockStaleMs: 100,
       qmdAutoEmbedEnabled: false,
       qmdEmbedMinIntervalMs: 0,
     };
@@ -1890,18 +1958,20 @@ test("runQmdMaintenance skips cataloged dynamic namespaces whose live root is un
       },
     };
     orchestrator.namespaceSearchRouter = {
-      async updateNamespaces(ns: string[]) {
-        updateArg = ns;
-        return ns.length;
+      async updateNamespacesDetailed(ns: string[]) {
+        updateCalls.push([...ns]);
+        updateArgs.push(...ns);
+        return { backendCount: ns.length, eligibleNamespaces: ns };
       },
       async embedNamespaces() {},
     };
 
     await orchestrator.runQmdMaintenance();
 
-    assert.ok(updateArg, "updateNamespaces must be called");
+    assert.ok(updateArgs.length > 0, "updateNamespaces must be called");
+    assert.equal(updateCalls.length, 1, "global QMD maintenance must update once for the locked namespace set");
     assert.deepEqual(
-      [...updateArg!].sort(),
+      [...updateArgs].sort(),
       ["default", "shared"],
       "cataloged dynamic namespaces are skipped when the live router root differs from the catalog-sanitized root",
     );
@@ -1911,46 +1981,395 @@ test("runQmdMaintenance skips cataloged dynamic namespaces whose live root is un
   }
 });
 
+test("runQmdMaintenance treats zero namespace updates as failed maintenance", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-zero-update-"));
+  let markMaintenanceCalls = 0;
+  let embedCalls = 0;
+  try {
+    orchestrator.config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      maintenanceNamespaceLockStaleMs: 100,
+      qmdAutoEmbedEnabled: false,
+      qmdEmbedMinIntervalMs: 0,
+    };
+    orchestrator.qmdMaintenanceInFlight = false;
+    orchestrator.qmdMaintenancePending = true;
+    orchestrator.lastQmdEmbedAtMs = 0;
+    orchestrator.namespaceCatalog = {
+      enabled: true,
+      async listNamespaces() {
+        return [{ namespace: "default" }];
+      },
+      async markMaintenance() {
+        markMaintenanceCalls += 1;
+      },
+    };
+    orchestrator.namespaceSearchRouter = {
+      async updateNamespacesDetailed() {
+        return { backendCount: 0, eligibleNamespaces: [] };
+      },
+      async embedNamespaces() {
+        embedCalls += 1;
+      },
+    };
+
+    await orchestrator.runQmdMaintenance();
+
+    const statuses = await readNamespaceMaintenanceStatuses(orchestrator.config);
+    assert.ok(
+      statuses.some((status) => status.namespace === "default" && status.state === "failed"),
+      "zero updates should be recorded as failed maintenance, not a successful run",
+    );
+    assert.equal(markMaintenanceCalls, 0);
+    assert.equal(embedCalls, 0);
+    assert.equal(orchestrator.lastQmdEmbedAtMs, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("runQmdMaintenance treats partial namespace update eligibility as failed maintenance", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-partial-update-"));
+  let markMaintenanceCalls = 0;
+  let embedCalls = 0;
+  try {
+    orchestrator.config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      maintenanceNamespaceLockStaleMs: 100,
+      qmdAutoEmbedEnabled: false,
+      qmdEmbedMinIntervalMs: 0,
+    };
+    orchestrator.qmdMaintenanceInFlight = false;
+    orchestrator.qmdMaintenancePending = true;
+    orchestrator.lastQmdEmbedAtMs = 0;
+    orchestrator.namespaceCatalog = {
+      enabled: true,
+      async listNamespaces() {
+        return [{ namespace: "default" }];
+      },
+      async markMaintenance() {
+        markMaintenanceCalls += 1;
+      },
+    };
+    orchestrator.namespaceSearchRouter = {
+      async updateNamespacesDetailed(ns: string[]) {
+        assert.ok(ns.includes("default") && ns.includes("shared"));
+        return { backendCount: 1, eligibleNamespaces: ["default"] };
+      },
+      async embedNamespaces() {
+        embedCalls += 1;
+      },
+    };
+
+    await orchestrator.runQmdMaintenance();
+
+    const statuses = await readNamespaceMaintenanceStatuses(orchestrator.config);
+    assert.ok(
+      statuses.some((status) => status.namespace === "default" && status.state === "failed"),
+      "partial update eligibility should not be recorded as successful maintenance",
+    );
+    assert.ok(
+      statuses.some((status) => status.namespace === "shared" && status.state === "failed"),
+      "ineligible selected namespaces should not be rotated as maintained",
+    );
+    assert.equal(markMaintenanceCalls, 0);
+    assert.equal(embedCalls, 0);
+    assert.equal(orchestrator.lastQmdEmbedAtMs, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("runQmdMaintenance treats namespace embed errors as failed maintenance", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-embed-failure-"));
+  let markMaintenanceCalls = 0;
+  try {
+    orchestrator.config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      maintenanceNamespaceLockStaleMs: 100,
+      qmdAutoEmbedEnabled: true,
+      qmdEmbedMinIntervalMs: 0,
+    };
+    orchestrator.qmdMaintenanceInFlight = false;
+    orchestrator.qmdMaintenancePending = true;
+    orchestrator.lastQmdEmbedAtMs = 0;
+    orchestrator.namespaceCatalog = {
+      enabled: true,
+      async listNamespaces() {
+        return [{ namespace: "default" }];
+      },
+      async markMaintenance() {
+        markMaintenanceCalls += 1;
+      },
+    };
+    orchestrator.namespaceSearchRouter = {
+      async updateNamespacesDetailed(ns: string[]) {
+        return { backendCount: 1, eligibleNamespaces: ns };
+      },
+      async embedNamespaces() {
+        throw Object.assign(new Error("embed failed"), { code: "EQMD" });
+      },
+    };
+
+    await orchestrator.runQmdMaintenance();
+
+    const statuses = await readNamespaceMaintenanceStatuses(orchestrator.config);
+    assert.ok(
+      statuses.some((status) => status.namespace === "default" && status.state === "failed"),
+      "embed failures should not be recorded as successful namespace maintenance",
+    );
+    assert.equal(markMaintenanceCalls, 0);
+    assert.equal(orchestrator.lastQmdEmbedAtMs, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("runQmdMaintenance records QMD min-interval throttles as skipped maintenance", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-throttled-update-"));
+  let markMaintenanceCalls = 0;
+  let embedCalls = 0;
+  let updateCalls = 0;
+  try {
+    orchestrator.config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      maintenanceNamespaceLockStaleMs: 100,
+      qmdAutoEmbedEnabled: false,
+      qmdEmbedMinIntervalMs: 0,
+    };
+    orchestrator.qmdMaintenanceInFlight = false;
+    orchestrator.qmdMaintenancePending = true;
+    orchestrator.lastQmdEmbedAtMs = 0;
+    orchestrator.namespaceCatalog = {
+      enabled: true,
+      async listNamespaces() {
+        return [{ namespace: "default" }];
+      },
+      async markMaintenance() {
+        markMaintenanceCalls += 1;
+      },
+    };
+    orchestrator.namespaceSearchRouter = {
+      async updateNamespacesDetailed(_ns: string[], _execution?: unknown, options?: { strict?: boolean }) {
+        updateCalls += 1;
+        assert.equal(options?.strict, true, "recurring maintenance must use strict QMD updates");
+        throw new Error("QMD update skipped by global min-interval gate");
+      },
+      async embedNamespaces() {
+        embedCalls += 1;
+      },
+    };
+
+    await orchestrator.runQmdMaintenance();
+
+    const statuses = await readNamespaceMaintenanceStatuses(orchestrator.config);
+    assert.equal(updateCalls, 1, "strict global QMD maintenance should be attempted once");
+    assert.ok(
+      statuses.some(
+        (status) =>
+          status.namespace === "default" &&
+          status.state === "skipped" &&
+          status.reason === "throttled",
+      ),
+      "QMD min-interval throttles should be recorded as skipped maintenance",
+    );
+    assert.ok(
+      statuses.some(
+        (status) =>
+          status.namespace === "shared" &&
+          status.state === "skipped" &&
+          status.reason === "throttled",
+      ),
+      "every selected namespace should receive the throttled skip status",
+    );
+    assert.equal(markMaintenanceCalls, 0);
+    assert.equal(embedCalls, 0);
+    assert.equal(orchestrator.lastQmdEmbedAtMs, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("runQmdMaintenance still embeds when due update is throttled", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-throttled-update-embed-"));
+  let markMaintenanceCalls = 0;
+  let updateCalls = 0;
+  const embedCalls: string[][] = [];
+  try {
+    orchestrator.config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      maintenanceNamespaceLockStaleMs: 100,
+      qmdAutoEmbedEnabled: true,
+      qmdEmbedMinIntervalMs: 0,
+    };
+    orchestrator.qmdMaintenanceInFlight = false;
+    orchestrator.qmdMaintenancePending = true;
+    orchestrator.lastQmdEmbedAtMs = 0;
+    orchestrator.namespaceCatalog = {
+      enabled: true,
+      async listNamespaces() {
+        return [{ namespace: "default" }];
+      },
+      async markMaintenance() {
+        markMaintenanceCalls += 1;
+      },
+    };
+    orchestrator.namespaceSearchRouter = {
+      async updateNamespacesDetailed(_ns: string[], _execution?: unknown, options?: { strict?: boolean }) {
+        updateCalls += 1;
+        assert.equal(options?.strict, true, "recurring maintenance must use strict QMD updates");
+        throw new Error("QMD update skipped by global min-interval gate");
+      },
+      async embedNamespaces(ns: string[], options?: { strict?: boolean }) {
+        assert.equal(options?.strict, true, "due embed retries must surface embed failures");
+        embedCalls.push([...ns]);
+      },
+    };
+
+    await orchestrator.runQmdMaintenance();
+
+    const statuses = await readNamespaceMaintenanceStatuses(orchestrator.config);
+    assert.equal(updateCalls, 1, "strict global QMD maintenance should be attempted once");
+    assert.deepEqual(embedCalls, [["default", "shared"]]);
+    assert.ok(
+      statuses.every((status) => status.state === "skipped" && status.reason === "throttled"),
+      "a throttled update should still be recorded as skipped after the due embed retry",
+    );
+    assert.equal(markMaintenanceCalls, 0);
+    assert.notEqual(orchestrator.lastQmdEmbedAtMs, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("runQmdMaintenance treats strict namespace update errors as failed maintenance", async () => {
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-update-failure-"));
+  let markMaintenanceCalls = 0;
+  let embedCalls = 0;
+  let updateCalls = 0;
+  try {
+    orchestrator.config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      maintenanceNamespaceLockStaleMs: 100,
+      qmdAutoEmbedEnabled: true,
+      qmdEmbedMinIntervalMs: 0,
+    };
+    orchestrator.qmdMaintenanceInFlight = false;
+    orchestrator.qmdMaintenancePending = true;
+    orchestrator.lastQmdEmbedAtMs = 0;
+    orchestrator.namespaceCatalog = {
+      enabled: true,
+      async listNamespaces() {
+        return [{ namespace: "default" }];
+      },
+      async markMaintenance() {
+        markMaintenanceCalls += 1;
+      },
+    };
+    orchestrator.namespaceSearchRouter = {
+      async updateNamespacesDetailed(_ns: string[], _execution?: unknown, options?: { strict?: boolean }) {
+        updateCalls += 1;
+        assert.equal(options?.strict, true, "recurring maintenance must require strict update failure propagation");
+        throw new Error("qmd exploded");
+      },
+      async embedNamespaces() {
+        embedCalls += 1;
+      },
+    };
+
+    await orchestrator.runQmdMaintenance();
+
+    const statuses = await readNamespaceMaintenanceStatuses(orchestrator.config);
+    assert.equal(updateCalls, 1, "strict global QMD maintenance should be attempted once");
+    assert.ok(
+      statuses.some((status) => status.namespace === "default" && status.state === "failed"),
+      "strict update errors should be recorded as failed maintenance",
+    );
+    assert.equal(markMaintenanceCalls, 0);
+    assert.equal(embedCalls, 0);
+    assert.equal(orchestrator.lastQmdEmbedAtMs, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // NGnei fallback: when the catalog is disabled, maintenance covers exactly the
 // configured set (no catalog read), and a catalog read failure degrades to the
 // configured set rather than breaking maintenance.
 test("runQmdMaintenance falls back to configured namespaces when the catalog is disabled (NGnei)", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
-  let updateArg: string[] | undefined;
+  const updateArgs: string[] = [];
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-disabled-catalog-"));
 
-  orchestrator.config = {
-    namespacesEnabled: true,
-    defaultNamespace: "default",
-    sharedNamespace: "shared",
+  try {
+    orchestrator.config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
     namespacePolicies: [],
+    maintenanceNamespaceLockStaleMs: 100,
     qmdAutoEmbedEnabled: false,
-    qmdEmbedMinIntervalMs: 0,
-  };
-  orchestrator.qmdMaintenanceInFlight = false;
-  orchestrator.qmdMaintenancePending = true;
-  orchestrator.lastQmdEmbedAtMs = 0;
-  orchestrator.namespaceCatalog = {
-    enabled: false,
-    async listNamespaces() {
-      throw new Error("catalog disabled — must not be read");
-    },
+      qmdEmbedMinIntervalMs: 0,
+    };
+    orchestrator.qmdMaintenanceInFlight = false;
+    orchestrator.qmdMaintenancePending = true;
+    orchestrator.lastQmdEmbedAtMs = 0;
+    orchestrator.namespaceCatalog = {
+      enabled: false,
+      async listNamespaces() {
+        throw new Error("catalog disabled — must not be read");
+      },
   };
   orchestrator.namespaceSearchRouter = {
-    async updateNamespaces(ns: string[]) {
-      updateArg = ns;
-      return ns.length;
+    async updateNamespacesDetailed(ns: string[]) {
+      updateArgs.push(...ns);
+      return { backendCount: ns.length, eligibleNamespaces: ns };
     },
-    async embedNamespaces() {},
-  };
+      async embedNamespaces() {},
+    };
 
-  await orchestrator.runQmdMaintenance();
+    await orchestrator.runQmdMaintenance();
 
-  assert.ok(updateArg, "updateNamespaces must be called");
-  assert.deepEqual(
-    [...updateArg!].sort(),
-    ["default", "shared"],
-    "a disabled catalog covers exactly the configured set",
-  );
+    assert.ok(updateArgs.length > 0, "updateNamespaces must be called");
+    assert.deepEqual(
+      [...updateArgs].sort(),
+      ["default", "shared"],
+      "a disabled catalog covers exactly the configured set",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 // ── NHZEV (codex P2): the QMD STARTUP sync in deferredInitialize() must cover
@@ -1981,6 +2400,7 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
     sharedNamespace: "shared",
     namespacePolicies: [],
     qmdMaintenanceEnabled: true,
+    maintenanceMaxNamespacesPerCycle: 2,
   };
   orchestrator.qmd = {
     isAvailable: () => true,
@@ -2017,7 +2437,7 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
   assert.ok(updateArg, "startup updateNamespaces must be called");
   assert.ok(
     updateArg!.includes(dynamicNamespace),
-    "startup sync must cover the cataloged dynamic namespace (NHZEV), not just configured ones",
+    "startup sync must cover the cataloged dynamic namespace even when it exceeds the recurring maintenance cycle budget",
   );
   assert.ok(
     updateArg!.includes("default") && updateArg!.includes("shared"),

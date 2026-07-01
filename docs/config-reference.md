@@ -1389,6 +1389,12 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `consolidationMinIntervalMs` | `600000` | `600000` |
 | `qmdMaintenanceEnabled` | `true` | `true` |
 | `qmdMaintenanceDebounceMs` | `30000` | `30000` |
+| `maintenance.namespaceFanoutEnabled` / `maintenanceNamespaceFanoutEnabled` | `true` | When namespaces are enabled, allow background jobs to use the namespace catalog to discover dynamic project/team namespaces. |
+| `maintenance.maxNamespacesPerCycle` / `maintenanceMaxNamespacesPerCycle` | `20` | Deterministic cap for each namespace-aware maintenance cycle. Default/shared/configured namespaces keep priority. |
+| `maintenance.includeProjectNamespaces` / `maintenanceIncludeProjectNamespaces` | `true` | Include project namespaces discovered from the catalog when their live roots contain memory data. |
+| `maintenance.includeBranchNamespaces` / `maintenanceIncludeBranchNamespaces` | `false` | Include branch namespaces in fanout. Off by default to avoid runaway branch maintenance. |
+| `maintenance.includeTeamProjectNamespaces` / `maintenanceIncludeTeamProjectNamespaces` | `true` | Include team-project namespaces discovered from trusted scope/profile writes. |
+| `maintenance.namespaceLockStaleMs` / `maintenanceNamespaceLockStaleMs` | `600000` | Stale threshold for per-job/per-namespace maintenance locks under `state/maintenance-locks/`. |
 | `qmdAutoEmbedEnabled` | `false` | `false` |
 | `qmdEmbedMinIntervalMs` | `3600000` | `3600000` |
 | `qmdUpdateTimeoutMs` | `90000` | `90000` |

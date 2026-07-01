@@ -1331,3 +1331,72 @@ test("parseConfig namespaceCatalogEnabled present-but-unrecognized → throws (r
   assert.throws(() => parseConfig({ namespaceCatalogEnabled: "flase" }), /boolean-like value/);
   assert.throws(() => parseConfig({ namespaceCatalogEnabled: 2 }), /boolean-like value/);
 });
+
+test("parseConfig maintenance namespace fanout defaults match hosted-safe policy", () => {
+  const cfg = parseConfig({});
+  assert.equal(cfg.maintenanceNamespaceFanoutEnabled, true);
+  assert.equal(cfg.maintenanceMaxNamespacesPerCycle, 20);
+  assert.equal(cfg.maintenanceIncludeProjectNamespaces, true);
+  assert.equal(cfg.maintenanceIncludeBranchNamespaces, false);
+  assert.equal(cfg.maintenanceIncludeTeamProjectNamespaces, true);
+  assert.equal(cfg.maintenanceNamespaceLockStaleMs, 10 * 60_000);
+});
+
+test("parseConfig accepts nested maintenance namespace fanout config", () => {
+  const cfg = parseConfig({
+    maintenance: {
+      namespaceFanoutEnabled: "false",
+      maxNamespacesPerCycle: "7",
+      includeProjectNamespaces: "off",
+      includeBranchNamespaces: "on",
+      includeTeamProjectNamespaces: "0",
+      namespaceLockStaleMs: "120000",
+    },
+  });
+  assert.equal(cfg.maintenanceNamespaceFanoutEnabled, false);
+  assert.equal(cfg.maintenanceMaxNamespacesPerCycle, 7);
+  assert.equal(cfg.maintenanceIncludeProjectNamespaces, false);
+  assert.equal(cfg.maintenanceIncludeBranchNamespaces, true);
+  assert.equal(cfg.maintenanceIncludeTeamProjectNamespaces, false);
+  assert.equal(cfg.maintenanceNamespaceLockStaleMs, 120_000);
+});
+
+test("parseConfig flat maintenance namespace fanout fields override nested config", () => {
+  const cfg = parseConfig({
+    maintenance: {
+      namespaceFanoutEnabled: false,
+      maxNamespacesPerCycle: 5,
+    },
+    maintenanceNamespaceFanoutEnabled: true,
+    maintenanceMaxNamespacesPerCycle: 8,
+  });
+  assert.equal(cfg.maintenanceNamespaceFanoutEnabled, true);
+  assert.equal(cfg.maintenanceMaxNamespacesPerCycle, 8);
+});
+
+test("parseConfig rejects invalid maintenance namespace fanout values", () => {
+  assert.throws(
+    () => parseConfig({ maintenance: [] }),
+    /maintenance must be a plain object/,
+  );
+  assert.throws(
+    () => parseConfig({ maintenance: "off" }),
+    /maintenance must be a plain object/,
+  );
+  assert.throws(
+    () => parseConfig({ maintenance: [], maintenanceNamespaceFanoutEnabled: false }),
+    /maintenance must be a plain object/,
+  );
+  assert.throws(
+    () => parseConfig({ maintenance: { namespaceFanoutEnabled: "flase" } }),
+    /maintenance\.namespaceFanoutEnabled must be a boolean-like value/,
+  );
+  assert.throws(
+    () => parseConfig({ maintenance: { maxNamespacesPerCycle: 0 } }),
+    /maintenance\.maxNamespacesPerCycle must be a positive integer/,
+  );
+  assert.throws(
+    () => parseConfig({ maintenance: { namespaceLockStaleMs: 1.5 } }),
+    /maintenance\.namespaceLockStaleMs must be a positive integer/,
+  );
+});
