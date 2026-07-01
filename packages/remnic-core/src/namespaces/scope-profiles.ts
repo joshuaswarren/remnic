@@ -124,7 +124,7 @@ function resolveTeam(
   const readableTeams = Object.entries(config.teams ?? {}).filter(([, team]) =>
     principalListed(team.principals, principal) || principalListed(team.read, principal),
   );
-  if (profile.writeDefault === "teamProject") {
+  if (profile.writeDefault === "teamProject" || profile.readOrder.includes("teamProject")) {
     const writableTeam = readableTeams.find(([, team]) => principalListed(team.write, principal));
     if (writableTeam) return { teamId: writableTeam[0], team: writableTeam[1] };
   }
