@@ -1892,11 +1892,10 @@ export class EngramAccessService {
           codingOverlay: null,
         })
       : null;
-    const allowedNamespaces = new Set(namespaces);
     const candidates = collectionPrincipal
-      ? this.resolveAllReadableConfiguredNamespaces(collectionPrincipal).filter((ns) =>
-          activeScopeProfilePlan ? allowedNamespaces.has(ns) : true,
-        )
+      ? activeScopeProfilePlan
+        ? namespaces
+        : this.resolveAllReadableConfiguredNamespaces(collectionPrincipal)
       : namespaces;
     const matchedNamespaces = candidates.filter((namespace) => {
       const canonical = namespaceCollectionName(baseCollection, namespace, {
