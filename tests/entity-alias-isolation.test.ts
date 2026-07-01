@@ -71,6 +71,26 @@ test("loadAliases drops non-string and empty alias values", async () => {
   }
 });
 
+test("construction loads aliases — no explicit loadAliases() call required", async () => {
+  // Router-created and ad-hoc StorageManagers (namespace router, operator
+  // toolkit, cold storage, ...) never call loadAliases(); the constructor
+  // must load the store's own table.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-alias-"));
+  try {
+    await mkdir(path.join(dir, "config"), { recursive: true });
+    await writeFile(
+      path.join(dir, "config", "aliases.json"),
+      JSON.stringify({ bobby: "robert-smith" }),
+      "utf-8",
+    );
+    const storage = new StorageManager(dir);
+    assert.equal(storage.normalizeEntityName("Bobby", "person"), "person-robert-smith");
+    assert.equal(storage.entityAliases.bobby, "robert-smith");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("reloading re-derives the table — stale aliases never survive a changed file", async () => {
   const store = await makeStoreWithAliases({ bobby: "robert-smith" });
   try {

@@ -1,5 +1,5 @@
 import { access, readdir, readFile, stat, writeFile, mkdir, unlink, rename, appendFile, open } from "node:fs/promises";
-import { appendFileSync, createReadStream, mkdirSync, statSync } from "node:fs";
+import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { log } from "./logger.js";
@@ -2448,7 +2448,14 @@ export class StorageManager {
   constructor(
     private readonly baseDir: string,
     private readonly entitySchemas?: PluginConfig["entitySchemas"],
-  ) {}
+  ) {
+    // Load this store's alias table at construction (#1534): StorageManager
+    // is created in a dozen places (namespace router, operator toolkit,
+    // compounding engine, cold storage, ...) and most never call
+    // loadAliases() explicitly — every creation path must still get the
+    // store's own aliases, never an empty or foreign table.
+    this.loadAliasesSync();
+  }
 
   /** The root directory of this storage instance. */
   get dir(): string {
@@ -3224,19 +3231,23 @@ export class StorageManager {
   }
 
   /**
-   * Load user-defined entity aliases from config/aliases.json in the memory store.
-   * File format: { "variant": "canonical", "variant2": "canonical", ... }
-   * Call this once at startup (e.g. from orchestrator.initialize()).
+   * Reload user-defined entity aliases from config/aliases.json in the memory
+   * store. File format: { "variant": "canonical", ... }. The constructor
+   * already loads aliases, so this is only needed to pick up file changes
+   * (e.g. orchestrator.initialize() re-running on a live instance).
    * Non-object payloads and non-string or empty alias values are ignored.
    */
   async loadAliases(): Promise<void> {
+    this.loadAliasesSync();
+  }
+
+  private loadAliasesSync(): void {
     const aliasPath = path.join(this.baseDir, "config", "aliases.json");
-    // Re-derive from the file on every call: initialize() can run repeatedly
-    // on the same instance, and a reload after the file was fixed, emptied,
-    // or removed must never leave a previous table active.
+    // Re-derive from the file on every call: a reload after the file was
+    // fixed, emptied, or removed must never leave a previous table active.
     this.userAliases = {};
     try {
-      const raw = await readFile(aliasPath, "utf-8");
+      const raw = readFileSync(aliasPath, "utf-8");
       const parsed = JSON.parse(raw);
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         const cleaned: Record<string, string> = {};
