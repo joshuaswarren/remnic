@@ -5860,7 +5860,7 @@ export class Orchestrator {
     } else if (observationScopeProfilePlan) {
       observationNamespaces = expandScopeProfileReadNamespaces({
         profilePlan: observationScopeProfilePlan,
-        principalSelfNamespace: observationPrincipalSelf,
+        principalSelfNamespace: observationScopeProfilePlan.baseNamespace,
         codingOverlay: observationCodingOverlay,
         legacyRecallNamespaces: recallNamespacesForPrincipal(principal, this.config),
       });
@@ -7500,7 +7500,7 @@ export class Orchestrator {
     } else if (scopeProfilePlan) {
       recallNamespaces = expandScopeProfileReadNamespaces({
         profilePlan: scopeProfilePlan,
-        principalSelfNamespace,
+        principalSelfNamespace: scopeProfilePlan.baseNamespace,
         codingOverlay,
         legacyRecallNamespaces: readableRecallNamespaces,
       });

@@ -1636,7 +1636,7 @@ export class EngramAccessService {
         : [];
       const expandedReadNamespaces = expandScopeProfileReadNamespaces({
         profilePlan,
-        principalSelfNamespace: baseNamespace,
+        principalSelfNamespace: profilePlan.baseNamespace,
         codingOverlay,
         legacyRecallNamespaces,
       });
@@ -3185,7 +3185,7 @@ export class EngramAccessService {
       : profilePlan
         ? expandScopeProfileReadNamespaces({
             profilePlan,
-            principalSelfNamespace: principalNamespace,
+            principalSelfNamespace: profilePlan.baseNamespace,
             codingOverlay: profileCodingOverlay,
             legacyRecallNamespaces,
           })
@@ -5989,7 +5989,7 @@ export class EngramAccessService {
       : [];
     return expandScopeProfileReadNamespaces({
       profilePlan,
-      principalSelfNamespace,
+      principalSelfNamespace: profilePlan.baseNamespace,
       codingOverlay,
       legacyRecallNamespaces,
     });
