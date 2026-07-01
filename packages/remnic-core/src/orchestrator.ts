@@ -7834,12 +7834,22 @@ export class Orchestrator {
     const emptyProfileStorage = new Proxy(
       { dir: path.join(this.config.memoryDir, ".empty-scope-profile") } as any,
       {
-      get(target, prop: string | symbol) {
-        if (prop in target) return target[prop];
-        if (prop === "readProfile") return async () => "";
-        if (prop === "readQuestions" || prop === "listEntityNames" || prop === "readContinuityIncidents") return async () => [];
-        if (prop === "readIdentityAnchor" || prop === "readIdentityImprovementLoops") return async () => "";
-        if (prop === "readEntity" || prop === "readMemoryByPath") return async () => null;
+        get(target, prop: string | symbol) {
+          if (prop in target) return target[prop];
+          if (prop === "readProfile") return async () => "";
+          if (
+            prop === "readQuestions" ||
+            prop === "listEntityNames" ||
+            prop === "readContinuityIncidents"
+          )
+            return async () => [];
+          if (
+            prop === "readIdentityAnchor" ||
+            prop === "readIdentityImprovementLoops"
+          )
+            return async () => "";
+          if (prop === "readEntity" || prop === "readMemoryByPath")
+            return async () => null;
           return async () => [];
         },
       },
