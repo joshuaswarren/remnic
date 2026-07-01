@@ -5633,29 +5633,52 @@ export class EngramAccessService {
     }
     // Query each LCM read key in order, merging + deduping rows (by
     // sessionId+turnIndex) and preserving first-seen order, capped at `limit`.
+    // Use allSettled so one corrupt/failed namespace key cannot discard sibling
+    // results from other authorized profile namespaces.
     const seenRows = new Set<string>();
     const results: Array<{ sessionId: string; content: string; turnIndex: number }> = [];
+    const lcmSearches: Array<{
+      key: string | undefined;
+      prefix: string | undefined;
+      promise: Promise<Array<{ session_id: string; content: string; turn_index: number }>>;
+    }> = [];
     for (const lcmSessionKey of lcmSessionKeyIds) {
-      if (results.length >= limit) break;
       for (const lcmSessionPrefix of lcmSessionPrefixes) {
-        if (results.length >= limit) break;
-        const rawResults = await this.orchestrator.lcmEngine.searchContextFull(
-          request.query,
-          limit,
-          lcmSessionKey,
-          lcmSessionPrefix,
+        lcmSearches.push({
+          key: lcmSessionKey,
+          prefix: lcmSessionPrefix,
+          promise: this.orchestrator.lcmEngine.searchContextFull(
+            request.query,
+            limit,
+            lcmSessionKey,
+            lcmSessionPrefix,
+          ) as Promise<Array<{ session_id: string; content: string; turn_index: number }>>,
+        });
+      }
+    }
+    const settledSearches = await Promise.allSettled(
+      lcmSearches.map((search) => search.promise),
+    );
+    for (let i = 0; i < settledSearches.length; i += 1) {
+      if (results.length >= limit) break;
+      const settled = settledSearches[i];
+      if (!settled || settled.status === "rejected") {
+        const failed = lcmSearches[i];
+        log.warn(
+          `lcmSearch: failed for key=${failed?.key ?? "<none>"} prefix=${failed?.prefix ?? "<none>"}: ${settled?.status === "rejected" ? settled.reason : "missing result"}`,
         );
-        for (const r of rawResults as Array<{ session_id: string; content: string; turn_index: number }>) {
-          const dedupeKey = `${r.session_id} ${r.turn_index}`;
-          if (seenRows.has(dedupeKey)) continue;
-          seenRows.add(dedupeKey);
-          results.push({
-            sessionId: r.session_id,
-            content: r.content,
-            turnIndex: r.turn_index,
-          });
-          if (results.length >= limit) break;
-        }
+        continue;
+      }
+      for (const r of settled.value) {
+        const dedupeKey = `${r.session_id}\0${r.turn_index}`;
+        if (seenRows.has(dedupeKey)) continue;
+        seenRows.add(dedupeKey);
+        results.push({
+          sessionId: r.session_id,
+          content: r.content,
+          turnIndex: r.turn_index,
+        });
+        if (results.length >= limit) break;
       }
     }
 
