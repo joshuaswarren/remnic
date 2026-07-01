@@ -268,6 +268,20 @@ function parseScopeTeams(value: unknown): Record<string, ScopeTeamConfig> {
   return teams;
 }
 
+function validateScopeProfileTeamReferences(
+  profiles: Record<string, ScopeProfileConfig>,
+  teams: Record<string, ScopeTeamConfig>,
+): void {
+  for (const [profileId, profile] of Object.entries(profiles)) {
+    const teamId = profile.teamProject?.teamId;
+    if (teamId && !Object.prototype.hasOwnProperty.call(teams, teamId)) {
+      throw new Error(
+        `scopeProfiles.${profileId}.teamProject.teamId references unknown team: ${teamId}`,
+      );
+    }
+  }
+}
+
 function parseBoundedIntegerMs(
   value: unknown,
   fallback: number,
@@ -1490,6 +1504,8 @@ export function parseConfig(raw: unknown): PluginConfig {
       ? expandTildePath(cfg.memoryDir)
       : DEFAULT_MEMORY_DIR;
   const scopeProfiles = parseScopeProfiles(cfg.scopeProfiles);
+  const teams = parseScopeTeams(cfg.teams);
+  validateScopeProfileTeamReferences(scopeProfiles, teams);
   const defaultScopeProfile =
     typeof cfg.defaultScopeProfile === "string" && cfg.defaultScopeProfile.trim().length > 0
       ? cfg.defaultScopeProfile.trim()
@@ -1500,7 +1516,6 @@ export function parseConfig(raw: unknown): PluginConfig {
   ) {
     throw new Error(`defaultScopeProfile references unknown scope profile: ${defaultScopeProfile}`);
   }
-  const teams = parseScopeTeams(cfg.teams);
   const rawIdentityInjectionMode = cfg.identityInjectionMode as string | undefined;
   const identityInjectionMode: IdentityInjectionMode =
     rawIdentityInjectionMode

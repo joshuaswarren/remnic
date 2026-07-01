@@ -678,4 +678,25 @@ test("parseConfig rejects unsupported scope profile layers and targets", () => {
       }),
     /scopeProfiles.bad.teamProject must be an object/,
   );
+  assert.throws(
+    () =>
+      parseConfig({
+        scopeProfiles: {
+          bad: {
+            readOrder: ["teamProject", "userGlobal"],
+            writeDefault: "teamProject",
+            teamProject: { teamId: "missing" },
+          },
+        },
+        teams: {
+          core: {
+            principals: ["alice"],
+            read: ["alice"],
+            write: ["alice"],
+            promote: ["alice"],
+          },
+        },
+      }),
+    /scopeProfiles.bad.teamProject.teamId references unknown team: missing/,
+  );
 });
