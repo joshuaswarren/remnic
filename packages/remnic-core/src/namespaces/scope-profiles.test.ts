@@ -510,6 +510,41 @@ test("scope profile requires namespace policy access when team-project templates
   assert.match(teamProject?.reason ?? "", /team-project namespace collides with a protected namespace policy/);
 });
 
+
+
+test("scope profile explicit self namespace policy overrides implicit self access", () => {
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: [], writePrincipals: [] },
+    ],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["userGlobal"],
+        writeDefault: "userGlobal",
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+  });
+
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "pi-geek",
+    codingContext: null,
+    codingOverlay: null,
+  });
+
+  assert.ok(plan);
+  assert.equal(plan.baseNamespace, "pi-geek");
+  assert.deepEqual(plan.readNamespaces, []);
+  assert.equal(plan.writeNamespace, "");
+  const userGlobal = plan.layers.find((layer) => layer.id === "userGlobal");
+  assert.equal(userGlobal?.readable, false);
+  assert.equal(userGlobal?.writable, false);
+});
+
 test("scope profile auto-promotion is disabled by default", () => {
   const config = parseConfig({
     scopeProfiles: {

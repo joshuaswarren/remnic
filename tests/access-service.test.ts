@@ -3896,6 +3896,65 @@ test("access service recall surfaces budgetWarning when over soft limit", async 
   assert.equal(res2.budgetWarning!.reason, "warn-over-soft");
 });
 
+
+
+test("access service recall treats profile self namespace as own namespace for budget", async () => {
+  let recallCalls = 0;
+  const service = new EngramAccessService({
+    config: {
+      memoryDir: "/tmp/engram",
+      namespacesEnabled: true,
+      defaultNamespace: "global",
+      sharedNamespace: "shared",
+      principalFromSessionKeyMode: "prefix",
+      principalFromSessionKeyRules: [],
+      namespacePolicies: [],
+      defaultRecallNamespaces: ["self"],
+      scopeProfiles: {
+        hosted: {
+          readOrder: ["userGlobal"],
+          writeDefault: "userGlobal",
+          promotionTargets: [],
+        },
+      },
+      defaultScopeProfile: "hosted",
+      searchBackend: "qmd",
+      qmdEnabled: true,
+      nativeKnowledge: undefined,
+      recallCrossNamespaceBudgetEnabled: true,
+      recallCrossNamespaceBudgetWindowMs: 60_000,
+      recallCrossNamespaceBudgetSoftLimit: 0,
+      recallCrossNamespaceBudgetHardLimit: 2,
+      dreamsPhases: dreamsPhasesConfig(),
+    },
+    recall: async () => {
+      recallCalls += 1;
+      return "ctx";
+    },
+    lastRecall: {
+      get: () => null,
+      getMostRecent: () => null,
+    },
+    getCodingContextForSession: () => null,
+    getStorage: async () => ({
+      dir: "/tmp/engram",
+      getMemoryById: async () => null,
+      getMemoryTimeline: async () => [],
+    }),
+  } as any);
+
+  for (let i = 0; i < 3; i += 1) {
+    const response = await service.recall({
+      query: "profile self recall " + i,
+      sessionKey: "agent:pi-geek:chat",
+      authenticatedPrincipal: "pi-geek",
+    });
+    assert.equal(response.context, "ctx");
+    assert.equal(response.budgetWarning, undefined);
+  }
+  assert.equal(recallCalls, 3);
+});
+
 test("access service liveConnectorsRun enforces write ACL before ingestion", async () => {
   let runCount = 0;
   const orchestrator = {

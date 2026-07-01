@@ -40,6 +40,7 @@ Example hosted coding profile:
 
 ```json
 {
+  "namespacesEnabled": true,
   "scopeProfiles": {
     "teamCoding": {
       "readOrder": ["userProject", "teamProject", "userGlobal", "serverShared"],

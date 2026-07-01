@@ -3194,6 +3194,7 @@ export class EngramAccessService {
             legacyRecallNamespaces,
           })
         : legacyRecallNamespaces;
+    const budgetPrincipalNamespace = profilePlan?.baseNamespace ?? principalNamespace;
     let budgetDecision: BudgetDecision;
     let recordBudgetAfterSuccess = false;
     if (modeSkipsBudget) {
@@ -3221,7 +3222,7 @@ export class EngramAccessService {
       for (const ns of effectiveNamespaces) {
         const peek = this.budget.peek({
           principal,
-          principalNamespace,
+          principalNamespace: budgetPrincipalNamespace,
           queryNamespace: ns,
         });
         if (peek.reason !== "allowed-same-namespace") {

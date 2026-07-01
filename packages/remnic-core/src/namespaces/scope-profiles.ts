@@ -75,6 +75,10 @@ function scopeProfileSelfNamespace(principal: string | undefined, config: Plugin
   return existing;
 }
 
+function hasExplicitNamespacePolicy(namespace: string, config: PluginConfig): boolean {
+  return (config.namespacePolicies ?? []).some((policy) => policy.name === namespace);
+}
+
 function isScopeProfileImplicitSelfNamespace(
   principal: string | undefined,
   namespace: string,
@@ -85,7 +89,8 @@ function isScopeProfileImplicitSelfNamespace(
       namespace === principal &&
       namespace !== config.defaultNamespace &&
       namespace !== config.sharedNamespace &&
-      isSafeRouteNamespace(namespace),
+      isSafeRouteNamespace(namespace) &&
+      !hasExplicitNamespacePolicy(namespace, config),
   );
 }
 

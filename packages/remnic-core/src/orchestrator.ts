@@ -249,6 +249,7 @@ import {
   type HarmonicRetrievalResult,
 } from "./harmonic-retrieval.js";
 import {
+  compareVerifiedEpisodeResults,
   searchVerifiedEpisodes,
   type VerifiedEpisodeResult,
 } from "./verified-recall.js";
@@ -8774,13 +8775,12 @@ export class Orchestrator {
           const merged: VerifiedEpisodeResult[] = [];
           const seen = new Set<string>();
           for (const result of groups.flat()) {
-            const key = JSON.stringify(result);
+            const key = result.box.id || JSON.stringify(result);
             if (seen.has(key)) continue;
             seen.add(key);
             merged.push(result);
-            if (merged.length >= maxResults) break;
           }
-          return merged;
+          return merged.sort(compareVerifiedEpisodeResults).slice(0, maxResults);
         }),
         new Promise<[]>((resolve) => {
           timeoutHandle = setTimeout(
