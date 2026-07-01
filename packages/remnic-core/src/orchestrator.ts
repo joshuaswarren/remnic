@@ -7879,7 +7879,7 @@ export class Orchestrator {
             },
           });
     const profileStorageDirs = Array.from(
-      new Set(profileStorages.map((storage) => storage.dir).filter((dir): dir is string => dir.length > 0)),
+      new Set(profileStorages.map((storage) => storage.dir).filter((dir): dir is string => typeof dir === "string" && dir.length > 0)),
     );
 
     // --- Phase 1: Launch ALL independent data fetches in parallel ---
@@ -9107,7 +9107,7 @@ export class Orchestrator {
                       const merged: ParallelSearchResult[] = [];
                       const seen = new Set<string>();
                       for (const result of groups.flat()) {
-                        const key = result.path ?? JSON.stringify(result);
+                        const key = (result as any).path ?? JSON.stringify(result);
                         if (seen.has(key)) continue;
                         seen.add(key);
                         merged.push(result);
