@@ -202,18 +202,27 @@ function resolveLayer(params: {
       };
     }
     const namespace = combineNamespaces(baseNamespace, codingOverlay.namespace);
+    const explicitProjectPolicy = hasExplicitNamespacePolicy(namespace, config);
     const baseReadable = canReadScopeProfileNamespace(principal, baseNamespace, config);
     const baseWritable = canWriteScopeProfileNamespace(principal, baseNamespace, config);
+    const projectReadable = explicitProjectPolicy
+      ? canReadNamespace(principal, namespace, config)
+      : baseReadable;
+    const projectWritable = explicitProjectPolicy
+      ? canWriteNamespace(principal, namespace, config)
+      : baseWritable;
     return {
       id,
       kind: "user-project",
       namespace,
-      readable: baseReadable,
-      writable: baseWritable,
-      promotable: baseWritable,
-      reason: baseReadable || baseWritable
-        ? "principal project namespace derived from coding context"
-        : "principal base namespace is not authorized",
+      readable: projectReadable,
+      writable: projectWritable,
+      promotable: projectWritable,
+      reason: explicitProjectPolicy
+        ? "explicit user-project namespace policy"
+        : baseReadable || baseWritable
+          ? "principal project namespace derived from coding context"
+          : "principal base namespace is not authorized",
     };
   }
   const team = resolveTeam(config, profile, principal);

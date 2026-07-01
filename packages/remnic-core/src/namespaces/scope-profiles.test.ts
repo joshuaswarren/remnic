@@ -134,6 +134,49 @@ test("teamCoding profile resolves user-project, team-project, user-global, and s
   );
 });
 
+test("explicit user-project namespace policies override base self access", () => {
+  const baseConfig = teamCodingConfig();
+  const overlay = resolveCodingNamespaceOverlay(
+    codingContext,
+    baseConfig.codingMode,
+    baseConfig.defaultNamespace,
+  );
+  assert.ok(overlay);
+  const deniedProject = combineNamespaces("pi-geek", overlay.namespace);
+  const config = parseConfig({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: deniedProject, readPrincipals: [], writePrincipals: [] },
+    ],
+    scopeProfiles: {
+      projectOnly: {
+        readOrder: ["userProject", "userGlobal"],
+        writeDefault: "userProject",
+      },
+    },
+    defaultScopeProfile: "projectOnly",
+  });
+
+  const plan = resolveScopeProfilePlan({
+    config,
+    principal: "pi-geek",
+    codingContext,
+    codingOverlay: overlay,
+  });
+
+  assert.ok(plan);
+  assert.equal(plan.writeLayer, "userGlobal");
+  assert.equal(plan.writeNamespace, "pi-geek");
+  assert.deepEqual(plan.readNamespaces, ["pi-geek"]);
+  const projectLayer = plan.layers.find((layer) => layer.id === "userProject");
+  assert.equal(projectLayer?.namespace, deniedProject);
+  assert.equal(projectLayer?.readable, false);
+  assert.equal(projectLayer?.writable, false);
+});
+
 test("userProject profile namespaces stay principal-specific without namespace policies", () => {
   const config = parseConfig({
     namespacesEnabled: true,
