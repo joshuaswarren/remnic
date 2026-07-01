@@ -442,6 +442,55 @@ export interface CodingContext {
   defaultBranch: string | null;
 }
 
+export type ScopeProfileLayerId =
+  | "userProject"
+  | "teamProject"
+  | "userGlobal"
+  | "serverShared";
+
+export type ScopeProfilePromotionTarget =
+  | ScopeProfileLayerId
+  | "serverShared"
+  | "teamProject"
+  | "userGlobal";
+
+export interface ScopeProfileTeamProjectConfig {
+  /**
+   * Namespace template for team-project layers. Supported placeholders:
+   * `{teamId}`, `{principal}`, `{projectId}`, `{projectHash}`, and
+   * `{projectNamespace}`. The resolved namespace is validated at use time.
+   */
+  namespaceTemplate?: string;
+  /**
+   * Optional trusted team id for this profile. When omitted, the resolver uses
+   * the first configured team whose principal lists include the caller.
+   */
+  teamId?: string;
+}
+
+export interface ScopeProfileAutoPromoteConfig {
+  enabled: boolean;
+  targets: ScopeProfilePromotionTarget[];
+  categories: Array<"fact" | "correction" | "decision" | "preference" | "rule" | "procedure">;
+  minConfidenceTier: ConfidenceTier;
+}
+
+export interface ScopeProfileConfig {
+  readOrder: ScopeProfileLayerId[];
+  writeDefault: ScopeProfileLayerId;
+  promotionTargets: ScopeProfilePromotionTarget[];
+  teamProject?: ScopeProfileTeamProjectConfig;
+  autoPromote: ScopeProfileAutoPromoteConfig;
+}
+
+export interface ScopeTeamConfig {
+  principals: string[];
+  projectNamespaceTemplate?: string;
+  read: string[];
+  write: string[];
+  promote: string[];
+}
+
 /** Configuration for the nightly contradiction-scan cron (issue #520). */
 export interface ContradictionScanConfig {
   /** Master switch for the contradiction scan cron. Default true. */
@@ -1321,6 +1370,9 @@ export interface PluginConfig {
   principalFromSessionKeyRules: PrincipalRule[];
   namespacePolicies: NamespacePolicy[];
   defaultRecallNamespaces: Array<"self" | "shared">;
+  scopeProfiles: Record<string, ScopeProfileConfig>;
+  defaultScopeProfile: string | undefined;
+  teams: Record<string, ScopeTeamConfig>;
   cronRecallMode: CronRecallMode;
   cronRecallAllowlist: string[];
   cronRecallPolicyEnabled: boolean;

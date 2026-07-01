@@ -4276,6 +4276,136 @@
           "shared"
         ]
       },
+      "scopeProfiles": {
+        "type": "object",
+        "default": {},
+        "description": "Optional hosted-team memory scope profiles. Profiles define ordered read layers, the default write layer, and authorized promotion target aliases without changing behavior when absent.",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "readOrder": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "userProject",
+                  "teamProject",
+                  "userGlobal",
+                  "serverShared"
+                ]
+              }
+            },
+            "writeDefault": {
+              "type": "string",
+              "enum": [
+                "userProject",
+                "teamProject",
+                "userGlobal",
+                "serverShared"
+              ]
+            },
+            "promotionTargets": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "userProject",
+                  "teamProject",
+                  "userGlobal",
+                  "serverShared"
+                ]
+              }
+            },
+            "teamProject": {
+              "type": "object",
+              "properties": {
+                "namespaceTemplate": {
+                  "type": "string"
+                },
+                "teamId": {
+                  "type": "string"
+                }
+              }
+            },
+            "autoPromote": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "targets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "teamProject",
+                      "serverShared",
+                      "userGlobal",
+                      "userProject"
+                    ]
+                  }
+                },
+                "categories": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "minConfidenceTier": {
+                  "type": "string",
+                  "enum": [
+                    "explicit",
+                    "implied",
+                    "inferred",
+                    "speculative"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "defaultScopeProfile": {
+        "type": "string",
+        "description": "Optional key in scopeProfiles to use as the default hosted memory scope profile."
+      },
+      "teams": {
+        "type": "object",
+        "default": {},
+        "description": "Trusted team membership and team-project namespace templates used by scopeProfiles.",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "principals": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "projectNamespaceTemplate": {
+              "type": "string"
+            },
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "promote": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
       "cronRecallMode": {
         "type": "string",
         "enum": [

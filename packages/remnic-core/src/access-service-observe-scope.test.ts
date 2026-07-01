@@ -41,7 +41,7 @@ import {
   projectNamespaceName,
   projectTagProjectId,
 } from "./coding/coding-namespace.js";
-import { resolveGitContext } from "./coding/git-context.js";
+import { resolveGitContext, stableHash } from "./coding/git-context.js";
 import type { CodingContext, PluginConfig } from "./types.js";
 
 /**
@@ -210,6 +210,72 @@ test("#1495 projectTag: LCM, extraction, objective-state, and response all agree
     probe.objectiveStateNamespaces.every((ns) => ns === expected),
     `objective-state target must be the effective namespace, got ${JSON.stringify(probe.objectiveStateNamespaces)}`,
   );
+});
+
+test("#1501 scope profile exposes layered read/write/promotion diagnostics without changing user-project write default", async () => {
+  const probe = makeObserveProbe({
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+      { name: "shared", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
+    scopeProfiles: {
+      teamCoding: {
+        readOrder: ["userProject", "teamProject", "userGlobal", "serverShared"],
+        writeDefault: "userProject",
+        promotionTargets: ["teamProject", "serverShared"],
+        teamProject: { namespaceTemplate: "team-{teamId}-project-{projectHash}" },
+        autoPromote: {
+          enabled: false,
+          targets: [],
+          categories: ["fact", "correction", "decision", "preference"],
+          minConfidenceTier: "explicit",
+        },
+      },
+    },
+    defaultScopeProfile: "teamCoding",
+    teams: {
+      pi: {
+        principals: ["pi-geek", "pi-friend"],
+        read: ["pi-geek", "pi-friend"],
+        write: ["pi-geek", "pi-friend"],
+        promote: ["pi-geek", "pi-friend"],
+      },
+    },
+  } as Partial<PluginConfig>);
+  const service = new EngramAccessService(probe.orch);
+
+  const res = await service.observe(
+    observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Remnic" }),
+  );
+  const expectedUserProject = combineNamespaces(
+    "pi-geek",
+    projectNamespaceName(projectTagProjectId("Remnic")),
+  );
+  const expectedTeamProject = `team-pi-project-${stableHash(projectTagProjectId("Remnic"))}`;
+
+  assert.equal(res.effectiveNamespace, expectedUserProject);
+  assert.equal(res.scopeDebug?.scopeProfile, "teamCoding");
+  assert.equal(res.scopeDebug?.writeLayer, "userProject");
+  assert.deepEqual(res.scopeDebug?.readNamespaces, [
+    expectedUserProject,
+    expectedTeamProject,
+    "pi-geek",
+    "shared",
+  ]);
+  assert.deepEqual(
+    res.scopeDebug?.promotionTargets?.map((target) => [
+      target.target,
+      target.namespace,
+      target.authorized,
+    ]),
+    [
+      ["teamProject", expectedTeamProject, true],
+      ["serverShared", "shared", true],
+    ],
+  );
+  assert.equal(probe.extractionCalls[0]?.writeNamespaceOverride, expectedUserProject);
 });
 
 test("#1495 cwd (git repo): every observe side effect agrees on the effective namespace", async () => {

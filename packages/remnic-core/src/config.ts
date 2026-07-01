@@ -19,6 +19,10 @@ import type {
   RecallPipelineConfig,
   RecallSectionConfig,
   ReasoningEffort,
+  ScopeProfileConfig,
+  ScopeProfileLayerId,
+  ScopeProfilePromotionTarget,
+  ScopeTeamConfig,
   SemanticChunkingConfigShape,
   SessionObserverBandConfig,
   SlotBehaviorConfig,
@@ -59,6 +63,178 @@ const LEGACY_ACTIVE_RECALL_CUSTOM_FIELD = [
   "Prompt",
   "Override",
 ].join("") as "activeRecallPromptOverride";
+const SCOPE_PROFILE_LAYER_IDS = [
+  "userProject",
+  "teamProject",
+  "userGlobal",
+  "serverShared",
+] as const satisfies readonly ScopeProfileLayerId[];
+const SCOPE_PROFILE_PROMOTION_TARGETS = [
+  ...SCOPE_PROFILE_LAYER_IDS,
+] as const satisfies readonly ScopeProfilePromotionTarget[];
+const SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES = [
+  "fact",
+  "correction",
+  "decision",
+  "preference",
+  "rule",
+  "procedure",
+] as const;
+const CONFIDENCE_TIERS = [
+  "explicit",
+  "implied",
+  "inferred",
+  "speculative",
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
+}
+
+function parseScopeProfileLayerList(
+  value: unknown,
+  keyName: string,
+  fallback: ScopeProfileLayerId[],
+): ScopeProfileLayerId[] {
+  if (value === undefined || value === null) return [...fallback];
+  if (!Array.isArray(value)) {
+    throw new Error(`${keyName} must be an array`);
+  }
+  const out: ScopeProfileLayerId[] = [];
+  for (const entry of value) {
+    if (!SCOPE_PROFILE_LAYER_IDS.includes(entry as ScopeProfileLayerId)) {
+      throw new Error(`${keyName} contains unsupported layer: ${String(entry)}`);
+    }
+    if (!out.includes(entry as ScopeProfileLayerId)) {
+      out.push(entry as ScopeProfileLayerId);
+    }
+  }
+  return out;
+}
+
+function parseScopeProfilePromotionTargets(
+  value: unknown,
+  keyName: string,
+): ScopeProfilePromotionTarget[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${keyName} must be an array`);
+  }
+  const out: ScopeProfilePromotionTarget[] = [];
+  for (const entry of value) {
+    if (!SCOPE_PROFILE_PROMOTION_TARGETS.includes(entry as ScopeProfilePromotionTarget)) {
+      throw new Error(`${keyName} contains unsupported target: ${String(entry)}`);
+    }
+    if (!out.includes(entry as ScopeProfilePromotionTarget)) {
+      out.push(entry as ScopeProfilePromotionTarget);
+    }
+  }
+  return out;
+}
+
+function parseScopeProfiles(value: unknown): Record<string, ScopeProfileConfig> {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value)) {
+    throw new Error("scopeProfiles must be an object");
+  }
+  const profiles: Record<string, ScopeProfileConfig> = {};
+  for (const [profileId, rawProfile] of Object.entries(value)) {
+    if (profileId.trim().length === 0) {
+      throw new Error("scopeProfiles keys must not be empty");
+    }
+    if (!isRecord(rawProfile)) {
+      throw new Error(`scopeProfiles.${profileId} must be an object`);
+    }
+    const readOrder = parseScopeProfileLayerList(
+      rawProfile.readOrder,
+      `scopeProfiles.${profileId}.readOrder`,
+      ["userProject", "userGlobal", "serverShared"],
+    );
+    const writeDefault =
+      rawProfile.writeDefault === undefined || rawProfile.writeDefault === null
+        ? "userProject"
+        : rawProfile.writeDefault;
+    if (!SCOPE_PROFILE_LAYER_IDS.includes(writeDefault as ScopeProfileLayerId)) {
+      throw new Error(`scopeProfiles.${profileId}.writeDefault contains unsupported layer: ${String(writeDefault)}`);
+    }
+    const teamProject = isRecord(rawProfile.teamProject)
+      ? {
+          ...(typeof rawProfile.teamProject.namespaceTemplate === "string" &&
+          rawProfile.teamProject.namespaceTemplate.length > 0
+            ? { namespaceTemplate: rawProfile.teamProject.namespaceTemplate }
+            : {}),
+          ...(typeof rawProfile.teamProject.teamId === "string" &&
+          rawProfile.teamProject.teamId.length > 0
+            ? { teamId: rawProfile.teamProject.teamId }
+            : {}),
+        }
+      : undefined;
+    const rawAutoPromote = isRecord(rawProfile.autoPromote) ? rawProfile.autoPromote : {};
+    const autoPromoteEnabled = coerceBool(rawAutoPromote.enabled);
+    const minConfidenceTier =
+      typeof rawAutoPromote.minConfidenceTier === "string" &&
+      CONFIDENCE_TIERS.includes(rawAutoPromote.minConfidenceTier as any)
+        ? (rawAutoPromote.minConfidenceTier as typeof CONFIDENCE_TIERS[number])
+        : "explicit";
+    const autoPromoteCategories: Array<typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number]> = Array.isArray(rawAutoPromote.categories)
+      ? rawAutoPromote.categories.filter((entry): entry is typeof SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES[number] =>
+          SCOPE_PROFILE_AUTO_PROMOTE_CATEGORIES.includes(entry as any),
+        )
+      : ["fact", "correction", "decision", "preference"];
+    profiles[profileId] = {
+      readOrder,
+      writeDefault: writeDefault as ScopeProfileLayerId,
+      promotionTargets: parseScopeProfilePromotionTargets(
+        rawProfile.promotionTargets,
+        `scopeProfiles.${profileId}.promotionTargets`,
+      ),
+      ...(teamProject && Object.keys(teamProject).length > 0 ? { teamProject } : {}),
+      autoPromote: {
+        enabled: autoPromoteEnabled === true,
+        targets: parseScopeProfilePromotionTargets(
+          rawAutoPromote.targets,
+          `scopeProfiles.${profileId}.autoPromote.targets`,
+        ),
+        categories: autoPromoteCategories,
+        minConfidenceTier,
+      },
+    };
+  }
+  return profiles;
+}
+
+function parseScopeTeams(value: unknown): Record<string, ScopeTeamConfig> {
+  if (value === undefined || value === null) return {};
+  if (!isRecord(value)) {
+    throw new Error("teams must be an object");
+  }
+  const teams: Record<string, ScopeTeamConfig> = {};
+  for (const [teamId, rawTeam] of Object.entries(value)) {
+    if (teamId.trim().length === 0) {
+      throw new Error("teams keys must not be empty");
+    }
+    if (!isRecord(rawTeam)) {
+      throw new Error(`teams.${teamId} must be an object`);
+    }
+    teams[teamId] = {
+      principals: parseStringList(rawTeam.principals),
+      ...(typeof rawTeam.projectNamespaceTemplate === "string" &&
+      rawTeam.projectNamespaceTemplate.length > 0
+        ? { projectNamespaceTemplate: rawTeam.projectNamespaceTemplate }
+        : {}),
+      read: parseStringList(rawTeam.read),
+      write: parseStringList(rawTeam.write),
+      promote: parseStringList(rawTeam.promote),
+    };
+  }
+  return teams;
+}
 
 function parseBoundedIntegerMs(
   value: unknown,
@@ -1281,6 +1457,18 @@ export function parseConfig(raw: unknown): PluginConfig {
     typeof cfg.memoryDir === "string" && cfg.memoryDir.length > 0
       ? expandTildePath(cfg.memoryDir)
       : DEFAULT_MEMORY_DIR;
+  const scopeProfiles = parseScopeProfiles(cfg.scopeProfiles);
+  const defaultScopeProfile =
+    typeof cfg.defaultScopeProfile === "string" && cfg.defaultScopeProfile.trim().length > 0
+      ? cfg.defaultScopeProfile.trim()
+      : undefined;
+  if (
+    defaultScopeProfile !== undefined &&
+    scopeProfiles[defaultScopeProfile] === undefined
+  ) {
+    throw new Error(`defaultScopeProfile references unknown scope profile: ${defaultScopeProfile}`);
+  }
+  const teams = parseScopeTeams(cfg.teams);
   const rawIdentityInjectionMode = cfg.identityInjectionMode as string | undefined;
   const identityInjectionMode: IdentityInjectionMode =
     rawIdentityInjectionMode
@@ -2777,6 +2965,9 @@ export function parseConfig(raw: unknown): PluginConfig {
         })).filter((p) => p.name.length > 0)
       : [],
     defaultRecallNamespaces: Array.isArray(cfg.defaultRecallNamespaces) ? ["self", "shared"].filter((x) => (cfg.defaultRecallNamespaces as any[]).includes(x)) as any : ["self", "shared"],
+    scopeProfiles,
+    defaultScopeProfile,
+    teams,
     cronRecallMode:
       cfg.cronRecallMode === "none"
         ? "none"

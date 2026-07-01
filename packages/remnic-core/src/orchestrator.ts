@@ -320,6 +320,7 @@ import {
   recallNamespacesForPrincipal,
   resolvePrincipal,
 } from "./namespaces/principal.js";
+import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import {
   combineNamespaces,
   lcmReadSessionIdsForNamespaces,
@@ -5830,9 +5831,22 @@ export class Orchestrator {
     const observationCodingSelf = observationCodingOverlay
       ? combineNamespaces(observationPrincipalSelf, observationCodingOverlay.namespace)
       : null;
+    const observationScopeProfilePlan =
+      namespaceOverride && canReadNamespace(principal, namespaceOverride, this.config)
+        ? null
+        : resolveScopeProfilePlan({
+            config: this.config,
+            principal,
+            codingContext: sessionKey
+              ? this.getCodingContextForSession(sessionKey)
+              : null,
+            codingOverlay: observationCodingOverlay,
+          });
     let observationNamespaces: string[];
     if (namespaceOverride && canReadNamespace(principal, namespaceOverride, this.config)) {
       observationNamespaces = [namespaceOverride];
+    } else if (observationScopeProfilePlan?.readNamespaces.length) {
+      observationNamespaces = observationScopeProfilePlan.readNamespaces;
     } else if (observationCodingOverlay && observationCodingSelf) {
       // Rule 42 / parity with the main recall path: substitute the self
       // namespace within the principal's recall list rather than
@@ -7449,6 +7463,16 @@ export class Orchestrator {
     const codingSelfNamespace = codingOverlay
       ? combineNamespaces(principalSelfNamespace, codingOverlay.namespace)
       : null;
+    const scopeProfilePlan = namespaceOverride
+      ? null
+      : resolveScopeProfilePlan({
+          config: this.config,
+          principal,
+          codingContext: sessionKey
+            ? this.getCodingContextForSession(sessionKey)
+            : null,
+          codingOverlay,
+        });
     const selfNamespace =
       namespaceOverride ??
       codingSelfNamespace ??
@@ -7456,6 +7480,8 @@ export class Orchestrator {
     let recallNamespaces: string[];
     if (namespaceOverride) {
       recallNamespaces = [namespaceOverride];
+    } else if (scopeProfilePlan?.readNamespaces.length) {
+      recallNamespaces = scopeProfilePlan.readNamespaces;
     } else if (codingOverlay && codingSelfNamespace) {
       // Substitute the principal's self namespace with the coding-scoped
       // one, and append any read fallbacks (branch→project, PR 3) combined
@@ -7515,7 +7541,9 @@ export class Orchestrator {
     // so the prior round's authorization invariant is preserved.
     const codingOverlaySelfReadable =
       codingOverlay !== null &&
-      readableRecallNamespaces.includes(principalSelfNamespace);
+      (scopeProfilePlan
+        ? scopeProfilePlan.layers.some((layer) => layer.id === "userProject" && layer.readable)
+        : readableRecallNamespaces.includes(principalSelfNamespace));
     let lcmReadNamespaces: string[];
     if (namespaceOverride) {
       // Explicit namespace already read-authorized above (canReadNamespace gate).

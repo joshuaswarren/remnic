@@ -1,5 +1,5 @@
 {
-  "id": "openclaw-engram",
+  "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
   "version": "9.3.654",
   "kind": "memory",
@@ -23,14 +23,14 @@
       "provider": "openai",
       "method": "api-key",
       "choiceId": "remnic-openai-api-key",
-      "choiceLabel": "OpenAI API key for Remnic memory extraction",
-      "choiceHint": "Remnic sends memory extraction, consolidation, and embedding requests to OpenAI or the configured OpenAI-compatible endpoint unless you route those tasks through OpenClaw gateway/local LLM settings.",
+      "choiceLabel": "Optional OpenAI API key for Remnic plugin-mode extraction",
+      "choiceHint": "Not needed when Remnic uses the OpenClaw gateway model source. Set only if you intentionally use plugin mode with OpenAI or an OpenAI-compatible endpoint.",
       "groupId": "remnic-memory",
       "groupLabel": "Remnic memory",
       "optionKey": "openaiApiKey",
       "cliFlag": "--openai-api-key",
       "cliOption": "--openai-api-key <key>",
-      "cliDescription": "OpenAI API key used by Remnic memory extraction, consolidation, and embedding flows.",
+      "cliDescription": "Optional OpenAI API key used by Remnic plugin-mode extraction, consolidation, and embedding flows.",
       "onboardingScopes": [
         "text-inference"
       ]
@@ -3391,8 +3391,8 @@
           "plugin",
           "gateway"
         ],
-        "default": "plugin",
-        "description": "LLM source: 'plugin' uses Engram's own openai/localLlm config; 'gateway' delegates to a gateway agent's model chain (agents.list[])."
+        "default": "gateway",
+        "description": "LLM source: 'gateway' delegates to a gateway agent's model chain (agents.list[]); 'plugin' uses Engram's own openai/localLlm config."
       },
       "gatewayAgentId": {
         "type": "string",
@@ -3669,6 +3669,38 @@
         "type": "number",
         "default": 900000,
         "description": "Minimum interval between QMD update executions (ms). Useful because current QMD update runs globally across collections."
+      },
+      "maintenanceNamespaceFanoutEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "When namespaces are enabled, let background maintenance enumerate live catalog namespaces in addition to configured default/shared/policy namespaces."
+      },
+      "maintenanceMaxNamespacesPerCycle": {
+        "type": "number",
+        "default": 20,
+        "minimum": 1,
+        "description": "Maximum namespaces a single maintenance job cycle may process. Default and shared namespaces keep priority inside this budget."
+      },
+      "maintenanceIncludeProjectNamespaces": {
+        "type": "boolean",
+        "default": true,
+        "description": "Include dynamic project namespaces from the namespace catalog in background maintenance fanout."
+      },
+      "maintenanceIncludeBranchNamespaces": {
+        "type": "boolean",
+        "default": false,
+        "description": "Include dynamic branch namespaces from the namespace catalog in background maintenance fanout. Defaults off to avoid high-cardinality branch churn."
+      },
+      "maintenanceIncludeTeamProjectNamespaces": {
+        "type": "boolean",
+        "default": true,
+        "description": "Include dynamic team-project namespaces from the namespace catalog in background maintenance fanout."
+      },
+      "maintenanceNamespaceLockStaleMs": {
+        "type": "number",
+        "default": 600000,
+        "minimum": 1,
+        "description": "Stale threshold for per-job/per-namespace maintenance locks under state/maintenance-locks/."
       },
       "localLlmRetry5xxCount": {
         "type": "number",
@@ -4243,6 +4275,136 @@
           "self",
           "shared"
         ]
+      },
+      "scopeProfiles": {
+        "type": "object",
+        "default": {},
+        "description": "Optional hosted-team memory scope profiles. Profiles define ordered read layers, the default write layer, and authorized promotion target aliases without changing behavior when absent.",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "readOrder": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "userProject",
+                  "teamProject",
+                  "userGlobal",
+                  "serverShared"
+                ]
+              }
+            },
+            "writeDefault": {
+              "type": "string",
+              "enum": [
+                "userProject",
+                "teamProject",
+                "userGlobal",
+                "serverShared"
+              ]
+            },
+            "promotionTargets": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "userProject",
+                  "teamProject",
+                  "userGlobal",
+                  "serverShared"
+                ]
+              }
+            },
+            "teamProject": {
+              "type": "object",
+              "properties": {
+                "namespaceTemplate": {
+                  "type": "string"
+                },
+                "teamId": {
+                  "type": "string"
+                }
+              }
+            },
+            "autoPromote": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "targets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "teamProject",
+                      "serverShared",
+                      "userGlobal",
+                      "userProject"
+                    ]
+                  }
+                },
+                "categories": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "minConfidenceTier": {
+                  "type": "string",
+                  "enum": [
+                    "explicit",
+                    "implied",
+                    "inferred",
+                    "speculative"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "defaultScopeProfile": {
+        "type": "string",
+        "description": "Optional key in scopeProfiles to use as the default hosted memory scope profile."
+      },
+      "teams": {
+        "type": "object",
+        "default": {},
+        "description": "Trusted team membership and team-project namespace templates used by scopeProfiles.",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "principals": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "projectNamespaceTemplate": {
+              "type": "string"
+            },
+            "read": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "write": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "promote": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
       },
       "cronRecallMode": {
         "type": "string",

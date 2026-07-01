@@ -56,6 +56,7 @@ import {
 } from "./memory-lifecycle-ledger-utils.js";
 import { getMemoryProjectionPath } from "./memory-projection-store.js";
 import { canReadNamespace, canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
+import { resolveScopeProfilePlan, type ScopeProfileLayerResolution, type ScopeProfilePromotionResolution } from "./namespaces/scope-profiles.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
@@ -888,6 +889,14 @@ export interface MemoryScopePlan {
   objectiveStateNamespace: string;
   /** Namespaces a same-session recall would read (cheap subset). */
   readNamespaces: string[];
+  /** Active scope profile id, when `defaultScopeProfile` is configured. */
+  scopeProfile?: string;
+  /** Resolved profile layer that supplied `writeNamespace`. */
+  writeLayer?: string;
+  /** Resolved profile layers in the active profile contract. */
+  layers?: ScopeProfileLayerResolution[];
+  /** Authorized promotion targets from the active profile contract. */
+  promotionTargets?: ScopeProfilePromotionResolution[];
   /** Whether the coding overlay changed the base namespace. */
   codingOverlayApplied: boolean;
   /** Non-fatal diagnostics surfaced during resolution. */
@@ -966,6 +975,10 @@ export interface EngramAccessScopeDebug {
   codingOverlayApplied: boolean;
   /** Namespaces a same-session recall would read, when cheap to compute. */
   readNamespaces?: string[];
+  scopeProfile?: string;
+  writeLayer?: string;
+  layers?: ScopeProfileLayerResolution[];
+  promotionTargets?: ScopeProfilePromotionResolution[];
 }
 
 export interface EngramAccessObserveResponse {
@@ -1398,17 +1411,36 @@ export class EngramAccessService {
     // `default-project-*` that its own recall never searches (Codex review).
     const hasSession =
       typeof request.sessionKey === "string" && request.sessionKey.length > 0;
+    const codingContext =
+      hasSession &&
+      this.orchestrator.config.namespacesEnabled &&
+      this.orchestrator.config.codingMode?.projectScope
+        ? this.orchestrator.getCodingContextForSession(request.sessionKey) ??
+          (await this.resolveCodingContextFromOptions(request))
+        : null;
     const overlay =
       hasSession &&
       this.orchestrator.config.namespacesEnabled &&
       this.orchestrator.config.codingMode?.projectScope
         ? resolveCodingNamespaceOverlay(
-            this.orchestrator.getCodingContextForSession(request.sessionKey) ??
-              (await this.resolveCodingContextFromOptions(request)),
+            codingContext,
             this.orchestrator.config.codingMode,
             this.orchestrator.config.defaultNamespace,
           )
         : null;
+    const principal = this.resolveRequestPrincipal(
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
+    const profilePlan = resolveScopeProfilePlan({
+      config: this.orchestrator.config,
+      principal,
+      codingContext,
+      codingOverlay: overlay,
+    });
+    if (profilePlan) {
+      return profilePlan.writeNamespace;
+    }
     if (!overlay) {
       // No coding overlay → unqualified write stays on config.defaultNamespace,
       // exactly the pre-#1434 behavior (auth-checked, like the legacy path).
@@ -1422,10 +1454,6 @@ export class EngramAccessService {
     // recall/observe/buffer-flush use. The result is a principal-owned
     // `project-*` sub-namespace derived from this authorized base, so it needs
     // no separate write policy.
-    const principal = this.resolveRequestPrincipal(
-      request.sessionKey,
-      request.authenticatedPrincipal,
-    );
     const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
     if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not writable: ${base}`);
@@ -1565,6 +1593,44 @@ export class EngramAccessService {
       baseNamespace,
     );
     const codingOverlayApplied = overlaidBase !== baseNamespace;
+    const codingOverlay = overlayEligible
+      ? resolveCodingNamespaceOverlay(
+          attachedContext,
+          this.orchestrator.config.codingMode,
+          this.orchestrator.config.defaultNamespace,
+        )
+      : null;
+    const profilePlan = resolveScopeProfilePlan({
+      config: this.orchestrator.config,
+      principal,
+      codingContext: attachedContext,
+      codingOverlay,
+    });
+    if (profilePlan) {
+      const selectedLayer = profilePlan.layers.find((layer) => layer.id === profilePlan.writeLayer);
+      if (!selectedLayer?.writable) {
+        clearSeededContext();
+        throw new EngramAccessInputError(
+          `scope profile ${profilePlan.profileId} has no writable layer for principal ${principal ?? "anonymous"}`,
+        );
+      }
+      const readNamespaces = profilePlan.readNamespaces.length > 0
+        ? profilePlan.readNamespaces
+        : [profilePlan.writeNamespace];
+      return {
+        principal,
+        baseNamespace,
+        writeNamespace: profilePlan.writeNamespace,
+        objectiveStateNamespace: profilePlan.writeNamespace,
+        readNamespaces,
+        scopeProfile: profilePlan.profileId,
+        writeLayer: profilePlan.writeLayer,
+        layers: profilePlan.layers,
+        promotionTargets: profilePlan.promotionTargets,
+        codingOverlayApplied: codingOverlayApplied || profilePlan.writeLayer === "userProject" || profilePlan.writeLayer === "teamProject",
+        warnings: [...warnings, ...profilePlan.warnings],
+      };
+    }
 
     if (!codingOverlayApplied) {
       // No overlay → the LCM/extraction/response write namespace mirrors the
@@ -1640,12 +1706,7 @@ export class EngramAccessService {
     // matches what a same-session recall searches. Resolved through the pure
     // overlay helper to enumerate fallbacks; the write namespace itself already
     // came from `applyCodingNamespaceOverlay` so the two agree.
-    const overlay = resolveCodingNamespaceOverlay(
-      attachedContext,
-      this.orchestrator.config.codingMode,
-      this.orchestrator.config.defaultNamespace,
-    );
-    for (const fallback of overlay?.readFallbacks ?? []) {
+    for (const fallback of codingOverlay?.readFallbacks ?? []) {
       const ns = combineNamespaces(baseNamespace, fallback);
       if (!readNamespaces.includes(ns)) readNamespaces.push(ns);
     }
@@ -3048,6 +3109,28 @@ export class EngramAccessService {
     }
     const principal = maybePrincipal ?? "default";
     const principalNamespace = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
+    const profileCodingContext = request.sessionKey
+      ? this.orchestrator.getCodingContextForSession(request.sessionKey)
+      : null;
+    const profileCodingOverlay =
+      !namespaceOverride &&
+      profileCodingContext &&
+      this.orchestrator.config.namespacesEnabled &&
+      this.orchestrator.config.codingMode?.projectScope
+        ? resolveCodingNamespaceOverlay(
+            profileCodingContext,
+            this.orchestrator.config.codingMode,
+            this.orchestrator.config.defaultNamespace,
+          )
+        : null;
+    const profilePlan = namespaceOverride
+      ? null
+      : resolveScopeProfilePlan({
+          config: this.orchestrator.config,
+          principal,
+          codingContext: profileCodingContext,
+          codingOverlay: profileCodingOverlay,
+        });
     // Skip budget checks for modes that never perform a cross-namespace read.
     const modeSkipsBudget = mode === "no_recall";
     // Derive the full set of namespaces the orchestrator will actually search.
@@ -3056,14 +3139,11 @@ export class EngramAccessService {
     // against every cross-namespace entry in the effective set so that omitting
     // `namespace` cannot bypass the limiter (Cursor/Codex review feedback).
     //
-    // NOTE: coding overlays (branch/project scope) are resolved inside
-    // orchestrator.recall() AFTER this check.  The access-service does not
-    // duplicate that resolution here to avoid tight coupling.  Coding-overlay
-    // namespaces are a second-layer defense covered by the anomaly detector
-    // (PR 5/5 of issue #565).
     const effectiveNamespaces = namespaceOverride
       ? [namespaceOverride]
-      : recallNamespacesForPrincipal(principal, this.orchestrator.config);
+      : profilePlan?.readNamespaces.length
+        ? profilePlan.readNamespaces
+        : recallNamespacesForPrincipal(principal, this.orchestrator.config);
     let budgetDecision: BudgetDecision;
     let recordBudgetAfterSuccess = false;
     if (modeSkipsBudget) {
@@ -5339,6 +5419,10 @@ export class EngramAccessService {
         writeNamespace: scope.writeNamespace,
         codingOverlayApplied: scope.codingOverlayApplied,
         readNamespaces: scope.readNamespaces,
+        scopeProfile: scope.scopeProfile,
+        writeLayer: scope.writeLayer,
+        layers: scope.layers,
+        promotionTargets: scope.promotionTargets,
       },
       lcmArchived,
       extractionQueued,
