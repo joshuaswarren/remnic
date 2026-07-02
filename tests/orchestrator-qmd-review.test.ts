@@ -86,6 +86,8 @@ test("fetchQmdMemoryResultsWithArtifactTopUp forwards QMD search options and ski
       intent: "goal:review action:review entities:repo",
       explain: true,
     },
+    // Degradation observer threading (#1536); unset in this fixture.
+    { onDegradation: undefined },
   ]);
   assert.equal(results.length, 1);
   assert.ok(snapshot);
@@ -213,6 +215,8 @@ test("fetchQmdMemoryResultsWithArtifactTopUp keeps hybrid top-up active when QMD
     {
       explain: true,
     },
+    // Degradation observer threading (#1536); unset in this fixture.
+    { onDegradation: undefined },
   ]);
   assert.equal(hybridCalls, 1);
   assert.equal(results.length, 2);
@@ -291,6 +295,8 @@ test("fetchQmdMemoryResultsWithArtifactTopUp keeps hybrid top-up active when the
       intent: "goal:review action:review",
       explain: true,
     },
+    // Degradation observer threading (#1536); unset in this fixture.
+    { onDegradation: undefined },
   ]);
   assert.equal(hybridCalls, 1);
   assert.equal(results.length, 2);

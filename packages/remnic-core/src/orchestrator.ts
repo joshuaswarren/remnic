@@ -11349,6 +11349,9 @@ export class Orchestrator {
             recallMode,
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
+            onDegradation: (degradation) => {
+              backendDegradations.push(degradation);
+            },
             xrayPoolSizeSink: xrayColdPoolSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
@@ -11571,6 +11574,9 @@ export class Orchestrator {
               recallMode,
               queryAwarePrefilter,
               abortSignal: options.abortSignal,
+              onDegradation: (degradation) => {
+                backendDegradations.push(degradation);
+              },
               xrayPoolSizeSink: xrayColdPoolSink,
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
@@ -11680,6 +11686,9 @@ export class Orchestrator {
                 recallMode,
                 queryAwarePrefilter,
                 abortSignal: options.abortSignal,
+                onDegradation: (degradation) => {
+                  backendDegradations.push(degradation);
+                },
                 xrayPoolSizeSink: xrayColdPoolSink,
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
@@ -11724,6 +11733,9 @@ export class Orchestrator {
             recallMode,
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
+            onDegradation: (degradation) => {
+              backendDegradations.push(degradation);
+            },
             xrayPoolSizeSink: xrayColdPoolSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
@@ -12125,15 +12137,14 @@ export class Orchestrator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+          // Included at record time so the published snapshot is born
+          // annotated — a post-record annotation leaves a window where
+          // readers see the snapshot without degradations, and a concurrent
+          // same-session recall could drop them entirely (codex + cursor
+          // reviews on #1544).
+          backendDegradations:
+            backendDegradations.length > 0 ? backendDegradations : undefined,
         })
-        .then(() =>
-          backendDegradations.length > 0
-            ? this.lastRecall.annotateBackendDegradations(
-                sessionKey,
-                backendDegradations,
-              )
-            : undefined,
-        )
         .catch((err) => log.debug(`last recall record failed: ${err}`));
     }
     if (sessionKey) {
@@ -18605,6 +18616,8 @@ export class Orchestrator {
     recallMode: RecallPlanMode;
     queryAwarePrefilter?: QueryAwarePrefilter;
     abortSignal?: AbortSignal;
+    /** Backend degradation observer — cold-tier QMD must report like hot (#1536). */
+    onDegradation?: (degradation: SearchDegradation) => void;
     /** Issue #680 — historical recall point in ms-since-epoch. */
     asOfMs?: number;
     /**
@@ -18703,6 +18716,7 @@ export class Orchestrator {
                 queryAwarePrefilter: options.queryAwarePrefilter,
                 searchOptions: this.buildConfiguredQmdSearchOptions(options.prompt),
                 abortSignal: options.abortSignal,
+                onDegradation: options.onDegradation,
               },
             ),
         );

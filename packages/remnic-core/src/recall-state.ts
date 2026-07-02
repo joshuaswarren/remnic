@@ -305,6 +305,13 @@ export class LastRecallStore {
      * can render which retrieval tier served the query.
      */
     tierExplain?: RecallTierExplain;
+    /**
+     * Backend degradations observed while serving this recall (issue #1536).
+     * Passed at record time so the published snapshot is born annotated —
+     * a post-record annotation would leave a window where readers see the
+     * snapshot without them (codex review on #1544).
+     */
+    backendDegradations?: SearchDegradation[];
   }): Promise<void> {
     const now = new Date().toISOString();
     const queryHash = createHash("sha256").update(opts.query).digest("hex");
@@ -336,6 +343,10 @@ export class LastRecallStore {
       identityInjectedChars: opts.identityInjection?.injectedChars,
       identityInjectionTruncated: opts.identityInjection?.truncated,
       tierExplain: opts.tierExplain,
+      backendDegradations:
+        opts.backendDegradations && opts.backendDegradations.length > 0
+          ? opts.backendDegradations
+          : undefined,
     };
     // `cloneLastRecallSnapshot` handles `null` but that never applies
     // at this call site — the non-null assertion keeps the type
@@ -401,31 +412,6 @@ export class LastRecallStore {
     }
   }
 
-  /**
-   * Attach backend degradations observed during a recall (issue #1536).
-   * Same stale-snapshot guards as `annotateTierExplain`: a snapshot replaced
-   * by a newer recall is never annotated. No-op for empty input or missing
-   * snapshots; callers do not need to guard.
-   */
-  async annotateBackendDegradations(
-    sessionKey: string,
-    degradations: SearchDegradation[],
-    expected?: { writeNonce?: string; traceId?: string; recordedAt?: string },
-  ): Promise<void> {
-    if (degradations.length === 0) return;
-    const current = this.state[sessionKey];
-    if (!current) return;
-    if (!snapshotMatchesExpectedIdentity(current, expected)) return;
-    this.state[sessionKey] = {
-      ...current,
-      backendDegradations: structuredClone(degradations),
-    };
-    try {
-      await this.flushState();
-    } catch (err) {
-      log.debug(`last recall backend-degradation annotate failed: ${err}`);
-    }
-  }
 
   private flushState(): Promise<void> {
     const run = this.stateWriteChain.catch(() => undefined).then(async () => {

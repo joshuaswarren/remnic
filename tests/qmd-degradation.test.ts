@@ -83,6 +83,22 @@ test("subprocess failure reports subprocess_error with detail", async () => {
   assert.match(degradations[0]?.detail ?? "", /qmd exploded/);
 });
 
+test("subprocess detail redacts path-like tokens before serialization", async () => {
+  const client = makeClient();
+  client.daemonAvailable = false;
+  client.daemonSession = undefined;
+  client.runQmdCommand = async () => {
+    throw new Error("ENOENT: no such file, open '/Users/someone/secret/memo.md' (~/fallback too)");
+  };
+  const { degradations, onDegradation } = collector();
+  await client.search("path redaction probe", undefined, 3, undefined, { onDegradation });
+  const detail = degradations[0]?.detail ?? "";
+  assert.match(detail, /<path>/);
+  assert.doesNotMatch(detail, /\/Users\//);
+  assert.doesNotMatch(detail, /secret/);
+  assert.ok(detail.length <= 160);
+});
+
 test("degradation codes are uniform across bm25/vector/global paths (rule 39)", async () => {
   const client = makeClient();
   client.bm25SearchViaDaemon = async () => null;
@@ -125,39 +141,60 @@ test("a throwing observer never breaks the search (#1536 safety contract)", asyn
   assert.deepEqual(out, []);
 });
 
-test("LastRecallStore.annotateBackendDegradations attaches and guards (#1536)", async () => {
+test("degraded subprocess results are never cached (#1544 codex)", async () => {
+  const client = makeClient();
+  client.daemonAvailable = false;
+  client.daemonSession = undefined;
+  let failNext = true;
+  client.runQmdCommand = async () => {
+    if (failNext) throw new Error("transient qmd failure");
+    return { stdout: JSON.stringify([{ docid: "d1", file: "/tmp/d1.md", snippet: "hit", score: 0.9 }]), stderr: "" };
+  };
+
+  const first = collector();
+  const out1 = await client.search("degraded cache probe", undefined, 3, undefined, {
+    onDegradation: first.onDegradation,
+  });
+  assert.deepEqual(out1, []);
+  assert.equal(first.degradations[0]?.code, "subprocess_error");
+
+  // Backend recovers within the cache TTL: the degraded [] must NOT be
+  // served from cache as a genuine no-matches.
+  failNext = false;
+  const second = collector();
+  const out2 = await client.search("degraded cache probe", undefined, 3, undefined, {
+    onDegradation: second.onDegradation,
+  });
+  assert.equal(out2.length, 1);
+  assert.equal(second.degradations.length, 0);
+});
+
+test("record() publishes the snapshot born-annotated with degradations (#1536)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-degradation-"));
   try {
     const store = new LastRecallStore(dir);
-    await store.record({ sessionKey: "s1", query: "q", memoryIds: [] });
-    const recorded = store.get("s1");
-    assert.ok(recorded);
-
     const degradations: SearchDegradation[] = [
       { backend: "qmd", code: "daemon_timeout" },
       { backend: "qmd", code: "subprocess_error", detail: "exit 3" },
     ];
-
-    // Stale-identity guard: a mismatched writeNonce must not annotate.
-    await store.annotateBackendDegradations("s1", degradations, { writeNonce: "not-the-nonce" });
-    assert.equal(store.get("s1")?.backendDegradations, undefined);
-
-    // Matching identity annotates; the stored copy is a clone.
-    await store.annotateBackendDegradations("s1", degradations, {
-      writeNonce: recorded.writeNonce,
+    await store.record({
+      sessionKey: "s1",
+      query: "q",
+      memoryIds: [],
+      backendDegradations: degradations,
     });
-    const annotated = store.get("s1");
-    assert.equal(annotated?.backendDegradations?.length, 2);
-    assert.equal(annotated?.backendDegradations?.[0]?.code, "daemon_timeout");
+    const snapshot = store.get("s1");
+    assert.equal(snapshot?.backendDegradations?.length, 2);
+    assert.equal(snapshot?.backendDegradations?.[0]?.code, "daemon_timeout");
+    // The stored snapshot is a deep copy — later caller mutations don't leak in.
     degradations[0]!.code = "daemon_loading";
-    assert.equal(annotated?.backendDegradations?.[0]?.code, "daemon_timeout");
+    assert.equal(store.get("s1")?.backendDegradations?.[0]?.code, "daemon_timeout");
 
-    // Empty input is a no-op and never clears an existing annotation.
-    await store.annotateBackendDegradations("s1", []);
-    assert.equal(store.get("s1")?.backendDegradations?.length, 2);
-
-    // Missing session is a silent no-op.
-    await store.annotateBackendDegradations("missing", degradations);
+    // No degradations → the field is omitted, not an empty array.
+    await store.record({ sessionKey: "s2", query: "q", memoryIds: [], backendDegradations: [] });
+    assert.equal(store.get("s2")?.backendDegradations, undefined);
+    await store.record({ sessionKey: "s3", query: "q", memoryIds: [] });
+    assert.equal(store.get("s3")?.backendDegradations, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
