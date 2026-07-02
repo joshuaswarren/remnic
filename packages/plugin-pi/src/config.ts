@@ -146,7 +146,13 @@ function trimTrailingSlashes(value: string): string {
 
 export function resolveConfigPath(options: LoadConfigOptions = {}): string {
   const env = options.env ?? process.env;
-  return expandTildePath(options.configPath || env.REMNIC_PI_CONFIG || defaultConfigPath(env));
+  // REMNIC_PI_CONFIG keeps precedence for upstream Pi; REMNIC_OMP_CONFIG lets an
+  // omp (oh-my-pi) direct load (`omp -e npm:@remnic/plugin-pi`) point the shared
+  // runtime module at its own config without an explicit configPath. Connector
+  // installs always pass an explicit configPath, so this only affects direct loads.
+  return expandTildePath(
+    options.configPath || env.REMNIC_PI_CONFIG || env.REMNIC_OMP_CONFIG || defaultConfigPath(env),
+  );
 }
 
 export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {

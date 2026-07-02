@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { type PublishContext, loadTokenStore, saveTokenStore } from "@remnic/core";
 
-import { PiMemoryExtensionPublisher } from "./publisher.js";
+import { OmpMemoryExtensionPublisher, PiMemoryExtensionPublisher } from "./publisher.js";
 
 class FailingPiPublisher extends PiMemoryExtensionPublisher {
   async renderInstructions(ctx: PublishContext): Promise<string> {
@@ -525,4 +525,130 @@ test("Pi publisher unpublish refuses owned file symlinks", async (t) => {
   assert.equal(fs.readFileSync(path.join(targetDir, "external-wrapper.ts"), "utf8"), "external wrapper\n");
   assert.equal(fs.readFileSync(path.join(extensionRoot, "remnic.config.json"), "utf8"), "{}\n");
   assert.equal(fs.readFileSync(path.join(extensionRoot, "README.md"), "utf8"), "# Remnic\n");
+});
+
+// ── omp (oh-my-pi) publisher ────────────────────────────────────────────────
+
+test("omp publisher exposes hostId omp and resolves the ~/.omp/agent extension root", async () => {
+  const publisher = new OmpMemoryExtensionPublisher();
+  assert.equal(publisher.hostId, "omp");
+  assert.equal(
+    await publisher.resolveExtensionRoot({ HOME: "/home/alice" }),
+    path.join("/home/alice", ".omp", "agent", "extensions", "remnic"),
+  );
+});
+
+test("omp publisher honors PI_CODING_AGENT_DIR for extension root", async () => {
+  const publisher = new OmpMemoryExtensionPublisher();
+  assert.equal(
+    await publisher.resolveExtensionRoot({
+      HOME: "/home/alice",
+      PI_CODING_AGENT_DIR: "/custom/omp-agent",
+    }),
+    path.join("/custom/omp-agent", "extensions", "remnic"),
+  );
+});
+
+test("omp publisher publishes config, wrapper, and readme with the omp connector token", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-publisher-test-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  const publisher = new OmpMemoryExtensionPublisher();
+  const result = await publisher.publish({
+    config: {
+      daemonUrl: "http://new-daemon/",
+      memoryDir: path.join(root, "memory"),
+      namespace: "ns-omp",
+    },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
+  assert.equal(result.extensionRoot, extensionRoot);
+  assert.equal(result.hostId, "omp");
+
+  const cfg = JSON.parse(
+    fs.readFileSync(path.join(extensionRoot, "remnic.config.json"), "utf8"),
+  ) as Record<string, unknown>;
+  assert.equal(cfg.authToken, "omp-token");
+  assert.equal(cfg.namespace, "ns-omp");
+  assert.equal(cfg.remnicDaemonUrl, "http://new-daemon");
+
+  assert.ok(fs.existsSync(path.join(extensionRoot, "index.ts")));
+  const readme = fs.readFileSync(path.join(extensionRoot, "README.md"), "utf8");
+  assert.match(readme, /omp/i);
+});
+
+test("omp publisher refuses a symlinked extension root", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-publisher-symlink-"));
+  const home = path.join(root, "home");
+  const extensionsDir = path.join(home, ".omp", "agent", "extensions");
+  const extensionRoot = path.join(extensionsDir, "remnic");
+  const targetDir = path.join(root, "symlink-target");
+  fs.mkdirSync(extensionsDir, { recursive: true });
+  fs.mkdirSync(targetDir, { recursive: true });
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  fs.symlinkSync(targetDir, extensionRoot, "dir");
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  const publisher = new OmpMemoryExtensionPublisher();
+  await assert.rejects(
+    () =>
+      publisher.publish({
+        config: { memoryDir: path.join(root, "memory") },
+        skillsRoot: path.join(root, "memory", "skills"),
+        log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      }),
+    /must not be a symlink/,
+  );
+
+  assert.equal(fs.existsSync(path.join(targetDir, "remnic.config.json")), false);
+  assert.equal(fs.existsSync(path.join(targetDir, "index.ts")), false);
 });

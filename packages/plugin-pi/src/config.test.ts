@@ -18,6 +18,28 @@ test("resolveConfigPath uses the Pi extension config location by default", () =>
   }
 });
 
+test("resolveConfigPath honors REMNIC_OMP_CONFIG for omp direct loads", () => {
+  assert.equal(
+    resolveConfigPath({
+      env: { HOME: "/home/alice", REMNIC_OMP_CONFIG: "/x/omp/remnic.config.json" },
+    }),
+    "/x/omp/remnic.config.json",
+  );
+});
+
+test("resolveConfigPath prefers REMNIC_PI_CONFIG over REMNIC_OMP_CONFIG", () => {
+  assert.equal(
+    resolveConfigPath({
+      env: {
+        HOME: "/home/alice",
+        REMNIC_PI_CONFIG: "/pi/remnic.config.json",
+        REMNIC_OMP_CONFIG: "/omp/remnic.config.json",
+      },
+    }),
+    "/pi/remnic.config.json",
+  );
+});
+
 test("resolveConfigPath honors Pi agent directory overrides", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-config-roots-"));
   try {

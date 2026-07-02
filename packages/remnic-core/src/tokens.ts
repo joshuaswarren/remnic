@@ -27,6 +27,7 @@ const TOKEN_PREFIXES: Record<string, string> = {
   "codex": "remnic_cx_",
   "hermes": "remnic_hm_",
   "pi": "remnic_pi_",
+  "omp": "remnic_op_",
   "replit": "remnic_rl_",
   "cursor": "remnic_cu_",
   "cline": "remnic_cl_",

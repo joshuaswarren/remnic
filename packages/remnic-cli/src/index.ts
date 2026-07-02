@@ -298,11 +298,22 @@ export {
 
 type PiPublisherModule = {
   PiMemoryExtensionPublisher: new () => MemoryExtensionPublisher;
+  OmpMemoryExtensionPublisher: new () => MemoryExtensionPublisher;
 };
 
-class LazyPiMemoryExtensionPublisher implements MemoryExtensionPublisher {
-  readonly hostId = "pi";
+/**
+ * Lazily loads a Pi-family publisher class from the optional @remnic/plugin-pi
+ * package so it is only imported when a Pi-family connector (pi, omp) is
+ * actually installed. Both hosts share one runtime extension module; only the
+ * publisher class (install location + token) differs.
+ */
+class LazyPluginPiPublisher implements MemoryExtensionPublisher {
   private delegate: Promise<MemoryExtensionPublisher> | undefined;
+
+  constructor(
+    readonly hostId: string,
+    private readonly select: (mod: PiPublisherModule) => new () => MemoryExtensionPublisher,
+  ) {}
 
   async resolveExtensionRoot(env?: NodeJS.ProcessEnv): Promise<string> {
     return (await this.load()).resolveExtensionRoot(env);
@@ -326,7 +337,7 @@ class LazyPiMemoryExtensionPublisher implements MemoryExtensionPublisher {
 
   private async load(): Promise<MemoryExtensionPublisher> {
     this.delegate ??= loadPiPublisherModule()
-      .then((mod) => new mod.PiMemoryExtensionPublisher())
+      .then((mod) => new (this.select(mod))())
       .catch((err) => {
         this.delegate = undefined;
         throw err;
@@ -345,7 +356,8 @@ async function loadPiPublisherModule(): Promise<PiPublisherModule> {
 registerPublisher("codex", () => new CodexMemoryExtensionPublisher());
 registerPublisher("claude-code", () => new ClaudeCodeMemoryExtensionPublisher());
 registerPublisher("hermes", () => new HermesMemoryExtensionPublisher());
-registerPublisher("pi", () => new LazyPiMemoryExtensionPublisher());
+registerPublisher("pi", () => new LazyPluginPiPublisher("pi", (mod) => mod.PiMemoryExtensionPublisher));
+registerPublisher("omp", () => new LazyPluginPiPublisher("omp", (mod) => mod.OmpMemoryExtensionPublisher));
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

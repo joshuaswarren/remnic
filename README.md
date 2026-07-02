@@ -66,7 +66,7 @@ OpenClaw's built-in memory works for simple cases, but it doesn't scale. It lack
 
 Remnic is an open-source memory and context layer for user-aware agents. It watches agent conversations, extracts durable knowledge, and injects the right context back when it is needed. Route extraction through the OpenClaw gateway model chain, OpenAI, or a **local LLM** (Ollama, LM Studio, etc.) -- your choice.
 
-Remnic helps agents understand the people they work with: preferences, projects, constraints, decisions, patterns, and definitions of good. It works natively with **[OpenClaw](https://github.com/openclaw/openclaw)**, **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, **[Codex CLI](https://github.com/openai/codex)**, **[Pi Coding Agent](https://pi.dev)**, **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**, and any **MCP-compatible client** (Replit, Cursor, etc.). When you tell any agent a preference, every agent can use the same governed memory store.
+Remnic helps agents understand the people they work with: preferences, projects, constraints, decisions, patterns, and definitions of good. It works natively with **[OpenClaw](https://github.com/openclaw/openclaw)**, **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)**, **[Codex CLI](https://github.com/openai/codex)**, **[Pi Coding Agent](https://pi.dev)**, **[Oh My Pi (omp)](https://omp.sh)**, **[Hermes Agent](https://github.com/NousResearch/hermes-agent)**, and any **MCP-compatible client** (Replit, Cursor, etc.). When you tell any agent a preference, every agent can use the same governed memory store.
 
 Local-first storage is a trust feature. All data can stay on your machine as plain markdown files: no cloud dependency, no subscription, and no third-party memory service required.
 
@@ -189,6 +189,7 @@ Once the Remnic daemon is running, connect any supported agent:
 remnic connectors install claude-code   # Claude Code (hooks + MCP)
 remnic connectors install codex-cli     # Codex CLI (hooks + MCP + memory extension)
 remnic connectors install pi            # Pi Coding Agent (extension + MCP + compaction)
+remnic connectors install omp           # Oh My Pi / omp (extension + MCP + compaction)
 remnic connectors install replit        # Replit (MCP only)
 pip install --upgrade remnic-hermes     # Hermes Agent (Python MemoryProvider)
 remnic connectors install hermes        # Writes Hermes config + token

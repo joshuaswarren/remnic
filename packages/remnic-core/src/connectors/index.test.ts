@@ -154,6 +154,26 @@ test("loadRegistry does not overwrite malformed registry.json", async (t) => {
   );
 });
 
+test("BUILTIN catalog includes the omp (oh-my-pi) connector", async (t) => {
+  const sandbox = makeSandbox(t);
+
+  await withEnv(
+    {
+      HOME: sandbox.home,
+      USERPROFILE: sandbox.home,
+      XDG_CONFIG_HOME: sandbox.xdgConfigHome,
+    },
+    () => {
+      const registry = loadRegistry();
+      const omp = registry.connectors.find((connector) => connector.id === "omp");
+
+      assert.ok(omp, "omp connector should be present in the built-in catalog");
+      assert.equal(omp?.requiresToken, true);
+      assert.match(omp?.homepage ?? "", /omp\.sh/);
+    },
+  );
+});
+
 test("loadRegistry filters custom connectors with invalid IDs", async (t) => {
   const sandbox = makeSandbox(t);
 
