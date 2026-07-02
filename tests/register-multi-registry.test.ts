@@ -685,6 +685,62 @@ test("full stop then secondary start: SERVICE_STARTED is true, REGISTERED_GUARD 
   }
 });
 
+test("full stop then secondary start republishes the keyed orchestrator slot for later register() calls", async () => {
+  // stop() destroys the orchestrator and deletes the keyed global slot. A
+  // secondary registry that was registered BEFORE the stop still holds the
+  // orchestrator in its closure; when its start() later revives it, the slot
+  // must be written back — otherwise a fresh register() while the service is
+  // running finds an empty slot and constructs a split-brain second
+  // orchestrator over the same memoryDir (codex review, PR #1560).
+  const saved = saveAndResetGlobals();
+  const previousDisableMigration = disableRegisterMigrationForTest();
+  let primary: ReturnType<typeof buildApi> | undefined;
+  let secondary: ReturnType<typeof buildApi> | undefined;
+  let third: ReturnType<typeof buildApi> | undefined;
+  try {
+    const { default: plugin } = await import("../src/index.js");
+
+    primary = buildApi("slot-primary");
+    secondary = buildApi("slot-secondary");
+
+    plugin.register(primary.api as any);
+    plugin.register(secondary.api as any);
+
+    await primary.api._registeredStart?.();
+    const liveOrchestrator = (globalThis as any)[ORCH_KEY];
+    assert.ok(liveOrchestrator, "slot should be populated after register+start");
+
+    await primary.api._registeredStop?.();
+    assert.equal(
+      (globalThis as any)[ORCH_KEY],
+      undefined,
+      "full stop should delete the keyed orchestrator slot",
+    );
+
+    // Secondary takes over: its captured orchestrator must be republished.
+    await secondary.api._registeredStart?.();
+    assert.equal(
+      (globalThis as any)[ORCH_KEY],
+      liveOrchestrator,
+      "takeover start() should republish the captured orchestrator into the slot",
+    );
+
+    // A fresh register() while the service runs must reuse the live instance.
+    third = buildApi("slot-third");
+    plugin.register(third.api as any);
+    assert.equal(
+      (globalThis as any)[ORCH_KEY],
+      liveOrchestrator,
+      "register() after takeover should reuse the live orchestrator, not construct a second one",
+    );
+  } finally {
+    await safeStop(primary?.api, secondary?.api, third?.api);
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    restoreGlobals(saved);
+  }
+});
+
 test("host embedding bridge re-registers after cleanup independently of REGISTERED_GUARD", async () => {
   const saved = saveAndResetGlobals();
   const previousDisableMigration = disableRegisterMigrationForTest();

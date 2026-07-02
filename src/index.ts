@@ -5406,6 +5406,12 @@ const pluginDefinition = {
         didCountStart = true;
         (globalThis as any)[CLI_ACTIVE_SERVICE_COUNT] =
           ((globalThis as any)[CLI_ACTIVE_SERVICE_COUNT] || 0) + 1;
+        // Republish the keyed orchestrator slot. A full stop() deletes it
+        // after destroy(); a secondary registry taking over afterwards revives
+        // its captured orchestrator here, and a fresh register() while the
+        // service is running must find that live instance in the slot — not
+        // construct a split-brain second orchestrator over the same memoryDir.
+        (globalThis as any)[keys.ORCHESTRATOR] = orchestrator;
         // IMPORTANT: Do NOT put a `finally` inside the IIFE to clear INIT_PROMISE.
         // If anything in the try block throws synchronously (before the first `await`),
         // the IIFE's finally would run before the outer assignment, and the outer line
@@ -5767,6 +5773,23 @@ const pluginDefinition = {
           stopHeartbeatWatcher = null;
           removeDreamingObserver?.();
           removeDreamingObserver = null;
+          // Tear down the orchestrator itself (#1537): destroy() clears the
+          // QMD maintenance timer and disposes the QMD client, the namespace
+          // router's per-namespace backends, and conversation QMD — releasing
+          // their refcounted shared daemon sessions (close-on-zero). Without
+          // this, every stop/start cycle stranded refs, the shared daemon map
+          // could never reach zero, and qmd child processes plus their map
+          // entries leaked across gateway reloads. The global slot is cleared
+          // (identity-guarded) so a subsequent start() constructs a fresh
+          // orchestrator instead of reusing a destroyed one.
+          try {
+            await orchestrator.destroy();
+          } catch (err) {
+            log.debug(`engram orchestrator destroy on stop failed: ${err}`);
+          }
+          if ((globalThis as any)[keys.ORCHESTRATOR] === orchestrator) {
+            delete (globalThis as any)[keys.ORCHESTRATOR];
+          }
           const unregisterOpenClawHostEmbeddingProvider = (globalThis as any)[
             keys.HOST_EMBEDDING_UNREGISTER
           ] as (() => void) | undefined;
