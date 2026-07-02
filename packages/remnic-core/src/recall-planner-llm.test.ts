@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
+import { resolveCapabilities } from "./capabilities.js";
 import {
   planRecallModeLLM,
   resolveRecallPlannerLlmOptions,
@@ -40,7 +41,7 @@ test("returns heuristic without calling the LLM when recallPlannerLlmEnabled is 
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ capturedOptions: captured, result: { mode: "no_recall" } });
 
-  const result = await planRecallModeLLM("what did we decide about auth?", undefined, config, llm);
+  const result = await planRecallModeLLM("what did we decide about auth?", undefined, config, resolveCapabilities(config), llm);
 
   assert.equal(captured.length, 0, "LLM must not be contacted when disabled");
   assert.equal(result.source, "heuristic");
@@ -54,7 +55,7 @@ test("uses the LLM classification when enabled", async () => {
   const config = parseConfig({ recallPlannerLlmEnabled: true });
   const llm = stubLlm({ result: { mode: "graph_mode", reason: "asks for root cause" }, modelUsed: "anthropic/claude" });
 
-  const result = await planRecallModeLLM("restart the gateway", undefined, config, llm);
+  const result = await planRecallModeLLM("restart the gateway", undefined, config, resolveCapabilities(config), llm);
 
   assert.equal(result.source, "llm");
   assert.equal(result.mode, "graph_mode");
@@ -74,7 +75,7 @@ test("forwards taskModelChain AND recallPlannerModel in gateway mode (provider-a
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ capturedOptions: captured, result: { mode: "minimal" } });
 
-  await planRecallModeLLM("check status", undefined, config, llm);
+  await planRecallModeLLM("check status", undefined, config, resolveCapabilities(config), llm);
 
   assert.equal(captured.length, 1);
   // recallPlannerModel is tried first (prepended), taskModelChain is the fallback chain.
@@ -97,7 +98,7 @@ test("plugin mode passes only the explicit model, no gateway chain", async () =>
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ capturedOptions: captured, result: { mode: "full" } });
 
-  await planRecallModeLLM("summarize the project", undefined, config, llm);
+  await planRecallModeLLM("summarize the project", undefined, config, resolveCapabilities(config), llm);
 
   assert.equal(captured.length, 1);
   assert.equal(captured[0]?.model, "openai/gpt-5.5");
@@ -109,7 +110,7 @@ test("falls back to heuristic when the LLM throws", async () => {
   const config = parseConfig({ recallPlannerLlmEnabled: true });
   const llm = stubLlm({ throwError: "boom" });
 
-  const result = await planRecallModeLLM("what happened during the outage?", undefined, config, llm);
+  const result = await planRecallModeLLM("what happened during the outage?", undefined, config, resolveCapabilities(config), llm);
 
   assert.equal(result.source, "heuristic-fallback");
   assert.equal(result.fallbackUsed, true);
@@ -123,7 +124,7 @@ test("falls back to heuristic when the LLM returns no parseable result", async (
   const config = parseConfig({ recallPlannerLlmEnabled: true });
   const llm = stubLlm({ result: null });
 
-  const result = await planRecallModeLLM("how did we get here?", undefined, config, llm);
+  const result = await planRecallModeLLM("how did we get here?", undefined, config, resolveCapabilities(config), llm);
 
   assert.equal(result.source, "heuristic-fallback");
   assert.equal(result.fallbackUsed, true);
@@ -139,7 +140,7 @@ test("falls back without a network attempt when the chain is empty and the model
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ available: false, capturedOptions: captured, result: { mode: "full" } });
 
-  const result = await planRecallModeLLM("anything", undefined, config, llm);
+  const result = await planRecallModeLLM("anything", undefined, config, resolveCapabilities(config), llm);
 
   assert.equal(captured.length, 0, "no network attempt when nothing is routable");
   assert.equal(result.source, "heuristic-fallback");
@@ -155,7 +156,7 @@ test("attempts the call (and falls back) when a provider-qualified model overrid
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ available: false, capturedOptions: captured, result: null });
 
-  const result = await planRecallModeLLM("anything", undefined, config, llm);
+  const result = await planRecallModeLLM("anything", undefined, config, resolveCapabilities(config), llm);
 
   assert.equal(captured.length, 1, "qualified model override → still attempt the call");
   assert.equal(captured[0]?.model, "openai/gpt-5.5");
@@ -170,7 +171,7 @@ test("an already-aborted recall short-circuits to the heuristic without an LLM c
   const ac = new AbortController();
   ac.abort();
 
-  const result = await planRecallModeLLM("what did we decide?", undefined, config, llm, ac.signal);
+  const result = await planRecallModeLLM("what did we decide?", undefined, config, resolveCapabilities(config), llm, ac.signal);
 
   assert.equal(captured.length, 0, "no LLM call when the recall is already aborted");
   assert.equal(result.source, "heuristic-fallback");
@@ -184,7 +185,7 @@ test("forwards the abort signal into the LLM call (cancellation contract)", asyn
   const llm = stubLlm({ capturedOptions: captured, result: { mode: "minimal" } });
   const ac = new AbortController();
 
-  await planRecallModeLLM("check status", undefined, config, llm, ac.signal);
+  await planRecallModeLLM("check status", undefined, config, resolveCapabilities(config), llm, ac.signal);
 
   assert.equal(captured.length, 1);
   assert.equal(captured[0]?.signal, ac.signal, "recall abort signal must reach FallbackLlmClient");
@@ -195,7 +196,7 @@ test("empty prompts skip the LLM entirely", async () => {
   const captured: Array<Record<string, unknown>> = [];
   const llm = stubLlm({ capturedOptions: captured, result: { mode: "full" } });
 
-  const result = await planRecallModeLLM("   ", undefined, config, llm);
+  const result = await planRecallModeLLM("   ", undefined, config, resolveCapabilities(config), llm);
 
   assert.equal(captured.length, 0);
   assert.equal(result.mode, "no_recall"); // heuristic returns no_recall for empty

@@ -14,7 +14,7 @@
  *
  * Short-circuit contract:
  *
- * - When `config.recallDirectAnswerEnabled === false`, the function
+ * - When the resolved `enabled` capability is `false`, the function
  *   returns the eligibility verdict with reason `"disabled"` without
  *   touching any source accessor.  This is the documented default.
  * - When enabled, the wiring cheaply drops non-trusted-zone memories
@@ -73,12 +73,18 @@ export interface DirectAnswerWiringInput {
   namespace: string;
   config: Pick<
     PluginConfig,
-    | "recallDirectAnswerEnabled"
     | "recallDirectAnswerTokenOverlapFloor"
     | "recallDirectAnswerImportanceFloor"
     | "recallDirectAnswerAmbiguityMargin"
     | "recallDirectAnswerEligibleTaxonomyBuckets"
   >;
+  /**
+   * Direct-answer capability gate, resolved once at the recall-operation entry
+   * (issue #1523: `caps.recallDirectAnswer`). Passed in rather than re-read from
+   * `config.recallDirectAnswerEnabled` so this module and the orchestrator agree
+   * on a single resolved gate value for the whole operation.
+   */
+  enabled: boolean;
   sources: DirectAnswerSources;
   queryEntityRefs?: string[];
   abortSignal?: AbortSignal;
@@ -92,10 +98,10 @@ export interface DirectAnswerWiringInput {
 export async function tryDirectAnswer(
   input: DirectAnswerWiringInput,
 ): Promise<DirectAnswerResult> {
-  const { query, namespace, config, sources, queryEntityRefs, abortSignal } = input;
+  const { query, namespace, config, enabled, sources, queryEntityRefs, abortSignal } = input;
 
   const eligibilityConfig: DirectAnswerConfig = {
-    enabled: config.recallDirectAnswerEnabled,
+    enabled,
     tokenOverlapFloor: config.recallDirectAnswerTokenOverlapFloor,
     importanceFloor: config.recallDirectAnswerImportanceFloor,
     ambiguityMargin: config.recallDirectAnswerAmbiguityMargin,

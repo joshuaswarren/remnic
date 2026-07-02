@@ -7,13 +7,12 @@ import {
   type DirectAnswerWiringInput,
 } from "./direct-answer-wiring.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/default-taxonomy.js";
-import type { MemoryFile, PluginConfig } from "./types.js";
+import type { MemoryFile } from "./types.js";
 import type { TrustZoneName } from "./trust-zones.js";
 
 type WiringConfig = DirectAnswerWiringInput["config"];
 
 const BASE_CONFIG: WiringConfig = {
-  recallDirectAnswerEnabled: true,
   recallDirectAnswerTokenOverlapFloor: 0.5,
   recallDirectAnswerImportanceFloor: 0.7,
   recallDirectAnswerAmbiguityMargin: 0.15,
@@ -94,7 +93,8 @@ test("tryDirectAnswer disabled-path does not call any source accessor", async ()
   const result = await tryDirectAnswer({
     query: "does not matter",
     namespace: "default",
-    config: { ...BASE_CONFIG, recallDirectAnswerEnabled: false },
+    config: BASE_CONFIG,
+    enabled: false,
     sources,
   });
   assert.equal(result.eligible, false);
@@ -119,6 +119,7 @@ test("tryDirectAnswer skips all I/O when query normalizes to zero searchable tok
     query: "? !!!  ",
     namespace: "default",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.equal(result.reason, "empty-query");
@@ -135,6 +136,7 @@ test("tryDirectAnswer with empty memory list returns no-candidates", async () =>
     query: "package manager remnic",
     namespace: "default",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.equal(result.reason, "no-candidates");
@@ -158,6 +160,7 @@ test("tryDirectAnswer skips importance resolution for non-trusted memories", asy
     query: "package manager remnic",
     namespace: "default",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.equal(result.eligible, false);
@@ -182,6 +185,7 @@ test("tryDirectAnswer skips importance for quarantine-zone memories", async () =
     query: "package manager remnic",
     namespace: "default",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.equal(result.eligible, false);
@@ -203,6 +207,7 @@ test("tryDirectAnswer skips importance when trust zone is missing (null)", async
     query: "package manager remnic",
     namespace: "default",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.equal(result.eligible, false);
@@ -229,6 +234,7 @@ test("tryDirectAnswer skips importance when taxonomy bucket is not eligible", as
     query: "package manager remnic",
     namespace: "default",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.equal(result.eligible, false);
@@ -254,6 +260,7 @@ test("tryDirectAnswer returns eligible for a single trusted user-confirmed decis
     query: "package manager remnic",
     namespace: "default",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.equal(result.eligible, true);
@@ -284,6 +291,7 @@ test("tryDirectAnswer defers to hybrid when two trusted candidates are within am
     query: "package manager remnic",
     namespace: "default",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.equal(result.eligible, false);
@@ -327,6 +335,7 @@ test("tryDirectAnswer throws AbortError when signal aborts mid-loop", async () =
         query: "package manager remnic",
         namespace: "default",
         config: BASE_CONFIG,
+        enabled: true,
         sources,
         abortSignal: controller.signal,
       }),
@@ -363,6 +372,7 @@ test("tryDirectAnswer throws when abort lands during trustZoneFor on the only me
         query: "package manager remnic",
         namespace: "default",
         config: BASE_CONFIG,
+        enabled: true,
         sources,
         abortSignal: controller.signal,
       }),
@@ -391,6 +401,7 @@ test("tryDirectAnswer throws when abort lands during trustZoneFor on the last of
         query: "package manager remnic",
         namespace: "default",
         config: BASE_CONFIG,
+        enabled: true,
         sources,
         abortSignal: controller.signal,
       }),
@@ -408,6 +419,7 @@ test("tryDirectAnswer throws when signal is already aborted before I/O", async (
         query: "anything",
         namespace: "default",
         config: BASE_CONFIG,
+        enabled: true,
         sources,
         abortSignal: controller.signal,
       }),
@@ -434,6 +446,7 @@ test("tryDirectAnswer passes the requested namespace to listCandidateMemories", 
     query: "anything",
     namespace: "project-x",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.equal(observedNamespace, "project-x");
@@ -465,6 +478,7 @@ test("tryDirectAnswer forwards queryEntityRefs to the eligibility gate", async (
     query: "package manager remnic",
     namespace: "default",
     config: BASE_CONFIG,
+    enabled: true,
     sources,
     queryEntityRefs: ["remnic"],
   });

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { PluginConfig, RecallPlanMode } from "./types.js";
+import type { CapabilitySet } from "./capabilities.js";
 import { planRecallMode } from "./intent.js";
 import {
   FallbackLlmClient,
@@ -187,12 +188,13 @@ export async function planRecallModeLLM(
   prompt: string,
   hints: string[] | undefined,
   config: PluginConfig,
+  caps: CapabilitySet,
   llm?: FallbackLlmClient,
   signal?: AbortSignal,
 ): Promise<RecallPlannerLlmResult> {
   const heuristicMode = planRecallMode(prompt);
 
-  if (!config.recallPlannerLlmEnabled) {
+  if (!caps.recallPlannerLlm) {
     return heuristicResult(heuristicMode, "heuristic", "llm-disabled", 0, false);
   }
 
