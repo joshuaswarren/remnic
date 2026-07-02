@@ -9604,7 +9604,23 @@ export class Orchestrator {
           return null;
         })
         .finally(() => qmdEnrichmentAbort.dispose()),
-      () => qmdEnrichmentAbort.cancel(),
+      () => {
+        // The enrichment budget abandoned the hot QMD phase mid-flight
+        // (#1536, codex round-7 on #1544): QmdClient treats this abort as
+        // caller cancellation and never reports, so report the abandonment
+        // deterministically here — the exact mirror of the cold-tier
+        // deadline gate. Guarded: a CALLER abort also routes through this
+        // cancel callback, and an aborted recall is not a backend
+        // degradation (no snapshot is recorded for it anyway).
+        if (!options.abortSignal?.aborted) {
+          backendDegradations.push({
+            backend: "qmd",
+            code: "deadline_exceeded",
+            detail: "hot qmd enrichment abandoned (enrichment deadline)",
+          });
+        }
+        qmdEnrichmentAbort.cancel();
+      },
     );
 
     const transcriptPromise = (async (): Promise<string | null> => {
