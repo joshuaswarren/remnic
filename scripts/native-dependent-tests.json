@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "issue": "#1538",
+  "reason": "These test files require the better-sqlite3 native binding (LCM engine, memory projection store, sqlite import/export, AMB integration). When the binding is unavailable and cannot be rebuilt, the root test runner excludes them with a loud per-file [SKIP] instead of producing ~160 guaranteed failures. CI sets REMNIC_REQUIRE_NATIVE_TESTS=1, which forbids exclusion entirely.",
+  "files": [
+    "integrations/amb/install-remnic-provider.test.mjs",
+    "integrations/amb/run-remnic-amb.test.mjs",
+    "packages/bench/src/adapters/remnic-adapter.test.ts",
+    "packages/import-lossless-claw/src/importer.test.ts",
+    "packages/import-lossless-claw/src/source.test.ts",
+    "packages/remnic-core/src/lcm-engine.test.ts",
+    "packages/remnic-core/src/lcm-recall.test.ts",
+    "packages/remnic-core/src/runtime/better-sqlite.test.ts",
+    "tests/amb-integration.test.ts",
+    "tests/export-import-sqlite.test.ts",
+    "tests/lcm-gateway-summarizer.test.ts",
+    "tests/lcm.test.ts",
+    "tests/memory-projection.test.ts"
+  ]
+}

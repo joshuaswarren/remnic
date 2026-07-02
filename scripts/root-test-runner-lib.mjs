@@ -1,0 +1,172 @@
+/**
+ * Pure helpers for the root test runner (issue #1538, epic #1520).
+ *
+ * Kept free of process/spawn side effects so tests/root-test-runner-lib.test.mjs
+ * can exercise every branch. Node stdlib only, cross-platform (no shell-outs,
+ * forward-slash-normalized results).
+ */
+
+import { readdirSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+/**
+ * The root suite's coverage, as structured entries rather than opaque glob
+ * strings. Each entry must match at least one file at run time — a pattern
+ * that matches nothing is an error (a rename or layout change silently
+ * removing coverage), not a pass.
+ */
+export const TEST_PATTERNS = [
+  { id: "tests/**/*.test.ts", base: "tests", recursive: true, suffix: ".test.ts" },
+  { id: "tests/**/*.test.mjs", base: "tests", recursive: true, suffix: ".test.mjs" },
+  { id: "packages/*/src/**/*.test.ts", base: "packages", packageSrc: true, recursive: true, suffix: ".test.ts" },
+  { id: "packages/*/src/**/*.test.tsx", base: "packages", packageSrc: true, recursive: true, suffix: ".test.tsx" },
+  { id: "dashboard/lib/*.test.ts", base: "dashboard/lib", recursive: false, suffix: ".test.ts" },
+  { id: "integrations/amb/*.test.mjs", base: "integrations/amb", recursive: false, suffix: ".test.mjs" },
+];
+
+const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
+
+function toPosix(relPath) {
+  return relPath.split(path.sep).join("/");
+}
+
+function listFiles(dir, recursive) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (recursive && !SKIPPED_DIR_NAMES.has(entry.name)) {
+        out.push(...listFiles(full, true));
+      }
+    } else if (entry.isFile()) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+function packageSrcDirs(repoRoot) {
+  const packagesDir = path.join(repoRoot, "packages");
+  let entries;
+  try {
+    entries = readdirSync(packagesDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(packagesDir, entry.name, "src"));
+}
+
+/**
+ * Expand every TEST_PATTERNS entry into repo-relative posix paths.
+ * Returns { files, emptyPatterns } — callers must treat a non-empty
+ * emptyPatterns list as an error (vacuous coverage).
+ */
+export function expandTestPatterns(repoRoot, patterns = TEST_PATTERNS) {
+  const files = new Set();
+  const emptyPatterns = [];
+  for (const pattern of patterns) {
+    const roots = pattern.packageSrc
+      ? packageSrcDirs(repoRoot)
+      : [path.join(repoRoot, ...pattern.base.split("/"))];
+    let matched = 0;
+    for (const root of roots) {
+      for (const file of listFiles(root, pattern.recursive)) {
+        if (file.endsWith(pattern.suffix)) {
+          files.add(toPosix(path.relative(repoRoot, file)));
+          matched += 1;
+        }
+      }
+    }
+    if (matched === 0) {
+      emptyPatterns.push(pattern.id);
+    }
+  }
+  return { files: [...files].sort(), emptyPatterns };
+}
+
+/** Load and validate the native-dependent test manifest. Throws on malformed input. */
+export function loadNativeManifest(manifestPath) {
+  const parsed = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${manifestPath}: manifest must be a JSON object`);
+  }
+  if (parsed.version !== 1) {
+    throw new Error(`${manifestPath}: unsupported manifest version ${JSON.stringify(parsed.version)}`);
+  }
+  if (!Array.isArray(parsed.files) || parsed.files.some((file) => typeof file !== "string")) {
+    throw new Error(`${manifestPath}: manifest files must be an array of strings`);
+  }
+  return { files: [...parsed.files].sort() };
+}
+
+/**
+ * Split expanded test files into runnable vs native-excluded sets.
+ * Manifest entries that match no expanded file are reported as stale so the
+ * manifest cannot silently drift from the tree.
+ */
+export function partitionNativeDependent(files, manifestFiles) {
+  const manifest = new Set(manifestFiles);
+  const run = [];
+  const excluded = [];
+  for (const file of files) {
+    (manifest.has(file) ? excluded : run).push(file);
+  }
+  const fileSet = new Set(files);
+  const stale = manifestFiles.filter((entry) => !fileSet.has(entry));
+  return { run, excluded, stale };
+}
+
+/**
+ * Parse the trailing TAP summary from a node:test run.
+ * Returns null when no summary is present (crash before the epilogue).
+ */
+export function parseTapSummary(output) {
+  const summary = {};
+  for (const key of ["tests", "pass", "fail", "cancelled", "skipped", "todo"]) {
+    const match = output.match(new RegExp(`^# ${key} (\\d+)$`, "m"));
+    if (!match) return null;
+    summary[key] = Number(match[1]);
+  }
+  return summary;
+}
+
+/**
+ * Strong better-sqlite3 probe: importing the JS wrapper succeeds without the
+ * native binary, so only constructing a real database proves the binding
+ * works. Resolves from packages/remnic-core (the depending package) — never
+ * from the repo root, where resolution can walk up into a parent checkout.
+ * REMNIC_FORCE_NATIVE_UNAVAILABLE=1 is a test seam that simulates a broken
+ * binding without touching node_modules.
+ */
+export function probeBetterSqlite3(repoRoot, env = process.env) {
+  if (env.REMNIC_FORCE_NATIVE_UNAVAILABLE === "1") {
+    return { ok: false, reason: "forced unavailable via REMNIC_FORCE_NATIVE_UNAVAILABLE" };
+  }
+  try {
+    const anchor = pathToFileURL(path.join(repoRoot, "packages", "remnic-core", "package.json"));
+    const req = createRequire(anchor);
+    const loaded = req("better-sqlite3");
+    const Database = typeof loaded === "function" ? loaded : loaded?.default;
+    if (typeof Database !== "function") {
+      return { ok: false, reason: "module did not export a constructor" };
+    }
+    const db = new Database(":memory:");
+    db.pragma("journal_mode = MEMORY");
+    db.close();
+    return { ok: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, reason: message.split("\n")[0] };
+  }
+}

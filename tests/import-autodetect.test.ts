@@ -1,4 +1,5 @@
 import test from "node:test";
+import { skipUnlessBetterSqlite3 } from "./helpers/native-binding.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -25,7 +26,7 @@ test("detectImportFormat detects md bundle dir", async () => {
   assert.equal(await detectImportFormat(outDir), "md");
 });
 
-test("detectImportFormat detects sqlite file", async () => {
+test("detectImportFormat detects sqlite file", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memDir = await mkdtemp(path.join(os.tmpdir(), "engram-mem-"));
   await writeFixtureMemoryDir(memDir);
   const outDir = await mkdtemp(path.join(os.tmpdir(), "engram-sqlite-"));
