@@ -12,8 +12,28 @@ export interface SearchQueryOptions {
   structuredSearches?: Array<{ type: "lex" | "vec" | "hyde"; query: string }>;
 }
 
+/**
+ * A search that returned empty (or partial) results because the backend was
+ * unavailable, still loading, or timed out — cases that are otherwise
+ * indistinguishable from a genuine "no matches" (issue #1536, CLAUDE.md
+ * rule 34).
+ */
+export interface SearchDegradation {
+  backend: "qmd";
+  code: "backend_unavailable" | "daemon_timeout" | "daemon_loading" | "subprocess_error";
+  detail?: string;
+}
+
 export interface SearchExecutionOptions {
   signal?: AbortSignal;
+  /**
+   * Observer invoked when the backend degrades during this call (#1536).
+   * Callers that need to distinguish empty-because-degraded from
+   * empty-because-no-matches (recall x-ray, fallback decisions) pass a
+   * collector here. Observer failures are swallowed by the notifier —
+   * observability must never break search.
+   */
+  onDegradation?: (degradation: SearchDegradation) => void;
 }
 
 export function resolveEnsureCollectionArgs(

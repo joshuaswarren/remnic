@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { log } from "./logger.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
+import type { SearchDegradation } from "./search/port.js";
 import type {
   IdentityInjectionMode,
   RecallPlanMode,
@@ -59,6 +60,14 @@ export interface LastRecallSnapshot {
    * graph-path `recallExplain` operation.
    */
   tierExplain?: RecallTierExplain;
+  /**
+   * Backend degradations observed while serving this recall (issue #1536).
+   * Present only when a search backend reported unavailable/loading/timeout
+   * during the recall — distinguishing "no matches" from "backend could not
+   * answer" (CLAUDE.md rule 34). Deliberately independent of `tierExplain`,
+   * which is gated behind `recallDirectAnswerEnabled`.
+   */
+  backendDegradations?: SearchDegradation[];
 }
 
 export interface GraphRecallExpandedEntry {
@@ -136,6 +145,31 @@ type StateFileWriter = (filePath: string, content: string) => Promise<void>;
  * qmd-recall-cache.ts).  The payload is pure JSON-shaped data, so
  * structuredClone is both safe and complete here.
  */
+/**
+ * Stale-snapshot identity guard shared by the annotate methods (issue #518):
+ * a writeNonce match wins outright; otherwise traceId (when expected) and
+ * recordedAt are compared. Extracted so every annotation surface applies
+ * identical guards (CLAUDE.md rule 22).
+ */
+function snapshotMatchesExpectedIdentity(
+  current: LastRecallSnapshot,
+  expected?: { writeNonce?: string; traceId?: string; recordedAt?: string },
+): boolean {
+  if (!expected) return true;
+  if (typeof expected.writeNonce === "string" && expected.writeNonce.length > 0) {
+    return current.writeNonce === expected.writeNonce;
+  }
+  const hasExpectedTraceId =
+    typeof expected.traceId === "string" && expected.traceId.length > 0;
+  if (hasExpectedTraceId) {
+    return current.traceId === expected.traceId;
+  }
+  if (expected.recordedAt !== undefined) {
+    return current.recordedAt === expected.recordedAt;
+  }
+  return true;
+}
+
 function cloneTierExplain(
   tierExplain: RecallTierExplain | undefined,
 ): RecallTierExplain | undefined {
@@ -355,27 +389,7 @@ export class LastRecallStore {
   ): Promise<void> {
     const current = this.state[sessionKey];
     if (!current) return;
-    if (expected) {
-      if (
-        typeof expected.writeNonce === "string" &&
-        expected.writeNonce.length > 0
-      ) {
-        if (current.writeNonce !== expected.writeNonce) return;
-      } else {
-        const hasExpectedTraceId =
-          typeof expected.traceId === "string" && expected.traceId.length > 0;
-        const traceIdMatches =
-          hasExpectedTraceId && current.traceId === expected.traceId;
-        const recordedAtMatches =
-          expected.recordedAt !== undefined &&
-          current.recordedAt === expected.recordedAt;
-        if (hasExpectedTraceId) {
-          if (!traceIdMatches) return;
-        } else if (expected.recordedAt !== undefined && !recordedAtMatches) {
-          return;
-        }
-      }
-    }
+    if (!snapshotMatchesExpectedIdentity(current, expected)) return;
     this.state[sessionKey] = {
       ...current,
       tierExplain: cloneTierExplain(tierExplain),
@@ -384,6 +398,32 @@ export class LastRecallStore {
       await this.flushState();
     } catch (err) {
       log.debug(`last recall tier-explain annotate failed: ${err}`);
+    }
+  }
+
+  /**
+   * Attach backend degradations observed during a recall (issue #1536).
+   * Same stale-snapshot guards as `annotateTierExplain`: a snapshot replaced
+   * by a newer recall is never annotated. No-op for empty input or missing
+   * snapshots; callers do not need to guard.
+   */
+  async annotateBackendDegradations(
+    sessionKey: string,
+    degradations: SearchDegradation[],
+    expected?: { writeNonce?: string; traceId?: string; recordedAt?: string },
+  ): Promise<void> {
+    if (degradations.length === 0) return;
+    const current = this.state[sessionKey];
+    if (!current) return;
+    if (!snapshotMatchesExpectedIdentity(current, expected)) return;
+    this.state[sessionKey] = {
+      ...current,
+      backendDegradations: structuredClone(degradations),
+    };
+    try {
+      await this.flushState();
+    } catch (err) {
+      log.debug(`last recall backend-degradation annotate failed: ${err}`);
     }
   }
 

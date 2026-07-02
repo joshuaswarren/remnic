@@ -52,6 +52,7 @@ import {
 import { findUnresolvedEntityRefs } from "./reconstruct.js";
 import type {
   SearchBackend,
+  SearchDegradation,
   SearchExecutionOptions,
   SearchQueryOptions,
 } from "./search/port.js";
@@ -6392,6 +6393,8 @@ export class Orchestrator {
       queryAwarePrefilter?: QueryAwarePrefilter;
       searchOptions?: SearchQueryOptions;
       onDebugSnapshot?: (snapshot: QmdRecallSnapshot) => Promise<void>;
+      /** Backend degradation observer, threaded into every QMD call (#1536). */
+      onDegradation?: (degradation: SearchDegradation) => void;
       abortSignal?: AbortSignal;
     },
   ): Promise<QmdSearchResult[]> {
@@ -6497,6 +6500,7 @@ export class Orchestrator {
               primarySearchOptions,
               {
                 signal: options.abortSignal,
+                onDegradation: options.onDegradation,
               },
             )
           : await this.qmd.search(
@@ -6504,6 +6508,7 @@ export class Orchestrator {
               options.collection,
               fetchLimit,
               primarySearchOptions,
+              { onDegradation: options.onDegradation },
             )
         : await this.searchAcrossNamespaces({
             query: prompt,
@@ -6513,7 +6518,10 @@ export class Orchestrator {
             maxResults: fetchLimit,
             mode: "search",
             searchOptions: primarySearchOptions,
-            execution: { signal: options.abortSignal },
+            execution: {
+              signal: options.abortSignal,
+              onDegradation: options.onDegradation,
+            },
           });
       lastPrimaryResultCount = primaryResults.length;
       lastHybridResultCount = 0;
@@ -6543,6 +6551,7 @@ export class Orchestrator {
                 fetchLimit,
                 {
                   signal: options.abortSignal,
+                  onDegradation: options.onDegradation,
                 },
               )
             : await this.searchAcrossNamespaces({
@@ -6552,7 +6561,10 @@ export class Orchestrator {
                   : undefined,
                 maxResults: fetchLimit,
                 mode: "hybrid",
-                execution: { signal: options.abortSignal },
+                execution: {
+                  signal: options.abortSignal,
+                  onDegradation: options.onDegradation,
+                },
               });
           lastHybridResultCount = hybridResults.length;
           lastHybridTopUpUsed = hybridResults.length > 0;
@@ -7241,6 +7253,11 @@ export class Orchestrator {
     options: RecallInvocationOptions = {},
   ): Promise<string> {
     const recallStart = Date.now();
+    // Backend degradations observed by this recall's QMD searches (#1536):
+    // collected via the execution-options observer and attached to the
+    // LastRecallSnapshot after it is recorded, so surfaces can distinguish
+    // "no matches" from "backend could not answer" (CLAUDE.md rule 34).
+    const backendDegradations: SearchDegradation[] = [];
     // Issue #680 — historical recall.  Parse `options.asOf` once at the
     // top of the recall so each boost-pass uses identical filter logic.
     // Invalid values are rejected at input boundaries (CLI / HTTP / MCP)
@@ -9437,6 +9454,9 @@ export class Orchestrator {
                 queryAwarePrefilter,
                 searchOptions: qmdSearchOptions,
                 abortSignal: qmdEnrichmentAbort.signal,
+                onDegradation: (degradation) => {
+                  backendDegradations.push(degradation);
+                },
                 onDebugSnapshot: async (snapshot) => {
                   await this.recordLastQmdRecallSnapshot({
                     storage: profileStorage,
@@ -12106,6 +12126,14 @@ export class Orchestrator {
             truncated: identityInjectionTruncated,
           },
         })
+        .then(() =>
+          backendDegradations.length > 0
+            ? this.lastRecall.annotateBackendDegradations(
+                sessionKey,
+                backendDegradations,
+              )
+            : undefined,
+        )
         .catch((err) => log.debug(`last recall record failed: ${err}`));
     }
     if (sessionKey) {
