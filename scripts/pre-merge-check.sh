@@ -169,6 +169,18 @@ fi
 # no reaction is credited — fail closed. A reactions read failure is likewise
 # non-fatal: we fall back to the other detection paths rather than block the gate.
 #
+# ACCEPTED RESIDUAL (deliberate, repo-owner decision): check-suite created_at is
+# keyed to the SHA, not to the moment that SHA became THIS PR's head, and GitHub
+# exposes no clean per-PR "head advanced at" timestamp (Commit.pushedDate is null
+# in practice). So if the identical SHA was already pushed to another branch —
+# creating its check suite earlier — a +1 placed on the old PR revision after
+# that suite but before the PR fast-forwards to the SHA could still be credited.
+# This requires an adversarial same-SHA-on-two-branches race that does not occur
+# in this repo's one-branch-per-PR flow; the SHA-pinned issue-comment verdict
+# remains the strong signal. Reactions are a convenience sign-off, not the
+# security boundary. Tightening this further would require dropping reaction
+# support entirely (no reliable PR-scoped push signal exists).
+#
 # Byte-wise "is $1 strictly before $2" for two GitHub ISO-8601 UTC (…Z)
 # timestamps. Runs in a subshell so LC_ALL=C stays scoped; the fixed-width
 # format makes a byte comparison chronological.
