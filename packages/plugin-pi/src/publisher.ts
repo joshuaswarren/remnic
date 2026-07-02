@@ -15,6 +15,7 @@ import {
 
 import {
   resolveOmpAgentHome,
+  resolveOmpConfigRoot,
   resolveOmpExtensionRoot,
   resolvePiAgentHome,
   resolvePiExtensionRoot,
@@ -47,6 +48,13 @@ export interface HostPublisherDescriptor {
   readonly tokenGenerateHint: string;
   resolveAgentHome(env: NodeJS.ProcessEnv): string;
   resolveExtensionRoot(env: NodeJS.ProcessEnv): string;
+  /**
+   * Optional: every agent home `unpublish` should sweep for a stale extension,
+   * beyond the one resolved from the current env. Hosts with env-sensitive
+   * install locations (e.g. omp profiles) provide this so `remnic connectors
+   * remove` cleans up even when the remove-time env differs from install time.
+   */
+  listRemovalAgentHomes?(env: NodeJS.ProcessEnv): string[];
 }
 
 const PI_HOST: HostPublisherDescriptor = {
@@ -65,7 +73,38 @@ const OMP_HOST: HostPublisherDescriptor = {
   tokenGenerateHint: "remnic token generate omp",
   resolveAgentHome: resolveOmpAgentHome,
   resolveExtensionRoot: resolveOmpExtensionRoot,
+  listRemovalAgentHomes: ompRemovalAgentHomes,
 };
+
+/**
+ * Every omp agent home a stale extension might live under, so `unpublish` cleans
+ * up regardless of the profile/env active at remove time: the env-resolved home,
+ * the base `<configRoot>/agent`, an explicit `PI_CODING_AGENT_DIR`, and every
+ * existing `<configRoot>/profiles/<name>/agent`. Symlinked profile dirs are
+ * skipped defensively.
+ */
+function ompRemovalAgentHomes(env: NodeJS.ProcessEnv): string[] {
+  const homes = new Set<string>([resolveOmpAgentHome(env)]);
+  const configRoot = resolveOmpConfigRoot(env);
+  homes.add(path.join(configRoot, "agent"));
+
+  const explicit = env.PI_CODING_AGENT_DIR?.trim();
+  if (explicit) homes.add(path.resolve(explicit));
+
+  const profilesDir = path.join(configRoot, "profiles");
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(profilesDir, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      homes.add(path.join(profilesDir, entry.name, "agent"));
+    }
+  }
+  return [...homes];
+}
 
 /**
  * Shared publisher for Pi-family hosts. Concrete hosts (Pi, omp) subclass this
@@ -208,17 +247,24 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
   }
 
   async unpublish(): Promise<void> {
-    const extensionRoot = await this.resolveExtensionRoot();
-    assertSafeExtensionRoot(extensionRoot, this.host.resolveAgentHome(process.env));
-    if (!fs.existsSync(extensionRoot)) {
-      return;
-    }
+    const agentHomes = this.host.listRemovalAgentHomes
+      ? this.host.listRemovalAgentHomes(process.env)
+      : [this.host.resolveAgentHome(process.env)];
 
-    const removableFiles = removableOwnedExtensionFiles(extensionOwnedUnpublishPaths(extensionRoot));
-    for (const filePath of removableFiles) {
-      fs.rmSync(filePath, { force: true });
+    const seen = new Set<string>();
+    for (const agentHome of agentHomes) {
+      const extensionRoot = path.join(path.resolve(agentHome), "extensions", "remnic");
+      if (seen.has(extensionRoot)) continue;
+      seen.add(extensionRoot);
+      if (!fs.existsSync(extensionRoot)) continue;
+
+      assertSafeExtensionRoot(extensionRoot, agentHome);
+      const removableFiles = removableOwnedExtensionFiles(extensionOwnedUnpublishPaths(extensionRoot));
+      for (const filePath of removableFiles) {
+        fs.rmSync(filePath, { force: true });
+      }
+      removeEmptyDirectory(extensionRoot);
     }
-    removeEmptyDirectory(extensionRoot);
   }
 }
 

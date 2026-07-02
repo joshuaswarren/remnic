@@ -52,10 +52,18 @@ function resolveOmpProfile(env: NodeJS.ProcessEnv): string | undefined {
  * agent dir that extensions are discovered from — so it is intentionally not
  * consulted here.
  */
-export function resolveOmpAgentHome(env: NodeJS.ProcessEnv): string {
+/**
+ * The omp config root (`~/<PI_CONFIG_DIR or .omp>`), which contains the base
+ * `agent/` dir and any `profiles/<name>/agent/` dirs.
+ */
+export function resolveOmpConfigRoot(env: NodeJS.ProcessEnv): string {
   const home = env.HOME ?? env.USERPROFILE ?? os.homedir();
   const configDirName = env.PI_CONFIG_DIR?.trim() || ".omp";
-  const configRoot = path.join(home, configDirName);
+  return path.join(home, configDirName);
+}
+
+export function resolveOmpAgentHome(env: NodeJS.ProcessEnv): string {
+  const configRoot = resolveOmpConfigRoot(env);
 
   const profile = resolveOmpProfile(env);
   if (profile) {

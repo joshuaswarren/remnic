@@ -25,17 +25,29 @@ every agent.
 omp is a first-class MCP client. This is the quickest way to validate shared
 read/write and needs no Remnic extension files.
 
-Add Remnic to `~/.omp/agent/mcp.json` (user scope) or `.omp/mcp.json` (project
-scope):
+First start the Remnic server (it serves the MCP endpoint on port 4318) and mint
+a token — the same HTTP/MCP surface every other MCP client uses (see
+[connector-setup.md](./connector-setup.md)):
+
+```bash
+remnic daemon start                       # serves http://localhost:4318/mcp
+remnic connectors install generic-mcp     # mints the connector token ($REMNIC_AUTH_TOKEN)
+```
+
+Then point omp at it via `~/.omp/agent/mcp.json` (user scope) or `.omp/mcp.json`
+(project scope) using the HTTP transport:
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
   "mcpServers": {
     "remnic": {
-      "type": "stdio",
-      "command": "remnic",
-      "args": ["access", "mcp-serve"]
+      "type": "http",
+      "url": "http://localhost:4318/mcp",
+      "headers": {
+        "Authorization": "Bearer ${REMNIC_AUTH_TOKEN}",
+        "X-Engram-Namespace": "my-project"
+      }
     }
   }
 }
@@ -43,27 +55,12 @@ scope):
 
 This exposes Remnic's MCP tools (`remnic_recall`, `remnic_memory_store`,
 `remnic_briefing`, `remnic_observe`, …) to omp against the same store the other
-agents use. The stdio server authenticates as the trusted principal from your
-Remnic config/env, so no bearer token is required for a local subprocess.
+agents use. The optional `X-Engram-Namespace` header scopes memory to a
+project/team.
 
-**Cross-machine / HTTP transport.** If the daemon runs elsewhere, start the
-authenticated HTTP surface (`remnic access http-serve --port 4318`) and point
-omp at its `/mcp` endpoint with a token:
-
-```json
-{
-  "mcpServers": {
-    "remnic": {
-      "type": "http",
-      "url": "http://127.0.0.1:4318/mcp",
-      "headers": { "Authorization": "Bearer ${REMNIC_TOKEN}" }
-    }
-  }
-}
-```
-
-Generate a token with `remnic connectors install generic-mcp` (or
-`remnic token generate omp`).
+> **Transport note.** The `remnic` binary does not serve MCP over stdio — the
+> daemon's HTTP `/mcp` endpoint is the supported transport for every MCP client
+> (OpenClaw plugin mode uses `openclaw engram access http-serve --port 4318`).
 
 **Trade-off:** MCP recall is *tool-gated* — the model must decide to call
 `remnic_recall`/`remnic_briefing`. There is no automatic system-prompt
@@ -115,9 +112,11 @@ extensions from, resolved the way omp's own `DirResolver` does:
 
 Install under the same profile/env you launch omp with (e.g.
 `OMP_PROFILE=work remnic connectors install omp`) so the extension lands where
-that profile scans. omp's XDG redirection (`XDG_DATA_HOME`, …) relocates
-*data* dirs (sessions/state/cache), **not** the extension dir, so it does not
-affect where the connector installs.
+that profile scans. `remnic connectors remove omp` sweeps the base agent dir and
+every `profiles/<name>/agent` under the config root, so removal cleans up a
+profile-scoped install even if the profile env is not set at remove time. omp's
+XDG redirection (`XDG_DATA_HOME`, …) relocates *data* dirs (sessions/state/cache),
+**not** the extension dir, so it does not affect where the connector installs.
 
 ### Turn off omp's built-in memory
 

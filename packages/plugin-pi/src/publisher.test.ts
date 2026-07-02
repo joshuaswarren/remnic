@@ -652,3 +652,54 @@ test("omp publisher refuses a symlinked extension root", async (t) => {
   assert.equal(fs.existsSync(path.join(targetDir, "remnic.config.json")), false);
   assert.equal(fs.existsSync(path.join(targetDir, "index.ts")), false);
 });
+
+test("omp publisher unpublish removes a profile-scoped install even without the profile env", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-profile-remove-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousConfigDir = process.env.PI_CONFIG_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.PI_CONFIG_DIR;
+  delete process.env.PI_PROFILE;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("PI_CONFIG_DIR", previousConfigDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  // Install under the "work" profile.
+  process.env.OMP_PROFILE = "work";
+  const profileRoot = path.join(home, ".omp", "profiles", "work", "agent", "extensions", "remnic");
+  const installResult = await new OmpMemoryExtensionPublisher().publish({
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+  assert.equal(installResult.extensionRoot, profileRoot);
+  assert.ok(fs.existsSync(path.join(profileRoot, "remnic.config.json")));
+
+  // Remove WITHOUT the profile env set — must still find and remove the
+  // profile-scoped install instead of no-oping on the default agent dir.
+  delete process.env.OMP_PROFILE;
+  await new OmpMemoryExtensionPublisher().unpublish();
+
+  assert.equal(fs.existsSync(path.join(profileRoot, "remnic.config.json")), false);
+  assert.equal(fs.existsSync(path.join(profileRoot, "index.ts")), false);
+  assert.equal(fs.existsSync(path.join(profileRoot, "README.md")), false);
+});
