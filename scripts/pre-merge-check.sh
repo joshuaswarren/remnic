@@ -108,6 +108,15 @@ if ! COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate --
   exit 1
 fi
 
+# `pulls/{n}/comments` returns only inline REVIEW comments. When Codex finds
+# no issues it posts its verdict ("Didn't find any major issues") as an ISSUE
+# comment, which lives on `issues/{n}/comments` — without this, clean-verdict
+# PRs are blocked forever even though the reviewer explicitly signed off.
+if ! ISSUE_COMMENTS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[].user.login' 2>/dev/null); then
+  echo "[pre-merge] BLOCKED: Failed to read PR issue comments from GitHub."
+  exit 1
+fi
+
 # Some bots (Cursor Bugbot, Kilo Code Review) post as check runs via GitHub
 # Apps rather than as PR comments. A completed check run counts as reviewer
 # activity. The app.slug field maps to reviewer aliases (e.g. "cursor" matches
@@ -126,7 +135,7 @@ if [[ -n "$HEAD_SHA" ]]; then
   fi
 fi
 
-ALL_REVIEWERS=$(printf '%s\n%s\n' "$REVIEWS" "$COMMENTS" | sort -u)
+ALL_REVIEWERS=$(printf '%s\n%s\n%s\n' "$REVIEWS" "$COMMENTS" "$ISSUE_COMMENTS" | sort -u)
 
 has_reviewer_check_run() {
   local reviewer="$1"
