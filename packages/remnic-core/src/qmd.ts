@@ -2481,8 +2481,11 @@ export class QmdClient implements SearchBackend {
       if (isCallerCancellation(err, signal)) {
         throw isAbortError(err) ? err : abortError("QMD subprocess search aborted");
       }
-      log.warn(`QMD subprocess search failed (returning empty): ${err}`);
-      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err, [query]));
+      // Sanitized in the LOG too: the raw error label embeds the argv,
+      // which includes the user's recall query (codex round-5 P1 on #1544).
+      const detail = this.degradationDetail(err, [query]);
+      log.warn(`QMD subprocess search failed (returning empty): ${detail}`);
+      this.notifyDegradation(onDegradation, "subprocess_error", detail);
       return [];
     }
   }
@@ -2507,8 +2510,9 @@ export class QmdClient implements SearchBackend {
       if (isCallerCancellation(err, signal)) {
         throw isAbortError(err) ? err : abortError("QMD subprocess bm25 aborted");
       }
-      log.warn(`QMD bm25 subprocess search failed (returning empty): ${err}`);
-      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err, [query]));
+      const detail = this.degradationDetail(err, [query]);
+      log.warn(`QMD bm25 subprocess search failed (returning empty): ${detail}`);
+      this.notifyDegradation(onDegradation, "subprocess_error", detail);
       return [];
     }
   }
@@ -2534,8 +2538,9 @@ export class QmdClient implements SearchBackend {
       if (isCallerCancellation(err, signal)) {
         throw isAbortError(err) ? err : abortError("QMD subprocess vsearch aborted");
       }
-      log.warn(`QMD vsearch subprocess failed (returning empty): ${err}`);
-      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err, [query]));
+      const detail = this.degradationDetail(err, [query]);
+      log.warn(`QMD vsearch subprocess failed (returning empty): ${detail}`);
+      this.notifyDegradation(onDegradation, "subprocess_error", detail);
       return [];
     }
   }
@@ -2577,8 +2582,9 @@ export class QmdClient implements SearchBackend {
       if (isCallerCancellation(err, signal)) {
         throw isAbortError(err) ? err : abortError("QMD subprocess global search aborted");
       }
-      log.warn(`QMD global subprocess search failed (returning empty): ${err}`);
-      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err, [query]));
+      const detail = this.degradationDetail(err, [query]);
+      log.warn(`QMD global subprocess search failed (returning empty): ${detail}`);
+      this.notifyDegradation(onDegradation, "subprocess_error", detail);
       return [];
     }
   }

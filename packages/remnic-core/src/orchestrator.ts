@@ -9581,6 +9581,7 @@ export class Orchestrator {
               success: true,
               timing: `stale-cache(${err instanceof Error ? err.message : String(err)})`,
             });
+            reportRecallQmdUnavailable("served stale recall cache (qmd phase error)");
             replayCachedDegradations(staleQmdFallback.value);
             if (queryAwarePrefilterIsEmpty) {
               return emptyQueryAwareQmdResult;
