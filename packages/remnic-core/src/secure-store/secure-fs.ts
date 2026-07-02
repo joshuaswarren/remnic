@@ -59,7 +59,7 @@ import {
   parseEnvelope,
   seal,
 } from "./cipher.js";
-import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 
 // ---------------------------------------------------------------------------
 // Error classes
@@ -705,15 +705,24 @@ function normalizeStorageRelativePath(rel: string): string {
   return normalized;
 }
 
-// Every recall category directory (facts/ + all CATEGORY_DIR_MAP dirs, incl.
-// questions/) must be encryptable at rest — #1546 routes decision/preference/
-// moment/... memories into their own dirs, so hardcoding only facts/corrections/
-// procedures/reasoning-traces would silently write those categories in
-// plaintext on encrypted stores. ALL_CATEGORY_DIRS is the single source of
-// truth; the extra non-category markdown roots (artifacts/archive/entities/
+// Every recall MEMORY category directory (facts/ + the CATEGORY_DIR_MAP memory
+// dirs) must be encryptable at rest — #1546 routes decision/preference/moment/...
+// memories into their own dirs, so hardcoding only facts/corrections/procedures/
+// reasoning-traces would silently write those categories in plaintext on
+// encrypted stores. RECALL_FALLBACK_DIRS is the single source of truth for that
+// set; the extra non-category markdown roots (artifacts/archive/entities/
 // identity) are appended.
+//
+// questions/ is deliberately EXCLUDED (RECALL_FALLBACK_DIRS omits the non-memory
+// queue dirs): the question queue is written/resolved through plain readFile/
+// writeFile (StorageManager.writeQuestion/resolveQuestion), NOT the secure-file
+// helpers. Encrypting questions/ here would make migration seal those files,
+// after which resolveQuestion() would read ciphertext as UTF-8, fail to update
+// the frontmatter, and overwrite/corrupt the file while returning success
+// (codex #1563 review). Keeping questions/ plaintext preserves the queue's
+// existing behavior; #1546 does not change question encryption.
 const ENCRYPTABLE_MARKDOWN_STORAGE_ROOTS = new Set<string>([
-  ...ALL_CATEGORY_DIRS,
+  ...RECALL_FALLBACK_DIRS,
   "artifacts",
   "archive",
   "entities",
