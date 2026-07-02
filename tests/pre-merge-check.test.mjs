@@ -42,7 +42,7 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
     malformed_page:1)
       printf '5\\t0\\n'
       ;;
-    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|codex_issue_comment_stale:1|codex_issue_comment_not_verdict:1|issue_comments_fail:1)
+    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|codex_issue_comment_stale:1|codex_issue_comment_not_verdict:1|generic_issue_comment_ignored:1|issue_comments_fail:1)
       printf '3\\t0\\tfalse\\t\\n'
       ;;
     repeated_cursor:1)
@@ -68,7 +68,7 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/pulls/7/reviews" ]]; then
     printf 'chatgpt-codex-connector[bot]\\n'
     exit 0
   fi
-  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" || "$GH_STUB_SCENARIO" == "codex_issue_comment_stale" || "$GH_STUB_SCENARIO" == "codex_issue_comment_not_verdict" ]]; then
+  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" || "$GH_STUB_SCENARIO" == "codex_issue_comment_stale" || "$GH_STUB_SCENARIO" == "codex_issue_comment_not_verdict" || "$GH_STUB_SCENARIO" == "generic_issue_comment_ignored" ]]; then
     printf 'cursor[bot]\\n'
     exit 0
   fi
@@ -89,15 +89,19 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/comments" ]]; then
     exit 3
   fi
   if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" ]]; then
-    printf "chatgpt-codex-connector[bot]\\t2026-01-02T00:00:00Z\\tCodex Review: Didn't find any major issues.\\n"
+    printf "chatgpt-codex-connector[bot]\\tCodex Review: Didn't find any major issues. **Reviewed commit:** deadbeef\\n"
     exit 0
   fi
   if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_stale" ]]; then
-    printf "chatgpt-codex-connector[bot]\\t2025-12-31T00:00:00Z\\tCodex Review: Didn't find any major issues.\\n"
+    printf "chatgpt-codex-connector[bot]\\tCodex Review: Didn't find any major issues. **Reviewed commit:** cafebabe12\\n"
     exit 0
   fi
   if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_not_verdict" ]]; then
-    printf "chatgpt-codex-connector[bot]\\t2026-01-02T00:00:00Z\\tFound 2 major issues in the diff.\\n"
+    printf "chatgpt-codex-connector[bot]\\tFound 2 major issues in the diff. **Reviewed commit:** deadbeef\\n"
+    exit 0
+  fi
+  if [[ "$GH_STUB_SCENARIO" == "generic_issue_comment_ignored" ]]; then
+    printf "someuser\\tLooks good to me! deadbeef\\n"
     exit 0
   fi
   exit 0
@@ -109,11 +113,6 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
     exit 5
   fi
   printf 'deadbeef\\n'
-  exit 0
-fi
-
-if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/deadbeef" ]]; then
-  printf '2026-01-01T00:00:00Z\\n'
   exit 0
 fi
 
@@ -235,9 +234,10 @@ test("pre-merge check accepts a codex clean-verdict ISSUE comment as reviewer ac
   });
 });
 
-test("pre-merge check ignores codex issue comments older than the head commit", async () => {
+test("pre-merge check rejects codex verdicts pinned to a different commit", async () => {
   // A clean verdict earned on a previous head must not carry over to new
-  // commits — the comment feed is PR-wide, not SHA-scoped.
+  // commits — the comment feed is PR-wide, not SHA-scoped. The verdict's
+  // embedded "Reviewed commit" SHA must be a prefix of the current head.
   await withGhStub("codex_issue_comment_stale", async (env) => {
     const result = runPreMergeCheck(env);
 
@@ -246,8 +246,17 @@ test("pre-merge check ignores codex issue comments older than the head commit", 
   });
 });
 
-test("pre-merge check ignores fresh codex issue comments that are not clean verdicts", async () => {
+test("pre-merge check ignores codex issue comments that are not clean verdicts", async () => {
   await withGhStub("codex_issue_comment_not_verdict", async (env) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Missing reviews from: chatgpt-codex-connector\[bot\]/);
+  });
+});
+
+test("pre-merge check never counts non-codex issue comments as reviewer activity", async () => {
+  await withGhStub("generic_issue_comment_ignored", async (env) => {
     const result = runPreMergeCheck(env);
 
     assert.equal(result.status, 1);
