@@ -1966,6 +1966,12 @@ export class QmdClient implements SearchBackend {
       .digest("hex");
     const cached = getCachedQmdSearch(cacheKey);
     if (cached) {
+      // No degradation fires on a cache hit BY DESIGN (#1536): only
+      // trustworthy results are ever cached (degraded empties are excluded
+      // at the write below), so a TTL hit is a healthy serve of a recently
+      // valid answer — the backend's live state is irrelevant because no
+      // live call is attempted. Reporting unavailability here would fabricate
+      // a degradation for a recall that was not degraded.
       log.debug(`QMD search cache hit (${cached.length} results)`);
       return cached as QmdSearchResult[];
     }
@@ -2427,16 +2433,24 @@ export class QmdClient implements SearchBackend {
    * error still reaches operators via the warn log at the failure site.
    */
   private degradationDetail(err: unknown, sensitive?: string[]): string {
-    let firstLine = String(err instanceof Error ? err.message : err).split("\n")[0] ?? "";
-    // Strip known-sensitive strings FIRST: runQmdCommand error labels embed
-    // the full command line, which includes the raw recall query — user
-    // conversation content that must never persist in last_recall.json or
-    // reach MCP/HTTP surfaces (codex P1 on #1544).
+    let message = String(err instanceof Error ? err.message : err);
+    // Strip known-sensitive strings BEFORE any line-splitting: runQmdCommand
+    // error labels embed the full command line including the raw recall
+    // query, and a multi-line query would otherwise leave its first-line
+    // prefix behind after the first-line cut (codex round-6 P1 on #1544).
+    // Whole values first, then their individual line fragments so truncated
+    // embeddings cannot leak partial prompt text either.
     for (const value of sensitive ?? []) {
-      if (typeof value === "string" && value.length > 0) {
-        firstLine = firstLine.split(value).join("<query>");
+      if (typeof value !== "string" || value.length === 0) continue;
+      message = message.split(value).join("<query>");
+      for (const fragment of value.split("\n")) {
+        const trimmed = fragment.trim();
+        if (trimmed.length >= 4) {
+          message = message.split(trimmed).join("<query>");
+        }
       }
     }
+    const firstLine = message.split("\n")[0] ?? "";
     const redacted = firstLine.replace(/(?:~|\/|[A-Za-z]:\\)[^\s'"`]+/g, "<path>");
     return redacted.length > 160 ? `${redacted.slice(0, 159)}…` : redacted;
   }

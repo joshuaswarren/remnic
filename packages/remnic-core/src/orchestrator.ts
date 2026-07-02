@@ -18687,10 +18687,19 @@ export class Orchestrator {
       label: string,
       fallback: T,
       task: () => Promise<T>,
+      // Invoked when the deadline abandons this step (before it started or
+      // while it runs), so callers can report the abandonment and gate off
+      // late observer callbacks (#1536, cursor round-6 on #1544).
+      onDeadline?: () => void,
     ): Promise<T> => {
       throwIfRecallAborted(options.abortSignal);
       const remainingMs = deadlineRemainingMs();
       if (remainingMs === 0) {
+        try {
+          onDeadline?.();
+        } catch {
+          // Observers must never break recall.
+        }
         log.debug(`cold-tier recall ${label} skipped: shared assembly deadline expired`);
         return fallback;
       }
@@ -18712,6 +18721,11 @@ export class Orchestrator {
           new Promise<T>((resolve) => {
             timeoutHandle = setTimeout(() => {
               timedOut = true;
+              try {
+                onDeadline?.();
+              } catch {
+                // Observers must never break recall.
+              }
               log.debug(
                 `cold-tier recall ${label} skipped: shared assembly deadline expired`,
               );
@@ -18742,6 +18756,24 @@ export class Orchestrator {
           false,
           0,
         );
+        // Deadline-gated observer (#1536, cursor round-6 on #1544): when the
+        // shared assembly deadline abandons this lookup, the still-running
+        // fetch's LATE reports must not land after the recall snapshot has
+        // been recorded — gate them off and report the abandonment itself
+        // deterministically at resolution time instead.
+        let coldQmdObserverActive = true;
+        const reportColdQmdDeadline = () => {
+          coldQmdObserverActive = false;
+          try {
+            options.onDegradation?.({
+              backend: "qmd",
+              code: "deadline_exceeded",
+              detail: "cold-tier qmd lookup abandoned (assembly deadline)",
+            });
+          } catch {
+            // Observers must never break recall.
+          }
+        };
         longTerm = await runColdStepWithinDeadline(
           "qmd lookup",
           [],
@@ -18758,10 +18790,19 @@ export class Orchestrator {
                 queryAwarePrefilter: options.queryAwarePrefilter,
                 searchOptions: this.buildConfiguredQmdSearchOptions(options.prompt),
                 abortSignal: options.abortSignal,
-                onDegradation: options.onDegradation,
+                onDegradation: (degradation) => {
+                  if (coldQmdObserverActive) {
+                    options.onDegradation?.(degradation);
+                  }
+                },
               },
             ),
+          reportColdQmdDeadline,
         );
+        // Normal completion also closes the gate: a deadline that fires
+        // after this await has nothing left to suppress, and a fetch that
+        // limps home later cannot mutate a recorded recall's collector.
+        coldQmdObserverActive = false;
         if (longTerm.length > 0) {
           log.debug(
             `cold-tier recall source=cold-qmd collection=${coldCollection} hits=${longTerm.length}`,

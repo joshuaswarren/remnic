@@ -20,7 +20,12 @@ export interface SearchQueryOptions {
  */
 export interface SearchDegradation {
   backend: "qmd";
-  code: "backend_unavailable" | "daemon_timeout" | "daemon_loading" | "subprocess_error";
+  code:
+    | "backend_unavailable"
+    | "daemon_timeout"
+    | "daemon_loading"
+    | "subprocess_error"
+    | "deadline_exceeded";
   detail?: string;
 }
 

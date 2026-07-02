@@ -115,6 +115,21 @@ test("subprocess detail redacts the raw recall query (#1544 codex P1)", async ()
   assert.doesNotMatch(detail, /medical|diagnosis/);
 });
 
+test("multi-line queries cannot leak a first-line prefix into detail (#1544 round 6)", async () => {
+  const client = makeClient();
+  client.daemonAvailable = false;
+  client.daemonSession = undefined;
+  const query = "my private first line secret\nand a second private line";
+  client.runQmdCommand = async () => {
+    throw new Error(`qmd query ${query} -c openclaw-engram timed out after 30000ms`);
+  };
+  const { degradations, onDegradation } = collector();
+  await client.search(query, undefined, 3, undefined, { onDegradation });
+  const detail = degradations[0]?.detail ?? "";
+  assert.match(detail, /<query>/);
+  assert.doesNotMatch(detail, /private|secret/);
+});
+
 test("degradation codes are uniform across bm25/vector/global paths (rule 39)", async () => {
   const client = makeClient();
   client.bm25SearchViaDaemon = async () => null;
