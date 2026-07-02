@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { log } from "./logger.js";
 import { isErrnoCode } from "./utils/errno.js";
-import { RECALL_FALLBACK_DIRS, getCategoryDir } from "./utils/category-dir.js";
+import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -4338,9 +4338,10 @@ export class StorageManager {
    * Read all memories from the cold tier by scanning the entire cold/ root
    * tree.  Previously this only scanned cold/facts/ and cold/corrections/, but
    * structuredAttributes can appear on any MemoryCategory (preference, decision,
-   * entity, etc.).  Although buildTierMemoryPath currently routes all
-   * non-correction, non-artifact memories to cold/facts/, scanning the full
-   * coldRoot ensures correctness if that routing ever changes and guards against
+   * entity, etc.).  buildTierMemoryPath now routes each category to its own
+   * cold/<dir>/ subtree via the shared categoryDirName() chokepoint (issue
+   * #1546), so cold decisions/preferences/... live outside cold/facts/.
+   * Scanning the full coldRoot covers every category dir and guards against
    * files placed in unexpected subdirectories during manual operations or future
    * refactors.
    *
@@ -4548,19 +4549,17 @@ export class StorageManager {
       return path.join(root, "artifacts", this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
     }
     if (memory.frontmatter.category === "correction") {
+      // corrections/ is flat (no date subdir); preserved across tier moves.
       return path.join(root, "corrections", `${memory.frontmatter.id}.md`);
     }
-    if (memory.frontmatter.category === "procedure") {
-      return path.join(root, "procedures", this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
-    }
-    if (memory.frontmatter.category === "reasoning_trace") {
-      // Issue #564 PR 3: preserve the dedicated reasoning-traces/ subtree
-      // across tier moves. Without this branch, hot→cold migration would
-      // funnel the memory into facts/, breaking isReasoningTracePath() and
-      // silently disabling the recall boost for migrated traces.
-      return path.join(root, "reasoning-traces", this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
-    }
-    return path.join(root, "facts", this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
+    // Every other category — decisions/, preferences/, reasoning-traces/, ...
+    // plus the facts/ fallback for fact/entity/unknown — resolves through the
+    // shared categoryDirName() chokepoint so tier moves land in the SAME dir the
+    // writer used, instead of funneling non-{correction,procedure,reasoning_trace}
+    // categories into facts/ (issue #564 PR 3 preserved reasoning-traces/; #1546
+    // generalizes it to every category dir).
+    const dir = categoryDirName(memory.frontmatter.category);
+    return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
 
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {

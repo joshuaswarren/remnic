@@ -61,12 +61,18 @@ export const ALL_CATEGORY_KEYS: string[] = [
 ];
 
 /**
+ * Relative directory NAME for a category (e.g. "decisions"); "facts" for
+ * unknown / `fact` / `entity`. Single source of truth shared by every write,
+ * path-derivation, and tier-move site — never inline a category→dir ternary.
+ */
+export function categoryDirName(category: string): string {
+  return Object.hasOwn(CATEGORY_DIR_MAP, category) ? CATEGORY_DIR_MAP[category] : "facts";
+}
+
+/**
  * Resolve a category name to its directory path under memoryDir.
  * Falls back to `facts/` for unknown categories.
  */
 export function getCategoryDir(memoryDir: string, category: string): string {
-  const dir = Object.hasOwn(CATEGORY_DIR_MAP, category)
-    ? CATEGORY_DIR_MAP[category]
-    : undefined;
-  return dir ? path.join(memoryDir, dir) : path.join(memoryDir, "facts");
+  return path.join(memoryDir, categoryDirName(category));
 }

@@ -343,6 +343,7 @@ import {
   defaultTierMigrationCycleBudget,
 } from "./compounding/engine.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
+import { categoryDirName } from "./utils/category-dir.js";
 // IRC preference consolidation — used by eval adapter directly;
 // orchestrator integration planned for future PR.
 // import { consolidatePreferences, buildQueryAwarePreferenceSection, synthesizePreferencesFromLcm } from "./compounding/preference-consolidator.js";
@@ -1758,16 +1759,13 @@ export function resolvePersistedMemoryRelativePath(options: {
   }
   // Pick the subtree that matches the StorageManager.writeMemory routing
   // so fallback paths (used before memoryPathById has seen the fresh
-  // write) agree with where the file actually lives. Without this branch,
-  // reasoning_trace graph edges point at facts/<date>/, and subsequent
-  // graph expansion silently drops those nodes when readMemoryByPath
-  // cannot resolve them (issue #564 PR 3 review).
-  const subtree =
-    options.category === "procedure"
-      ? "procedures"
-      : options.category === "reasoning_trace"
-        ? "reasoning-traces"
-        : "facts";
+  // write) agree with where the file actually lives. Routing goes through
+  // the shared categoryDirName() chokepoint (utils/category-dir.ts) so
+  // every category — decisions/, preferences/, reasoning-traces/, ... —
+  // resolves to the same dir the writer used; otherwise graph edges point
+  // at the wrong subtree and graph expansion silently drops those nodes
+  // when readMemoryByPath cannot resolve them (issue #564 PR 3 / #1546).
+  const subtree = categoryDirName(options.category);
   const idParts = options.memoryId.split("-");
   const maybeTimestamp = Number(idParts[1]);
   if (Number.isFinite(maybeTimestamp) && maybeTimestamp > 0) {
