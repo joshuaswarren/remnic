@@ -42,7 +42,7 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
     malformed_page:1)
       printf '5\\t0\\n'
       ;;
-    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|issue_comments_fail:1)
+    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|codex_issue_comment_stale:1|codex_issue_comment_not_verdict:1|issue_comments_fail:1)
       printf '3\\t0\\tfalse\\t\\n'
       ;;
     repeated_cursor:1)
@@ -68,7 +68,7 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/pulls/7/reviews" ]]; then
     printf 'chatgpt-codex-connector[bot]\\n'
     exit 0
   fi
-  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" ]]; then
+  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" || "$GH_STUB_SCENARIO" == "codex_issue_comment_stale" || "$GH_STUB_SCENARIO" == "codex_issue_comment_not_verdict" ]]; then
     printf 'cursor[bot]\\n'
     exit 0
   fi
@@ -89,7 +89,15 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/comments" ]]; then
     exit 3
   fi
   if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" ]]; then
-    printf 'chatgpt-codex-connector[bot]\\n'
+    printf "chatgpt-codex-connector[bot]\\t2026-01-02T00:00:00Z\\tCodex Review: Didn't find any major issues.\\n"
+    exit 0
+  fi
+  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_stale" ]]; then
+    printf "chatgpt-codex-connector[bot]\\t2025-12-31T00:00:00Z\\tCodex Review: Didn't find any major issues.\\n"
+    exit 0
+  fi
+  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_not_verdict" ]]; then
+    printf "chatgpt-codex-connector[bot]\\t2026-01-02T00:00:00Z\\tFound 2 major issues in the diff.\\n"
     exit 0
   fi
   exit 0
@@ -101,6 +109,11 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
     exit 5
   fi
   printf 'deadbeef\\n'
+  exit 0
+fi
+
+if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/deadbeef" ]]; then
+  printf '2026-01-01T00:00:00Z\\n'
   exit 0
 fi
 
@@ -219,6 +232,26 @@ test("pre-merge check accepts a codex clean-verdict ISSUE comment as reviewer ac
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /OK: All reviewers posted/);
     assert.equal((await readFile(countPath, "utf8")).trim(), "1");
+  });
+});
+
+test("pre-merge check ignores codex issue comments older than the head commit", async () => {
+  // A clean verdict earned on a previous head must not carry over to new
+  // commits — the comment feed is PR-wide, not SHA-scoped.
+  await withGhStub("codex_issue_comment_stale", async (env) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Missing reviews from: chatgpt-codex-connector\[bot\]/);
+  });
+});
+
+test("pre-merge check ignores fresh codex issue comments that are not clean verdicts", async () => {
+  await withGhStub("codex_issue_comment_not_verdict", async (env) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Missing reviews from: chatgpt-codex-connector\[bot\]/);
   });
 });
 

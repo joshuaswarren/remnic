@@ -112,7 +112,8 @@ fi
 # no issues it posts its verdict ("Didn't find any major issues") as an ISSUE
 # comment, which lives on `issues/{n}/comments` — without this, clean-verdict
 # PRs are blocked forever even though the reviewer explicitly signed off.
-if ! ISSUE_COMMENTS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[].user.login' 2>/dev/null); then
+# Body newlines/tabs are flattened so each comment stays one TSV row.
+if ! ISSUE_COMMENTS_RAW=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[] | [.user.login, .created_at, (.body // "" | gsub("[\r\n\t]"; " "))] | @tsv' 2>/dev/null); then
   echo "[pre-merge] BLOCKED: Failed to read PR issue comments from GitHub."
   exit 1
 fi
@@ -135,7 +136,30 @@ if [[ -n "$HEAD_SHA" ]]; then
   fi
 fi
 
-ALL_REVIEWERS=$(printf '%s\n%s\n%s\n' "$REVIEWS" "$COMMENTS" "$ISSUE_COMMENTS" | sort -u)
+# Issue comments are PR-wide, not head-scoped: a clean verdict posted before
+# the latest push must not count as reviewer activity for the new head. Keep
+# only comments created after the head commit (both timestamps are ISO-8601
+# Zulu, so lexicographic comparison is chronological). For Codex, additionally
+# require the comment to actually be a clean verdict — its findings arrive as
+# review comments; only the "no major issues" sign-off is an issue comment.
+if ! HEAD_COMMIT_DATE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" --jq '.commit.committer.date' 2>/dev/null); then
+  echo "[pre-merge] BLOCKED: Failed to read head commit date from GitHub."
+  exit 1
+fi
+ISSUE_COMMENTERS=""
+while IFS=$'\t' read -r ic_login ic_created ic_body; do
+  [[ -z "$ic_login" ]] && continue
+  if [[ -z "$ic_created" ]] || [[ ! "$ic_created" > "$HEAD_COMMIT_DATE" ]]; then
+    continue
+  fi
+  if [[ "$ic_login" == "chatgpt-codex-connector[bot]" ]] && \
+     ! grep -qiE "find any major issues|no major issues" <<< "$ic_body"; then
+    continue
+  fi
+  ISSUE_COMMENTERS+="${ic_login}"$'\n'
+done <<< "$ISSUE_COMMENTS_RAW"
+
+ALL_REVIEWERS=$(printf '%s\n%s\n%s\n' "$REVIEWS" "$COMMENTS" "$ISSUE_COMMENTERS" | sort -u)
 
 has_reviewer_check_run() {
   local reviewer="$1"
