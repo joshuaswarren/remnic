@@ -213,3 +213,49 @@ test("day-summary auto-gather filters hourly summary sections by configured loca
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("gatherTodayFacts includes a decision-category memory routed to decisions/ (issue #1546)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-day-summary-decision-"));
+  try {
+    // A day whose only memory is a decision routed into decisions/<utc-date>/
+    // must still produce a non-empty day summary that includes it — the scan
+    // now iterates every recall category dir, not just facts/.
+    const utcDate = "2026-06-24";
+    const created = "2026-06-24T12:00:00.000Z";
+    const dir = path.join(memoryDir, "decisions", utcDate);
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, "decision-1.md"),
+      [
+        "---",
+        "id: decision-1",
+        "category: decision",
+        `created: ${created}`,
+        `updated: ${created}`,
+        "source: test",
+        "confidence: 0.9",
+        "---",
+        "We chose blue-green deploys for the ingestion worker.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      daySummaryTimezone: "UTC",
+    });
+    const orchestrator = new Orchestrator(config);
+
+    const gathered = await orchestrator.gatherTodayFacts(undefined, {
+      now: new Date("2026-06-24T18:00:00Z"),
+    });
+
+    assert.notEqual(gathered.trim(), "", "day summary must not be empty for a decision-only day");
+    assert.match(gathered, /blue-green deploys for the ingestion worker/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

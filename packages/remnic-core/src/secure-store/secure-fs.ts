@@ -59,6 +59,7 @@ import {
   parseEnvelope,
   seal,
 } from "./cipher.js";
+import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 
 // ---------------------------------------------------------------------------
 // Error classes
@@ -704,11 +705,15 @@ function normalizeStorageRelativePath(rel: string): string {
   return normalized;
 }
 
-const ENCRYPTABLE_MARKDOWN_STORAGE_ROOTS = new Set([
-  "facts",
-  "corrections",
-  "procedures",
-  "reasoning-traces",
+// Every recall category directory (facts/ + all CATEGORY_DIR_MAP dirs, incl.
+// questions/) must be encryptable at rest — #1546 routes decision/preference/
+// moment/... memories into their own dirs, so hardcoding only facts/corrections/
+// procedures/reasoning-traces would silently write those categories in
+// plaintext on encrypted stores. ALL_CATEGORY_DIRS is the single source of
+// truth; the extra non-category markdown roots (artifacts/archive/entities/
+// identity) are appended.
+const ENCRYPTABLE_MARKDOWN_STORAGE_ROOTS = new Set<string>([
+  ...ALL_CATEGORY_DIRS,
   "artifacts",
   "archive",
   "entities",

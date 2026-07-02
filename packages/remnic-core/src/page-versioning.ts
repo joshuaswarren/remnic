@@ -25,6 +25,7 @@ import {
   writeFile,
   unlink,
 } from "node:fs/promises";
+import { ALL_CATEGORY_DIRS } from "./utils/category-dir.js";
 
 // ---------------------------------------------------------------------------
 // Public interfaces
@@ -445,13 +446,15 @@ function computeLCS(a: string[], b: string[]): string[] {
  * optional `memoryDir` parameter is omitted.
  */
 function resolveMemoryDir(pagePath: string): string {
-  const knownSubdirs = new Set([
-    "facts",
-    "corrections",
+  // Derive the recall category dirs from ALL_CATEGORY_DIRS (single source of
+  // truth) so newly-routed categories (decisions/, preferences/, ...) are
+  // recognized when walking up to the memory root (#1546); the non-category
+  // subdirs are listed explicitly.
+  const knownSubdirs = new Set<string>([
+    ...ALL_CATEGORY_DIRS,
     "entities",
     "state",
     "artifacts",
-    "questions",
     "profiles",
   ]);
 

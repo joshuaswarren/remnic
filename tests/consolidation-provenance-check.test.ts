@@ -252,6 +252,50 @@ test("runConsolidationProvenanceCheck flags raw derived_from that the parser dro
   }
 });
 
+test("runConsolidationProvenanceCheck surfaces a malformed .md under decisions/ (issue #1546)", async () => {
+  // The parse-failure walk must scan every recall category dir, not just
+  // facts/corrections/procedures/reasoning-traces. A malformed decision file
+  // with visible provenance YAML must be surfaced by the doctor.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-decision-"));
+  try {
+    const storage = await seedStorage(dir);
+
+    const day = "2026-04-20";
+    const decisionDir = path.join(dir, "decisions", day);
+    await mkdir(decisionDir, { recursive: true });
+
+    const id = "decision-scalar-from";
+    const filePath = path.join(decisionDir, `${id}.md`);
+    const raw = [
+      "---",
+      `id: ${id}`,
+      "category: decision",
+      "created: 2026-04-20T01:00:00.000Z",
+      "updated: 2026-04-20T01:00:00.000Z",
+      "source: semantic-consolidation",
+      "confidence: 0.8",
+      "confidenceTier: implied",
+      "derived_from: decisions/a.md:7", // scalar — not a list; parser drops it
+      "derived_via: merge",
+      "---",
+      "",
+      "body",
+      "",
+    ].join("\n");
+    await writeFile(filePath, raw, "utf-8");
+
+    const report = await runConsolidationProvenanceCheck({ storage, memoryDir: dir });
+    const malformed = report.issues.filter(
+      (i) => i.kind === "derived_from_malformed_entry",
+    );
+    assert.equal(malformed.length, 1);
+    assert.ok(malformed[0].detail.includes("decisions/a.md:7"));
+    assert.equal(malformed[0].memoryPath, filePath);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("summarizeConsolidationProvenance honors versioningSidecarDir from config", async () => {
   // Regression for PR #634 review feedback (codex P2 / cursor Medium):
   // the summarizer must thread the configured `versioningSidecarDir`

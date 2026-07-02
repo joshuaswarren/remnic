@@ -502,4 +502,23 @@ describe("convertMemoriesToRecords", () => {
       ["a", "b", "c"],
     );
   });
+
+  it("exports memories under category dirs beyond facts/ (issue #1546)", async () => {
+    const dir = await makeTmpDir();
+    // A decision routed into decisions/<date>/ must appear in the export, not
+    // just facts/ + corrections/.
+    await writeSyntheticMemory(dir, "decisions/2026-02-22", "decision-1.md", {
+      id: "decision-1",
+      category: "decision",
+      content: "We chose blue-green deploys.",
+    });
+    await writeSyntheticMemory(dir, "facts/2026-02-22", "fact-1.md", {
+      id: "fact-1",
+      content: "The worker retries three times.",
+    });
+
+    const records = await convertMemoriesToRecords({ memoryDir: dir });
+    const ids = records.map((r) => r.sourceIds?.[0]).sort();
+    assert.deepEqual(ids, ["decision-1", "fact-1"]);
+  });
 });

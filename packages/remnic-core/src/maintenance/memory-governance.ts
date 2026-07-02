@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { StorageManager } from "../storage.js";
 import { decideLifecycleTransition } from "../lifecycle.js";
 import type { MemoryFile, MemoryStatus } from "../types.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 
 export type MemoryGovernanceMode = "shadow" | "apply";
 export type MemoryGovernanceReasonCode =
@@ -372,10 +373,16 @@ async function buildMalformedImportEntries(
   candidateFiles?: string[],
 ): Promise<MemoryGovernanceReviewQueueEntry[]> {
   const parsedPaths = new Set(parsedMemories.map((memory) => memory.path));
-  const filesToInspect = candidateFiles ?? [
-    ...await listMarkdownFiles(path.join(memoryDir, "facts")),
-    ...await listMarkdownFiles(path.join(memoryDir, "corrections")),
-  ];
+  // Inspect every recall category directory (RECALL_FALLBACK_DIRS — the single
+  // source of truth) so malformed files under newly-routed categories
+  // (decisions/, preferences/, ...) are surfaced too, not just facts/ (#1546).
+  const filesToInspect =
+    candidateFiles ??
+    (
+      await Promise.all(
+        RECALL_FALLBACK_DIRS.map((dir) => listMarkdownFiles(path.join(memoryDir, dir))),
+      )
+    ).flat();
   const entries: MemoryGovernanceReviewQueueEntry[] = [];
 
   for (const filePath of filesToInspect) {

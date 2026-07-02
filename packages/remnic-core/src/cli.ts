@@ -215,6 +215,7 @@ import {
 } from "./policy-runtime.js";
 import { resolveHomeDir } from "./runtime/env.js";
 import { expandTildePath } from "./utils/path.js";
+import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 import { convertMemoriesToRecords } from "./training-export/converter.js";
 import { parseStrictCliDate as parseStrictCliDateShared } from "./training-export/date-parse.js";
 import { getTrainingExportAdapter, listTrainingExportAdapters } from "./training-export/registry.js";
@@ -3320,17 +3321,18 @@ export async function resolveMemoryDirForNamespace(
 }
 
 /**
- * Walk `memoryDir/{facts,corrections}` recursively and invoke `visit` for
- * every `*.md` file. Intentionally swallows per-directory errors so a missing
- * subdir reads as empty. Shared primitive for `listMemoryMarkdownFilePaths`,
- * `readAllMemoryFiles`, and any future walker that needs the same roots +
- * `.md` filter.
+ * Walk every recall category directory under `memoryDir` recursively and invoke
+ * `visit` for every `*.md` file. The directory set is `RECALL_FALLBACK_DIRS`
+ * (single source of truth), so newly-routed categories (decisions/, ...) are
+ * covered without touching this walker again (#1546). Swallows per-directory
+ * errors so a missing subdir reads as empty. Shared primitive for
+ * `listMemoryMarkdownFilePaths`, `readAllMemoryFiles`, and future walkers.
  */
 async function walkMemoryMarkdownFiles(
   memoryDir: string,
   visit: (fullPath: string) => void | Promise<void>,
 ): Promise<void> {
-  const roots = [path.join(memoryDir, "facts"), path.join(memoryDir, "corrections")];
+  const roots = RECALL_FALLBACK_DIRS.map((dir) => path.join(memoryDir, dir));
 
   const walk = async (dir: string): Promise<void> => {
     let entries: Array<{ isDirectory(): boolean; isFile(): boolean; name: string | Buffer }>;
@@ -3361,16 +3363,16 @@ async function walkMemoryMarkdownFiles(
 }
 
 /**
- * List absolute paths of every `*.md` file under `memoryDir/{facts,corrections}`.
- * Used by the bulk-import CLI to derive a per-batch `memoriesCreated` count
- * via set-subtraction of "paths after extraction" against "paths before
- * extraction". Caveat: the extraction queue is shared across sessions, so
- * concurrent organic extractions that write memories between the two
- * snapshots will still inflate the reported count. Filename-set diff at
- * least correctly ignores pre-existing files and files that were deleted
- * while the batch ran.
+ * List absolute paths of every `*.md` file under each recall category directory
+ * of `memoryDir` (facts/, corrections/, decisions/, ...; see
+ * `walkMemoryMarkdownFiles`). Used by the bulk-import CLI to derive a per-batch
+ * `memoriesCreated` count via set-subtraction of "paths after extraction"
+ * against "paths before extraction". Caveat: the extraction queue is shared
+ * across sessions, so concurrent organic extractions between the two snapshots
+ * can still inflate the count; the set diff at least ignores pre-existing and
+ * deleted files. Exported for category-dir coverage tests (#1546).
  */
-async function listMemoryMarkdownFilePaths(memoryDir: string): Promise<string[]> {
+export async function listMemoryMarkdownFilePaths(memoryDir: string): Promise<string[]> {
   const paths: string[] = [];
   await walkMemoryMarkdownFiles(memoryDir, (fullPath) => {
     paths.push(fullPath);

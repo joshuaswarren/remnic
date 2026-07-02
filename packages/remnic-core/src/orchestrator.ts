@@ -343,7 +343,7 @@ import {
   defaultTierMigrationCycleBudget,
 } from "./compounding/engine.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
-import { categoryDirName } from "./utils/category-dir.js";
+import { categoryDirName, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 // IRC preference consolidation — used by eval adapter directly;
 // orchestrator integration planned for future PR.
 // import { consolidatePreferences, buildQueryAwarePreferenceSection, synthesizePreferencesFromLcm } from "./compounding/preference-consolidator.js";
@@ -4785,60 +4785,66 @@ export class Orchestrator {
     // a local calendar day. Scan the UTC-date envelope that overlaps the local
     // day, then filter parseable fact timestamps to that configured local day.
     const datesToScan = utcDateKeysForLocalDay(now, timeZone);
-    const factsBaseDir = path.join(storage.dir, "facts");
     const MAX_CHARS = 100_000;
 
-    // --- Read fact files from each date directory ---
+    // --- Read memory files from each category dir × date directory ---
+    // Iterate every recall category dir (RECALL_FALLBACK_DIRS — single source
+    // of truth) so the day summary includes decisions/, moments/, ... not just
+    // facts/ (#1546). corrections/ is flat, so corrections/<date>/ never exists
+    // and is skipped by the ENOENT guard — preserving the prior exclusion. The
+    // per-file created→local-day filter below is unchanged.
     const facts: MemoryFile[] = [];
-    for (const date of datesToScan) {
-      const factsDir = path.join(factsBaseDir, date);
-      try {
-        const entries = await readdir(factsDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.name.endsWith(".md")) continue;
-          const fullPath = path.join(factsDir, entry.name);
-          try {
-            const raw = await readFile(fullPath, "utf-8");
-            const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-            if (!fmMatch) continue;
-            const fmBlock = fmMatch[1];
-            const content = fmMatch[2].trim();
-            const fm: Record<string, string> = {};
-            for (const line of fmBlock.split("\n")) {
-              const colonIdx = line.indexOf(":");
-              if (colonIdx === -1) continue;
-              fm[line.slice(0, colonIdx).trim()] = line
-                .slice(colonIdx + 1)
-                .trim();
+    for (const categoryDir of RECALL_FALLBACK_DIRS) {
+      for (const date of datesToScan) {
+        const dateDir = path.join(storage.dir, categoryDir, date);
+        try {
+          const entries = await readdir(dateDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.name.endsWith(".md")) continue;
+            const fullPath = path.join(dateDir, entry.name);
+            try {
+              const raw = await readFile(fullPath, "utf-8");
+              const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+              if (!fmMatch) continue;
+              const fmBlock = fmMatch[1];
+              const content = fmMatch[2].trim();
+              const fm: Record<string, string> = {};
+              for (const line of fmBlock.split("\n")) {
+                const colonIdx = line.indexOf(":");
+                if (colonIdx === -1) continue;
+                fm[line.slice(0, colonIdx).trim()] = line
+                  .slice(colonIdx + 1)
+                  .trim();
+              }
+              const created = fm.created || "unknown";
+              const createdAt = parseFiniteDate(created);
+              if (
+                createdAt &&
+                formatDateInTimeZone(createdAt, timeZone) !== targetLocalDate
+              ) {
+                continue;
+              }
+              facts.push({
+                path: fullPath,
+                frontmatter: {
+                  id: fm.id || path.basename(entry.name, ".md"),
+                  category: (fm.category as any) || "fact",
+                  created,
+                  updated: fm.updated || created,
+                  source: fm.source || "unknown",
+                  confidence: parseFloat(fm.confidence || "0.8"),
+                  confidenceTier: (fm.confidenceTier as any) || "implied",
+                  tags: [],
+                },
+                content,
+              });
+            } catch {
+              // Skip unreadable files
             }
-            const created = fm.created || "unknown";
-            const createdAt = parseFiniteDate(created);
-            if (
-              createdAt &&
-              formatDateInTimeZone(createdAt, timeZone) !== targetLocalDate
-            ) {
-              continue;
-            }
-            facts.push({
-              path: fullPath,
-              frontmatter: {
-                id: fm.id || path.basename(entry.name, ".md"),
-                category: (fm.category as any) || "fact",
-                created,
-                updated: fm.updated || created,
-                source: fm.source || "unknown",
-                confidence: parseFloat(fm.confidence || "0.8"),
-                confidenceTier: (fm.confidenceTier as any) || "implied",
-                tags: [],
-              },
-              content,
-            });
-          } catch {
-            // Skip unreadable files
           }
+        } catch {
+          // Directory doesn't exist for this category/date — nothing to read
         }
-      } catch {
-        // Directory doesn't exist — no facts for this date
       }
     }
 

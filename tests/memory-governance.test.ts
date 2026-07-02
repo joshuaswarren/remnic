@@ -1432,3 +1432,31 @@ test("bounded governance apply skips path reloads whose memory id changed", asyn
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// NOTE: keep this test LAST so it never shifts the line numbers of the
+// pre-existing type-check baseline entries earlier in this file
+// (scripts/test-typecheck-baseline.txt pins them by line number).
+test("governance surfaces a malformed file under decisions/ (issue #1546)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-governance-category-"));
+  try {
+    // A malformed memory routed into decisions/<date>/ must be surfaced by the
+    // malformed-import scan, which now walks every recall category directory.
+    await writeText(
+      memoryDir,
+      "decisions/2026-03-03/decision-malformed.md",
+      "---\nid: decision-malformed\ncategory: decision\ncreated: not-a-date\n",
+    );
+
+    const result = await runMemoryGovernance({
+      memoryDir,
+      mode: "shadow",
+      now: new Date("2026-03-09T12:00:00.000Z"),
+    });
+
+    const malformed = result.reviewQueue.filter((entry) => entry.reasonCode === "malformed_import");
+    assert.equal(malformed.length, 1);
+    assert.equal(malformed[0].path, path.join(memoryDir, "decisions/2026-03-03/decision-malformed.md"));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
