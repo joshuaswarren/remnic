@@ -42,7 +42,7 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
     malformed_page:1)
       printf '5\\t0\\n'
       ;;
-    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|codex_issue_comment_short_sha:1|codex_issue_comment_stale:1|codex_issue_comment_not_verdict:1|codex_verdict_sha_in_prose:1|codex_verdict_unpinned:1|generic_issue_comment_ignored:1|issue_comments_fail:1|codex_reaction_ok:1|codex_reaction_negative:1|reaction_wrong_user:1|reactions_read_fail:1)
+    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|codex_issue_comment_short_sha:1|codex_issue_comment_stale:1|codex_issue_comment_not_verdict:1|codex_verdict_sha_in_prose:1|codex_verdict_unpinned:1|generic_issue_comment_ignored:1|issue_comments_fail:1|codex_reaction_ok:1|codex_reaction_stale:1|codex_reaction_negative:1|reaction_wrong_user:1|reactions_read_fail:1|reaction_head_date_missing:1)
       printf '3\\t0\\tfalse\\t\\n'
       ;;
     repeated_cursor:1)
@@ -68,7 +68,7 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/pulls/7/reviews" ]]; then
     printf 'chatgpt-codex-connector[bot]\\n'
     exit 0
   fi
-  if [[ "$GH_STUB_SCENARIO" == codex_issue_comment_* || "$GH_STUB_SCENARIO" == "codex_verdict_sha_in_prose" || "$GH_STUB_SCENARIO" == "generic_issue_comment_ignored" || "$GH_STUB_SCENARIO" == "codex_reaction_ok" || "$GH_STUB_SCENARIO" == "codex_reaction_negative" || "$GH_STUB_SCENARIO" == "reaction_wrong_user" || "$GH_STUB_SCENARIO" == "reactions_read_fail" ]]; then
+  if [[ "$GH_STUB_SCENARIO" == codex_issue_comment_* || "$GH_STUB_SCENARIO" == "codex_verdict_sha_in_prose" || "$GH_STUB_SCENARIO" == "generic_issue_comment_ignored" || "$GH_STUB_SCENARIO" == codex_reaction_* || "$GH_STUB_SCENARIO" == "reaction_wrong_user" || "$GH_STUB_SCENARIO" == "reactions_read_fail" || "$GH_STUB_SCENARIO" == "reaction_head_date_missing" ]]; then
     printf 'cursor[bot]\\n'
     exit 0
   fi
@@ -119,21 +119,35 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/comments" ]]; then
   exit 0
 fi
 
+# Head commit metadata (committer date) — used to reject stale reaction sign-offs.
+if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/deadbeef1234567890abcdef1234567890abcdef" ]]; then
+  if [[ "$GH_STUB_SCENARIO" == "reaction_head_date_missing" ]]; then
+    exit 0  # empty body -> HEAD_COMMIT_DATE unknown
+  fi
+  printf '2026-06-01T00:00:00Z\\n'
+  exit 0
+fi
+
+# PR-body reactions: login <TAB> content <TAB> created_at. Head commit date in
+# the stub is 2026-06-01T00:00:00Z, so "…06-02…" is fresh and "…05-01…" is stale.
 if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/reactions" ]]; then
   case "$GH_STUB_SCENARIO" in
     reactions_read_fail)
       echo "reactions unavailable" >&2
       exit 3
       ;;
-    codex_reaction_ok)
-      printf 'chatgpt-codex-connector[bot]\\t+1\\n'
+    codex_reaction_ok|reaction_head_date_missing)
+      printf 'chatgpt-codex-connector[bot]\\t+1\\t2026-06-02T00:00:00Z\\n'
+      ;;
+    codex_reaction_stale)
+      printf 'chatgpt-codex-connector[bot]\\t+1\\t2026-05-01T00:00:00Z\\n'
       ;;
     codex_reaction_negative)
-      printf 'chatgpt-codex-connector[bot]\\tconfused\\n'
-      printf 'chatgpt-codex-connector[bot]\\t-1\\n'
+      printf 'chatgpt-codex-connector[bot]\\tconfused\\t2026-06-02T00:00:00Z\\n'
+      printf 'chatgpt-codex-connector[bot]\\t-1\\t2026-06-02T00:00:00Z\\n'
       ;;
     reaction_wrong_user)
-      printf 'someuser\\t+1\\n'
+      printf 'someuser\\t+1\\t2026-06-02T00:00:00Z\\n'
       ;;
   esac
   exit 0
@@ -379,6 +393,29 @@ test("pre-merge check accepts a codex thumbs-up reaction on the PR body as sign-
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /OK: All reviewers posted/);
+  });
+});
+
+test("pre-merge check rejects a codex reaction left before the current head commit", async () => {
+  // A +1 on an earlier revision must not satisfy the reviewer once a newer
+  // commit is pushed — the reaction predates the head commit's committer date.
+  await withGhStub("codex_reaction_stale", async (env) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Missing reviews from: chatgpt-codex-connector\[bot\]/);
+  });
+});
+
+test("pre-merge check does not count reactions when the head commit date is unknown", async () => {
+  // Fail closed: without the head commit date there is no way to prove a
+  // reaction is fresh, so even a positive codex reaction must not sign off.
+  await withGhStub("reaction_head_date_missing", async (env) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Head commit date unknown/);
+    assert.match(result.stdout, /Missing reviews from: chatgpt-codex-connector\[bot\]/);
   });
 });
 

@@ -131,6 +131,7 @@ if ! HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq .h
   exit 1
 fi
 CHECK_RUNS=""
+HEAD_COMMIT_DATE=""
 if [[ -n "$HEAD_SHA" ]]; then
   if ! CHECK_RUNS=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" \
     --jq '.check_runs[] | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "neutral") | [.app.slug, .name] | @tsv' \
@@ -138,27 +139,53 @@ if [[ -n "$HEAD_SHA" ]]; then
     echo "[pre-merge] BLOCKED: Failed to read PR check runs from GitHub."
     exit 1
   fi
+  # Committer date of the head commit, used to reject stale reaction sign-offs
+  # (see the reactions block). committedDate is rewritten on rebase, so a
+  # pre-rebase reaction correctly stops counting — fail closed.
+  HEAD_COMMIT_DATE=$(gh api "repos/${REPO}/commits/${HEAD_SHA}" \
+    --jq '.commit.committer.date // empty' 2>/dev/null || true)
 fi
 
 # Reviewer approval via a reaction on the PR body. Codex signs off on clean PRs
 # with a thumbs-up (+1) reaction on the PR description instead of a review or
 # comment. Only count explicitly POSITIVE reactions as a sign-off — a "-1" or
 # "confused" reaction is the opposite of approval, and "eyes" means "still
-# looking", so none of those count. Reactions are PR-wide (not head-scoped);
-# that matches how reviews/issue-comment verdicts are already treated for
-# reviewers that post as check runs. A read failure here is non-fatal: reactions
-# are a supplementary signal, so we fall back to the other detection paths
-# rather than blocking the whole gate on a reactions-endpoint hiccup.
+# looking", so none of those count.
+#
+# CURRENT-HEAD BINDING: a reaction carries no commit SHA and GitHub does NOT
+# dismiss it when new commits are pushed, so a bare reaction would let a +1 left
+# on an earlier revision satisfy the reviewer for a newer diff it never saw.
+# Reactions cannot be SHA-pinned like issue-comment verdicts, so we bind by
+# time: a reaction only counts when it was created at/after the head commit's
+# committer date. A commit pushed after the +1 has a newer committer date and
+# invalidates the stale reaction; a rebase rewrites committer dates and does the
+# same — both fail closed, forcing a fresh sign-off. (Residual: cherry-picking a
+# commit with an OLD committer date as the new head could re-admit a reaction in
+# that window; the SHA-pinned issue-comment path remains the strong signal.)
+# If the head commit date is unknown, no reaction can be validated → none count.
+# A read failure here is non-fatal: reactions are a supplementary signal, so we
+# fall back to the other detection paths rather than blocking the whole gate.
+# Byte-wise "is $1 strictly before $2" for two GitHub ISO-8601 UTC (…Z)
+# timestamps. Runs in a subshell so LC_ALL=C stays scoped; the fixed-width
+# format makes a byte comparison chronological.
+iso_before() ( LC_ALL=C; [[ "$1" < "$2" ]] )
+
 POSITIVE_REACTIONS_RE='^(\+1|heart|hooray|rocket)$'
 POSITIVE_REACTORS=""
-if BODY_REACTIONS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/reactions" --paginate \
+if [[ -z "$HEAD_COMMIT_DATE" ]]; then
+  echo "[pre-merge] NOTE: Head commit date unknown; PR-body reactions will not count as sign-off."
+elif BODY_REACTIONS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/reactions" --paginate \
   -H "Accept: application/vnd.github+json" \
-  --jq '.[] | [.user.login, .content] | @tsv' 2>/dev/null); then
-  while IFS=$'\t' read -r rx_login rx_content; do
+  --jq '.[] | [.user.login, .content, .created_at] | @tsv' 2>/dev/null); then
+  while IFS=$'\t' read -r rx_login rx_content rx_created; do
     [[ -n "$rx_login" ]] || continue
-    if [[ "$rx_content" =~ $POSITIVE_REACTIONS_RE ]]; then
-      POSITIVE_REACTORS+="${rx_login}"$'\n'
+    [[ "$rx_content" =~ $POSITIVE_REACTIONS_RE ]] || continue
+    # Reject reactions predating the head commit (stale sign-off on an older rev).
+    [[ -n "$rx_created" ]] || continue
+    if iso_before "$rx_created" "$HEAD_COMMIT_DATE"; then
+      continue
     fi
+    POSITIVE_REACTORS+="${rx_login}"$'\n'
   done <<< "$BODY_REACTIONS"
 else
   echo "[pre-merge] NOTE: Could not read PR body reactions; relying on reviews/comments/checks."
