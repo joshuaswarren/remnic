@@ -42,7 +42,7 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
     malformed_page:1)
       printf '5\\t0\\n'
       ;;
-    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|codex_issue_comment_stale:1|codex_issue_comment_not_verdict:1|generic_issue_comment_ignored:1|issue_comments_fail:1)
+    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|codex_issue_comment_short_sha:1|codex_issue_comment_stale:1|codex_issue_comment_not_verdict:1|codex_verdict_sha_in_prose:1|generic_issue_comment_ignored:1|issue_comments_fail:1)
       printf '3\\t0\\tfalse\\t\\n'
       ;;
     repeated_cursor:1)
@@ -68,7 +68,7 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/pulls/7/reviews" ]]; then
     printf 'chatgpt-codex-connector[bot]\\n'
     exit 0
   fi
-  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" || "$GH_STUB_SCENARIO" == "codex_issue_comment_stale" || "$GH_STUB_SCENARIO" == "codex_issue_comment_not_verdict" || "$GH_STUB_SCENARIO" == "generic_issue_comment_ignored" ]]; then
+  if [[ "$GH_STUB_SCENARIO" == codex_issue_comment_* || "$GH_STUB_SCENARIO" == "codex_verdict_sha_in_prose" || "$GH_STUB_SCENARIO" == "generic_issue_comment_ignored" ]]; then
     printf 'cursor[bot]\\n'
     exit 0
   fi
@@ -89,7 +89,11 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/comments" ]]; then
     exit 3
   fi
   if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" ]]; then
-    printf "chatgpt-codex-connector[bot]\\tCodex Review: Didn't find any major issues. **Reviewed commit:** deadbeef\\n"
+    printf "chatgpt-codex-connector[bot]\\tCodex Review: Didn't find any major issues. **Reviewed commit:** deadbeef12\\n"
+    exit 0
+  fi
+  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_short_sha" ]]; then
+    printf "chatgpt-codex-connector[bot]\\tCodex Review: Didn't find any major issues. Reviewed commit: deadbee\\n"
     exit 0
   fi
   if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_stale" ]]; then
@@ -97,11 +101,15 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/comments" ]]; then
     exit 0
   fi
   if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_not_verdict" ]]; then
-    printf "chatgpt-codex-connector[bot]\\tFound 2 major issues in the diff. **Reviewed commit:** deadbeef\\n"
+    printf "chatgpt-codex-connector[bot]\\tFound 2 major issues in the diff. **Reviewed commit:** deadbeef12\\n"
+    exit 0
+  fi
+  if [[ "$GH_STUB_SCENARIO" == "codex_verdict_sha_in_prose" ]]; then
+    printf "chatgpt-codex-connector[bot]\\tCodex Review: Didn't find any major issues. Compare with deadbeef12 later. **Reviewed commit:** cafebabe12\\n"
     exit 0
   fi
   if [[ "$GH_STUB_SCENARIO" == "generic_issue_comment_ignored" ]]; then
-    printf "someuser\\tLooks good to me! deadbeef\\n"
+    printf "someuser\\tLooks good to me! Reviewed commit: deadbeef12\\n"
     exit 0
   fi
   exit 0
@@ -112,11 +120,11 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
     echo "gh pr view must pass --repo" >&2
     exit 5
   fi
-  printf 'deadbeef\\n'
+  printf 'deadbeef1234567890abcdef1234567890abcdef\\n'
   exit 0
 fi
 
-if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/deadbeef/check-runs" ]]; then
+if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/deadbeef1234567890abcdef1234567890abcdef/check-runs" ]]; then
   if [[ "$GH_STUB_SCENARIO" == "cursor_check_ok" ]]; then
     printf 'cursor\\tCursor Bugbot\\n'
     exit 0
@@ -231,6 +239,28 @@ test("pre-merge check accepts a codex clean-verdict ISSUE comment as reviewer ac
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /OK: All reviewers posted/);
     assert.equal((await readFile(countPath, "utf8")).trim(), "1");
+  });
+});
+
+test("pre-merge check accepts codex verdicts with a short (7-char) reviewed-commit SHA", async () => {
+  // Codex controls its own short-SHA length; the gate must accept any git
+  // short SHA (>= 7 hex chars) that is a prefix of the current head.
+  await withGhStub("codex_issue_comment_short_sha", async (env) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /OK: All reviewers posted/);
+  });
+});
+
+test("pre-merge check anchors the SHA pin to the Reviewed commit label, not prose", async () => {
+  // The head SHA appearing elsewhere in the body must not satisfy the pin
+  // when the verdict's own "Reviewed commit" points at a different SHA.
+  await withGhStub("codex_verdict_sha_in_prose", async (env) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Missing reviews from: chatgpt-codex-connector\[bot\]/);
   });
 });
 
