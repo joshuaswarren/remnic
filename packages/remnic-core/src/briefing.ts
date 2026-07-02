@@ -183,7 +183,11 @@ export function parseBriefingFocus(token: string | undefined): BriefingFocus | n
  * an entity only via `frontmatter.entityRef` (no body / tag mention) would
  * silently drop out of an untyped focus filter (codex P2 review on #695).
  */
-export function focusMatchesMemory(memory: MemoryFile, focus: BriefingFocus): boolean {
+export function focusMatchesMemory(
+  memory: MemoryFile,
+  focus: BriefingFocus,
+  entityAliases?: Readonly<Record<string, string>>,
+): boolean {
   const needle = focus.value.toLowerCase();
   const entityRef = (memory.frontmatter.entityRef ?? "").toLowerCase();
 
@@ -216,7 +220,7 @@ export function focusMatchesMemory(memory: MemoryFile, focus: BriefingFocus): bo
   // `Project-Alpha` of type `project` canonicalizes to `project-alpha`,
   // and a focus on `project:Project-Alpha` does the same.
   if (!entityRef) return false;
-  const focusCanonical = normalizeEntityName(focus.value, focus.type);
+  const focusCanonical = normalizeEntityName(focus.value, focus.type, entityAliases);
   // Strip a leading `<type><delimiter>` prefix from a non-canonical
   // entityRef before normalizing — `normalizeEntityName` only strips
   // `<type>-` so other valid verbatim formats (`person:Alice-Test`,
@@ -232,7 +236,7 @@ export function focusMatchesMemory(memory: MemoryFile, focus: BriefingFocus): bo
   if (typeDelimMatch) {
     refForNormalize = refForNormalize.slice(typeDelimMatch[0].length);
   }
-  const refCanonical = normalizeEntityName(refForNormalize, focus.type);
+  const refCanonical = normalizeEntityName(refForNormalize, focus.type, entityAliases);
   return refCanonical === focusCanonical;
 }
 
@@ -834,7 +838,7 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
 
   const memoriesInWindow = filterMemoriesByWindow(allMemories, window);
   const focusedMemories = focus
-    ? memoriesInWindow.filter((m) => focusMatchesMemory(m, focus))
+    ? memoriesInWindow.filter((m) => focusMatchesMemory(m, focus, options.storage.entityAliases))
     : memoriesInWindow;
 
   const activeThreads = buildActiveThreads(focusedMemories);

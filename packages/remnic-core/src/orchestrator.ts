@@ -65,7 +65,6 @@ import {
   StorageManager,
   ContentHashIndex,
   fingerprintEntityStructuredFacts,
-  normalizeEntityName,
   normalizeAttributePairs,
   parseEntityFile,
 } from "./storage.js";
@@ -15791,7 +15790,7 @@ export class Orchestrator {
         const type = (entity as any)?.type;
         if (typeof name !== "string" || typeof type !== "string") continue;
         try {
-          const normalized = normalizeEntityName(name, type);
+          const normalized = storage.normalizeEntityName(name, type);
           await storage.addEntityActivity(
             normalized,
             { date: today, note: "Mentioned in conversation" },
