@@ -9,8 +9,12 @@ set -euo pipefail
 # AI reviewers had time to post reviews. This script blocks merging until
 # reviewers have weighed in and all threads are resolved.
 #
-# Reviewer activity is detected via PR reviews, PR comments, and completed
-# check runs (Cursor Bugbot and Kilo Code Review run as GitHub App checks).
+# Reviewer activity is detected via PR reviews, PR comments, completed check
+# runs (Cursor Bugbot and Kilo Code Review run as GitHub App checks), and an
+# approving reaction on the PR body. Codex (chatgpt-codex-connector[bot]) often
+# signs off on a clean PR by leaving a thumbs-up (+1) reaction on the PR
+# description rather than posting a review or comment — without reaction
+# detection those PRs block forever even though the reviewer approved.
 
 PR_NUMBER="${1:?Usage: scripts/pre-merge-check.sh <PR_NUMBER>}"
 REPO="${REMNIC_REPO:-joshuaswarren/remnic}"
@@ -136,6 +140,30 @@ if [[ -n "$HEAD_SHA" ]]; then
   fi
 fi
 
+# Reviewer approval via a reaction on the PR body. Codex signs off on clean PRs
+# with a thumbs-up (+1) reaction on the PR description instead of a review or
+# comment. Only count explicitly POSITIVE reactions as a sign-off — a "-1" or
+# "confused" reaction is the opposite of approval, and "eyes" means "still
+# looking", so none of those count. Reactions are PR-wide (not head-scoped);
+# that matches how reviews/issue-comment verdicts are already treated for
+# reviewers that post as check runs. A read failure here is non-fatal: reactions
+# are a supplementary signal, so we fall back to the other detection paths
+# rather than blocking the whole gate on a reactions-endpoint hiccup.
+POSITIVE_REACTIONS_RE='^(\+1|heart|hooray|rocket)$'
+POSITIVE_REACTORS=""
+if BODY_REACTIONS=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/reactions" --paginate \
+  -H "Accept: application/vnd.github+json" \
+  --jq '.[] | [.user.login, .content] | @tsv' 2>/dev/null); then
+  while IFS=$'\t' read -r rx_login rx_content; do
+    [[ -n "$rx_login" ]] || continue
+    if [[ "$rx_content" =~ $POSITIVE_REACTIONS_RE ]]; then
+      POSITIVE_REACTORS+="${rx_login}"$'\n'
+    fi
+  done <<< "$BODY_REACTIONS"
+else
+  echo "[pre-merge] NOTE: Could not read PR body reactions; relying on reviews/comments/checks."
+fi
+
 # Issue comments are PR-wide, not head-scoped, and this gate reads them for
 # exactly one reason: Codex posts its clean verdict ("Didn't find any major
 # issues … **Reviewed commit:** \`<short sha>\`") as an issue comment. Count
@@ -188,11 +216,20 @@ has_reviewer_check_run() {
   return 1
 }
 
+# A required reviewer counts as having signed off if they left a positive
+# reaction on the PR body (exact, case-insensitive login match).
+has_reviewer_positive_reaction() {
+  local reviewer="$1"
+  [[ -n "$POSITIVE_REACTORS" ]] || return 1
+  grep -qxiF "$reviewer" <<< "$POSITIVE_REACTORS"
+}
+
 MISSING_REVIEWERS=()
 for reviewer in "${REQUIRED_REVIEWERS[@]}"; do
   # Use exact line match (-x) to avoid substring false positives.
   if ! echo "$ALL_REVIEWERS" | grep -qxiF "$reviewer" && \
-     ! has_reviewer_check_run "$reviewer"; then
+     ! has_reviewer_check_run "$reviewer" && \
+     ! has_reviewer_positive_reaction "$reviewer"; then
     MISSING_REVIEWERS+=("$reviewer")
   fi
 done
