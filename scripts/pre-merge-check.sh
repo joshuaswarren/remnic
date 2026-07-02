@@ -150,8 +150,10 @@ while IFS=$'\t' read -r ic_login ic_body; do
   grep -qiE "find any major issues|no major issues" <<< "$ic_body" || continue
   # Extract the hex run following the "Reviewed commit" label, tolerating
   # markdown decoration (bold markers, backticks, colon) between the two.
+  # `|| true` keeps errexit/pipefail from aborting the gate on comments with
+  # no label (legacy unpinned verdicts) — those are simply never counted.
   ic_sha=$(grep -oiE "reviewed commit[^0-9a-fA-F]*[0-9a-fA-F]{7,40}" <<< "$ic_body" \
-    | grep -oE "[0-9a-fA-F]{7,40}" | head -n 1 | tr '[:upper:]' '[:lower:]')
+    | grep -oE "[0-9a-fA-F]{7,40}" | head -n 1 | tr '[:upper:]' '[:lower:]' || true)
   if [[ -n "$ic_sha" && -n "$HEAD_SHA" && "$HEAD_SHA" == "$ic_sha"* ]]; then
     ISSUE_COMMENTERS+="${ic_login}"$'\n'
   fi

@@ -42,7 +42,7 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
     malformed_page:1)
       printf '5\\t0\\n'
       ;;
-    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|codex_issue_comment_short_sha:1|codex_issue_comment_stale:1|codex_issue_comment_not_verdict:1|codex_verdict_sha_in_prose:1|generic_issue_comment_ignored:1|issue_comments_fail:1)
+    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|codex_issue_comment_short_sha:1|codex_issue_comment_stale:1|codex_issue_comment_not_verdict:1|codex_verdict_sha_in_prose:1|codex_verdict_unpinned:1|generic_issue_comment_ignored:1|issue_comments_fail:1)
       printf '3\\t0\\tfalse\\t\\n'
       ;;
     repeated_cursor:1)
@@ -106,6 +106,10 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/comments" ]]; then
   fi
   if [[ "$GH_STUB_SCENARIO" == "codex_verdict_sha_in_prose" ]]; then
     printf "chatgpt-codex-connector[bot]\\tCodex Review: Didn't find any major issues. Compare with deadbeef12 later. **Reviewed commit:** cafebabe12\\n"
+    exit 0
+  fi
+  if [[ "$GH_STUB_SCENARIO" == "codex_verdict_unpinned" ]]; then
+    printf "chatgpt-codex-connector[bot]\\tCodex Review: Didn't find any major issues. Hooray!\\n"
     exit 0
   fi
   if [[ "$GH_STUB_SCENARIO" == "generic_issue_comment_ignored" ]]; then
@@ -261,6 +265,18 @@ test("pre-merge check anchors the SHA pin to the Reviewed commit label, not pros
 
     assert.equal(result.status, 1);
     assert.match(result.stdout, /Missing reviews from: chatgpt-codex-connector\[bot\]/);
+  });
+});
+
+test("pre-merge check ignores unpinned codex verdicts without aborting the gate", async () => {
+  // A legacy clean verdict with no "Reviewed commit" label must be skipped —
+  // not crash the errexit/pipefail script — so reviewers satisfied via
+  // reviews/check runs still pass.
+  await withGhStub("codex_verdict_unpinned", async (env) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /OK: All reviewers posted/);
   });
 });
 
