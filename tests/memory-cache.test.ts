@@ -1,17 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  ALL_CACHE_LAYERS,
   getCachedMemories,
   setCachedMemories,
   getCachedArchivedMemories,
   setCachedArchivedMemories,
   getCachedEntities,
   setCachedEntities,
+  setCachedEpisodeMap,
+  setCachedRuleMemories,
+  setCachedQmdSearch,
+  getCachedQmdSearch,
+  invalidateAllForDir,
+  invalidateCachedEntities,
   updateCacheOnWrite,
   updateCacheOnDelete,
   clearMemoryCache,
   getMemoryCacheStats,
 } from "../src/memory-cache.ts";
+import {
+  getCachedQmdRecall,
+  setCachedQmdRecall,
+} from "../src/qmd-recall-cache.ts";
 import type { EntityFile, MemoryFile } from "../src/types.ts";
 
 function makeMemory(id: string, filePath: string): MemoryFile {
@@ -224,4 +235,157 @@ test("clearMemoryCache also clears entity cache", () => {
   clearMemoryCache();
 
   assert.equal(getCachedEntities(dir, 1), null);
+});
+
+// --- Entity schemaKey normalization (issue #1535, point 3) ---
+
+test("entity cache: omitted and empty-string schemaKey resolve to the same entry", () => {
+  clearMemoryCache();
+  const dir = "/test/entity-schema-normalize";
+  setCachedEntities(dir, [makeEntity("Alice")], 1); // schemaKey omitted
+  const viaEmpty = getCachedEntities(dir, 1, "");
+  const viaOmitted = getCachedEntities(dir, 1);
+  assert.ok(viaEmpty);
+  assert.ok(viaOmitted);
+  assert.equal(viaEmpty[0].name, "Alice");
+  assert.equal(viaOmitted[0].name, "Alice");
+});
+
+test("invalidateCachedEntities clears entries for every schemaKey of the dir", () => {
+  clearMemoryCache();
+  const dir = "/test/entity-schema-invalidate";
+  setCachedEntities(dir, [makeEntity("Alice")], 1);
+  setCachedEntities(dir, [makeEntity("Bob")], 1, "schema-v2");
+  assert.ok(getCachedEntities(dir, 1));
+  assert.ok(getCachedEntities(dir, 1, "schema-v2"));
+
+  invalidateCachedEntities(dir);
+
+  assert.equal(getCachedEntities(dir, 1), null);
+  assert.equal(getCachedEntities(dir, 1, "schema-v2"), null);
+});
+
+test("invalidateCachedEntities does not clear a sibling dir sharing a string prefix", () => {
+  clearMemoryCache();
+  const dir = "/test/entity-prefix";
+  const sibling = "/test/entity-prefix-sibling";
+  setCachedEntities(dir, [makeEntity("Alice")], 1);
+  setCachedEntities(sibling, [makeEntity("Bob")], 1);
+
+  invalidateCachedEntities(dir);
+
+  assert.equal(getCachedEntities(dir, 1), null);
+  assert.ok(getCachedEntities(sibling, 1));
+});
+
+// --- Invalidation chokepoint fitness tests (issue #1535) ---
+//
+// ALL_CACHE_LAYERS is the single source of truth for cache layers: the
+// invalidateAllForDir() chokepoint iterates it, and these tests enumerate it.
+// Adding a new cache layer REQUIRES adding a seeder below — the first test
+// fails loudly otherwise.
+
+const layerSeeders: Record<string, (dir: string) => void> = {
+  "hot-memories": (dir) => setCachedMemories(dir, [makeMemory("h1", `${dir}/facts/h1.md`)], 1),
+  "archive-memories": (dir) => setCachedArchivedMemories(dir, [makeMemory("a1", `${dir}/archive/a1.md`)], 1),
+  entities: (dir) => {
+    setCachedEntities(dir, [makeEntity("Alice")], 1);
+    setCachedEntities(dir, [makeEntity("Bob")], 1, "schema-v2");
+  },
+  "derived-episode-map": (dir) => void setCachedEpisodeMap(dir, [makeMemory("e1", `${dir}/facts/e1.md`)], 1),
+  "derived-rule-memories": (dir) => void setCachedRuleMemories(dir, [makeMemory("r1", `${dir}/facts/r1.md`)], 1),
+  "qmd-search": (dir) => setCachedQmdSearch(`qmd-search:${dir}`, [{ path: `${dir}/facts/h1.md` }]),
+  "qmd-recall": (dir) => setCachedQmdRecall(`qmd-recall:${dir}`, { bundle: dir }, { maxEntries: 16 }),
+};
+
+function seedAllLayers(dir: string): void {
+  for (const layer of ALL_CACHE_LAYERS) {
+    const seeder = layerSeeders[layer.name];
+    assert.ok(seeder, `no test seeder for cache layer "${layer.name}" — add one to layerSeeders`);
+    seeder(dir);
+  }
+}
+
+test("fitness: every registered cache layer has a test seeder", () => {
+  clearMemoryCache();
+  for (const layer of ALL_CACHE_LAYERS) {
+    assert.ok(
+      layerSeeders[layer.name],
+      `cache layer "${layer.name}" has no seeder in this test — new layers must be covered here`,
+    );
+  }
+  assert.equal(
+    Object.keys(layerSeeders).length,
+    ALL_CACHE_LAYERS.length,
+    "layerSeeders has entries that do not correspond to a registered cache layer",
+  );
+});
+
+test("fitness: invalidateAllForDir clears every registered cache layer", () => {
+  clearMemoryCache();
+  const dir = "/test/chokepoint-all-layers";
+  seedAllLayers(dir);
+  for (const layer of ALL_CACHE_LAYERS) {
+    assert.equal(layer.hasEntriesFor(dir), true, `layer "${layer.name}" was not seeded`);
+  }
+
+  invalidateAllForDir(dir);
+
+  for (const layer of ALL_CACHE_LAYERS) {
+    assert.equal(
+      layer.hasEntriesFor(dir),
+      false,
+      `layer "${layer.name}" still holds entries after invalidateAllForDir`,
+    );
+  }
+});
+
+test("fitness: invalidateAllForDir keeps dir-scoped entries of other dirs, clears global layers fully", () => {
+  clearMemoryCache();
+  const dirA = "/test/chokepoint-dir-a";
+  const dirB = "/test/chokepoint-dir-b";
+  seedAllLayers(dirA);
+  seedAllLayers(dirB);
+
+  invalidateAllForDir(dirA);
+
+  for (const layer of ALL_CACHE_LAYERS) {
+    assert.equal(layer.hasEntriesFor(dirA), false, `layer "${layer.name}" not cleared for dirA`);
+    if (layer.scope === "dir") {
+      assert.equal(layer.hasEntriesFor(dirB), true, `dir-scoped layer "${layer.name}" lost dirB entries`);
+    } else {
+      // Global layers (QMD result caches) key by query/namespace, not dir —
+      // any mutation clears them fully (issue #1535 option (b)).
+      assert.equal(layer.hasEntriesFor(dirB), false, `global layer "${layer.name}" should clear fully`);
+    }
+  }
+});
+
+test("fitness: clearMemoryCache() with no dir clears every registered cache layer", () => {
+  clearMemoryCache();
+  const dir = "/test/chokepoint-clear-all";
+  seedAllLayers(dir);
+
+  clearMemoryCache();
+
+  for (const layer of ALL_CACHE_LAYERS) {
+    assert.equal(layer.hasEntriesFor(dir), false, `layer "${layer.name}" survived clearMemoryCache()`);
+  }
+});
+
+test("invalidateAllForDir clears the QMD recall cache within its fresh TTL window", () => {
+  clearMemoryCache();
+  setCachedQmdRecall("stale-recall-key", { bundle: "pre-edit" }, { maxEntries: 16 });
+  assert.ok(
+    getCachedQmdRecall("stale-recall-key", { freshTtlMs: 60_000, staleTtlMs: 600_000 }),
+  );
+
+  invalidateAllForDir("/test/any-dir");
+
+  assert.equal(
+    getCachedQmdRecall("stale-recall-key", { freshTtlMs: 60_000, staleTtlMs: 600_000 }),
+    null,
+  );
+  // qmd-search sibling layer clears alongside (split-layer coherence).
+  assert.equal(getCachedQmdSearch("qmd-search:/test/any-dir"), null);
 });
