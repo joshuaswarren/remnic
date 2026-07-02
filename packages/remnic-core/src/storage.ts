@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { log } from "./logger.js";
 import { isErrnoCode } from "./utils/errno.js";
-import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import { RECALL_FALLBACK_DIRS, getCategoryDir } from "./utils/category-dir.js";
 import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -3297,6 +3297,32 @@ export class StorageManager {
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
   }
 
+  /**
+   * Resolve the on-disk write path for a memory of the given category, creating
+   * the target directory. Category routing goes through the shared
+   * `getCategoryDir()` chokepoint (utils/category-dir.ts → CATEGORY_DIR_MAP) so
+   * decision/preference/moment/etc. outputs land in their dedicated dirs
+   * (`decisions/`, `preferences/`, ...) instead of collapsing into `facts/`
+   * (issue #1546; CLAUDE.md rule 39). `correction` keeps its historical flat
+   * layout (no `<date>` subdir) as the corrections pipeline expects; every other
+   * category — including `fact`/`entity`, which fall back to `facts/` — is dated
+   * as `<dir>/<date>/`. Read/scan/reindex already iterate every category dir
+   * (RECALL_FALLBACK_DIRS; QMD scans baseDir recursively), so writes stay found.
+   */
+  private async resolveCategoryWritePath(
+    category: MemoryCategory,
+    id: string,
+    today: string,
+  ): Promise<string> {
+    if (category === "correction") {
+      await mkdir(this.correctionsDir, { recursive: true });
+      return path.join(this.correctionsDir, `${id}.md`);
+    }
+    const datedDir = path.join(getCategoryDir(this.baseDir, category), today);
+    await mkdir(datedDir, { recursive: true });
+    return path.join(datedDir, `${id}.md`);
+  }
+
   async writeMemory(
     category: MemoryCategory,
     content: string,
@@ -3435,20 +3461,7 @@ export class StorageManager {
 
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
-    let filePath: string;
-    if (category === "correction") {
-      filePath = path.join(this.correctionsDir, `${id}.md`);
-    } else if (category === "procedure") {
-      await mkdir(path.join(this.proceduresDir, today), { recursive: true });
-      filePath = path.join(this.proceduresDir, today, `${id}.md`);
-    } else if (category === "reasoning_trace") {
-      // Issue #564 PR 3: reasoning traces live in their own subtree so recall
-      // can filter on path cheaply without parsing frontmatter.
-      await mkdir(path.join(this.reasoningTracesDir, today), { recursive: true });
-      filePath = path.join(this.reasoningTracesDir, today, `${id}.md`);
-    } else {
-      filePath = path.join(this.factsDir, today, `${id}.md`);
-    }
+    const filePath = await this.resolveCategoryWritePath(category, id, today);
 
     await this.snapshotBeforeWrite(filePath, "write");
     await writeMaybeEncryptedFile(filePath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
@@ -6984,20 +6997,7 @@ export class StorageManager {
     }
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
-    let filePath: string;
-    if (category === "correction") {
-      filePath = path.join(this.correctionsDir, `${id}.md`);
-    } else if (category === "procedure") {
-      await mkdir(path.join(this.proceduresDir, today), { recursive: true });
-      filePath = path.join(this.proceduresDir, today, `${id}.md`);
-    } else if (category === "reasoning_trace") {
-      // Issue #564 PR 3: chunks of a reasoning_trace memory live alongside the
-      // parent in reasoning-traces/<date>/.
-      await mkdir(path.join(this.reasoningTracesDir, today), { recursive: true });
-      filePath = path.join(this.reasoningTracesDir, today, `${id}.md`);
-    } else {
-      filePath = path.join(this.factsDir, today, `${id}.md`);
-    }
+    const filePath = await this.resolveCategoryWritePath(category, id, today);
 
     await this.writeStorageSecureFile(filePath, fileContent);
     log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);

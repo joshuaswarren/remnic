@@ -454,7 +454,7 @@ test("buffers are keyed by session: flushing one session leaves the other intact
 
 // ── 3. Extract (flush) ──────────────────────────────────────────────────────
 
-test("extraction persists every category under facts/ with the category in frontmatter (current behavior)", async () => {
+test("extraction routes each category into its own category dir via CATEGORY_DIR_MAP", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-char-category-dirs-"));
   const orchestrator = new Orchestrator(makeConfig(memoryDir));
   try {
@@ -476,23 +476,25 @@ test("extraction persists every category under facts/ with the category in front
     );
     await orchestrator.flushSession("session-char-categories", { reason: "session-command" });
 
-    // CURRENT behavior (pinned, not endorsed): the extraction persist path
-    // writes ALL categories under facts/<date>/ — the category-specific
-    // directories from utils/category-dir.ts (decisions/, preferences/, ...)
-    // are NOT used by this path. The category survives in the id prefix and
-    // the `category:` frontmatter field. If #1526 extraction moves change
-    // this routing, this test must be updated deliberately, not silently.
+    // CORRECTED behavior (issue #1546): the extraction persist path routes each
+    // category through the shared getCategoryDir()/CATEGORY_DIR_MAP chokepoint,
+    // so a `fact` lands under facts/ and a `decision` lands under decisions/ —
+    // no longer collapsing every category into facts/. The category still
+    // survives in the id prefix and the `category:` frontmatter field.
     const factHits = await memoryFilesContaining(path.join(memoryDir, "facts"), "retries webhooks");
-    const decisionHits = await memoryFilesContaining(path.join(memoryDir, "facts"), "blue-green deploys");
     assert.equal(factHits.length, 1, "category 'fact' persists under facts/");
-    assert.equal(decisionHits.length, 1, "category 'decision' ALSO persists under facts/ today");
+
+    // The decision no longer appears under facts/ — it is routed to decisions/.
+    assert.equal(
+      (await memoryFilesContaining(path.join(memoryDir, "facts"), "blue-green deploys")).length,
+      0,
+      "category 'decision' no longer lands under facts/",
+    );
+
+    const decisionHits = await memoryFilesContaining(path.join(memoryDir, "decisions"), "blue-green deploys");
+    assert.equal(decisionHits.length, 1, "category 'decision' persists under decisions/");
     assert.match(path.basename(decisionHits[0] ?? ""), /^decision-/);
     assert.match(await readFile(decisionHits[0] ?? "", "utf-8"), /category: decision/);
-    assert.equal(
-      (await markdownFilesUnder(path.join(memoryDir, "decisions"))).length,
-      0,
-      "the decisions/ category dir stays empty on the extraction path today",
-    );
   } finally {
     await orchestrator.destroy();
     await cleanupDir(memoryDir);
