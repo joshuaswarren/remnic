@@ -1,6 +1,7 @@
 import path from "node:path";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import { assertPathInsideRoot } from "../utils/path-containment.js";
 
 export interface IndexableDocument {
   /** Memory ID from frontmatter or filename stem */
@@ -93,17 +94,6 @@ async function scanDir(dir: string, memoryRootReal: string): Promise<IndexableDo
 
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {
   return typeof err === "object" && err !== null && "code" in err;
-}
-
-function pathIsInside(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function assertPathInsideRoot(rootReal: string, candidateReal: string, originalPath: string): void {
-  if (!pathIsInside(rootReal, candidateReal)) {
-    throw new Error(`Refusing to scan memory path outside memoryDir: ${originalPath}`);
-  }
 }
 
 /**

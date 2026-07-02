@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { access, readFile, readdir, unlink } from "node:fs/promises";
+import { access, lstat, readFile, readdir, realpath, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { Orchestrator } from "./orchestrator.js";
@@ -216,6 +216,7 @@ import {
 import { resolveHomeDir } from "./runtime/env.js";
 import { expandTildePath } from "./utils/path.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { convertMemoriesToRecords } from "./training-export/converter.js";
 import { parseStrictCliDate as parseStrictCliDateShared } from "./training-export/date-parse.js";
 import { getTrainingExportAdapter, listTrainingExportAdapters } from "./training-export/registry.js";
@@ -3327,27 +3328,63 @@ export async function resolveMemoryDirForNamespace(
  * covered without touching this walker again (#1546). Swallows per-directory
  * errors so a missing subdir reads as empty. Shared primitive for
  * `listMemoryMarkdownFilePaths`, `readAllMemoryFiles`, and future walkers.
+ *
+ * Symlink/containment hardening (mirrors `scanDir` in
+ * search/document-scanner.ts): downstream consumers include `readAllMemoryFiles`
+ * → the `dedupe-exact` / `dedupe-aggressive` commands, which `unlink()` files.
+ * Because this walker scans EVERY category root, a symlinked category dir
+ * (e.g. `decisions/` → outside `memoryDir`) could otherwise redirect the walk —
+ * and a destructive dedupe delete — outside the memory store. We resolve the
+ * memory root once, skip symlinked dirs/entries, and assert every realpath stays
+ * inside the root before descending or visiting. A single poisoned entry is
+ * skipped (logged), never aborting a legitimate dedupe run.
  */
 async function walkMemoryMarkdownFiles(
   memoryDir: string,
   visit: (fullPath: string) => void | Promise<void>,
 ): Promise<void> {
-  const roots = RECALL_FALLBACK_DIRS.map((dir) => path.join(memoryDir, dir));
+  let memoryRootReal: string;
+  try {
+    memoryRootReal = await realpath(memoryDir);
+  } catch {
+    return; // memoryDir itself does not exist — nothing to walk.
+  }
+
+  const skip = (target: string, err: unknown): void => {
+    // ENOENT (optional dir absent) is silent; containment/other errors log.
+    if (!(err instanceof Error && /ENOENT/.test(err.message))) {
+      console.debug(`walkMemoryMarkdownFiles: skipping ${target}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   const walk = async (dir: string): Promise<void> => {
-    let entries: Array<{ isDirectory(): boolean; isFile(): boolean; name: string | Buffer }>;
+    // Reject symlinked / non-directory roots and anything resolving outside the
+    // memory store before reading it.
     try {
-      entries = (await readdir(dir, { withFileTypes: true })) as Array<{
-        isDirectory(): boolean;
-        isFile(): boolean;
-        name: string | Buffer;
-      }>;
+      const dirStat = await lstat(dir);
+      if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
+      assertPathInsideRoot(memoryRootReal, await realpath(dir), dir);
+    } catch (err) {
+      skip(dir, err);
+      return;
+    }
+
+    let entries: Array<{ isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean; name: string | Buffer }>;
+    try {
+      entries = (await readdir(dir, { withFileTypes: true })) as typeof entries;
     } catch {
       return;
     }
     for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue; // never follow symlinked entries
       const entryName = typeof entry.name === "string" ? entry.name : entry.name.toString("utf-8");
       const fullPath = path.join(dir, entryName);
+      try {
+        assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
+      } catch (err) {
+        skip(fullPath, err); // poisoned entry — skip, keep walking the rest.
+        continue;
+      }
       if (entry.isDirectory()) {
         await walk(fullPath);
         continue;
@@ -3357,7 +3394,7 @@ async function walkMemoryMarkdownFiles(
     }
   };
 
-  for (const root of roots) {
+  for (const root of RECALL_FALLBACK_DIRS.map((dir) => path.join(memoryDir, dir))) {
     await walk(root);
   }
 }
