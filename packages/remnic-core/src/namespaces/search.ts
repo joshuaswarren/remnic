@@ -109,6 +109,22 @@ export class NamespaceSearchRouter {
       namespaces.map(async (namespace) => {
         const record = await this.backendRecordFor(namespace);
         if (!record.available || record.collectionState === "missing") {
+          // A per-namespace backend that is unavailable (or missing its
+          // collection) must report like any other QMD skip (#1536): its
+          // empty contribution is otherwise indistinguishable from a true
+          // no-matches for that namespace (codex round-5 review on #1544).
+          try {
+            options.execution?.onDegradation?.({
+              backend: "qmd",
+              code: "backend_unavailable",
+              detail:
+                record.collectionState === "missing"
+                  ? `namespace collection missing: ${namespace}`
+                  : `namespace backend unavailable: ${namespace}`,
+            });
+          } catch {
+            // Observers must never break search.
+          }
           return { namespace, results: [] as QmdSearchResult[] };
         }
         const backendLimit = backendSearchLimit(record, maxResults);

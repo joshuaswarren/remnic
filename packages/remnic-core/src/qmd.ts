@@ -12,6 +12,7 @@ import type { QmdSearchExplain, QmdSearchResult } from "./types.js";
 import {
   resolveEnsureCollectionArgs,
   type SearchBackend,
+  type SearchDegradation,
   type SearchExecutionOptions,
   type SearchQueryOptions,
 } from "./search/port.js";
@@ -1941,7 +1942,10 @@ export class QmdClient implements SearchBackend {
     const trimmed = query.trim();
     if (!trimmed) return [];
     await this.maybeProbeDaemon();
-    if (!this.isAvailable()) return [];
+    if (!this.isAvailable()) {
+      this.notifyDegradation(execution?.onDegradation, "backend_unavailable");
+      return [];
+    }
 
     const col = collection ?? this.collection;
     const n = maxResults ?? this.maxResults;
@@ -1962,6 +1966,12 @@ export class QmdClient implements SearchBackend {
       .digest("hex");
     const cached = getCachedQmdSearch(cacheKey);
     if (cached) {
+      // No degradation fires on a cache hit BY DESIGN (#1536): only
+      // trustworthy results are ever cached (degraded empties are excluded
+      // at the write below), so a TTL hit is a healthy serve of a recently
+      // valid answer — the backend's live state is irrelevant because no
+      // live call is attempted. Reporting unavailability here would fabricate
+      // a degradation for a recall that was not degraded.
       log.debug(`QMD search cache hit (${cached.length} results)`);
       return cached as QmdSearchResult[];
     }
@@ -1993,7 +2003,8 @@ export class QmdClient implements SearchBackend {
       }
       // Daemon timed out or had a transient error — skip subprocess for large
       // collections. Return empty rather than hanging the caller.
-      log.debug("QMD daemon search timed out/failed; skipping subprocess (daemon-only mode)");
+      log.warn("QMD daemon search timed out/failed; skipping subprocess (daemon-only mode)");
+      this.notifyDegradation(execution?.onDegradation, "daemon_timeout");
       return [];
     }
 
@@ -2002,12 +2013,29 @@ export class QmdClient implements SearchBackend {
     // Return empty and let the next recheck cycle pick up the daemon once ready.
     if (this.daemonSession?.isLoading()) {
       log.debug("QMD search: daemon loading, skipping subprocess");
+      this.notifyDegradation(execution?.onDegradation, "daemon_loading");
       return [];
     }
 
     // Subprocess fallback (only reached when daemon is unavailable and not loading)
-    const subprocessResults = await this.searchViaSubprocess(trimmed, col, n, searchOptions, execution?.signal);
-    setCachedQmdSearch(cacheKey, subprocessResults);
+    let subprocessDegraded = false;
+    const subprocessResults = await this.searchViaSubprocess(
+      trimmed,
+      col,
+      n,
+      searchOptions,
+      execution?.signal,
+      (degradation) => {
+        subprocessDegraded = true;
+        this.notifyDegradation(execution?.onDegradation, degradation.code, degradation.detail);
+      },
+    );
+    // Never cache a degraded empty result: a 60s TTL hit would serve the
+    // failure as a genuine no-matches WITHOUT re-reporting the degradation
+    // (codex review on #1544). Only trustworthy results are cacheable.
+    if (!subprocessDegraded) {
+      setCachedQmdSearch(cacheKey, subprocessResults);
+    }
     return subprocessResults;
   }
 
@@ -2019,7 +2047,10 @@ export class QmdClient implements SearchBackend {
     const trimmed = query.trim();
     if (!trimmed) return [];
     await this.maybeProbeDaemon();
-    if (!this.isAvailable()) return [];
+    if (!this.isAvailable()) {
+      this.notifyDegradation(execution?.onDegradation, "backend_unavailable");
+      return [];
+    }
 
     const n = maxResults ?? 6;
     const searchOptions = this.resolveSearchOptions();
@@ -2043,18 +2074,26 @@ export class QmdClient implements SearchBackend {
         }
         return results;
       }
-      log.debug("QMD daemon global search timed out/failed; skipping subprocess (daemon-only mode)");
+      log.warn("QMD daemon global search timed out/failed; skipping subprocess (daemon-only mode)");
+      this.notifyDegradation(execution?.onDegradation, "daemon_timeout");
       return [];
     }
 
     // If the daemon is spawned but still loading, skip subprocess — same as search().
     if (this.daemonSession?.isLoading()) {
       log.debug("QMD searchGlobal: daemon loading, skipping subprocess");
+      this.notifyDegradation(execution?.onDegradation, "daemon_loading");
       return [];
     }
 
     // Subprocess fallback (only reached when daemon is unavailable and not loading)
-    return this.searchGlobalViaSubprocess(trimmed, n, searchOptions, execution?.signal);
+    return this.searchGlobalViaSubprocess(
+      trimmed,
+      n,
+      searchOptions,
+      execution?.signal,
+      execution?.onDegradation,
+    );
   }
 
   /**
@@ -2069,7 +2108,10 @@ export class QmdClient implements SearchBackend {
     const trimmed = query.trim();
     if (!trimmed) return [];
     await this.maybeProbeDaemon();
-    if (!this.isAvailable()) return [];
+    if (!this.isAvailable()) {
+      this.notifyDegradation(execution?.onDegradation, "backend_unavailable");
+      return [];
+    }
     const col = collection ?? this.collection;
     const n = maxResults ?? this.maxResults;
 
@@ -2092,14 +2134,16 @@ export class QmdClient implements SearchBackend {
         }
         return results;
       }
-      log.debug("QMD daemon bm25 timed out/failed; skipping subprocess (daemon-only mode)");
+      log.warn("QMD daemon bm25 timed out/failed; skipping subprocess (daemon-only mode)");
+      this.notifyDegradation(execution?.onDegradation, "daemon_timeout");
       return [];
     }
     if (this.daemonSession?.isLoading()) {
       log.debug("QMD bm25: daemon loading, skipping subprocess");
+      this.notifyDegradation(execution?.onDegradation, "daemon_loading");
       return [];
     }
-    return this.bm25SearchViaSubprocess(trimmed, col, n, execution?.signal);
+    return this.bm25SearchViaSubprocess(trimmed, col, n, execution?.signal, execution?.onDegradation);
   }
 
   /**
@@ -2114,7 +2158,10 @@ export class QmdClient implements SearchBackend {
     const trimmed = query.trim();
     if (!trimmed) return [];
     await this.maybeProbeDaemon();
-    if (!this.isAvailable()) return [];
+    if (!this.isAvailable()) {
+      this.notifyDegradation(execution?.onDegradation, "backend_unavailable");
+      return [];
+    }
     const col = collection ?? this.collection;
     const n = maxResults ?? this.maxResults;
 
@@ -2137,14 +2184,16 @@ export class QmdClient implements SearchBackend {
         }
         return results;
       }
-      log.debug("QMD daemon vsearch timed out/failed; skipping subprocess (daemon-only mode)");
+      log.warn("QMD daemon vsearch timed out/failed; skipping subprocess (daemon-only mode)");
+      this.notifyDegradation(execution?.onDegradation, "daemon_timeout");
       return [];
     }
     if (this.daemonSession?.isLoading()) {
       log.debug("QMD vsearch: daemon loading, skipping subprocess");
+      this.notifyDegradation(execution?.onDegradation, "daemon_loading");
       return [];
     }
-    return this.vsearchViaSubprocess(trimmed, col, n, execution?.signal);
+    return this.vsearchViaSubprocess(trimmed, col, n, execution?.signal, execution?.onDegradation);
   }
 
   /**
@@ -2356,12 +2405,63 @@ export class QmdClient implements SearchBackend {
     }
   }
 
+  /**
+   * Report a backend degradation to the caller's observer (#1536): an empty
+   * result caused by unavailability/loading/timeout is otherwise
+   * indistinguishable from "no matches" (CLAUDE.md rule 34). Observer
+   * failures are swallowed — observability must never break search.
+   */
+  private notifyDegradation(
+    onDegradation: SearchExecutionOptions["onDegradation"],
+    code: SearchDegradation["code"],
+    detail?: string,
+  ): void {
+    if (!onDegradation) return;
+    try {
+      onDegradation({ backend: "qmd", code, ...(detail !== undefined ? { detail } : {}) });
+    } catch (err) {
+      log.debug(`QMD degradation observer threw: ${err}`);
+    }
+  }
+
+  /**
+   * Condense an error into a degradation `detail` string that is safe to
+   * serialize on LastRecallSnapshot and expose via last-recall MCP/HTTP
+   * surfaces (cursor review on #1544): first line only, path-like tokens
+   * redacted (absolute, home-rooted, and Windows drive paths can leak
+   * usernames and filesystem layout), capped at 160 chars. The unredacted
+   * error still reaches operators via the warn log at the failure site.
+   */
+  private degradationDetail(err: unknown, sensitive?: string[]): string {
+    let message = String(err instanceof Error ? err.message : err);
+    // Strip known-sensitive strings BEFORE any line-splitting: runQmdCommand
+    // error labels embed the full command line including the raw recall
+    // query, and a multi-line query would otherwise leave its first-line
+    // prefix behind after the first-line cut (codex round-6 P1 on #1544).
+    // Whole values first, then their individual line fragments so truncated
+    // embeddings cannot leak partial prompt text either.
+    for (const value of sensitive ?? []) {
+      if (typeof value !== "string" || value.length === 0) continue;
+      message = message.split(value).join("<query>");
+      for (const fragment of value.split("\n")) {
+        const trimmed = fragment.trim();
+        if (trimmed.length >= 4) {
+          message = message.split(trimmed).join("<query>");
+        }
+      }
+    }
+    const firstLine = message.split("\n")[0] ?? "";
+    const redacted = firstLine.replace(/(?:~|\/|[A-Za-z]:\\)[^\s'"`]+/g, "<path>");
+    return redacted.length > 160 ? `${redacted.slice(0, 159)}…` : redacted;
+  }
+
   private async searchViaSubprocess(
     query: string,
     collection: string,
     maxResults: number,
     options?: SearchQueryOptions,
     signal?: AbortSignal,
+    onDegradation?: SearchExecutionOptions["onDegradation"],
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
 
@@ -2373,7 +2473,7 @@ export class QmdClient implements SearchBackend {
     // `qmdSubprocessStrategy: "search"` — but that trades away expansion + rerank,
     // so it stays opt-in and the default remains `query`.
     if (this.qmdSubprocessStrategy === "search") {
-      return this.bm25SearchViaSubprocess(query, collection, maxResults, signal);
+      return this.bm25SearchViaSubprocess(query, collection, maxResults, signal, onDegradation);
     }
 
     const startedAtMs = Date.now();
@@ -2395,7 +2495,11 @@ export class QmdClient implements SearchBackend {
       if (isCallerCancellation(err, signal)) {
         throw isAbortError(err) ? err : abortError("QMD subprocess search aborted");
       }
-      log.debug(`QMD search failed: ${err}`);
+      // Sanitized in the LOG too: the raw error label embeds the argv,
+      // which includes the user's recall query (codex round-5 P1 on #1544).
+      const detail = this.degradationDetail(err, [query]);
+      log.warn(`QMD subprocess search failed (returning empty): ${detail}`);
+      this.notifyDegradation(onDegradation, "subprocess_error", detail);
       return [];
     }
   }
@@ -2405,6 +2509,7 @@ export class QmdClient implements SearchBackend {
     collection: string,
     maxResults: number,
     signal?: AbortSignal,
+    onDegradation?: SearchExecutionOptions["onDegradation"],
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
     const startedAtMs = Date.now();
@@ -2419,7 +2524,9 @@ export class QmdClient implements SearchBackend {
       if (isCallerCancellation(err, signal)) {
         throw isAbortError(err) ? err : abortError("QMD subprocess bm25 aborted");
       }
-      log.debug(`QMD bm25 search failed: ${err}`);
+      const detail = this.degradationDetail(err, [query]);
+      log.warn(`QMD bm25 subprocess search failed (returning empty): ${detail}`);
+      this.notifyDegradation(onDegradation, "subprocess_error", detail);
       return [];
     }
   }
@@ -2429,6 +2536,7 @@ export class QmdClient implements SearchBackend {
     collection: string,
     maxResults: number,
     signal?: AbortSignal,
+    onDegradation?: SearchExecutionOptions["onDegradation"],
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
     const startedAtMs = Date.now();
@@ -2444,7 +2552,9 @@ export class QmdClient implements SearchBackend {
       if (isCallerCancellation(err, signal)) {
         throw isAbortError(err) ? err : abortError("QMD subprocess vsearch aborted");
       }
-      log.debug(`QMD vsearch failed: ${err}`);
+      const detail = this.degradationDetail(err, [query]);
+      log.warn(`QMD vsearch subprocess failed (returning empty): ${detail}`);
+      this.notifyDegradation(onDegradation, "subprocess_error", detail);
       return [];
     }
   }
@@ -2454,6 +2564,7 @@ export class QmdClient implements SearchBackend {
     maxResults: number,
     options?: SearchQueryOptions,
     signal?: AbortSignal,
+    onDegradation?: SearchExecutionOptions["onDegradation"],
   ): Promise<QmdSearchResult[]> {
     if (this.available === false) return [];
 
@@ -2485,7 +2596,9 @@ export class QmdClient implements SearchBackend {
       if (isCallerCancellation(err, signal)) {
         throw isAbortError(err) ? err : abortError("QMD subprocess global search aborted");
       }
-      log.debug(`QMD global search failed: ${err}`);
+      const detail = this.degradationDetail(err, [query]);
+      log.warn(`QMD global subprocess search failed (returning empty): ${detail}`);
+      this.notifyDegradation(onDegradation, "subprocess_error", detail);
       return [];
     }
   }

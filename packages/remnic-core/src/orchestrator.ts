@@ -52,6 +52,7 @@ import {
 import { findUnresolvedEntityRefs } from "./reconstruct.js";
 import type {
   SearchBackend,
+  SearchDegradation,
   SearchExecutionOptions,
   SearchQueryOptions,
 } from "./search/port.js";
@@ -6392,6 +6393,8 @@ export class Orchestrator {
       queryAwarePrefilter?: QueryAwarePrefilter;
       searchOptions?: SearchQueryOptions;
       onDebugSnapshot?: (snapshot: QmdRecallSnapshot) => Promise<void>;
+      /** Backend degradation observer, threaded into every QMD call (#1536). */
+      onDegradation?: (degradation: SearchDegradation) => void;
       abortSignal?: AbortSignal;
     },
   ): Promise<QmdSearchResult[]> {
@@ -6497,6 +6500,7 @@ export class Orchestrator {
               primarySearchOptions,
               {
                 signal: options.abortSignal,
+                onDegradation: options.onDegradation,
               },
             )
           : await this.qmd.search(
@@ -6504,6 +6508,7 @@ export class Orchestrator {
               options.collection,
               fetchLimit,
               primarySearchOptions,
+              { onDegradation: options.onDegradation },
             )
         : await this.searchAcrossNamespaces({
             query: prompt,
@@ -6513,7 +6518,10 @@ export class Orchestrator {
             maxResults: fetchLimit,
             mode: "search",
             searchOptions: primarySearchOptions,
-            execution: { signal: options.abortSignal },
+            execution: {
+              signal: options.abortSignal,
+              onDegradation: options.onDegradation,
+            },
           });
       lastPrimaryResultCount = primaryResults.length;
       lastHybridResultCount = 0;
@@ -6543,6 +6551,7 @@ export class Orchestrator {
                 fetchLimit,
                 {
                   signal: options.abortSignal,
+                  onDegradation: options.onDegradation,
                 },
               )
             : await this.searchAcrossNamespaces({
@@ -6552,7 +6561,10 @@ export class Orchestrator {
                   : undefined,
                 maxResults: fetchLimit,
                 mode: "hybrid",
-                execution: { signal: options.abortSignal },
+                execution: {
+                  signal: options.abortSignal,
+                  onDegradation: options.onDegradation,
+                },
               });
           lastHybridResultCount = hybridResults.length;
           lastHybridTopUpUsed = hybridResults.length > 0;
@@ -7241,6 +7253,11 @@ export class Orchestrator {
     options: RecallInvocationOptions = {},
   ): Promise<string> {
     const recallStart = Date.now();
+    // Backend degradations observed by this recall's QMD searches (#1536):
+    // collected via the execution-options observer and attached to the
+    // LastRecallSnapshot after it is recorded, so surfaces can distinguish
+    // "no matches" from "backend could not answer" (CLAUDE.md rule 34).
+    const backendDegradations: SearchDegradation[] = [];
     // Issue #680 — historical recall.  Parse `options.asOf` once at the
     // top of the recall so each boost-pass uses identical filter logic.
     // Invalid values are rejected at input boundaries (CLI / HTTP / MCP)
@@ -9230,12 +9247,39 @@ export class Orchestrator {
        * an exact entity-name match) are not discarded just because the QMD
        * contextual pass returned a weak result. */
       maxSpecializedScore: number;
+      /**
+       * Degradations observed while producing this phase result (#1536).
+       * Cached WITH the result so cache hits replay them — a served-from-
+       * cache partial result must still explain why it is partial (codex
+       * round-4 review on #1544).
+       */
+      degradations?: SearchDegradation[];
     } | null;
 
     const qmdEnrichmentAbort = createEnrichmentAbortHandle(options.abortSignal);
     const qmdPromise = observeEnrichmentPromise(
       (async (): Promise<QmdPhaseResult> => {
         const t0 = Date.now();
+        // Degradation accounting for this phase (#1536): everything pushed
+        // after this mark belongs to this phase and is cached with its
+        // result; cache hits and stale fallbacks replay stored degradations
+        // so served-from-cache results still explain their gaps, and every
+        // path that skips QMD entirely reports backend_unavailable.
+        const phaseDegradationsStart = backendDegradations.length;
+        const replayCachedDegradations = (value: {
+          degradations?: SearchDegradation[];
+        }) => {
+          for (const degradation of value.degradations ?? []) {
+            backendDegradations.push(degradation);
+          }
+        };
+        const reportRecallQmdUnavailable = (detail: string) => {
+          backendDegradations.push({
+            backend: "qmd",
+            code: "backend_unavailable",
+            detail,
+          });
+        };
         if (recallResultLimit <= 0) {
           recordRecallSectionMetric({
             section: "qmd",
@@ -9287,6 +9331,7 @@ export class Orchestrator {
             success: true,
             timing: `${Math.max(0, Math.round(cachedQmd.ageMs))}ms-cache`,
           });
+          replayCachedDegradations(cachedQmd.value);
           if (queryAwarePrefilterIsEmpty) {
             return emptyQueryAwareQmdResult;
           }
@@ -9310,6 +9355,8 @@ export class Orchestrator {
                 success: true,
                 timing: `stale-cache(reprobe-cooldown:${Math.max(0, Math.round(staleQmdFallback.ageMs))}ms)`,
               });
+              reportRecallQmdUnavailable("served stale recall cache (reprobe cooldown)");
+              replayCachedDegradations(staleQmdFallback.value);
               if (queryAwarePrefilterIsEmpty) {
                 return emptyQueryAwareQmdResult;
               }
@@ -9324,6 +9371,7 @@ export class Orchestrator {
               success: true,
               timing: "skip(reprobe-cooldown)",
             });
+            reportRecallQmdUnavailable("recall skipped QMD (reprobe cooldown)");
             return null;
           }
           this.lastQmdReprobeAtMs = now;
@@ -9339,6 +9387,8 @@ export class Orchestrator {
                 success: true,
                 timing: `stale-cache(reprobe-failed:${Math.max(0, Math.round(staleQmdFallback.ageMs))}ms)`,
               });
+              reportRecallQmdUnavailable("served stale recall cache (reprobe failed)");
+              replayCachedDegradations(staleQmdFallback.value);
               if (queryAwarePrefilterIsEmpty) {
                 return emptyQueryAwareQmdResult;
               }
@@ -9356,6 +9406,7 @@ export class Orchestrator {
             log.debug(
               `Search skip (re-probe failed): ${this.qmd.debugStatus()}`,
             );
+            reportRecallQmdUnavailable("recall skipped QMD (reprobe failed)");
             return null;
           }
           log.info(`QMD re-probe succeeded: ${this.qmd.debugStatus()}`);
@@ -9437,6 +9488,9 @@ export class Orchestrator {
                 queryAwarePrefilter,
                 searchOptions: qmdSearchOptions,
                 abortSignal: qmdEnrichmentAbort.signal,
+                onDegradation: (degradation) => {
+                  backendDegradations.push(degradation);
+                },
                 onDebugSnapshot: async (snapshot) => {
                   await this.recordLastQmdRecallSnapshot({
                     storage: profileStorage,
@@ -9487,11 +9541,17 @@ export class Orchestrator {
             }
           }
 
+          const phaseDegradations = backendDegradations.slice(
+            phaseDegradationsStart,
+          );
           const result = {
             memoryResultsLists: [augmentedResults],
             globalResults: [],
             preAugmentTopScore,
             maxSpecializedScore,
+            ...(phaseDegradations.length > 0
+              ? { degradations: phaseDegradations }
+              : {}),
           };
           if (
             augmentedResults.length > 0 ||
@@ -9521,6 +9581,8 @@ export class Orchestrator {
               success: true,
               timing: `stale-cache(${err instanceof Error ? err.message : String(err)})`,
             });
+            reportRecallQmdUnavailable("served stale recall cache (qmd phase error)");
+            replayCachedDegradations(staleQmdFallback.value);
             if (queryAwarePrefilterIsEmpty) {
               return emptyQueryAwareQmdResult;
             }
@@ -9542,7 +9604,23 @@ export class Orchestrator {
           return null;
         })
         .finally(() => qmdEnrichmentAbort.dispose()),
-      () => qmdEnrichmentAbort.cancel(),
+      () => {
+        // The enrichment budget abandoned the hot QMD phase mid-flight
+        // (#1536, codex round-7 on #1544): QmdClient treats this abort as
+        // caller cancellation and never reports, so report the abandonment
+        // deterministically here — the exact mirror of the cold-tier
+        // deadline gate. Guarded: a CALLER abort also routes through this
+        // cancel callback, and an aborted recall is not a backend
+        // degradation (no snapshot is recorded for it anyway).
+        if (!options.abortSignal?.aborted) {
+          backendDegradations.push({
+            backend: "qmd",
+            code: "deadline_exceeded",
+            detail: "hot qmd enrichment abandoned (enrichment deadline)",
+          });
+        }
+        qmdEnrichmentAbort.cancel();
+      },
     );
 
     const transcriptPromise = (async (): Promise<string | null> => {
@@ -11329,6 +11407,9 @@ export class Orchestrator {
             recallMode,
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
+            onDegradation: (degradation) => {
+              backendDegradations.push(degradation);
+            },
             xrayPoolSizeSink: xrayColdPoolSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
@@ -11551,6 +11632,9 @@ export class Orchestrator {
               recallMode,
               queryAwarePrefilter,
               abortSignal: options.abortSignal,
+              onDegradation: (degradation) => {
+                backendDegradations.push(degradation);
+              },
               xrayPoolSizeSink: xrayColdPoolSink,
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
@@ -11660,6 +11744,9 @@ export class Orchestrator {
                 recallMode,
                 queryAwarePrefilter,
                 abortSignal: options.abortSignal,
+                onDegradation: (degradation) => {
+                  backendDegradations.push(degradation);
+                },
                 xrayPoolSizeSink: xrayColdPoolSink,
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
@@ -11704,6 +11791,9 @@ export class Orchestrator {
             recallMode,
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
+            onDegradation: (degradation) => {
+              backendDegradations.push(degradation);
+            },
             xrayPoolSizeSink: xrayColdPoolSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
@@ -12105,6 +12195,13 @@ export class Orchestrator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+          // Included at record time so the published snapshot is born
+          // annotated — a post-record annotation leaves a window where
+          // readers see the snapshot without degradations, and a concurrent
+          // same-session recall could drop them entirely (codex + cursor
+          // reviews on #1544).
+          backendDegradations:
+            backendDegradations.length > 0 ? backendDegradations : undefined,
         })
         .catch((err) => log.debug(`last recall record failed: ${err}`));
     }
@@ -18577,6 +18674,8 @@ export class Orchestrator {
     recallMode: RecallPlanMode;
     queryAwarePrefilter?: QueryAwarePrefilter;
     abortSignal?: AbortSignal;
+    /** Backend degradation observer — cold-tier QMD must report like hot (#1536). */
+    onDegradation?: (degradation: SearchDegradation) => void;
     /** Issue #680 — historical recall point in ms-since-epoch. */
     asOfMs?: number;
     /**
@@ -18604,10 +18703,19 @@ export class Orchestrator {
       label: string,
       fallback: T,
       task: () => Promise<T>,
+      // Invoked when the deadline abandons this step (before it started or
+      // while it runs), so callers can report the abandonment and gate off
+      // late observer callbacks (#1536, cursor round-6 on #1544).
+      onDeadline?: () => void,
     ): Promise<T> => {
       throwIfRecallAborted(options.abortSignal);
       const remainingMs = deadlineRemainingMs();
       if (remainingMs === 0) {
+        try {
+          onDeadline?.();
+        } catch {
+          // Observers must never break recall.
+        }
         log.debug(`cold-tier recall ${label} skipped: shared assembly deadline expired`);
         return fallback;
       }
@@ -18629,6 +18737,11 @@ export class Orchestrator {
           new Promise<T>((resolve) => {
             timeoutHandle = setTimeout(() => {
               timedOut = true;
+              try {
+                onDeadline?.();
+              } catch {
+                // Observers must never break recall.
+              }
               log.debug(
                 `cold-tier recall ${label} skipped: shared assembly deadline expired`,
               );
@@ -18659,6 +18772,24 @@ export class Orchestrator {
           false,
           0,
         );
+        // Deadline-gated observer (#1536, cursor round-6 on #1544): when the
+        // shared assembly deadline abandons this lookup, the still-running
+        // fetch's LATE reports must not land after the recall snapshot has
+        // been recorded — gate them off and report the abandonment itself
+        // deterministically at resolution time instead.
+        let coldQmdObserverActive = true;
+        const reportColdQmdDeadline = () => {
+          coldQmdObserverActive = false;
+          try {
+            options.onDegradation?.({
+              backend: "qmd",
+              code: "deadline_exceeded",
+              detail: "cold-tier qmd lookup abandoned (assembly deadline)",
+            });
+          } catch {
+            // Observers must never break recall.
+          }
+        };
         longTerm = await runColdStepWithinDeadline(
           "qmd lookup",
           [],
@@ -18675,9 +18806,19 @@ export class Orchestrator {
                 queryAwarePrefilter: options.queryAwarePrefilter,
                 searchOptions: this.buildConfiguredQmdSearchOptions(options.prompt),
                 abortSignal: options.abortSignal,
+                onDegradation: (degradation) => {
+                  if (coldQmdObserverActive) {
+                    options.onDegradation?.(degradation);
+                  }
+                },
               },
             ),
+          reportColdQmdDeadline,
         );
+        // Normal completion also closes the gate: a deadline that fires
+        // after this await has nothing left to suppress, and a fetch that
+        // limps home later cannot mutate a recorded recall's collector.
+        coldQmdObserverActive = false;
         if (longTerm.length > 0) {
           log.debug(
             `cold-tier recall source=cold-qmd collection=${coldCollection} hits=${longTerm.length}`,
