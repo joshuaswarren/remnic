@@ -14,9 +14,10 @@
  *
  * Short-circuit contract:
  *
- * - When `config.recallDirectAnswerEnabled === false`, the function
- *   returns the eligibility verdict with reason `"disabled"` without
- *   touching any source accessor.  This is the documented default.
+ * - When the resolved gate (`input.enabled` if supplied, else
+ *   `config.recallDirectAnswerEnabled`) is `false`, the function returns the
+ *   eligibility verdict with reason `"disabled"` without touching any source
+ *   accessor.  This is the documented default.
  * - When enabled, the wiring cheaply drops non-trusted-zone memories
  *   and ineligible taxonomy buckets before computing importance, so
  *   the eligibility module sees a pre-filtered candidate set.  The
@@ -79,6 +80,15 @@ export interface DirectAnswerWiringInput {
     | "recallDirectAnswerAmbiguityMargin"
     | "recallDirectAnswerEligibleTaxonomyBuckets"
   >;
+  /**
+   * Direct-answer capability gate, resolved once at the recall-operation entry
+   * (issue #1523: `caps.recallDirectAnswer`). OPTIONAL and additive: when the
+   * caller supplies it, this module and the orchestrator agree on a single
+   * resolved gate value for the whole operation. When omitted, we fall back to
+   * `config.recallDirectAnswerEnabled` so existing callers on the old input
+   * shape keep identical behavior.
+   */
+  enabled?: boolean;
   sources: DirectAnswerSources;
   queryEntityRefs?: string[];
   abortSignal?: AbortSignal;
@@ -92,10 +102,13 @@ export interface DirectAnswerWiringInput {
 export async function tryDirectAnswer(
   input: DirectAnswerWiringInput,
 ): Promise<DirectAnswerResult> {
-  const { query, namespace, config, sources, queryEntityRefs, abortSignal } = input;
+  const { query, namespace, config, enabled, sources, queryEntityRefs, abortSignal } = input;
 
   const eligibilityConfig: DirectAnswerConfig = {
-    enabled: config.recallDirectAnswerEnabled,
+    // Prefer the resolved capability when supplied; fall back to the config
+    // flag so callers on the old input shape (config-only, no `enabled`) get
+    // identical gating (issue #1523 backward-compat).
+    enabled: enabled ?? config.recallDirectAnswerEnabled,
     tokenOverlapFloor: config.recallDirectAnswerTokenOverlapFloor,
     importanceFloor: config.recallDirectAnswerImportanceFloor,
     ambiguityMargin: config.recallDirectAnswerAmbiguityMargin,

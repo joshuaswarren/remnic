@@ -245,6 +245,7 @@ import {
   type TrustZoneSearchResult,
 } from "./trust-zones.js";
 import { tryDirectAnswer, type DirectAnswerSources } from "./direct-answer-wiring.js";
+import { resolveCapabilities, type CapabilitySet } from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
   searchHarmonicRetrieval,
@@ -1376,6 +1377,13 @@ export function resolveRecallModeDecision(options: RecallModeGraphOptions): Reca
 export async function resolveRecallModeDecisionAsync(
   options: RecallModeGraphOptions & {
     config: PluginConfig;
+    /**
+     * Recall-operation capability gates (issue #1523). OPTIONAL and additive:
+     * the recall orchestrator passes a resolved set, but existing callers that
+     * only pass `config` + planner flags stay backward-compatible — the LLM
+     * planner gate falls back to `config.recallPlannerLlmEnabled` when omitted.
+     */
+    caps?: CapabilitySet;
     hints?: string[];
     llm?: FallbackLlmClient;
     signal?: AbortSignal;
@@ -1384,7 +1392,11 @@ export async function resolveRecallModeDecisionAsync(
   const heuristicDecision = resolveRecallModeDecision(options);
 
   // Planner globally off, or LLM planning not opted into → heuristic only.
-  if (!options.plannerEnabled || !options.config.recallPlannerLlmEnabled) {
+  // Prefer the resolved capability when supplied; otherwise fall back to the
+  // config flag so callers on the old option shape get identical gating.
+  const plannerLlmEnabled =
+    options.caps?.recallPlannerLlm ?? options.config.recallPlannerLlmEnabled;
+  if (!options.plannerEnabled || !plannerLlmEnabled) {
     return heuristicDecision;
   }
 
@@ -1395,6 +1407,7 @@ export async function resolveRecallModeDecisionAsync(
     options.config,
     options.llm,
     options.signal,
+    options.caps,
   );
 
   // Shadow mode: record what the LLM would have chosen but keep the heuristic
@@ -5738,6 +5751,10 @@ export class Orchestrator {
     sessionKey?: string,
     options: RecallInvocationOptions = {},
   ): Promise<string> {
+    // Resolve the recall-operation capability gates ONCE, at the operation
+    // entry, and thread the frozen set down (issue #1523). Never re-read the
+    // migrated flags off `this.config` mid-operation.
+    const caps = resolveCapabilities(this.config);
     const abortController = new AbortController();
     const onAbort = () => {
       abortController.abort();
@@ -5813,7 +5830,7 @@ export class Orchestrator {
       const recallPromise = this.recallInternal(prompt, sessionKey, {
         ...options,
         abortSignal: abortController.signal,
-      });
+      }, caps);
       const RECALL_TIMEOUT_MS = this.config.recallOuterTimeoutMs ?? 75_000;
       if (RECALL_TIMEOUT_MS <= 0) {
         return await recallPromise;
@@ -5837,13 +5854,14 @@ export class Orchestrator {
       // Observation-mode direct-answer tier (issue #518 slice 3c).
       // Runs after the user's recall already succeeded, fire-and-forget,
       // so annotation latency can never delay the caller's response.
-      if (this.config.recallDirectAnswerEnabled && sessionKey) {
+      if (caps.recallDirectAnswer && sessionKey) {
         try {
           this.enqueueDirectAnswerObservation(
             prompt,
             sessionKey,
             options.namespace?.trim() || undefined,
             options.principalOverride,
+            caps,
           );
         } catch (err) {
           log.debug(`direct-answer observation setup failed: ${err}`);
@@ -5912,6 +5930,7 @@ export class Orchestrator {
     sessionKey: string,
     namespaceOverride: string | undefined,
     principalOverride: string | undefined,
+    caps: CapabilitySet,
   ): void {
     const expectedSnapshot = this.lastRecall.get(sessionKey);
     if (expectedSnapshot === null) return;
@@ -5992,6 +6011,7 @@ export class Orchestrator {
             sessionKey,
             observationNamespaces,
             expectedIdentity,
+            caps,
             undefined,
           );
         } catch (err) {
@@ -6007,6 +6027,7 @@ export class Orchestrator {
     expectedIdentity:
       | { writeNonce?: string; traceId?: string; recordedAt?: string }
       | undefined,
+    caps: CapabilitySet,
     _parentAbortSignal?: AbortSignal,
   ): Promise<void> {
     const tierStart = Date.now();
@@ -6091,6 +6112,7 @@ export class Orchestrator {
           query: prompt,
           namespace: ns,
           config: this.config,
+          enabled: caps.recallDirectAnswer,
           sources,
         });
         if (r.eligible && r.winner) {
@@ -7277,6 +7299,7 @@ export class Orchestrator {
     prompt: string,
     sessionKey?: string,
     options: RecallInvocationOptions = {},
+    caps: CapabilitySet = resolveCapabilities(this.config),
   ): Promise<string> {
     const recallStart = Date.now();
     // Backend degradations observed by this recall's QMD searches (#1536):
@@ -7436,11 +7459,10 @@ export class Orchestrator {
     let identityInjectionTruncated = false;
     timings.queryPolicy = `${queryPolicy.promptShape}/${queryPolicy.retrievalBudgetMode}${queryPolicy.skipConversationRecall ? "/skip-conv" : ""}`;
     const recallModeDecisionOptions = {
-      plannerEnabled: this.config.recallPlannerEnabled,
-      graphRecallEnabled: this.config.graphRecallEnabled,
+      plannerEnabled: caps.recallPlanner,
+      graphRecallEnabled: caps.graphRecall,
       multiGraphMemoryEnabled: this.config.multiGraphMemoryEnabled,
-      graphExpandedIntentEnabled:
-        this.config.graphExpandedIntentEnabled === true,
+      graphExpandedIntentEnabled: caps.graphExpandedIntent,
       prompt,
     };
     const requestedMode = options.mode;
@@ -7454,6 +7476,7 @@ export class Orchestrator {
         : await resolveRecallModeDecisionAsync({
             ...recallModeDecisionOptions,
             config: this.config,
+            caps,
             signal: options.abortSignal,
           });
     if (
@@ -7779,7 +7802,7 @@ export class Orchestrator {
       promptLength: prompt.length,
       retrievalQueryHash,
       retrievalQueryLength: retrievalQuery.length,
-      plannerEnabled: this.config.recallPlannerEnabled,
+      plannerEnabled: caps.recallPlanner,
       plannedMode: requestedMode ?? recallDecision.plannedMode,
       effectiveMode: recallMode,
       recallResultLimit,
@@ -7790,7 +7813,7 @@ export class Orchestrator {
         reason: graphDecisionReason,
         shadowMode: graphDecisionShadowMode,
         qmdAvailable,
-        graphRecallEnabled: this.config.graphRecallEnabled,
+        graphRecallEnabled: caps.graphRecall,
         multiGraphMemoryEnabled: this.config.multiGraphMemoryEnabled,
       },
     });
@@ -11012,7 +11035,7 @@ export class Orchestrator {
 
       const isFullModeGraphAssist =
         this.config.multiGraphMemoryEnabled &&
-        this.config.graphAssistInFullModeEnabled !== false &&
+        caps.graphAssistInFullMode &&
         recallMode === "full" &&
         memoryResults.length >=
           Math.max(1, this.config.graphAssistMinSeedResults ?? 3);
@@ -11192,7 +11215,7 @@ export class Orchestrator {
           timeoutMs: this.config.rerankTimeoutMs,
           maxCandidates: this.config.rerankMaxCandidates,
           cache: this.rerankCache,
-          cacheEnabled: this.config.rerankCacheEnabled,
+          cacheEnabled: caps.rerankCache,
           cacheTtlMs: this.config.rerankCacheTtlMs,
         });
         if (ranked && ranked.length > 0) {
@@ -11222,7 +11245,7 @@ export class Orchestrator {
       // flips the default once bench shows tie-or-win. Fail-open: any
       // lookup error leaves the original scores untouched rather than
       // breaking recall for the whole namespace.
-      if (this.config.recallMemoryWorthFilterEnabled && memoryResults.length > 0) {
+      if (caps.recallMemoryWorthFilter && memoryResults.length > 0) {
         try {
           memoryResults = await this.applyMemoryWorthRerank(memoryResults, recallNamespaces);
         } catch (err) {
@@ -11260,7 +11283,7 @@ export class Orchestrator {
         memoryResults.length,
       );
       let confidenceGateRejected = false;
-      if (this.config.recallConfidenceGateEnabled && effectiveGateScore > 0) {
+      if (caps.recallConfidenceGate && effectiveGateScore > 0) {
         if (effectiveGateScore < this.config.recallConfidenceGateThreshold) {
           log.debug(
             `recall: confidence gate rejected ${memoryResults.length} results (effective score ${effectiveGateScore.toFixed(3)} below ${this.config.recallConfidenceGateThreshold})`,
@@ -11278,6 +11301,7 @@ export class Orchestrator {
         memoryResults,
         recallResultLimit,
         retrievalQuery,
+        caps,
       );
 
       // E-Mem-inspired memory reconstruction: fill gaps for referenced entities
@@ -11394,6 +11418,7 @@ export class Orchestrator {
               boostedScoped,
               recallResultLimit,
               retrievalQuery,
+              caps,
             );
           },
           [] as QmdSearchResult[],
@@ -11431,6 +11456,7 @@ export class Orchestrator {
             recallNamespaces,
             recallResultLimit,
             recallMode,
+            caps,
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
             onDegradation: (degradation) => {
@@ -11551,6 +11577,7 @@ export class Orchestrator {
               boostedScoped,
               recallResultLimit,
               retrievalQuery,
+              caps,
             );
           },
           [] as QmdSearchResult[],
@@ -11656,6 +11683,7 @@ export class Orchestrator {
               recallNamespaces,
               recallResultLimit,
               recallMode,
+              caps,
               queryAwarePrefilter,
               abortSignal: options.abortSignal,
               onDegradation: (degradation) => {
@@ -11730,6 +11758,7 @@ export class Orchestrator {
                   boostedRecent,
                   recallResultLimit,
                   retrievalQuery,
+                  caps,
                 );
               },
               [] as QmdSearchResult[],
@@ -11768,6 +11797,7 @@ export class Orchestrator {
                 recallNamespaces,
                 recallResultLimit,
                 recallMode,
+                caps,
                 queryAwarePrefilter,
                 abortSignal: options.abortSignal,
                 onDegradation: (degradation) => {
@@ -11815,6 +11845,7 @@ export class Orchestrator {
             recallNamespaces,
             recallResultLimit,
             recallMode,
+            caps,
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
             onDegradation: (degradation) => {
@@ -18361,6 +18392,11 @@ export class Orchestrator {
     results: QmdSearchResult[],
     limit: number,
     retrievalQuery?: string,
+    // `caps` is additive AND last (issue #1523) so the positional call shape
+    // stays backward-compatible: the recall pipeline threads a resolved set,
+    // but callers that omit it (e.g. direct unit-test invocations) get an
+    // equivalent set derived from the same config — behavior-preserving.
+    caps: CapabilitySet = resolveCapabilities(this.config),
   ): QmdSearchResult[] {
     const safeLimit =
       typeof limit === "number" && Number.isFinite(limit)
@@ -18377,13 +18413,13 @@ export class Orchestrator {
     // facts/decisions before MMR picks the final section. No-op when the
     // flag is off or the query is not a problem-solving ask.
     const boosted =
-      this.config.recallReasoningTraceBoostEnabled && typeof retrievalQuery === "string"
+      caps.recallReasoningTraceBoost && typeof retrievalQuery === "string"
         ? applyReasoningTraceBoost(results, {
             enabled: true,
             query: retrievalQuery,
           })
         : results;
-    const diversified = this.applyMmrToQmdResults(sectionId, boosted);
+    const diversified = this.applyMmrToQmdResults(sectionId, boosted, caps);
     return diversified.slice(0, safeLimit);
   }
 
@@ -18398,8 +18434,11 @@ export class Orchestrator {
   private applyMmrToQmdResults(
     sectionId: string,
     results: QmdSearchResult[],
+    // Additive `caps` (issue #1523); defaults to a config-derived set so direct
+    // callers that omit it behave identically to the threaded recall path.
+    caps: CapabilitySet = resolveCapabilities(this.config),
   ): QmdSearchResult[] {
-    if (this.config.recallMmrEnabled === false) return results;
+    if (!caps.recallMmr) return results;
     if (!Array.isArray(results) || results.length < 2) return results;
 
     // Config is runtime API (see AGENTS.md §4): preserve `0` as a true zero
@@ -18698,6 +18737,13 @@ export class Orchestrator {
     recallNamespaces: string[];
     recallResultLimit: number;
     recallMode: RecallPlanMode;
+    /**
+     * Recall-operation capability gates resolved once at recall entry (#1523).
+     * OPTIONAL and additive: the recall pipeline threads a resolved set, but
+     * callers that omit it (e.g. direct unit-test invocations) get an
+     * equivalent config-derived set — behavior-preserving.
+     */
+    caps?: CapabilitySet;
     queryAwarePrefilter?: QueryAwarePrefilter;
     abortSignal?: AbortSignal;
     /** Backend degradation observer — cold-tier QMD must report like hot (#1536). */
@@ -18717,6 +18763,9 @@ export class Orchestrator {
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
   }): Promise<QmdSearchResult[]> {
+    // Prefer the threaded set; fall back to a config-derived set so direct
+    // callers (unit tests) behave identically to the recall pipeline (#1523).
+    const caps = options.caps ?? resolveCapabilities(this.config);
     if (options.queryAwarePrefilter?.candidatePaths?.size === 0) {
       if (options.xrayPoolSizeSink) options.xrayPoolSizeSink.size = 0;
       return [];
@@ -18932,7 +18981,7 @@ export class Orchestrator {
     const isFullModeGraphAssist =
       this.config.qmdTierParityGraphEnabled &&
       this.config.multiGraphMemoryEnabled &&
-      this.config.graphAssistInFullModeEnabled !== false &&
+      caps.graphAssistInFullMode &&
       options.recallMode === "full" &&
       results.length >= Math.max(1, this.config.graphAssistMinSeedResults ?? 3);
     const shouldRunGraphExpansion =
@@ -19028,7 +19077,7 @@ export class Orchestrator {
         timeoutMs: this.config.rerankTimeoutMs,
         maxCandidates: this.config.rerankMaxCandidates,
         cache: this.rerankCache,
-        cacheEnabled: this.config.rerankCacheEnabled,
+        cacheEnabled: caps.rerankCache,
         cacheTtlMs: this.config.rerankCacheTtlMs,
       });
       if (ranked && ranked.length > 0) {
@@ -19054,7 +19103,7 @@ export class Orchestrator {
     // Memory Worth filter — must fire on the cold fallback path too, or the
     // feature flag produces divergent behavior by retrieval path (CLAUDE.md
     // rule 39). Fail-open on lookup errors.
-    if (this.config.recallMemoryWorthFilterEnabled && results.length > 0) {
+    if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
         results = await this.applyMemoryWorthRerank(results, options.recallNamespaces);
       } catch (err) {
@@ -19079,6 +19128,7 @@ export class Orchestrator {
       results,
       options.recallResultLimit,
       options.prompt,
+      caps,
     );
   }
 
