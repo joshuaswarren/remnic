@@ -223,6 +223,11 @@ export class NamespaceStorageRouter {
   // entry is always removed when the promise settles, so the map cannot grow
   // unbounded (one transient entry per concurrently-resolving namespace).
   private readonly inFlightResolved = new Map<string, string>();
+  // Tracks every in-flight resolve-hook promise so callers can deterministically
+  // await the fire-and-forget registrations that `storageFor()` kicks off (see
+  // `whenResolveHooksSettled`). Entries are removed as each hook settles, so the
+  // set holds at most one promise per concurrently-resolving namespace.
+  private readonly pendingResolveHooks = new Set<Promise<unknown>>();
 
   // Normalized (trimmed) default namespace identity (NH-FH). `storageFor`
   // normalizes its input, so default-namespace branches must compare against the
@@ -325,7 +330,10 @@ export class NamespaceStorageRouter {
       // the map holds at most one transient entry per concurrently-resolving
       // namespace and cannot grow unbounded.
       this.inFlightResolved.set(namespace, storageDir);
-      Promise.resolve(hook(namespace, storageDir)).then(
+      const hookResult = Promise.resolve(hook(namespace, storageDir));
+      // Track the in-flight promise so `whenResolveHooksSettled()` can await it.
+      this.pendingResolveHooks.add(hookResult);
+      hookResult.then(
         (persisted) => {
           // Clear the in-flight marker ONLY if it is still ours (a newer resolve
           // for a different dir may have replaced it).
@@ -338,6 +346,7 @@ export class NamespaceStorageRouter {
           // On `false` (dropped touch) we intentionally do NOT mark notified, so
           // a later `storageFor()` retries the registration. Clearing the
           // in-flight marker above is what re-enables that retry.
+          this.pendingResolveHooks.delete(hookResult);
         },
         () => {
           // Registration failed — clear in-flight AND do NOT mark as notified, so
@@ -348,6 +357,7 @@ export class NamespaceStorageRouter {
           if (this.notifiedResolved.get(namespace) === storageDir) {
             this.notifiedResolved.delete(namespace);
           }
+          this.pendingResolveHooks.delete(hookResult);
         },
       );
     } catch {
@@ -356,6 +366,23 @@ export class NamespaceStorageRouter {
       if (this.inFlightResolved.get(namespace) === storageDir) {
         this.inFlightResolved.delete(namespace);
       }
+    }
+  }
+
+  /**
+   * Resolve once every in-flight `onResolve` registration has settled.
+   *
+   * `storageFor()` fires the resolve hook fire-and-forget, so its catalog side
+   * effect (e.g. `registerResolved(...)`) is not observable the moment
+   * `storageFor()` returns. Callers that must act on that side effect — notably
+   * tests asserting the catalog was updated — should await this instead of
+   * racing a timer. Resolves immediately when no hook is registered or nothing
+   * is in flight. The loop re-checks because a settling hook could, in
+   * principle, trigger a follow-on resolution.
+   */
+  async whenResolveHooksSettled(): Promise<void> {
+    while (this.pendingResolveHooks.size > 0) {
+      await Promise.allSettled([...this.pendingResolveHooks]);
     }
   }
 }
