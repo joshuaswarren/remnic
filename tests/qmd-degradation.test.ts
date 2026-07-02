@@ -99,6 +99,22 @@ test("subprocess detail redacts path-like tokens before serialization", async ()
   assert.ok(detail.length <= 160);
 });
 
+test("subprocess detail redacts the raw recall query (#1544 codex P1)", async () => {
+  const client = makeClient();
+  client.daemonAvailable = false;
+  client.daemonSession = undefined;
+  const query = "my private medical question about diagnosis";
+  client.runQmdCommand = async () => {
+    // Mirrors runQmdCommand's real failure label, which embeds the argv.
+    throw new Error(`qmd query ${query} -c openclaw-engram timed out after 30000ms`);
+  };
+  const { degradations, onDegradation } = collector();
+  await client.search(query, undefined, 3, undefined, { onDegradation });
+  const detail = degradations[0]?.detail ?? "";
+  assert.match(detail, /<query>/);
+  assert.doesNotMatch(detail, /medical|diagnosis/);
+});
+
 test("degradation codes are uniform across bm25/vector/global paths (rule 39)", async () => {
   const client = makeClient();
   client.bm25SearchViaDaemon = async () => null;

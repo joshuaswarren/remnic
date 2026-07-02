@@ -2426,8 +2426,17 @@ export class QmdClient implements SearchBackend {
    * usernames and filesystem layout), capped at 160 chars. The unredacted
    * error still reaches operators via the warn log at the failure site.
    */
-  private degradationDetail(err: unknown): string {
-    const firstLine = String(err instanceof Error ? err.message : err).split("\n")[0] ?? "";
+  private degradationDetail(err: unknown, sensitive?: string[]): string {
+    let firstLine = String(err instanceof Error ? err.message : err).split("\n")[0] ?? "";
+    // Strip known-sensitive strings FIRST: runQmdCommand error labels embed
+    // the full command line, which includes the raw recall query — user
+    // conversation content that must never persist in last_recall.json or
+    // reach MCP/HTTP surfaces (codex P1 on #1544).
+    for (const value of sensitive ?? []) {
+      if (typeof value === "string" && value.length > 0) {
+        firstLine = firstLine.split(value).join("<query>");
+      }
+    }
     const redacted = firstLine.replace(/(?:~|\/|[A-Za-z]:\\)[^\s'"`]+/g, "<path>");
     return redacted.length > 160 ? `${redacted.slice(0, 159)}…` : redacted;
   }
@@ -2473,7 +2482,7 @@ export class QmdClient implements SearchBackend {
         throw isAbortError(err) ? err : abortError("QMD subprocess search aborted");
       }
       log.warn(`QMD subprocess search failed (returning empty): ${err}`);
-      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err));
+      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err, [query]));
       return [];
     }
   }
@@ -2499,7 +2508,7 @@ export class QmdClient implements SearchBackend {
         throw isAbortError(err) ? err : abortError("QMD subprocess bm25 aborted");
       }
       log.warn(`QMD bm25 subprocess search failed (returning empty): ${err}`);
-      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err));
+      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err, [query]));
       return [];
     }
   }
@@ -2526,7 +2535,7 @@ export class QmdClient implements SearchBackend {
         throw isAbortError(err) ? err : abortError("QMD subprocess vsearch aborted");
       }
       log.warn(`QMD vsearch subprocess failed (returning empty): ${err}`);
-      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err));
+      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err, [query]));
       return [];
     }
   }
@@ -2569,7 +2578,7 @@ export class QmdClient implements SearchBackend {
         throw isAbortError(err) ? err : abortError("QMD subprocess global search aborted");
       }
       log.warn(`QMD global subprocess search failed (returning empty): ${err}`);
-      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err));
+      this.notifyDegradation(onDegradation, "subprocess_error", this.degradationDetail(err, [query]));
       return [];
     }
   }
