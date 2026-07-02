@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.3.660",
+  "version": "9.3.661",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -2856,6 +2856,7 @@
     "src",
     "dist",
     "skills",
+    "scripts/build-with-heap.mjs",
     "scripts/ensure-better-sqlite3.mjs",
     "scripts/faiss_index.py",
     "scripts/faiss_requirements.txt"
@@ -2865,7 +2866,7 @@
     "provenance": true
   },
   "scripts": {
-    "build": "tsup",
+    "build": "node ./scripts/build-with-heap.mjs",
     "check-types": "tsc --noEmit",
     "test": "tsx --test 'src/**/*.test.ts'",
     "postinstall": "node ./scripts/ensure-better-sqlite3.mjs",
