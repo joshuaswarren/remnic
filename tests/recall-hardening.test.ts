@@ -980,6 +980,15 @@ test("recallInternal skips embedding fallback after assembly budget expires", as
     },
   );
 
+  // Drive the shared post-retrieval assembly budget deterministically instead
+  // of racing the 5ms wall clock: the deadline is set on the first clock read
+  // (base) and every later read is far past it, so the "skip after budget
+  // expired" gate fires every time rather than flapping on scheduler jitter.
+  let assemblyClockReads = 0;
+  const assemblyClockBase = Date.now();
+  (orchestrator as any).recallAssemblyClockMs = () =>
+    assemblyClockBase + assemblyClockReads++ * 60_000;
+
   (orchestrator as any).boxBuilderFor = () => ({
     readRecentBoxes: async () => {
       await new Promise<never>(() => {});
@@ -1029,6 +1038,15 @@ test("recallInternal skips no-QMD hot fallback after assembly budget expires", a
       parallelRetrievalEnabled: false,
     },
   );
+
+  // Drive the shared post-retrieval assembly budget deterministically instead
+  // of racing the 5ms wall clock (this test was ~1-in-3 flaky on Node 22): the
+  // deadline is set on the first clock read (base) and every later read is far
+  // past it, so the "skip after budget expired" gate fires every time.
+  let assemblyClockReads = 0;
+  const assemblyClockBase = Date.now();
+  (orchestrator as any).recallAssemblyClockMs = () =>
+    assemblyClockBase + assemblyClockReads++ * 60_000;
 
   (orchestrator as any).boxBuilderFor = () => ({
     readRecentBoxes: async () => {
