@@ -9247,12 +9247,39 @@ export class Orchestrator {
        * an exact entity-name match) are not discarded just because the QMD
        * contextual pass returned a weak result. */
       maxSpecializedScore: number;
+      /**
+       * Degradations observed while producing this phase result (#1536).
+       * Cached WITH the result so cache hits replay them — a served-from-
+       * cache partial result must still explain why it is partial (codex
+       * round-4 review on #1544).
+       */
+      degradations?: SearchDegradation[];
     } | null;
 
     const qmdEnrichmentAbort = createEnrichmentAbortHandle(options.abortSignal);
     const qmdPromise = observeEnrichmentPromise(
       (async (): Promise<QmdPhaseResult> => {
         const t0 = Date.now();
+        // Degradation accounting for this phase (#1536): everything pushed
+        // after this mark belongs to this phase and is cached with its
+        // result; cache hits and stale fallbacks replay stored degradations
+        // so served-from-cache results still explain their gaps, and every
+        // path that skips QMD entirely reports backend_unavailable.
+        const phaseDegradationsStart = backendDegradations.length;
+        const replayCachedDegradations = (value: {
+          degradations?: SearchDegradation[];
+        }) => {
+          for (const degradation of value.degradations ?? []) {
+            backendDegradations.push(degradation);
+          }
+        };
+        const reportRecallQmdUnavailable = (detail: string) => {
+          backendDegradations.push({
+            backend: "qmd",
+            code: "backend_unavailable",
+            detail,
+          });
+        };
         if (recallResultLimit <= 0) {
           recordRecallSectionMetric({
             section: "qmd",
@@ -9304,6 +9331,7 @@ export class Orchestrator {
             success: true,
             timing: `${Math.max(0, Math.round(cachedQmd.ageMs))}ms-cache`,
           });
+          replayCachedDegradations(cachedQmd.value);
           if (queryAwarePrefilterIsEmpty) {
             return emptyQueryAwareQmdResult;
           }
@@ -9327,6 +9355,8 @@ export class Orchestrator {
                 success: true,
                 timing: `stale-cache(reprobe-cooldown:${Math.max(0, Math.round(staleQmdFallback.ageMs))}ms)`,
               });
+              reportRecallQmdUnavailable("served stale recall cache (reprobe cooldown)");
+              replayCachedDegradations(staleQmdFallback.value);
               if (queryAwarePrefilterIsEmpty) {
                 return emptyQueryAwareQmdResult;
               }
@@ -9341,6 +9371,7 @@ export class Orchestrator {
               success: true,
               timing: "skip(reprobe-cooldown)",
             });
+            reportRecallQmdUnavailable("recall skipped QMD (reprobe cooldown)");
             return null;
           }
           this.lastQmdReprobeAtMs = now;
@@ -9356,6 +9387,8 @@ export class Orchestrator {
                 success: true,
                 timing: `stale-cache(reprobe-failed:${Math.max(0, Math.round(staleQmdFallback.ageMs))}ms)`,
               });
+              reportRecallQmdUnavailable("served stale recall cache (reprobe failed)");
+              replayCachedDegradations(staleQmdFallback.value);
               if (queryAwarePrefilterIsEmpty) {
                 return emptyQueryAwareQmdResult;
               }
@@ -9373,6 +9406,7 @@ export class Orchestrator {
             log.debug(
               `Search skip (re-probe failed): ${this.qmd.debugStatus()}`,
             );
+            reportRecallQmdUnavailable("recall skipped QMD (reprobe failed)");
             return null;
           }
           log.info(`QMD re-probe succeeded: ${this.qmd.debugStatus()}`);
@@ -9507,11 +9541,17 @@ export class Orchestrator {
             }
           }
 
+          const phaseDegradations = backendDegradations.slice(
+            phaseDegradationsStart,
+          );
           const result = {
             memoryResultsLists: [augmentedResults],
             globalResults: [],
             preAugmentTopScore,
             maxSpecializedScore,
+            ...(phaseDegradations.length > 0
+              ? { degradations: phaseDegradations }
+              : {}),
           };
           if (
             augmentedResults.length > 0 ||
@@ -9541,6 +9581,7 @@ export class Orchestrator {
               success: true,
               timing: `stale-cache(${err instanceof Error ? err.message : String(err)})`,
             });
+            replayCachedDegradations(staleQmdFallback.value);
             if (queryAwarePrefilterIsEmpty) {
               return emptyQueryAwareQmdResult;
             }
