@@ -1,10 +1,11 @@
-import { access, readdir, readFile, stat, writeFile, mkdir, unlink, rename, appendFile, open } from "node:fs/promises";
+import { access, lstat, readdir, readFile, realpath, stat, writeFile, mkdir, unlink, rename, appendFile, open } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { log } from "./logger.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -4069,15 +4070,37 @@ export class StorageManager {
   private async collectActiveMemoryPaths(): Promise<string[]> {
     const filePaths: string[] = [];
 
+    // Resolve the memory root once for containment checks below. A category dir
+    // symlinked outside memoryDir (e.g. decisions/ -> an external dir) must NOT
+    // pull out-of-store files into the QMD-unavailable recall fallback (info
+    // leak). Same walker-hardening pattern as document-scanner.ts / cli.ts /
+    // consolidation-provenance-check.ts; reuses the shared containment helper.
+    let memoryRootReal: string;
+    try {
+      memoryRootReal = await realpath(this.baseDir);
+    } catch {
+      return filePaths;
+    }
+
     const collectPaths = async (dir: string) => {
       try {
+        // Skip symlinked or non-directory category dirs, then assert the
+        // resolved dir still lives inside the memory root before reading it.
+        const dirStat = await lstat(dir);
+        if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
+        assertPathInsideRoot(memoryRootReal, await realpath(dir), dir);
+
         const entries = await readdir(dir, { withFileTypes: true });
         const subdirs: string[] = [];
         for (const entry of entries) {
+          // Never follow symlinked entries out of the store.
+          if (entry.isSymbolicLink()) continue;
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             subdirs.push(fullPath);
           } else if (entry.name.endsWith(".md")) {
+            // Assert the file resolves inside the root before including it.
+            assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
             filePaths.push(fullPath);
           }
         }
@@ -4085,7 +4108,9 @@ export class StorageManager {
           await collectPaths(subdir);
         }
       } catch {
-        // Directory does not exist yet.
+        // Directory does not exist yet, or a symlink/containment guard tripped
+        // — fail closed by skipping this subtree rather than leaking or crashing
+        // the recall fallback.
       }
     };
 
