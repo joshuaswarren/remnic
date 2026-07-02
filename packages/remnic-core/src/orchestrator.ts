@@ -7295,6 +7295,17 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * Clock source for the shared post-retrieval assembly/enrichment budget. The
+   * deadline is set from this value and every expiry check reads it back, so a
+   * test can drive the budget deterministically instead of racing the few-ms
+   * wall-clock window that made the "skips … after budget expires" tests flaky.
+   * Production behavior is unchanged — it returns the wall clock.
+   */
+  protected recallAssemblyClockMs(): number {
+    return Date.now();
+  }
+
   private async recallInternal(
     prompt: string,
     sessionKey?: string,
@@ -10261,7 +10272,7 @@ export class Orchestrator {
 
     const enrichmentAssemblyDeadlineAtMs =
       enrichmentSectionDeadlineMs > 0
-        ? Date.now() + enrichmentSectionDeadlineMs
+        ? this.recallAssemblyClockMs() + enrichmentSectionDeadlineMs
         : null;
 
     const awaitEnrichmentSection = async <T>(
@@ -10303,7 +10314,7 @@ export class Orchestrator {
       const timeoutMs =
         enrichmentAssemblyDeadlineAtMs === null
           ? null
-          : Math.max(0, enrichmentAssemblyDeadlineAtMs - Date.now());
+          : Math.max(0, enrichmentAssemblyDeadlineAtMs - this.recallAssemblyClockMs());
       if (timeoutMs === 0) {
         const settledOutcome = promise.getSettledOutcome();
         if (settledOutcome) {
@@ -10349,7 +10360,7 @@ export class Orchestrator {
     const remainingEnrichmentAssemblyMs = (): number | null =>
       enrichmentAssemblyDeadlineAtMs === null
         ? null
-        : Math.max(0, enrichmentAssemblyDeadlineAtMs - Date.now());
+        : Math.max(0, enrichmentAssemblyDeadlineAtMs - this.recallAssemblyClockMs());
 
     const awaitAssemblyStep = async <T>(
       name: string,
