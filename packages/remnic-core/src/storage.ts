@@ -5,7 +5,7 @@ import path from "node:path";
 import { log } from "./logger.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
-import { getCachedEntities, invalidateCachedEntities, setCachedEntities } from "./memory-cache.js";
+import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { createVersion as createPageVersion, type VersioningConfig, type VersionTrigger } from "./page-versioning.js";
@@ -2335,7 +2335,10 @@ export class StorageManager {
   setSecureStoreKey(key: Buffer | null, encryptOnWrite = true): void {
     this._secureStoreKey = key;
     this._secureStoreEncryptOnWrite = encryptOnWrite;
-    invalidateCachedEntities(this.baseDir);
+    // Route through the invalidation chokepoint (issue #1535): a key change
+    // (or store lock) must evict every cache layer that may hold content
+    // decrypted under the previous key, not just the entity layer.
+    invalidateAllForDir(this.baseDir);
     this.invalidateKnowledgeIndexCache();
   }
 
@@ -2511,6 +2514,13 @@ export class StorageManager {
 
   private bumpMemoryStatusVersion(): void {
     this.bumpSharedVersion("memory-status", StorageManager.memoryStatusVersionByDir);
+    // Invalidation chokepoint (issue #1535): status/entity mutations funnel
+    // through this bump — several of them (supersedeMemory, archiveMemories,
+    // writeEntity, cleanExpiredCommitments) do NOT call
+    // invalidateAllMemoriesCache(), so the chokepoint must fire here as well.
+    // Version bumps only invalidate the version-checked layers lazily; the
+    // TTL-based QMD caches need this eager clear.
+    invalidateAllForDir(this.baseDir);
   }
 
   getMemoryStatusVersion(): number {
@@ -2943,8 +2953,9 @@ export class StorageManager {
   }
 
   private async invalidateAfterOfflineSyncMutation(filePath: string): Promise<void> {
+    // invalidateAllMemoriesCache() routes through the invalidateAllForDir()
+    // chokepoint, which also covers the entity cache (issue #1535).
     this.invalidateAllMemoriesCache();
-    invalidateCachedEntities(this.baseDir);
     this.invalidateKnowledgeIndexCache();
     this.factHashIndexAuthoritative = false;
     await unlink(this.factHashIndexReadyPath).catch((error: unknown) => {
@@ -4002,6 +4013,13 @@ export class StorageManager {
    *  inside cold/, archiveMemory, etc.). */
   private invalidateAllMemoriesCache(): void {
     StorageManager.allMemoriesInFlight.delete(this.baseDir);
+    // Invalidation chokepoint (issue #1535): eagerly evict EVERY process-level
+    // cache layer that can serve memory-derived content for this dir — hot,
+    // archive, entity, derived episode/rule views, and both QMD result caches
+    // (qmdSearchCache and qmdRecallCache). Before this call was added, the QMD
+    // recall cache was never invalidated on mutations, so recall served
+    // pre-edit bundles for the remainder of its fresh/stale TTL window.
+    invalidateAllForDir(this.baseDir);
   }
 
   /**
@@ -4020,6 +4038,12 @@ export class StorageManager {
     const coldRoot = path.join(this.baseDir, "cold");
     StorageManager.coldMemoriesCache.delete(coldRoot);
     this.bumpColdWriteVersion();
+    // Invalidation chokepoint (issue #1535): cold-tier mutations can reach
+    // this funnel without invalidateAllMemoriesCache() (e.g. the cold-only
+    // branch of invalidateMemoryCachesForTiers used by maintenance/purge), so
+    // the chokepoint must fire here too — cold memories are recallable and a
+    // cold delete must not leave stale QMD recall bundles behind.
+    invalidateAllForDir(this.baseDir);
   }
 
   /** Return the current cold-write version counter for this storage root.

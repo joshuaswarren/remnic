@@ -1,4 +1,5 @@
 import type { EntityFile, MemoryFile } from "./types.js";
+import { clearQmdRecallCache, qmdRecallCacheSize } from "./qmd-recall-cache.js";
 
 interface CacheEntry {
   memories: Map<string, MemoryFile>; // keyed by file path
@@ -52,8 +53,23 @@ export function setCachedArchivedMemories(baseDir: string, memories: MemoryFile[
 // Entity cache — same pattern as memory cache, but keyed by schema-aware parse inputs.
 const entityCacheByDir = new Map<string, { entities: EntityFile[]; version: number; loadedAt: number }>();
 
-function buildEntityCacheKey(baseDir: string, schemaKey: string = ""): string {
-  return `${baseDir}\u0000${schemaKey}`;
+/**
+ * Single normalization point for the entity-cache schema key (issue #1535).
+ * BOTH the set/get key builder and the prefix invalidation derive from here so
+ * `undefined` vs `""` (or any future normalization rule) can never diverge
+ * between the write path and the invalidate path (rule 38 cousin).
+ */
+function normalizeEntitySchemaKey(schemaKey: string | undefined): string {
+  return schemaKey ?? "";
+}
+
+/** Prefix shared by every entity-cache key for a dir, regardless of schemaKey. */
+function entityCacheKeyPrefix(baseDir: string): string {
+  return `${baseDir}\u0000`;
+}
+
+function buildEntityCacheKey(baseDir: string, schemaKey?: string): string {
+  return `${entityCacheKeyPrefix(baseDir)}${normalizeEntitySchemaKey(schemaKey)}`;
 }
 
 export function getCachedEntities(
@@ -81,7 +97,7 @@ export function setCachedEntities(
 }
 
 export function invalidateCachedEntities(baseDir: string): void {
-  const prefix = `${baseDir}\u0000`;
+  const prefix = entityCacheKeyPrefix(baseDir);
   for (const key of entityCacheByDir.keys()) {
     if (key.startsWith(prefix)) entityCacheByDir.delete(key);
   }
@@ -174,21 +190,118 @@ export function setCachedQmdSearch(cacheKey: string, results: unknown[]): void {
   }
 }
 
+/**
+ * Cache-layer registry (issue #1535).
+ *
+ * EVERY process-level cache that can serve memory-derived content is
+ * enumerated here, and the single invalidation chokepoint
+ * (`invalidateAllForDir`) iterates this list. Adding a new cache layer to
+ * this module (or qmd-recall-cache.ts) REQUIRES registering it here —
+ * otherwise mutations will never invalidate it (the exact bug this registry
+ * exists to prevent) and the enumerate-all-layers fitness test in
+ * tests/cache-invalidation-coherence.test.ts fails.
+ */
+export interface MemoryCacheLayer {
+  /** Stable identifier used by tests and diagnostics. */
+  readonly name: string;
+  /** "dir" layers evict only entries for the given baseDir. "global" layers
+   *  are fully cleared on any mutation: their keys embed queries, namespaces,
+   *  and strategies rather than a storage dir, so a per-dir selective clear
+   *  is not possible without recording the dir in each entry. Full clear is
+   *  the simple-and-correct choice — these caches are re-warmable
+   *  (issue #1535, implementation guide option (b)). */
+  readonly scope: "dir" | "global";
+  /** Evict entries for baseDir ("dir" scope) or everything ("global" scope). */
+  readonly invalidateForDir: (baseDir: string) => void;
+  /** Evict every entry across all dirs. */
+  readonly clearAll: () => void;
+  /** True when the layer still holds entries for baseDir ("dir" scope) or
+   *  any entries at all ("global" scope). */
+  readonly hasEntriesFor: (baseDir: string) => boolean;
+}
+
+export const ALL_CACHE_LAYERS: readonly MemoryCacheLayer[] = [
+  {
+    name: "hot-memories",
+    scope: "dir",
+    invalidateForDir: (baseDir) => void hotCacheByDir.delete(baseDir),
+    clearAll: () => hotCacheByDir.clear(),
+    hasEntriesFor: (baseDir) => hotCacheByDir.has(baseDir),
+  },
+  {
+    name: "archive-memories",
+    scope: "dir",
+    invalidateForDir: (baseDir) => void archiveCacheByDir.delete(baseDir),
+    clearAll: () => archiveCacheByDir.clear(),
+    hasEntriesFor: (baseDir) => archiveCacheByDir.has(baseDir),
+  },
+  {
+    name: "entities",
+    scope: "dir",
+    invalidateForDir: (baseDir) => invalidateCachedEntities(baseDir),
+    clearAll: () => entityCacheByDir.clear(),
+    hasEntriesFor: (baseDir) => {
+      const prefix = entityCacheKeyPrefix(baseDir);
+      for (const key of entityCacheByDir.keys()) {
+        if (key.startsWith(prefix)) return true;
+      }
+      return false;
+    },
+  },
+  {
+    name: "derived-episode-map",
+    scope: "dir",
+    invalidateForDir: (baseDir) => void episodeMapByDir.delete(baseDir),
+    clearAll: () => episodeMapByDir.clear(),
+    hasEntriesFor: (baseDir) => episodeMapByDir.has(baseDir),
+  },
+  {
+    name: "derived-rule-memories",
+    scope: "dir",
+    invalidateForDir: (baseDir) => void ruleMemoriesByDir.delete(baseDir),
+    clearAll: () => ruleMemoriesByDir.clear(),
+    hasEntriesFor: (baseDir) => ruleMemoriesByDir.has(baseDir),
+  },
+  {
+    name: "qmd-search",
+    scope: "global",
+    invalidateForDir: () => qmdSearchCache.clear(),
+    clearAll: () => qmdSearchCache.clear(),
+    hasEntriesFor: () => qmdSearchCache.size > 0,
+  },
+  {
+    name: "qmd-recall",
+    scope: "global",
+    invalidateForDir: () => clearQmdRecallCache(),
+    clearAll: () => clearQmdRecallCache(),
+    hasEntriesFor: () => qmdRecallCacheSize() > 0,
+  },
+];
+
+/**
+ * The single invalidation chokepoint (issue #1535, rule 37).
+ *
+ * Every memory/entity mutation path must route through this function —
+ * storage.ts calls it from its internal invalidation funnels
+ * (invalidateAllMemoriesCache / invalidateColdMemoriesCache /
+ * bumpMemoryStatusVersion / setSecureStoreKey). Nothing may clear an
+ * individual layer ad hoc: partial clears are how the stale-recall bug
+ * happened (qmdRecallCache was never invalidated on mutations, so recall
+ * served pre-edit bundles for the remainder of its fresh/stale TTL window).
+ */
+export function invalidateAllForDir(baseDir: string): void {
+  for (const layer of ALL_CACHE_LAYERS) {
+    layer.invalidateForDir(baseDir);
+  }
+}
+
 export function clearMemoryCache(baseDir?: string): void {
   if (baseDir) {
-    hotCacheByDir.delete(baseDir);
-    archiveCacheByDir.delete(baseDir);
-    invalidateCachedEntities(baseDir);
-    episodeMapByDir.delete(baseDir);
-    ruleMemoriesByDir.delete(baseDir);
-    qmdSearchCache.clear();
-  } else {
-    hotCacheByDir.clear();
-    archiveCacheByDir.clear();
-    entityCacheByDir.clear();
-    episodeMapByDir.clear();
-    ruleMemoriesByDir.clear();
-    qmdSearchCache.clear();
+    invalidateAllForDir(baseDir);
+    return;
+  }
+  for (const layer of ALL_CACHE_LAYERS) {
+    layer.clearAll();
   }
 }
 

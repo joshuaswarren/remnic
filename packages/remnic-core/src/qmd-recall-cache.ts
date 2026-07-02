@@ -116,3 +116,9 @@ export function setCachedQmdRecall<T>(
 export function clearQmdRecallCache(): void {
   qmdRecallCache.clear();
 }
+
+/** Number of cached recall entries. Used by the cache-layer registry in
+ *  memory-cache.ts (`ALL_CACHE_LAYERS`) and its fitness tests (issue #1535). */
+export function qmdRecallCacheSize(): number {
+  return qmdRecallCache.size;
+}
