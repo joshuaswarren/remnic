@@ -25,6 +25,8 @@ import { fileURLToPath } from "node:url";
 
 import { appendNodeOption } from "./root-test-runner-env.mjs";
 import {
+  TEST_PATTERNS,
+  chunkArgsByLength,
   expandTestPatterns,
   loadNativeManifest,
   parseTapSummary,
@@ -92,41 +94,69 @@ if (!probe.ok) {
   );
 }
 
-const child = spawn(tsxBin, ["--test", ...filesToRun.map((file) => path.join(repoRoot, ...file.split("/")))], {
-  cwd: repoRoot,
-  env: process.env,
-  stdio: ["inherit", "pipe", "inherit"],
-});
+/** Run one tsx --test invocation, streaming output and parsing its TAP epilogue. */
+function runTsx(testArgs) {
+  return new Promise((resolve) => {
+    const child = spawn(tsxBin, ["--test", ...testArgs], {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: ["inherit", "pipe", "inherit"],
+    });
 
-// Stream stdout live while keeping a bounded tail for the TAP summary parse.
-const TAIL_LIMIT = 64 * 1024;
-let tail = "";
-child.stdout.on("data", (chunk) => {
-  process.stdout.write(chunk);
-  tail = (tail + chunk.toString("utf-8")).slice(-TAIL_LIMIT);
-});
+    // Stream stdout live while keeping a bounded tail for the TAP summary parse.
+    const TAIL_LIMIT = 64 * 1024;
+    let tail = "";
+    child.stdout.on("data", (chunk) => {
+      process.stdout.write(chunk);
+      tail = (tail + chunk.toString("utf-8")).slice(-TAIL_LIMIT);
+    });
 
-child.on("error", (error) => {
-  console.error(`[root-tests] ERROR: failed to launch ${tsxBin}: ${error.message}`);
-  process.exit(1);
-});
+    child.on("error", (error) => {
+      console.error(`[root-tests] ERROR: failed to launch ${tsxBin}: ${error.message}`);
+      resolve({ status: 1, summary: null });
+    });
 
-child.on("close", (status) => {
-  const summary = parseTapSummary(tail);
+    child.on("close", (status) => {
+      resolve({ status: status ?? 1, summary: parseTapSummary(tail) });
+    });
+  });
+}
+
+// Windows builds a single bounded command line per spawn, so hundreds of
+// explicit file arguments cannot ride one invocation. Healthy runs therefore
+// use the original six pattern arguments (tsx expands them internally, and
+// expandTestPatterns above already proved none are vacuous); only exclusion
+// runs pass explicit relative paths, chunked under a conservative budget.
+const ARGV_CHAR_BUDGET = 6000;
+const runsArgs =
+  filesToRun.length === files.length
+    ? [TEST_PATTERNS.map((pattern) => pattern.id)]
+    : chunkArgsByLength(filesToRun, ARGV_CHAR_BUDGET);
+
+let totalFail = 0;
+let worstStatus = 0;
+for (const [index, args] of runsArgs.entries()) {
+  if (runsArgs.length > 1) {
+    console.warn(`[root-tests] chunk ${index + 1}/${runsArgs.length} (${args.length} file(s))`);
+  }
+  const { status, summary } = await runTsx(args);
   if (summary === null) {
     console.error("[root-tests] ERROR: no TAP summary found in test output — treating as failure.");
-    process.exit(status === 0 ? 1 : (status ?? 1));
+    process.exit(status === 0 ? 1 : status);
   }
-  if (summary.fail > 0 && status === 0) {
-    console.error(
-      `[root-tests] ERROR: runner exited 0 but TAP reports ${summary.fail} failing test(s) — failing the run.`,
-    );
-    process.exit(1);
-  }
-  if (filesToRun.length !== files.length) {
-    console.warn(
-      `[root-tests] reminder: ${files.length - filesToRun.length} native-dependent file(s) were skipped this run.`,
-    );
-  }
-  process.exit(status ?? 1);
-});
+  totalFail += summary.fail;
+  if (status !== 0) worstStatus = status;
+}
+
+if (totalFail > 0 && worstStatus === 0) {
+  console.error(
+    `[root-tests] ERROR: runner exited 0 but TAP reports ${totalFail} failing test(s) — failing the run.`,
+  );
+  process.exit(1);
+}
+if (filesToRun.length !== files.length) {
+  console.warn(
+    `[root-tests] reminder: ${files.length - filesToRun.length} native-dependent file(s) were skipped this run.`,
+  );
+}
+process.exit(worstStatus);

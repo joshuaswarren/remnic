@@ -128,6 +128,34 @@ export function partitionNativeDependent(files, manifestFiles) {
 }
 
 /**
+ * Greedily chunk argument lists so each spawn's combined argv stays under a
+ * conservative character budget — Windows builds one command line with a low
+ * length limit, so hundreds of explicit file paths cannot go into a single
+ * spawn (cursor review on #1542). A single oversized argument still gets its
+ * own chunk rather than being dropped.
+ */
+export function chunkArgsByLength(args, budgetChars) {
+  if (!Number.isInteger(budgetChars) || budgetChars <= 0) {
+    throw new Error(`chunkArgsByLength: budgetChars must be a positive integer, got ${budgetChars}`);
+  }
+  const chunks = [];
+  let current = [];
+  let currentLength = 0;
+  for (const arg of args) {
+    const cost = arg.length + 1;
+    if (current.length > 0 && currentLength + cost > budgetChars) {
+      chunks.push(current);
+      current = [];
+      currentLength = 0;
+    }
+    current.push(arg);
+    currentLength += cost;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+/**
  * Parse the trailing TAP summary from a node:test run.
  * Returns null when no summary is present (crash before the epilogue).
  */

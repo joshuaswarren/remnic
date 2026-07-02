@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  chunkArgsByLength,
   expandTestPatterns,
   loadNativeManifest,
   parseTapSummary,
@@ -110,6 +111,21 @@ test("parseTapSummary reads the epilogue and returns null without one", () => {
     todo: 0,
   });
   assert.equal(parseTapSummary("ok 1 - no summary here"), null);
+});
+
+test("chunkArgsByLength keeps every spawn under the budget without dropping args", () => {
+  const args = ["aaaa", "bbbb", "cccc", "dddd", "eeee"];
+  const chunks = chunkArgsByLength(args, 10);
+  // Each arg costs length+1 = 5, so two fit per 10-char chunk.
+  assert.deepEqual(chunks, [["aaaa", "bbbb"], ["cccc", "dddd"], ["eeee"]]);
+  assert.deepEqual(chunks.flat(), args);
+
+  // A single oversized argument still gets its own chunk.
+  assert.deepEqual(chunkArgsByLength(["x".repeat(50)], 10), [["x".repeat(50)]]);
+  // Empty input produces no chunks.
+  assert.deepEqual(chunkArgsByLength([], 10), []);
+  // Invalid budgets are rejected loudly.
+  assert.throws(() => chunkArgsByLength(["a"], 0), /positive integer/);
 });
 
 test("probeBetterSqlite3 honours the forced-unavailable test seam", () => {
