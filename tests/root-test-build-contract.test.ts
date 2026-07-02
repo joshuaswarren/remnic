@@ -44,13 +44,22 @@ test("root test runner applies remnic source conditions and test globs portably"
   );
   assert.equal(helperCheck.status, 0, helperCheck.stderr);
 
+  // Pattern coverage now lives in root-test-runner-lib.mjs as structured
+  // entries (#1538); the runner consumes them via expandTestPatterns and
+  // must keep the probe + vacuous-pattern guards wired.
+  const lib = readFileSync(join(repoRoot, "scripts", "root-test-runner-lib.mjs"), "utf8");
+  assert.match(lib, /id: "tests\/\*\*\/\*\.test\.ts"/);
+  assert.match(lib, /id: "tests\/\*\*\/\*\.test\.mjs"/);
+  assert.match(lib, /id: "packages\/\*\/src\/\*\*\/\*\.test\.ts"/);
+  assert.match(lib, /id: "packages\/\*\/src\/\*\*\/\*\.test\.tsx"/);
+  assert.match(lib, /id: "dashboard\/lib\/\*\.test\.ts"/);
+  assert.match(lib, /id: "integrations\/amb\/\*\.test\.mjs"/);
+
   const script = readFileSync(join(repoRoot, "scripts", "run-root-tests.mjs"), "utf8");
-  assert.match(script, /"tests\/\*\*\/\*\.test\.ts"/);
-  assert.match(script, /"tests\/\*\*\/\*\.test\.mjs"/);
-  assert.match(script, /"packages\/\*\/src\/\*\*\/\*\.test\.ts"/);
-  assert.match(script, /"packages\/\*\/src\/\*\*\/\*\.test\.tsx"/);
-  assert.match(script, /"dashboard\/lib\/\*\.test\.ts"/);
-  assert.match(script, /"integrations\/amb\/\*\.test\.mjs"/);
+  assert.match(script, /expandTestPatterns/);
+  assert.match(script, /probeBetterSqlite3/);
+  assert.match(script, /REMNIC_REQUIRE_NATIVE_TESTS/);
+  assert.match(script, /emptyPatterns/);
   assert.match(script, /cwd: repoRoot/);
   assert.match(script, /process\.platform === "win32" \? "tsx\.cmd" : "tsx"/);
   assert.doesNotMatch(script, /shell:/);

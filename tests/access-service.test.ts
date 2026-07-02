@@ -1,4 +1,5 @@
 import test from "node:test";
+import { skipUnlessBetterSqlite3 } from "./helpers/native-binding.mjs";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -2316,7 +2317,7 @@ test("access service browses memories, lists entities, and applies review dispos
   }
 });
 
-test("access service uses projection-backed browse filters, including archived memories", async () => {
+test("access service uses projection-backed browse filters, including archived memories", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-projection-browse-"));
   try {
     await writeText(
@@ -2372,7 +2373,7 @@ test("access service uses projection-backed browse filters, including archived m
   }
 });
 
-test("access service supports explicit browse sorting for projection-backed and fallback memory pages", async () => {
+test("access service supports explicit browse sorting for projection-backed and fallback memory pages", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-browse-sort-"));
   try {
     await writeText(
@@ -2428,7 +2429,7 @@ test("access service supports explicit browse sorting for projection-backed and 
   }
 });
 
-test("access service fallback browse matches projection secondary timestamp tie breakers", async () => {
+test("access service fallback browse matches projection secondary timestamp tie breakers", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-browse-tiebreak-"));
   try {
     await writeText(
@@ -2539,7 +2540,7 @@ test("access service fallback browse infers archived status from archive paths w
   }
 });
 
-test("access service projection browse matches full content beyond preview text", async () => {
+test("access service projection browse matches full content beyond preview text", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-projection-content-"));
   try {
     const deepNeedle = "full content projection query";
@@ -2644,7 +2645,7 @@ test("access service reviewQueue and maintenance fall back to governance artifac
   }
 });
 
-test("access service serves reviewQueue and maintenance from projection when governance artifacts are gone", async () => {
+test("access service serves reviewQueue and maintenance from projection when governance artifacts are gone", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-governance-projection-"));
   try {
     await writeText(

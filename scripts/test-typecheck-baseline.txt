@@ -155,9 +155,9 @@ tests/access-mcp.test.ts(156,69): TS7031
 tests/access-mcp.test.ts(156,89): TS7031
 tests/access-mcp.test.ts(184,29): TS7031
 tests/access-mcp.test.ts(184,42): TS7031
-tests/access-service.test.ts(431,35): TS2339
 tests/access-service.test.ts(432,35): TS2339
-tests/access-service.test.ts(2060,5): TS2349
+tests/access-service.test.ts(433,35): TS2339
+tests/access-service.test.ts(2061,5): TS2349
 tests/amb-bridge.test.ts(20,8): TS7016
 tests/amb-bridge.test.ts(477,9): TS7034
 tests/amb-bridge.test.ts(482,20): TS7006

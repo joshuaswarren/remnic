@@ -1,4 +1,5 @@
 import test from "node:test";
+import { skipUnlessBetterSqlite3 } from "./helpers/native-binding.mjs";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -96,7 +97,7 @@ alpha
   await stat(writeResult.outputPath);
 });
 
-test("rebuild-memory-projection CLI wrapper respects dry-run default and write mode", async () => {
+test("rebuild-memory-projection CLI wrapper respects dry-run default and write mode", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-rebuild-memory-projection-"));
   await writeText(
     memoryDir,
@@ -129,7 +130,7 @@ alpha
   await stat(writeResult.outputPath);
 });
 
-test("memory-timeline CLI wrapper reads rows from the derived projection store", async () => {
+test("memory-timeline CLI wrapper reads rows from the derived projection store", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-memory-timeline-"));
   await writeText(
     memoryDir,
@@ -161,7 +162,7 @@ alpha
   assert.deepEqual(rows.map((row) => row.eventType), ["created", "updated"]);
 });
 
-test("verify-memory-projection and repair-memory-projection CLI wrappers detect and repair drift", async () => {
+test("verify-memory-projection and repair-memory-projection CLI wrappers detect and repair drift", { skip: skipUnlessBetterSqlite3() }, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-verify-memory-projection-"));
   await writeText(
     memoryDir,
