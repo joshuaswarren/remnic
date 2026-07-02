@@ -1377,7 +1377,13 @@ export function resolveRecallModeDecision(options: RecallModeGraphOptions): Reca
 export async function resolveRecallModeDecisionAsync(
   options: RecallModeGraphOptions & {
     config: PluginConfig;
-    caps: CapabilitySet;
+    /**
+     * Recall-operation capability gates (issue #1523). OPTIONAL and additive:
+     * the recall orchestrator passes a resolved set, but existing callers that
+     * only pass `config` + planner flags stay backward-compatible — the LLM
+     * planner gate falls back to `config.recallPlannerLlmEnabled` when omitted.
+     */
+    caps?: CapabilitySet;
     hints?: string[];
     llm?: FallbackLlmClient;
     signal?: AbortSignal;
@@ -1386,7 +1392,11 @@ export async function resolveRecallModeDecisionAsync(
   const heuristicDecision = resolveRecallModeDecision(options);
 
   // Planner globally off, or LLM planning not opted into → heuristic only.
-  if (!options.plannerEnabled || !options.caps.recallPlannerLlm) {
+  // Prefer the resolved capability when supplied; otherwise fall back to the
+  // config flag so callers on the old option shape get identical gating.
+  const plannerLlmEnabled =
+    options.caps?.recallPlannerLlm ?? options.config.recallPlannerLlmEnabled;
+  if (!options.plannerEnabled || !plannerLlmEnabled) {
     return heuristicDecision;
   }
 
@@ -18381,7 +18391,10 @@ export class Orchestrator {
     sectionId: string,
     results: QmdSearchResult[],
     limit: number,
-    caps: CapabilitySet,
+    // `caps` is additive (issue #1523): the recall pipeline threads a resolved
+    // set, but callers that omit it (e.g. direct unit-test invocations) get an
+    // equivalent set derived from the same config — behavior-preserving.
+    caps: CapabilitySet = resolveCapabilities(this.config),
     retrievalQuery?: string,
   ): QmdSearchResult[] {
     const safeLimit =
@@ -18420,7 +18433,9 @@ export class Orchestrator {
   private applyMmrToQmdResults(
     sectionId: string,
     results: QmdSearchResult[],
-    caps: CapabilitySet,
+    // Additive `caps` (issue #1523); defaults to a config-derived set so direct
+    // callers that omit it behave identically to the threaded recall path.
+    caps: CapabilitySet = resolveCapabilities(this.config),
   ): QmdSearchResult[] {
     if (!caps.recallMmr) return results;
     if (!Array.isArray(results) || results.length < 2) return results;
@@ -18721,8 +18736,13 @@ export class Orchestrator {
     recallNamespaces: string[];
     recallResultLimit: number;
     recallMode: RecallPlanMode;
-    /** Recall-operation capability gates resolved once at recall entry (#1523). */
-    caps: CapabilitySet;
+    /**
+     * Recall-operation capability gates resolved once at recall entry (#1523).
+     * OPTIONAL and additive: the recall pipeline threads a resolved set, but
+     * callers that omit it (e.g. direct unit-test invocations) get an
+     * equivalent config-derived set — behavior-preserving.
+     */
+    caps?: CapabilitySet;
     queryAwarePrefilter?: QueryAwarePrefilter;
     abortSignal?: AbortSignal;
     /** Backend degradation observer — cold-tier QMD must report like hot (#1536). */
@@ -18742,6 +18762,9 @@ export class Orchestrator {
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
   }): Promise<QmdSearchResult[]> {
+    // Prefer the threaded set; fall back to a config-derived set so direct
+    // callers (unit tests) behave identically to the recall pipeline (#1523).
+    const caps = options.caps ?? resolveCapabilities(this.config);
     if (options.queryAwarePrefilter?.candidatePaths?.size === 0) {
       if (options.xrayPoolSizeSink) options.xrayPoolSizeSink.size = 0;
       return [];
@@ -18957,7 +18980,7 @@ export class Orchestrator {
     const isFullModeGraphAssist =
       this.config.qmdTierParityGraphEnabled &&
       this.config.multiGraphMemoryEnabled &&
-      options.caps.graphAssistInFullMode &&
+      caps.graphAssistInFullMode &&
       options.recallMode === "full" &&
       results.length >= Math.max(1, this.config.graphAssistMinSeedResults ?? 3);
     const shouldRunGraphExpansion =
@@ -19053,7 +19076,7 @@ export class Orchestrator {
         timeoutMs: this.config.rerankTimeoutMs,
         maxCandidates: this.config.rerankMaxCandidates,
         cache: this.rerankCache,
-        cacheEnabled: options.caps.rerankCache,
+        cacheEnabled: caps.rerankCache,
         cacheTtlMs: this.config.rerankCacheTtlMs,
       });
       if (ranked && ranked.length > 0) {
@@ -19079,7 +19102,7 @@ export class Orchestrator {
     // Memory Worth filter — must fire on the cold fallback path too, or the
     // feature flag produces divergent behavior by retrieval path (CLAUDE.md
     // rule 39). Fail-open on lookup errors.
-    if (options.caps.recallMemoryWorthFilter && results.length > 0) {
+    if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
         results = await this.applyMemoryWorthRerank(results, options.recallNamespaces);
       } catch (err) {
@@ -19103,7 +19126,7 @@ export class Orchestrator {
       "memories",
       results,
       options.recallResultLimit,
-      options.caps,
+      caps,
       options.prompt,
     );
   }
