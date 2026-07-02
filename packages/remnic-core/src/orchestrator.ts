@@ -1405,9 +1405,9 @@ export async function resolveRecallModeDecisionAsync(
     options.prompt,
     options.hints,
     options.config,
-    options.caps,
     options.llm,
     options.signal,
+    options.caps,
   );
 
   // Shadow mode: record what the LLM would have chosen but keep the heuristic
@@ -11300,8 +11300,8 @@ export class Orchestrator {
         "memories",
         memoryResults,
         recallResultLimit,
-        caps,
         retrievalQuery,
+        caps,
       );
 
       // E-Mem-inspired memory reconstruction: fill gaps for referenced entities
@@ -11417,8 +11417,8 @@ export class Orchestrator {
               "memories",
               boostedScoped,
               recallResultLimit,
-              caps,
               retrievalQuery,
+              caps,
             );
           },
           [] as QmdSearchResult[],
@@ -11576,8 +11576,8 @@ export class Orchestrator {
               "memories",
               boostedScoped,
               recallResultLimit,
-              caps,
               retrievalQuery,
+              caps,
             );
           },
           [] as QmdSearchResult[],
@@ -11757,8 +11757,8 @@ export class Orchestrator {
                   "memories",
                   boostedRecent,
                   recallResultLimit,
-                  caps,
                   retrievalQuery,
+                  caps,
                 );
               },
               [] as QmdSearchResult[],
@@ -18391,11 +18391,12 @@ export class Orchestrator {
     sectionId: string,
     results: QmdSearchResult[],
     limit: number,
-    // `caps` is additive (issue #1523): the recall pipeline threads a resolved
-    // set, but callers that omit it (e.g. direct unit-test invocations) get an
+    retrievalQuery?: string,
+    // `caps` is additive AND last (issue #1523) so the positional call shape
+    // stays backward-compatible: the recall pipeline threads a resolved set,
+    // but callers that omit it (e.g. direct unit-test invocations) get an
     // equivalent set derived from the same config — behavior-preserving.
     caps: CapabilitySet = resolveCapabilities(this.config),
-    retrievalQuery?: string,
   ): QmdSearchResult[] {
     const safeLimit =
       typeof limit === "number" && Number.isFinite(limit)
@@ -19126,8 +19127,8 @@ export class Orchestrator {
       "memories",
       results,
       options.recallResultLimit,
-      caps,
       options.prompt,
+      caps,
     );
   }
 

@@ -188,9 +188,9 @@ export async function planRecallModeLLM(
   prompt: string,
   hints: string[] | undefined,
   config: PluginConfig,
-  caps?: CapabilitySet,
   llm?: FallbackLlmClient,
   signal?: AbortSignal,
+  caps?: CapabilitySet,
 ): Promise<RecallPlannerLlmResult> {
   const heuristicMode = planRecallMode(prompt);
 
