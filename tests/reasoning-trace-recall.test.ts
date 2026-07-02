@@ -333,4 +333,35 @@ describe("StorageManager reasoning_trace routing", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("buildTierMemoryPath routes a decision into <root>/decisions/<date>/ (issue #1546)", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-decision-tier-"));
+    try {
+      const storage = new StorageManager(dir);
+      const id = await storage.writeMemory("decision", "We chose blue-green deploys.", {
+        source: "test",
+      });
+      const memories = await storage.readAllMemories();
+      const found = memories.find((m) => m.frontmatter.id === id);
+      assert.ok(found, "stored decision should be readable");
+
+      const hot = storage.buildTierMemoryPath(found, "hot");
+      const cold = storage.buildTierMemoryPath(found, "cold");
+      assert.ok(
+        hot.includes(`${path.sep}decisions${path.sep}`),
+        `hot tier path should be under decisions/, got: ${hot}`,
+      );
+      assert.ok(
+        cold.includes(`${path.sep}cold${path.sep}decisions${path.sep}`),
+        `cold tier path should be under cold/decisions/, got: ${cold}`,
+      );
+      // The generic tail must not funnel non-fact categories into facts/.
+      assert.ok(
+        !/[\\/]facts[\\/]/.test(hot),
+        `decision must not be migrated into facts/: ${hot}`,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

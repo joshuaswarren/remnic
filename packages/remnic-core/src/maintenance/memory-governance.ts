@@ -1,8 +1,10 @@
 import path from "node:path";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { StorageManager } from "../storage.js";
 import { decideLifecycleTransition } from "../lifecycle.js";
 import type { MemoryFile, MemoryStatus } from "../types.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import { assertPathInsideRoot } from "../utils/path-containment.js";
 
 export type MemoryGovernanceMode = "shadow" | "apply";
 export type MemoryGovernanceReasonCode =
@@ -337,23 +339,42 @@ function buildExplicitCaptureReviewEntries(
     }));
 }
 
-async function listMarkdownFiles(root: string): Promise<string[]> {
+/**
+ * List every `*.md` under `root`, refusing to follow symlinked directories or
+ * entries that resolve outside `containmentRoot` (a realpath-resolved memory
+ * store root). Mirrors the containment guard in consolidation-provenance's
+ * walkMarkdownFiles / the CLI walker, reusing the shared assertPathInsideRoot
+ * (rule 22). Without this, a symlinked category dir (e.g. decisions/ → outside
+ * memoryDir) would be walked and its files surfaced by the malformed-import
+ * governance sweep — an out-of-store info leak.
+ */
+async function listMarkdownFiles(root: string, containmentRoot: string): Promise<string[]> {
   const files: string[] = [];
   const walk = async (dir: string) => {
     try {
+      const dirStat = await lstat(dir);
+      if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
+      assertPathInsideRoot(containmentRoot, await realpath(dir), dir);
       const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
+        if (entry.isSymbolicLink()) continue; // never follow symlinked entries
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           await walk(fullPath);
           continue;
         }
         if (entry.isFile() && entry.name.endsWith(".md")) {
+          try {
+            assertPathInsideRoot(containmentRoot, await realpath(fullPath), fullPath);
+          } catch {
+            continue; // poisoned entry escaping the root — skip it.
+          }
           files.push(fullPath);
         }
       }
     } catch {
-      // Directory may not exist yet.
+      // Absent dir (ENOENT), symlinked/out-of-root dir, or containment
+      // violation — skip this subtree without aborting the sweep.
     }
   };
 
@@ -372,10 +393,29 @@ async function buildMalformedImportEntries(
   candidateFiles?: string[],
 ): Promise<MemoryGovernanceReviewQueueEntry[]> {
   const parsedPaths = new Set(parsedMemories.map((memory) => memory.path));
-  const filesToInspect = candidateFiles ?? [
-    ...await listMarkdownFiles(path.join(memoryDir, "facts")),
-    ...await listMarkdownFiles(path.join(memoryDir, "corrections")),
-  ];
+  // Inspect every recall category directory (RECALL_FALLBACK_DIRS — the single
+  // source of truth) so malformed files under newly-routed categories
+  // (decisions/, preferences/, ...) are surfaced too, not just facts/ (#1546).
+  // Resolve the containment root (realpath) once and thread it into the walker
+  // so a symlinked category dir can't escape memoryDir. If memoryDir itself
+  // can't be resolved, there is nothing valid to inspect.
+  let containmentRoot: string | null = null;
+  try {
+    containmentRoot = await realpath(memoryDir);
+  } catch {
+    containmentRoot = null;
+  }
+  const filesToInspect =
+    candidateFiles ??
+    (containmentRoot === null
+      ? []
+      : (
+          await Promise.all(
+            RECALL_FALLBACK_DIRS.map((dir) =>
+              listMarkdownFiles(path.join(memoryDir, dir), containmentRoot as string),
+            ),
+          )
+        ).flat());
   const entries: MemoryGovernanceReviewQueueEntry[] = [];
 
   for (const filePath of filesToInspect) {

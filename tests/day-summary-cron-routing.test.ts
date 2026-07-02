@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { validateRequest } from "../src/access-schema.js";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
@@ -211,5 +211,128 @@ test("day-summary auto-gather filters hourly summary sections by configured loca
     assert.doesNotMatch(gathered, /Next Chicago day hourly/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("gatherTodayFacts includes a decision-category memory routed to decisions/ (issue #1546)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-day-summary-decision-"));
+  try {
+    // A day whose only memory is a decision routed into decisions/<utc-date>/
+    // must still produce a non-empty day summary that includes it — the scan
+    // now iterates every recall category dir, not just facts/.
+    const utcDate = "2026-06-24";
+    const created = "2026-06-24T12:00:00.000Z";
+    const dir = path.join(memoryDir, "decisions", utcDate);
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, "decision-1.md"),
+      [
+        "---",
+        "id: decision-1",
+        "category: decision",
+        `created: ${created}`,
+        `updated: ${created}`,
+        "source: test",
+        "confidence: 0.9",
+        "---",
+        "We chose blue-green deploys for the ingestion worker.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      daySummaryTimezone: "UTC",
+    });
+    const orchestrator = new Orchestrator(config);
+
+    const gathered = await orchestrator.gatherTodayFacts(undefined, {
+      now: new Date("2026-06-24T18:00:00Z"),
+    });
+
+    assert.notEqual(gathered.trim(), "", "day summary must not be empty for a decision-only day");
+    assert.match(gathered, /blue-green deploys for the ingestion worker/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// Security regression (codex P2): gatherTodayFacts feeds file contents into the
+// day-summary LLM input. A category dir symlinked outside memoryDir must NOT be
+// followed, or an external file would leak into the summary.
+test("gatherTodayFacts does not follow a category dir symlinked outside memoryDir", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("directory symlink setup is platform-specific");
+    return;
+  }
+
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-day-summary-escape-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "remnic-day-summary-outside-"));
+  try {
+    const utcDate = "2026-06-24";
+    const created = "2026-06-24T12:00:00.000Z";
+
+    // External file under <outside>/<date>/, reachable only via a symlink.
+    const outsideDated = path.join(outsideDir, utcDate);
+    await mkdir(outsideDated, { recursive: true });
+    await writeFile(
+      path.join(outsideDated, "decision-external.md"),
+      [
+        "---",
+        "id: decision-external",
+        "category: decision",
+        `created: ${created}`,
+        `updated: ${created}`,
+        "source: test",
+        "confidence: 0.9",
+        "---",
+        "EXTERNAL SECRET — must not leak into the day summary.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    // decisions/ → external dir.
+    await symlink(outsideDir, path.join(memoryDir, "decisions"), "dir");
+
+    // A genuine in-store fact for the same day (regression: real scan works).
+    const realDated = path.join(memoryDir, "facts", utcDate);
+    await mkdir(realDated, { recursive: true });
+    await writeFile(
+      path.join(realDated, "fact-real.md"),
+      [
+        "---",
+        "id: fact-real",
+        "category: fact",
+        `created: ${created}`,
+        `updated: ${created}`,
+        "source: test",
+        "confidence: 0.9",
+        "---",
+        "A genuine in-store fact for the day.",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const config = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      daySummaryTimezone: "UTC",
+    });
+    const orchestrator = new Orchestrator(config);
+
+    const gathered = await orchestrator.gatherTodayFacts(undefined, {
+      now: new Date("2026-06-24T18:00:00Z"),
+    });
+
+    assert.doesNotMatch(gathered, /EXTERNAL SECRET/, "external file must not leak via the symlinked category dir");
+    assert.match(gathered, /genuine in-store fact/, "the real in-store fact is still included");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
   }
 });

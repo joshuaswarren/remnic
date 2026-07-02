@@ -487,13 +487,13 @@ test("StorageRouter integration: catalog registers namespace on storageFor", asy
     const config = makeConfig(memoryDir);
     const catalog = new NamespaceCatalog(config);
     const router = new NamespaceStorageRouter(config, {
-      onResolve: (namespace, storageDir) => {
-        void catalog.registerResolved(namespace, storageDir);
-      },
+      // Return the registration promise so the router tracks it as in-flight and
+      // `whenResolveHooksSettled()` can await it deterministically (no timer race).
+      onResolve: (namespace, storageDir) => catalog.registerResolved(namespace, storageDir),
     });
     await router.storageFor("project-origin-abc123");
-    // allow the fire-and-forget registration to settle
-    await new Promise((r) => setTimeout(r, 10));
+    // Deterministically await the fire-and-forget registration instead of sleeping.
+    await router.whenResolveHooksSettled();
 
     const record = await catalog.getNamespaceRecord("project-origin-abc123");
     assert.ok(record, "storageFor should have registered the namespace");
@@ -2523,8 +2523,8 @@ test("an async onResolve hook rejection does not crash storage resolution", asyn
     // Must not throw or produce an unhandled rejection that fails the test.
     const sm = await router.storageFor("default");
     assert.ok(sm, "storage resolution succeeds despite a rejecting async hook");
-    // Give the swallowed rejection a tick to settle.
-    await new Promise((r) => setTimeout(r, 10));
+    // Deterministically await the swallowed rejection instead of sleeping.
+    await router.whenResolveHooksSettled();
     assert.ok(called >= 1, "the async hook was invoked");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -2564,7 +2564,7 @@ test("concurrent storageFor() for one namespace fires the resolve hook ONCE whil
     // Let the in-flight registration settle, then a steady-state cache hit must
     // still be a catalog no-op (now deduped via notifiedResolved).
     release();
-    await new Promise((r) => setTimeout(r, 10));
+    await router.whenResolveHooksSettled();
     await router.storageFor("project-origin-inflight");
     assert.equal(calls, 1, "a steady-state cache hit after settle must not re-fire the hook");
   } finally {
@@ -2589,20 +2589,20 @@ test("a dropped resolve registration (hook returns false) is retried on a later 
     });
 
     await router.storageFor("project-origin-retry");
-    // Give the async hook a tick to settle and clear the in-flight marker.
-    await new Promise((r) => setTimeout(r, 10));
+    // Deterministically await the async hook so the in-flight marker is cleared.
+    await router.whenResolveHooksSettled();
     assert.equal(calls, 1, "the hook fired once for the dropped registration");
 
     // Now the registration will succeed; a later resolve must RETRY (not be
     // suppressed by a stale in-flight/notified marker from the dropped attempt).
     result = undefined; // success (legacy void)
     await router.storageFor("project-origin-retry");
-    await new Promise((r) => setTimeout(r, 10));
+    await router.whenResolveHooksSettled();
     assert.equal(calls, 2, "a dropped registration must be retried on the next storageFor()");
 
     // After a SUCCESSFUL registration, further cache hits are deduped (no retry).
     await router.storageFor("project-origin-retry");
-    await new Promise((r) => setTimeout(r, 10));
+    await router.whenResolveHooksSettled();
     assert.equal(calls, 2, "a successful registration is not re-fired on subsequent cache hits");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

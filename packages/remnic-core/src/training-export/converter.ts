@@ -15,6 +15,7 @@ import path from "node:path";
 
 import { parseStrictCliDate } from "./date-parse.js";
 import type { TrainingExportOptions, TrainingExportRecord } from "./types.js";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 
 // ---------------------------------------------------------------------------
 // Frontmatter parsing (mirrors storage.ts but kept standalone)
@@ -266,12 +267,14 @@ export async function convertMemoriesToRecords(
   const containmentRoot = await safeRealpath(memoryDir);
   if (!containmentRoot) return [];
 
-  // Collect from facts/ and corrections/ subdirectories (mirrors storage.ts)
-  const factsDir = path.join(memoryDir, "facts");
-  const correctionsDir = path.join(memoryDir, "corrections");
-
-  const dirs = [factsDir, correctionsDir];
+  // Collect from every recall category directory (RECALL_FALLBACK_DIRS — the
+  // single source of truth), so newly-routed categories (decisions/,
+  // preferences/, ...) are exported, not just facts/ + corrections/ (#1546).
+  // collectMarkdownFiles recurses, so flat (corrections/) vs dated
+  // (decisions/<date>/) layouts are both handled.
+  const dirs = RECALL_FALLBACK_DIRS.map((dir) => path.join(memoryDir, dir));
   if (options.includeEntities) {
+    // entities/ is NOT a recall category — it stays a separate opt-in include.
     dirs.push(path.join(memoryDir, "entities"));
   }
 

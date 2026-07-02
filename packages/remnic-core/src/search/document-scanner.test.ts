@@ -78,3 +78,32 @@ test("scanMemoryDir skips nested symlink entries", async (t) => {
     await rm(outsideDir, { recursive: true, force: true });
   }
 });
+
+test("scanMemoryDir indexes memories under category dirs beyond facts/ (issue #1546)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-scan-category-"));
+  try {
+    // A decision routed into decisions/<date>/ must be picked up by the
+    // non-QMD index scanner (Orama/Meilisearch/LanceDB), not just facts/.
+    const decisionDir = path.join(memoryDir, "decisions", "2026-02-22");
+    await mkdir(decisionDir, { recursive: true });
+    await writeFile(
+      path.join(decisionDir, "decision-1.md"),
+      ["---", "id: decision-1", "category: decision", "---", "We chose blue-green deploys."].join("\n"),
+      "utf8",
+    );
+    const factsDir = path.join(memoryDir, "facts", "2026-02-22");
+    await mkdir(factsDir, { recursive: true });
+    await writeFile(
+      path.join(factsDir, "fact-1.md"),
+      ["---", "id: fact-1", "category: fact", "---", "The worker retries three times."].join("\n"),
+      "utf8",
+    );
+
+    const docs = await scanMemoryDir(memoryDir);
+    const ids = docs.map((doc) => doc.docid).sort();
+
+    assert.deepEqual(ids, ["decision-1", "fact-1"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

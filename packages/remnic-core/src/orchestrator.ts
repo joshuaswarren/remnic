@@ -8,9 +8,11 @@ import os from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import {
+  lstat,
   mkdir,
   readdir,
   readFile,
+  realpath,
   stat,
   unlink,
   writeFile,
@@ -343,6 +345,8 @@ import {
   defaultTierMigrationCycleBudget,
 } from "./compounding/engine.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
+import { categoryDirName, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import { assertPathInsideRoot } from "./utils/path-containment.js";
 // IRC preference consolidation — used by eval adapter directly;
 // orchestrator integration planned for future PR.
 // import { consolidatePreferences, buildQueryAwarePreferenceSection, synthesizePreferencesFromLcm } from "./compounding/preference-consolidator.js";
@@ -1758,16 +1762,13 @@ export function resolvePersistedMemoryRelativePath(options: {
   }
   // Pick the subtree that matches the StorageManager.writeMemory routing
   // so fallback paths (used before memoryPathById has seen the fresh
-  // write) agree with where the file actually lives. Without this branch,
-  // reasoning_trace graph edges point at facts/<date>/, and subsequent
-  // graph expansion silently drops those nodes when readMemoryByPath
-  // cannot resolve them (issue #564 PR 3 review).
-  const subtree =
-    options.category === "procedure"
-      ? "procedures"
-      : options.category === "reasoning_trace"
-        ? "reasoning-traces"
-        : "facts";
+  // write) agree with where the file actually lives. Routing goes through
+  // the shared categoryDirName() chokepoint (utils/category-dir.ts) so
+  // every category — decisions/, preferences/, reasoning-traces/, ... —
+  // resolves to the same dir the writer used; otherwise graph edges point
+  // at the wrong subtree and graph expansion silently drops those nodes
+  // when readMemoryByPath cannot resolve them (issue #564 PR 3 / #1546).
+  const subtree = categoryDirName(options.category);
   const idParts = options.memoryId.split("-");
   const maybeTimestamp = Number(idParts[1]);
   if (Number.isFinite(maybeTimestamp) && maybeTimestamp > 0) {
@@ -4787,60 +4788,85 @@ export class Orchestrator {
     // a local calendar day. Scan the UTC-date envelope that overlaps the local
     // day, then filter parseable fact timestamps to that configured local day.
     const datesToScan = utcDateKeysForLocalDay(now, timeZone);
-    const factsBaseDir = path.join(storage.dir, "facts");
     const MAX_CHARS = 100_000;
 
-    // --- Read fact files from each date directory ---
+    // --- Read memory files from each category dir × date directory ---
+    // Iterate every recall category dir (RECALL_FALLBACK_DIRS — single source
+    // of truth) so the day summary includes decisions/, moments/, ... not just
+    // facts/ (#1546). corrections/ is flat, so corrections/<date>/ never exists
+    // and is skipped by the ENOENT guard — preserving the prior exclusion. The
+    // per-file created→local-day filter below is unchanged.
+    //
+    // Symlink/containment hardening (mirrors scanDir / the CLI walker): the
+    // gathered contents feed the day-summary LLM input, so a symlinked category
+    // dir (decisions/ → outside memoryDir) must not be followed and leak files.
+    // Resolve the store root once; skip symlinked / out-of-root dirs and
+    // entries; skip the scan gracefully if the root can't be resolved.
     const facts: MemoryFile[] = [];
-    for (const date of datesToScan) {
-      const factsDir = path.join(factsBaseDir, date);
-      try {
-        const entries = await readdir(factsDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.name.endsWith(".md")) continue;
-          const fullPath = path.join(factsDir, entry.name);
-          try {
-            const raw = await readFile(fullPath, "utf-8");
-            const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-            if (!fmMatch) continue;
-            const fmBlock = fmMatch[1];
-            const content = fmMatch[2].trim();
-            const fm: Record<string, string> = {};
-            for (const line of fmBlock.split("\n")) {
-              const colonIdx = line.indexOf(":");
-              if (colonIdx === -1) continue;
-              fm[line.slice(0, colonIdx).trim()] = line
-                .slice(colonIdx + 1)
-                .trim();
+    let memoryRootReal: string | null = null;
+    try {
+      memoryRootReal = await realpath(storage.dir);
+    } catch {
+      memoryRootReal = null;
+    }
+    for (const categoryDir of RECALL_FALLBACK_DIRS) {
+      if (memoryRootReal === null) break;
+      for (const date of datesToScan) {
+        const dateDir = path.join(storage.dir, categoryDir, date);
+        try {
+          const dirStat = await lstat(dateDir);
+          if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue;
+          assertPathInsideRoot(memoryRootReal, await realpath(dateDir), dateDir);
+          const entries = await readdir(dateDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isSymbolicLink()) continue;
+            if (!entry.name.endsWith(".md")) continue;
+            const fullPath = path.join(dateDir, entry.name);
+            try {
+              assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
+              const raw = await readFile(fullPath, "utf-8");
+              const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+              if (!fmMatch) continue;
+              const fmBlock = fmMatch[1];
+              const content = fmMatch[2].trim();
+              const fm: Record<string, string> = {};
+              for (const line of fmBlock.split("\n")) {
+                const colonIdx = line.indexOf(":");
+                if (colonIdx === -1) continue;
+                fm[line.slice(0, colonIdx).trim()] = line
+                  .slice(colonIdx + 1)
+                  .trim();
+              }
+              const created = fm.created || "unknown";
+              const createdAt = parseFiniteDate(created);
+              if (
+                createdAt &&
+                formatDateInTimeZone(createdAt, timeZone) !== targetLocalDate
+              ) {
+                continue;
+              }
+              facts.push({
+                path: fullPath,
+                frontmatter: {
+                  id: fm.id || path.basename(entry.name, ".md"),
+                  category: (fm.category as any) || "fact",
+                  created,
+                  updated: fm.updated || created,
+                  source: fm.source || "unknown",
+                  confidence: parseFloat(fm.confidence || "0.8"),
+                  confidenceTier: (fm.confidenceTier as any) || "implied",
+                  tags: [],
+                },
+                content,
+              });
+            } catch {
+              // Skip unreadable files
             }
-            const created = fm.created || "unknown";
-            const createdAt = parseFiniteDate(created);
-            if (
-              createdAt &&
-              formatDateInTimeZone(createdAt, timeZone) !== targetLocalDate
-            ) {
-              continue;
-            }
-            facts.push({
-              path: fullPath,
-              frontmatter: {
-                id: fm.id || path.basename(entry.name, ".md"),
-                category: (fm.category as any) || "fact",
-                created,
-                updated: fm.updated || created,
-                source: fm.source || "unknown",
-                confidence: parseFloat(fm.confidence || "0.8"),
-                confidenceTier: (fm.confidenceTier as any) || "implied",
-                tags: [],
-              },
-              content,
-            });
-          } catch {
-            // Skip unreadable files
           }
+        } catch {
+          // Absent dir (ENOENT), symlinked/out-of-root dir, or containment
+          // violation — skip this category/date without aborting the summary.
         }
-      } catch {
-        // Directory doesn't exist — no facts for this date
       }
     }
 
