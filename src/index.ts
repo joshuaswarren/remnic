@@ -5406,6 +5406,12 @@ const pluginDefinition = {
         didCountStart = true;
         (globalThis as any)[CLI_ACTIVE_SERVICE_COUNT] =
           ((globalThis as any)[CLI_ACTIVE_SERVICE_COUNT] || 0) + 1;
+        // Republish the keyed orchestrator slot. A full stop() deletes it
+        // after destroy(); a secondary registry taking over afterwards revives
+        // its captured orchestrator here, and a fresh register() while the
+        // service is running must find that live instance in the slot — not
+        // construct a split-brain second orchestrator over the same memoryDir.
+        (globalThis as any)[keys.ORCHESTRATOR] = orchestrator;
         // IMPORTANT: Do NOT put a `finally` inside the IIFE to clear INIT_PROMISE.
         // If anything in the try block throws synchronously (before the first `await`),
         // the IIFE's finally would run before the outer assignment, and the outer line
