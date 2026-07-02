@@ -1,5 +1,5 @@
 import { access, lstat, readdir, readFile, realpath, stat, writeFile, mkdir, unlink, rename, appendFile, open } from "node:fs/promises";
-import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { log } from "./logger.js";
@@ -4083,34 +4083,46 @@ export class StorageManager {
     }
 
     const collectPaths = async (dir: string) => {
+      // Directory-level guard, isolated from per-entry handling: skip symlinked
+      // or non-directory category dirs and assert the resolved dir stays inside
+      // the memory root before reading. A failure here means the whole subtree
+      // does not exist or escaped the store — fail closed by skipping it.
+      let entries: Dirent[];
       try {
-        // Skip symlinked or non-directory category dirs, then assert the
-        // resolved dir still lives inside the memory root before reading it.
         const dirStat = await lstat(dir);
         if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return;
         assertPathInsideRoot(memoryRootReal, await realpath(dir), dir);
+        entries = await readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
 
-        const entries = await readdir(dir, { withFileTypes: true });
-        const subdirs: string[] = [];
-        for (const entry of entries) {
-          // Never follow symlinked entries out of the store.
-          if (entry.isSymbolicLink()) continue;
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            subdirs.push(fullPath);
-          } else if (entry.name.endsWith(".md")) {
-            // Assert the file resolves inside the root before including it.
+      const subdirs: string[] = [];
+      for (const entry of entries) {
+        // Never follow symlinked entries out of the store.
+        if (entry.isSymbolicLink()) continue;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          subdirs.push(fullPath);
+        } else if (entry.name.endsWith(".md")) {
+          // Isolate per-entry failures in their own try/catch: a containment or
+          // realpath failure on ONE .md entry must not drop sibling files or,
+          // crucially, the deferred subdir recursion below (Cursor Bugbot:
+          // "Poisoned md skips sibling subdirs"). Mirrors the per-file try/catch
+          // in search/document-scanner.ts scanDir and
+          // consolidation-provenance-check.ts walkMarkdownFiles.
+          try {
             assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
             filePaths.push(fullPath);
+          } catch {
+            // Skip just this entry (symlink/containment/realpath failure).
           }
         }
-        for (const subdir of subdirs) {
-          await collectPaths(subdir);
-        }
-      } catch {
-        // Directory does not exist yet, or a symlink/containment guard tripped
-        // — fail closed by skipping this subtree rather than leaking or crashing
-        // the recall fallback.
+      }
+      // Recurse into real subdirectories regardless of any single poisoned entry
+      // above, so valid nested in-store memories are never dropped.
+      for (const subdir of subdirs) {
+        await collectPaths(subdir);
       }
     };
 

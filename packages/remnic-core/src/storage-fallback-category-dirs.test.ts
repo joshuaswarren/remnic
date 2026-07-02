@@ -446,6 +446,65 @@ test("symlinked entry nested inside a category dir does NOT leak into fallback r
   }
 });
 
+/**
+ * Regression for Cursor Bugbot "Poisoned md skips sibling subdirs".
+ *
+ * Per-entry containment/realpath failures must be isolated so they cannot drop
+ * sibling `.md` files or, crucially, the nested-subdir recursion. This asserts
+ * that a category dir which also contains a symlinked-out entry still recurses
+ * into its real nested subdirectory and returns every in-store memory, while
+ * the out-of-store target stays excluded.
+ */
+test("a guarded/skipped sibling entry does NOT drop nested in-store memories", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("directory symlink setup is platform-specific");
+    return;
+  }
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "engram-1497-sibling-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "engram-1497-sibling-out-"));
+  const storage = new StorageManager(baseDir);
+  StorageManager.clearAllStaticCaches();
+  storage.invalidateAllMemoriesCacheForDir();
+  try {
+    const factsDir = path.join(baseDir, "facts");
+    await mkdir(factsDir, { recursive: true });
+    // A top-level in-store memory and a nested in-store memory in the SAME
+    // category dir that also holds the symlinked-out sibling.
+    await writeFile(
+      path.join(factsDir, "top.md"),
+      memoryFile("top-fact", "fact", "Top-level in-store fact."),
+      "utf-8",
+    );
+    await seedMemory(baseDir, "facts", "deep-fact", "fact", "Deeply nested in-store fact.", {
+      nested: true,
+    });
+
+    await writeFile(
+      path.join(outsideDir, "leaked.md"),
+      memoryFile("leaked-secret", "fact", "Out-of-store file must never be recalled."),
+      "utf-8",
+    );
+    // A symlinked-out sibling entry alongside the real files/subdir.
+    await symlink(outsideDir, path.join(factsDir, "escape"), "dir");
+
+    storage.invalidateAllMemoriesCacheForDir();
+    const memories = await storage.readAllMemories();
+    const foundIds = new Set(memories.map((m) => m.frontmatter.id));
+
+    assert.ok(foundIds.has("top-fact"), "the top-level in-store fact must be recalled");
+    assert.ok(
+      foundIds.has("deep-fact"),
+      "the nested in-store fact must still be recalled past a skipped sibling",
+    );
+    assert.ok(!foundIds.has("leaked-secret"), "the symlinked-out file must not leak");
+    assert.equal(memories.length, 2, "exactly the two in-store memories should be returned");
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
 test("QMD-disabled deployment: disk-scan collector returns all categories", async () => {
   const baseDir = await mkdtemp(path.join(os.tmpdir(), "engram-1497-qmd-off-"));
   // entitySchemas is the only other constructor arg; QMD is never constructed by
