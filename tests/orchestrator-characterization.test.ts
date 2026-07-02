@@ -767,7 +767,7 @@ test("runQmdMaintenance unions configured and cataloged namespaces into one stri
     };
 
     const updateCalls: Array<{ namespaces: string[]; strict: boolean | undefined }> = [];
-    const embedCalls: string[][] = [];
+    const embedCalls: Array<{ namespaces: string[]; strict: boolean | undefined }> = [];
     orchestrator.namespaceSearchRouter = {
       async updateNamespacesDetailed(
         namespaces: string[],
@@ -777,8 +777,11 @@ test("runQmdMaintenance unions configured and cataloged namespaces into one stri
         updateCalls.push({ namespaces: [...namespaces], strict: options?.strict });
         return { backendCount: namespaces.length, eligibleNamespaces: namespaces };
       },
-      async embedNamespaces(namespaces: string[]) {
-        embedCalls.push([...namespaces]);
+      // Mock signature matches production (rule 33 / #1545 codex review):
+      // runQmdMaintenance passes { strict: true }, and dropping the options
+      // parameter here would let a non-strict regression pass silently.
+      async embedNamespaces(namespaces: string[], options?: { strict?: boolean }) {
+        embedCalls.push({ namespaces: [...namespaces], strict: options?.strict });
       },
     };
 
@@ -792,7 +795,11 @@ test("runQmdMaintenance unions configured and cataloged namespaces into one stri
       "the update set is the UNION of configured + cataloged namespaces",
     );
     assert.equal(embedCalls.length, 1, "auto-embed batches the same selection into one router call");
-    assert.deepEqual(new Set(embedCalls[0]), new Set(["default", "shared", dynamicNamespace]));
+    assert.equal(embedCalls[0]?.strict, true, "recurring maintenance uses strict embed semantics");
+    assert.deepEqual(
+      new Set(embedCalls[0]?.namespaces),
+      new Set(["default", "shared", dynamicNamespace]),
+    );
   } finally {
     await cleanupDir(memoryDir);
   }
