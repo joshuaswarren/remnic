@@ -42,7 +42,7 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
     malformed_page:1)
       printf '5\\t0\\n'
       ;;
-    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1)
+    cursor_check_ok:1|unrelated_cursor_check:1|all_required_check_runs_ok:1|codex_issue_comment_ok:1|issue_comments_fail:1)
       printf '3\\t0\\tfalse\\t\\n'
       ;;
     repeated_cursor:1)
@@ -68,6 +68,10 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/pulls/7/reviews" ]]; then
     printf 'chatgpt-codex-connector[bot]\\n'
     exit 0
   fi
+  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" ]]; then
+    printf 'cursor[bot]\\n'
+    exit 0
+  fi
   if [[ "$GH_STUB_SCENARIO" == "all_required_check_runs_ok" ]]; then
     exit 0
   fi
@@ -76,6 +80,18 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/pulls/7/reviews" ]]; then
 fi
 
 if [[ "$1" == "api" && "$2" == "repos/example/repo/pulls/7/comments" ]]; then
+  exit 0
+fi
+
+if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/comments" ]]; then
+  if [[ "$GH_STUB_SCENARIO" == "issue_comments_fail" ]]; then
+    echo "issue comments unavailable" >&2
+    exit 3
+  fi
+  if [[ "$GH_STUB_SCENARIO" == "codex_issue_comment_ok" ]]; then
+    printf 'chatgpt-codex-connector[bot]\\n'
+    exit 0
+  fi
   exit 0
 fi
 
@@ -191,6 +207,27 @@ test("pre-merge check fails closed when GitHub pagination does not advance", asy
     assert.equal(result.status, 1);
     assert.match(result.stdout, /BLOCKED: GitHub review thread pagination did not advance/);
     assert.equal((await readFile(countPath, "utf8")).trim(), "2");
+  });
+});
+
+test("pre-merge check accepts a codex clean-verdict ISSUE comment as reviewer activity", async () => {
+  // Codex posts "no major issues" verdicts as issue comments, not reviews or
+  // review comments — the endpoint gap this PR fixes.
+  await withGhStub("codex_issue_comment_ok", async (env, countPath) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /OK: All reviewers posted/);
+    assert.equal((await readFile(countPath, "utf8")).trim(), "1");
+  });
+});
+
+test("pre-merge check blocks when issue comments cannot be read", async () => {
+  await withGhStub("issue_comments_fail", async (env) => {
+    const result = runPreMergeCheck(env);
+
+    assert.equal(result.status, 1);
+    assert.match(result.stdout + result.stderr, /Failed to read PR issue comments/);
   });
 });
 
