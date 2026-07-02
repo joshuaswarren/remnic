@@ -5767,6 +5767,23 @@ const pluginDefinition = {
           stopHeartbeatWatcher = null;
           removeDreamingObserver?.();
           removeDreamingObserver = null;
+          // Tear down the orchestrator itself (#1537): destroy() clears the
+          // QMD maintenance timer and disposes the QMD client, the namespace
+          // router's per-namespace backends, and conversation QMD — releasing
+          // their refcounted shared daemon sessions (close-on-zero). Without
+          // this, every stop/start cycle stranded refs, the shared daemon map
+          // could never reach zero, and qmd child processes plus their map
+          // entries leaked across gateway reloads. The global slot is cleared
+          // (identity-guarded) so a subsequent start() constructs a fresh
+          // orchestrator instead of reusing a destroyed one.
+          try {
+            await orchestrator.destroy();
+          } catch (err) {
+            log.debug(`engram orchestrator destroy on stop failed: ${err}`);
+          }
+          if ((globalThis as any)[keys.ORCHESTRATOR] === orchestrator) {
+            delete (globalThis as any)[keys.ORCHESTRATOR];
+          }
           const unregisterOpenClawHostEmbeddingProvider = (globalThis as any)[
             keys.HOST_EMBEDDING_UNREGISTER
           ] as (() => void) | undefined;

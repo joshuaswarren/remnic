@@ -1212,6 +1212,12 @@ async function releaseSharedDaemonSession(session: QmdDaemonSession | null): Pro
   }
 }
 
+// Test-only seams (#1537): lifecycle tests assert the pool reaches zero after
+// every holder disposes — the property the stop()-teardown fix restores.
+export const sharedDaemonSessionCountForTest = (): number => SHARED_DAEMON_SESSIONS.size;
+export { retainSharedDaemonSession as retainSharedDaemonSessionForTest };
+export { releaseSharedDaemonSession as releaseSharedDaemonSessionForTest };
+
 // ---------------------------------------------------------------------------
 // QmdClient
 // ---------------------------------------------------------------------------
