@@ -119,17 +119,19 @@ if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/comments" ]]; then
   exit 0
 fi
 
-# Head commit metadata (committer date) — used to reject stale reaction sign-offs.
-if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/deadbeef1234567890abcdef1234567890abcdef" ]]; then
+# Head-visibility time = earliest check-suite created_at for the head SHA. Used
+# to reject reaction sign-offs placed before the current head was pushed.
+if [[ "$1" == "api" && "$2" == "repos/example/repo/commits/deadbeef1234567890abcdef1234567890abcdef/check-suites" ]]; then
   if [[ "$GH_STUB_SCENARIO" == "reaction_head_date_missing" ]]; then
-    exit 0  # empty body -> HEAD_COMMIT_DATE unknown
+    exit 0  # empty output -> HEAD_VISIBLE_AT unknown -> fail closed
   fi
   printf '2026-06-01T00:00:00Z\\n'
   exit 0
 fi
 
-# PR-body reactions: login <TAB> content <TAB> created_at. Head commit date in
-# the stub is 2026-06-01T00:00:00Z, so "…06-02…" is fresh and "…05-01…" is stale.
+# PR-body reactions: login <TAB> content <TAB> created_at. Head-visibility time
+# in the stub is 2026-06-01T00:00:00Z, so "…06-02…" is fresh and "…05-01…" is
+# stale (placed before the head was pushed).
 if [[ "$1" == "api" && "$2" == "repos/example/repo/issues/7/reactions" ]]; then
   case "$GH_STUB_SCENARIO" in
     reactions_read_fail)
@@ -396,9 +398,9 @@ test("pre-merge check accepts a codex thumbs-up reaction on the PR body as sign-
   });
 });
 
-test("pre-merge check rejects a codex reaction left before the current head commit", async () => {
+test("pre-merge check rejects a codex reaction placed before the head was pushed", async () => {
   // A +1 on an earlier revision must not satisfy the reviewer once a newer
-  // commit is pushed — the reaction predates the head commit's committer date.
+  // commit is pushed — the reaction predates the head's check-suite (push) time.
   await withGhStub("codex_reaction_stale", async (env) => {
     const result = runPreMergeCheck(env);
 
@@ -407,14 +409,14 @@ test("pre-merge check rejects a codex reaction left before the current head comm
   });
 });
 
-test("pre-merge check does not count reactions when the head commit date is unknown", async () => {
-  // Fail closed: without the head commit date there is no way to prove a
+test("pre-merge check does not count reactions when the head push time is unknown", async () => {
+  // Fail closed: without a push-visibility timestamp there is no way to prove a
   // reaction is fresh, so even a positive codex reaction must not sign off.
   await withGhStub("reaction_head_date_missing", async (env) => {
     const result = runPreMergeCheck(env);
 
     assert.equal(result.status, 1);
-    assert.match(result.stdout, /Head commit date unknown/);
+    assert.match(result.stdout, /Head push time unknown/);
     assert.match(result.stdout, /Missing reviews from: chatgpt-codex-connector\[bot\]/);
   });
 });
