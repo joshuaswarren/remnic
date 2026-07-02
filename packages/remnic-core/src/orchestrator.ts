@@ -8,9 +8,11 @@ import os from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import {
+  lstat,
   mkdir,
   readdir,
   readFile,
+  realpath,
   stat,
   unlink,
   writeFile,
@@ -344,6 +346,7 @@ import {
 } from "./compounding/engine.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { categoryDirName, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import { assertPathInsideRoot } from "./utils/path-containment.js";
 // IRC preference consolidation — used by eval adapter directly;
 // orchestrator integration planned for future PR.
 // import { consolidatePreferences, buildQueryAwarePreferenceSection, synthesizePreferencesFromLcm } from "./compounding/preference-consolidator.js";
@@ -4793,16 +4796,34 @@ export class Orchestrator {
     // facts/ (#1546). corrections/ is flat, so corrections/<date>/ never exists
     // and is skipped by the ENOENT guard — preserving the prior exclusion. The
     // per-file created→local-day filter below is unchanged.
+    //
+    // Symlink/containment hardening (mirrors scanDir / the CLI walker): the
+    // gathered contents feed the day-summary LLM input, so a symlinked category
+    // dir (decisions/ → outside memoryDir) must not be followed and leak files.
+    // Resolve the store root once; skip symlinked / out-of-root dirs and
+    // entries; skip the scan gracefully if the root can't be resolved.
     const facts: MemoryFile[] = [];
+    let memoryRootReal: string | null = null;
+    try {
+      memoryRootReal = await realpath(storage.dir);
+    } catch {
+      memoryRootReal = null;
+    }
     for (const categoryDir of RECALL_FALLBACK_DIRS) {
+      if (memoryRootReal === null) break;
       for (const date of datesToScan) {
         const dateDir = path.join(storage.dir, categoryDir, date);
         try {
+          const dirStat = await lstat(dateDir);
+          if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) continue;
+          assertPathInsideRoot(memoryRootReal, await realpath(dateDir), dateDir);
           const entries = await readdir(dateDir, { withFileTypes: true });
           for (const entry of entries) {
+            if (entry.isSymbolicLink()) continue;
             if (!entry.name.endsWith(".md")) continue;
             const fullPath = path.join(dateDir, entry.name);
             try {
+              assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
               const raw = await readFile(fullPath, "utf-8");
               const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
               if (!fmMatch) continue;
@@ -4843,7 +4864,8 @@ export class Orchestrator {
             }
           }
         } catch {
-          // Directory doesn't exist for this category/date — nothing to read
+          // Absent dir (ENOENT), symlinked/out-of-root dir, or containment
+          // violation — skip this category/date without aborting the summary.
         }
       }
     }
