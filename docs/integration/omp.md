@@ -101,6 +101,24 @@ remnic connectors install omp \
   --config namespace=work
 ```
 
+### Install location
+
+The connector writes into the same agent directory omp auto-discovers
+extensions from, resolved the way omp's own `DirResolver` does:
+
+- The config dir name is `PI_CONFIG_DIR` (default `.omp`).
+- An active profile (`OMP_PROFILE`, falling back to `PI_PROFILE`) wins and
+  targets `<configRoot>/profiles/<name>/agent`; omp discards `PI_CODING_AGENT_DIR`
+  while a profile is active.
+- Otherwise `PI_CODING_AGENT_DIR` overrides the whole agent dir.
+- Otherwise the base is `~/.omp/agent`.
+
+Install under the same profile/env you launch omp with (e.g.
+`OMP_PROFILE=work remnic connectors install omp`) so the extension lands where
+that profile scans. omp's XDG redirection (`XDG_DATA_HOME`, …) relocates
+*data* dirs (sessions/state/cache), **not** the extension dir, so it does not
+affect where the connector installs.
+
 ### Turn off omp's built-in memory
 
 omp ships its own memory backends (`memory.backend: local` and

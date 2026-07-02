@@ -21,6 +21,33 @@ test("resolveOmpAgentHome honors PI_CODING_AGENT_DIR override", () => {
   );
 });
 
+test("resolveOmpAgentHome honors PI_CONFIG_DIR for the config dir name", () => {
+  assert.equal(
+    resolveOmpAgentHome({ HOME: "/home/alice", PI_CONFIG_DIR: ".myomp" }),
+    path.join("/home/alice", ".myomp", "agent"),
+  );
+});
+
+test("resolveOmpAgentHome lets an active profile take precedence over PI_CODING_AGENT_DIR", () => {
+  // Matches omp's DirResolver: when a profile is active, the agent-dir
+  // override is discarded, so the extension must land in the profile dir.
+  assert.equal(
+    resolveOmpAgentHome({
+      HOME: "/home/alice",
+      OMP_PROFILE: "work",
+      PI_CODING_AGENT_DIR: "/custom/omp-agent",
+    }),
+    path.join("/home/alice", ".omp", "profiles", "work", "agent"),
+  );
+});
+
+test("resolveOmpAgentHome combines PI_CONFIG_DIR with a named profile", () => {
+  assert.equal(
+    resolveOmpAgentHome({ HOME: "/home/alice", PI_CONFIG_DIR: ".myomp", PI_PROFILE: "scratch" }),
+    path.join("/home/alice", ".myomp", "profiles", "scratch", "agent"),
+  );
+});
+
 test("resolveOmpAgentHome resolves a named profile under ~/.omp/profiles", () => {
   assert.equal(
     resolveOmpAgentHome({ HOME: "/home/alice", OMP_PROFILE: "work" }),
