@@ -108,6 +108,16 @@ if ! COMMENTS=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments" --paginate --
   exit 1
 fi
 
+# `pulls/{n}/comments` returns only inline REVIEW comments. When Codex finds
+# no issues it posts its verdict ("Didn't find any major issues") as an ISSUE
+# comment, which lives on `issues/{n}/comments` — without this, clean-verdict
+# PRs are blocked forever even though the reviewer explicitly signed off.
+# Body newlines/tabs are flattened so each comment stays one TSV row.
+if ! ISSUE_COMMENTS_RAW=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate --jq '.[] | [.user.login, (.body // "" | gsub("[\r\n\t]"; " "))] | @tsv' 2>/dev/null); then
+  echo "[pre-merge] BLOCKED: Failed to read PR issue comments from GitHub."
+  exit 1
+fi
+
 # Some bots (Cursor Bugbot, Kilo Code Review) post as check runs via GitHub
 # Apps rather than as PR comments. A completed check run counts as reviewer
 # activity. The app.slug field maps to reviewer aliases (e.g. "cursor" matches
@@ -126,7 +136,30 @@ if [[ -n "$HEAD_SHA" ]]; then
   fi
 fi
 
-ALL_REVIEWERS=$(printf '%s\n%s\n' "$REVIEWS" "$COMMENTS" | sort -u)
+# Issue comments are PR-wide, not head-scoped, and this gate reads them for
+# exactly one reason: Codex posts its clean verdict ("Didn't find any major
+# issues … **Reviewed commit:** \`<short sha>\`") as an issue comment. Count
+# ONLY those, and only when the SHA embedded after the "Reviewed commit"
+# label is a prefix (>= 7 hex chars, git's short-SHA floor) of the CURRENT
+# head. Timestamps cannot prove a verdict reviewed this SHA (committer dates
+# survive cherry-picks and rebases); the extracted SHA pin can. Every other
+# issue comment is conversation, never reviewer activity.
+ISSUE_COMMENTERS=""
+while IFS=$'\t' read -r ic_login ic_body; do
+  [[ "$ic_login" == "chatgpt-codex-connector[bot]" ]] || continue
+  grep -qiE "find any major issues|no major issues" <<< "$ic_body" || continue
+  # Extract the hex run following the "Reviewed commit" label, tolerating
+  # markdown decoration (bold markers, backticks, colon) between the two.
+  # `|| true` keeps errexit/pipefail from aborting the gate on comments with
+  # no label (legacy unpinned verdicts) — those are simply never counted.
+  ic_sha=$(grep -oiE "reviewed commit[^0-9a-fA-F]*[0-9a-fA-F]{7,40}" <<< "$ic_body" \
+    | grep -oE "[0-9a-fA-F]{7,40}" | head -n 1 | tr '[:upper:]' '[:lower:]' || true)
+  if [[ -n "$ic_sha" && -n "$HEAD_SHA" && "$HEAD_SHA" == "$ic_sha"* ]]; then
+    ISSUE_COMMENTERS+="${ic_login}"$'\n'
+  fi
+done <<< "$ISSUE_COMMENTS_RAW"
+
+ALL_REVIEWERS=$(printf '%s\n%s\n%s\n' "$REVIEWS" "$COMMENTS" "$ISSUE_COMMENTERS" | sort -u)
 
 has_reviewer_check_run() {
   local reviewer="$1"
