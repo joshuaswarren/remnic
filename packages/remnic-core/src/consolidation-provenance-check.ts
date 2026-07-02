@@ -29,6 +29,7 @@ import {
 // review, cursor Medium) so a future key-format change stays in
 // lock-step with the doctor scan.
 import { sidecarKey } from "./page-versioning.js";
+import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 
 /**
  * Regex to spot a `derived_via: <value>` line in the raw YAML frontmatter
@@ -490,14 +491,14 @@ export async function runConsolidationProvenanceCheck(options: {
 
   // Parse-failure detection (PR #634 round-4 review, codex P2):
   // `readAllMemories()` silently drops files whose frontmatter
-  // doesn't parse.  Walk the facts/ and corrections/ directories for
-  // `.md` files that DO reference provenance frontmatter but didn't
-  // come back from the reader — those are the corruption cases the
-  // doctor is meant to surface.
+  // doesn't parse.  Walk every recall category directory for `.md` files
+  // that DO reference provenance frontmatter but didn't come back from the
+  // reader — those are the corruption cases the doctor is meant to surface.
+  // Uses RECALL_FALLBACK_DIRS (the single source of truth) so newly-routed
+  // categories (decisions/, preferences/, ...) are scanned too (#1546).
   try {
     const seenPaths = new Set(memories.map((m) => m.path));
-    const scanRoots = ["facts", "corrections", "procedures", "reasoning-traces"];
-    for (const rootName of scanRoots) {
+    for (const rootName of RECALL_FALLBACK_DIRS) {
       const rootPath = path.join(memoryDir, rootName);
       for await (const file of walkMarkdownFiles(rootPath, memoryDir)) {
         if (seenPaths.has(file)) continue;

@@ -1,5 +1,7 @@
 import path from "node:path";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
+import { assertPathInsideRoot } from "../utils/path-containment.js";
 
 export interface IndexableDocument {
   /** Memory ID from frontmatter or filename stem */
@@ -94,25 +96,18 @@ function isNodeError(err: unknown): err is NodeJS.ErrnoException {
   return typeof err === "object" && err !== null && "code" in err;
 }
 
-function pathIsInside(parent: string, child: string): boolean {
-  const relative = path.relative(parent, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function assertPathInsideRoot(rootReal: string, candidateReal: string, originalPath: string): void {
-  if (!pathIsInside(rootReal, candidateReal)) {
-    throw new Error(`Refusing to scan memory path outside memoryDir: ${originalPath}`);
-  }
-}
-
 /**
- * Scan `facts/`, `corrections/`, `procedures/`, and `reasoning-traces/`
- * subdirs of memoryDir for indexable markdown documents.
- *
- * Note: reasoning-traces live under their own subtree (issue #564 PR 3).
- * Non-QMD backends (Orama / Meilisearch / LanceDB) build their index
- * through this helper, so any new category subtree must be listed here
- * or those backends silently stop seeing the new memories.
+ * Scan every recall category subdir of memoryDir for indexable markdown
+ * documents. The directory set is derived from `RECALL_FALLBACK_DIRS`
+ * (utils/category-dir.ts → ALL_CATEGORY_DIRS minus non-recall queue dirs) —
+ * the single source of truth — so adding a new category never requires
+ * touching this scanner. Non-QMD backends (Orama / Meilisearch / LanceDB)
+ * build their index through this helper; deriving from RECALL_FALLBACK_DIRS
+ * keeps them in parity with writeMemory's category-dir routing (issue #1546)
+ * and the QMD filesystem-fallback corpus. reasoning-traces/ and the other
+ * category dirs are covered automatically (issue #564 PR 3 no longer needs a
+ * hand-maintained list). scanDir tolerates missing dirs (ENOENT), so category
+ * dirs that do not exist yet are skipped.
  */
 export async function scanMemoryDir(memoryDir: string): Promise<IndexableDocument[]> {
   let memoryRootReal: string;
@@ -124,15 +119,8 @@ export async function scanMemoryDir(memoryDir: string): Promise<IndexableDocumen
     }
     throw err;
   }
-  const factsDir = path.join(memoryDir, "facts");
-  const correctionsDir = path.join(memoryDir, "corrections");
-  const proceduresDir = path.join(memoryDir, "procedures");
-  const reasoningTracesDir = path.join(memoryDir, "reasoning-traces");
-  const [facts, corrections, procedures, reasoningTraces] = await Promise.all([
-    scanDir(factsDir, memoryRootReal),
-    scanDir(correctionsDir, memoryRootReal),
-    scanDir(proceduresDir, memoryRootReal),
-    scanDir(reasoningTracesDir, memoryRootReal),
-  ]);
-  return [...facts, ...corrections, ...procedures, ...reasoningTraces];
+  const perDir = await Promise.all(
+    RECALL_FALLBACK_DIRS.map((dir) => scanDir(path.join(memoryDir, dir), memoryRootReal)),
+  );
+  return perDir.flat();
 }

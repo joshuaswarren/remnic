@@ -935,3 +935,31 @@ test("backspace on BMP character removes exactly one character (thread 7 — reg
 
   assert.equal(result, "a");
 });
+
+test("secure-store migration encrypts memory category dirs but leaves the questions queue plaintext", async () => {
+  // #1546 routes decision/preference/... memories into their own dirs, which
+  // must be encryptable at rest. But questions/ is written/resolved via plain
+  // readFile/writeFile (writeQuestion/resolveQuestion), so encrypting it would
+  // make resolveQuestion() read ciphertext as UTF-8 and corrupt the file
+  // (codex #1563 review). Migration must seal decisions/ but skip questions/.
+  const tempRoot = await mkdtemp(path.join(tmpdir(), "remnic-secure-store-questions-"));
+  try {
+    const memoryDir = path.join(tempRoot, "memory");
+    const decisionPath = path.join(memoryDir, "decisions", "2026-02-22", "decision-1.md");
+    const questionPath = path.join(memoryDir, "questions", "q-1.md");
+    await mkdir(path.dirname(decisionPath), { recursive: true });
+    await mkdir(path.dirname(questionPath), { recursive: true });
+    await writeFile(decisionPath, "---\ncategory: decision\n---\n\nChose Postgres.\n", "utf8");
+    await writeFile(questionPath, "---\nid: q-1\nresolved: false\n---\n\nWhat DB?\n", "utf8");
+
+    const key = deriveKeyScrypt("questions-plaintext", Buffer.alloc(KDF_SALT_LENGTH, 0x5a), FAST_SCRYPT);
+    const migrated = await migrateMemoryDirToEncrypted(memoryDir, key);
+
+    assert.equal(migrated.encrypted, 1, "only the decision memory should be encrypted");
+    assert.equal(isEncryptedFile(await readFile(decisionPath)), true, "decisions/ is encrypted at rest");
+    assert.equal(isEncryptedFile(await readFile(questionPath)), false, "questions/ stays plaintext");
+    assert.match(await readFile(questionPath, "utf8"), /What DB\?/, "question body remains readable UTF-8");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

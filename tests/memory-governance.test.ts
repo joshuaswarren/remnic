@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { RULE_VERSION, runMemoryGovernance, restoreMemoryGovernanceRun } from "../src/maintenance/memory-governance.ts";
 import { StorageManager } from "../src/storage.ts";
 
@@ -1430,5 +1430,86 @@ test("bounded governance apply skips path reloads whose memory id changed", asyn
   } finally {
     StorageManager.prototype.readMemoryByPath = originalReadMemoryByPath;
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// NOTE: keep this test LAST so it never shifts the line numbers of the
+// pre-existing type-check baseline entries earlier in this file
+// (scripts/test-typecheck-baseline.txt pins them by line number).
+test("governance surfaces a malformed file under decisions/ (issue #1546)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-governance-category-"));
+  try {
+    // A malformed memory routed into decisions/<date>/ must be surfaced by the
+    // malformed-import scan, which now walks every recall category directory.
+    await writeText(
+      memoryDir,
+      "decisions/2026-03-03/decision-malformed.md",
+      "---\nid: decision-malformed\ncategory: decision\ncreated: not-a-date\n",
+    );
+
+    const result = await runMemoryGovernance({
+      memoryDir,
+      mode: "shadow",
+      now: new Date("2026-03-09T12:00:00.000Z"),
+    });
+
+    const malformed = result.reviewQueue.filter((entry) => entry.reasonCode === "malformed_import");
+    assert.equal(malformed.length, 1);
+    assert.equal(malformed[0].path, path.join(memoryDir, "decisions/2026-03-03/decision-malformed.md"));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// Security regression (codex P2): the malformed-import sweep must not follow a
+// category dir symlinked outside memoryDir. Kept LAST so it never shifts the
+// line-pinned test-typecheck-baseline entries earlier in this file.
+test("governance does not surface a malformed file behind a symlinked category dir (issue #1546)", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("directory symlink setup is platform-specific");
+    return;
+  }
+
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-governance-escape-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-governance-outside-"));
+  try {
+    // Malformed markdown OUTSIDE the store, reachable only via a symlink.
+    await mkdir(path.join(outsideDir, "2026-03-03"), { recursive: true });
+    await writeFile(
+      path.join(outsideDir, "2026-03-03", "decision-external.md"),
+      "---\nid: decision-external\ncategory: decision\ncreated: not-a-date\n",
+      "utf-8",
+    );
+    // decisions/ → external dir.
+    await symlink(outsideDir, path.join(memoryDir, "decisions"), "dir");
+
+    // A genuine in-store malformed decision under a REAL preferences/ dir
+    // (regression: real category dirs are still swept).
+    await writeText(
+      memoryDir,
+      "preferences/2026-03-03/preference-malformed.md",
+      "---\nid: preference-malformed\ncategory: preference\ncreated: not-a-date\n",
+    );
+
+    const result = await runMemoryGovernance({
+      memoryDir,
+      mode: "shadow",
+      now: new Date("2026-03-09T12:00:00.000Z"),
+    });
+
+    const malformed = result.reviewQueue.filter((entry) => entry.reasonCode === "malformed_import");
+    assert.equal(
+      malformed.some((entry) => entry.path.includes("decision-external.md")),
+      false,
+      "external malformed file must not be surfaced via the symlinked category dir",
+    );
+    assert.equal(
+      malformed.some((entry) => entry.path === path.join(memoryDir, "preferences/2026-03-03/preference-malformed.md")),
+      true,
+      "the real in-store malformed file is still surfaced",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
   }
 });

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { log } from "./logger.js";
 import { isErrnoCode } from "./utils/errno.js";
-import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -3297,6 +3297,32 @@ export class StorageManager {
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
   }
 
+  /**
+   * Resolve the on-disk write path for a memory of the given category, creating
+   * the target directory. Category routing goes through the shared
+   * `getCategoryDir()` chokepoint (utils/category-dir.ts → CATEGORY_DIR_MAP) so
+   * decision/preference/moment/etc. outputs land in their dedicated dirs
+   * (`decisions/`, `preferences/`, ...) instead of collapsing into `facts/`
+   * (issue #1546; CLAUDE.md rule 39). `correction` keeps its historical flat
+   * layout (no `<date>` subdir) as the corrections pipeline expects; every other
+   * category — including `fact`/`entity`, which fall back to `facts/` — is dated
+   * as `<dir>/<date>/`. Read/scan/reindex already iterate every category dir
+   * (RECALL_FALLBACK_DIRS; QMD scans baseDir recursively), so writes stay found.
+   */
+  private async resolveCategoryWritePath(
+    category: MemoryCategory,
+    id: string,
+    today: string,
+  ): Promise<string> {
+    if (category === "correction") {
+      await mkdir(this.correctionsDir, { recursive: true });
+      return path.join(this.correctionsDir, `${id}.md`);
+    }
+    const datedDir = path.join(getCategoryDir(this.baseDir, category), today);
+    await mkdir(datedDir, { recursive: true });
+    return path.join(datedDir, `${id}.md`);
+  }
+
   async writeMemory(
     category: MemoryCategory,
     content: string,
@@ -3435,20 +3461,7 @@ export class StorageManager {
 
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
-    let filePath: string;
-    if (category === "correction") {
-      filePath = path.join(this.correctionsDir, `${id}.md`);
-    } else if (category === "procedure") {
-      await mkdir(path.join(this.proceduresDir, today), { recursive: true });
-      filePath = path.join(this.proceduresDir, today, `${id}.md`);
-    } else if (category === "reasoning_trace") {
-      // Issue #564 PR 3: reasoning traces live in their own subtree so recall
-      // can filter on path cheaply without parsing frontmatter.
-      await mkdir(path.join(this.reasoningTracesDir, today), { recursive: true });
-      filePath = path.join(this.reasoningTracesDir, today, `${id}.md`);
-    } else {
-      filePath = path.join(this.factsDir, today, `${id}.md`);
-    }
+    const filePath = await this.resolveCategoryWritePath(category, id, today);
 
     await this.snapshotBeforeWrite(filePath, "write");
     await writeMaybeEncryptedFile(filePath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
@@ -4325,9 +4338,10 @@ export class StorageManager {
    * Read all memories from the cold tier by scanning the entire cold/ root
    * tree.  Previously this only scanned cold/facts/ and cold/corrections/, but
    * structuredAttributes can appear on any MemoryCategory (preference, decision,
-   * entity, etc.).  Although buildTierMemoryPath currently routes all
-   * non-correction, non-artifact memories to cold/facts/, scanning the full
-   * coldRoot ensures correctness if that routing ever changes and guards against
+   * entity, etc.).  buildTierMemoryPath now routes each category to its own
+   * cold/<dir>/ subtree via the shared categoryDirName() chokepoint (issue
+   * #1546), so cold decisions/preferences/... live outside cold/facts/.
+   * Scanning the full coldRoot covers every category dir and guards against
    * files placed in unexpected subdirectories during manual operations or future
    * refactors.
    *
@@ -4535,19 +4549,17 @@ export class StorageManager {
       return path.join(root, "artifacts", this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
     }
     if (memory.frontmatter.category === "correction") {
+      // corrections/ is flat (no date subdir); preserved across tier moves.
       return path.join(root, "corrections", `${memory.frontmatter.id}.md`);
     }
-    if (memory.frontmatter.category === "procedure") {
-      return path.join(root, "procedures", this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
-    }
-    if (memory.frontmatter.category === "reasoning_trace") {
-      // Issue #564 PR 3: preserve the dedicated reasoning-traces/ subtree
-      // across tier moves. Without this branch, hot→cold migration would
-      // funnel the memory into facts/, breaking isReasoningTracePath() and
-      // silently disabling the recall boost for migrated traces.
-      return path.join(root, "reasoning-traces", this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
-    }
-    return path.join(root, "facts", this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
+    // Every other category — decisions/, preferences/, reasoning-traces/, ...
+    // plus the facts/ fallback for fact/entity/unknown — resolves through the
+    // shared categoryDirName() chokepoint so tier moves land in the SAME dir the
+    // writer used, instead of funneling non-{correction,procedure,reasoning_trace}
+    // categories into facts/ (issue #564 PR 3 preserved reasoning-traces/; #1546
+    // generalizes it to every category dir).
+    const dir = categoryDirName(memory.frontmatter.category);
+    return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
 
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
@@ -6984,20 +6996,7 @@ export class StorageManager {
     }
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
 
-    let filePath: string;
-    if (category === "correction") {
-      filePath = path.join(this.correctionsDir, `${id}.md`);
-    } else if (category === "procedure") {
-      await mkdir(path.join(this.proceduresDir, today), { recursive: true });
-      filePath = path.join(this.proceduresDir, today, `${id}.md`);
-    } else if (category === "reasoning_trace") {
-      // Issue #564 PR 3: chunks of a reasoning_trace memory live alongside the
-      // parent in reasoning-traces/<date>/.
-      await mkdir(path.join(this.reasoningTracesDir, today), { recursive: true });
-      filePath = path.join(this.reasoningTracesDir, today, `${id}.md`);
-    } else {
-      filePath = path.join(this.factsDir, today, `${id}.md`);
-    }
+    const filePath = await this.resolveCategoryWritePath(category, id, today);
 
     await this.writeStorageSecureFile(filePath, fileContent);
     log.debug(`wrote chunk ${id} (${chunkIndex + 1}/${chunkTotal}) to ${filePath}`);

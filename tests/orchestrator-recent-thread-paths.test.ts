@@ -139,6 +139,32 @@ test("resolvePersistedMemoryRelativePath uses corrections directory for correcti
   assert.equal(resolved, `corrections/${memoryId}.md`);
 });
 
+test("resolvePersistedMemoryRelativePath routes a decision into decisions/<date>/ (issue #1546)", () => {
+  const ts = Date.parse("2026-02-22T12:00:00.000Z");
+  const memoryId = `decision-${ts}-abcd`;
+  const resolved = resolvePersistedMemoryRelativePath({
+    memoryId,
+    pathById: new Map(),
+    category: "decision",
+  });
+
+  // The fallback dir must match StorageManager.writeMemory's category-dir
+  // routing so graph edges point at the file's real location.
+  assert.equal(resolved, `decisions/2026-02-22/${memoryId}.md`);
+});
+
+test("resolvePersistedMemoryRelativePath preserves reasoning-traces/ subtree", () => {
+  const ts = Date.parse("2026-02-22T12:00:00.000Z");
+  const memoryId = `reasoning_trace-${ts}-wxyz`;
+  const resolved = resolvePersistedMemoryRelativePath({
+    memoryId,
+    pathById: new Map(),
+    category: "reasoning_trace",
+  });
+
+  assert.equal(resolved, `reasoning-traces/2026-02-22/${memoryId}.md`);
+});
+
 test("appendMemoryToGraphContext adds newly written memory for same-run graph linking", () => {
   const allMems: MemoryFile[] = [];
   appendMemoryToGraphContext({
