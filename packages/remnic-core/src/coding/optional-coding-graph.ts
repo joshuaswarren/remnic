@@ -1,11 +1,11 @@
 // Lazy loader for the optional @remnic/coding-graph package.
 //
-// Remnic's core is installed à-la-carte: users who only need memory features
-// should not have to install codebase-graph tooling, so @remnic/coding-graph
-// is an optional peer dependency, not a bundled dependency. Any code path
-// that actually needs the graph engine calls loadCodingGraphEngineFactory()
-// or one of the try* helpers; the loader either returns the engine factory
-// or throws a user-facing install hint.
+// Remnic's core is installed à-la-carte: users who only need memory
+// features should not have to install codebase-graph tooling, so
+// @remnic/coding-graph is an optional peer dependency, not a bundled
+// dependency. Any code path that actually needs the graph engine calls
+// loadCodingGraphEngineFactory() or one of the try* helpers; the loader
+// either returns the engine factory or throws a user-facing install hint.
 //
 // Justification for the dynamic import:
 //   CLAUDE.md rule 57 / AGENTS.md rule 44 require à-la-carte optional
@@ -19,24 +19,54 @@
 //   packages/remnic-cli/src/optional-module-loader.ts; we mirror it here
 //   because core, not the CLI, owns the engine entry point.
 //
-// The shape of the engine comes from a top-level `import type` so type
-// checking and refactoring tools see the dependency without bundling it.
+// Type-source direction:
+//   The CodingGraphEngine interface and supporting IR types live in
+//   packages/remnic-core/src/coding/coding-graph-types.ts (a local
+//   types-only module). They are owned by core; @remnic/coding-graph
+//   imports them and implements against them. This breaks the type
+//   cycle that would otherwise require core to resolve
+//   @remnic/coding-graph at compile time. Core's tsup DTS phase emits
+//   declarations against the package's compiled output — this would
+//   fail in CI's fresh base install where the optional peer is not
+//   symlinked. With the types owned locally, the loader types its
+//   dynamic-import result through the local shape (validated at runtime
+//   via a structural check, not via TS) so the base install compiles.
 
-import type {
-  CodingGraphEngine,
-  CodingGraphLanguage,
-  FileIR,
-  ParseFileInput,
-  ParseResult,
-  SymbolIR,
-  CreateCodingGraphEngineOptions,
-} from "@remnic/coding-graph";
+import {
+  CODING_GRAPH_ENGINE_VERSION,
+  TIER_1_LANGUAGES,
+  type CodingGraphEngine,
+  type CodingGraphErrorCode,
+  type CodingGraphLanguage,
+  type CreateCodingGraphEngineOptions,
+  type FileIR,
+  type ParseFileInput,
+  type ParseResult,
+  type SymbolIR,
+} from "./coding-graph-types.js";
 
 const SPECIFIER = "@remnic/" + "coding-graph";
 
-type CodingGraphModule = typeof import("@remnic/coding-graph");
+/**
+ * Structural minimal shape of `@remnic/coding-graph`'s public surface,
+ * as seen by core after a successful dynamic import. We narrow to
+ * `unknown` first (since the dynamic import returns `any` at runtime)
+ * and then to this interface only after the runtime check below.
+ */
+interface LoadedCodingGraphModule {
+  ENGINE_VERSION: string;
+  TIER_1_LANGUAGES: readonly CodingGraphLanguage[];
+  CodingGraphError: new (
+    code: CodingGraphErrorCode,
+    message: string,
+    engineVersion?: string,
+  ) => Error;
+  createCodingGraphEngine: (
+    options?: CreateCodingGraphEngineOptions,
+  ) => CodingGraphEngine;
+}
 
-let cached: CodingGraphModule | null | undefined;
+let cached: LoadedCodingGraphModule | null | undefined;
 
 /**
  * Build the user-facing install hint message. Exported so tests can assert
@@ -58,11 +88,12 @@ export function buildCodingGraphInstallHint(): string {
 /**
  * Return true when `err` is a module-not-found failure for exactly the
  * `@remnic/coding-graph` specifier. Same boundary-aware regex as
- * packages/remnic-cli/src/optional-module-loader.ts so transitive misses
- * (a broken @remnic/coding-graph release) bubble up rather than being
- * mis-reported as "run npm install".
+ * packages/remnic-cli/src/optional-module-loader.ts so transitive
+ * misses (a broken @remnic/coding-graph release) bubble up rather than
+ * being mis-reported as "run npm install".
  *
- * Exported for tests; the production loaders call the internal alias below.
+ * Exported for tests; the production loaders call the internal alias
+ * below.
  */
 export function isSpecifierNotFoundErrorForCodingGraph(
   err: unknown,
@@ -94,11 +125,42 @@ function notInstalledError(): Error {
   return new Error(buildCodingGraphInstallHint());
 }
 
-async function tryImportCodingGraphModule(): Promise<CodingGraphModule | null> {
+/**
+ * Narrow a dynamic import result to the local LoadedCodingGraphModule
+ * shape via a runtime structural check (never inline-as casting).
+ * The cast-through-unknown double-step satisfies the rule that
+ * "unchecked casts" must be justified; here the check is the runtime
+ * predicate below.
+ */
+function isLoadedCodingGraphModule(value: unknown): value is LoadedCodingGraphModule {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.createCodingGraphEngine === "function" &&
+    typeof candidate.CodingGraphError === "function" &&
+    typeof candidate.ENGINE_VERSION === "string" &&
+    Array.isArray(candidate.TIER_1_LANGUAGES)
+  );
+}
+
+async function tryImportCodingGraphModule(): Promise<LoadedCodingGraphModule | null> {
   // The dynamic `import()` with a runtime-concatenated specifier is the
   // documented à-la-carte loader pattern. See file header.
   try {
-    return (await import(SPECIFIER)) as CodingGraphModule;
+    // Cast through `unknown` is justified here: the dynamic import below
+    // is the LOADING BOUNDARY between core (no compile-time dependency on
+    // @remnic/coding-graph by design — see file header) and the optional
+    // package whose shape we have documented locally. We validate the
+    // structural shape before using any of the cast fields, so the cast
+    // asserts the boundary, not specific fields.
+    const mod = (await import(SPECIFIER)) as unknown;
+    if (!isLoadedCodingGraphModule(mod)) {
+      // Present but mismatched — treat as a missing install so the hint
+      // surfaces cleanly. A future PR may add a richer diagnostic, but
+      // for PR1 this keeps the contract identical to "not installed".
+      return null;
+    }
+    return mod;
   } catch (err) {
     if (isSpecifierNotFoundErrorForCodingGraph(err)) {
       return null;
@@ -122,51 +184,49 @@ export async function loadCodingGraphEngineFactory(): Promise<
   if (!cached) {
     throw notInstalledError();
   }
-  // `cached.createCodingGraphEngine` is the named export from the
-  // resolved module; the dynamic import `as CodingGraphModule` makes
-  // it statically typed without rebundling the optional package.
   return cached.createCodingGraphEngine;
 }
 
 /**
  * Return `true` only when `@remnic/coding-graph` can be loaded. Use this
- * for gate-off characterization (CLAUDE.md rule 30/48 — `codingGraph.enabled`
- * defaults `false`, and when off the loader must never run). Returns
- * `false` when the package is absent; never throws.
+ * for gate-off characterization (CLAUDE.md rule 30/48 —
+ * `codingGraph.enabled` defaults `false`, and when off the loader must
+ * never run). Returns `false` when the package is absent; never throws.
  */
 export async function isCodingGraphInstalled(): Promise<boolean> {
   return (await tryLoadCodingGraphModule()) !== null;
 }
 
 /**
- * Return the engine factory module if `@remnic/coding-graph` is installed,
- * or `null` if it is not. Use this for code paths that can degrade
- * gracefully when the optional package is absent; do NOT use it where the
- * absence is a user-facing error (use `loadCodingGraphEngineFactory` for
- * that).
+ * Return the engine factory module if `@remnic/coding-graph` is
+ * installed, or `null` if it is not. Use this for code paths that can
+ * degrade gracefully when the optional package is absent; do NOT use it
+ * where the absence is a user-facing error (use
+ * `loadCodingGraphEngineFactory` for that).
  */
-export async function tryLoadCodingGraphModule(): Promise<CodingGraphModule | null> {
+export async function tryLoadCodingGraphModule(): Promise<LoadedCodingGraphModule | null> {
   if (cached === undefined) {
     cached = await tryImportCodingGraphModule();
   }
   return cached ?? null;
 }
 
-/**
- * Re-export of the public engine types so consumers can stay in `core`
- * (the engine contract is owned by `core`, not the optional package).
- *
- * Why: rule 31 — generic names, no host prefix. The branded types live in
- * the optional package; we expose them under core so call-sites don't need
- * a separate import line that fails the moment the optional package goes
- * missing.
- */
+// ---------------------------------------------------------------------------
+// Re-export the engine contract types and stable constants so callers can
+// stay in `core` (no host prefix; the engine contract is owned by core).
+// ---------------------------------------------------------------------------
+export {
+  CODING_GRAPH_ENGINE_VERSION,
+  TIER_1_LANGUAGES,
+};
+
 export type {
   CodingGraphEngine,
+  CodingGraphErrorCode,
   CodingGraphLanguage,
+  CreateCodingGraphEngineOptions,
   FileIR,
   ParseFileInput,
   ParseResult,
   SymbolIR,
-  CreateCodingGraphEngineOptions,
 };
