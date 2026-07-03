@@ -1,0 +1,56 @@
+{
+  "name": "@remnic/coding-graph",
+  "version": "9.3.669",
+  "description": "Web-tree-sitter powered symbol-extraction engine for codebase memory (Tier 1: TypeScript, TSX, JavaScript, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP, Kotlin, Swift, Bash). Optional companion of @remnic/core — install only when coding-graph features are needed.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "grammars"
+  ],
+  "scripts": {
+    "build": "tsup --config tsup.config.ts",
+    "check-types": "tsc --noEmit",
+    "test": "tsx --test 'src/**/*.test.ts'",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "web-tree-sitter": "^0.25.0"
+  },
+  "peerDependencies": {
+    "@remnic/core": "^9.3.669"
+  },
+  "devDependencies": {
+    "@remnic/core": "workspace:*",
+    "@types/node": "^22.10.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/coding-graph"
+  },
+  "keywords": [
+    "remnic",
+    "memory",
+    "codebase",
+    "tree-sitter",
+    "wasm",
+    "symbols",
+    "extraction"
+  ]
+}

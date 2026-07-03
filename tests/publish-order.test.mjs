@@ -94,3 +94,55 @@ test("publish order rejects public packages that depend on private workspace pac
     /depends on private workspace package/,
   );
 });
+
+test("publish order ignores optional peer edges (issue #1551)", async () => {
+  // Mutual optional peers create cycles in the unfiltered graph but are
+  // install-time orthogonal in practice — either peer may be installed
+  // first. The resolver must ignore the edge so the order remains
+  // acyclic. See packageDepNames comment in publish-order.mjs.
+  const repoRoot = await createFixture([
+    {
+      dir: "packages/coding-graph",
+      name: "@fixture/coding-graph",
+      peerDependencies: { "@fixture/core": "^1.0.0" },
+    },
+    {
+      dir: "packages/core",
+      name: "@fixture/core",
+      peerDependencies: { "@fixture/coding-graph": "^1.0.0" },
+    },
+  ]);
+  // createFixture does not emit peerDependenciesMeta — patch the generated
+  // package.json so both peers are declared optional. This mirrors what
+  // packages/coding-graph and packages/remnic-core look like in the real
+  // workspace for #1551.
+  for (const name of ["@fixture/coding-graph", "@fixture/core"]) {
+    await writeFile(
+      path.join(repoRoot, "packages", name.replace(/^@fixture\//, ""), "package.json"),
+      `${JSON.stringify(
+        {
+          name,
+          version: "1.0.0",
+          peerDependencies:
+            name === "@fixture/coding-graph"
+              ? { "@fixture/core": "^1.0.0" }
+              : { "@fixture/coding-graph": "^1.0.0" },
+          peerDependenciesMeta:
+            name === "@fixture/coding-graph"
+              ? { "@fixture/core": { optional: true } }
+              : { "@fixture/coding-graph": { optional: true } },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  }
+  const packages = await discoverWorkspacePackages(repoRoot);
+  // Should NOT throw — the mutual optional-peer cycle is suppressed.
+  const order = resolvePublishOrder(packages);
+  assert.deepEqual(
+    order.slice().sort(),
+    ["packages/coding-graph", "packages/core"],
+    "both public packages must be in the order (no cycle rejection)",
+  );
+});

@@ -1,7 +1,7 @@
 {
   "name": "@remnic/core",
   "version": "9.3.669",
-  "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
+  "description": "Framework-agnostic Remnic memory engine \u2014 orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -440,6 +440,16 @@
       "types": "./dist/codex-thread-key.d.ts",
       "remnic-source": "./src/codex-thread-key.ts",
       "import": "./dist/codex-thread-key.js"
+    },
+    "./coding/optional-coding-graph": {
+      "types": "./dist/coding/optional-coding-graph.d.ts",
+      "remnic-source": "./src/coding/optional-coding-graph.ts",
+      "import": "./dist/coding/optional-coding-graph.js"
+    },
+    "./coding/optional-coding-graph.js": {
+      "types": "./dist/coding/optional-coding-graph.d.ts",
+      "remnic-source": "./src/coding/optional-coding-graph.ts",
+      "import": "./dist/coding/optional-coding-graph.js"
     },
     "./commitment-ledger": {
       "types": "./dist/commitment-ledger.d.ts",
@@ -2911,5 +2921,13 @@
     "ai",
     "agent",
     "core"
-  ]
+  ],
+  "peerDependencies": {
+    "@remnic/coding-graph": "*"
+  },
+  "peerDependenciesMeta": {
+    "@remnic/coding-graph": {
+      "optional": true
+    }
+  }
 }
