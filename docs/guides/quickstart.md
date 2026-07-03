@@ -41,29 +41,45 @@ retrieval reasons.
 
 `remnic connectors doctor <id>` requires a connector id — it doctor-checks one connector at a time (see `Usage: remnic connectors doctor <id>` in the CLI). Run it per connector you installed.
 
-The command prints a row per `DoctorCheck` in the format `<check.name>: <check.detail>` (see `cmdConnectors` at `packages/remnic-cli/src/index.ts:8425-8427`), followed by `Connector healthy` or `Connector has issues`. The rows come from `doctorConnector` (`packages/remnic-core/src/connectors/index.ts:2569`): `Config file` (path under `getConnectorsDir()`), `Config valid` (the JSON parses), and optionally `MCP server` (if the install persisted an `mcpServerUrl`) and `Memory directory` (if it persisted a `memoryDir`). The CLI also computes a `publisherChecks` block from `PUBLISHERS[targetHostId]` (`cmdConnectors:8384-8417`), but at the time of writing the `PUBLISHERS` registry in `packages/remnic-core/src/memory-extension/index.ts` is an empty `Record` — no `registerPublisher(...)` callers ship in the tree — so the publisher block never runs in practice and doctor output is just the config-file + config-valid rows.
+The command prints a row per `DoctorCheck` in the format `<check.name>: <check.detail>` (see `cmdConnectors` at `packages/remnic-cli/src/index.ts:8425-8427`), followed by `Connector healthy` or `Connector has issues`. Three sources contribute rows:
 
-None of those checks probe whether the host plugin is loaded, the host MCP server is wired up, or the host-side MemoryProvider is active. They only validate Remnic-side connector state plus optional MCP URL reachability and memory-dir existence.
+- `Config file` (path under `getConnectorsDir()`) and `Config valid` — from `doctorConnector` at `packages/remnic-core/src/connectors/index.ts:2569`. Optionally `MCP server` (if the install persisted an `mcpServerUrl`) and `Memory directory` (if it persisted a `memoryDir`).
+- `Publisher: <host>` — from the publisher block at `cmdConnectors:8384-8417`. The block runs only when `PUBLISHERS[targetHostId]` is defined. `@remnic/cli` registers publishers at module load (`packages/remnic-cli/src/index.ts:356-360`) for `codex`, `claude-code`, `hermes`, `pi`, and `omp`. `hostIdForConnector("codex-cli") = "codex"` (per `CONNECTOR_TO_HOST` at `packages/remnic-core/src/memory-extension/index.ts:67-69`); every other connector id maps to itself, so `codex-cli` produces a publisher row for the `codex` host, and `claude-code`, `hermes`, `pi`, `omp` produce publisher rows for their own host ids. `replit` and every other connector id not in the registration table prints NO publisher row.
 
-A representative green run for `codex-cli` after `remnic connectors install codex-cli` looks like:
+None of the checks probe whether the host plugin is loaded, the host MCP server is wired up, or the host-side MemoryProvider is active. The publisher row only checks Remnic-side publisher state (publisher's `isHostAvailable()` and whether the host's memory-extension directory exists on disk for publishers that resolve one).
+
+For `codex-cli`, a representative green run after `remnic connectors install codex-cli` (when Codex is installed at `~/.codex` and the install persisted the extension) looks like:
 
 ```bash
 remnic connectors doctor codex-cli
   ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/codex-cli.json
   ✓ Config valid: OK
+  ✓ Publisher: codex: extension at /home/<you>/.codex/memories_extensions/remnic
 
 Connector healthy
 ```
 
-The same shape applies to `hermes` and `replit` (both produce just the config-file and config-valid rows):
+For `claude-code` and `hermes`, the publishers are intentional all-no-op stubs (`isHostAvailable()` returns `false`, per `claude-code-publisher.ts:31-33` and `hermes-publisher.ts:31-33`), so the publisher row prints `host not installed (skip)` with `ok = !available || extensionExists = true` (the `!available` branch). The verdict is still `Connector healthy`:
 
 ```bash
-remnic connectors doctor hermes
-  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/hermes.json
+remnic connectors doctor claude-code
+  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/claude-code.json
   ✓ Config valid: OK
+  ✓ Publisher: claude-code: host not installed (skip)
 
 Connector healthy
 
+remnic connectors doctor hermes
+  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/hermes.json
+  ✓ Config valid: OK
+  ✓ Publisher: hermes: host not installed (skip)
+
+Connector healthy
+```
+
+For `replit`, the install only mints a bearer token. There is no `@remnic/cli` `registerPublisher("replit", ...)` call and no `replit` entry in `CONNECTOR_TO_HOST`, so `hostIdForConnector("replit")` returns `"replit"`, `PUBLISHERS["replit"]` is `undefined`, the `if (factory)` block at `cmdConnectors:8384` is skipped, and the doctor prints only the two config rows:
+
+```bash
 remnic connectors doctor replit
   ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/replit.json
   ✓ Config valid: OK
@@ -71,7 +87,7 @@ remnic connectors doctor replit
 Connector healthy
 ```
 
-For `claude-code`, `remnic connectors doctor claude-code` returns `Connector healthy` after step 1 of the install — the two config-file/config-valid rows pass, and there is no publisher row because `PUBLISHERS` is empty. But the host itself is not actually wired up until steps 2 and 3 from the plugin README are also done. See [`docs/plugins/claude-code.md`](../plugins/claude-code.md#troubleshooting) for what to check when auto-recall/auto-observe do not fire despite a green doctor output.
+For `claude-code`, `remnic connectors doctor claude-code` returns `Connector healthy` after step 1 of the install (the two config rows pass and the publisher row reports `host not installed (skip)` because the stub returns false) — but the host itself is not actually wired up until steps 2 and 3 from the plugin README are also done. See [`docs/plugins/claude-code.md`](../plugins/claude-code.md#troubleshooting) for what to check when auto-recall/auto-observe do not fire despite a green doctor output.
 
 ## Step 5: Use It
 
