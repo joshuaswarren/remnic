@@ -46,16 +46,20 @@ retrieval reasons.
 
 ## Step 4: Verify
 
-The exact `remnic connectors doctor` output depends on which hosts you have actually configured. Each connector install is a separate step (see the plugin README for the host you picked). A representative green run might look like:
+`remnic connectors doctor <id>` requires a connector id — it doctor-checks one connector at a time (see `Usage: remnic connectors doctor <id>` in the CLI). Run it per connector you installed. A representative green run for the three hosts in Step 3 might look like:
 
 ```bash
-remnic connectors doctor
+remnic connectors doctor codex-cli
 # ✓ codex-cli: connected, plugin loaded
+
+remnic connectors doctor hermes
 # ✓ hermes: connected, MemoryProvider active
+
+remnic connectors doctor replit
 # ✓ replit: token generated (configure in Integrations pane)
 ```
 
-Claude Code does **not** appear here as automated output — its connector install only writes Remnic-side state; you have to load the plugin and paste the `.mcp.json` block yourself per the plugin README.
+For claude-code, `remnic connectors doctor claude-code` will report green after step 1 of the install (Remnic-side token + connector state) — but the host itself is not actually wired up until steps 2 and 3 from the plugin README are also done. See [`docs/plugins/claude-code.md`](../plugins/claude-code.md#troubleshooting) for what to check when auto-recall/auto-observe do not fire despite a green doctor output.
 
 ## Step 5: Use It
 

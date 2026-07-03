@@ -22,6 +22,12 @@ Earlier versions of this page claimed `remnic connectors install claude-code` "i
 
 Follow the package README. The legacy `docs/guides/claude-code-integration.md` and the `scripts/hooks/claude-code/` + `scripts/hooks/codex/` engram-branded hook trees were deleted in #1527 PR1 (this change) because they described a flow that no longer exists; do not recreate them.
 
+
+## Troubleshooting
+
+The `remnic connectors install claude-code` step only writes Remnic-side state; the actual plugin has to be loaded through Claude Code's plugin system and the `.mcp.json` block has to be pasted by hand. If a step appears to have no effect, walk through the three steps in the package README in order and verify each one — install (Remnic-side token + connector state), MCP config (`.mcp.json` block with the bearer token), plugin load (`npm install -g @remnic/plugin-claude-code` and Claude Code's plugin loader picks it up). The package README's `Troubleshooting` section lists the specific failure modes for each step.
+
+If `remnic connectors doctor claude-code` reports green but auto-recall/auto-observe do not fire in a Claude Code session, the most common cause is step 3 (plugin load) being skipped — the Remnic-side state is fine, but Claude Code has no hook/skill/agent tree to invoke until the plugin is loaded through Claude Code's own loader.
 ## Related
 
 - [`@remnic/plugin-codex`](../plugins/codex.md) — same pattern for OpenAI Codex CLI
