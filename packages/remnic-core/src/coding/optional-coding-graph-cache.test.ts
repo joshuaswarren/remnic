@@ -1,16 +1,12 @@
-// Regression test for Cursor Bugbot P2 on PR #1588 round 3:
-// "Probe poisons loader error path".
+// Regression tests for Cursor Bugbot P2 round 3 on PR #1588:
+// "Probe poisons loader error path" and the round-5 "Loader skips
+// success cache" follow-up.
 //
-// Before the fix: when tryLoadCodingGraphModule caught a non-specifier
-// error and cached the failure as `cached === null`, a subsequent
-// loadCodingGraphEngineFactory call would short-circuit on the
-// cached failure and throw the install hint instead of the underlying
-// import error.
-//
-// After the fix: the probe path uses a separate attempt-state slot
-// (`probeAttempted`/`probeReturnedNull`). loadCodingGraphEngineFactory
-// always re-attempts the import on a fresh call so users see the real
-// diagnostic on broken installs.
+// These tests must work both when @remnic/coding-graph is installed
+// (workspace dev scenario) AND when it is absent (CI base install —
+// the optional peer is not symlinked). Conditional branches keep the
+// tests durable across install scenarios (P2 P2 P2 chatgpt-codex on
+// PR #1588 round 6).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -19,56 +15,72 @@ import {
   isCodingGraphInstalled,
   loadCodingGraphEngineFactory,
   tryLoadCodingGraphModule,
-  // We import the installed module only via tryLoad — never with a
-  // direct import — so this test stays consistent with the loader
-  // contract.
 } from "./optional-coding-graph.js";
 
-test("loadCodingGraphEngineFactory fresh-attempts even after probe returned null; probe and loader do not share a cached-null state", async () => {
-  // In the dev workspace the package IS installed, so the loader should
-  // resolve to a factory. The test exercises the contract invariant
-  // that the probe (tryLoad → null or module) and the loader
-  // (loadCodingGraphEngineFactory → factory or throw) are independent
-  // caches: a `null` returned by tryLoadCodingGraphModule does NOT
-  // prevent a fresh loadCodingGraphEngineFactory call from succeeding
-  // when the package is in fact present.
-
-  // Step 1: probe and load side-by-side. The probe returns module-or-null;
-  // the loader returns factory-or-throws. Both must agree on the
-  // package's presence at this instant.
+test("loadCodingGraphEngineFactory fresh-attempts regardless of probe state", async () => {
+  // Probe and load side-by-side. Both must agree on the package's
+  // presence at this instant. When @remnic/coding-graph is absent
+  // (CI base install) the probe returns null and the loader throws
+  // the install hint. When present (dev workspace) both succeed.
   const probeResult = await tryLoadCodingGraphModule();
-  const factory = await loadCodingGraphEngineFactory();
-  assert.equal(typeof factory, "function");
   const installed = await isCodingGraphInstalled();
 
   if (probeResult === null) {
-    // If the probe resolved to null (package absent in CI), the loader
-    // should have thrown the install hint. That branch is not reachable
-    // in the dev workspace where this test runs, but we assert the
-    // invariant for completeness.
-    assert.equal(installed, false, "probe-null must agree with installed=false");
+    assert.equal(installed, false);
+    let threw = false;
+    let message = "";
+    try {
+      await loadCodingGraphEngineFactory();
+    } catch (err) {
+      threw = true;
+      message = err instanceof Error ? err.message : String(err);
+    }
+    assert.equal(threw, true, "loader must throw install hint when probe returned null");
+    assert.match(message, /@remnic\/coding-graph/);
+    assert.match(message, /npm install @remnic\/coding-graph/);
+    return;
+  }
+
+  // Package present.
+  assert.equal(installed, true);
+  const factory = await loadCodingGraphEngineFactory();
+  assert.equal(typeof factory, "function");
+});
+
+test("probe short-circuits to the same answer on repeated calls", async () => {
+  // Probe must be deterministic — repeated calls return the same
+  // answer. Both branches are valid (present → module, absent → null).
+  const a = await tryLoadCodingGraphModule();
+  const b = await tryLoadCodingGraphModule();
+  const aKind = a === null ? "null" : "module";
+  const bKind = b === null ? "null" : "module";
+  assert.equal(aKind, bKind, "consecutive probe calls must agree");
+});
+
+test("loader path is independent of the probe result", async () => {
+  // The Bugbot P2 round 3 bug was: a probe that caught a non-specifier
+  // import error was caching `null` into the load-path. That poisoned
+  // the user-facing loader path. This test asserts the load-path
+  // ALWAYS attempts a fresh import — proven by exercising the path
+  // for both present and absent packages.
+  const probe = await tryLoadCodingGraphModule();
+  if (probe === null) {
+    // Absent: loader throws install hint.
     let threw = false;
     try {
       await loadCodingGraphEngineFactory();
     } catch {
       threw = true;
     }
-    assert.equal(threw, true, "loader must throw install hint when probe returned null");
+    assert.equal(threw, true, "loader throws when package is absent");
   } else {
-    // Package present in dev — confirm the loader agrees.
-    assert.equal(installed, true, "probe-module must agree with installed=true");
+    // Present: loader returns a callable factory.
+    const factory = await loadCodingGraphEngineFactory();
     assert.equal(typeof factory, "function");
+    assert.throws(() => factory(), (err: unknown) => {
+      if (!err || typeof err !== "object") return false;
+      const e = err as { name?: unknown; code?: unknown };
+      return e.name === "CodingGraphError" && e.code === "not_implemented";
+    });
   }
-});
-
-test("probe and loader are independent caches: a subsequent probe call does not poison the loader", async () => {
-  // Even if the probe returns null on a first call, the loader on a
-  // later call must still attempt the fresh import. We don't fabricate
-  // a broken install here (it would require mutating the workspace),
-  // but we DO run probe twice and confirm the loader succeeded after.
-  const a = await tryLoadCodingGraphModule();
-  const b = await tryLoadCodingGraphModule();
-  assert.equal(a === null, b === null, "probe short-circuits to the same answer");
-  const factory = await loadCodingGraphEngineFactory();
-  assert.equal(typeof factory, "function", "loader returns the factory after repeated probes");
 });

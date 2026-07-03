@@ -1,50 +1,69 @@
-// Regression test for Cursor Bugbot P3 round 5 on PR #1588:
+// Regression tests for Cursor Bugbot P3 round 5 on PR #1588:
 // "Loader skips success cache".
 //
-// After an initial loadCodingGraphEngineFactory() succeeds, subsequent
-// calls must reuse the cached factory without re-importing the optional
-// package. This test asserts the success-cache fast path is wired.
+// These tests must work both when @remnic/coding-graph is installed
+// (workspace dev scenario) AND when it is absent (CI base install —
+// the optional peer is not symlinked). chatgpt-codex round 6 P2:
+// the original test assumed the package is installed and would fail
+// in a core-only install. Every assertion below is conditional.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { loadCodingGraphEngineFactory, tryLoadCodingGraphModule } from "./optional-coding-graph.js";
+import {
+  isCodingGraphInstalled,
+  loadCodingGraphEngineFactory,
+  tryLoadCodingGraphModule,
+} from "./optional-coding-graph.js";
 
-test("loadCodingGraphEngineFactory returns a callable factory on every call (cached success fast-path)", async () => {
-  const f1 = await loadCodingGraphEngineFactory();
-  const f2 = await loadCodingGraphEngineFactory();
-  // Both calls return the same factory function (cached success path).
-  assert.equal(typeof f1, "function");
-  assert.equal(typeof f2, "function");
-});
-
-test("after a successful load, tryLoadCodingGraphModule and loadCodingGraphEngineFactory agree on the cached module", async () => {
-  // Seed the success cache by calling loadCodingGraphEngineFactory once.
+test("loadCodingGraphEngineFactory returns a callable factory (install present)", async () => {
+  const installed = await isCodingGraphInstalled();
+  if (!installed) {
+    // Skip when package is absent (CI base install).
+    return;
+  }
   const factory = await loadCodingGraphEngineFactory();
   assert.equal(typeof factory, "function");
-  // Now a fresh probe call should return the same cached module reference.
+});
+
+test("loadCodingGraphEngineFactory throws install hint when package absent", async () => {
+  const installed = await isCodingGraphInstalled();
+  if (installed) {
+    return;
+  }
+  let threw = false;
+  let message = "";
+  try {
+    await loadCodingGraphEngineFactory();
+  } catch (err) {
+    threw = true;
+    message = err instanceof Error ? err.message : String(err);
+  }
+  assert.equal(threw, true);
+  assert.match(message, /@remnic\/coding-graph/);
+  assert.match(message, /npm install @remnic\/coding-graph/);
+});
+
+test("after a successful load, tryLoadCodingGraphModule returns the same module (cache fast-path)", async () => {
+  const installed = await isCodingGraphInstalled();
+  if (!installed) return;
+  // Seed the success cache by calling loadCodingGraphEngineFactory.
+  const factory = await loadCodingGraphEngineFactory();
+  assert.equal(typeof factory, "function");
+  // A fresh probe call should return the cached module reference.
   const probeResult = await tryLoadCodingGraphModule();
-  assert.ok(probeResult !== null, "dev workspace has the package installed");
-  // Both paths now serve the same identity until the process ends.
-  const factoryAgain = await loadCodingGraphEngineFactory();
-  assert.equal(typeof factoryAgain, "function");
-  // Sanity: invoking the factory throws the placeholder (proves the
-  // exposed function is the actual createCodingGraphEngine).
-  assert.throws(() => factoryAgain(), (err: unknown) => {
+  assert.ok(probeResult !== null);
+  // Invoking the factory throws the placeholder (PR1 contract).
+  assert.throws(() => factory(), (err: unknown) => {
     if (!err || typeof err !== "object") return false;
     const e = err as { name?: unknown; code?: unknown };
     return e.name === "CodingGraphError" && e.code === "not_implemented";
   });
 });
 
-test("loader fresh-attempts when the package is currently missing (not in dev)", async () => {
-  // This test asserts the throwing loader path: when the cached result
-  // is unset AND the package is missing, the loader must throw the
-  // install hint. The runtime check is conditional because the dev
-  // workspace has the package installed; we exercise the throwing
-  // branch via a fresh loadCodingGraphEngineFactory call and confirm
-  // it either returns a function (package present) or throws the
-  // install hint (package absent).
+test("loader fresh-attempts after the package is detected as missing", async () => {
+  // If present, loader returns a factory.
+  // If absent, loader throws the install hint.
   try {
     const factory = await loadCodingGraphEngineFactory();
     assert.equal(typeof factory, "function");
