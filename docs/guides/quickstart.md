@@ -27,23 +27,16 @@ remnic daemon status
 
 ## Step 3: Connect Your Tools
 
-Install plugins for the AI tools you use:
+Install the plugin for your AI tool. Each plugin has its own install path — read its README before running anything:
 
-```bash
-# Connect Claude Code (hooks + MCP + skills)
-remnic connectors install claude-code
+- Claude Code: <https://github.com/joshuaswarren/remnic/blob/main/packages/plugin-claude-code/README.md> (three manual steps; the Remnic-side connector install does not configure Claude Code)
+- Codex CLI: <https://github.com/joshuaswarren/remnic/blob/main/packages/plugin-codex/README.md>
+- Hermes Agent: <https://github.com/joshuaswarren/remnic/blob/main/packages/plugin-hermes/README.md>
+- Replit Agent: <https://github.com/joshuaswarren/remnic/blob/main/packages/connector-replit/README.md>
 
-# Connect Codex CLI (hooks + MCP + skills)
-remnic connectors install codex-cli
+See [Plugin docs](../plugins/) for the platform-by-platform overview, and the [Connector setup](https://github.com/joshuaswarren/remnic/blob/main/docs/integration/connector-setup.md) guide for how `remnic connectors` tracks per-host state.
 
-# Connect Hermes Agent (MemoryProvider + tools)
-remnic connectors install hermes
-
-# Connect Replit Agent (MCP only)
-remnic connectors install replit
-```
-
-Each command generates a dedicated auth token and installs the native plugin for that platform.
+Each `remnic connectors install <host>` command mints a host-specific auth token and writes Remnic-side connector state. Whether it also configures the host itself varies — read the plugin README for the host you picked before assuming anything is wired up.
 
 Want to see cross-tool memory before installing connectors? Run the no-key
 [Coding Agent Memory Demo](../../examples/coding-agent-memory-demo/) from a
@@ -53,13 +46,16 @@ retrieval reasons.
 
 ## Step 4: Verify
 
+The exact `remnic connectors doctor` output depends on which hosts you have actually configured. Each connector install is a separate step (see the plugin README for the host you picked). A representative green run might look like:
+
 ```bash
 remnic connectors doctor
-# ✓ claude-code: connected, 44 tools available
-# ✓ codex-cli: connected, 44 tools available
+# ✓ codex-cli: connected, plugin loaded
 # ✓ hermes: connected, MemoryProvider active
 # ✓ replit: token generated (configure in Integrations pane)
 ```
+
+Claude Code does **not** appear here as automated output — its connector install only writes Remnic-side state; you have to load the plugin and paste the `.mcp.json` block yourself per the plugin README.
 
 ## Step 5: Use It
 

@@ -22,7 +22,6 @@ packages/remnic-cli/templates/
 
 # Scripts that are operational, not core logic
 scripts/faiss/
-scripts/hooks/
 
 # Python scripts (separate tooling)
 scripts/faiss_index.py
