@@ -1,0 +1,403 @@
+/**
+ * Tests for `judge-cache`: content-keyed judge-result cache.
+ *
+ * Covers the six contract classes fixed by issue #1573 (PR 1):
+ *   (a) hit/miss
+ *   (b) key stability across process restarts (two cache instances over the same dir)
+ *   (c) answer text change => miss
+ *   (d) corrupted entry => recompute, never crash, never fabricated verdict
+ *   (e) concurrent writes do not corrupt (per-key serialization)
+ *   (f) characterization: cache disabled => byte-identical judge behavior
+ *
+ * Run individually with:
+ *   npx tsx --test packages/bench/src/judges/judge-cache.test.ts
+ */
+
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import type { BenchJudgeResult } from "../adapters/types.ts";
+import { JudgeCache, runJudgeWithCache } from "./judge-cache.ts";
+
+async function withTempDir<T>(
+  body: (dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-judge-cache-"));
+  try {
+    return await body(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+const sampleResult: BenchJudgeResult = {
+  score: 1,
+  tokens: { input: 12, output: 9 },
+  latencyMs: 42,
+  model: "judge-mock",
+};
+
+interface SampleKeyParts {
+  benchmarkId: string;
+  datasetVersion: string;
+  questionId: string;
+  answerText: string;
+  judgePromptHash: string;
+  judgeModelId: string;
+  judgeParamsHash: string;
+}
+
+function sampleKeyParts(overrides: Partial<SampleKeyParts> = {}): SampleKeyParts {
+  return {
+    benchmarkId: "locomo",
+    datasetVersion: "v1",
+    questionId: "q-001",
+    answerText: "the eagle has landed",
+    judgePromptHash: "judge-prompt-sha",
+    judgeModelId: "judge-model-id",
+    judgeParamsHash: "judge-params-sha",
+    ...overrides,
+  };
+}
+
+// --- (a) hit/miss -----------------------------------------------------------
+
+test("a) hit/miss: cache miss on first lookup, hit after put", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+    const parts = sampleKeyParts();
+
+    const firstLookup = await cache.get(parts);
+    assert.equal(firstLookup, undefined, "fresh cache must miss");
+
+    await cache.put(parts, sampleResult);
+    const secondLookup = await cache.get(parts);
+    assert.deepEqual(secondLookup?.verdict, sampleResult);
+    assert.equal(secondLookup?.cacheHit, true);
+  });
+});
+
+// --- (b) key stability across process restarts -----------------------------
+
+test("b) key stability: re-opening the cache from the same dir produces the same verdict", async () => {
+  await withTempDir(async (cacheDir) => {
+    const parts = sampleKeyParts();
+
+    const writer = new JudgeCache({ dir: cacheDir });
+    await writer.put(parts, sampleResult);
+
+    // Simulate a process restart: a brand-new JudgeCache instance on the
+    // same directory must read the persisted entry.
+    const reader = new JudgeCache({ dir: cacheDir });
+    const lookup = await reader.get(parts);
+    assert.ok(lookup, "second-process instance must read persisted entry");
+    assert.deepEqual(lookup.verdict, sampleResult);
+  });
+});
+
+// --- (c) answer text change => miss ---------------------------------------
+
+test("c) answer text change produces a fresh miss", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+
+    await cache.put(sampleKeyParts({ questionId: "q-002", answerText: "alpha" }), {
+      ...sampleResult,
+      score: 0.4,
+    });
+
+    const sameQuestion = await cache.get(
+      sampleKeyParts({ questionId: "q-002", answerText: "alpha" }),
+    );
+    assert.ok(sameQuestion, "identical key must hit");
+
+    const newAnswer = await cache.get(
+      sampleKeyParts({ questionId: "q-002", answerText: "beta" }),
+    );
+    assert.equal(newAnswer, undefined, "changed answer text must miss");
+  });
+});
+
+test("c) any single key field change produces a fresh miss", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+    const base = sampleKeyParts();
+
+    await cache.put(base, sampleResult);
+    assert.ok(await cache.get(base), "base entry must hit");
+
+    const variations: SampleKeyParts[] = [
+      { ...base, benchmarkId: "longmemeval" },
+      { ...base, datasetVersion: "v2" },
+      { ...base, questionId: "q-002" },
+      { ...base, judgePromptHash: "different-prompt-sha" },
+      { ...base, judgeModelId: "different-judge-model" },
+      { ...base, judgeParamsHash: "different-judge-params" },
+    ];
+    for (const variant of variations) {
+      const result = await cache.get(variant);
+      assert.equal(result, undefined, `variant ${JSON.stringify(variant)} must miss`);
+    }
+  });
+});
+
+// --- (d) corrupted entry => recompute, never crash, never fabricated -----
+
+test("d) corrupted entry is treated as miss and never throws", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+    const parts = sampleKeyParts();
+
+    await cache.put(parts, sampleResult);
+    const key = await cache.computeKey(parts);
+    // Write garbage bytes directly into the entry file. The cache must
+    // absorb this as a miss and never surface fabricated verdict data.
+    await writeFile(path.join(cacheDir, `${key}.json`), "}\u0000not-json{", "utf8");
+
+    const lookup = await cache.get(parts);
+    assert.equal(lookup, undefined, "corrupted entry must not surface as a hit");
+  });
+});
+
+test("d) entry that is valid JSON but not an object is treated as miss", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+    const parts = sampleKeyParts();
+
+    const key = await cache.computeKey(parts);
+    await writeFile(path.join(cacheDir, `${key}.json`), "null", "utf8");
+
+    const lookup = await cache.get(parts);
+    assert.equal(lookup, undefined, "null JSON entry must not hit");
+  });
+});
+
+test("d) entry referencing a missing required field is treated as miss", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+    const parts = sampleKeyParts();
+
+    const key = await cache.computeKey(parts);
+    // Missing the required 'verdict' field.
+    await writeFile(
+      path.join(cacheDir, `${key}.json`),
+      JSON.stringify({ storedAt: new Date().toISOString() }),
+      "utf8",
+    );
+
+    const lookup = await cache.get(parts);
+    assert.equal(lookup, undefined, "malformed JSON entry must not hit");
+  });
+});
+
+// --- (e) concurrent writes do not corrupt ---------------------------------
+
+test("e) concurrent writes for the same key do not corrupt the entry", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+    const parts = sampleKeyParts();
+
+    const writerCount = 16;
+    await Promise.all(
+      Array.from({ length: writerCount }, (_, index) =>
+        cache.put(parts, {
+          ...sampleResult,
+          score: index / writerCount,
+          tokens: { input: index, output: index },
+        }),
+      ),
+    );
+
+    const lookup = await cache.get(parts);
+    assert.ok(lookup, "concurrent writes must leave a readable entry");
+    // One of the writers must have won, but the entry must be one of the
+    // payloads we wrote and parse as a complete BenchJudgeResult.
+    const winners = Array.from({ length: writerCount }, (_, index) => ({
+      ...sampleResult,
+      score: index / writerCount,
+      tokens: { input: index, output: index },
+    }));
+    assert.ok(
+      winners.some(
+        (candidate) =>
+          candidate.score === lookup.verdict.score &&
+          candidate.tokens.input === lookup.verdict.tokens.input &&
+          candidate.tokens.output === lookup.verdict.tokens.output &&
+          (candidate.model ?? null) === (lookup.verdict.model ?? null) &&
+          candidate.latencyMs === lookup.verdict.latencyMs,
+      ),
+      "winning entry must be one of the payloads actually written",
+    );
+  });
+});
+
+test("e) different keys stay independent under concurrent writes", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+
+    const writes = Array.from({ length: 12 }, (_, index) => {
+      const parts = sampleKeyParts({ questionId: `q-conc-${index}` });
+      const verdict: BenchJudgeResult = {
+        ...sampleResult,
+        score: index,
+        tokens: { input: index, output: index },
+      };
+      return cache.put(parts, verdict);
+    });
+    await Promise.all(writes);
+
+    for (let index = 0; index < 12; index += 1) {
+      const parts = sampleKeyParts({ questionId: `q-conc-${index}` });
+      const lookup = await cache.get(parts);
+      assert.ok(
+        lookup,
+        `entry for ${parts.questionId} must read back after concurrent writes`,
+      );
+      assert.equal(lookup.verdict.score, index);
+    }
+  });
+});
+
+// --- (f) characterization: cache disabled => byte-identical behavior -----
+
+test("f) cache disabled: every call reaches the underlying judge exactly once", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+    let underlyingCalls = 0;
+    const underlying = {
+      async score(_q: string, predicted: string, expected: string) {
+        underlyingCalls += 1;
+        return predicted === expected ? 1 : 0;
+      },
+      async scoreWithMetrics(_q: string, predicted: string, expected: string) {
+        underlyingCalls += 1;
+        return {
+          score: predicted === expected ? 1 : 0,
+          tokens: { input: 1, output: 1 },
+          latencyMs: 1,
+          model: "judge-mock",
+        };
+      },
+      async scoreBinaryPrompt(prompt: string) {
+        underlyingCalls += 1;
+        return {
+          score: prompt.includes("yes") ? 1 : 0,
+          tokens: { input: 1, output: 1 },
+          latencyMs: 1,
+          model: "judge-mock",
+        };
+      },
+    };
+
+    const wrapper = runJudgeWithCache({
+      judge: underlying,
+      cache: null, // characterization: cache disabled
+    });
+
+    const question = "What did the eagle land on?";
+    const predicted = "the moon";
+    const expected = "the moon";
+
+    const scoreA = await wrapper.score(question, predicted, expected);
+    const scoreB = await wrapper.score(question, predicted, expected);
+    assert.equal(scoreA, 1);
+    assert.equal(scoreB, 1);
+    assert.equal(underlyingCalls, 2, "with cache disabled, every score() call must hit the judge");
+
+    const metricsA = await wrapper.scoreWithMetrics!(question, predicted, expected);
+    const metricsB = await wrapper.scoreWithMetrics!(question, predicted, expected);
+    assert.equal(metricsA.score, metricsB.score);
+    assert.equal(underlyingCalls, 4, "scoreWithMetrics() must also reach the judge every time");
+
+    await wrapper.scoreBinaryPrompt!("answer yes or no: blah");
+    await wrapper.scoreBinaryPrompt!("answer yes or no: blah");
+    assert.equal(underlyingCalls, 6, "scoreBinaryPrompt() must also reach the judge every time");
+
+    assert.equal(wrapper.counters.modelCalls, underlyingCalls);
+    assert.equal(wrapper.counters.cacheHits, 0);
+    assert.equal(wrapper.counters.cacheMisses, 0);
+  });
+});
+
+test("f) cache enabled: identical input serves from cache after first miss", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+    let underlyingCalls = 0;
+    const underlying = {
+      async scoreWithMetrics(_q: string, predicted: string, expected: string) {
+        underlyingCalls += 1;
+        return {
+          score: predicted === expected ? 1 : 0,
+          tokens: { input: 1, output: 1 },
+          latencyMs: 1,
+          model: "judge-mock",
+        };
+      },
+    };
+    const wrapper = runJudgeWithCache({
+      judge: underlying,
+      cache,
+      keyExtras: {
+        benchmarkId: "locomo",
+        datasetVersion: "v1",
+        judgePromptHash: "sha-prompt",
+        judgeModelId: "judge-x",
+        judgeParamsHash: "sha-params",
+      },
+    });
+
+    const q = "Q", predicted = "P", expected = "P";
+    const a = await wrapper.scoreWithMetrics!(q, predicted, expected);
+    const b = await wrapper.scoreWithMetrics!(q, predicted, expected);
+    const c = await wrapper.scoreWithMetrics!(q, predicted, expected);
+
+    assert.equal(a.score, 1);
+    assert.equal(b.score, 1);
+    assert.equal(c.score, 1);
+    assert.equal(underlyingCalls, 1, "second and third calls must serve from cache");
+    assert.equal(wrapper.counters.modelCalls, 1);
+    assert.equal(wrapper.counters.cacheHits, 2);
+    assert.equal(wrapper.counters.cacheMisses, 1);
+  });
+});
+
+test("f) changing answer text causes a fresh judge call even with cache enabled", async () => {
+  await withTempDir(async (cacheDir) => {
+    const cache = new JudgeCache({ dir: cacheDir });
+    let underlyingCalls = 0;
+    const underlying = {
+      async scoreWithMetrics(_q: string, predicted: string, expected: string) {
+        underlyingCalls += 1;
+        return {
+          score: predicted === expected ? 1 : 0,
+          tokens: { input: 1, output: 1 },
+          latencyMs: 1,
+          model: "judge-mock",
+        };
+      },
+    };
+    const wrapper = runJudgeWithCache({
+      judge: underlying,
+      cache,
+      keyExtras: {
+        benchmarkId: "locomo",
+        datasetVersion: "v1",
+        judgePromptHash: "sha-prompt",
+        judgeModelId: "judge-x",
+        judgeParamsHash: "sha-params",
+      },
+    });
+
+    await wrapper.scoreWithMetrics!("q", "alpha", "expected");
+    await wrapper.scoreWithMetrics!("q", "alpha", "expected");
+    await wrapper.scoreWithMetrics!("q", "beta", "expected");
+
+    assert.equal(underlyingCalls, 2, "answer-text change must trigger one fresh model call");
+    assert.equal(wrapper.counters.modelCalls, 2);
+    assert.equal(wrapper.counters.cacheHits, 1);
+    assert.equal(wrapper.counters.cacheMisses, 2);
+  });
+});

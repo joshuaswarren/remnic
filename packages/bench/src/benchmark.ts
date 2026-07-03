@@ -4,6 +4,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { EngramAccessService } from "@remnic/core";
 import {
   createTimeoutGuardedAdapter,
@@ -12,6 +13,12 @@ import {
   resolveBenchmarkProgressLogging,
 } from "./adapters/timeout-guard.js";
 import { createSyntheticEmailIngestionAdapter } from "./ingestion-adapters/synthetic-email-adapter.js";
+import type { BenchMemoryAdapter } from "./adapters/types.js";
+import {
+  JudgeCache,
+  runJudgeWithCache,
+  type JudgeCacheCounters,
+} from "./judges/judge-cache.js";
 import { getRegisteredBenchmark, listBenchmarks, getBenchmark } from "./registry.js";
 import { finalizeBenchmarkResultConfig } from "./result-config.js";
 import { buildBenchmarkRunSeeds } from "./run-seeds.js";
@@ -138,18 +145,59 @@ export async function runBenchmark(
   const log = (message: string): void => {
     console.error(`  ${message}`);
   };
-  const system =
-    !shouldGuardSystem
-      ? options.system
-      : createTimeoutGuardedAdapter(options.system, {
-          benchmarkId,
-          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-          ...(options.drainTimeoutMs !== undefined
-            ? { drainTimeoutMs: options.drainTimeoutMs }
-            : {}),
-          logProgress,
-          log,
-        });
+  let judgeCacheCounters: JudgeCacheCounters | undefined;
+  // Issue #1573 PR1: optionally route judge calls through a content-keyed
+  // cache. Wrap before createTimeoutGuardedAdapter so timeout-phase
+  // enforcement still applies to underlying model calls on cache misses.
+  // When noJudgeCache is set, no judge is wired, or no outputDir is in scope
+  // to derive a cache directory, the system judge is left untouched —
+  // preserving the byte-identical baseline.
+  const baseSystem: BenchMemoryAdapter = (() => {
+    if (options.noJudgeCache || !options.system.judge || !options.outputDir) {
+      return options.system;
+    }
+    const cacheDir = options.judgeCacheDir
+      ? path.resolve(options.judgeCacheDir)
+      : path.join(path.resolve(options.outputDir), "judge-cache");
+    const judgeProvider = options.judgeProvider ?? null;
+    const cached = runJudgeWithCache({
+      judge: options.system.judge,
+      cache: new JudgeCache({ dir: cacheDir }),
+      keyExtras: {
+        benchmarkId,
+        datasetVersion: definition.meta.version,
+        judgePromptHash:
+          judgeProvider !== null
+            ? createHash("sha256")
+                .update(`${judgeProvider.provider}\u0001${judgeProvider.model ?? ""}`)
+                .digest("hex")
+            : "unknown-prompt",
+        judgeModelId:
+          judgeProvider?.model !== undefined && judgeProvider.model.length > 0
+            ? judgeProvider.model
+            : "unknown-judge",
+        judgeParamsHash:
+          judgeProvider !== null && judgeProvider.retryOptions !== undefined
+            ? createHash("sha256")
+                .update(JSON.stringify(judgeProvider.retryOptions))
+                .digest("hex")
+            : "unknown-params",
+      },
+    });
+    judgeCacheCounters = cached.counters;
+    return { ...options.system, judge: cached };
+  })();
+  const system = !shouldGuardSystem
+    ? baseSystem
+    : createTimeoutGuardedAdapter(baseSystem, {
+        benchmarkId,
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(options.drainTimeoutMs !== undefined
+          ? { drainTimeoutMs: options.drainTimeoutMs }
+          : {}),
+        logProgress,
+        log,
+      });
   const rawIngestionAdapter =
     options.ingestionAdapter ??
     (definition.meta.category === "ingestion"
@@ -195,6 +243,11 @@ export async function runBenchmark(
     await destroyOwnedIngestionAdapter();
   }
 
+  // Issue #1573 PR1: surface the judge-call counter on the run report so the
+  // "judge model calls" line is observable (zero on a cached re-run).
+  if (judgeCacheCounters !== undefined) {
+    result.cost.judgeModelCalls = judgeCacheCounters.modelCalls;
+  }
   return finalizeBenchmarkResultConfig(result, options);
 }
 

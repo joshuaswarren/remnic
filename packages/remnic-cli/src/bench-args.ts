@@ -109,6 +109,10 @@ export interface ParsedBenchArgs {
   resume?: boolean;
   /** Only re-run benchmarks that failed in the previous run. */
   retryFailed?: boolean;
+  /** Issue #1573 PR1: force-disable the content-keyed judge-result cache. */
+  noJudgeCache?: boolean;
+  /** Issue #1573 PR1: override the judge-result cache directory. */
+  judgeCacheDir?: string;
 }
 
 export interface BenchWorkItem {
@@ -293,6 +297,7 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--judge-base-url",
   "--judge-api-key",
   "--judge-codex-reasoning-effort",
+  "--judge-cache-dir",
   "--internal-provider",
   "--internal-model",
   "--internal-base-url",
@@ -334,6 +339,7 @@ const BENCH_BOOLEAN_FLAGS = Object.freeze([
   "--internal-disable-thinking",
   "--dry-run",
   "--disable-thinking",
+  "--no-judge-cache",
   "--resume",
   "--retry-failed",
   "--help",
@@ -377,6 +383,7 @@ const RUN_VALUE_FLAGS = Object.freeze([
   "--judge-base-url",
   "--judge-api-key",
   "--judge-codex-reasoning-effort",
+  "--judge-cache-dir",
   "--internal-provider",
   "--internal-model",
   "--internal-base-url",
@@ -410,6 +417,7 @@ const RUN_BOOLEAN_FLAGS = Object.freeze([
   "--json",
   "--internal-disable-thinking",
   "--disable-thinking",
+  "--no-judge-cache",
   "--resume",
   "--retry-failed",
   "--help",
@@ -712,6 +720,10 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const targetRaw = readBenchOptionValue(args, "--target");
   const requestTimeoutRaw = readBenchOptionValue(args, "--request-timeout");
   const drainTimeoutRaw = readBenchOptionValue(args, "--drain-timeout");
+  // Issue #1573 PR1: judge-result cache directory override. `parseBenchArgs`
+  // resolves tildes + relative paths identically to other filesystem flags
+  // (datasetDir, resultsDir, baselinesDir).
+  const judgeCacheDirRaw = readBenchOptionValue(args, "--judge-cache-dir");
   const max429WaitRaw = readBenchOptionValue(args, "--max-429-wait");
   const amaBenchJudgeProtocolRaw = readBenchOptionValue(args, "--ama-bench-judge-protocol");
   const amaBenchCrossJudgeProviderRaw = readBenchOptionValue(args, "--ama-bench-cross-judge-provider");
@@ -1276,6 +1288,9 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     publishedDryRun: args.includes("--dry-run"),
     requestTimeout,
     drainTimeout,
+    // Issue #1573 PR1: surface judge-cache flags into the runner options.
+    noJudgeCache: args.includes("--no-judge-cache"),
+    judgeCacheDir: judgeCacheDirRaw ? path.resolve(expandTilde(judgeCacheDirRaw)) : undefined,
     max429WaitMs,
     disableThinking: args.includes("--disable-thinking"),
     amaBenchJudgeProtocol,
