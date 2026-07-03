@@ -236,6 +236,72 @@ test("applySupersede: throws when the replaced record is missing", () => {
   assert.throws(() => applySupersede([], "ADR-0001", replacement), /ADR-0001/);
 });
 
+test("applySupersede result round-trips through serialize/parse (issue #1548 review)", () => {
+  // The classic on-disk shape after supersede: the old record carries
+  // `status: "superseded"` and no `supersedes` field (the edge lives on
+  // the replacement). The parser MUST accept both shapes — only the
+  // listing filter excludes superseded records, not the parser.
+  const initial: DecisionRecord[] = [
+    {
+      id: "ADR-0001",
+      title: "Use markdown+frontmatter",
+      status: "accepted",
+      context: "C",
+      decision: "D",
+      consequences: undefined,
+      entityRefs: [],
+    },
+  ];
+  const replacement: DecisionRecord = {
+    id: "ADR-0002",
+    title: "Switch to TOML",
+    status: "accepted",
+    context: "C2",
+    decision: "D2",
+    consequences: undefined,
+    entityRefs: [],
+  };
+  const next = applySupersede(initial, "ADR-0001", replacement);
+  // Round-trip the whole set through serialize + parse. Comparing the
+  // status-presence and id/path fields rather than `deepEqual` because
+  // `supersedes: undefined` differs from "key absent" under strict
+  // equality (deepEqual) even though the data is the same — the surface
+  // contract is "each record must parse without throwing", not byte
+  // identity.
+  for (const record of next) {
+    const serialized = serializeDecisionRecord(record);
+    const reparsed = parseDecisionRecord(serialized);
+    assert.equal(reparsed.id, record.id);
+    assert.equal(reparsed.status, record.status);
+    assert.equal(reparsed.title, record.title);
+  }
+
+  // Spot-check the canonical shape invariants on the superseded record.
+  const a = next.find((r) => r.id === "ADR-0001");
+  if (!a) throw new Error("ADR-0001 missing after applySupersede (test invariant violated)");
+  assert.equal(a.status, "superseded");
+  assert.equal(a.supersedes, undefined, "superseded record must NOT carry its own edge");
+});
+
+test("parseDecisionRecord: accepts status 'superseded' without a supersedes field", () => {
+  // Round-trip a record produced by applySupersede — the on-disk shape
+  // for a superseded record has no supersedes field (the edge is on the
+  // *replacement*). The parser is permissive (rule 51: only the four
+  // declared enum values are valid; field presence is the listing filter's
+  // concern).
+  const serialized = serializeDecisionRecord({
+    id: "ADR-0001",
+    title: "Old guidance",
+    status: "superseded",
+    context: "",
+    decision: "",
+    consequences: undefined,
+    entityRefs: [],
+  });
+  const reparsed = parseDecisionRecord(serialized);
+  assert.equal(reparsed.status, "superseded");
+  assert.equal(reparsed.supersedes, undefined);
+});
 // ──────────────────────────────────────────────────────────────────────────
 // Listing
 // ──────────────────────────────────────────────────────────────────────────

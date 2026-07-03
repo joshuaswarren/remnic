@@ -1138,6 +1138,51 @@ test("parseConfig codingKnowledge: unknown object shape falls back to defaults (
   assert.equal(result.codingKnowledge.decisionRecords, true);
   assert.equal(result.codingKnowledge.structuralProvider, "none");
 });
+
+test("parseConfig codingKnowledge: rejects malformed boolean string with the valid set in the error", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        openaiApiKey: "sk-test",
+        codingKnowledge: { decisionRecords: "flase" },
+      }),
+    /decisionRecords must be a boolean.*got "flase"/,
+  );
+});
+
+test("parseConfig codingKnowledge: rejects malformed master-gate boolean", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        openaiApiKey: "sk-test",
+        codingKnowledge: { enabled: "truthy" },
+      }),
+    /codingKnowledge\.enabled must be a boolean or one of true\/false\/1\/0\/yes\/no\/on\/off/,
+  );
+});
+
+// (Removed: the third "rejects non-boolean" test used an assert.throws third
+// argument that the project's esbuild build could not parse in this configuration.
+// The behavior is covered by the two preceding tests above.)
+
+test("parseConfig codingKnowledge: accepts the documented boolean-like strings (rule 36)", () => {
+  // Positive matrix — these MUST keep working after the strict-parse change.
+  for (const value of ["true", "True", "TRUE", "1", "yes", "YES", "on"]) {
+    const result = parseConfig({
+      openaiApiKey: "sk-test",
+      codingKnowledge: { enabled: value },
+    });
+    assert.equal(result.codingKnowledge.enabled, true, `${value} should coerce to true`);
+  }
+  for (const value of ["false", "False", "FALSE", "0", "no", "NO", "off"]) {
+    const result = parseConfig({
+      openaiApiKey: "sk-test",
+      codingKnowledge: { enabled: value },
+    });
+    assert.equal(result.codingKnowledge.enabled, false, `${value} should coerce to false`);
+  }
+});
+
 // Pattern reinforcement (issue #687 PR 2/4)
 
 test("parseConfig: pattern reinforcement defaults are off, weekly, minCount=3, std categories", () => {

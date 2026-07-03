@@ -245,12 +245,14 @@ export function parseDecisionRecord(raw: string): DecisionRecord {
   const supersedes =
     fields.supersedes === undefined ? undefined : requireString(fields.supersedes, "supersedes");
 
-  if (status === "superseded" && supersedes === undefined) {
-    throw new Error(
-      `decision '${id}' is marked superseded but has no supersedes target; supply a ` +
-        `supersedes field or set status to "accepted".`,
-    );
-  }
+  // The parser is intentionally permissive about the on-disk shape. A
+  // record with `status: "superseded"` and no `supersedes` field is the
+  // shape `applySupersede` writes for the replaced record — the
+  // `supersedes` edge lives on the *replacement*, not the superseded one,
+  // so this branch must accept the canonical serialised form and stay
+  // round-trippable. Excluding superseded records from "active" listings is
+  // `listActive`'s job (rule 53, single classification source), not the
+  // parser's.
 
   const record: DecisionRecord = {
     id,

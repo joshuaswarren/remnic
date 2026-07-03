@@ -53,18 +53,46 @@ export function parseCodingKnowledgeConfig(raw: unknown): CodingKnowledgeConfig 
 
   const structuralProvider = readStructuralProvider(record.structuralProvider);
   return {
-    enabled: coerceBool(record.enabled) === true,
-    decisionRecords: coerceBool(record.decisionRecords) !== false,
-    architectureCard: coerceBool(record.architectureCard) !== false,
-    sessionDelta: coerceBool(record.sessionDelta) !== false,
-    architectureCardLlmSummary:
-      coerceBool(record.architectureCardLlmSummary) === true,
+    enabled: readStrictBool(record.enabled, "enabled", /* default */ false),
+    decisionRecords: readStrictBool(record.decisionRecords, "decisionRecords", /* default */ true),
+    architectureCard: readStrictBool(record.architectureCard, "architectureCard", /* default */ true),
+    sessionDelta: readStrictBool(record.sessionDelta, "sessionDelta", /* default */ true),
+    architectureCardLlmSummary: readStrictBool(record.architectureCardLlmSummary, "architectureCardLlmSummary", /* default */ false),
     structuralProvider,
     structuralProviderCommand:
       typeof record.structuralProviderCommand === "string"
         ? record.structuralProviderCommand.trim()
         : "",
   };
+}
+
+const STRICT_BOOL_ACCEPTED = "true/false/1/0/yes/no/on/off";
+
+/**
+ * Strict boolean parse for feature-gate config values.
+ *  - `undefined` falls back to `defaultValue` (the key was simply not
+ *    supplied).
+ *  - `true`/`false` (native) and the boolean-like strings listed in
+ *    `STRICT_BOOL_ACCEPTED` are honored (rule 36 — CLI string parity).
+ *  - Any other shape, including misspelled strings like `"flase"`,
+ *    numbers outside `{0, 1}`, objects, arrays — is REJECTED with an
+ *    error listing the valid inputs (rule 51). Silent defaulting on
+ *    malformed operator input is a contract lie.
+ */
+export function readStrictBool(
+  value: unknown,
+  keyName: string,
+  defaultValue: boolean,
+): boolean {
+  if (value === undefined) return defaultValue;
+  const coerced = coerceBool(value);
+  if (coerced === undefined) {
+    throw new Error(
+      `codingKnowledge.${keyName} must be a boolean or one of ${STRICT_BOOL_ACCEPTED}; ` +
+        `got ${JSON.stringify(value)}.`,
+    );
+  }
+  return coerced;
 }
 
 function readStructuralProvider(raw: unknown): StructuralProvider {
