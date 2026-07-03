@@ -211,13 +211,17 @@ test("recall() injects seeded on-disk memories into the returned context", async
   }
 });
 
-test("recall() short-circuits no_recall intent without touching storage", async () => {
+for (const { recallPlannerEnabled, label } of [
+  { recallPlannerEnabled: true, label: "planner-on" },
+  { recallPlannerEnabled: false, label: "planner-off" },
+]) {
+test(`recall() short-circuits no_recall intent without touching storage (${label})`, async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-char-no-recall-"));
-  // The no_recall intent short-circuit is a PLANNER-path behavior: with
-  // recallPlannerEnabled disabled, a trivial "ok" prompt runs the full
-  // filesystem recall assembly instead. Pin the short-circuit under the
-  // planner (its default-on configuration), at the public entry point.
-  const orchestrator = new Orchestrator(makeConfig(memoryDir, { recallPlannerEnabled: true }));
+  // Issue #1547 — the no_recall short-circuit must fire IDENTICALLY regardless
+  // of `recallPlannerEnabled` (CLAUDE.md rule 39: feature gates identical
+  // across parallel paths). Pin BOTH configurations so a future regression
+  // that re-gates the short-circuit to the planner path trips here.
+  const orchestrator = new Orchestrator(makeConfig(memoryDir, { recallPlannerEnabled }));
   try {
     // The public recall() surface swallows errors into "", so the pinned
     // discriminator is the storage-router probe: a no_recall prompt must
@@ -225,22 +229,26 @@ test("recall() short-circuits no_recall intent without touching storage", async 
     // recallInternal-level pin in tests/recall-no-recall-short-circuit.test.ts
     // up to the public entry point.)
     let storageRouterTouched = false;
-    (orchestrator as any).storageRouter = {
+    let storageForCalls = 0;
+    (orchestrator as unknown as { storageRouter: unknown }).storageRouter = {
       storageFor: async () => {
         storageRouterTouched = true;
+        storageForCalls += 1;
         throw new Error("storageFor must not run for no_recall prompts");
       },
     };
 
-    const context = await orchestrator.recall("ok", "session-char-no-recall");
+    const context = await orchestrator.recall("ok", `session-char-no-recall-${label}`);
 
     assert.equal(context, "");
     assert.equal(storageRouterTouched, false);
+    assert.equal(storageForCalls, 0, "storageRouter.storageFor must not be called on the no_recall short-circuit");
   } finally {
     await orchestrator.destroy();
     await cleanupDir(memoryDir);
   }
 });
+}
 
 test("recall() populates the LastRecallSnapshot observable via getLastRecall()", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-char-last-recall-"));
