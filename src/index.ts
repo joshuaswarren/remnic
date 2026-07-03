@@ -3365,6 +3365,20 @@ const pluginDefinition = {
     let memoryPromptBuilder: ((params: { sessionKey?: string }) => string[] | null) | undefined;
 
     if (useMemoryPromptSection && api.registerMemoryPromptSection) {
+      // Issue #1550: memory-slot prompt injection is the primary recall path.
+      // activeRecall is a compat-only secondary pre-reply worker — running
+      // both means two blocking retrievals per turn, so make the overlap
+      // visible once at startup instead of letting operators assume
+      // activeRecall is required for injection.
+      if (cfg.activeRecallEnabled) {
+        log.warn(
+          "activeRecallEnabled=true while memory-slot prompt injection is active " +
+            "(registerMemoryPromptSection). Prompt injection does NOT require " +
+            "active recall; this runs a second blocking retrieval per turn. " +
+            "Disable activeRecallEnabled unless the secondary pre-reply summary " +
+            "block is intentional (issue #1550).",
+        );
+      }
       // Async pre-compute: run recall in before_prompt_build and cache result.
       // The hook receives both event and ctx — session identity is in ctx.
       (api.on as (
@@ -4842,8 +4856,13 @@ const pluginDefinition = {
       );
 
       // ---- Subagent lifecycle ----
+      // Migrated off the deprecated `subagent_spawning` hook (issue #1550).
+      // OpenClaw core now prepares thread-bound subagent bindings through
+      // channel session-binding adapters before `subagent_spawned` fires,
+      // so this hook is observation-only — routing is handled by the core
+      // session-binding adapters (no in-plugin routing logic).
       api.on(
-        "subagent_spawning",
+        "subagent_spawned",
         async (
           event: import("openclaw/plugin-sdk").PluginHookSubagentSpawningEvent &
             Record<string, unknown>,
@@ -4851,7 +4870,7 @@ const pluginDefinition = {
             Record<string, unknown>,
         ) => {
           log.debug(
-            `subagent_spawning: ${event.subagentId ?? "?"} purpose=${event.purpose ?? "?"}`,
+            `subagent_spawned: ${event.subagentId ?? "?"} purpose=${event.purpose ?? "?"} parent=${event.parentSessionKey ?? "?"}`,
           );
         },
       );

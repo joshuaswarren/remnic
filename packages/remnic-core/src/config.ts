@@ -39,6 +39,7 @@ import { expandTildePath } from "./utils/path.js";
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
+import { hasLegacyConnectorEntries } from "./connectors/paths.js";
 import { parseWearablesConfig } from "./wearables/config.js";
 
 const DEFAULT_MEMORY_DIR = path.join(
@@ -614,54 +615,48 @@ function coerceBooleanLike(value: unknown): boolean | undefined {
 }
 
 /**
- * Resolve the `emitLegacyTools` opt-out (issue #1427): config field wins, then
- * the REMNIC_/ENGRAM_ env var, then default true. A *present-but-malformed*
- * value fails fast rather than silently re-enabling legacy aliases — this knob
- * controls the advertised MCP `tools/list` surface, so a typo like
- * `emitLegacyTools=fales` must not be misread as `true` (gotcha #51).
+ * Coerce a present boolean-like gate value or fail fast. A PRESENT but
+ * unrecognized value ("fales", 2) is REJECTED rather than silently defaulting
+ * (CLAUDE.md rule #51) — shared by every boolean gate resolver below so the
+ * rejection behavior can never drift between gates.
+ */
+function coerceBooleanLikeOrThrow(label: string, value: unknown): boolean {
+  const coerced = coerceBooleanLike(value);
+  if (coerced === undefined) {
+    throw new Error(
+      `${label} must be a boolean-like value (true/false/1/0/yes/no/on/off); got ${JSON.stringify(value)}`,
+    );
+  }
+  return coerced;
+}
+
+/**
+ * Resolve the `emitLegacyTools` opt-out (issue #1427, defaults revised in
+ * #1550): config field wins, then the REMNIC_/ENGRAM_ env var, then a
+ * sticky-legacy default — `true` only when existing legacy connector entries
+ * are present on disk (`hasLegacyConnectorEntries`), `false` for fresh
+ * installs, so upgrades never silently break a configured legacy client while
+ * new installs get the halved canonical-only tools/list surface.
  */
 function resolveEmitLegacyTools(configValue: unknown): boolean {
-  const ACCEPTED = "true/false/1/0/yes/no/on/off";
   if (configValue !== undefined && configValue !== null) {
-    const coerced = coerceBooleanLike(configValue);
-    if (coerced === undefined) {
-      throw new Error(
-        `emitLegacyTools must be a boolean-like value (${ACCEPTED}); got ${JSON.stringify(configValue)}`,
-      );
-    }
-    return coerced;
+    return coerceBooleanLikeOrThrow("emitLegacyTools", configValue);
   }
   const envRaw =
     readEnvVar("REMNIC_EMIT_LEGACY_TOOLS") ?? readEnvVar("ENGRAM_EMIT_LEGACY_TOOLS");
   if (envRaw !== undefined) {
-    const coerced = coerceBooleanLike(envRaw);
-    if (coerced === undefined) {
-      throw new Error(
-        `REMNIC_EMIT_LEGACY_TOOLS must be a boolean-like value (${ACCEPTED}); got "${envRaw}"`,
-      );
-    }
-    return coerced;
+    return coerceBooleanLikeOrThrow("REMNIC_EMIT_LEGACY_TOOLS", envRaw);
   }
-  return true;
+  return hasLegacyConnectorEntries();
 }
 
 /**
- * Resolve the `namespaceCatalogEnabled` opt-out (issue #1499). A boolean-like
- * value ("false"/"0"/"no"/"off" etc.) is honored; a PRESENT but unrecognized
- * value ("flase", 2) is REJECTED rather than silently defaulting to enabled
- * (CLAUDE.md rule #51 — reject invalid input instead of silently defaulting),
- * mirroring `resolveEmitLegacyTools`. Defaults to enabled only when absent.
+ * Resolve the `namespaceCatalogEnabled` opt-out (issue #1499). Boolean-like
+ * values honored, malformed values rejected (rule #51), enabled when absent.
  */
 function resolveNamespaceCatalogEnabled(configValue: unknown): boolean {
-  const ACCEPTED = "true/false/1/0/yes/no/on/off";
   if (configValue !== undefined && configValue !== null) {
-    const coerced = coerceBooleanLike(configValue);
-    if (coerced === undefined) {
-      throw new Error(
-        `namespaceCatalogEnabled must be a boolean-like value (${ACCEPTED}); got ${JSON.stringify(configValue)}`,
-      );
-    }
-    return coerced;
+    return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", configValue);
   }
   return true;
 }

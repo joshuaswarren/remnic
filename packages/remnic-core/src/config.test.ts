@@ -1,14 +1,53 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
 
-test("parseConfig emitLegacyTools defaults to true and coerces config/env (issue #1427)", () => {
-  // Default: legacy aliases on, for backward compatibility.
-  assert.equal(parseConfig({}).emitLegacyTools, true);
-  // `null` means "unset → use default", consistent with the repo convention for
-  // optional fields (e.g. taskModelChain: null → undefined). Not a hard error.
-  assert.equal(parseConfig({ emitLegacyTools: null }).emitLegacyTools, true);
+/**
+ * Run `body` with XDG_CONFIG_HOME pointing at a throwaway dir so the
+ * sticky-legacy `emitLegacyTools` default (#1550) never reads the real
+ * machine state. `withLegacyEntry` seeds one persisted connector file.
+ */
+function withIsolatedConnectorsDir<T>(
+  withLegacyEntry: boolean,
+  body: () => T,
+): T {
+  const prev = process.env.XDG_CONFIG_HOME;
+  const root = mkdtempSync(path.join(tmpdir(), "remnic-config-test-"));
+  process.env.XDG_CONFIG_HOME = root;
+  try {
+    if (withLegacyEntry) {
+      const dir = path.join(root, "engram", ".engram-connectors", "connectors");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "codex-cli.json"), "{}\n");
+    }
+    return body();
+  } finally {
+    if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prev;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("parseConfig emitLegacyTools sticky-legacy default (issue #1550)", () => {
+  // Fresh install (no legacy connector entries): canonical-only surface.
+  withIsolatedConnectorsDir(false, () => {
+    assert.equal(parseConfig({}).emitLegacyTools, false, "fresh install defaults false");
+    assert.equal(parseConfig({ emitLegacyTools: null }).emitLegacyTools, false);
+  });
+  // Existing install with a persisted legacy connector entry: aliases stay on.
+  withIsolatedConnectorsDir(true, () => {
+    assert.equal(parseConfig({}).emitLegacyTools, true, "legacy connector entry keeps aliases");
+    // Explicit opt-out still wins over the sticky evidence.
+    assert.equal(parseConfig({ emitLegacyTools: false }).emitLegacyTools, false);
+    assert.equal(parseConfig({ emitLegacyTools: "false" }).emitLegacyTools, false);
+  });
+});
+
+test("parseConfig emitLegacyTools coerces config/env (issue #1427)", () => {
   // Boolean + boolean-like string config values.
   assert.equal(parseConfig({ emitLegacyTools: false }).emitLegacyTools, false);
   assert.equal(parseConfig({ emitLegacyTools: "false" }).emitLegacyTools, false);
@@ -26,6 +65,12 @@ test("parseConfig emitLegacyTools defaults to true and coerces config/env (issue
     delete process.env.REMNIC_EMIT_LEGACY_TOOLS;
     process.env.ENGRAM_EMIT_LEGACY_TOOLS = "false";
     assert.equal(parseConfig({}).emitLegacyTools, false, "ENGRAM_ env fallback disables");
+    // Env "true" also wins over the fresh-install default (#1550).
+    delete process.env.ENGRAM_EMIT_LEGACY_TOOLS;
+    process.env.REMNIC_EMIT_LEGACY_TOOLS = "true";
+    withIsolatedConnectorsDir(false, () => {
+      assert.equal(parseConfig({}).emitLegacyTools, true, "env true wins over fresh-install default");
+    });
   } finally {
     if (prevRemnic === undefined) delete process.env.REMNIC_EMIT_LEGACY_TOOLS;
     else process.env.REMNIC_EMIT_LEGACY_TOOLS = prevRemnic;

@@ -2,7 +2,7 @@
  * Hook handler behavior tests for new SDK hooks.
  *
  * Verifies that the new SDK hook handlers (session_start, session_end,
- * before_tool_call, after_tool_call, llm_output, subagent_spawning,
+ * before_tool_call, after_tool_call, llm_output, subagent_spawned,
  * subagent_ended, before_prompt_build) actually invoke correct behavior
  * when called, not just that they are registered.
  */
@@ -288,17 +288,17 @@ test("before_tool_call handler logs tool name without throwing", async () => {
   );
 });
 
-test("subagent_spawning handler logs without throwing", async () => {
+test("subagent_spawned handler logs without throwing", async () => {
   const { default: plugin } = await import("../src/index.js");
-  const api = buildHandlerCapturingApi("subagent-spawning-test");
+  const api = buildHandlerCapturingApi("subagent-spawned-test");
   plugin.register(api as any);
 
-  const handler = api.handlers.get("subagent_spawning");
-  assert.ok(handler, "subagent_spawning handler should be registered");
+  const handler = api.handlers.get("subagent_spawned");
+  assert.ok(handler, "subagent_spawned handler should be registered (replaces deprecated subagent_spawning, issue #1550)");
 
   await assert.doesNotReject(
-    async () => handler({ subagentId: "sub-1", purpose: "research" }, {}),
-    "subagent_spawning handler should not throw",
+    async () => handler({ subagentId: "sub-1", purpose: "research", parentSessionKey: "sess-1" }, {}),
+    "subagent_spawned handler should not throw",
   );
 });
 

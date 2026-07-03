@@ -123,7 +123,7 @@ function resetGlobals() {
 
 interface MockApi {
   label: string;
-  logger: { debug: () => void; info: () => void; warn: () => void; error: () => void };
+  logger: { debug: (...args: unknown[]) => void; info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void };
   pluginConfig: Record<string, unknown>;
   config: Record<string, unknown>;
   registerTool: (spec: unknown) => void;
@@ -321,8 +321,8 @@ test("new SDK api gets all new hooks + memory section", async () => {
       "llm_output should be registered on new SDK",
     );
     assert.ok(
-      api._registeredHooks.includes("subagent_spawning"),
-      "subagent_spawning should be registered on new SDK",
+      api._registeredHooks.includes("subagent_spawned"),
+      "subagent_spawned should be registered on new SDK (replaces deprecated subagent_spawning, issue #1550)",
     );
     assert.ok(
       api._registeredHooks.includes("subagent_ended"),
@@ -721,8 +721,8 @@ test("legacy SDK api gets legacy hooks only", async () => {
       "llm_output should NOT be registered on legacy SDK",
     );
     assert.ok(
-      !api._registeredHooks.includes("subagent_spawning"),
-      "subagent_spawning should NOT be registered on legacy SDK",
+      !api._registeredHooks.includes("subagent_spawned"),
+      "subagent_spawned should NOT be registered on legacy SDK",
     );
     assert.ok(
       !api._registeredHooks.includes("subagent_ended"),
@@ -1048,6 +1048,75 @@ test("publicArtifacts.listArtifacts falls back to default agent id when runtime 
     }
   } finally {
     await fixture.cleanup();
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    resetGlobals();
+  }
+});
+
+// ============================================================================
+// Issue #1550: activeRecall + memory-slot prompt injection overlap warning
+// ============================================================================
+test("warns once when activeRecallEnabled overlaps memory-slot prompt injection (issue #1550)", async () => {
+  resetGlobals();
+  const previousDisableMigration = disableRegisterMigrationForTest();
+  try {
+    const { default: plugin } = await import("../src/index.js");
+
+    const warned: string[] = [];
+    const api = buildNewSdkApi("active-recall-overlap-test");
+    api.logger = {
+      debug: () => {},
+      info: () => {},
+      warn: (message: unknown) => {
+        warned.push(String(message));
+      },
+      error: () => {},
+    };
+    api.pluginConfig = { activeRecallEnabled: true };
+    plugin.register(api as any);
+
+    const overlapWarnings = warned.filter((message) =>
+      message.includes("activeRecallEnabled=true while memory-slot prompt injection"),
+    );
+    assert.equal(
+      overlapWarnings.length,
+      1,
+      `expected exactly one overlap warning, got ${overlapWarnings.length}: ${JSON.stringify(warned)}`,
+    );
+  } finally {
+    await awaitPendingMigration();
+    restoreRegisterMigrationEnv(previousDisableMigration);
+    resetGlobals();
+  }
+});
+
+test("no overlap warning when activeRecallEnabled is off (issue #1550)", async () => {
+  resetGlobals();
+  const previousDisableMigration = disableRegisterMigrationForTest();
+  try {
+    const { default: plugin } = await import("../src/index.js");
+
+    const warned: string[] = [];
+    const api = buildNewSdkApi("active-recall-off-test");
+    api.logger = {
+      debug: () => {},
+      info: () => {},
+      warn: (message: unknown) => {
+        warned.push(String(message));
+      },
+      error: () => {},
+    };
+    plugin.register(api as any);
+
+    assert.equal(
+      warned.filter((message) =>
+        message.includes("activeRecallEnabled=true while memory-slot prompt injection"),
+      ).length,
+      0,
+      "gate-off registration must not emit the overlap warning",
+    );
+  } finally {
     await awaitPendingMigration();
     restoreRegisterMigrationEnv(previousDisableMigration);
     resetGlobals();
