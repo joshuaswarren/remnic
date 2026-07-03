@@ -40,6 +40,7 @@ import { expandTildePath } from "./utils/path.js";
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseWearablesConfig } from "./wearables/config.js";
+import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
@@ -1538,6 +1539,8 @@ export function parseConfig(raw: unknown): PluginConfig {
     globalFallback: codingGlobalFallbackRaw === undefined ? true : codingGlobalFallbackRaw,
   };
 
+  const codingKnowledge = parseCodingKnowledgeConfig(cfg.codingKnowledge);
+
   const memoryDir =
     typeof cfg.memoryDir === "string" && cfg.memoryDir.length > 0
       ? expandTildePath(cfg.memoryDir)
@@ -2484,6 +2487,8 @@ export function parseConfig(raw: unknown): PluginConfig {
     heartbeat,
     slotBehavior,
     codexCompat,
+    // Track A (issue #1548 PR 1) — sibling of `codingMode`.
+    codingKnowledge,
     // Hourly summaries
     hourlySummariesEnabled: cfg.hourlySummariesEnabled !== false, // default: true
     daySummaryEnabled: cfg.daySummaryEnabled !== false, // default: true

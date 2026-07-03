@@ -1065,6 +1065,79 @@ test("parseConfig codingMode: unknown object shape falls back to defaults", () =
   assert.equal(result.codingMode.branchScope, false);
 });
 
+// Track A coding-knowledge surface (issue #1548 PR 1).
+// Defaults pinned here are the contract — any drift between these expectations,
+// `CodingKnowledgeConfig`, `CODING_KNOWLEDGE_DEFAULTS`, the JSON schema, and
+// `docs/config-reference.md` is a contract regression (rule 55).
+
+test("parseConfig codingKnowledge: defaults match the documented contract (issue #1548 Track A PR 1)", () => {
+  const result = parseConfig({ openaiApiKey: "sk-test" });
+  assert.deepEqual(result.codingKnowledge, {
+    enabled: false,
+    decisionRecords: true,
+    architectureCard: true,
+    sessionDelta: true,
+    architectureCardLlmSummary: false,
+    structuralProvider: "none",
+    structuralProviderCommand: "",
+  });
+});
+
+test("parseConfig codingKnowledge: master gate defaults OFF so the pre-feature path is byte-identical", () => {
+  // The hard rule — rule 39 / rule 48. Every other switch is opt-in under
+  // the master gate, so the default must be `false` (least-privileged).
+  assert.equal(parseConfig({ openaiApiKey: "sk-test" }).codingKnowledge.enabled, false);
+});
+
+test("parseConfig codingKnowledge: accepts CLI-style boolean strings (CLAUDE.md gotcha 36)", () => {
+  const result = parseConfig({
+    openaiApiKey: "sk-test",
+    codingKnowledge: {
+      enabled: "true",
+      decisionRecords: "false",
+      architectureCardLlmSummary: "true",
+    },
+  });
+  assert.equal(result.codingKnowledge.enabled, true);
+  assert.equal(result.codingKnowledge.decisionRecords, false);
+  assert.equal(result.codingKnowledge.architectureCardLlmSummary, true);
+});
+
+test("parseConfig codingKnowledge: rejects unknown structuralProvider value (rule 51)", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        openaiApiKey: "sk-test",
+        codingKnowledge: { structuralProvider: "warp" },
+      }),
+    /structuralProvider must be one of none, subprocess, native/,
+  );
+});
+
+test("parseConfig codingKnowledge: structuralProvider 'subprocess' survives; defaults to 'none' on missing", () => {
+  const explicit = parseConfig({
+    openaiApiKey: "sk-test",
+    codingKnowledge: { structuralProvider: "subprocess" },
+  });
+  assert.equal(explicit.codingKnowledge.structuralProvider, "subprocess");
+  const missing = parseConfig({ openaiApiKey: "sk-test", codingKnowledge: {} });
+  assert.equal(missing.codingKnowledge.structuralProvider, "none");
+});
+
+test("parseConfig codingKnowledge: structuralProviderCommand trims surrounding whitespace", () => {
+  const result = parseConfig({
+    openaiApiKey: "sk-test",
+    codingKnowledge: { structuralProviderCommand: "  /usr/local/bin/cbm  " },
+  });
+  assert.equal(result.codingKnowledge.structuralProviderCommand, "/usr/local/bin/cbm");
+});
+
+test("parseConfig codingKnowledge: unknown object shape falls back to defaults (rule 55)", () => {
+  const result = parseConfig({ openaiApiKey: "sk-test", codingKnowledge: null });
+  assert.equal(result.codingKnowledge.enabled, false);
+  assert.equal(result.codingKnowledge.decisionRecords, true);
+  assert.equal(result.codingKnowledge.structuralProvider, "none");
+});
 // Pattern reinforcement (issue #687 PR 2/4)
 
 test("parseConfig: pattern reinforcement defaults are off, weekly, minCount=3, std categories", () => {

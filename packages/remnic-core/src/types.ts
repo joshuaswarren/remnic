@@ -426,6 +426,37 @@ export interface CodingModeConfig {
   globalFallback: boolean;
 }
 
+// CodingKnowledgeConfig — Track A (issue #1548) durable coding-knowledge
+// surface. Master gate plus per-feature switches. Off by default.
+export interface CodingKnowledgeConfig {
+  /** Master gate. Off = byte-for-byte pre-feature behaviour on every path. */
+  enabled: boolean;
+  /** Decision-record surfaces + briefing titles (effective only under the master gate). */
+  decisionRecords: boolean;
+  /** Architecture-card build/refresh + briefing injection. */
+  architectureCard: boolean;
+  /** Last-seen-head persistence + delta briefing line. */
+  sessionDelta: boolean;
+  /** Opt-in LLM summary pass (costs tokens — default off, per rule 48). */
+  architectureCardLlmSummary: boolean;
+  /**
+   * Structural-context provider selection.
+   *  - `"none"` (default): no provider consulted — review-context runs
+   *    file-path-only boosting, identical to pre-feature behaviour.
+   *  - `"subprocess"`: shells out to `structuralProviderCommand` via
+   *    `execFile` (argv-array, never shell-string — rule 10).
+   *  - `"native"`: the `@remnic/coding-graph` engine, when installed.
+   */
+  structuralProvider: "none" | "subprocess" | "native";
+  /**
+   * Absolute path to the subprocess binary when `structuralProvider =
+   * "subprocess"`. Empty string = no command configured (consumer must
+   * reject the empty case at the wiring site). Rule 24: `statSync` file
+   * check at boot, not at every call.
+   */
+  structuralProviderCommand: string;
+}
+
 /**
  * Session-scoped coding context. Produced by `resolveGitContext()` in the
  * connector layer and attached to a session so that recall + write paths can
@@ -942,6 +973,10 @@ export interface PluginConfig {
   secureStoreEncryptOnWrite: boolean;
   // Coding-agent project/branch scoping (issue #569)
   codingMode: CodingModeConfig;
+  // Coding-knowledge durable memory surface (issue #1548 Track A). Off
+  // by default — byte-for-byte pre-feature behaviour when `enabled === false`
+  // (rule 39).
+  codingKnowledge: CodingKnowledgeConfig;
   heartbeat: HeartbeatConfig;
   slotBehavior: SlotBehaviorConfig;
   codexCompat: CodexCompatConfig;
