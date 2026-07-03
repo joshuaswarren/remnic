@@ -15,8 +15,10 @@ import {
 import { createSyntheticEmailIngestionAdapter } from "./ingestion-adapters/synthetic-email-adapter.js";
 import type { BenchMemoryAdapter } from "./adapters/types.js";
 import {
+  JUDGE_CACHE_PROTOCOL_VERSION,
   JudgeCache,
   runJudgeWithCache,
+  stableStringify,
   type JudgeCacheCounters,
 } from "./judges/judge-cache.js";
 import { getRegisteredBenchmark, listBenchmarks, getBenchmark } from "./registry.js";
@@ -149,16 +151,23 @@ export async function runBenchmark(
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
   // cache. Wrap before createTimeoutGuardedAdapter so timeout-phase
   // enforcement still applies to underlying model calls on cache misses.
-  // When noJudgeCache is set, no judge is wired, or no outputDir is in scope
-  // to derive a cache directory, the system judge is left untouched —
-  // preserving the byte-identical baseline.
+  // When noJudgeCache is set, no judge is wired, or no cache directory can
+  // be derived (neither judgeCacheDir nor outputDir), the system judge is
+  // left untouched — preserving the byte-identical baseline.
   const baseSystem: BenchMemoryAdapter = (() => {
-    if (options.noJudgeCache || !options.system.judge || !options.outputDir) {
+    if (options.noJudgeCache || !options.system.judge) {
       return options.system;
     }
+    // An explicit judgeCacheDir enables caching on its own — programmatic
+    // callers do not need outputDir for the flag to work (PR #1591, Low).
     const cacheDir = options.judgeCacheDir
       ? path.resolve(options.judgeCacheDir)
-      : path.join(path.resolve(options.outputDir), "judge-cache");
+      : options.outputDir
+        ? path.join(path.resolve(options.outputDir), "judge-cache")
+        : undefined;
+    if (cacheDir === undefined) {
+      return options.system;
+    }
     const judgeProvider = options.judgeProvider ?? null;
     const cached = runJudgeWithCache({
       judge: options.system.judge,
@@ -166,22 +175,35 @@ export async function runBenchmark(
       keyExtras: {
         benchmarkId,
         datasetVersion: definition.meta.version,
-        judgePromptHash:
-          judgeProvider !== null
-            ? createHash("sha256")
-                .update(`${judgeProvider.provider}\u0001${judgeProvider.model ?? ""}`)
-                .digest("hex")
-            : "unknown-prompt",
+        // Protocol identity: bench judge protocol version + the selected
+        // judge protocol variant. Bumping JUDGE_CACHE_PROTOCOL_VERSION
+        // invalidates verdicts when judge prompt/parse semantics change, so
+        // different judge implementations never reuse each other's entries
+        // (PR #1591, High).
+        judgePromptHash: createHash("sha256")
+          .update(JUDGE_CACHE_PROTOCOL_VERSION)
+          .update("\u0001")
+          .update(options.amaBenchJudgeProtocol ?? "default")
+          .digest("hex"),
         judgeModelId:
           judgeProvider?.model !== undefined && judgeProvider.model.length > 0
             ? judgeProvider.model
             : "unknown-judge",
-        judgeParamsHash:
-          judgeProvider !== null && judgeProvider.retryOptions !== undefined
-            ? createHash("sha256")
-                .update(JSON.stringify(judgeProvider.retryOptions))
-                .digest("hex")
-            : "unknown-params",
+        // Full judge configuration, deterministically serialized (sorted
+        // keys) so provider/base-url/retry/cross-judge changes all produce
+        // fresh cache keys.
+        judgeParamsHash: createHash("sha256")
+          .update(
+            stableStringify({
+              judgeProvider,
+              // BenchJudge is a function bag — serialize presence only; the
+              // provider config below carries the identifying configuration.
+              amaBenchCrossJudgeAttached: options.amaBenchCrossJudge !== undefined,
+              amaBenchCrossJudgeProvider:
+                options.amaBenchCrossJudgeProvider ?? null,
+            }),
+          )
+          .digest("hex"),
       },
     });
     judgeCacheCounters = cached.counters;

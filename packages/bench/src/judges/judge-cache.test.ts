@@ -20,7 +20,7 @@ import path from "node:path";
 import test from "node:test";
 
 import type { BenchJudgeResult } from "../adapters/types.ts";
-import { JudgeCache, runJudgeWithCache } from "./judge-cache.ts";
+import { JudgeCache, runJudgeWithCache, stableStringify } from "./judge-cache.ts";
 
 async function withTempDir<T>(
   body: (dir: string) => Promise<T>,
@@ -400,4 +400,36 @@ test("f) changing answer text causes a fresh judge call even with cache enabled"
     assert.equal(wrapper.counters.cacheHits, 1);
     assert.equal(wrapper.counters.cacheMisses, 2);
   });
+});
+
+test("(g) put cleans up its per-key write chain entry (PR #1591, Medium)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    await cache.put(sampleKeyParts(), sampleResult);
+    assert.equal(
+      cache.pendingWriteCount(),
+      0,
+      "writeQueues entry must be removed once the write settles",
+    );
+    // Concurrent same-key writes also drain fully.
+    await Promise.all([
+      cache.put(sampleKeyParts(), sampleResult),
+      cache.put(sampleKeyParts(), sampleResult),
+      cache.put(sampleKeyParts({ questionId: "q-002" }), sampleResult),
+    ]);
+    assert.equal(cache.pendingWriteCount(), 0);
+  });
+});
+
+test("(h) stableStringify is key-order independent and array-order preserving", () => {
+  const a = stableStringify({ city: "NYC", country: "US", nested: { b: 2, a: 1 } });
+  const b = stableStringify({ country: "US", nested: { a: 1, b: 2 }, city: "NYC" });
+  assert.equal(a, b, "semantically identical objects must serialize identically");
+  assert.notEqual(
+    stableStringify({ list: [1, 2] }),
+    stableStringify({ list: [2, 1] }),
+    "array order is significant and must be preserved",
+  );
+  assert.equal(stableStringify(null), "null");
+  assert.equal(stableStringify(undefined), "null");
 });

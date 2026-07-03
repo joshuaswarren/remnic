@@ -73,12 +73,37 @@ interface CacheEnvelope {
   verdict: BenchJudgeResult;
 }
 
-interface PendingWrite {
-  resolve: () => void;
-  reject: (error: unknown) => void;
-}
-
 const PIPE_SEPARATOR = "|";
+
+/**
+ * Version token folded into every cache key via the wiring's
+ * `judgePromptHash`. Bump when judge prompt construction, rubric parsing, or
+ * verdict semantics change in a way that invalidates previously stored
+ * verdicts — different judge implementations must never reuse each other's
+ * entries (PR #1591 review, High).
+ */
+export const JUDGE_CACHE_PROTOCOL_VERSION = "judge-protocol-v1";
+
+/**
+ * Deterministic JSON serialization: object keys sorted recursively so two
+ * semantically identical configs hash identically regardless of insertion
+ * order (CLAUDE.md rule 26). Arrays keep their order; non-object leaves
+ * delegate to JSON.stringify.
+ */
+export function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    const body = keys
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+      .join(",");
+    return `{${body}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
 
 /**
  * Cache store. Pure module — every instance owns its own state, and there are
@@ -147,14 +172,23 @@ export class JudgeCache {
     const key = this.computeKey(parts);
     const prior = this.writeQueues.get(key) ?? Promise.resolve();
     const next = prior.then(() => this.writeOne(key, parts, verdict));
-    this.writeQueues.set(key, next.catch(() => undefined));
+    // Track ONE settled-safe promise object so the finally-block identity
+    // check can succeed; a fresh `.catch()` per comparison would never match
+    // and the per-key entry would leak (PR #1591 review, Medium).
+    const tracked = next.catch(() => undefined);
+    this.writeQueues.set(key, tracked);
     try {
       await next;
     } finally {
-      if (this.writeQueues.get(key) === next.catch(() => undefined)) {
+      if (this.writeQueues.get(key) === tracked) {
         this.writeQueues.delete(key);
       }
     }
+  }
+
+  /** Number of in-flight per-key write chains (diagnostic/test seam). */
+  pendingWriteCount(): number {
+    return this.writeQueues.size;
   }
 
   private async writeOne(
@@ -328,9 +362,6 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
   };
 }
 
-// Silence unused-declaration ts rule — PendingWrite exists to document the
-// contract; explicit `void` so future maintainers don't strip the keepalive.
-void ({} as PendingWrite);
 
 function parseEnvelope(raw: string): CacheEnvelope | undefined {
   let parsed: unknown;
