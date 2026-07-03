@@ -108,6 +108,11 @@ jobs:
           # CI rebuilds the native binding above; skipping native-dependent
           # suites here would silently drop coverage (#1538).
           REMNIC_REQUIRE_NATIVE_TESTS: "1"
+          # CI treats environment-dependent capability tests as required
+          # (uv for AMB runner scripts, clean working tree for SOTA
+          # provenance — #1541). A missing tool or dirty tree fails the run
+          # locally instead of counting a silent skip.
+          REMNIC_REQUIRE_CAPABILITY_TESTS: "1"
 
       - name: Build
         run: pnpm run build

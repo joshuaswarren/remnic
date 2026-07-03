@@ -140,7 +140,7 @@ if [[ "${skip_run}" -ne 1 && "${retrieve_only}" -ne 1 && -z "${GEMINI_API_KEY:-}
 fi
 
 cp "${script_dir}/remnic_provider.py" "${amb_dir}/src/memory_bench/memory/remnic.py"
-python - "${amb_dir}/src/memory_bench/memory/__init__.py" <<'PY'
+uv run --directory "${amb_dir}" python - "${amb_dir}/src/memory_bench/memory/__init__.py" <<'PY'
 from pathlib import Path
 import re
 import sys

@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+// #1541: capability probe for the SOTA verifier test — pin published
+// provenance, skip locally with reason when the working tree is dirty.
+import { skipUnlessCleanWorkingTree } from "./helpers/capability-probe.mjs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
@@ -2274,7 +2277,15 @@ test("AMB helper does not satisfy health-event MCQ from query text alone", {
   assert.match(payload.raw_response.answerError, /no retrieved memory evidence/i);
 });
 
-test("AMB SOTA verifier compares Remnic result against external best", async () => {
+test("AMB SOTA verifier compares Remnic result against external best", {
+  // The verifier under test records provenance for published SOTA numbers
+  // (scripts/bench/verify-amb-sota.mjs: `Remnic checkout provenance is dirty or
+  // unavailable; commit or discard changes before SOTA verification`). That is a
+  // CI/release concern, not a local-dev concern — the check pins a published
+  // benchmark, not the test's own behavior. Locally we skip-with-reason; CI
+  // forbids the skip via REMNIC_REQUIRE_CAPABILITY_TESTS=1.
+  skip: skipUnlessCleanWorkingTree(),
+}, async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-sota-"));
   const externalPath = path.join(tmpDir, "external_results.json");
   const nullResultPath = path.join(tmpDir, "null-result.json");
