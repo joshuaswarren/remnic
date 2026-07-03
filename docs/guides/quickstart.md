@@ -16,34 +16,20 @@ remnic daemon install
 
 This starts the Remnic daemon (historically called EMO) and configures it to auto-start on boot.
 
-Verify:
-
-```bash
-remnic daemon status
-# ✓ Remnic server running on :4318
-# ✓ Memory store: ~/.remnic/memory/
-# ✓ Auto-start: enabled
-```
+To check the daemon, run `remnic daemon status`. The command prints whether the daemon is currently running (and its pid if so), the port it is listening on, and whether the system service is installed. None of those fields require the daemon to be reachable — the command only inspects the system service definition and the port binding, so it works even when the daemon process is down.
 
 ## Step 3: Connect Your Tools
 
-Install plugins for the AI tools you use:
+Install the plugin for your AI tool. Each plugin has its own install path — read its README before running anything:
 
-```bash
-# Connect Claude Code (hooks + MCP + skills)
-remnic connectors install claude-code
+- Claude Code: <https://github.com/joshuaswarren/remnic/blob/main/packages/plugin-claude-code/README.md> (three manual steps; the Remnic-side connector install does not configure Claude Code)
+- Codex CLI: <https://github.com/joshuaswarren/remnic/blob/main/packages/plugin-codex/README.md>
+- Hermes Agent: <https://github.com/joshuaswarren/remnic/blob/main/packages/plugin-hermes/README.md>
+- Replit Agent: <https://github.com/joshuaswarren/remnic/blob/main/packages/connector-replit/README.md>
 
-# Connect Codex CLI (hooks + MCP + skills)
-remnic connectors install codex-cli
+See [Plugin docs](../plugins/) for the platform-by-platform overview, and the [Connector setup](https://github.com/joshuaswarren/remnic/blob/main/docs/integration/connector-setup.md) guide for how `remnic connectors` tracks per-host state.
 
-# Connect Hermes Agent (MemoryProvider + tools)
-remnic connectors install hermes
-
-# Connect Replit Agent (MCP only)
-remnic connectors install replit
-```
-
-Each command generates a dedicated auth token and installs the native plugin for that platform.
+Each `remnic connectors install <host>` command mints a host-specific auth token and writes Remnic-side connector state. Whether it also configures the host itself varies — read the plugin README for the host you picked before assuming anything is wired up.
 
 Want to see cross-tool memory before installing connectors? Run the no-key
 [Coding Agent Memory Demo](../../examples/coding-agent-memory-demo/) from a
@@ -53,13 +39,55 @@ retrieval reasons.
 
 ## Step 4: Verify
 
+`remnic connectors doctor <id>` requires a connector id — it doctor-checks one connector at a time (see `Usage: remnic connectors doctor <id>` in the CLI). Run it per connector you installed.
+
+The command prints a row per `DoctorCheck` in the format `<check.name>: <check.detail>` (see `cmdConnectors` at `packages/remnic-cli/src/index.ts:8425-8427`), followed by `Connector healthy` or `Connector has issues`. Three sources contribute rows:
+
+- `Config file` (path under `getConnectorsDir()`) and `Config valid` — from `doctorConnector` at `packages/remnic-core/src/connectors/index.ts:2569`. Optionally `MCP server` (if the install persisted an `mcpServerUrl`) and `Memory directory` (if it persisted a `memoryDir`).
+- `Publisher: <host>` — from the publisher block at `cmdConnectors:8384-8417`. The block runs only when `PUBLISHERS[targetHostId]` is defined. `@remnic/cli` registers publishers at module load (`packages/remnic-cli/src/index.ts:356-360`) for `codex`, `claude-code`, `hermes`, `pi`, and `omp`. `hostIdForConnector("codex-cli") = "codex"` (per `CONNECTOR_TO_HOST` at `packages/remnic-core/src/memory-extension/index.ts:67-69`); every other connector id maps to itself, so `codex-cli` produces a publisher row for the `codex` host, and `claude-code`, `hermes`, `pi`, `omp` produce publisher rows for their own host ids. `replit` and every other connector id not in the registration table prints NO publisher row.
+
+None of the checks probe whether the host plugin is loaded, the host MCP server is wired up, or the host-side MemoryProvider is active. The publisher row only checks Remnic-side publisher state (publisher's `isHostAvailable()` and whether the host's memory-extension directory exists on disk for publishers that resolve one).
+
+For `codex-cli`, a representative green run after `remnic connectors install codex-cli` (when Codex is installed at `~/.codex` and the install persisted the extension) looks like:
+
 ```bash
-remnic connectors doctor
-# ✓ claude-code: connected, 44 tools available
-# ✓ codex-cli: connected, 44 tools available
-# ✓ hermes: connected, MemoryProvider active
-# ✓ replit: token generated (configure in Integrations pane)
+remnic connectors doctor codex-cli
+  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/codex-cli.json
+  ✓ Config valid: OK
+  ✓ Publisher: codex: extension at /home/<you>/.codex/memories_extensions/remnic
+
+Connector healthy
 ```
+
+For `claude-code` and `hermes`, the publishers are intentional all-no-op stubs (`isHostAvailable()` returns `false`, per `claude-code-publisher.ts:31-33` and `hermes-publisher.ts:31-33`), so the publisher row prints `host not installed (skip)` with `ok = !available || extensionExists = true` (the `!available` branch). The verdict is still `Connector healthy`:
+
+```bash
+remnic connectors doctor claude-code
+  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/claude-code.json
+  ✓ Config valid: OK
+  ✓ Publisher: claude-code: host not installed (skip)
+
+Connector healthy
+
+remnic connectors doctor hermes
+  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/hermes.json
+  ✓ Config valid: OK
+  ✓ Publisher: hermes: host not installed (skip)
+
+Connector healthy
+```
+
+For `replit`, the install only mints a bearer token. There is no `@remnic/cli` `registerPublisher("replit", ...)` call and no `replit` entry in `CONNECTOR_TO_HOST`, so `hostIdForConnector("replit")` returns `"replit"`, `PUBLISHERS["replit"]` is `undefined`, the `if (factory)` block at `cmdConnectors:8384` is skipped, and the doctor prints only the two config rows:
+
+```bash
+remnic connectors doctor replit
+  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/replit.json
+  ✓ Config valid: OK
+
+Connector healthy
+```
+
+For `claude-code`, `remnic connectors doctor claude-code` returns `Connector healthy` after step 1 of the install (the two config rows pass and the publisher row reports `host not installed (skip)` because the stub returns false) — but the host itself is not actually wired up until steps 2 and 3 from the plugin README are also done. See [`docs/plugins/claude-code.md`](../plugins/claude-code.md#troubleshooting) for what to check when auto-recall/auto-observe do not fire despite a green doctor output.
 
 ## Step 5: Use It
 
