@@ -433,3 +433,49 @@ test("(h) stableStringify is key-order independent and array-order preserving", 
   assert.equal(stableStringify(null), "null");
   assert.equal(stableStringify(undefined), "null");
 });
+
+test("(i) cache-write failure returns the fresh verdict, never throws (PR #1591 P1)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    // Poison put() to simulate disk-full/permission failure.
+    cache.put = async () => {
+      throw new Error("simulated ENOSPC");
+    };
+    const wrapper = runJudgeWithCache({
+      judge: {
+        scoreWithMetrics: async () => sampleResult,
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    const verdict = await wrapper.scoreWithMetrics!("q", "p", "e");
+    assert.equal(verdict.score, sampleResult.score, "fresh verdict must survive a cache-write failure");
+    assert.equal(wrapper.counters.cacheWriteFailures, 1);
+    assert.equal(wrapper.counters.modelCalls, 1);
+  });
+});
+
+test("(j) abort control forwards through cache misses to the underlying judge (PR #1591 P2)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    const seenControls: Array<unknown> = [];
+    const wrapper = runJudgeWithCache({
+      judge: {
+        scoreWithMetrics: async (_q, _p, _e, control) => {
+          seenControls.push(control);
+          return sampleResult;
+        },
+        scoreBinaryPrompt: async (_prompt, control) => {
+          seenControls.push(control);
+          return sampleResult;
+        },
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    const control = { signal: new AbortController().signal };
+    await wrapper.scoreWithMetrics!("q", "p", "e", control);
+    await wrapper.scoreBinaryPrompt!("binary prompt", control);
+    assert.deepEqual(seenControls, [control, control], "control must reach the underlying judge on both miss paths");
+  });
+});

@@ -21,7 +21,11 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-import type { BenchJudge, BenchJudgeResult } from "../adapters/types.ts";
+import type {
+  BenchJudge,
+  BenchJudgeResult,
+  BenchPhaseControl,
+} from "../adapters/types.ts";
 
 /** Inputs fed into {@link JudgeCache}. All fields are required. */
 export interface JudgeCacheKeyParts {
@@ -34,15 +38,24 @@ export interface JudgeCacheKeyParts {
   judgeParamsHash: string;
 }
 
-/** Wrapper-friendly bench-judge surface. */
+/** Wrapper-friendly bench-judge surface. Control params forward abort signals. */
 export interface WrappableBenchJudge {
-  score?(question: string, predicted: string, expected: string): Promise<number>;
+  score?(
+    question: string,
+    predicted: string,
+    expected: string,
+    control?: BenchPhaseControl,
+  ): Promise<number>;
   scoreWithMetrics?(
     question: string,
     predicted: string,
     expected: string,
+    control?: BenchPhaseControl,
   ): Promise<BenchJudgeResult>;
-  scoreBinaryPrompt?(prompt: string): Promise<BenchJudgeResult>;
+  scoreBinaryPrompt?(
+    prompt: string,
+    control?: BenchPhaseControl,
+  ): Promise<BenchJudgeResult>;
 }
 
 /** Result returned by {@link JudgeCache.get}. */
@@ -65,6 +78,12 @@ export interface JudgeCacheCounters {
   modelCalls: number;
   cacheHits: number;
   cacheMisses: number;
+  /**
+   * Judge succeeded but persisting the verdict failed (disk full,
+   * permissions, …). The fresh verdict is still returned to the caller —
+   * a cache-write failure must never fail the task (PR #1591, P1).
+   */
+  cacheWriteFailures: number;
 }
 
 interface CacheEnvelope {
@@ -262,14 +281,40 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
     modelCalls: 0,
     cacheHits: 0,
     cacheMisses: 0,
+    cacheWriteFailures: 0,
+  };
+
+  // Cache-write failures must never fail the task: the judge already
+  // produced a verdict, so count the failure and return the fresh result
+  // (PR #1591, P1).
+  const putSafely = async (
+    parts: JudgeCacheKeyParts,
+    verdict: BenchJudgeResult,
+  ): Promise<void> => {
+    if (!cache) return;
+    try {
+      await cache.put(parts, verdict);
+    } catch {
+      counters.cacheWriteFailures += 1;
+    }
   };
 
   const wrapper = {
     counters,
     cache,
 
-    async score(question: string, predicted: string, expected: string): Promise<number> {
-      const detailed = await wrapper.scoreWithMetrics!(question, predicted, expected);
+    async score(
+      question: string,
+      predicted: string,
+      expected: string,
+      control?: BenchPhaseControl,
+    ): Promise<number> {
+      const detailed = await wrapper.scoreWithMetrics!(
+        question,
+        predicted,
+        expected,
+        control,
+      );
       return detailed.score;
     },
 
@@ -277,6 +322,7 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
       question: string,
       predicted: string,
       expected: string,
+      control?: BenchPhaseControl,
     ): Promise<BenchJudgeResult> {
       const answerText = `${predicted}\u0001${expected}`;
       const parts: JudgeCacheKeyParts = {
@@ -301,7 +347,7 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
       if (!judge.scoreWithMetrics) {
         // Fall back to score() then synthesize a result shape.
         const scoreValue = judge.score
-          ? await judge.score(question, predicted, expected)
+          ? await judge.score(question, predicted, expected, control)
           : 0;
         const synthesized: BenchJudgeResult = {
           score: scoreValue,
@@ -310,17 +356,25 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
           model: keyExtras.judgeModelId ?? undefined,
         };
         counters.modelCalls += 1;
-        if (cache) await cache.put(parts, synthesized);
+        await putSafely(parts, synthesized);
         return synthesized;
       }
 
-      const fresh = await judge.scoreWithMetrics(question, predicted, expected);
+      const fresh = await judge.scoreWithMetrics(
+        question,
+        predicted,
+        expected,
+        control,
+      );
       counters.modelCalls += 1;
-      if (cache) await cache.put(parts, fresh);
+      await putSafely(parts, fresh);
       return fresh;
     },
 
-    async scoreBinaryPrompt(prompt: string): Promise<BenchJudgeResult> {
+    async scoreBinaryPrompt(
+      prompt: string,
+      control?: BenchPhaseControl,
+    ): Promise<BenchJudgeResult> {
       if (!judge.scoreBinaryPrompt) {
         const fallback: BenchJudgeResult = {
           score: 0,
@@ -349,9 +403,9 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
         counters.cacheMisses += 1;
       }
 
-      const fresh = await judge.scoreBinaryPrompt(prompt);
+      const fresh = await judge.scoreBinaryPrompt(prompt, control);
       counters.modelCalls += 1;
-      if (cache) await cache.put(parts, fresh);
+      await putSafely(parts, fresh);
       return fresh;
     },
   };
