@@ -16,14 +16,7 @@ remnic daemon install
 
 This starts the Remnic daemon (historically called EMO) and configures it to auto-start on boot.
 
-Verify:
-
-```bash
-remnic daemon status
-# ✓ Remnic server running on :4318
-# ✓ Memory store: ~/.remnic/memory/
-# ✓ Auto-start: enabled
-```
+To check the daemon, run `remnic daemon status`. The command prints whether the daemon is currently running (and its pid if so), the port it is listening on, and whether the system service is installed. None of those fields require the daemon to be reachable — the command only inspects the system service definition and the port binding, so it works even when the daemon process is down.
 
 ## Step 3: Connect Your Tools
 
@@ -46,20 +39,39 @@ retrieval reasons.
 
 ## Step 4: Verify
 
-`remnic connectors doctor <id>` requires a connector id — it doctor-checks one connector at a time (see `Usage: remnic connectors doctor <id>` in the CLI). Run it per connector you installed. A representative green run for the three hosts in Step 3 might look like:
+`remnic connectors doctor <id>` requires a connector id — it doctor-checks one connector at a time (see `Usage: remnic connectors doctor <id>` in the CLI). Run it per connector you installed.
+
+The command prints a row per `DoctorCheck` in the format `<check.name>: <check.detail>` (see `cmdConnectors` at `packages/remnic-cli/src/index.ts:8425-8427`), followed by `Connector healthy` or `Connector has issues`. The rows come from `doctorConnector` (`packages/remnic-core/src/connectors/index.ts:2569`): `Config file` (path under `getConnectorsDir()`), `Config valid` (the JSON parses), and optionally `MCP server` (if the install persisted an `mcpServerUrl`) and `Memory directory` (if it persisted a `memoryDir`). The CLI also computes a `publisherChecks` block from `PUBLISHERS[targetHostId]` (`cmdConnectors:8384-8417`), but at the time of writing the `PUBLISHERS` registry in `packages/remnic-core/src/memory-extension/index.ts` is an empty `Record` — no `registerPublisher(...)` callers ship in the tree — so the publisher block never runs in practice and doctor output is just the config-file + config-valid rows.
+
+None of those checks probe whether the host plugin is loaded, the host MCP server is wired up, or the host-side MemoryProvider is active. They only validate Remnic-side connector state plus optional MCP URL reachability and memory-dir existence.
+
+A representative green run for `codex-cli` after `remnic connectors install codex-cli` looks like:
 
 ```bash
 remnic connectors doctor codex-cli
-# ✓ codex-cli: connected, plugin loaded
+  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/codex-cli.json
+  ✓ Config valid: OK
 
-remnic connectors doctor hermes
-# ✓ hermes: connected, MemoryProvider active
-
-remnic connectors doctor replit
-# ✓ replit: token generated (configure in Integrations pane)
+Connector healthy
 ```
 
-For claude-code, `remnic connectors doctor claude-code` will report green after step 1 of the install (Remnic-side token + connector state) — but the host itself is not actually wired up until steps 2 and 3 from the plugin README are also done. See [`docs/plugins/claude-code.md`](../plugins/claude-code.md#troubleshooting) for what to check when auto-recall/auto-observe do not fire despite a green doctor output.
+The same shape applies to `hermes` and `replit` (both produce just the config-file and config-valid rows):
+
+```bash
+remnic connectors doctor hermes
+  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/hermes.json
+  ✓ Config valid: OK
+
+Connector healthy
+
+remnic connectors doctor replit
+  ✓ Config file: /home/<you>/.config/engram/.engram-connectors/connectors/replit.json
+  ✓ Config valid: OK
+
+Connector healthy
+```
+
+For `claude-code`, `remnic connectors doctor claude-code` returns `Connector healthy` after step 1 of the install — the two config-file/config-valid rows pass, and there is no publisher row because `PUBLISHERS` is empty. But the host itself is not actually wired up until steps 2 and 3 from the plugin README are also done. See [`docs/plugins/claude-code.md`](../plugins/claude-code.md#troubleshooting) for what to check when auto-recall/auto-observe do not fire despite a green doctor output.
 
 ## Step 5: Use It
 
