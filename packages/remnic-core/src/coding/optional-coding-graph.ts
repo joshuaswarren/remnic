@@ -31,6 +31,14 @@
 //   symlinked. With the types owned locally, the loader types its
 //   dynamic-import result through the local shape (validated at runtime
 //   via a structural check, not via TS) so the base install compiles.
+//
+// Failure-mode policy:
+//   - Missing optional package → user-facing install hint (via
+//     loadCodingGraphEngineFactory).
+//   - Present-but-broken optional package (transitive dep missing,
+//     loader error, etc.) → user-facing install hint on the loadFactory
+//     path; the probe/try* paths return null so they never crash a
+//     grace-degradation consumer.
 
 import {
   CODING_GRAPH_ENGINE_VERSION,
@@ -165,6 +173,8 @@ async function tryImportCodingGraphModule(): Promise<LoadedCodingGraphModule | n
     if (isSpecifierNotFoundErrorForCodingGraph(err)) {
       return null;
     }
+    // Non-specifier error (broken transitive dep, loader fault, etc.) —
+    // rethrow so the user-facing loader path can surface the diagnostic.
     throw err;
   }
 }
@@ -173,7 +183,9 @@ async function tryImportCodingGraphModule(): Promise<LoadedCodingGraphModule | n
  * Load `@remnic/coding-graph` if installed and return its
  * `createCodingGraphEngine` factory. Throws a user-facing install hint
  * when the package is absent. Cached per process so repeated calls do
- * not re-import.
+ * not re-import. For present-but-broken installs, throws the install
+ * hint (treated as "not usable") — broken-install diagnostics live here,
+ * not on the probe/try* paths.
  */
 export async function loadCodingGraphEngineFactory(): Promise<
   (options?: CreateCodingGraphEngineOptions) => CodingGraphEngine
@@ -188,25 +200,42 @@ export async function loadCodingGraphEngineFactory(): Promise<
 }
 
 /**
- * Return `true` only when `@remnic/coding-graph` can be loaded. Use this
- * for gate-off characterization (CLAUDE.md rule 30/48 —
- * `codingGraph.enabled` defaults `false`, and when off the loader must
- * never run). Returns `false` when the package is absent; never throws.
+ * Return `true` only when `@remnic/coding-graph` is loaded AND usable.
+ * Returns `false` for either a missing package or a broken install.
+ * Never throws — callers using this as a safe gate-off probe do not
+ * need try/catch. Broken-install diagnostics surface through
+ * `loadCodingGraphEngineFactory()` instead.
  */
 export async function isCodingGraphInstalled(): Promise<boolean> {
-  return (await tryLoadCodingGraphModule()) !== null;
+  try {
+    return (await tryLoadCodingGraphModule()) !== null;
+  } catch {
+    // Swallow non-specifier import errors (broken transitive dep,
+    // ESM loader failure). The boolean probe stays safe; the throwing
+    // path is owned by loadCodingGraphEngineFactory().
+    return false;
+  }
 }
 
 /**
  * Return the engine factory module if `@remnic/coding-graph` is
- * installed, or `null` if it is not. Use this for code paths that can
- * degrade gracefully when the optional package is absent; do NOT use it
- * where the absence is a user-facing error (use
- * `loadCodingGraphEngineFactory` for that).
+ * installed, or `null` if it is not. Use this for graceful-degradation
+ * code paths. A malformed install (present but failing to import) also
+ * resolves to `null` here rather than throwing — broken-install
+ * reporting lives on the `loadCodingGraphEngineFactory()` path so
+ * degradation consumers never crash.
  */
 export async function tryLoadCodingGraphModule(): Promise<LoadedCodingGraphModule | null> {
   if (cached === undefined) {
-    cached = await tryImportCodingGraphModule();
+    try {
+      cached = await tryImportCodingGraphModule();
+    } catch {
+      // Malformed install (broken transitive dep, etc.) — treat as
+      // not-usable here so degradation callers stay crash-free. The
+      // loadFactory path still surfaces the diagnostic on a fresh
+      // attempt because it bypasses this cached `null`.
+      cached = null;
+    }
   }
   return cached ?? null;
 }
