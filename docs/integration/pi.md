@@ -3,6 +3,9 @@
 Remnic ships a native Pi Coding Agent extension through `@remnic/plugin-pi`.
 It uses Pi's extension hooks instead of wrapping Pi with a parallel runtime.
 
+> Using the [Oh My Pi (omp)](https://omp.sh) fork? The same runtime extension
+> works there via the `omp` connector — see [omp.md](./omp.md).
+
 ## Install
 
 Start the Remnic daemon, then install the connector:

@@ -13,11 +13,17 @@ import {
   saveTokenStore,
 } from "@remnic/core";
 
-import { resolvePiAgentHome, resolvePiExtensionRoot } from "./paths.js";
+import {
+  resolveOmpAgentHome,
+  resolveOmpConfigRoot,
+  resolveOmpExtensionRoot,
+  resolvePiAgentHome,
+  resolvePiExtensionRoot,
+} from "./paths.js";
 
 const DEFAULT_DAEMON_PORT = 4318;
-const PI_EXTENSION_OWNED_FILES = ["remnic.config.json", "index.ts", "README.md"] as const;
-const PI_EXTENSION_OWNED_TEMP_FILE_PATTERN = /^(?:remnic\.config\.json|index\.ts|README\.md)\.tmp-\d+-\d+$/u;
+const EXTENSION_OWNED_FILES = ["remnic.config.json", "index.ts", "README.md"] as const;
+const EXTENSION_OWNED_TEMP_FILE_PATTERN = /^(?:remnic\.config\.json|index\.ts|README\.md)\.tmp-\d+-\d+$/u;
 
 type FileSnapshot = {
   path: string;
@@ -26,9 +32,86 @@ type FileSnapshot = {
   mode?: number;
 };
 
-export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
-  readonly hostId = "pi";
+/**
+ * Host-specific parameters for a Pi-family memory extension publisher.
+ *
+ * The Remnic runtime extension is host-neutral (it only uses Pi's extension
+ * hooks, which omp preserves as a superset), so the only things that vary
+ * between hosts are *where* the extension is installed, *which* connector
+ * token it uses, and *how* it is labelled. Everything else — atomic writes,
+ * rollback, symlink guards, config merge — is shared.
+ */
+export interface HostPublisherDescriptor {
+  readonly hostId: string;
+  readonly connectorId: string;
+  readonly displayName: string;
+  readonly tokenGenerateHint: string;
+  resolveAgentHome(env: NodeJS.ProcessEnv): string;
+  resolveExtensionRoot(env: NodeJS.ProcessEnv): string;
+  /**
+   * Optional: every agent home `unpublish` should sweep for a stale extension,
+   * beyond the one resolved from the current env. Hosts with env-sensitive
+   * install locations (e.g. omp profiles) provide this so `remnic connectors
+   * remove` cleans up even when the remove-time env differs from install time.
+   */
+  listRemovalAgentHomes?(env: NodeJS.ProcessEnv): string[];
+}
 
+const PI_HOST: HostPublisherDescriptor = {
+  hostId: "pi",
+  connectorId: "pi",
+  displayName: "Pi Coding Agent",
+  tokenGenerateHint: "remnic token generate pi",
+  resolveAgentHome: resolvePiAgentHome,
+  resolveExtensionRoot: resolvePiExtensionRoot,
+};
+
+const OMP_HOST: HostPublisherDescriptor = {
+  hostId: "omp",
+  connectorId: "omp",
+  displayName: "Oh My Pi (omp)",
+  tokenGenerateHint: "remnic token generate omp",
+  resolveAgentHome: resolveOmpAgentHome,
+  resolveExtensionRoot: resolveOmpExtensionRoot,
+  listRemovalAgentHomes: ompRemovalAgentHomes,
+};
+
+/**
+ * Every omp agent home a stale extension might live under, so `unpublish` cleans
+ * up regardless of the profile/env active at remove time: the env-resolved home,
+ * the base `<configRoot>/agent`, an explicit `PI_CODING_AGENT_DIR`, and every
+ * existing `<configRoot>/profiles/<name>/agent`. Symlinked profile dirs are
+ * skipped defensively.
+ */
+function ompRemovalAgentHomes(env: NodeJS.ProcessEnv): string[] {
+  const homes = new Set<string>([resolveOmpAgentHome(env)]);
+  const configRoot = resolveOmpConfigRoot(env);
+  homes.add(path.join(configRoot, "agent"));
+
+  const explicit = env.PI_CODING_AGENT_DIR?.trim();
+  if (explicit) homes.add(path.resolve(explicit));
+
+  const profilesDir = path.join(configRoot, "profiles");
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(profilesDir, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      homes.add(path.join(profilesDir, entry.name, "agent"));
+    }
+  }
+  return [...homes];
+}
+
+/**
+ * Shared publisher for Pi-family hosts. Concrete hosts (Pi, omp) subclass this
+ * with a {@link HostPublisherDescriptor}; the install/rollback machinery is
+ * identical across hosts.
+ */
+export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
   static readonly capabilities: PublisherCapabilities = {
     instructionsMd: false,
     skillsFolder: false,
@@ -36,14 +119,20 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
     readPathTemplate: false,
   };
 
+  protected constructor(private readonly host: HostPublisherDescriptor) {}
+
+  get hostId(): string {
+    return this.host.hostId;
+  }
+
   async resolveExtensionRoot(env?: NodeJS.ProcessEnv): Promise<string> {
-    return resolvePiExtensionRoot(env ?? process.env);
+    return this.host.resolveExtensionRoot(env ?? process.env);
   }
 
   async isHostAvailable(): Promise<boolean> {
-    // Pi auto-discovers extensions from ~/.pi/agent/extensions. The directory can
-    // be created before Pi has been launched, so availability should not block
-    // first-time installation.
+    // Pi-family agents auto-discover extensions from their agent extensions
+    // directory. The directory can be created before the agent has been
+    // launched, so availability should not block first-time installation.
     return true;
   }
 
@@ -51,17 +140,17 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
     const namespace = ctx.config.namespace ?? "default";
     const daemonUrl = resolveDaemonUrl(ctx);
     return [
-      "# Remnic for Pi",
+      `# Remnic for ${this.host.displayName}`,
       "",
-      "Remnic provides memory, retrieval, observation, MCP tools, and long-context compaction coordination for Pi Coding Agent.",
+      `Remnic provides memory, retrieval, observation, MCP tools, and long-context compaction coordination for ${this.host.displayName}.`,
       "",
       "## Installed Capabilities",
       "",
-      "- Recall relevant Remnic context in Pi's `context` hook before agent turns.",
-      '- Observe Pi user, assistant, and tool messages with `sourceFormat: "pi"`.',
-      "- Coordinate Pi `session_before_compact` with Remnic LCM flush and checkpoint recording.",
-      "- Register Remnic MCP tools as Pi tools when daemon authentication is configured.",
-      "- Persist lightweight dedupe state in Pi custom entries via `appendEntry`.",
+      "- Recall relevant Remnic context in the `context` hook before agent turns.",
+      '- Observe user, assistant, and tool messages with `sourceFormat: "pi"`.',
+      "- Coordinate `session_before_compact` with Remnic LCM flush and checkpoint recording.",
+      "- Register Remnic MCP tools as host tools when daemon authentication is configured.",
+      "- Persist lightweight dedupe state in custom entries via `appendEntry`.",
       "",
       "## Runtime",
       "",
@@ -75,21 +164,26 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
 
   async publish(ctx: PublishContext): Promise<PublishResult> {
     const extensionRoot = await this.resolveExtensionRoot();
-    assertSafePiExtensionRoot(extensionRoot, process.env);
+    const agentHome = this.host.resolveAgentHome(process.env);
+    assertSafeExtensionRoot(extensionRoot, agentHome);
     const filesWritten: string[] = [];
     const skipped: string[] = [];
 
-    ctx.log.info(`Publishing Pi memory extension to ${extensionRoot}`);
+    ctx.log.info(`Publishing ${this.host.displayName} memory extension to ${extensionRoot}`);
 
-    const [configPath, wrapperPath, readmePath] = piExtensionOwnedPaths(extensionRoot);
+    const [configPath, wrapperPath, readmePath] = extensionOwnedPaths(extensionRoot);
     const rootExisted = fs.existsSync(extensionRoot);
     const snapshots = snapshotFiles([configPath, wrapperPath, readmePath]);
     const priorTokenEntry =
-      ctx.rollbackTokenEntry === undefined ? snapshotPiTokenEntry() : cloneTokenEntry(ctx.rollbackTokenEntry);
+      ctx.rollbackTokenEntry === undefined
+        ? snapshotTokenEntry(this.host.connectorId)
+        : cloneTokenEntry(ctx.rollbackTokenEntry);
 
-    const token = getConnectorToken("pi");
+    const token = getConnectorToken(this.host.connectorId);
     if (!token) {
-      skipped.push("auth token unavailable; run `remnic token generate pi` and reinstall the connector");
+      skipped.push(
+        `auth token unavailable; run \`${this.host.tokenGenerateHint}\` and reinstall the connector`,
+      );
     }
 
     try {
@@ -116,7 +210,7 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
         config.namespace = ctx.config.namespace;
       }
 
-      mkdirPiExtensionRoot(extensionRoot, process.env);
+      mkdirExtensionRoot(extensionRoot, agentHome);
 
       atomicWriteFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
       filesWritten.push(configPath);
@@ -131,21 +225,21 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
         restorePublishSnapshot(extensionRoot, rootExisted, snapshots);
       } catch (restoreErr) {
         ctx.log.warn(
-          `Pi extension rollback failed: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`
+          `${this.host.displayName} extension rollback failed: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`,
         );
       }
       try {
-        restorePiTokenEntry(priorTokenEntry);
+        restoreTokenEntry(priorTokenEntry, this.host.connectorId);
       } catch (tokenErr) {
         ctx.log.warn(
-          `Pi connector token rollback failed: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`
+          `${this.host.displayName} connector token rollback failed: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`,
         );
       }
       throw err;
     }
 
     return {
-      hostId: this.hostId,
+      hostId: this.host.hostId,
       extensionRoot,
       filesWritten,
       skipped,
@@ -153,28 +247,49 @@ export class PiMemoryExtensionPublisher implements MemoryExtensionPublisher {
   }
 
   async unpublish(): Promise<void> {
-    const extensionRoot = await this.resolveExtensionRoot();
-    assertSafePiExtensionRoot(extensionRoot, process.env);
-    if (!fs.existsSync(extensionRoot)) {
-      return;
-    }
+    const agentHomes = this.host.listRemovalAgentHomes
+      ? this.host.listRemovalAgentHomes(process.env)
+      : [this.host.resolveAgentHome(process.env)];
 
-    const removableFiles = removableOwnedExtensionFiles(piExtensionOwnedUnpublishPaths(extensionRoot));
-    for (const filePath of removableFiles) {
-      fs.rmSync(filePath, { force: true });
+    const seen = new Set<string>();
+    for (const agentHome of agentHomes) {
+      const extensionRoot = path.join(path.resolve(agentHome), "extensions", "remnic");
+      if (seen.has(extensionRoot)) continue;
+      seen.add(extensionRoot);
+      if (!fs.existsSync(extensionRoot)) continue;
+
+      assertSafeExtensionRoot(extensionRoot, agentHome);
+      const removableFiles = removableOwnedExtensionFiles(extensionOwnedUnpublishPaths(extensionRoot));
+      for (const filePath of removableFiles) {
+        fs.rmSync(filePath, { force: true });
+      }
+      removeEmptyDirectory(extensionRoot);
     }
-    removeEmptyDirectory(extensionRoot);
   }
 }
 
-function piExtensionOwnedPaths(extensionRoot: string): string[] {
-  return PI_EXTENSION_OWNED_FILES.map((fileName) => path.join(extensionRoot, fileName));
+/** Publisher for upstream Pi (`~/.pi/agent/extensions/remnic`). */
+export class PiMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
+  constructor() {
+    super(PI_HOST);
+  }
 }
 
-function piExtensionOwnedUnpublishPaths(extensionRoot: string): string[] {
-  const ownedPaths = piExtensionOwnedPaths(extensionRoot);
+/** Publisher for Oh My Pi / omp (`~/.omp/agent/extensions/remnic`). */
+export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
+  constructor() {
+    super(OMP_HOST);
+  }
+}
+
+function extensionOwnedPaths(extensionRoot: string): string[] {
+  return EXTENSION_OWNED_FILES.map((fileName) => path.join(extensionRoot, fileName));
+}
+
+function extensionOwnedUnpublishPaths(extensionRoot: string): string[] {
+  const ownedPaths = extensionOwnedPaths(extensionRoot);
   for (const fileName of fs.readdirSync(extensionRoot)) {
-    if (PI_EXTENSION_OWNED_TEMP_FILE_PATTERN.test(fileName)) {
+    if (EXTENSION_OWNED_TEMP_FILE_PATTERN.test(fileName)) {
       ownedPaths.push(path.join(extensionRoot, fileName));
     }
   }
@@ -241,7 +356,7 @@ function snapshotFiles(paths: string[]): FileSnapshot[] {
     if (!fs.existsSync(filePath)) return { path: filePath, existed: false };
     const stat = fs.lstatSync(filePath);
     if (stat.isSymbolicLink()) {
-      throw new Error(`Pi extension path must not be a symlink: ${filePath}`);
+      throw new Error(`Extension path must not be a symlink: ${filePath}`);
     }
     if (!stat.isFile()) return { path: filePath, existed: false };
     return {
@@ -287,7 +402,7 @@ function canCleanNewExtensionRoot(extensionRoot: string): boolean {
     throw err;
   }
   if (stat.isSymbolicLink()) {
-    throw new Error(`Pi extension path must not be a symlink: ${extensionRoot}`);
+    throw new Error(`Extension path must not be a symlink: ${extensionRoot}`);
   }
   return stat.isDirectory();
 }
@@ -301,7 +416,7 @@ function removeEmptyDirectory(dirPath: string): void {
     throw err;
   }
   if (stat.isSymbolicLink()) {
-    throw new Error(`Pi extension path must not be a symlink: ${dirPath}`);
+    throw new Error(`Extension path must not be a symlink: ${dirPath}`);
   }
   if (!stat.isDirectory()) return;
   if (fs.readdirSync(dirPath).length > 0) return;
@@ -314,7 +429,7 @@ function removableOwnedExtensionFiles(filePaths: string[]): string[] {
     const stat = statOwnedExtensionPath(filePath);
     if (stat === null) continue;
     if (stat.isSymbolicLink()) {
-      throw new Error(`Pi extension path must not be a symlink: ${filePath}`);
+      throw new Error(`Extension path must not be a symlink: ${filePath}`);
     }
     if (stat.isFile()) removableFiles.push(filePath);
   }
@@ -332,25 +447,25 @@ function statOwnedExtensionPath(filePath: string): fs.Stats | null {
   return stat;
 }
 
-function mkdirPiExtensionRoot(extensionRoot: string, env: NodeJS.ProcessEnv): void {
-  const extensionsDir = path.join(resolvePiAgentHome(env), "extensions");
-  assertSafePiExtensionRoot(extensionRoot, env);
+function mkdirExtensionRoot(extensionRoot: string, agentHome: string): void {
+  const extensionsDir = path.join(path.resolve(agentHome), "extensions");
+  assertSafeExtensionRoot(extensionRoot, agentHome);
   fs.mkdirSync(extensionsDir, { recursive: true });
   rejectSymlinkPath(extensionsDir);
   fs.mkdirSync(extensionRoot, { recursive: true });
   rejectSymlinkPath(extensionRoot);
 }
 
-function assertSafePiExtensionRoot(extensionRoot: string, env: NodeJS.ProcessEnv): void {
-  const expected = path.join(resolvePiAgentHome(env), "extensions", "remnic");
+function assertSafeExtensionRoot(extensionRoot: string, agentHome: string): void {
+  const resolvedAgentHome = path.resolve(agentHome);
+  const expected = path.join(resolvedAgentHome, "extensions", "remnic");
   if (path.resolve(extensionRoot) !== path.resolve(expected)) {
-    throw new Error(`Pi extension root is outside the configured Pi extensions directory: ${extensionRoot}`);
+    throw new Error(`Extension root is outside the configured extensions directory: ${extensionRoot}`);
   }
-  const agentHome = path.resolve(resolvePiAgentHome(env));
-  const extensionsDir = path.join(agentHome, "extensions");
-  assertPathContained(agentHome, extensionsDir);
+  const extensionsDir = path.join(resolvedAgentHome, "extensions");
+  assertPathContained(resolvedAgentHome, extensionsDir);
   assertPathContained(extensionsDir, extensionRoot);
-  rejectSymlinkPath(agentHome);
+  rejectSymlinkPath(resolvedAgentHome);
   if (fs.existsSync(extensionsDir)) rejectSymlinkPath(extensionsDir);
   if (fs.existsSync(extensionRoot)) rejectSymlinkPath(extensionRoot);
 }
@@ -363,7 +478,7 @@ function rejectSymlinkPath(filePath: string): void {
   if (!fs.existsSync(filePath)) return;
   const stat = fs.lstatSync(filePath);
   if (stat.isSymbolicLink()) {
-    throw new Error(`Pi extension path must not be a symlink: ${filePath}`);
+    throw new Error(`Extension path must not be a symlink: ${filePath}`);
   }
 }
 
@@ -372,7 +487,7 @@ function assertPathContained(root: string, candidate: string): void {
   const candidateResolved = path.resolve(candidate);
   const relative = path.relative(rootResolved, candidateResolved);
   if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) return;
-  throw new Error(`Pi extension path escapes allowed root: ${candidate}`);
+  throw new Error(`Extension path escapes allowed root: ${candidate}`);
 }
 
 function readPriorConfig(configPath: string): Record<string, unknown> {
@@ -389,8 +504,8 @@ function readPriorConfig(configPath: string): Record<string, unknown> {
   }
 }
 
-function snapshotPiTokenEntry(): TokenEntry | null {
-  const entry = loadTokenStore().tokens.find((candidate) => candidate.connector === "pi");
+function snapshotTokenEntry(connectorId: string): TokenEntry | null {
+  const entry = loadTokenStore().tokens.find((candidate) => candidate.connector === connectorId);
   return cloneTokenEntry(entry ?? null);
 }
 
@@ -398,9 +513,9 @@ function cloneTokenEntry(entry: TokenEntry | null): TokenEntry | null {
   return entry ? { ...entry } : null;
 }
 
-function restorePiTokenEntry(priorEntry: TokenEntry | null): void {
+function restoreTokenEntry(priorEntry: TokenEntry | null, connectorId: string): void {
   const store = loadTokenStore();
-  store.tokens = store.tokens.filter((entry) => entry.connector !== "pi");
+  store.tokens = store.tokens.filter((entry) => entry.connector !== connectorId);
   if (priorEntry) store.tokens.push(priorEntry);
   saveTokenStore(store);
 }

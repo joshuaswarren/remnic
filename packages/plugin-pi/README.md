@@ -4,6 +4,8 @@ Remnic memory and context for [Pi Coding Agent](https://pi.dev).
 
 This package is the first-class Remnic extension for Pi. It uses Pi's extension hooks directly, so Remnic can recall context before a model call, observe useful session events after the turn, expose Remnic MCP tools inside Pi, and coordinate Pi compaction with Remnic's long-context memory archive.
 
+> **Oh My Pi (omp).** The [omp](https://omp.sh) fork preserves Pi's extension API, so this package's runtime extension runs there too. Install it with `remnic connectors install omp` (writes to `~/.omp/agent/extensions/remnic/`) via the `OmpMemoryExtensionPublisher`. See [docs/integration/omp.md](../../docs/integration/omp.md).
+
 ## What It Does
 
 - Recalls relevant Remnic context in Pi's `context` hook before an agent turn.

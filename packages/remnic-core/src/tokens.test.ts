@@ -194,3 +194,17 @@ test("token writes invalidate the cached valid-token list", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("generateToken uses a recognizable prefix for the omp connector", async () => {
+  const { dir, tokensPath } = await makeTempTokenPath();
+  try {
+    const entry = generateToken("omp", tokensPath);
+    assert.equal(entry.connector, "omp");
+    assert.ok(
+      entry.token.startsWith("remnic_op_"),
+      `expected remnic_op_ prefix, got ${entry.token}`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

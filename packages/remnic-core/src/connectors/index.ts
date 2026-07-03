@@ -416,6 +416,33 @@ const BUILTIN_CONNECTORS: ConnectorManifest[] = [
     requiresToken: true,
   },
   {
+    id: "omp",
+    name: "Oh My Pi (omp)",
+    version: "1.0.0",
+    description:
+      "Oh My Pi (omp) — Pi-fork coding agent; native extension for recall, observe, MCP tools, and compaction coordination",
+    capabilities: {
+      observe: true,
+      recall: true,
+      store: true,
+      search: true,
+      entities: true,
+      realtimeSync: true,
+      batch: true,
+      maxBudgetChars: 32000,
+      connectionType: "http",
+    },
+    configSchema: {
+      remnicDaemonUrl: "URL of the Remnic daemon (default: http://127.0.0.1:4318)",
+      namespace: "Optional namespace",
+      installExtension: "Install the omp extension into ~/.omp/agent/extensions/remnic (default: true)",
+    },
+    homepage: "https://omp.sh",
+    author: "Remnic",
+    tags: ["official", "ai", "omp", "pi", "coding-agent"],
+    requiresToken: true,
+  },
+  {
     id: "replit",
     name: "Replit Agent",
     version: "1.0.0",
