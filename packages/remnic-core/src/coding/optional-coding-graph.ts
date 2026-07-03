@@ -32,18 +32,22 @@
 //   dynamic-import result through the local shape (validated at runtime
 //   via a structural check, not via TS) so the base install compiles.
 //
-// Failure-mode policy:
+// Failure-mode policy (Bugbot P1/P2/P3 review iterations on #1588):
 //   - Missing optional package → install hint (loadCodingGraphEngineFactory throws).
 //   - Present-but-broken optional package (transitive dep missing,
 //     loader error, etc.) → install hint on the loadFactory path (the
-//     throw preserves the diagnostic on a fresh attempt).
+//     throw preserves the real diagnostic on a fresh attempt).
 //   - Probe / try* paths never throw; a broken install resolves to
-//     `null`/`false`. They use a SEPARATE attempt-state slot so a
-//     poisoned probe attempt doesn't cache `null` into the loadFactory
-//     path (Cursor Bugbot P2 on PR #1588: "probe poisons loader error
-//     path"). loadCodingGraphEngineFactory always attempts a fresh
-//     import so users see the underlying diagnostic, not a stale
-//     graceful-degradation result.
+//     `null`/`false`.
+//   - Probe and loader use SEPARATE caches. The probe uses an
+//     in-flight promise slot (so concurrent callers share the same
+//     import attempt and either all see it succeed or all see it
+//     fail). The loader ALWAYS re-attempts on a fresh call so users
+//     see the underlying diagnostic on broken installs, never a stale
+//     install hint.
+//   - A successful loadFactory result is cached and shared with
+//     subsequent calls (both loader and probe). A probe "not present"
+//     result is NOT cached into the loader path.
 
 import {
   CODING_GRAPH_ENGINE_VERSION,
@@ -80,26 +84,25 @@ interface LoadedCodingGraphModule {
 }
 
 // ---------------------------------------------------------------------------
-// Cache slots.
+// Cache slots — three, never collapsed.
 //
-// Two separate flags avoid the "probe poisons loader" bug:
+// 1. `cachedLoadResult` — the resolved module after a SUCCESSFUL
+//    loadFactory call. Shared between loadFactory and tryLoad.
+//    Never set to null on a broken install.
 //
-// - `cachedLoadResult`: the successful module reference (set on first
-//   import that returned a usable module). When this is set we never
-//   re-import. Used by both loadFactory and tryLoad.
+// 2. `inFlightProbe` — the Promise of the current (or most recent)
+//    probe attempt. Concurrent probe callers await the SAME promise,
+//    so two probes started in the same tick both observe the real
+//    result (Cursor Bugbot P2 round 4: "concurrent probe calls return
+//    null"). A previous FALSE attempt is NOT cached into the loader
+//    path, so a subsequent loadFactory call re-attempts the import.
 //
-// - `probeAttempted`: records whether the probe path (tryLoad /
-//   isInstalled) has already run, separately from loadFactory. This
-//   lets the probe short-circuit repeat calls without polluting the
-//   loadFactory cache with a `null` result on broken installs.
-//
-// The loadFactory path ALWAYS bypasses both caches and attempts a fresh
-// import, so users see a broken-install diagnostic on the throwing
-// path instead of a stale "not installed" hint.
+// 3. (No "probe failure cache" — the result IS the cache.) When
+//    probeAttempted/loadResult interactions were buggy earlier, the
+//    fix was to not write to loadResult from the probe path at all.
 // ---------------------------------------------------------------------------
 let cachedLoadResult: LoadedCodingGraphModule | null | undefined;
-let probeAttempted = false;
-let probeReturnedNull = false;
+let inFlightProbe: Promise<LoadedCodingGraphModule | null> | null = null;
 
 /**
  * Build the user-facing install hint message. Exported so tests can assert
@@ -209,8 +212,8 @@ async function tryImportCodingGraphModule(): Promise<LoadedCodingGraphModule | n
  * `createCodingGraphEngine` factory. Throws a user-facing install hint
  * when the package is absent. Always attempts a fresh import so a
  * previous failed probe attempt doesn't poison this path with a stale
- * "not installed" result. On success, the resolved module is cached and
- * subsequent calls return the same reference without re-importing.
+ * "not installed" result. On success, the resolved module is cached
+ * and subsequent calls return the same reference without re-importing.
  *
  * For present-but-broken installs (transitive dep missing, loader
  * error, etc.) the underlying import error is rethrown so users see the
@@ -219,10 +222,9 @@ async function tryImportCodingGraphModule(): Promise<LoadedCodingGraphModule | n
 export async function loadCodingGraphEngineFactory(): Promise<
   (options?: CreateCodingGraphEngineOptions) => CodingGraphEngine
 > {
-  // Bypass the probe-attempted / probeReturnedNull slots here. A probe
-  // call that caught a broken-install error must NOT cause the next
-  // loadFactory call to silently throw the install hint instead of the
-  // real diagnostic — see file header "Failure-mode policy".
+  // Bypass the probe-attempted slot here. A probe call that caught a
+  // broken-install error must NOT cause the next loadFactory call to
+  // silently throw the install hint instead of the real diagnostic.
   const result = await tryImportCodingGraphModule();
   if (!result) {
     throw notInstalledError();
@@ -232,16 +234,54 @@ export async function loadCodingGraphEngineFactory(): Promise<
 }
 
 /**
+ * Run the probe attempt exactly once. Concurrent probe callers await
+ * the SAME promise so a probe started in another tick does not race
+ * with the original attempt (Cursor Bugbot P2 round 4). The promise
+ * rejects only on a non-specifier import error (broken transitive
+ * dep, etc.); we rewrap the rejection here as `null` so the
+ * grace-degradation contract "never throws" holds for callers.
+ *
+ * On success we also write into `cachedLoadResult` so a SUBSEQUENT
+ * loadCodingGraphEngineFactory skips the import — this is the
+ * legitimate "I've already proven it's usable" sharing path. A
+ * `null` result (missing or throw) does NOT write to
+ * `cachedLoadResult`, so the loader path stays clear to re-attempt.
+ */
+function startProbeOnce(): Promise<LoadedCodingGraphModule | null> {
+  if (inFlightProbe !== null) {
+    return inFlightProbe;
+  }
+  const p = tryImportCodingGraphModule()
+    .then((mod) => {
+      if (mod !== null) {
+        cachedLoadResult = mod;
+      }
+      return mod as LoadedCodingGraphModule | null;
+    })
+    .catch(() => {
+      // Broken install — keep probe boolean-safe (returns null) and DO
+      // NOT touch cachedLoadResult. Loader can still re-attempt on a
+      // fresh call.
+      return null as LoadedCodingGraphModule | null;
+    });
+  inFlightProbe = p;
+  // Once settled, clear the in-flight slot so a future call after a
+  // long delay still re-attempts. The "successful module" result
+  // lives on in cachedLoadResult if it succeeded.
+  p.finally(() => {
+    if (inFlightProbe === p) {
+      inFlightProbe = null;
+    }
+  });
+  return p;
+}
+
+/**
  * Return `true` only when `@remnic/coding-graph` is installed AND
  * importable. Returns `false` for either a missing package or a broken
  * install. Never throws — callers using this as a safe gate-off probe
  * do not need try/catch. Broken-install diagnostics surface through
  * `loadCodingGraphEngineFactory()` instead.
- *
- * Uses a separate `probeAttempted` / `probeReturnedNull` slot so the
- * graceful-degradation result does NOT poison the loadFactory path
- * (Cur skip for re-import). Subsequent probe calls return the cached
- * answer immediately.
  */
 export async function isCodingGraphInstalled(): Promise<boolean> {
   return (await tryLoadCodingGraphModule()) !== null;
@@ -252,35 +292,19 @@ export async function isCodingGraphInstalled(): Promise<boolean> {
  * installed, or `null` if it is not. Use this for graceful-degradation
  * code paths. A malformed install resolves to `null` here without
  * throwing — broken-install reporting lives on
- * `loadCodingGraphEngineFactory()`. The cached probe result does NOT
- * poison loadFactory (see "Failure-mode policy" in file header).
+ * `loadCodingGraphEngineFactory()`.
+ *
+ * Uses an in-flight-promise slot so concurrent callers don't race.
  */
 export async function tryLoadCodingGraphModule(): Promise<LoadedCodingGraphModule | null> {
-  // Fast path: success is shared across loadFactory AND tryLoad. The
-  // loadFactory path always re-attempts; this fast path only fires when
-  // the success cache was populated by a previous loadFactory call.
+  // Fast path: a previous loadFactory call stored a successful module.
+  // Sharing this result is fine — both loader and probe are "is the
+  // usable module available?" callers, and the loader wrote it
+  // because it succeeded.
   if (cachedLoadResult !== undefined && cachedLoadResult !== null) {
     return cachedLoadResult;
   }
-  if (probeAttempted) {
-    return probeReturnedNull ? null : null;
-  }
-  probeAttempted = true;
-  probeReturnedNull = false;
-  try {
-    const result = await tryImportCodingGraphModule();
-    cachedLoadResult = result;
-    probeReturnedNull = result === null;
-    return result;
-  } catch {
-    // Probe path swallows non-specifier errors so it stays boolean-safe.
-    // Do NOT write `null` into cachedLoadResult — that would short-
-    // circuit loadFactory to the install-hint throw instead of the
-    // underlying diagnostic. The probeAttempted+probeReturnedNull slots
-    // carry the "not usable" signal for graceful-degradation callers.
-    probeReturnedNull = true;
-    return null;
-  }
+  return startProbeOnce();
 }
 
 // ---------------------------------------------------------------------------
