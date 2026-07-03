@@ -10,13 +10,13 @@
  *
  * Type-source direction:
  *   The contract types (CodingGraphEngine, FileIR, etc.) and the
- *   `TIER_1_LANGUAGES` / `ENGINE_VERSION` constants live in
- *   @remnic/core (packages/remnic-core/src/coding/coding-graph-types.ts
- *   and `CODING_GRAPH_ENGINE_VERSION` re-export from the main index).
- *   This package imports them and implements against them; it does NOT
- *   redefine them. That keeps a single source of truth so core's tsup
- *   DTS phase can emit declarations in CI's fresh base install (where
- *   this optional peer is not symlinked at compile time).
+ *   TIER_1_LANGUAGES / CODING_GRAPH_ENGINE_VERSION constants live in
+ *   @remnic/core (packages/remnic-core/src/coding/coding-graph-types.ts,
+ *   re-exported from the main index). This package imports them and
+ *   implements against them; it does NOT redefine them. That keeps a
+ *   single source of truth so updating the engine version in one place
+ *   keeps every consumer in lockstep (Cursor Bugbot low-severity on
+ *   PR #1588 round 2: "ENGINE_VERSION duplicated not imported").
  *
  *   @remnic/coding-graph declares @remnic/core as both `peerDependencies`
  *   and `devDependencies: "workspace:*"` in its package.json, so the
@@ -25,6 +25,7 @@
  */
 
 import {
+  CODING_GRAPH_ENGINE_VERSION,
   TIER_1_LANGUAGES,
   type CodingGraphEngine,
   type CodingGraphErrorCode,
@@ -37,15 +38,20 @@ import {
 } from "@remnic/core";
 
 // ---------------------------------------------------------------------------
-// Engine version constant — kept under the `ENGINE_VERSION` name (and
-// ALSO exposed by @remnic/core as `CODING_GRAPH_ENGINE_VERSION`) so the
-// dynamic-import loader in @remnic/core can validate the shape via a
-// single field name without an alias dance. The constant must match
-// across both packages or the loader's structural check fails.
+// Engine version — single source of truth lives in @remnic/core as
+// `CODING_GRAPH_ENGINE_VERSION`. We re-export it under the conventional
+// `ENGINE_VERSION` name (the dynamic-import loader in @remnic/core
+// validates the shape using this field name) AND keep the core alias
+// available so any consumer that wants the local name or the core
+// name gets the same value. Updating the constant in core propagates
+// here automatically.
 // ---------------------------------------------------------------------------
 
-/** Public engine version (single source of truth: @remnic/core). */
-export const ENGINE_VERSION = "0.1.0-pr1" as const;
+/** Public engine version. Imported from @remnic/core (single source of truth). */
+export const ENGINE_VERSION = CODING_GRAPH_ENGINE_VERSION;
+
+/** Core-alias re-export so callers can use either name. */
+export { CODING_GRAPH_ENGINE_VERSION };
 
 // ---------------------------------------------------------------------------
 // Tier-1 language list re-export. The list itself lives in @remnic/core
@@ -56,7 +62,8 @@ export { TIER_1_LANGUAGES };
 export type { CodingGraphLanguage };
 
 // ---------------------------------------------------------------------------
-// Tagged error
+// Tagged error — `code` is the load-bearing signal for programmatic
+// detection (see PR2 contract).
 // ---------------------------------------------------------------------------
 
 export type { CodingGraphErrorCode } from "@remnic/core";

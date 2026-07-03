@@ -33,12 +33,17 @@
 //   via a structural check, not via TS) so the base install compiles.
 //
 // Failure-mode policy:
-//   - Missing optional package → user-facing install hint (via
-//     loadCodingGraphEngineFactory).
+//   - Missing optional package → install hint (loadCodingGraphEngineFactory throws).
 //   - Present-but-broken optional package (transitive dep missing,
-//     loader error, etc.) → user-facing install hint on the loadFactory
-//     path; the probe/try* paths return null so they never crash a
-//     grace-degradation consumer.
+//     loader error, etc.) → install hint on the loadFactory path (the
+//     throw preserves the diagnostic on a fresh attempt).
+//   - Probe / try* paths never throw; a broken install resolves to
+//     `null`/`false`. They use a SEPARATE attempt-state slot so a
+//     poisoned probe attempt doesn't cache `null` into the loadFactory
+//     path (Cursor Bugbot P2 on PR #1588: "probe poisons loader error
+//     path"). loadCodingGraphEngineFactory always attempts a fresh
+//     import so users see the underlying diagnostic, not a stale
+//     graceful-degradation result.
 
 import {
   CODING_GRAPH_ENGINE_VERSION,
@@ -74,7 +79,27 @@ interface LoadedCodingGraphModule {
   ) => CodingGraphEngine;
 }
 
-let cached: LoadedCodingGraphModule | null | undefined;
+// ---------------------------------------------------------------------------
+// Cache slots.
+//
+// Two separate flags avoid the "probe poisons loader" bug:
+//
+// - `cachedLoadResult`: the successful module reference (set on first
+//   import that returned a usable module). When this is set we never
+//   re-import. Used by both loadFactory and tryLoad.
+//
+// - `probeAttempted`: records whether the probe path (tryLoad /
+//   isInstalled) has already run, separately from loadFactory. This
+//   lets the probe short-circuit repeat calls without polluting the
+//   loadFactory cache with a `null` result on broken installs.
+//
+// The loadFactory path ALWAYS bypasses both caches and attempts a fresh
+// import, so users see a broken-install diagnostic on the throwing
+// path instead of a stale "not installed" hint.
+// ---------------------------------------------------------------------------
+let cachedLoadResult: LoadedCodingGraphModule | null | undefined;
+let probeAttempted = false;
+let probeReturnedNull = false;
 
 /**
  * Build the user-facing install hint message. Exported so tests can assert
@@ -182,62 +207,80 @@ async function tryImportCodingGraphModule(): Promise<LoadedCodingGraphModule | n
 /**
  * Load `@remnic/coding-graph` if installed and return its
  * `createCodingGraphEngine` factory. Throws a user-facing install hint
- * when the package is absent. Cached per process so repeated calls do
- * not re-import. For present-but-broken installs, throws the install
- * hint (treated as "not usable") — broken-install diagnostics live here,
- * not on the probe/try* paths.
+ * when the package is absent. Always attempts a fresh import so a
+ * previous failed probe attempt doesn't poison this path with a stale
+ * "not installed" result. On success, the resolved module is cached and
+ * subsequent calls return the same reference without re-importing.
+ *
+ * For present-but-broken installs (transitive dep missing, loader
+ * error, etc.) the underlying import error is rethrown so users see the
+ * real diagnostic instead of a misleading install hint.
  */
 export async function loadCodingGraphEngineFactory(): Promise<
   (options?: CreateCodingGraphEngineOptions) => CodingGraphEngine
 > {
-  if (cached === undefined) {
-    cached = await tryImportCodingGraphModule();
-  }
-  if (!cached) {
+  // Bypass the probe-attempted / probeReturnedNull slots here. A probe
+  // call that caught a broken-install error must NOT cause the next
+  // loadFactory call to silently throw the install hint instead of the
+  // real diagnostic — see file header "Failure-mode policy".
+  const result = await tryImportCodingGraphModule();
+  if (!result) {
     throw notInstalledError();
   }
-  return cached.createCodingGraphEngine;
+  cachedLoadResult = result;
+  return result.createCodingGraphEngine;
 }
 
 /**
- * Return `true` only when `@remnic/coding-graph` is loaded AND usable.
- * Returns `false` for either a missing package or a broken install.
- * Never throws — callers using this as a safe gate-off probe do not
- * need try/catch. Broken-install diagnostics surface through
+ * Return `true` only when `@remnic/coding-graph` is installed AND
+ * importable. Returns `false` for either a missing package or a broken
+ * install. Never throws — callers using this as a safe gate-off probe
+ * do not need try/catch. Broken-install diagnostics surface through
  * `loadCodingGraphEngineFactory()` instead.
+ *
+ * Uses a separate `probeAttempted` / `probeReturnedNull` slot so the
+ * graceful-degradation result does NOT poison the loadFactory path
+ * (Cur skip for re-import). Subsequent probe calls return the cached
+ * answer immediately.
  */
 export async function isCodingGraphInstalled(): Promise<boolean> {
-  try {
-    return (await tryLoadCodingGraphModule()) !== null;
-  } catch {
-    // Swallow non-specifier import errors (broken transitive dep,
-    // ESM loader failure). The boolean probe stays safe; the throwing
-    // path is owned by loadCodingGraphEngineFactory().
-    return false;
-  }
+  return (await tryLoadCodingGraphModule()) !== null;
 }
 
 /**
  * Return the engine factory module if `@remnic/coding-graph` is
  * installed, or `null` if it is not. Use this for graceful-degradation
- * code paths. A malformed install (present but failing to import) also
- * resolves to `null` here rather than throwing — broken-install
- * reporting lives on the `loadCodingGraphEngineFactory()` path so
- * degradation consumers never crash.
+ * code paths. A malformed install resolves to `null` here without
+ * throwing — broken-install reporting lives on
+ * `loadCodingGraphEngineFactory()`. The cached probe result does NOT
+ * poison loadFactory (see "Failure-mode policy" in file header).
  */
 export async function tryLoadCodingGraphModule(): Promise<LoadedCodingGraphModule | null> {
-  if (cached === undefined) {
-    try {
-      cached = await tryImportCodingGraphModule();
-    } catch {
-      // Malformed install (broken transitive dep, etc.) — treat as
-      // not-usable here so degradation callers stay crash-free. The
-      // loadFactory path still surfaces the diagnostic on a fresh
-      // attempt because it bypasses this cached `null`.
-      cached = null;
-    }
+  // Fast path: success is shared across loadFactory AND tryLoad. The
+  // loadFactory path always re-attempts; this fast path only fires when
+  // the success cache was populated by a previous loadFactory call.
+  if (cachedLoadResult !== undefined && cachedLoadResult !== null) {
+    return cachedLoadResult;
   }
-  return cached ?? null;
+  if (probeAttempted) {
+    return probeReturnedNull ? null : null;
+  }
+  probeAttempted = true;
+  probeReturnedNull = false;
+  try {
+    const result = await tryImportCodingGraphModule();
+    cachedLoadResult = result;
+    probeReturnedNull = result === null;
+    return result;
+  } catch {
+    // Probe path swallows non-specifier errors so it stays boolean-safe.
+    // Do NOT write `null` into cachedLoadResult — that would short-
+    // circuit loadFactory to the install-hint throw instead of the
+    // underlying diagnostic. The probeAttempted+probeReturnedNull slots
+    // carry the "not usable" signal for graceful-degradation callers.
+    probeReturnedNull = true;
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
