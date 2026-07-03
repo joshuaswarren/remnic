@@ -236,6 +236,7 @@ test("applySupersede: throws when the replaced record is missing", () => {
   assert.throws(() => applySupersede([], "ADR-0001", replacement), /ADR-0001/);
 });
 
+
 test("applySupersede result round-trips through serialize/parse (issue #1548 review)", () => {
   // The classic on-disk shape after supersede: the old record carries
   // `status: "superseded"` and no `supersedes` field (the edge lives on
@@ -302,6 +303,30 @@ test("parseDecisionRecord: accepts status 'superseded' without a supersedes fiel
   assert.equal(reparsed.status, "superseded");
   assert.equal(reparsed.supersedes, undefined);
 });
+
+test("serializeDecisionRecord: round-trips entityRefs containing backslashes and quotes", () => {
+  // Cursor review-round bug d16b2a18: `parseFlowList` used to not honour
+  // backslash escapes inside quoted elements, so any ref containing a `"`
+  // would close its own element early and merge with the next ref. The
+  // serializer must escape such refs and the parser must decode them.
+  for (const refs of [
+    ["plain"],
+    ["with\"quote"],
+    ["with\\backslash"],
+    ["mix\"ed\\both", "second"],
+    ["a", "b\"c", "d\\\\e", "f"],
+  ]) {
+    const input = makeInput({ entityRefs: refs });
+    const out = serializeDecisionRecord(input);
+    const parsed = parseDecisionRecord(out);
+    assert.deepEqual(
+      parsed.entityRefs,
+      refs,
+      `entityRefs ${JSON.stringify(refs)} must round-trip verbatim`,
+    );
+  }
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // Listing
 // ──────────────────────────────────────────────────────────────────────────

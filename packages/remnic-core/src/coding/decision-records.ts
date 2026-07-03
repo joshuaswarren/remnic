@@ -369,8 +369,25 @@ function parseFlowList(valueText: string): unknown[] {
   const out: string[] = [];
   let buf = "";
   let inQuotes = false;
+  // Track whether we are sitting on a backslash so that `\"` inside a
+  // quoted element is recognised as an escaped quote rather than a
+  // closing quote. Without this flag, a ref containing a literal `"`
+  // (e.g. an entity id like `org/dept/\"lead\"`) would close its own
+  // element early and the next comma would split a string in half
+  // (cursor bug d16b2a18, review round on PR #1590).
+  let escaped = false;
   for (let i = 0; i < inner.length; i += 1) {
     const c = inner[i]!;
+    if (escaped) {
+      buf += c;
+      escaped = false;
+      continue;
+    }
+    if (c === "\\") {
+      buf += c;
+      escaped = true;
+      continue;
+    }
     if (c === '"') {
       inQuotes = !inQuotes;
       buf += c;
