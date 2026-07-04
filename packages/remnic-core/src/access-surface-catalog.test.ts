@@ -172,10 +172,12 @@ function normalizeHttpRegexRoute(src: string): string {
 
 /**
  * Statically extract a route-specific dispatch map from `access-http.ts`:
- * pathname → set of operations dispatched via `getOperation("…")` within that
- * route's handler block. Route-specific scoping prevents a catalog entry from
- * passing the dispatch gate just because a DIFFERENT route dispatches the same
- * operation (review P2: bind dispatch validation to method/path routes).
+ * `"${method} ${pathname}"` → set of operations dispatched via
+ * `getOperation("…")` within that route's handler block. Keying by
+ * method+pathname (not just pathname) prevents cross-method contamination
+ * when GET and POST share a path — a dispatch in the POST block must not
+ * satisfy a GET catalog entry (review P2: key HTTP dispatch coverage by
+ * method and path).
  */
 function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
   const source = readFileSync(
@@ -184,39 +186,65 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
   );
   const lines = source.split("\n");
   const routeOps = new Map<string, Set<string>>();
-  let currentRoute: string | null = null;
+  let currentKey: string | null = null;
 
-  for (const line of lines) {
-    // Detect route block start and update the current route.
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+
+    // Detect route block start — extract pathname and method.
+    let pathname: string | null = null;
+    let isExactMatch = false;
+
     let m = line.match(/pathname\s*===\s*"((?:\/engram|\/remnic|\/v1)\/[^"]+)"/);
     if (m) {
-      currentRoute = m[1]!.replace(/^\/remnic\//, "/engram/");
+      pathname = m[1]!.replace(/^\/remnic\//, "/engram/");
+      isExactMatch = true;
     } else {
       m = line.match(/\/\^((?:\\\/engram|\\\/remnic|\\\/v1).+?)\$\/g?\.(?:exec|test)\(pathname\)/);
       if (m) {
-        currentRoute = normalizeHttpRegexRoute(m[1]!);
+        pathname = normalizeHttpRegexRoute(m[1]!);
       } else {
         m = line.match(/pathname\.match\(\/\^((?:\\\/engram|\\\/remnic|\\\/v1).+?)\$\/g?\)/);
         if (m) {
-          currentRoute = normalizeHttpRegexRoute(m[1]!);
+          pathname = normalizeHttpRegexRoute(m[1]!);
         } else {
           m = line.match(/pathname\.startsWith\("((?:\/engram)\/v1\/[^"]+)"\)/);
           if (m) {
-            currentRoute = m[1]!.replace(/\/$/, "") + "/:id";
+            pathname = m[1]!.replace(/\/$/, "") + "/:id";
           }
         }
       }
     }
 
-    if (currentRoute && !routeOps.has(currentRoute)) {
-      routeOps.set(currentRoute, new Set<string>());
+    if (pathname) {
+      // Determine the HTTP method: same line first, then backward for
+      // exact-match routes, forward for dynamic routes.
+      let method: string | null = null;
+      const sameLine = line.match(/req\.method\s*===\s*"(\w+)"/);
+      if (sameLine) {
+        method = sameLine[1]!;
+      } else if (isExactMatch) {
+        for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
+          const bm = lines[j]!.match(/req\.method\s*===\s*"(\w+)"/);
+          if (bm) { method = bm[1]!; break; }
+        }
+      } else {
+        for (let j = i + 1; j < Math.min(lines.length, i + 5); j++) {
+          if (/pathname\s*===\s*"|\/\^.*\$\/g?\.(?:exec|test)\(pathname\)|pathname\.match\(/.test(lines[j]!)) break;
+          const fm = lines[j]!.match(/req\.method\s*===\s*"(\w+)"/);
+          if (fm) { method = fm[1]!; break; }
+        }
+      }
+      currentKey = method ? `${method} ${pathname}` : pathname;
+      if (!routeOps.has(currentKey)) routeOps.set(currentKey, new Set<string>());
+      continue;
     }
 
     // Collect getOperation calls within the current route block.
-    if (currentRoute) {
+    if (currentKey) {
       const opMatch = line.match(/getOperation\("(\w+)"\)/);
       if (opMatch) {
-        routeOps.get(currentRoute)!.add(opMatch[1]!);
+        routeOps.get(currentKey)!.add(opMatch[1]!);
       }
     }
   }
@@ -262,11 +290,13 @@ function validateDispatchCoverage(
   }
   for (const entry of httpCatalog) {
     if (entry.operation === null) continue;
-    // Route-specific: the getOperation("…") call must be in THIS route's
-    // handler block, not just anywhere in the file. A global set would let a
-    // flipped catalog row pass if a different route dispatches the same
-    // operation (review P2: bind dispatch validation to method/path routes).
-    const routeOps = httpRouteDispatch.get(entry.pathname);
+    // Method+path specific: the getOperation("…") call must be in THIS
+    // method's handler block for THIS pathname, not just anywhere in the
+    // file or in a different method's block for the same path. A pathname-
+    // only key would let a POST block's dispatch satisfy a GET catalog entry
+    // when they share a path (review P2: key dispatch by method and path).
+    const routeKey = `${entry.method} ${entry.pathname}`;
+    const routeOps = httpRouteDispatch.get(routeKey) ?? httpRouteDispatch.get(entry.pathname);
     if (!routeOps || !routeOps.has(entry.operation)) {
       violations.push({
         kind: "http-no-dispatch",
@@ -365,7 +395,7 @@ test("dispatch validator catches an HTTP route whose operation is dispatched by 
     { method: "GET", pathname: "/engram/v1/synthetic", operation: "memory_get" },
   ];
   const routeDispatch = new Map<string, ReadonlySet<string>>([
-    ["/engram/v1/memories/:id", new Set(["memory_get"])],
+    ["GET /engram/v1/memories/:id", new Set(["memory_get"])],
   ]);
   const violations = validateDispatchCoverage(
     [],
@@ -377,6 +407,31 @@ test("dispatch validator catches an HTTP route whose operation is dispatched by 
   assert.ok(
     noDispatch.some((v) => v.detail.includes("/engram/v1/synthetic")),
     "dispatch validator must flag an HTTP route whose operation is dispatched by a different route",
+  );
+});
+
+test("dispatch validator catches cross-method contamination on a shared path", () => {
+  // Seed: catalog claims `GET /engram/v1/memories` migrated to `memory_store`.
+  // The operation IS registered, and `POST /engram/v1/memories` DOES dispatch
+  // `memory_store` — but the GET method's own block does not. A pathname-only
+  // key would find the POST block's dispatch and pass; the method+pathname key
+  // must reject it. (review P2: key HTTP dispatch coverage by method and path)
+  const lyingHttpCatalog: readonly HttpRouteEntry[] = [
+    { method: "GET", pathname: "/engram/v1/memories", operation: "memory_store" },
+  ];
+  const routeDispatch = new Map<string, ReadonlySet<string>>([
+    ["POST /engram/v1/memories", new Set(["memory_store"])],
+  ]);
+  const violations = validateDispatchCoverage(
+    [],
+    lyingHttpCatalog,
+    new Map<string, string>(),
+    routeDispatch,
+  );
+  const noDispatch = violations.filter((v) => v.kind === "http-no-dispatch");
+  assert.ok(
+    noDispatch.some((v) => v.detail.includes("GET /engram/v1/memories")),
+    "dispatch validator must flag a GET route whose operation is dispatched only by the POST route on the same path",
   );
 });
 
