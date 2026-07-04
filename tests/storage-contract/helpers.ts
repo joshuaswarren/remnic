@@ -309,6 +309,10 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
     {
       name: "updateMemoryFrontmatter",
       kind: "memory",
+      // STATEFUL ENTRY: performs setup (writeMemory) THEN the operation under
+      // test (updateMemoryFrontmatter). #1522's catalog-touch consumer must
+      // baseline its lastWriteAt/catalog snapshot AFTER the setup write so the
+      // measurement is attributable to updateMemoryFrontmatter, not setup.
       write: async (storage) => {
         const id = await storage.writeMemory(
           "fact",
@@ -318,6 +322,12 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
         const ok = await storage.updateMemoryFrontmatter(id, { confidence: 0.5 });
         if (!ok) {
           throw new Error("updateMemoryFrontmatter returned false for a just-written memory");
+        }
+        // Verify the OPERATION persisted (not just the setup write): the
+        // patched confidence must round-trip through a fresh read.
+        const updated = await storage.getMemoryById(id);
+        if (!updated || updated.frontmatter.confidence !== 0.5) {
+          throw new Error("updateMemoryFrontmatter did not persist the frontmatter patch");
         }
         return id;
       },
@@ -346,6 +356,13 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
       kind: "profile",
       write: async (storage) => {
         await storage.writeProfile("# Profile\n\ncontract-surface profile\n");
+        // writeProfile returns void, so verify persistence by reading back — a
+        // silent no-op (or a write to the wrong path) must fail the surface
+        // test rather than pass on a fabricated non-empty return.
+        const readBack = await storage.readProfile();
+        if (!readBack.includes("contract-surface profile")) {
+          throw new Error("writeProfile did not persist profile.md (read-back mismatch)");
+        }
         return "profile.md";
       },
     },
