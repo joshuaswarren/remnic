@@ -20,7 +20,7 @@
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, stat, unlink, utimes } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, stat, unlink, utimes } from "node:fs/promises";
 import path from "node:path";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -495,15 +495,40 @@ async function breakStaleLock(
     await rename(lockPath, trashPath);
     try {
       const moved = await readFile(trashPath, "utf8");
-      if (moved === staleIdentity) {
-        // We moved the stale lock — clean up the trash.
-        await unlink(trashPath).catch(() => undefined);
-      } else {
+      if (moved !== staleIdentity) {
         // We accidentally moved a replacement lock (created between our last
         // check and the rename). Restore it so the replacement holder's lock
-        // survives. Best-effort: if restore fails, the trash orphan is not at
-        // lockPath so it does not block other contenders.
-        await rename(trashPath, lockPath).catch(() => undefined);
+        // survives. Use link (not rename) to AVOID overwriting a fresh lock
+        // that a third contender may have acquired at lockPath while the file
+        // was in trash: link fails with EEXIST if lockPath exists, leaving
+        // the third contender's lock intact (codex P2 review).
+        try {
+          await link(trashPath, lockPath);
+        } catch {
+          // lockPath already exists (a third contender acquired it) — do NOT
+          // overwrite. The moved file is an orphan in trash, not at lockPath,
+          // so it does not block anyone.
+        }
+        await unlink(trashPath).catch(() => undefined);
+      } else {
+        // Content matches — but verify the moved file is STILL stale. The
+        // original holder may have resumed and heartbeated between our
+        // pre-rename stat() and the rename, refreshing the mtime. If so, the
+        // holder is live: restore the lock instead of deleting it (codex P2).
+        const movedStat = await stat(trashPath);
+        if (Date.now() - movedStat.mtimeMs <= staleMs) {
+          // Mtime was refreshed — the holder resumed. Restore the lock.
+          try {
+            await link(trashPath, lockPath);
+          } catch {
+            // lockPath already exists — another contender acquired it. Leave
+            // the moved file in trash as an orphan.
+          }
+          await unlink(trashPath).catch(() => undefined);
+        } else {
+          // Still stale — we broke the right lock. Clean up the trash.
+          await unlink(trashPath).catch(() => undefined);
+        }
       }
     } catch {
       // Could not read the trash file — clean it up best-effort.
