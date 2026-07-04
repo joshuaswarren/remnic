@@ -272,7 +272,20 @@ export async function withHeldFileLock<T>(
         `(valid range: > 0 and < staleMs ms) so at least one heartbeat lands per stale window.`,
     );
   }
-  const warn = opts.onLockWarning ?? (() => undefined);
+  // Wrap the consumer's warning hook so a throwing callback never turns a
+  // non-fatal advisory lock warning into an unhandled rejection (heartbeat
+  // catch handler) or overrides the task's result (release path). The option
+  // is documented as never throwing into the caller; enforce that here
+  // (codex P2 review).
+  const rawWarn = opts.onLockWarning;
+  const warn = (message: string, err: unknown): void => {
+    if (!rawWarn) return;
+    try {
+      rawWarn(message, err);
+    } catch {
+      /* swallow — a throwing advisory hook must not crash the guarded op */
+    }
+  };
 
   // Per-call owner identity. Two withHeldFileLock calls in the SAME process
   // get different ids, so neither mistakes the other's lock for its own

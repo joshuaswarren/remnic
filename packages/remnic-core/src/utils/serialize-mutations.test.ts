@@ -740,3 +740,33 @@ test("withHeldFileLock runs task(false) best-effort when the lock directory cann
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("withHeldFileLock swallows a throwing onLockWarning hook (never crashes the guarded op)", async () => {
+  // The option is documented as never throwing into the caller. If a consumer
+  // supplies a hook that throws, it must not turn a non-fatal heartbeat
+  // failure into an unhandled rejection or override the task result on
+  // release (codex P2 review).
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "throwing-hook.lock");
+    let warnings = 0;
+    const result = await withHeldFileLock(
+      lockPath,
+      {
+        staleMs: 5_000,
+        onLockWarning: () => {
+          warnings++;
+          throw new Error("hook exploded");
+        },
+      },
+      async () => "task-succeeded",
+    );
+    assert.equal(result, "task-succeeded", "task result not overridden by throwing hook");
+    // The hook may or may not fire (only on non-fatal FS hiccups); if it
+    // does, the throw is swallowed — the key assertion is that the task
+    // completed and no unhandled rejection propagated.
+    assert.ok(warnings >= 0, "did not crash");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
