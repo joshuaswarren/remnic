@@ -297,11 +297,27 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
   // at process exit) and observe failures via the
   // `cacheWriteFailures` counter.
   let pendingWrites: Promise<void> = Promise.resolve();
+  // Cache-write failures must never fail the task (PR #1591, P1).
+  // PR #1591 (round-5 OTHls): cache writes are fire-and-forget at the
+  // miss site so a slow filesystem write cannot consume a phase
+  // timeout (benchmarkPhaseTimeoutMs / retryOptions.timeoutMs) that
+  // exists for the judge call. Track pending writes on a chained
+  // `pendingWrites` promise so callers may drain (e.g. between runs or
+  // at process exit) and observe failures via the
+  // `cacheWriteFailures` counter.
+  // PR #1591 (round-6 OUojr): after the judge call has returned, if
+  // the control signal is already aborted (the timeout fired and the
+  // wrapper raced this verdict), skip persisting the verdict — a later
+  // rerun must not find a "successful" LLM verdict for a task that
+  // actually timed out.
+
   const putSafely = (
     parts: JudgeCacheKeyParts,
     verdict: BenchJudgeResult,
+    control?: BenchPhaseControl,
   ): void => {
     if (!cache) return;
+    if (control?.signal?.aborted) return;
     const write = cache.put(parts, verdict).catch(() => {
       counters.cacheWriteFailures += 1;
     });
@@ -419,7 +435,7 @@ async function readCacheWithAbort(
           latencyMs: Date.now() - scoreStartedAt,
           model: keyExtras.judgeModelId ?? undefined,
         };
-        putSafely(parts, synthesized);
+        putSafely(parts, synthesized, control);
         return synthesized;
       }
 
@@ -430,7 +446,7 @@ async function readCacheWithAbort(
         expected,
         control,
       );
-      putSafely(parts, fresh);
+      putSafely(parts, fresh, control);
       return fresh;
     },
 
@@ -490,7 +506,7 @@ async function readCacheWithAbort(
         // cursor bugbot, OS_-h. Bypassing via a local copy would
         // rebind `this` to `undefined` and break those implementations.
         const fresh = await judge.scoreBinaryPrompt!(prompt, control);
-        putSafely(parts, fresh);
+        putSafely(parts, fresh, control);
         return fresh;
       },
     });

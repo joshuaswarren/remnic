@@ -172,6 +172,14 @@ export async function runBenchmark(
   // any role so primary and cross judges can share the helper below.
   let cachedCrossJudge: BenchJudge | undefined;
   let crossJudgeCacheCounters: JudgeCacheCounters | undefined;
+
+  // PR #1591 round-6 (OUojs / OUnib): capture the drain handles for
+  // both wrapped judges so the run-block finally can await them before
+  // returning — fire-and-forget cache writes (round-5 OTHls) require a
+  // drain when the run finishes so a follow-up run in the same process
+  // doesn't miss still-pending entries.
+  let primaryDrainPendingWrites: (() => Promise<void>) | undefined;
+  let crossDrainPendingWrites: (() => Promise<void>) | undefined;
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
   // cache. Wrap before createTimeoutGuardedAdapter so timeout-phase
   // enforcement still applies to underlying model calls on cache misses.
@@ -229,8 +237,7 @@ export async function runBenchmark(
         cache,
       });
       judgeCacheCounters = primary.counters;
-      // Install the cached judge on the ORIGINAL adapter instance
-      // rather than cloning it (round-4 OTEYU): a class-style
+      primaryDrainPendingWrites = primary.drainPendingWrites;
       // BenchMemoryAdapter uses #private fields and/or non-enumerable
       // own state that only exist on the receiver. Cloning via
       // Object.create+Object.assign preserves the prototype but not
@@ -258,6 +265,7 @@ export async function runBenchmark(
       });
       cachedCrossJudge = wrapped.judge;
       crossJudgeCacheCounters = wrapped.counters;
+      crossDrainPendingWrites = wrapped.drainPendingWrites;
     }
     return baseSystemInner;
   })();
@@ -321,14 +329,29 @@ export async function runBenchmark(
       benchmark: definition,
     });
   } finally {
-    await destroyOwnedIngestionAdapter();
-    // PR #1591 round-5 OTHlr: restore the caller's original judges on
-    // the mutable adapter and cross-judge slot so a subsequent run
-    // using the same adapter instance starts from the unwrapped baseline
-    // again.
-    options.system.judge = originalSystemJudge;
-    if (originalCrossJudge !== undefined) {
-      options.amaBenchCrossJudge = originalCrossJudge;
+    // PR #1591 round-6 (OUnif): the judge-restore step is its own
+    // try/finally so it always runs, even when ingestion teardown
+    // throws — leaving a cached wrapper installed on a reused
+    // adapter would silently feed stale verdicts into the next run.
+    try {
+      await destroyOwnedIngestionAdapter();
+    } finally {
+      options.system.judge = originalSystemJudge;
+      if (originalCrossJudge !== undefined) {
+        options.amaBenchCrossJudge = originalCrossJudge;
+      }
+    }
+    // PR #1591 round-6 (OUojs / OUnib): drain all pending cache
+    // writes before finalizing the report. Runs outside the phase
+    // timeout because the judge call has already completed; only
+    // disk I/O remains. Without this drain, a follow-up run in the
+    // same process with the same cacheDir would miss still-pending
+    // entries and issue extra judge calls on cached answers.
+    if (primaryDrainPendingWrites) {
+      await primaryDrainPendingWrites();
+    }
+    if (crossDrainPendingWrites) {
+      await crossDrainPendingWrites();
     }
   }
 
@@ -369,7 +392,7 @@ function wrapJudgeWithCache(args: {
   amaBenchJudgeProtocol: string;
   provider: ProviderConfig | null;
   cache: JudgeCache;
-}): { judge: BenchJudge; counters: JudgeCacheCounters } {
+}): { judge: BenchJudge; counters: JudgeCacheCounters; drainPendingWrites: () => Promise<void> } {
   // PR #1591 P2 (round-3 follow-up, reviewer chatgpt-codex-connector):
   // caller guarantees `provider !== null` here — providerless judges are
   // passed through unwrapped so two factory-created judges with identical
@@ -412,7 +435,11 @@ function wrapJudgeWithCache(args: {
         .digest("hex"),
     },
   });
-  return { judge: wrapped as unknown as BenchJudge, counters: wrapped.counters };
+  return {
+    judge: wrapped as unknown as BenchJudge,
+    counters: wrapped.counters,
+    drainPendingWrites: wrapped.drainPendingWrites,
+  };
 }
 
 function benchmarkDefinition(id: string): BenchmarkDefinition {
