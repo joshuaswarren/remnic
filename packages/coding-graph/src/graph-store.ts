@@ -361,11 +361,32 @@ export class GraphStore {
       // passes together make the write pipeline order-independent for
       // cross-file edges (chatgpt-codex-connector P1/P2).
       const tx = this.db.transaction((irs: StoreFileIR[]) => {
-        // Pass 1: every file's nodes. Returns the upsert result so we
-        // can populate `results` and so pass 2 can read back
-        // droppedDanglingEdges for logging.
+        // Pass 1a: upsert every file's nodes and collect the per-file
+        // prune sets WITHOUT deleting yet. `upsertFileNodes` returns
+        // the result plus the node ids it wants to prune; the actual
+        // prune (and the dangling-edge count that gates it) is deferred
+        // to pass 1b so all files in the batch share one batch-wide
+        // view of what is being pruned.
+        const pending: { result: UpsertResult; prunedNodeIds: string[] }[] = [];
         for (const ir of irs) {
-          results.push(this.upsertFileNodes(ir));
+          const { result, prunedNodeIds } = this.upsertFileNodes(ir);
+          pending.push({ result, prunedNodeIds });
+          results.push(result);
+        }
+        // Pass 1b: count + delete dangling edges per file. The src
+        // exclusion uses the BATCH-WIDE pruned set, not just this
+        // file's, so an edge whose both ends are pruned in different
+        // files is never reported as "dangling" — it is
+        // cascade-deleted, and the reported loss no longer depends on
+        // which file the loop visits first
+        // (chatgpt-codex-connector P2: 'Count dangling edges against
+        // the whole batch').
+        const batchPrunedIds: string[] = [];
+        for (const { prunedNodeIds } of pending) {
+          for (const id of prunedNodeIds) batchPrunedIds.push(id);
+        }
+        for (const { result, prunedNodeIds } of pending) {
+          this.pruneFileNodes(result, prunedNodeIds, batchPrunedIds);
         }
         // Pass 2: every file's edges. Resolves against the full DB
         // (which already contains every node from this batch plus
@@ -385,14 +406,19 @@ export class GraphStore {
   }
 
   /**
-   * Pass 1: upsert the file row and every symbol node, refreshing the
-   * contentless `nodes_fts` index in lockstep. Prune by deterministic
-   * id (NOT qualified_name) so a symbol whose kind changes gets a new
-   * id and the OLD row — which still has the same qualified_name but a
-   * stale id — is correctly deleted. Counts the dangling edges that
-   * fall out of the cascade so the caller can log the loss.
+   * Pass 1a: upsert the file row and every symbol node, refreshing the
+   * contentless `nodes_fts` index in lockstep, and compute the set of
+   * stale node ids this file wants to prune (deterministic id, NOT
+   * qualified_name, so a kind change gets a new id and the OLD row is
+   * deleted). The prune itself — and the dangling-edge count that
+   * gates it — is deferred to {@link pruneFileNodes} so the whole batch
+   * shares one batch-wide view of what is being pruned before any
+   * cascade runs.
    */
-  private upsertFileNodes(ir: StoreFileIR): UpsertResult {
+  private upsertFileNodes(ir: StoreFileIR): {
+    result: UpsertResult;
+    prunedNodeIds: string[];
+  } {
     // Upsert the file row first; the nodes table references files(id).
     const upsertFile = this.db.prepare(
       `INSERT INTO files (path, lang, content_hash)
@@ -537,66 +563,110 @@ export class GraphStore {
     // keeps the same qualifiedName but has a new node id; the old
     // id's row must be deleted to keep the file's symbol set honest.
     // We do this AFTER the upserts so any same-id re-upsert above is
-    // preserved.
+    // preserved. The actual delete (and the dangling-edge count) is
+    // deferred to pruneFileNodes so the batch can share one batch-wide
+    // view of every pruned node before any cascade runs.
     const prunedNodeIds = existingNodes
       .map((n) => n.id)
       .filter((id) => !seenNodeIds.has(id));
-    let droppedDanglingEdges = 0;
-    if (prunedNodeIds.length > 0) {
-      // Use a temp table for the pruned-id set so IN / NOT IN queries
-      // don't hit SQLite's ~32766 variable bind limit for large
-      // prune sets (cursor Bugbot: 'Prune path exceeds SQL variable
-      // limit'). Each insert binds 1 param; the subquery-based
-      // count/delete bind zero.
-      this.db.exec(
-        "CREATE TEMP TABLE IF NOT EXISTS _pruned_ids (id TEXT NOT NULL PRIMARY KEY)",
-      );
-      const clearPruned = this.db.prepare("DELETE FROM _pruned_ids");
-      const insertPruned = this.db.prepare(
-        "INSERT OR IGNORE INTO _pruned_ids (id) VALUES (?)",
-      );
-      clearPruned.run();
-      const fillPruned = this.db.transaction((ids: readonly string[]) => {
-        for (const id of ids) insertPruned.run(id);
-      });
-      fillPruned(prunedNodeIds);
-      // Count dangling edges BEFORE the cascade: dst is a pruned
-      // node AND src is NOT a pruned node (edges between two pruned
-      // nodes are cascade-deleted, not "dangling").
-      const dangling = expectRow<{ c: number }>(
-        this.db
-          .prepare(
-            `SELECT COUNT(*) AS c FROM edges
-               WHERE dst IN (SELECT id FROM _pruned_ids)
-                 AND src NOT IN (SELECT id FROM _pruned_ids)`,
-          )
-          .get(),
-        ["c"],
-      );
-      droppedDanglingEdges = dangling?.c ?? 0;
-      // DELETE stale nodes — ON DELETE CASCADE on edges drops every
-      // edge whose src or dst is pruned (FK pragma set in open()).
-      this.db.exec("DELETE FROM nodes WHERE id IN (SELECT id FROM _pruned_ids)");
-      clearPruned.run();
-      // FTS + fts_index cleanup: rowids are derived in JS (not SQL),
-      // so chunk the IN list to stay under the bind limit.
-      const SQLITE_VAR_LIMIT = 32_766;
-      const ftsRowids = prunedNodeIds.map(ftsRowidForNodeId);
-      for (let i = 0; i < ftsRowids.length; i += SQLITE_VAR_LIMIT) {
-        const chunk = ftsRowids.slice(i, i + SQLITE_VAR_LIMIT);
-        const ph = chunk.map(() => "?").join(", ");
-        this.db.prepare(`DELETE FROM nodes_fts WHERE rowid IN (${ph})`).run(...chunk);
-        this.db.prepare(`DELETE FROM fts_index WHERE fts_rowid IN (${ph})`).run(...chunk);
-      }
-    }
 
     return {
-      path: ir.path,
-      fileId,
-      nodeCount,
-      edgeCount: 0,
-      droppedDanglingEdges,
+      result: {
+        path: ir.path,
+        fileId,
+        nodeCount,
+        edgeCount: 0,
+        droppedDanglingEdges: 0,
+      },
+      prunedNodeIds,
     };
+  }
+
+  /**
+   * Pass 1b: count the dangling edges this file's prune will drop and
+   * perform the cascade delete + FTS cleanup. A dangling edge is one
+   * whose dst is pruned by THIS file but whose src survives — and
+   * "survives" is judged against the BATCH-WIDE pruned set, so an edge
+   * whose both ends are pruned (possibly in different files) is
+   * cascade-deleted and never reported as dangling. This makes the
+   * reported loss independent of the order files are visited in
+   * (chatgpt-codex-connector P2: 'Count dangling edges against the
+   * whole batch').
+   */
+  private pruneFileNodes(
+    result: UpsertResult,
+    prunedNodeIds: readonly string[],
+    batchPrunedIds: readonly string[],
+  ): void {
+    if (prunedNodeIds.length === 0) {
+      result.droppedDanglingEdges = 0;
+      return;
+    }
+    // Two temp tables keep the IN / NOT IN queries under SQLite's
+    // ~32766 variable bind limit for large prune sets (cursor Bugbot:
+    // 'Prune path exceeds SQL variable limit'). Each insert binds 1
+    // param; the subquery-based count/delete bind zero.
+    this.db.exec(
+      "CREATE TEMP TABLE IF NOT EXISTS _pruned_ids (id TEXT NOT NULL PRIMARY KEY)",
+    );
+    this.db.exec(
+      "CREATE TEMP TABLE IF NOT EXISTS _batch_pruned_ids (id TEXT NOT NULL PRIMARY KEY)",
+    );
+    const clearPruned = this.db.prepare("DELETE FROM _pruned_ids");
+    const clearBatch = this.db.prepare("DELETE FROM _batch_pruned_ids");
+    const insertPruned = this.db.prepare(
+      "INSERT OR IGNORE INTO _pruned_ids (id) VALUES (?)",
+    );
+    const insertBatch = this.db.prepare(
+      "INSERT OR IGNORE INTO _batch_pruned_ids (id) VALUES (?)",
+    );
+    clearPruned.run();
+    clearBatch.run();
+    const fillTemp = this.db.transaction(
+      (rows: { table: string; ids: readonly string[] }[]) => {
+        for (const { table, ids } of rows) {
+          const stmt =
+            table === "_pruned_ids"
+              ? insertPruned
+              : insertBatch;
+          for (const id of ids) stmt.run(id);
+        }
+      },
+    );
+    fillTemp([
+      { table: "_pruned_ids", ids: prunedNodeIds },
+      { table: "_batch_pruned_ids", ids: batchPrunedIds },
+    ]);
+    // Count dangling edges BEFORE the cascade: dst is a node pruned by
+    // THIS file AND src is NOT pruned anywhere in the batch (edges
+    // between two batch-pruned nodes are cascade-deleted, not
+    // "dangling", and must not be attributed to either file).
+    const dangling = expectRow<{ c: number }>(
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM edges
+             WHERE dst IN (SELECT id FROM _pruned_ids)
+               AND src NOT IN (SELECT id FROM _batch_pruned_ids)`,
+        )
+        .get(),
+      ["c"],
+    );
+    result.droppedDanglingEdges = dangling?.c ?? 0;
+    // DELETE stale nodes — ON DELETE CASCADE on edges drops every
+    // edge whose src or dst is pruned (FK pragma set in open()).
+    this.db.exec("DELETE FROM nodes WHERE id IN (SELECT id FROM _pruned_ids)");
+    clearPruned.run();
+    clearBatch.run();
+    // FTS + fts_index cleanup: rowids are derived in JS (not SQL),
+    // so chunk the IN list to stay under the bind limit.
+    const SQLITE_VAR_LIMIT = 32_766;
+    const ftsRowids = prunedNodeIds.map(ftsRowidForNodeId);
+    for (let i = 0; i < ftsRowids.length; i += SQLITE_VAR_LIMIT) {
+      const chunk = ftsRowids.slice(i, i + SQLITE_VAR_LIMIT);
+      const ph = chunk.map(() => "?").join(", ");
+      this.db.prepare(`DELETE FROM nodes_fts WHERE rowid IN (${ph})`).run(...chunk);
+      this.db.prepare(`DELETE FROM fts_index WHERE fts_rowid IN (${ph})`).run(...chunk);
+    }
   }
 
   /**

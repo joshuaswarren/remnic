@@ -196,6 +196,97 @@ test("dangling-edge policy: cross-file edges whose dst is dropped are counted, n
   }
 });
 
+test("dangling-edge count is batch-order-independent when both ends are pruned (chatgpt-codex-connector P2: 'Count dangling edges against the whole batch')", async () => {
+  // Two files share one cross-file edge x.src → y.dst. A re-ingest
+  // batch that prunes BOTH ends must report 0 dangling edges (the
+  // edge is cascade-deleted, not dangling) regardless of which file
+  // the loop visits first. The pre-fix per-file src exclusion made
+  // this 1 in one order and 0 in the other.
+  const fileXfull: StoreFileIR = {
+    path: "src/x.ts",
+    language: "typescript",
+    contentHash: "h-x",
+    symbols: [sym("x.src", "src", 0, 50)],
+    edges: [
+      {
+        srcQualifiedName: "x.src",
+        dstQualifiedName: "y.dst",
+        type: "CALLS",
+        confidence: 0.9,
+        provenance: "heuristic",
+      },
+    ],
+  };
+  const fileYfull: StoreFileIR = {
+    path: "src/y.ts",
+    language: "typescript",
+    contentHash: "h-y",
+    symbols: [sym("y.dst", "dst", 0, 50)],
+  };
+  const fileXempty: StoreFileIR = {
+    path: "src/x.ts",
+    language: "typescript",
+    contentHash: "h-x-2",
+    symbols: [],
+    edges: [],
+  };
+  const fileYempty: StoreFileIR = {
+    path: "src/y.ts",
+    language: "typescript",
+    contentHash: "h-y-2",
+    symbols: [],
+  };
+
+  async function droppedTotal(order: StoreFileIR[]): Promise<number> {
+    const dir = await mkdtemp(path.join(tmpdir(), "cg-order-"));
+    const store = await GraphStore.open({ dbPath: path.join(dir, "store.db") });
+    try {
+      await store.upsertFileBatch([fileXfull, fileYfull]);
+      const pruned = await store.upsertFileBatch(order);
+      assert.equal(pruned.ok, true);
+      if (!pruned.ok) throw new Error("expected ok result");
+      return pruned.results.reduce((sum, r) => sum + r.droppedDanglingEdges, 0);
+    } finally {
+      await store.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  // Both ends pruned in one batch — order must not change the total,
+  // and the total must be 0 (the edge is cascade-deleted, not dangling).
+  const totalXfirst = await droppedTotal([fileXempty, fileYempty]);
+  const totalYfirst = await droppedTotal([fileYempty, fileXempty]);
+  assert.equal(
+    totalXfirst,
+    totalYfirst,
+    "droppedDanglingEdges total must be identical regardless of file order in the batch",
+  );
+  assert.equal(
+    totalXfirst,
+    0,
+    "an edge whose both ends are pruned in the batch is cascade-deleted, not dangling",
+  );
+
+  // Control: pruning only the dst (src survives in a separate batch)
+  // is a genuine dangling edge and must still be reported as 1.
+  const dirCtl = await mkdtemp(path.join(tmpdir(), "cg-order-ctl-"));
+  const storeCtl = await GraphStore.open({ dbPath: path.join(dirCtl, "store.db") });
+  try {
+    await storeCtl.upsertFileBatch([fileXfull, fileYfull]);
+    const onlyDstPruned = await storeCtl.upsertFileBatch([fileYempty]);
+    assert.equal(onlyDstPruned.ok, true);
+    if (!onlyDstPruned.ok) throw new Error("expected ok result");
+    assert.equal(
+      onlyDstPruned.results.reduce((s, r) => s + r.droppedDanglingEdges, 0),
+      1,
+      "a one-ended prune (src survives) is a genuine dangling edge and is still counted",
+    );
+  } finally {
+    await storeCtl.close();
+    await rm(dirCtl, { recursive: true, force: true });
+  }
+});
+
 test("fts_index: maps FTS rowid → node id so PR2 can JOIN hits back to nodes", async () => {
   const { store, dir } = await tempStore();
   let peekDb: BetterSqlite3Database | undefined;
