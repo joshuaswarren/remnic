@@ -221,7 +221,17 @@ export async function runBenchmark(
         cache,
       });
       judgeCacheCounters = primary.counters;
-      baseSystemInner = { ...options.system, judge: primary.judge };
+      // Preserve the adapter's prototype (round-4 OS7CFz): a bare
+      // object-spread only copies own enumerable properties, so a
+      // class instance with prototype methods (or non-enumerable
+      // members) loses `store`/`recall`/`search`/`reset`/`destroy`.
+      // Spread own enumerable properties onto a fresh object whose
+      // prototype matches the original adapter, then overwrite `judge`.
+      baseSystemInner = Object.assign(
+        Object.create(Object.getPrototypeOf(options.system)),
+        options.system,
+        { judge: primary.judge },
+      );
     }
     // AMA-Bench cross judge: only wrap when a cross-judge provider config
     // identifies it. Without provider config, leave the cross judge

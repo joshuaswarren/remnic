@@ -737,3 +737,69 @@ test("(r) scoreBinaryPrompt preserves the underlying judge receiver (PR #1591 ro
     assert.equal(verdict.score, 1, "this must remain bound to the underlying judge instance");
   });
 });
+
+test("(s) cache-wrapping preserves BenchMemoryAdapter prototype (PR #1591 round-4 OS7CFz)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    // A class-style adapter where every method (including store,
+    // recall, search, reset, destroy) lives on the prototype, not on
+    // the instance. A naive {...system, judge: cached} spread only
+    // copies own enumerable properties, so prototype methods vanish
+    // and the benchmark runner fails when it calls them. The
+    // benchmark.ts wrap site must preserve the prototype.
+    class ClassAdapter {
+      readonly marker = "class-adapter-marker";
+      async store(): Promise<void> {}
+      async recall(): Promise<string> {
+        return "from-class-adapter";
+      }
+      async search(): Promise<Array<{ id: string; score: number; preview: string }>> {
+        return [];
+      }
+      async reset(): Promise<void> {}
+      async getStats(): Promise<{
+        totalMessages: number;
+        totalSummaryNodes: number;
+        maxDepth: number;
+      }> {
+        return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+      }
+      async destroy(): Promise<void> {}
+      async score(): Promise<number> {
+        return 0;
+      }
+      async scoreWithMetrics(): Promise<BenchJudgeResult> {
+        return sampleResult;
+      }
+    }
+    const adapter = new ClassAdapter();
+    // Simulate the benchmark.ts wrap site inline so we don't pull in
+    // the whole runBenchmark surface here.
+    const cached = runJudgeWithCache({
+      judge: adapter,
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    const wrappedSystem = Object.assign(
+      Object.create(Object.getPrototypeOf(adapter)),
+      adapter,
+      { judge: cached },
+    );
+    // Every prototype method must remain callable.
+    await wrappedSystem.store();
+    const recalled = await wrappedSystem.recall();
+    assert.equal(recalled, "from-class-adapter");
+    const results = await wrappedSystem.search();
+    assert.deepEqual(results, []);
+    await wrappedSystem.reset();
+    await wrappedSystem.getStats();
+    await wrappedSystem.destroy();
+    // The wrapped judge must be the cached wrapper.
+    assert.notEqual(wrappedSystem.judge, adapter, "wrapped judge should be the cached wrapper");
+    // The cached wrapper must still route to the underlying class
+    // instance so the instance methods on `judge` (here, a class
+    // method via prototype) stay bound.
+    const verdict = await wrappedSystem.judge.scoreWithMetrics!("q", "p", "e");
+    assert.equal(verdict.score, sampleResult.score);
+  });
+});
