@@ -229,7 +229,9 @@ test("a documented command that is not registered fails the check", () => {
     const result = runParity(root);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /documented command "remnic nonexistent-command" is not registered/);
-    assert.match(result.stderr, /bogus\.md/);
+    // Line must be 4 (the actual command line), not 3 (the fence opener) —
+    // guards the off-by-one fix in extractRemnicInvocations.
+    assert.match(result.stderr, /bogus\.md:4/);
   });
 });
 
@@ -374,6 +376,64 @@ test("commands registered in remnic-core/src/cli.ts via .command() are recognize
 
     const result = runParity(root);
     assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+// Regression: wrapped invocations (pnpm ... exec remnic <cmd>) must be
+// detected. Before the token-regex rewrite, an anchored regex missed these
+// and a drift like `pnpm ... remnic bogus` exited green (codex review
+// thread on PR #1601).
+test("a remnic command wrapped in a package-manager invocation is detected", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "docs", "wrapped.md"),
+      [
+        "# Wrapped",
+        "",
+        "```bash",
+        "pnpm --filter @remnic/cli exec remnic bogus-wrapped",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /documented command "remnic bogus-wrapped" is not registered/);
+  });
+});
+
+// Regression: sibling union types in remnic-cli must NOT leak into the
+// registered-command set. `type DaemonAction = ... | "install" | ...` is a
+// child-action union; `install` is only valid as `remnic daemon install`,
+// never as a top-level `remnic install`. Before the UNION regex was scoped
+// to the CommandName type body, `remnic install` falsely passed (codex
+// review thread on PR #1601).
+test("a nested child label in a sibling union type is NOT treated as top-level", () => {
+  withFixture((root) => {
+    // Inject a sibling union (DaemonAction) whose members are NOT in
+    // CommandName — `install` must still be flagged as drift.
+    const cliPath = path.join(root, "packages", "remnic-cli", "src", "index.ts");
+    let src = readFileSyncSafe(cliPath);
+    const sibling = 'type DaemonAction = "start" | "stop" | "restart" | "install" | "uninstall" | "status";\n';
+    src = sibling + src;
+    writeFileSync(cliPath, src);
+
+    writeFileSync(
+      path.join(root, "docs", "daemon-child.md"),
+      [
+        "# Daemon Child",
+        "",
+        "```bash",
+        "remnic install",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /documented command "remnic install" is not registered/);
   });
 });
 

@@ -67,7 +67,11 @@ const SKIPPED_DIR_NAMES = new Set([
 // from inside fences to avoid prose false-positives like "remnic recall is
 // the command you use" (issue #1527 PR2 spec).
 const FENCE_OPEN_RE = /^(\s*)(`{3,}|~{3,})/;
-const REMNIC_INVOCATION_RE = /^(\s*)(?:\$\s+)?(?:#\s+)?remnic\s+([A-Za-z][A-Za-z0-9:_-]*)/;
+// Match `remnic <subcommand>` anywhere in a fenced shell line, not just at
+// the start — handles both direct invocations (`remnic init`) and
+// package-manager wrappers (`pnpm --filter @remnic/cli exec remnic init`).
+// The `\b` ensures we don't match inside paths like `packages/remnic-cli`.
+const REMNIC_TOKEN_RE = /\bremnic\s+([A-Za-z][A-Za-z0-9:_-]*)/g;
 
 // Automation phrases a stub publisher cannot back. Scoped to install sections
 // only so that an honest runtime-behavior description ("once installed, the
@@ -173,7 +177,7 @@ function collectDocFiles() {
  * up — the common case in this repo is plain top-level fences.
  *
  * @param {string} src
- * @returns {Array<{ text: string; startLine: number }>}
+ * @returns {Array<{ text: string; startLine: number; lang: string }>}
  */
 function extractFencedBlocks(src) {
   const lines = src.split("\n");
@@ -188,6 +192,8 @@ function extractFencedBlocks(src) {
     const indent = openMatch[1];
     const marker = openMatch[2][0];
     const markerLen = openMatch[2].length;
+    // Info string: the text after the fence marker (e.g. ```bash → "bash").
+    const infoStr = lines[i].slice(openMatch[0].length).trim().split(/\s+/)[0] ?? "";
     const closeRe = new RegExp(`^${indent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${marker}{${markerLen},})\\s*$`);
     const startLine = i + 1; // 1-indexed line of the fence opener
     const bodyLines = [];
@@ -200,7 +206,7 @@ function extractFencedBlocks(src) {
       bodyLines.push(lines[i]);
       i++;
     }
-    blocks.push({ text: bodyLines.join("\n"), startLine });
+    blocks.push({ text: bodyLines.join("\n"), startLine, lang: infoStr });
   }
   return blocks;
 }
@@ -219,21 +225,43 @@ function extractFencedBlocks(src) {
 function extractRemnicInvocations(relPath, src) {
   const blocks = extractFencedBlocks(src);
   const out = [];
+  // Only scan shell-like or untagged blocks. Fenced diagrams (mermaid),
+  // data formats (json, yaml, toml), and prose-like blocks (text, md)
+  // can mention `remnic <word>` without being a CLI invocation.
+  const SHELL_LANGS = new Set([
+    "",
+    "bash",
+    "sh",
+    "shell",
+    "shell-session",
+    "zsh",
+    "console",
+    "bat",
+    "powershell",
+    "ps1",
+  ]);
   for (const block of blocks) {
+    if (!SHELL_LANGS.has(block.lang)) continue;
     const lines = block.text.split("\n");
     for (let j = 0; j < lines.length; j++) {
       const raw = lines[j];
-      const m = raw.match(REMNIC_INVOCATION_RE);
-      if (!m) continue;
-      const subcommand = m[2];
-      // Strip the leading indent + prompt prefix for the "full" display.
-      const full = raw.replace(/^\s*(?:\$\s+)?(?:#\s+)?/, "").trim();
-      out.push({
-        file: relPath,
-        line: block.startLine + j,
-        subcommand,
-        full,
-      });
+      // Skip comment lines — `# remnic is the CLI` is not an invocation.
+      if (/^\s*#/.test(raw)) continue;
+      // Find all `remnic <subcommand>` occurrences in the line (handles
+      // wrapped invocations like `pnpm ... exec remnic init`).
+      REMNIC_TOKEN_RE.lastIndex = 0;
+      let m;
+      while ((m = REMNIC_TOKEN_RE.exec(raw)) !== null) {
+        const subcommand = m[1];
+        out.push({
+          file: relPath,
+          // +1 because startLine is the fence opener; the first body line
+          // is startLine+1. +j for the offset within the block.
+          line: block.startLine + 1 + j,
+          subcommand,
+          full: raw.trim(),
+        });
+      }
     }
   }
   return out;
@@ -241,15 +269,39 @@ function extractRemnicInvocations(relPath, src) {
 
 // ── Registered-command discovery (TODO: replace with #1532 registrar) ─────
 
-const CASE_COMMAND_RE = /case\s+"([A-Za-z][A-Za-z0-9:_-]*)"\s*:/g;
-const COMMANDER_COMMAND_RE = /\.command\(\s*"([A-Za-z][A-Za-z0-9:_-]*)"\s*\)/g;
-const COMMAND_NAME_UNION_RE = /\|\s*"([A-Za-z][A-Za-z0-9:_-]*)"\s*(?=\||$)/gm;
+// remnic-cli/src/index.ts: the authoritative top-level set is the
+// `CommandName` type union. We extract ONLY that one type declaration's
+// body (from `type CommandName =` to its terminating `;`) before
+// scanning — otherwise sibling unions in the same file
+// (`type DaemonAction = "start" | "stop" | "install" | …`,
+// `type TokenAction`, `type ReviewAction`, …) leak their members into
+// the registered set and mask drift like a `remnic install` docs typo.
+// We deliberately do NOT scan bare `case "X":` labels either — those
+// include nested subcommand arms inside `cmd<X>` handlers.
+const COMMAND_NAME_TYPE_RE = /type\s+CommandName\s*=\s*([\s\S]*?);/;
+const QUOTED_MEMBER_RE = /"([A-Za-z][A-Za-z0-9:_-]*)"/g;
+
+// remnic-core/src/cli.ts: the commander tree is rooted at `cmd` (the
+// `engram` parent, assigned once at
+// `const cmd = program.command("engram")`). Top-level subcommands are
+// registered as `cmd.command("X")` — NOT `tierCmd.command("X")` or
+// other sub-commander variables. The `\bcmd\b` word boundary is
+// case-sensitive, so it matches the variable `cmd` but not `tierCmd`,
+// `namespacesCmd`, `secureStoreCmd`, etc. (those use a capital `C`).
+const CORE_TOP_LEVEL_RE = /\bcmd\b\s*\.\s*command\(\s*"([A-Za-z][A-Za-z0-9:_-]*)"\s*\)/g;
 
 /**
  * Collect the set of registered top-level command names from both CLI files.
- * Conservative: includes every `case "X":`, `.command("X")`, and `| "X"` in
- * the CommandName union. Over-approximation is safe — it means we might fail
- * to flag a nonexistent command, but #1532's registrar will tighten this.
+ *
+ * For remnic-cli/src/index.ts, extracts the `type CommandName = …;` body
+ * and scans only that — the authoritative top-level set. Sibling union
+ * types in the same file are excluded so that `remnic install` (a docs
+ * typo) is not masked by `type DaemonAction = … | "install" | …`, and
+ * nested `case "install":` labels inside `cmdDaemon` are excluded too.
+ *
+ * For remnic-core/src/cli.ts, uses only `.command("X")` calls whose
+ * receiver is the `cmd` (engram parent) variable — grandchild commands
+ * like `tierCmd.command("list")` are excluded.
  *
  * @param {string[]} cliFiles — repo-relative posix paths
  * @returns {Set<string>}
@@ -260,17 +312,20 @@ function collectRegisteredCommands(cliFiles) {
     const abs = path.join(ROOT, ...rel.split("/"));
     if (!existsSync(abs)) continue;
     const src = readFileSync(abs, "utf8");
+    // remnic-cli: scope to the CommandName type body only.
+    const typeMatch = src.match(COMMAND_NAME_TYPE_RE);
+    if (typeMatch) {
+      const body = typeMatch[1];
+      QUOTED_MEMBER_RE.lastIndex = 0;
+      let m;
+      while ((m = QUOTED_MEMBER_RE.exec(body)) !== null) {
+        commands.add(m[1]);
+      }
+    }
+    // remnic-core: top-level cmd.command("X") registrations.
     let m;
-    CASE_COMMAND_RE.lastIndex = 0;
-    while ((m = CASE_COMMAND_RE.exec(src)) !== null) {
-      commands.add(m[1]);
-    }
-    COMMANDER_COMMAND_RE.lastIndex = 0;
-    while ((m = COMMANDER_COMMAND_RE.exec(src)) !== null) {
-      commands.add(m[1]);
-    }
-    COMMAND_NAME_UNION_RE.lastIndex = 0;
-    while ((m = COMMAND_NAME_UNION_RE.exec(src)) !== null) {
+    CORE_TOP_LEVEL_RE.lastIndex = 0;
+    while ((m = CORE_TOP_LEVEL_RE.exec(src)) !== null) {
       commands.add(m[1]);
     }
   }
