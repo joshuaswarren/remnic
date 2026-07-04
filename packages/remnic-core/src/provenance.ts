@@ -58,6 +58,7 @@ function canonicalProvenanceSource(src: ProvenanceSource): Record<string, unknow
  * are ever written.
  */
 export function serializeProvenanceFields(fm: MemoryFrontmatter, lines: string[]): void {
+  let hasValidSources = false;
   if (fm.sources && fm.sources.length > 0) {
     // Validate each entry against the same schema used on read so invalid
     // in-memory sources are dropped at write time, not silently lost on the
@@ -69,10 +70,17 @@ export function serializeProvenanceFields(fm: MemoryFrontmatter, lines: string[]
     }
     if (canonical.length > 0) {
       lines.push(`sources: ${JSON.stringify(canonical)}`);
+      hasValidSources = true;
     }
   }
-  if (fm.provenance) {
-    lines.push(`provenance: ${fm.provenance}`);
+  // Downgrade the provenance tag to "none" when sources were present but all
+  // failed validation — a verified/unverified tag without evidence is
+  // indistinguishable from a grounded fact downstream (review thread IPn).
+  const tag = hasValidSources ? fm.provenance
+    : fm.sources && fm.sources.length > 0 ? "none"
+    : fm.provenance;
+  if (tag) {
+    lines.push(`provenance: ${tag}`);
   }
 }
 
@@ -101,14 +109,22 @@ export function parseProvenanceTag(
  * blobs).  `safeParse` lets us drop corrupt entries individually instead of
  * failing the whole field.
  */
-const ProvenanceSourceSchema = z.object({
-  sessionKey: z.string().min(1),
-  observedAt: z.string().min(1),
-  quote: z.string().min(1),
-  turnId: z.string().min(1).optional(),
-  charStart: z.number().finite().optional(),
-  charEnd: z.number().finite().optional(),
-});
+const ProvenanceSourceSchema = z
+  .object({
+    sessionKey: z.string().min(1),
+    observedAt: z
+      .string()
+      .min(1)
+      .refine((s) => !Number.isNaN(Date.parse(s)), "must be a parseable ISO timestamp"),
+    quote: z.string().min(1),
+    turnId: z.string().min(1).optional(),
+    charStart: z.number().finite().nonnegative().optional(),
+    charEnd: z.number().finite().nonnegative().optional(),
+  })
+  .refine(
+    (src) => src.charStart === undefined || src.charEnd === undefined || src.charEnd >= src.charStart,
+    { message: "charEnd must be >= charStart (half-open interval, rule 35)" },
+  );
 
 /**
  * Parse the `sources` array (issue #1575) from its single-line JSON form.

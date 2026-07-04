@@ -361,3 +361,75 @@ test("write-path validation drops invalid in-memory sources (review thread 4)", 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("write-path drops source with invalid observedAt timestamp (review round 4)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-ts-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await writeFactFile(storage, "Fact with bad timestamp.");
+
+    await storage.updateMemoryFrontmatter(id, {
+      sources: [
+        { sessionKey: "s/1", observedAt: "not-a-date", quote: "bad ts" },
+        { sessionKey: "s/2", observedAt: "2026-01-01T00:00:00Z", quote: "good" },
+      ],
+    });
+
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written);
+    assert.equal(written!.frontmatter.sources!.length, 1, "only the valid-timestamp entry survives");
+    assert.equal(written!.frontmatter.sources![0]!.quote, "good");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("write-path drops source with invalid span interval (review round 4)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-span-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await writeFactFile(storage, "Fact with bad span.");
+
+    await storage.updateMemoryFrontmatter(id, {
+      sources: [
+        { sessionKey: "s/1", observedAt: "2026-01-01T00:00:00Z", quote: "bad span", charStart: 10, charEnd: 5 },
+        { sessionKey: "s/2", observedAt: "2026-01-01T00:00:00Z", quote: "good", charStart: 0, charEnd: 10 },
+      ],
+    });
+
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written);
+    assert.equal(written!.frontmatter.sources!.length, 1, "only the valid-span entry survives");
+    assert.equal(written!.frontmatter.sources![0]!.quote, "good");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("write-path downgrades provenance tag to none when all sources dropped (review round 4)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-downgrade-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await writeFactFile(storage, "Fact with all-bad sources.");
+
+    await storage.updateMemoryFrontmatter(id, {
+      provenance: "verified",
+      sources: [
+        { sessionKey: "s/1", observedAt: "not-a-date", quote: "bad" },
+      ],
+    });
+
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written);
+    assert.equal(written!.frontmatter.sources, undefined, "all sources dropped");
+    assert.equal(written!.frontmatter.provenance, "none", "tag downgraded from verified to none");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
