@@ -108,38 +108,39 @@ jobs:
                 .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
             }
 
-            const CURSOR_LOGINS = new Set(['cursor-bugbot', 'cursor', 'cursor-bugbot[bot]', 'cursor[bot]']);
+            const CURSOR_APP_SLUGS = new Set(['cursor-bugbot', 'cursor']);
 
-            // Current-head positive Cursor signal, mirroring the two signal
-            // shapes the gate itself trusts most: a passing cursor check run
-            // on the head, or a cursor APPROVED review pinned to the head
-            // commit. Used to decide when a FAILED gate suite is stale (it
-            // failed before the reviewer spoke) and worth its one retry.
-            async function hasPositiveCursorSignal(headSha, prNumber) {
+            // Positive Cursor CHECK on the head, judged by the LATEST run of
+            // each cursor check name (an older success never outranks a newer
+            // failure). This deliberately does NOT interpret reviews or
+            // comments: review/comment verdicts fire the gate workflow
+            // themselves (pull_request_review / pull_request_review_comment
+            // triggers), so they surface to the sweeper as a green gate suite
+            // on the head — the gate's own evaluation stays the single
+            // authority on verdict semantics. Only the check_run signal path
+            // needs separate detection here, because check_run-triggered gate
+            // runs execute in default-branch context and never create a green
+            // suite on the PR head.
+            async function hasPositiveCursorCheck(headSha) {
               const checkRuns = await github.paginate(github.rest.checks.listForRef, {
                 owner,
                 repo,
                 ref: headSha,
                 per_page: 100,
               });
-              const positiveCheck = checkRuns.some(
-                (checkRun) =>
-                  CURSOR_LOGINS.has(checkRun.app?.slug ?? '') &&
-                  checkRun.status === 'completed' &&
-                  ['success', 'neutral'].includes(checkRun.conclusion ?? ''),
-              );
-              if (positiveCheck) return true;
-              const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                owner,
-                repo,
-                pull_number: prNumber,
-                per_page: 100,
-              });
-              return reviews.some(
-                (review) =>
-                  CURSOR_LOGINS.has((review.user?.login ?? '').toLowerCase()) &&
-                  review.state === 'APPROVED' &&
-                  review.commit_id === headSha,
+              const latestByName = new Map();
+              for (const checkRun of checkRuns) {
+                if (!CURSOR_APP_SLUGS.has(checkRun.app?.slug ?? '')) continue;
+                if (checkRun.status !== 'completed') continue;
+                const key = checkRun.name ?? 'unnamed';
+                const previous = latestByName.get(key);
+                const time = Date.parse(checkRun.completed_at ?? checkRun.started_at ?? '') || 0;
+                if (!previous || time >= previous.time) {
+                  latestByName.set(key, { time, conclusion: checkRun.conclusion ?? '' });
+                }
+              }
+              return [...latestByName.values()].some((entry) =>
+                ['success', 'neutral'].includes(entry.conclusion),
               );
             }
 
@@ -199,9 +200,12 @@ jobs:
               }
               // Cancelled suites are always retryable (cancellation is not a
               // verdict). Failed suites get ONE retry (run_attempt 1), and
-              // only after a positive Cursor signal exists on the head —
-              // i.e. the failure predates the reviewer's verdict and a
-              // re-evaluation can genuinely pass. The attempt bound prevents
+              // only once the head demonstrably satisfies the gate: either a
+              // sibling gate suite already re-evaluated to green (covers
+              // review/comment-delivered verdicts, which trigger the gate),
+              // or the latest cursor check run on the head is positive
+              // (covers check-only verdicts, whose gate runs land on the
+              // default branch, not the PR head). The attempt bound prevents
               // rerun loops on legitimately failing gates.
               const cancelledGate = gateRuns.filter(
                 (run) => run.status === 'completed' && run.conclusion === 'cancelled',
@@ -210,8 +214,13 @@ jobs:
                 (run) => run.status === 'completed' && run.conclusion === 'failure' && run.run_attempt === 1,
               );
               let target = cancelledGate[0] ?? null;
-              if (!target && staleFailedGate.length > 0 && (await hasPositiveCursorSignal(headSha, pull.number))) {
-                target = staleFailedGate[0];
+              if (!target && staleFailedGate.length > 0) {
+                const greenSuiteExists = gateRuns.some(
+                  (run) => run.status === 'completed' && run.conclusion === 'success',
+                );
+                if (greenSuiteExists || (await hasPositiveCursorCheck(headSha))) {
+                  target = staleFailedGate[0];
+                }
               }
               if (target) {
                 await rerun(target, `${label} ai-review gate`);
