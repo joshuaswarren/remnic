@@ -424,13 +424,29 @@ export class GraphIndex {
     recentInThread?: string[];
     entitySiblings?: string[];
     causalPredecessor?: string;
+    /**
+     * Optional frozen gate overrides (from GraphConstructionCapabilitySet).
+     * When provided, these take precedence over `this.cfg` so the caller's
+     * operation-scoped snapshot is the single source of truth (#1566).
+     */
+    graphCapsOverride?: {
+      entityGraph: boolean;
+      timeGraph: boolean;
+      causalGraph: boolean;
+      multiGraphMemory: boolean;
+    };
   }): Promise<void> {
-    if (!this.cfg.multiGraphMemoryEnabled) return;
+    const g = opts.graphCapsOverride;
+    const multiGraphOn = g ? g.multiGraphMemory : this.cfg.multiGraphMemoryEnabled;
+    if (!multiGraphOn) return;
+    const entityOn = g ? g.entityGraph : this.cfg.entityGraphEnabled;
+    const timeOn = g ? g.timeGraph : this.cfg.timeGraphEnabled;
+    const causalOn = g ? g.causalGraph : this.cfg.causalGraphEnabled;
     const ts = new Date().toISOString();
 
     try {
       // Entity graph
-      if (this.cfg.entityGraphEnabled && opts.entityRef && opts.entitySiblings?.length) {
+      if (entityOn && opts.entityRef && opts.entitySiblings?.length) {
         const siblings = opts.entitySiblings.slice(0, this.cfg.maxEntityGraphEdgesPerMemory);
         for (const sibling of siblings) {
           await appendEdge(this.memoryDir, {
@@ -445,7 +461,7 @@ export class GraphIndex {
       }
 
       // Time graph — link to most recent memory in same thread
-      if (this.cfg.timeGraphEnabled && opts.threadId && opts.recentInThread?.length) {
+      if (timeOn && opts.threadId && opts.recentInThread?.length) {
         const predecessor = opts.recentInThread[opts.recentInThread.length - 1];
         if (predecessor && predecessor !== opts.memoryPath) {
           await appendEdge(this.memoryDir, {
@@ -460,7 +476,7 @@ export class GraphIndex {
       }
 
       // Causal graph
-      if (this.cfg.causalGraphEnabled && opts.causalPredecessor) {
+      if (causalOn && opts.causalPredecessor) {
         const phrase = detectCausalPhrase(opts.content);
         if (phrase) {
           await appendEdge(this.memoryDir, {

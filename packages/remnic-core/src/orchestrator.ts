@@ -16155,6 +16155,12 @@ export class Orchestrator {
       recentInThread,
       entitySiblings,
       causalPredecessor,
+      graphCapsOverride: {
+        entityGraph: graphCaps.entityGraph,
+        timeGraph: graphCaps.timeGraph,
+        causalGraph: graphCaps.causalGraph,
+        multiGraphMemory: graphCaps.multiGraphMemory,
+      },
     });
   }
 
