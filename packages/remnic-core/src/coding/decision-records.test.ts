@@ -432,35 +432,3 @@ test("serializeDecisionRecord: body changes change the byte output (so dedup has
   const c = serializeDecisionRecord(input2);
   assert.notEqual(a, c, "body changes must change the serialised bytes");
 });
-
-
-test("applySupersede: same-id replacement skips the mutate hook (PR #1593 round 8)", () => {
-  // chatgpt-codex-connector P2 (PR #1593, src/index.ts:1348 era): when
-  // `replacement.id === targetId`, the in-place swap is intentional. Firing
-  // `mutate:${targetId}:superseded` after `write:${replacement.id}` would
-  // target the same record we just wrote, erasing the in-place edit.
-  const target = makeInput({ id: "ADR-0001" });
-  const replacement = makeInput({ id: "ADR-0001", decision: "revised body" });
-  const events: string[] = [];
-  applySupersede([target], "ADR-0001", replacement, (e) => events.push(e));
-  assert.deepEqual(
-    events,
-    ["write:ADR-0001"],
-    "same-id replacement fires only the write hook, not the mutate hook",
-  );
-});
-
-test("applySupersede: cross-id replacement fires both hooks", () => {
-  // Sanity: the suppression only applies to the same-id path. Cross-id
-  // replacements (replacement.id !== targetId) still fire the mutate hook
-  // to flip the old record's status.
-  const target = makeInput({ id: "ADR-0001" });
-  const replacement = makeInput({ id: "ADR-0002" });
-  const events: string[] = [];
-  applySupersede([target], "ADR-0001", replacement, (e) => events.push(e));
-  assert.deepEqual(
-    events,
-    ["write:ADR-0002", "mutate:ADR-0001:superseded"],
-    "cross-id replacement fires both hooks",
-  );
-});

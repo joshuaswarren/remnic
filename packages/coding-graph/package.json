@@ -1,7 +1,7 @@
 {
-  "name": "@remnic/belief-ledger",
+  "name": "@remnic/coding-graph",
   "version": "9.3.672",
-  "description": "Belief and prediction ledger library built on Remnic memory primitives",
+  "description": "Web-tree-sitter powered symbol-extraction engine for codebase memory (Tier 1: TypeScript, TSX, JavaScript, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP, Kotlin, Swift, Bash). Optional companion of @remnic/core — install only when coding-graph features are needed.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,41 +13,45 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "grammars"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup --config tsup.config.ts",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "pretest": "node ../../scripts/ensure-bench-build-deps.mjs",
-    "test": "tsx --test src/*.test.ts",
+    "test": "tsx --test 'src/**/*.test.ts'",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
+  "dependencies": {
+    "web-tree-sitter": "^0.25.0"
+  },
   "peerDependencies": {
     "@remnic/core": "^9.3.672"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
-    "tsup": "^8.0.0",
-    "tsx": "^4.0.0",
+    "@types/node": "^22.10.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/joshuaswarren/remnic.git",
-    "directory": "packages/belief-ledger"
+    "directory": "packages/coding-graph"
   },
   "keywords": [
     "remnic",
     "memory",
-    "beliefs",
-    "prediction",
-    "calibration",
-    "ledger"
+    "codebase",
+    "tree-sitter",
+    "wasm",
+    "symbols",
+    "extraction"
   ]
 }

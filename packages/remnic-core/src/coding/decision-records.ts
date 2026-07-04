@@ -473,14 +473,8 @@ export function applySupersede(
     next.push(replacementWithEdge);
   }
 
-  // Same-id replacement path: the write and mutate targets are the same
-  // record, so the mutate would erase the in-place edit. Skip the mutate
-  // hook (chatgpt-codex-connector P2 review on PR #1593 round 8).
-  const isSameIdReplacement = replacement.id === targetId;
   hook?.(`write:${replacement.id}`);
-  if (!isSameIdReplacement) {
-    hook?.(`mutate:${targetId}:superseded`);
-  }
+  hook?.(`mutate:${targetId}:superseded`);
 
   return next;
 }

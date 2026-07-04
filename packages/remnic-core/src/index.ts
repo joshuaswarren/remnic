@@ -1311,3 +1311,25 @@ export {
   type ForkCapsuleResult,
   type ForkLineage,
 } from "./transfer/capsule-fork.js";
+
+
+// ---------------------------------------------------------------------------
+// Coding-graph engine contract (#1551 PR1) — types owned by core,
+// implemented by @remnic/coding-graph (à-la-carte optional).
+// ---------------------------------------------------------------------------
+
+export {
+  CODING_GRAPH_ENGINE_VERSION,
+  TIER_1_LANGUAGES,
+} from "./coding/coding-graph-types.js";
+
+export type {
+  CodingGraphEngine,
+  CodingGraphErrorCode,
+  CodingGraphLanguage,
+  CreateCodingGraphEngineOptions,
+  FileIR,
+  ParseFileInput,
+  ParseResult,
+  SymbolIR,
+} from "./coding/coding-graph-types.js";
