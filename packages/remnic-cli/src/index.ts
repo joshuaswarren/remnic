@@ -2889,35 +2889,32 @@ async function runBenchViaPackage(
     return { ok: false };
   }
 
-  // local-lab endpoint preflight gate (issue #1573 PR2, cursor review round 5):
-  // probe each manifest role's endpoint before the benchmark starts so the
-  // operator gets a clear model-mismatch / endpoint-down error up front
-  // (rule 51: surface the endpoint's actual model list) instead of a mid-run
-  // failure. Full sequential phase scheduling (runSequentialPhases with
-  // responder->judge hand-off) lands in PR3 calibration; this gate delivers
-  // the preflight half of the local-lab run contract now.
+  // local-lab endpoint preflight gate (issue #1573 PR2, cursor review rounds 5-6):
+  // probe ONLY the responder (first phase) endpoint before the benchmark
+  // starts, so the operator gets a clear model-mismatch / endpoint-down
+  // error up front (rule 51: surface the endpoint's actual model list)
+  // instead of a mid-run failure. The judge is intentionally NOT probed
+  // here: in the documented single-GPU swap flow (responder + judge on
+  // different baseUrls) the judge endpoint is not running at startup — the
+  // operator starts it after the responder phase. Preflighting it now
+  // would block the sequential run. The judge preflight belongs at the
+  // hand-off transition, which PR3 calibration wires via runSequentialPhases.
   if (
     plan.runtime.profile === "local-lab" &&
     plan.runtime.localLab &&
     benchModule.preflightLocalLabRole
   ) {
-    const ll = plan.runtime.localLab;
-    const roles: Array<[string, { provider: string; baseUrl: string; model: string; ctx: number }]> = [
-      ["responder", ll.responder],
-      ["judge", ll.judge],
-    ];
-    for (const [roleName, role] of roles) {
-      const preflightResult = await benchModule.preflightLocalLabRole({
-        provider: role.provider,
-        baseUrl: role.baseUrl,
-        model: role.model,
-        ctx: role.ctx,
-      });
-      if (!preflightResult.ok) {
-        throw new Error(
-          `local-lab ${roleName} endpoint preflight failed: ${preflightResult.reason}`,
-        );
-      }
+    const responder = plan.runtime.localLab.responder;
+    const preflightResult = await benchModule.preflightLocalLabRole({
+      provider: responder.provider,
+      baseUrl: responder.baseUrl,
+      model: responder.model,
+      ctx: responder.ctx,
+    });
+    if (!preflightResult.ok) {
+      throw new Error(
+        `local-lab responder endpoint preflight failed: ${preflightResult.reason}`,
+      );
     }
   }
 
