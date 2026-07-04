@@ -713,15 +713,22 @@ export class GraphStore {
     // re-asserts, even when its dst lives in a file NOT in this
     // batch — the row survives the delete and the no-op skip below
     // keeps `changes` honest.
-    if (staleSrcDstTypes.length > 0) {
-      const placeholders = staleSrcDstTypes.map(() => "(?, ?, ?)").join(", ");
+    //
+    // Chunk the deletes: each tuple binds 3 parameters and SQLite
+    // enforces a variable limit (32766 in the bundled build). An
+    // unbounded IN list would throw `too many SQL variables` for a
+    // file with >10,922 stale edges, rolling back the whole batch
+    // (chatgpt-codex-connector P2: 'Chunk stale-edge deletes before
+    // binding them').
+    const SQLITE_VARIABLE_LIMIT = 32_766;
+    const PARAMS_PER_TUPLE = 3;
+    const MAX_TUPLES_PER_CHUNK = Math.floor(SQLITE_VARIABLE_LIMIT / PARAMS_PER_TUPLE);
+    for (let i = 0; i < staleSrcDstTypes.length; i += MAX_TUPLES_PER_CHUNK) {
+      const chunk = staleSrcDstTypes.slice(i, i + MAX_TUPLES_PER_CHUNK);
+      const placeholders = chunk.map(() => "(?, ?, ?)").join(", ");
       this.db
-        .prepare(
-          `DELETE FROM edges WHERE (src, dst, type) IN (${placeholders})`,
-        )
-        .run(
-          ...staleSrcDstTypes.flatMap((e) => [e.src, e.dst, e.type]),
-        );
+        .prepare(`DELETE FROM edges WHERE (src, dst, type) IN (${placeholders})`)
+        .run(...chunk.flatMap((e) => [e.src, e.dst, e.type]));
     }
 
     const insertEdge = this.db.prepare(
