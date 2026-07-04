@@ -15,6 +15,15 @@
  * process survives. Every override is restored in `finally`, even if the
  * dispatcher throws or calls `process.exit(N)`.
  *
+ * Limitation: `main()` is imported statically (per project rule
+ * ts-no-dynamic-import), so module-scope constants in `index.ts` that read
+ * env vars at load time (e.g. PID_FILE, LOG_FILE via resolveHomeDir) are
+ * frozen with the host environment before `runCli` can apply `options.env`.
+ * The env override IS visible to runtime `process.env` reads inside the
+ * dispatcher, but NOT to module-scope initialisers. Tests that need to
+ * isolate module-scope env derivatives (HOME-dependent paths, etc.) should
+ * use `spawnSync(process.execPath, ...)` instead.
+ *
  * Phase B of #1532 will move handlers behind a registrar table; until then
  * this harness is what gives the contract suite a stable surface to assert
  * against without booting the whole CLI as a subprocess.
@@ -140,7 +149,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   // `process.stdout` / `process.stderr` at call time).
   const originalProcessExit = process.exit;
   const originalProcessExitCode = process.exitCode;
-  const originalProcessCwd = process.cwd;
+  const originalCwd = process.cwd();
   const originalStdout = process.stdout;
   const originalStderr = process.stderr;
   const originalConsoleLog = console.log;
@@ -185,7 +194,10 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   }) as typeof process.exit;
 
   if (options.cwd !== undefined) {
-    process.cwd = () => options.cwd as string;
+    // Use process.chdir (not process.cwd = () => ...) so that filesystem
+    // APIs receiving relative paths resolve against the override directory,
+    // not the test runner's real cwd. Restored in finally via chdir back.
+    process.chdir(options.cwd);
   }
 
   for (const [key, value] of options.env ? Object.entries(options.env) : []) {
@@ -249,7 +261,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     };
   } finally {
     process.exit = originalProcessExit;
-    process.cwd = originalProcessCwd;
+    process.chdir(originalCwd);
     Object.defineProperty(process, "stdout", { value: originalStdout, configurable: true });
     Object.defineProperty(process, "stderr", { value: originalStderr, configurable: true });
     console.log = originalConsoleLog;
