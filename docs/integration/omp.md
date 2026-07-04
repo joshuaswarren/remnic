@@ -143,7 +143,12 @@ config_root="$HOME/${PI_CONFIG_DIR:-.omp}"
 if [ -n "$profile" ]; then
   agent_dir="$config_root/profiles/$profile/agent"
 elif [ -n "${PI_CODING_AGENT_DIR:-}" ]; then
-  agent_dir="$PI_CODING_AGENT_DIR"
+  # Expand a leading tilde the way expandTildePath() does.
+  case "$PI_CODING_AGENT_DIR" in
+    "~") agent_dir="$HOME" ;;
+    "~/"*) agent_dir="$HOME/${PI_CODING_AGENT_DIR#\~/}" ;;
+    *) agent_dir="$PI_CODING_AGENT_DIR" ;;
+  esac
 else
   agent_dir="$config_root/agent"
 fi
