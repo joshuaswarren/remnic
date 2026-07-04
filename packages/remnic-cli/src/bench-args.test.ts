@@ -985,3 +985,40 @@ test("parseBenchArgs --limit 0 preserved (CLAUDE.md rule 27 slice-negative-zero)
   ]);
   assert.equal(parsed.publishedLimit, 0);
 });
+
+test("parseBenchArgs resolves --local-lab-manifest into localLabManifestPath (cursor review: #1573 PR2)", () => {
+  // Regression: --runtime-profile accepted "local-lab" but there was no flag
+  // to supply localLabManifestPath, so every CLI local-lab resolution failed
+  // with the manifest-path error. --local-lab-manifest closes that gap and
+  // resolves tildes + relative paths identically to other filesystem flags.
+  const parsed = parseBenchArgs([
+    "run",
+    "locomo",
+    "--runtime-profile",
+    "local-lab",
+    "--local-lab-manifest",
+    "~/bench/local-lab.json",
+  ]);
+
+  assert.equal(parsed.runtimeProfile, "local-lab");
+  assert.ok(
+    parsed.localLabManifestPath?.startsWith("/"),
+    "localLabManifestPath must be resolved to an absolute path",
+  );
+  assert.match(parsed.localLabManifestPath ?? "", /local-lab\.json$/);
+});
+
+test("parseBenchArgs leaves localLabManifestPath undefined when --local-lab-manifest is absent", () => {
+  const parsed = parseBenchArgs(["run", "locomo", "--runtime-profile", "baseline"]);
+  assert.equal(parsed.localLabManifestPath, undefined);
+});
+
+test("parseBenchArgs --matrix empty error lists local-lab alongside the other profiles (cursor review: #1573 PR2 round 5)", () => {
+  // Regression: the empty-matrix error named only baseline/real/openclaw-chain
+  // even though parseBenchRuntimeProfile accepts local-lab, so the message was
+  // an outdated allow-list.
+  assert.throws(
+    () => parseBenchArgs(["run", "locomo", "--matrix", " , , "]),
+    /local-lab/,
+  );
+});

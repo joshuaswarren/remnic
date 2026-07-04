@@ -60,8 +60,9 @@ class OllamaProvider implements LlmProvider {
           system: opts.systemPrompt,
           stream: false,
           options: {
-            temperature: opts.temperature,
+            temperature: opts.temperature ?? this.config.temperature,
             num_predict: opts.maxTokens,
+            ...(this.config.seed !== undefined ? { seed: this.config.seed } : {}),
           },
         }),
       },

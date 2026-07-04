@@ -206,7 +206,7 @@ test("bench CLI exposes runtime profile and provider-backed run surfaces", async
   const parserSource = await readFile("packages/remnic-cli/src/bench-args.ts", "utf8");
   const readme = await readFile("packages/remnic-cli/README.md", "utf8");
 
-  assert.match(source, /--runtime-profile <baseline\|real\|openclaw-chain>/);
+  assert.match(source, /--runtime-profile <baseline\|real\|openclaw-chain\|local-lab>/);
   assert.match(source, /--matrix <profiles>/);
   assert.match(source, /--remnic-config <path>/);
   assert.match(source, /--openclaw-config <path>/);
@@ -222,8 +222,9 @@ test("bench CLI exposes runtime profile and provider-backed run surfaces", async
   assert.match(source, /remnic bench run longmemeval --runtime-profile openclaw-chain --openclaw-config/);
   assert.match(source, /remnic bench run longmemeval --runtime-profile real --system-provider openai --system-model/);
   assert.match(source, /remnic bench run longmemeval --matrix baseline,real,openclaw-chain/);
+  assert.match(source, /--local-lab-manifest <path>/);
 
-  assert.match(parserSource, /export type BenchRuntimeProfile = "baseline" \| "real" \| "openclaw-chain";/);
+  assert.match(parserSource, /export type BenchRuntimeProfile = "baseline" \| "real" \| "openclaw-chain" \| "local-lab";/);
   assert.match(parserSource, /runtimeProfile\?: BenchRuntimeProfile;/);
   assert.match(parserSource, /matrixProfiles\?: BenchRuntimeProfile\[];/);
   assert.match(parserSource, /systemProvider\?: BuiltInProvider;/);

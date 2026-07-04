@@ -45,6 +45,7 @@ import {
   resolveNamespaceCatalogEnabled,
 } from "./emit-legacy-tools.js";
 import { parseWearablesConfig } from "./wearables/config.js";
+import { parseProvenanceConfig } from "./provenance.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
@@ -1471,18 +1472,16 @@ export function parseConfig(
     recallMaxProcedures,
   };
 
-  // Wearable transcript ingestion (Limitless / Bee / Omi). Parsing is
-  // delegated to the wearables module; it follows the same loud-reject
-  // conventions as the `procedural` block above.
+  // Wearable transcript ingestion (Limitless / Bee / Omi) — delegated to the wearables module.
   const wearables = parseWearablesConfig(cfg.wearables);
 
+  const provenance = parseProvenanceConfig(cfg.provenance);
   // Coding-agent project/branch scoping (issue #569)
   const rawCodingMode =
     cfg.codingMode && typeof cfg.codingMode === "object" && !Array.isArray(cfg.codingMode)
       ? (cfg.codingMode as Record<string, unknown>)
       : {};
-  // Default: projectScope=true (enabled), branchScope=false (opt-in).
-  // `coerceBool` treats "false"/"0"/"no"/"off" as false (CLAUDE.md #36).
+  // Default: projectScope=true, branchScope=false (opt-in; CLAUDE.md #36).
   const codingProjectScopeRaw = coerceBool(rawCodingMode.projectScope);
   const codingBranchScopeRaw = coerceBool(rawCodingMode.branchScope);
   const codingGlobalFallbackRaw = coerceBool(rawCodingMode.globalFallback);
@@ -2431,6 +2430,7 @@ export function parseConfig(
     dreamsPhases,
     procedural,
     wearables,
+    provenance,
     // At-rest encryption (issue #690 PR 3/4)
     // coerceBool handles CLI string inputs: `--config secureStoreEnabled=true`
     // arrives as the string "true" which `=== true` would reject (CLAUDE.md #36).

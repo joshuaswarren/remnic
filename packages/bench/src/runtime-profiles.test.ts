@@ -575,3 +575,134 @@ test("runtime profile routes OpenAI internal LLM calls through Responses API", a
     "secret-openai-key",
   );
 });
+
+test("local-lab runtime profile applies requestTimeout/max429WaitMs/disableThinking to providers (cursor review: #1573 PR2)", async () => {
+  // Regression: the local-lab branch built ProviderConfig values only from the
+  // manifest and never applied --request-timeout / --max-429-wait / --disable-thinking,
+  // so those flags silently no-op'd on local-lab runs. Other profiles route through
+  // resolveProviderConfig which honours them; local-lab must match that contract.
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-local-lab-"));
+  const manifestPath = path.join(root, "local-lab.json");
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      profile: "local-lab",
+      responder: {
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "qwen3:14b",
+        ctx: 16384,
+        temperature: 0,
+        seed: 1573,
+      },
+      judge: {
+        provider: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        model: "gemma3:27b",
+        ctx: 16384,
+        temperature: 0,
+        seed: 1573,
+      },
+      phases: "sequential",
+    }),
+  );
+
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "local-lab",
+    localLabManifestPath: manifestPath,
+    requestTimeout: 12_000,
+    max429WaitMs: 5_000,
+    disableThinking: true,
+  });
+
+  assert.equal(resolved.profile, "local-lab");
+  // System (responder) provider carries the runtime options layered on top of
+  // the manifest's provider/model/baseUrl/temperature/seed.
+  assert.equal(resolved.systemProvider?.retryOptions?.timeoutMs, 12_000);
+  assert.equal(resolved.systemProvider?.retryOptions?.max429WaitMs, 5_000);
+  assert.equal(resolved.systemProvider?.disableThinking, true);
+  // Judge provider honours the same contract.
+  assert.equal(resolved.judgeProvider?.retryOptions?.timeoutMs, 12_000);
+  assert.equal(resolved.judgeProvider?.retryOptions?.max429WaitMs, 5_000);
+  assert.equal(resolved.judgeProvider?.disableThinking, true);
+});
+
+test("local-lab runtime profile leaves providers unchanged when no runtime options are set", async () => {
+  // The manifest-only common case must not sprout empty retryOptions or
+  // disableThinking — applyLocalLabRuntimeOptions returns the config as-is.
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-local-lab-"));
+  const manifestPath = path.join(root, "local-lab.json");
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      profile: "local-lab",
+      responder: {
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "qwen3:14b",
+        ctx: 16384,
+        temperature: 0,
+        seed: 1573,
+      },
+      judge: {
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "gemma3:27b",
+        ctx: 16384,
+        temperature: 0,
+        seed: 1573,
+      },
+      phases: "sequential",
+    }),
+  );
+
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "local-lab",
+    localLabManifestPath: manifestPath,
+  });
+
+  assert.equal(resolved.systemProvider?.retryOptions, undefined);
+  assert.equal(resolved.systemProvider?.disableThinking, undefined);
+  assert.equal(resolved.judgeProvider?.retryOptions, undefined);
+  assert.equal(resolved.judgeProvider?.disableThinking, undefined);
+});
+
+test("local-lab runtime profile applies lcmObserveConcurrency to the effective config (cursor review: #1573 PR2 round 4)", async () => {
+  // Regression: resolveLocalLabRuntimeProfile built effectiveRemnicConfig from
+  // buildBenchBaselineRemnicConfig() only and never merged lcmObserveConcurrency,
+  // so --ingest-concurrency silently no-op'd on local-lab (unlike baseline/real).
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-local-lab-"));
+  const manifestPath = path.join(root, "local-lab.json");
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      profile: "local-lab",
+      responder: {
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "qwen3:14b",
+        ctx: 16384,
+        temperature: 0,
+        seed: 1573,
+      },
+      judge: {
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "gemma3:27b",
+        ctx: 16384,
+        temperature: 0,
+        seed: 1573,
+      },
+      phases: "sequential",
+    }),
+  );
+
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "local-lab",
+    localLabManifestPath: manifestPath,
+    lcmObserveConcurrency: 4,
+  });
+
+  assert.equal(resolved.remnicConfig.lcmObserveConcurrency, 4);
+  assert.equal(resolved.effectiveRemnicConfig.lcmObserveConcurrency, 4);
+});

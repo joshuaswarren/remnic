@@ -218,6 +218,40 @@ export type {
   ResolvedBenchRuntimeProfile,
 } from "./runtime-profiles.js";
 export { resolveBenchRuntimeProfile } from "./runtime-profiles.js";
+
+export {
+  LOCAL_LAB_PROVIDER_KINDS,
+  loadLocalLabManifest,
+  parseLocalLabManifest,
+  preflightLocalLabRole,
+  resolveLocalLabProfile,
+  resolveLocalLabRole,
+  runSequentialPhases,
+  formatHandoffNote,
+  discoveryEndpointFor,
+  LocalLabPreflightError,
+} from "./local-lab/index.js";
+export type {
+  LocalLabManifest,
+  LocalLabManifestNotes,
+  LocalLabPhase,
+  LocalLabPhaseDescriptor,
+  LocalLabPhaseExecute,
+  LocalLabPhaseName,
+  LocalLabPhaseOutcome,
+  LocalLabPreflightFailure,
+  LocalLabPreflightInput,
+  LocalLabPreflightOptions,
+  LocalLabPreflightResult,
+  LocalLabPreflightSuccess,
+  LocalLabProviderKind,
+  LocalLabRoleConfig,
+  PreflightDiscoveredModel,
+  ResolvedLocalLabProfile,
+  ResolvedLocalLabRole,
+  RunSequentialPhasesOptions,
+  SequentialPhaseHooks,
+} from "./local-lab/index.js";
 export {
   buildBenchmarkRunSeeds,
   orchestrateBenchmarkRuns,
