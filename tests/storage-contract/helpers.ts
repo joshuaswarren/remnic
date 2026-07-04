@@ -249,6 +249,31 @@ export type PublicWriteKind =
   | "chunk";
 
 /**
+ * Every `MemoryCategory`, enumerated once and fail-closed against the union.
+ * `satisfies Record<MemoryCategory, unknown>` makes the object literal carry
+ * EVERY category, so adding a value to `MemoryCategory` is a compile error
+ * here until it is listed — the surface entries and the category-coverage test
+ * both flow from this list, so a new category cannot silently ship without a
+ * `writeMemory(<category>)` surface entry. Removing a category from the union
+ * likewise fails because the orphaned key no longer satisfies the Record.
+ */
+export const ALL_MEMORY_CATEGORIES = Object.keys({
+  fact: 1,
+  preference: 1,
+  decision: 1,
+  correction: 1,
+  commitment: 1,
+  moment: 1,
+  principle: 1,
+  relationship: 1,
+  rule: 1,
+  skill: 1,
+  procedure: 1,
+  reasoning_trace: 1,
+  entity: 1,
+} satisfies Record<MemoryCategory, unknown>) as MemoryCategory[];
+
+/**
  * One entry in the public storage WRITE surface. #1522's catalog-touch fitness
  * test iterates this list, calls `write(storage)`, and asserts the target
  * namespace's `lastWriteAt` moved (and only the target's).
@@ -292,21 +317,7 @@ export interface PublicWriteSurfaceEntry {
  * → chunk) so #1522's per-entry failure messages are deterministic.
  */
 export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
-  const memoryCategories: MemoryCategory[] = [
-    "fact",
-    "preference",
-    "decision",
-    "correction",
-    "commitment",
-    "moment",
-    "principle",
-    "relationship",
-    "rule",
-    "skill",
-    "procedure",
-    "reasoning_trace",
-    "entity",
-  ];
+  const memoryCategories = ALL_MEMORY_CATEGORIES;
   const memoryEntries: PublicWriteSurfaceEntry[] = memoryCategories.map((category) => ({
     name: `writeMemory(${category})`,
     kind: "memory",
@@ -351,6 +362,37 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
         const updated = await storage.getMemoryById(id);
         if (!updated || updated.frontmatter.confidence !== 0.5) {
           throw new Error("updateMemoryFrontmatter did not persist the frontmatter patch");
+        }
+        return id;
+      },
+    },
+    {
+      name: "updateMemory",
+      kind: "memory",
+      // STATEFUL ENTRY: `setup` creates the record to rewrite OUTSIDE the
+      // measured window so #1522's catalog-touch consumer attributes lastWriteAt
+      // movement to updateMemory alone. Without this entry a regression where
+      // updateMemory stops touching the namespace catalog would pass silently —
+      // the surface jumped from writeMemory to updateMemoryFrontmatter and never
+      // measured this method even though production callers invoke it directly.
+      setup: async (storage) => {
+        return storage.writeMemory(
+          "fact",
+          "contract-surface updateMemory original body",
+          { tags: ["contract-surface"] },
+        );
+      },
+      write: async (storage, setupContext) => {
+        const id = setupContext as string;
+        const ok = await storage.updateMemory(id, "contract-surface updateMemory rewritten body");
+        if (!ok) {
+          throw new Error("updateMemory returned false for a just-written memory");
+        }
+        // Verify the OPERATION persisted (not the setup write): the rewritten
+        // body must round-trip through a fresh read.
+        const updated = await storage.getMemoryById(id);
+        if (!updated || !updated.content.includes("updateMemory rewritten body")) {
+          throw new Error("updateMemory did not persist the rewritten content");
         }
         return id;
       },

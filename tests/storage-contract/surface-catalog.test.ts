@@ -14,7 +14,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { enumeratePublicWriteSurface, withScratchStorage } from "./helpers.js";
+import { ALL_MEMORY_CATEGORIES, enumeratePublicWriteSurface, withScratchStorage } from "./helpers.js";
 
 /**
  * The LOCKED count of CATALOGUED memory-content write entry points — the
@@ -28,7 +28,7 @@ import { enumeratePublicWriteSurface, withScratchStorage } from "./helpers.js";
  * writeSummary — write outside the memory catalog and are intentionally NOT
  * catalogued here; they are a separate surface.
  */
-const EXPECTED_SURFACE_COUNT = 19; // 13 writeMemory categories (incl. entity) + updateMemoryFrontmatter + artifact + entity(writeEntity) + profile + question + chunk
+const EXPECTED_SURFACE_COUNT = 20; // 13 writeMemory categories (incl. entity) + updateMemoryFrontmatter + updateMemory + artifact + entity(writeEntity) + profile + question + chunk
 
 test("surface catalog: enumeratePublicWriteSurface returns the locked count", () => {
   const surface = enumeratePublicWriteSurface();
@@ -89,24 +89,13 @@ test("surface catalog: writeMemory entries cover EVERY MemoryCategory (no catego
       return match![1];
     }),
   );
-  // Must match the WRITE_CATEGORIES list from round-trip.test.ts — locked here
-  // so a new MemoryCategory that lands in types.ts without a surface entry
-  // fails loudly. (Pinned by hand to avoid a circular import of the list.)
-  const expectedCategories = [
-    "fact",
-    "preference",
-    "decision",
-    "correction",
-    "commitment",
-    "moment",
-    "principle",
-    "relationship",
-    "rule",
-    "skill",
-    "procedure",
-    "reasoning_trace",
-    "entity",
-  ];
+  // Fail-closed against the MemoryCategory union: ALL_MEMORY_CATEGORIES is
+  // type-checked via `satisfies Record<MemoryCategory, unknown>` in helpers.ts,
+  // so adding a category to the union without listing it is a compile error
+  // there — and this test then enforces every listed category has a
+  // writeMemory(<category>) surface entry. A hand-written array here could
+  // silently miss a new category; this cannot.
+  const expectedCategories = ALL_MEMORY_CATEGORIES;
   for (const cat of expectedCategories) {
     assert.ok(coveredCategories.has(cat), `MemoryCategory "${cat}" has no writeMemory surface entry`);
   }

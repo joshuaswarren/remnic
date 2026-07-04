@@ -53,9 +53,14 @@ test("namespace routing: a named (non-default) namespace lands under <memoryDir>
     const router = new NamespaceStorageRouter(cfg);
 
     const storage = await router.storageFor("project-origin-abcd1234");
+    // Path-boundary check: a sibling like <memoryDir>/namespaces-evil would
+    // satisfy a naive startsWith("<memoryDir>/namespaces") but is OUTSIDE the
+    // namespaces/ directory. path.relative returns ".." only for paths outside
+    // the root, so this catches the prefix-collision bug a startsWith misses.
+    const namespacesRoot = path.join(memoryDir, "namespaces");
     assert.ok(
-      storage.dir.startsWith(path.join(memoryDir, "namespaces")),
-      `named namespace must resolve under <memoryDir>/namespaces — got ${storage.dir}`,
+      !path.relative(namespacesRoot, storage.dir).startsWith(".."),
+      `named namespace must resolve under <memoryDir>/namespaces/ — got ${storage.dir}`,
     );
     assert.notEqual(storage.dir, memoryDir, "named namespace must NOT collapse onto the default root");
   });
