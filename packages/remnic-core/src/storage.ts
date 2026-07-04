@@ -5942,7 +5942,7 @@ export class StorageManager {
     const q = questions.find((q) => q.id === id);
     if (!q) return false;
 
-    let raw = await readFile(q.filePath, "utf-8");
+    let raw = await this.readStorageSecureFile(q.filePath);
     raw = raw.replace(/resolved: false/, "resolved: true");
     raw = raw.replace(
       /---\n\n/,

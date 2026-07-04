@@ -16595,14 +16595,14 @@ export class Orchestrator {
       }
     }
 
-    // Consolidated catalog write touch (issue #1499 sweep; NIBOi + NIjwl). One
-    // belt-and-suspenders touch covering cleanup-only consolidation passes that
-    // may mutate the store via delete-only paths (entity-file merges, TTL
-    // cleanup) without triggering the storage chokepoint's post-write hook. The
-    // storage chokepoint (#1522) already fires for every explicit write method,
-    // so this is only needed for the rare cleanup-only case. `markWrite` is
-    // idempotent so this only refreshes recency. Best-effort and failure-tolerant.
-    this.storageRouter.recordWrite(this.config.defaultNamespace, this.storage.dir);
+    // Consolidated catalog write touch — belt-and-suspenders for cleanup-only
+    // passes that mutate the store via delete-only paths (entity merges, TTL
+    // cleanup) without triggering the storage chokepoint's post-write hook.
+    // Gated on merged/invalidated so idle passes don't spuriously touch.
+    // Best-effort and failure-tolerant.
+    if (merged > 0 || invalidated > 0) {
+      this.storageRouter.recordWrite(this.config.defaultNamespace, this.storage.dir);
+    }
 
     log.info("consolidation complete");
     return { memoriesProcessed: allMemories.length, merged, invalidated };
