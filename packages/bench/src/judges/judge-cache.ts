@@ -274,6 +274,7 @@ export interface RunJudgeWithCacheOptions {
 export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge & {
   counters: JudgeCacheCounters;
   cache: JudgeCache | null;
+  drainPendingWrites: () => Promise<void>;
 } {
   const { judge, cache } = options;
   const keyExtras = options.keyExtras ?? {};
@@ -287,16 +288,24 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
   // Cache-write failures must never fail the task: the judge already
   // produced a verdict, so count the failure and return the fresh result
   // (PR #1591, P1).
-  const putSafely = async (
+  // Cache-write failures must never fail the task (PR #1591, P1).
+  // PR #1591 (round-5 OTHls): cache writes are fire-and-forget at the
+  // miss site so a slow filesystem write cannot consume a phase
+  // timeout (benchmarkPhaseTimeoutMs / retryOptions.timeoutMs) that
+  // exists for the judge call. Track pending writes on a chained
+  // `pendingWrites` promise so callers may drain (e.g. between runs or
+  // at process exit) and observe failures via the
+  // `cacheWriteFailures` counter.
+  let pendingWrites: Promise<void> = Promise.resolve();
+  const putSafely = (
     parts: JudgeCacheKeyParts,
     verdict: BenchJudgeResult,
-  ): Promise<void> => {
+  ): void => {
     if (!cache) return;
-    try {
-      await cache.put(parts, verdict);
-    } catch {
+    const write = cache.put(parts, verdict).catch(() => {
       counters.cacheWriteFailures += 1;
-    }
+    });
+    pendingWrites = pendingWrites.then(() => write);
   };
 
   // Cache hits must NOT replay the original judge's latency/tokens —
@@ -314,6 +323,7 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
   const wrapper = {
     counters,
     cache,
+    drainPendingWrites: () => pendingWrites,
 
     async score(
       question: string,
@@ -376,7 +386,7 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
           latencyMs: Date.now() - scoreStartedAt,
           model: keyExtras.judgeModelId ?? undefined,
         };
-        await putSafely(parts, synthesized);
+        putSafely(parts, synthesized);
         return synthesized;
       }
 
@@ -387,7 +397,7 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
         expected,
         control,
       );
-      await putSafely(parts, fresh);
+      putSafely(parts, fresh);
       return fresh;
     },
 
@@ -440,15 +450,16 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
         // cursor bugbot, OS_-h. Bypassing via a local copy would
         // rebind `this` to `undefined` and break those implementations.
         const fresh = await judge.scoreBinaryPrompt!(prompt, control);
-        await putSafely(parts, fresh);
+        putSafely(parts, fresh);
         return fresh;
       },
     });
   }
 
-  return wrapper as BenchJudge & {
+  return wrapper as unknown as BenchJudge & {
     counters: JudgeCacheCounters;
     cache: JudgeCache | null;
+    drainPendingWrites: () => Promise<void>;
   };
 }
 

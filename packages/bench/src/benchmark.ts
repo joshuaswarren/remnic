@@ -150,6 +150,15 @@ export async function runBenchmark(
   const log = (message: string): void => {
     console.error(`  ${message}`);
   };
+
+  // PR #1591 round-5 OTHlr: capture the caller's original judge (and
+  // cross judge) references so we can restore them after the run —
+  // mutating options.system.judge permanently replaces the adapter's
+  // judge, so a second run reusing the same adapter (with noJudgeCache,
+  // a different cacheDir, or different provider) would silently hit
+  // the stale wrapper or wrap the wrapper.
+  const originalSystemJudge = options.system.judge;
+  const originalCrossJudge = options.amaBenchCrossJudge;
   let judgeCacheCounters: JudgeCacheCounters | undefined;
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
   // cache. Wrap before createTimeoutGuardedAdapter so timeout-phase
@@ -296,12 +305,13 @@ export async function runBenchmark(
       : rawIngestionAdapter;
 
   let result: BenchmarkResult;
+
   try {
     result = await registeredBenchmark.run({
       ...options,
       system,
       // PR #1591 P2 (thread #10): when caching is on AND a cross judge is
-      // supplied, hand the cached cross judge to the runner so AMA-Bench
+      // configured, hand the cached cross judge to the runner so AMA-Bench
       // cross-judge calls participate in the same content-keyed cache as
       // the primary system judge. Without this override, the runner kept
       // calling the unwrapped cross judge on every iteration.
@@ -312,6 +322,14 @@ export async function runBenchmark(
     });
   } finally {
     await destroyOwnedIngestionAdapter();
+    // PR #1591 round-5 OTHlr: restore the caller's original judges on
+    // the mutable adapter and cross-judge slot so a subsequent run
+    // using the same adapter instance starts from the unwrapped baseline
+    // again.
+    options.system.judge = originalSystemJudge;
+    if (originalCrossJudge !== undefined) {
+      options.amaBenchCrossJudge = originalCrossJudge;
+    }
   }
 
   // Issue #1573 PR1: surface the judge-call counter on the run report so the

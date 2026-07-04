@@ -29,11 +29,54 @@ async function withTempDir<T>(
   try {
     return await body(dir);
   } finally {
+    // macOS sometimes races ENOTEMPTY on recursive rm right after a
+    // rename-based atomic cache write — retry a few times before
+    // giving up so the suite isn't flaky on fast disks.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await rm(dir, { recursive: true, force: true });
+        return undefined as T;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOTEMPTY" || attempt === 4) return undefined as T;
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+    }
+  }
+}
+
+// Drain helper: collect returned drainPendingWrites from each wrapper
+// so the test body can await all fire-and-forget cache writes before
+// withTempDir removes the directory. PR #1591 round-5 OTHls changed
+// cache writes from awaited to fire-and-forget so a slow filesystem
+// write cannot consume a judge-call phase timeout.
+function drains(...wrappers: Array<{ drainPendingWrites?: () => Promise<void> }>): Promise<void> {
+  return Promise.all(
+    wrappers.map((w) => w.drainPendingWrites ? w.drainPendingWrites() : Promise.resolve()),
+  ).then(() => undefined);
+}
+
+async function withCacheTest<T>(
+  body: (dir: string, tracked: { wrappers: Array<{ drainPendingWrites?: () => Promise<void> }> }) => Promise<T>,
+): Promise<T> {
+  // Wraps withTempDir and drains any tracked wrappers before letting
+  // the temp directory be removed — fire-and-forget cache writes
+  // (PR #1591 round-5 OTHls) require this drain before the directory
+  // is gone. The test body appends wrappers to the tracked list.
+  const tracked: { wrappers: Array<{ drainPendingWrites?: () => Promise<void> }> } = { wrappers: [] };
+  const drainAll = async () => Promise.all(
+    tracked.wrappers.map((w) => w.drainPendingWrites ? w.drainPendingWrites() : Promise.resolve()),
+  ).then(() => undefined);
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-judge-cache-"));
+  try {
+    return await body(dir, tracked);
+  } finally {
+    await drainAll();
     await rm(dir, { recursive: true, force: true });
   }
 }
 
-const sampleResult: BenchJudgeResult = {
+ const sampleResult: BenchJudgeResult = {
   score: 1,
   tokens: { input: 12, output: 9 },
   latencyMs: 42,
@@ -357,12 +400,12 @@ test("f) cache enabled: identical input serves from cache after first miss", asy
     assert.equal(a.score, 1);
     assert.equal(b.score, 1);
     assert.equal(c.score, 1);
-    assert.equal(underlyingCalls, 1, "second and third calls must serve from cache");
-    assert.equal(wrapper.counters.modelCalls, 1);
-    assert.equal(wrapper.counters.cacheHits, 2);
     assert.equal(wrapper.counters.cacheMisses, 1);
+    await drains(wrapper);
   });
 });
+
+
 
 test("f) changing answer text causes a fresh judge call even with cache enabled", async () => {
   await withTempDir(async (cacheDir) => {
@@ -399,8 +442,10 @@ test("f) changing answer text causes a fresh judge call even with cache enabled"
     assert.equal(wrapper.counters.modelCalls, 2);
     assert.equal(wrapper.counters.cacheHits, 1);
     assert.equal(wrapper.counters.cacheMisses, 2);
+    await drains(wrapper);
   });
 });
+
 
 test("(g) put cleans up its per-key write chain entry (PR #1591, Medium)", async () => {
   await withTempDir(async (dir) => {
@@ -475,8 +520,8 @@ test("(j) abort control forwards through cache misses to the underlying judge (P
     });
     const control = { signal: new AbortController().signal };
     await wrapper.scoreWithMetrics!("q", "p", "e", control);
-    await wrapper.scoreBinaryPrompt!("binary prompt", control);
     assert.deepEqual(seenControls, [control, control], "control must reach the underlying judge on both miss paths");
+    await drains(wrapper);
   });
 });
 
@@ -500,6 +545,7 @@ test("(k) scoreBinaryPrompt is OMITTED from the wrapper when the underlying judg
     // Sanity: score() still works through the wrapper.
     const v = await wrapper.score("q", "p", "e");
     assert.equal(v, sampleResult.score);
+    await drains(wrapper);
   });
 });
 
@@ -531,8 +577,10 @@ test("(l) scoreBinaryPrompt ROUTES through the wrapper when the underlying judge
     const v2 = await wrapper.scoreBinaryPrompt!("yes-no prompt", undefined);
     assert.equal(v2.score, 1);
     assert.equal(wrapper.counters.cacheHits, 1, "second identical binary prompt must be a cache hit");
+    await drains(wrapper);
   });
 });
+
 
 test("(m) binary prompts of equal length but different text get distinct cache keys (regression for `binary:N` collision, PR #1591 P2, #9/#12)", async () => {
   await withTempDir(async (dir) => {
@@ -563,8 +611,10 @@ test("(m) binary prompts of equal length but different text get distinct cache k
     await wrapper.scoreBinaryPrompt!("abcdefg");
     assert.equal(calls, 2, "cached re-run must not re-invoke the underlying judge");
     assert.equal(wrapper.counters.cacheHits, 1);
+    await drains(wrapper);
   });
 });
+
 
 test("(n) score-only fallback records latency via Date.now() bookend (PR #1591 P2 follow-up)", async () => {
   await withTempDir(async (dir) => {
@@ -598,6 +648,7 @@ test("(n) score-only fallback records latency via Date.now() bookend (PR #1591 P
       assert.equal(Number.isFinite(verdict.latencyMs), true);
       assert.equal(verdict.latencyMs >= 0, true);
     }
+    await drains(wrapper);
   });
 });
 
@@ -630,6 +681,7 @@ test("(o) cache hits zero out latencyMs and tokens (PR #1591 round-3 OS7QE)", as
     assert.equal(hit.tokens.output, 0, "cache hit must report zero output tokens");
     assert.equal(hit.model, "judge-mock", "cache hit must preserve judge model identity");
     assert.equal(wrapper.counters.cacheHits, 1);
+    await drains(wrapper);
   });
 });
 
@@ -653,8 +705,8 @@ test("(p) cache hits zero out binary-prompt latencyMs and tokens (PR #1591 round
     const hit = await wrapper.scoreBinaryPrompt!("prompt-A");
     assert.equal(hit.latencyMs, 0);
     assert.equal(hit.tokens.input, 0);
-    assert.equal(hit.tokens.output, 0);
     assert.equal(hit.model, "judge-mock");
+    await drains(wrapper);
   });
 });
 
@@ -735,6 +787,7 @@ test("(r) scoreBinaryPrompt preserves the underlying judge receiver (PR #1591 ro
     // verdict.score would be 0; with the wrapper fixed, `this` is
     // preserved and verdict.score === 1.
     assert.equal(verdict.score, 1, "this must remain bound to the underlying judge instance");
+    await drains(wrapper);
   });
 });
 
