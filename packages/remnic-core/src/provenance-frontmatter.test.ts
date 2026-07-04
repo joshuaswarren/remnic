@@ -516,3 +516,55 @@ test("read-path downgrades hand-edited verified tag with no sources line (review
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("write-path drops source with non-integer character offsets (review round 6)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-intoffset-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await writeFactFile(storage, "Fact with fractional span offsets.");
+
+    await storage.updateMemoryFrontmatter(id, {
+      sources: [
+        { sessionKey: "s/1", observedAt: "2026-01-01T00:00:00Z", quote: "half", charStart: 2.5, charEnd: 8.5 },
+        { sessionKey: "s/2", observedAt: "2026-01-01T00:00:00Z", quote: "whole", charStart: 0, charEnd: 9 },
+      ],
+    });
+
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written);
+    assert.equal(written!.frontmatter.sources!.length, 1, "fractional-offset entry dropped, integer entry kept");
+    assert.equal(written!.frontmatter.sources![0]!.quote, "whole");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("write-path drops source with overflow-normalized ISO timestamp (review round 6)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-strictts-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await writeFactFile(storage, "Fact with calendar-overflow timestamp.");
+
+    await storage.updateMemoryFrontmatter(id, {
+      sources: [
+        // 2026-02-30 silently normalizes to March 2 under Date.parse; the
+        // strict ISO check must reject it. A bare "123" (year 123) is also
+        // rejected by the format regex.
+        { sessionKey: "s/1", observedAt: "2026-02-30T00:00:00Z", quote: "overflow" },
+        { sessionKey: "s/2", observedAt: "123", quote: "bare-year" },
+        { sessionKey: "s/3", observedAt: "2026-05-03T10:01:30Z", quote: "good" },
+      ],
+    });
+
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written);
+    assert.equal(written!.frontmatter.sources!.length, 1, "overflow + bare-year dropped, valid ISO kept");
+    assert.equal(written!.frontmatter.sources![0]!.quote, "good");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

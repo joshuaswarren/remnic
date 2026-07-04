@@ -140,6 +140,33 @@ export function reconcileProvenanceRead(
 }
 
 /**
+ * Strict ISO-8601 timestamp check (review round 6, codex thread OXPAp).
+ * `Date.parse` accepts non-ISO strings (bare years like `"123"`) and
+ * silently normalizes calendar overflow (`2026-02-30` -> March 2, hour 25
+ * -> next day), so malformed provenance survives as if valid. Require the
+ * full `YYYY-MM-DDTHH:MM:SS[.fff](Z|±HH:MM)` shape and reject overflow via a
+ * `Date.UTC` round-trip component check — the offset does not affect whether
+ * a wall-clock field overflows, so this is correct for any timezone suffix.
+ */
+function isStrictIsoTimestamp(s: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(s);
+  if (!m) return false;
+  const y = Number(m[1]), mo = Number(m[2]), da = Number(m[3]);
+  const h = Number(m[4]), mi = Number(m[5]), se = Number(m[6]);
+  // Date.UTC normalizes overflow (Feb 30 -> Mar 2); a component round-trip
+  // catches what Date.parse silently accepts.
+  const d = new Date(Date.UTC(y, mo - 1, da, h, mi, se));
+  return (
+    d.getUTCFullYear() === y &&
+    d.getUTCMonth() === mo - 1 &&
+    d.getUTCDate() === da &&
+    d.getUTCHours() === h &&
+    d.getUTCMinutes() === mi &&
+    d.getUTCSeconds() === se
+  );
+}
+
+/**
  * Zod schema for a single `ProvenanceSource` entry (issue #1575).  Parsed
  * JSON from frontmatter is external data, so each entry is validated here
  * rather than trusted via a cast (rule: no inline-cast-access on parsed
@@ -152,11 +179,11 @@ const ProvenanceSourceSchema = z
     observedAt: z
       .string()
       .min(1)
-      .refine((s) => !Number.isNaN(Date.parse(s)), "must be a parseable ISO timestamp"),
+      .refine(isStrictIsoTimestamp, "must be a valid ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SS[Z|±HH:MM], no calendar overflow)"),
     quote: z.string().min(1),
     turnId: z.string().min(1).optional(),
-    charStart: z.number().finite().nonnegative().optional(),
-    charEnd: z.number().finite().nonnegative().optional(),
+    charStart: z.number().finite().nonnegative().int().optional(),
+    charEnd: z.number().finite().nonnegative().int().optional(),
   })
   .refine(
     (src) => src.charStart === undefined || src.charEnd === undefined || src.charEnd >= src.charStart,
