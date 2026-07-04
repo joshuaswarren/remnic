@@ -163,20 +163,65 @@ function extractMcpDispatchMap(): Map<string, string> {
 }
 
 /**
- * Statically extract the set of operation names dispatched via `getOperation`
- * in `access-http.ts`. Each `getOperation("op_name")` call proves the route
- * routes through the boundary at dispatch time.
+ * Normalize a regex route body (e.g. `\/engram\/v1\/peers\/([^/]+)`) to the
+ * catalog pathname form (`/engram/v1/peers/:id`).
  */
-function extractHttpDispatchOperations(): Set<string> {
+function normalizeHttpRegexRoute(src: string): string {
+  return src.replace(/\\\//g, "/").replace(/\(\[\^\/\]\+\)/g, ":id");
+}
+
+/**
+ * Statically extract a route-specific dispatch map from `access-http.ts`:
+ * pathname → set of operations dispatched via `getOperation("…")` within that
+ * route's handler block. Route-specific scoping prevents a catalog entry from
+ * passing the dispatch gate just because a DIFFERENT route dispatches the same
+ * operation (review P2: bind dispatch validation to method/path routes).
+ */
+function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
   const source = readFileSync(
     new URL("./access-http.ts", import.meta.url),
     "utf-8",
   );
-  const ops = new Set<string>();
-  for (const m of source.matchAll(/getOperation\("(\w+)"\)/g)) {
-    ops.add(m[1]!);
+  const lines = source.split("\n");
+  const routeOps = new Map<string, Set<string>>();
+  let currentRoute: string | null = null;
+
+  for (const line of lines) {
+    // Detect route block start and update the current route.
+    let m = line.match(/pathname\s*===\s*"((?:\/engram|\/remnic|\/v1)\/[^"]+)"/);
+    if (m) {
+      currentRoute = m[1]!.replace(/^\/remnic\//, "/engram/");
+    } else {
+      m = line.match(/\/\^((?:\\\/engram|\\\/remnic|\\\/v1).+?)\$\/g?\.(?:exec|test)\(pathname\)/);
+      if (m) {
+        currentRoute = normalizeHttpRegexRoute(m[1]!);
+      } else {
+        m = line.match(/pathname\.match\(\/\^((?:\\\/engram|\\\/remnic|\\\/v1).+?)\$\/g?\)/);
+        if (m) {
+          currentRoute = normalizeHttpRegexRoute(m[1]!);
+        } else {
+          m = line.match(/pathname\.startsWith\("((?:\/engram)\/v1\/[^"]+)"\)/);
+          if (m) {
+            currentRoute = m[1]!.replace(/\/$/, "") + "/:id";
+          }
+        }
+      }
+    }
+
+    if (currentRoute && !routeOps.has(currentRoute)) {
+      routeOps.set(currentRoute, new Set<string>());
+    }
+
+    // Collect getOperation calls within the current route block.
+    if (currentRoute) {
+      const opMatch = line.match(/getOperation\("(\w+)"\)/);
+      if (opMatch) {
+        routeOps.get(currentRoute)!.add(opMatch[1]!);
+      }
+    }
   }
-  return ops;
+
+  return routeOps;
 }
 
 /**
@@ -197,7 +242,7 @@ function validateDispatchCoverage(
   mcpCatalog: readonly McpToolEntry[],
   httpCatalog: readonly HttpRouteEntry[],
   mcpDispatch: ReadonlyMap<string, string>,
-  httpDispatch: ReadonlySet<string>,
+  httpRouteDispatch: ReadonlyMap<string, ReadonlySet<string>>,
 ): DispatchViolation[] {
   const violations: DispatchViolation[] = [];
   for (const entry of mcpCatalog) {
@@ -217,10 +262,15 @@ function validateDispatchCoverage(
   }
   for (const entry of httpCatalog) {
     if (entry.operation === null) continue;
-    if (!httpDispatch.has(entry.operation)) {
+    // Route-specific: the getOperation("…") call must be in THIS route's
+    // handler block, not just anywhere in the file. A global set would let a
+    // flipped catalog row pass if a different route dispatches the same
+    // operation (review P2: bind dispatch validation to method/path routes).
+    const routeOps = httpRouteDispatch.get(entry.pathname);
+    if (!routeOps || !routeOps.has(entry.operation)) {
       violations.push({
         kind: "http-no-dispatch",
-        detail: `HTTP ${entry.method} ${entry.pathname} claims migration to ${entry.operation} but no getOperation("${entry.operation}") found in access-http.ts`,
+        detail: `HTTP ${entry.method} ${entry.pathname} claims migration to ${entry.operation} but no getOperation("${entry.operation}") found in its route block in access-http.ts`,
       });
     }
   }
@@ -295,12 +345,38 @@ test("dispatch validator catches a catalog entry whose operation is registered b
     lyingCatalog,
     [],
     new Map<string, string>(),
-    new Set<string>(),
+    new Map<string, ReadonlySet<string>>(),
   );
   const noDispatch = violations.filter((v) => v.kind === "mcp-no-dispatch");
   assert.ok(
     noDispatch.some((v) => v.detail.includes("synthetic_dispatch_liar")),
     "dispatch validator must flag a migrated entry with no surface dispatch wiring",
+  );
+});
+
+test("dispatch validator catches an HTTP route whose operation is dispatched by a different route", () => {
+  // Seed: catalog claims `GET /engram/v1/synthetic` migrated to `memory_get`.
+  // The operation IS registered, and `memory_get` IS dispatched — but by a
+  // DIFFERENT route (`/engram/v1/memories/:id`). The route-specific check must
+  // catch that `/engram/v1/synthetic` itself has no `getOperation("memory_get")`
+  // in its handler block. A global set would pass this false migration.
+  // (review P2: bind dispatch validation to method/path routes)
+  const lyingHttpCatalog: readonly HttpRouteEntry[] = [
+    { method: "GET", pathname: "/engram/v1/synthetic", operation: "memory_get" },
+  ];
+  const routeDispatch = new Map<string, ReadonlySet<string>>([
+    ["/engram/v1/memories/:id", new Set(["memory_get"])],
+  ]);
+  const violations = validateDispatchCoverage(
+    [],
+    lyingHttpCatalog,
+    new Map<string, string>(),
+    routeDispatch,
+  );
+  const noDispatch = violations.filter((v) => v.kind === "http-no-dispatch");
+  assert.ok(
+    noDispatch.some((v) => v.detail.includes("/engram/v1/synthetic")),
+    "dispatch validator must flag an HTTP route whose operation is dispatched by a different route",
   );
 });
 
@@ -440,8 +516,11 @@ test("HTTP handler source routes match the catalog (static completeness)", () =>
         sourceTuples.add(`${methodMatch[1]} ${pathname}`);
       }
       // Also handle negated checks: `req.method !== "GET"` → the route IS GET.
+      // Scan within the whole block, not just the match line — some routes
+      // (e.g. GET /engram/v1/peers/:id/profile) use the negation as a guard
+      // inside the block, not on the regex-match line.
       const negMethodMatch = lines[j]!.match(/req\.method\s*!==\s*"(\w+)"/);
-      if (negMethodMatch && j === matchLine) {
+      if (negMethodMatch) {
         sourceTuples.add(`${negMethodMatch[1]} ${pathname}`);
       }
     }
@@ -488,14 +567,18 @@ test("every migrated MCP/HTTP entry resolves to a registered AND dispatched boun
   // Registration alone is not enough — a flipped catalog row without wired
   // dispatch is a false migration. The ratchet would lower the unmigrated
   // count while the handler still uses its old direct service branch.
-  // (review P2: verify dispatch before counting handlers as migrated)
+  // MCP dispatch is verified against MCP_MIGRATED_OPERATIONS; HTTP dispatch is
+  // verified route-specifically (getOperation("…") must be in the entry's own
+  // handler block, not just anywhere in the file).
+  // (review P2: verify dispatch before counting handlers as migrated;
+  //  review P2: bind dispatch validation to method/path routes)
   const mcpDispatch = extractMcpDispatchMap();
-  const httpDispatch = extractHttpDispatchOperations();
+  const httpRouteDispatch = extractHttpRouteDispatchMap();
   const violations = validateDispatchCoverage(
     MCP_TOOLS,
     HTTP_ROUTES,
     mcpDispatch,
-    httpDispatch,
+    httpRouteDispatch,
   );
   assert.deepEqual(
     violations,
