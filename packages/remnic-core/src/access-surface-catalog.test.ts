@@ -6,14 +6,17 @@
  *      (so a new tool cannot ship without either migrating it or
  *      acknowledging it as unmigrated);
  *   2. every catalog entry that claims a migration (`operation !== null`)
- *      resolves to a registered boundary operation;
+ *      resolves to a registered boundary operation AND dispatches through it
+ *      — a flipped catalog row without wired dispatch is caught, so the
+ *      ratchet cannot record a false migration;
  *   3. the unmigrated-handler count equals the ratchet baseline, so the count
  *      may only decrease.
  *
- * Prove-fail-before (issue requirement): a dedicated test seeds a bypass —
- * an MCP tool the catalog does not know about — and asserts the validator
- * reports it. That demonstrates the gate catches the regression class before
- * relying on it for the real surface.
+ * Prove-fail-before (issue requirement): dedicated tests seed bypasses — an
+ * MCP tool the catalog does not know about, and a catalog entry whose
+ * operation is registered but never dispatched — and assert the validators
+ * report them. That demonstrates the gates catch the regression class before
+ * relying on them for the real surface.
  */
 
 import assert from "node:assert/strict";
@@ -30,6 +33,7 @@ import {
   HTTP_ROUTES,
   MCP_TOOLS,
   countUnmigratedHandlers,
+  type HttpRouteEntry,
   type McpToolEntry,
 } from "./access-surface-catalog.js";
 
@@ -132,6 +136,98 @@ function formatViolations(violations: readonly CoverageViolation[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Live dispatch extraction — verify surfaces route through the boundary
+// ---------------------------------------------------------------------------
+
+/**
+ * Statically extract the MCP dispatch map (`MCP_MIGRATED_OPERATIONS`) from
+ * `access-mcp.ts`. This is the map that routes incoming tool calls to the
+ * boundary at dispatch time. Comparing it to the catalog proves a flipped
+ * catalog row is not a false migration — the surface code must also wire
+ * the dispatch.
+ */
+function extractMcpDispatchMap(): Map<string, string> {
+  const source = readFileSync(
+    new URL("./access-mcp.ts", import.meta.url),
+    "utf-8",
+  );
+  const blockMatch = source.match(
+    /MCP_MIGRATED_OPERATIONS[^{]*\{([\s\S]*?)\}/,
+  );
+  const body = blockMatch?.[1] ?? "";
+  const map = new Map<string, string>();
+  for (const m of body.matchAll(/"engram\.(\w+)"\s*:\s*"(\w+)"/g)) {
+    map.set(m[1]!, m[2]!);
+  }
+  return map;
+}
+
+/**
+ * Statically extract the set of operation names dispatched via `getOperation`
+ * in `access-http.ts`. Each `getOperation("op_name")` call proves the route
+ * routes through the boundary at dispatch time.
+ */
+function extractHttpDispatchOperations(): Set<string> {
+  const source = readFileSync(
+    new URL("./access-http.ts", import.meta.url),
+    "utf-8",
+  );
+  const ops = new Set<string>();
+  for (const m of source.matchAll(/getOperation\("(\w+)"\)/g)) {
+    ops.add(m[1]!);
+  }
+  return ops;
+}
+
+/**
+ * Pure dispatch validator — shared by the prove-fail-before test and the real
+ * gate. Flags a catalog entry that claims a migration (`operation !== null`)
+ * but whose live surface code does not dispatch through the boundary. A
+ * flipped catalog row without wired dispatch is a false migration.
+ */
+interface DispatchViolation {
+  readonly kind:
+    | "mcp-no-dispatch"
+    | "mcp-dispatch-mismatch"
+    | "http-no-dispatch";
+  readonly detail: string;
+}
+
+function validateDispatchCoverage(
+  mcpCatalog: readonly McpToolEntry[],
+  httpCatalog: readonly HttpRouteEntry[],
+  mcpDispatch: ReadonlyMap<string, string>,
+  httpDispatch: ReadonlySet<string>,
+): DispatchViolation[] {
+  const violations: DispatchViolation[] = [];
+  for (const entry of mcpCatalog) {
+    if (entry.operation === null) continue;
+    const dispatched = mcpDispatch.get(entry.tool);
+    if (dispatched === undefined) {
+      violations.push({
+        kind: "mcp-no-dispatch",
+        detail: `${entry.tool} claims migration to ${entry.operation} but has no entry in MCP_MIGRATED_OPERATIONS`,
+      });
+    } else if (dispatched !== entry.operation) {
+      violations.push({
+        kind: "mcp-dispatch-mismatch",
+        detail: `${entry.tool}: dispatch routes to "${dispatched}" but catalog claims "${entry.operation}"`,
+      });
+    }
+  }
+  for (const entry of httpCatalog) {
+    if (entry.operation === null) continue;
+    if (!httpDispatch.has(entry.operation)) {
+      violations.push({
+        kind: "http-no-dispatch",
+        detail: `HTTP ${entry.method} ${entry.pathname} claims migration to ${entry.operation} but no getOperation("${entry.operation}") found in access-http.ts`,
+      });
+    }
+  }
+  return violations;
+}
+
+// ---------------------------------------------------------------------------
 // Prove-fail-before: the validator MUST catch a seeded bypass
 // ---------------------------------------------------------------------------
 
@@ -184,6 +280,28 @@ test("fitness validator catches a stale catalog entry (tool removed from the ser
   const violations = validateCoverage(staleCatalog, live, new Set(listRegisteredOperations()));
   const stale = violations.filter((v) => v.kind === "catalog-tool-not-live");
   assert.ok(stale.length > 0, "validator must flag a catalog entry with no live tool");
+});
+
+test("dispatch validator catches a catalog entry whose operation is registered but never dispatched", () => {
+  // Seed: a catalog entry claims `operation: "memory_get"` — the operation IS
+  // registered — but the MCP dispatch map passed in is EMPTY, simulating a
+  // handler that flipped its catalog row without wiring dispatch through the
+  // boundary. Registration alone would pass the old gate; this check must
+  // catch the false migration (review P2: verify dispatch before counting).
+  const lyingCatalog: readonly McpToolEntry[] = [
+    { tool: "synthetic_dispatch_liar", operation: "memory_get" },
+  ];
+  const violations = validateDispatchCoverage(
+    lyingCatalog,
+    [],
+    new Map<string, string>(),
+    new Set<string>(),
+  );
+  const noDispatch = violations.filter((v) => v.kind === "mcp-no-dispatch");
+  assert.ok(
+    noDispatch.some((v) => v.detail.includes("synthetic_dispatch_liar")),
+    "dispatch validator must flag a migrated entry with no surface dispatch wiring",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -344,7 +462,10 @@ test("HTTP handler source routes match the catalog (static completeness)", () =>
   );
 });
 
-test("every migrated MCP/HTTP entry resolves to a registered boundary operation", () => {
+test("every migrated MCP/HTTP entry resolves to a registered AND dispatched boundary operation", () => {
+  // Phase 1 — registration: the operation name must exist in the live registry.
+  // This catches a flipped catalog row that references an operation no one
+  // ever defined.
   const registered = new Set(listRegisteredOperations());
   for (const entry of MCP_TOOLS) {
     if (entry.operation !== null) {
@@ -362,6 +483,27 @@ test("every migrated MCP/HTTP entry resolves to a registered boundary operation"
       );
     }
   }
+
+  // Phase 2 — dispatch: the live surface code must route through the boundary.
+  // Registration alone is not enough — a flipped catalog row without wired
+  // dispatch is a false migration. The ratchet would lower the unmigrated
+  // count while the handler still uses its old direct service branch.
+  // (review P2: verify dispatch before counting handlers as migrated)
+  const mcpDispatch = extractMcpDispatchMap();
+  const httpDispatch = extractHttpDispatchOperations();
+  const violations = validateDispatchCoverage(
+    MCP_TOOLS,
+    HTTP_ROUTES,
+    mcpDispatch,
+    httpDispatch,
+  );
+  assert.deepEqual(
+    violations,
+    [],
+    `catalog entries claim migrations the surface does not dispatch through — ` +
+      `a handler is marked migrated but still uses its old direct service branch.\n` +
+      violations.map((v) => `  - [${v.kind}] ${v.detail}`).join("\n"),
+  );
 });
 
 test("unmigrated-handler count matches the ratchet baseline (may only decrease)", () => {
