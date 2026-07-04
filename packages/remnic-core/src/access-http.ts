@@ -2213,6 +2213,13 @@ export class EngramAccessHttpServer {
       typeof toolArgs === "object" &&
       !Array.isArray(toolArgs) &&
       (toolArgs as { dryRun?: unknown }).dryRun === true;
+    const codingDecisionWrite =
+      (toolName === "engram.coding_decision" || toolName === "remnic.coding_decision") &&
+      toolArgs !== null &&
+      typeof toolArgs === "object" &&
+      !Array.isArray(toolArgs) &&
+      ((toolArgs as { subcommand?: unknown }).subcommand === "record" ||
+        (toolArgs as { subcommand?: unknown }).subcommand === "supersede");
     const isMcpWrite =
       request.method === "tools/call" &&
       (
@@ -2240,7 +2247,8 @@ export class EngramAccessHttpServer {
             toolName === "engram.memory_action_apply" ||
             toolName === "remnic.memory_action_apply"
           )
-        )
+        ) ||
+        codingDecisionWrite
       );
     if (isMcpWrite) {
       this.ensureWriteRateLimitAvailable();
