@@ -133,7 +133,12 @@ import:
 # Resolve the extension root the same way the installer does (see
 # "Install location" above): active profile wins, then PI_CODING_AGENT_DIR,
 # then the default agent dir.
-profile="${OMP_PROFILE:-${PI_PROFILE:-}}"
+# Profile selection mirrors resolveOmpProfile(): OMP_PROFILE wins whenever it
+# is SET (even set-but-empty — it does not fall through to PI_PROFILE), values
+# are trimmed, and blank or the reserved "default" mean "no profile".
+if [ "${OMP_PROFILE+x}" = "x" ]; then raw_profile="$OMP_PROFILE"; else raw_profile="${PI_PROFILE-}"; fi
+profile="$(printf '%s' "$raw_profile" | xargs)"
+[ "$profile" = "default" ] && profile=""
 config_root="$HOME/${PI_CONFIG_DIR:-.omp}"
 if [ -n "$profile" ]; then
   agent_dir="$config_root/profiles/$profile/agent"
